@@ -97,7 +97,7 @@ pub(super) const MAX_TYPE_PARAMETERS: usize = 4096;
 /// Dense bound of ordered type/lifetime bounds across one request.
 /// Each bound has written source evidence, so the request geometry scales
 /// with entered bytes rather than allocating a language-wide maximum.
-pub(super) const MAX_TYPE_PARAMETER_BOUNDS: usize = MAX_TYPE_PARAMETERS * MAX_REF_LIST_ELEMENTS;
+pub(super) const MAX_TYPE_PARAMETER_BOUNDS: usize = MAX_TYPE_PARAMETERS * 255;
 /// Dense bound of pooled Rust free generic predicates across one request.
 /// Each predicate carries written source evidence, so real usage scales with
 /// entered bytes like type parameters do.
@@ -110,12 +110,13 @@ pub(super) const MAX_FREE_PREDICATES: usize = 4096;
 /// a hard `RefListCapacity` wall.
 pub(super) const MAX_REF_LISTS: usize = 4096;
 /// Dense bound of one pooled reference list.
-/// The measured corpus maximum is 220 (`pflag.FlagSet` method set; testify's
-/// `Assertions` reaches 146). Raised from 128 to 255 — the exact `u8` list
-/// length ceiling — to admit real wide method sets while preserving the dense
-/// geometry; a list beyond this is still a typed `RefListElements` rejection,
-/// never a truncated emission.
-pub(super) const MAX_REF_LIST_ELEMENTS: usize = 255;
+///
+/// The measured Go method-set maximum was 220, which fit in a `u8` length.
+/// C translation units such as Lua and json-c emit a wider include or
+/// reference list at the first fact, so the ceiling is the element count a
+/// flat pool can address, not a fixed row width. A list beyond this is still
+/// a typed `RefListElements` rejection, never a truncated emission.
+pub(super) const MAX_REF_LIST_ELEMENTS: usize = 4096;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
@@ -581,6 +582,49 @@ impl RejectedFact<'_> {
 
 /// Caller-owned bounded SoA lanes for the ordered emission set. Only the
 /// admitted prefix is read by [`admit`]; slots past `len` are never observed.
+/// Flat pool of reference-list rows. Each row is a span into `elements`,
+/// so a list wider than 255 does not reserve a fixed-width scratch row.
+struct PooledRefLists {
+    elements: Vec<u32>,
+    starts: Box<[u32]>,
+    lengths: Box<[u32]>,
+    len: usize,
+}
+
+impl PooledRefLists {
+    fn reserve(lists: usize) -> Self {
+        Self {
+            elements: Vec::new(),
+            starts: vec![0; lists].into_boxed_slice(),
+            lengths: vec![0; lists].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    fn row(&self, index: usize) -> Option<&[u32]> {
+        if index >= self.len {
+            return None;
+        }
+        let start = usize::try_from(self.starts[index]).ok()?;
+        let length = usize::try_from(self.lengths[index]).ok()?;
+        let end = start.checked_add(length)?;
+        self.elements.get(start..end)
+    }
+
+    fn push(&mut self, elements: &[u32]) -> Result<(), ()> {
+        let start = u32::try_from(self.elements.len()).map_err(|_| ())?;
+        let length = u32::try_from(elements.len()).map_err(|_| ())?;
+        if self.len >= self.starts.len() {
+            return Err(());
+        }
+        self.elements.extend_from_slice(elements);
+        self.starts[self.len] = start;
+        self.lengths[self.len] = length;
+        self.len += 1;
+        Ok(())
+    }
+}
+
 pub(super) struct FactSet<'source> {
     plan: ResourcePlan,
     primary_source_len: Option<u32>,
@@ -627,14 +671,11 @@ pub(super) struct FactSet<'source> {
     free_predicates: Box<[backend_semantic::ir::ExtensionFreePredicate]>,
     free_predicate_len: usize,
     free_predicate_ranges: Box<[Option<StagedFreePredicateRange>]>,
-    atom_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    atom_list_lengths: Box<[u8]>,
+    atom_lists: PooledRefLists,
     atom_list_len: usize,
-    type_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    type_list_lengths: Box<[u8]>,
+    type_lists: PooledRefLists,
     type_list_len: usize,
-    entity_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    entity_list_lengths: Box<[u8]>,
+    entity_lists: PooledRefLists,
     entity_list_len: usize,
     anonymous_records: Box<[SemanticTypeRecord<'source>]>,
     anonymous_owners: Box<[u32]>,
@@ -987,14 +1028,11 @@ impl<'source> FactSet<'source> {
             .into_boxed_slice(),
             free_predicate_len: 0,
             free_predicate_ranges: vec![None; plan.facts].into_boxed_slice(),
-            atom_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
-            atom_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
+            atom_lists: PooledRefLists::reserve(plan.ref_lists),
             atom_list_len: 0,
-            type_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
-            type_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
+            type_lists: PooledRefLists::reserve(plan.ref_lists),
             type_list_len: 0,
-            entity_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
-            entity_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
+            entity_lists: PooledRefLists::reserve(plan.ref_lists),
             entity_list_len: 0,
             anonymous_records: vec![opaque_record(); plan.anonymous_rows].into_boxed_slice(),
             anonymous_owners: vec![0; plan.anonymous_rows].into_boxed_slice(),
@@ -1839,26 +1877,18 @@ impl<'source> FactSet<'source> {
         let (count, matches) = match lane {
             ReferenceListLane::Atoms => {
                 let count = self.atom_list_len;
-                let matches = (0..count).find(|index| {
-                    usize::from(self.atom_list_lengths[*index]) == elements.len()
-                        && self.atom_lists[*index][..elements.len()] == *elements
-                });
+                let matches = (0..count).find(|index| self.atom_lists.row(*index) == Some(elements));
                 (count, matches)
             }
             ReferenceListLane::Types => {
                 let count = self.type_list_len;
-                let matches = (0..count).find(|index| {
-                    usize::from(self.type_list_lengths[*index]) == elements.len()
-                        && self.type_lists[*index][..elements.len()] == *elements
-                });
+                let matches = (0..count).find(|index| self.type_lists.row(*index) == Some(elements));
                 (count, matches)
             }
             ReferenceListLane::Entities => {
                 let count = self.entity_list_len;
-                let matches = (0..count).find(|index| {
-                    usize::from(self.entity_list_lengths[*index]) == elements.len()
-                        && self.entity_lists[*index][..elements.len()] == *elements
-                });
+                let matches =
+                    (0..count).find(|index| self.entity_lists.row(*index) == Some(elements));
                 (count, matches)
             }
         };
@@ -1868,24 +1898,16 @@ impl<'source> FactSet<'source> {
         if count == self.plan.ref_lists {
             return Err(FactFault::RefListCapacity);
         }
-        let mut row = [0; MAX_REF_LIST_ELEMENTS];
-        row[..elements.len()].copy_from_slice(elements);
+        let pool = match lane {
+            ReferenceListLane::Atoms => &mut self.atom_lists,
+            ReferenceListLane::Types => &mut self.type_lists,
+            ReferenceListLane::Entities => &mut self.entity_lists,
+        };
+        pool.push(elements).map_err(|_| FactFault::RefListElements)?;
         match lane {
-            ReferenceListLane::Atoms => {
-                self.atom_lists[count] = row;
-                self.atom_list_lengths[count] = elements.len() as u8;
-                self.atom_list_len = count + 1;
-            }
-            ReferenceListLane::Types => {
-                self.type_lists[count] = row;
-                self.type_list_lengths[count] = elements.len() as u8;
-                self.type_list_len = count + 1;
-            }
-            ReferenceListLane::Entities => {
-                self.entity_lists[count] = row;
-                self.entity_list_lengths[count] = elements.len() as u8;
-                self.entity_list_len = count + 1;
-            }
+            ReferenceListLane::Atoms => self.atom_list_len = count + 1,
+            ReferenceListLane::Types => self.type_list_len = count + 1,
+            ReferenceListLane::Entities => self.entity_list_len = count + 1,
         }
         Ok(count as u32)
     }
@@ -2564,19 +2586,13 @@ impl<'source> FactSet<'source> {
             if self.atom_list_len == 0 && list == 0 {
                 continue;
             }
-            let length = self.atom_list_lengths.get(list).copied().ok_or(
-                backend_semantic::ir::BuildError::Dangling {
-                    space: backend_semantic::ir::SemanticSpace::AtomList,
-                    raw: list as u32,
-                },
-            )?;
-            if list >= self.atom_list_len {
+            let Some(row) = self.atom_lists.row(list) else {
                 return Err(backend_semantic::ir::BuildError::Dangling {
                     space: backend_semantic::ir::SemanticSpace::AtomList,
                     raw: list as u32,
                 });
-            }
-            let length = usize::from(length);
+            };
+            let length = row.len();
             item_attribute_ranges[ordinal] = (item_attribute_total, length);
             item_attribute_total = item_attribute_total.checked_add(length).ok_or(
                 backend_semantic::ir::BuildError::Dangling {
@@ -2596,7 +2612,13 @@ impl<'source> FactSet<'source> {
                 continue;
             }
             let (start, length) = item_attribute_ranges[ordinal];
-            for (relative, provisional) in self.atom_lists[list][..length].iter().enumerate() {
+            let Some(row) = self.atom_lists.row(list) else {
+                return Err(backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::AtomList,
+                    raw: list as u32,
+                });
+            };
+            for (relative, provisional) in row[..length].iter().enumerate() {
                 let offset = usize::try_from(*provisional).map_err(|_| {
                     backend_semantic::ir::BuildError::Dangling {
                         space: backend_semantic::ir::SemanticSpace::Atom,
@@ -3170,20 +3192,14 @@ fn live_atom_list<'source>(
     if facts.atom_list_len == 0 && index == 0 {
         return tree.intern_attributes(&[]);
     }
-    let length = facts.atom_list_lengths.get(index).copied().ok_or(
-        backend_semantic::ir::BuildError::Dangling {
-            space: backend_semantic::ir::SemanticSpace::AtomList,
-            raw: id.raw,
-        },
-    )?;
-    if index >= facts.atom_list_len {
+    let Some(row) = facts.atom_lists.row(index) else {
         return Err(backend_semantic::ir::BuildError::Dangling {
             space: backend_semantic::ir::SemanticSpace::AtomList,
             raw: id.raw,
         });
-    }
-    let mut atoms = Vec::with_capacity(usize::from(length));
-    for provisional in &facts.atom_lists[index][..usize::from(length)] {
+    };
+    let mut atoms = Vec::with_capacity(row.len());
+    for provisional in row {
         let bytes = facts
             .extension_atoms
             .get(*provisional as usize)
@@ -3288,9 +3304,14 @@ fn live_type_list<'source>(
             raw: id.raw,
         });
     }
-    let length = usize::from(facts.type_list_lengths[index]);
-    let mut types = Vec::with_capacity(length);
-    for row in &facts.type_lists[index][..length] {
+    let Some(rows) = facts.type_lists.row(index) else {
+        return Err(backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::TypeList,
+            raw: id.raw,
+        });
+    };
+    let mut types = Vec::with_capacity(rows.len());
+    for row in rows {
         types.push(live_type(tree, facts, *row, ids, seen, scratch)?);
     }
     tree.intern_types(&types)
@@ -3311,9 +3332,14 @@ fn live_entity_list(
             raw: id.raw,
         });
     }
-    let length = usize::from(facts.entity_list_lengths[index]);
-    let mut entities = Vec::with_capacity(length);
-    for raw in &facts.entity_lists[index][..length] {
+    let Some(rows) = facts.entity_lists.row(index) else {
+        return Err(backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::EntityList,
+            raw: id.raw,
+        });
+    };
+    let mut entities = Vec::with_capacity(rows.len());
+    for raw in rows {
         let local = backend_semantic::ir::TreeEntityId::new(*raw);
         entities.push(tree.entities().get(local).ok_or(
             backend_semantic::ir::BuildError::InvalidTreeEntity {
@@ -5327,16 +5353,17 @@ pub(super) fn admit<'source, 'output>(
 
     // Extension pooled lanes: provisional atom coordinates become final atom
     // lane positions; type and entity coordinates were already final.
-    let mut atom_list_elements =
-        vec![[0; MAX_REF_LIST_ELEMENTS]; facts.atom_list_len].into_boxed_slice();
-    for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
-        .iter()
-        .enumerate()
-    {
-        for (offset, provisional) in facts.atom_lists[index][..usize::from(*length)]
-            .iter()
-            .enumerate()
-        {
+    let mut atom_list_elements = Vec::with_capacity(facts.atom_list_len);
+    for index in 0..facts.atom_list_len {
+        let Some(row) = facts.atom_lists.row(index) else {
+            return Err(AdmissionFault::ExtensionAtom {
+                row: index,
+                provisional: 0,
+                atom_count: extension_atom_count,
+            });
+        };
+        let mut mapped = Vec::with_capacity(row.len());
+        for provisional in row {
             if *provisional as usize >= extension_atom_count {
                 return Err(AdmissionFault::ExtensionAtom {
                     row: index,
@@ -5344,48 +5371,39 @@ pub(super) fn admit<'source, 'output>(
                     atom_count: extension_atom_count,
                 });
             }
-            atom_list_elements[index][offset] = (fact_count + *provisional as usize) as u32;
+            mapped.push((fact_count + *provisional as usize) as u32);
         }
+        atom_list_elements.push(mapped);
     }
-    let mut pooled_atom_lists = vec![ExtensionRefList { elements: &[] }; facts.atom_list_len];
-    for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
+    let pooled_atom_lists = atom_list_elements
         .iter()
-        .enumerate()
-    {
-        pooled_atom_lists[index] = ExtensionRefList {
-            elements: &atom_list_elements[index][..usize::from(*length)],
+        .map(|row| ExtensionRefList { elements: row })
+        .collect::<Vec<_>>();
+    let mut type_list_elements = Vec::with_capacity(facts.type_list_len);
+    for index in 0..facts.type_list_len {
+        let Some(row) = facts.type_lists.row(index) else {
+            return Err(AdmissionFault::ExtensionAtom {
+                row: index,
+                provisional: 0,
+                atom_count: 0,
+            });
         };
+        type_list_elements.push(row.iter().copied().map(remap_staged_type).collect::<Vec<_>>());
     }
-    let mut type_list_elements =
-        vec![[0; MAX_REF_LIST_ELEMENTS]; facts.type_list_len].into_boxed_slice();
-    for (index, length) in facts.type_list_lengths[..facts.type_list_len]
+    let pooled_type_lists = type_list_elements
         .iter()
-        .enumerate()
-    {
-        for (offset, raw) in facts.type_lists[index][..usize::from(*length)]
-            .iter()
-            .enumerate()
-        {
-            type_list_elements[index][offset] = remap_staged_type(*raw);
-        }
-    }
-    let mut pooled_type_lists = vec![ExtensionRefList { elements: &[] }; facts.type_list_len];
-    for (index, length) in facts.type_list_lengths[..facts.type_list_len]
-        .iter()
-        .enumerate()
-    {
-        pooled_type_lists[index] = ExtensionRefList {
-            elements: &type_list_elements[index][..usize::from(*length)],
+        .map(|row| ExtensionRefList { elements: row })
+        .collect::<Vec<_>>();
+    let mut pooled_entity_lists = Vec::with_capacity(facts.entity_list_len);
+    for index in 0..facts.entity_list_len {
+        let Some(row) = facts.entity_lists.row(index) else {
+            return Err(AdmissionFault::ExtensionAtom {
+                row: index,
+                provisional: 0,
+                atom_count: 0,
+            });
         };
-    }
-    let mut pooled_entity_lists = vec![ExtensionRefList { elements: &[] }; facts.entity_list_len];
-    for (index, length) in facts.entity_list_lengths[..facts.entity_list_len]
-        .iter()
-        .enumerate()
-    {
-        pooled_entity_lists[index] = ExtensionRefList {
-            elements: &facts.entity_lists[index][..usize::from(*length)],
-        };
+        pooled_entity_lists.push(ExtensionRefList { elements: row });
     }
     const EMPTY_FREE_PREDICATE_LISTS: [ExtensionTypeParameterRange; 1] =
         [ExtensionTypeParameterRange {

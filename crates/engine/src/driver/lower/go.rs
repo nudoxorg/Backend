@@ -4848,13 +4848,13 @@ mod tests {
             let authority = fix.start_row(ROW_INTERFACE);
             fix.declarations[owner].type_root = Some(authority);
             for index in 0..count {
-                let name = format!("M{index:03}");
+                let name = format!("M{index:04}");
                 fix.method_set(authority, name.as_bytes(), None);
             }
             fix
         };
 
-        for count in 33..=MAX_REF_LIST_ELEMENTS {
+        for count in [33, 255, 256] {
             let legal = fixture(count);
             let bytes = lower(&legal, b"package demo\ntype Authority struct{}\n")?;
             let view = FragmentView::validate(&bytes)?;
