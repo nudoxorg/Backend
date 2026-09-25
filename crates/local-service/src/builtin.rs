@@ -75,7 +75,7 @@ mod view_build;
 mod view_journal;
 use view_build::rows_for_indexed_sources;
 use view_journal::ViewJournal;
-#[path = "builtin/commands.rs"]
+#[path = "builtin/commands/mod.rs"]
 mod commands;
 #[path = "builtin/registry.rs"]
 mod registry;
