@@ -70,7 +70,11 @@ use crate::server::registry::blob::creation::BlobBuilder;
 /// (partial-data capture for diagnostics) — the caller decides whether to
 /// use it, but must not report the job as a clean `Stored` success when
 /// `degraded_reason` is `Some`.
-pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrIngestOutcome {
+pub(super) fn ingest_ir_bytes(
+    builder: &mut BlobBuilder,
+    ir_bytes: &[u8],
+    prior: &[crate::frontier::ir::IrEntryKey],
+) -> IrIngestOutcome {
     use ir::change::{IntroId, PackageLineageId};
     use ir_vcs::protocol::{BodyWire, Received, StreamReceiver};
 
@@ -85,11 +89,13 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
             identifiers: Vec::new(),
             occurrences: Vec::new(),
             owning_package: None,
+            generation: Vec::new(),
             degraded_reason: Some(format!("no Hello frame: {err}")),
         };
     }
 
     let mut payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
+    let mut staged: Vec<StagedSymbol> = Vec::new();
     let mut identifiers: Vec<String> = Vec::new();
     // IntroId → source_path from the Symbols batches: used to group
     // oracle-derived references by their owning entry's source file.
@@ -130,6 +136,11 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
                     }
 
                     identifiers.push(entry.payload.symbol.name.clone());
+                    staged.push(StagedSymbol {
+                        intro: intro,
+                        parent: entry.parent,
+                        payload: entry.payload.clone(),
+                    });
                     payloads.push(entry.payload);
                 }
             }
@@ -198,6 +209,7 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
                     identifiers,
                     occurrences: Vec::new(),
                     owning_package: None,
+                    generation: Vec::new(),
                     degraded_reason: Some(
                         degraded_reason.unwrap_or_else(|| format!("set_ir failed: {err}")),
                     ),
@@ -211,6 +223,7 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
                 identifiers,
                 occurrences: Vec::new(),
                 owning_package: None,
+                generation: Vec::new(),
                 degraded_reason: Some(
                     degraded_reason
                         .unwrap_or_else(|| format!("IR payload serialization failed: {err}")),
@@ -256,6 +269,19 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
         degraded_reason.get_or_insert_with(|| format!("set_references failed: {err}"));
     }
 
+    let generation = if degraded_reason.is_none() {
+        match attach_generation_root(builder, &staged, owning_package.as_ref(), prior) {
+            Ok(keys) => keys,
+            Err(err) => {
+                tracing::warn!(error = %err, "set_generation_root failed");
+                degraded_reason.get_or_insert(err);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     // ── Derive usage-query occurrences from the same Bodies frames ───────────
     // The same oracle-resolved facts that feed `ref_set` above also carry
     // everything `ir::vocab::Occurrence` needs (owner, target, kind,
@@ -273,8 +299,87 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
         identifiers,
         occurrences,
         owning_package,
+        generation,
         degraded_reason,
     }
+}
+
+/// One symbol kept long enough to build a [`ir::generation::GenerationRoot`].
+struct StagedSymbol {
+    intro: ir::change::IntroId,
+    parent: Option<ir::change::IntroId>,
+    payload: ir_vcs::wire::OwnedEntryPayload,
+}
+
+/// Dual-write a generation root beside the opaque IR blob.
+///
+/// Payloads are [`ir::content::entry_storage_payload`] bytes, addressed by
+/// [`ir::content::entry_storage_hash`]. Location stays on the root row, so a
+/// move does not change the payload hash. [`crate::frontier::ir::project`]
+/// decides which payloads are queued: an intro id already stored at the same
+/// hash is left in the root and omitted from `payloads`.
+fn attach_generation_root(
+    builder: &mut BlobBuilder,
+    staged: &[StagedSymbol],
+    package: Option<&ir::change::PackageLineageId>,
+    prior: &[crate::frontier::ir::IrEntryKey],
+) -> Result<Vec<crate::frontier::ir::IrEntryKey>, String> {
+    let Some(package) = package else {
+        return Ok(Vec::new());
+    };
+    if staged.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut last_at: std::collections::HashMap<ir::change::IntroId, usize> =
+        std::collections::HashMap::with_capacity(staged.len());
+    for (index, symbol) in staged.iter().enumerate() {
+        last_at.insert(symbol.intro, index);
+    }
+    let mut order: Vec<usize> = last_at.into_values().collect();
+    order.sort_unstable();
+
+    let mut rows = Vec::with_capacity(order.len());
+    let mut keys = Vec::with_capacity(order.len());
+    let mut bodies = Vec::with_capacity(order.len());
+    for index in order {
+        let symbol = &staged[index];
+        let entry = ir_vcs::lower::lower_payload(&symbol.payload);
+        let content = ir::content::entry_storage_hash(&entry);
+        keys.push(crate::frontier::ir::IrEntryKey {
+            intro_id: *symbol.intro.as_bytes(),
+            content_hash: *content.as_bytes(),
+        });
+        rows.push(ir::generation::RootEntry {
+            intro: symbol.intro,
+            content,
+            parent: symbol.parent,
+            source: entry.sym().source.clone(),
+            span: entry.sym().span.clone(),
+        });
+        bodies.push(ir::content::entry_storage_payload(&entry));
+    }
+
+    let delta = crate::frontier::ir::project(prior, &keys);
+    let mut write = std::collections::HashSet::with_capacity(delta.added.len() + delta.changed.len());
+    for key in delta.added.iter().chain(delta.changed.iter()) {
+        write.insert(key.intro_id);
+    }
+    let payloads = keys
+        .iter()
+        .zip(bodies)
+        .filter(|(key, _)| write.contains(&key.intro_id))
+        .map(|(key, body)| {
+            (
+                ir::change::ContentBlake3::from_raw(key.content_hash),
+                bytes::Bytes::from(body),
+            )
+        });
+    let root = ir::generation::GenerationRoot::build(package.clone(), rows);
+    builder
+        .set_generation_root(&root, payloads)
+        .map_err(|err| format!("set_generation_root failed: {err}"))?;
+    Ok(keys)
 }
 
 /// The result of decoding one producer NdIrF1 stream (W1).
@@ -299,6 +404,10 @@ pub(super) struct IrIngestOutcome {
     /// legitimately emitted zero symbols). The caller needs this to bind the
     /// usage-query `IrView` to the correct package identity.
     pub(super) owning_package: Option<ir::change::PackageLineageId>,
+    /// Intro ids and storage hashes written into this generation's root.
+    /// Empty when the stream carried no symbols or was degraded. A later
+    /// ingest passes this slice as `prior` so unchanged payloads are not queued.
+    pub(super) generation: Vec<crate::frontier::ir::IrEntryKey>,
     pub(super) degraded_reason: Option<String>,
 }
 
@@ -695,7 +804,7 @@ mod tests {
             test_package(),
             identity_toolchain(crate::ecosystem::Language::Rust),
         );
-        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        let outcome = ingest_ir_bytes(&mut builder, &bytes, &[]);
         assert_eq!(outcome.degraded_reason, None);
         assert!(outcome.identifiers.is_empty());
     }
@@ -710,7 +819,7 @@ mod tests {
             test_package(),
             identity_toolchain(crate::ecosystem::Language::Rust),
         );
-        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        let outcome = ingest_ir_bytes(&mut builder, &bytes, &[]);
         assert!(
             outcome.degraded_reason.is_some(),
             "a stream truncated before Finish must be reported as degraded, not silent success"
@@ -731,7 +840,7 @@ mod tests {
             test_package(),
             identity_toolchain(crate::ecosystem::Language::Rust),
         );
-        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        let outcome = ingest_ir_bytes(&mut builder, &bytes, &[]);
         let reason = outcome.degraded_reason.expect("Abort must degrade the job");
         assert!(reason.contains("aborted"), "reason: {reason}");
     }
@@ -749,7 +858,7 @@ mod tests {
             test_package(),
             identity_toolchain(crate::ecosystem::Language::Rust),
         );
-        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        let outcome = ingest_ir_bytes(&mut builder, &bytes, &[]);
         let reason = outcome
             .degraded_reason
             .expect("corrupt frame must degrade the job");
@@ -766,9 +875,133 @@ mod tests {
             test_package(),
             identity_toolchain(crate::ecosystem::Language::Rust),
         );
-        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        let outcome = ingest_ir_bytes(&mut builder, &bytes, &[]);
         assert!(outcome.degraded_reason.is_some());
         assert!(outcome.identifiers.is_empty());
+    }
+
+    fn module_entry(name: &str, docs: &str, span_start: u32) -> ir_vcs::protocol::WireEntry {
+        use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+        use ir::entry::Visibility;
+        use ir::kind::KindDiscriminant;
+        use ir_vcs::wire::{
+            EntryPayloadFlags, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
+        };
+
+        let symbol = SymbolWire {
+            name: name.to_owned(),
+            visibility: Visibility::Public,
+            documentation: Some(docs.to_owned()),
+            source_path: "src/lib.rs".to_owned(),
+            span_start,
+            span_end: span_start + 8,
+            aliases: Vec::new(),
+            deprecation: None,
+            doc_links: Vec::new(),
+            attrs: Vec::new(),
+            cfg: None,
+        };
+        ir_vcs::protocol::WireEntry {
+            stable: StableRef::new(
+                PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("acme")),
+                IntroId::from_domain("nudox.test.intro", name.as_bytes()),
+            ),
+            payload: OwnedEntryPayload::sealed(
+                symbol,
+                KindDiscriminant::Module,
+                KindWire::Module(ModuleWire {}),
+                EntryPayloadFlags::default(),
+            ),
+            parent: None,
+            links: Vec::new(),
+        }
+    }
+
+    fn finish(emitted: u64) -> StreamFrame {
+        StreamFrame::Finish {
+            emitted,
+            producer_digest: heart::content::ContentHash::from_bytes([0u8; 32]),
+        }
+    }
+
+    fn ingest_symbols(
+        entries: &[ir_vcs::protocol::WireEntry],
+        prior: &[crate::frontier::ir::IrEntryKey],
+    ) -> (
+        Option<heart::content::ContentHash>,
+        Vec<crate::blob::creation::PendingSection>,
+        IrIngestOutcome,
+    ) {
+        let frames = [
+            hello_frame(),
+            StreamFrame::Symbols {
+                batch: entries.to_vec(),
+            },
+            finish(entries.len() as u64),
+        ];
+        let bytes = encode_frames(&frames);
+        let mut builder = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
+        builder
+            .push_file(
+                "src/lib.rs".into(),
+                bytes::Bytes::from_static(b"fn main() {}\n"),
+            )
+            .expect("file");
+        let outcome = ingest_ir_bytes(&mut builder, &bytes, prior);
+        assert_eq!(outcome.degraded_reason, None);
+        let (manifest, sections) = builder.finalize().expect("finalize");
+        (manifest.root_ref, sections, outcome)
+    }
+
+    #[test]
+    fn generation_root_skips_an_unchanged_payload_and_a_pure_move() {
+        let alpha = module_entry("alpha", "The alpha module.", 0);
+        let beta = module_entry("beta", "The beta module.", 20);
+        let (first_root, first_sections, first) =
+            ingest_symbols(&[alpha.clone(), beta.clone()], &[]);
+        assert!(first_root.is_some());
+        assert_eq!(first.generation.len(), 2);
+        let root_bytes = first_sections
+            .iter()
+            .find(|section| Some(section.hash) == first_root)
+            .expect("root section")
+            .bytes
+            .clone();
+        let decoded = ir::generation::GenerationRoot::decode(&root_bytes).expect("decode root");
+        let alpha_hash = decoded
+            .entries
+            .iter()
+            .find(|row| row.span.start == 0)
+            .expect("alpha starts at 0")
+            .content
+            .as_bytes();
+
+        let moved = module_entry("alpha", "The alpha module.", 400);
+        let rewritten = module_entry("beta", "The beta module, rewritten.", 20);
+        let (second_root, second_sections, second) =
+            ingest_symbols(&[moved, rewritten], &first.generation);
+        let queued = second.generation.iter().filter(|key| {
+            let hash = heart::content::ContentHash::from_bytes(key.content_hash);
+            second_sections.iter().any(|section| section.hash == hash)
+        });
+        assert_eq!(queued.count(), 1, "a move must not queue a payload; a rewrite must");
+        let second_bytes = second_sections
+            .iter()
+            .find(|section| Some(section.hash) == second_root)
+            .expect("second root")
+            .bytes
+            .clone();
+        let decoded = ir::generation::GenerationRoot::decode(&second_bytes).expect("decode");
+        let moved_row = decoded
+            .entries
+            .iter()
+            .find(|row| row.content.as_bytes() == alpha_hash)
+            .expect("moved row keeps its content hash");
+        assert_eq!(moved_row.span.start, 400);
+        assert!(second.generation.iter().any(|key| key.content_hash == *alpha_hash));
     }
 
     // ── In-process path: real reference edges flow from the sealed table ──

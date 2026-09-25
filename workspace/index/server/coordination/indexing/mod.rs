@@ -267,7 +267,7 @@ impl<M: EmbeddingModel> Indexer<M> {
             // indistinguishable from a genuinely empty package and silently
             // corrupts the catalog. `degraded_reason` carries that signal;
             // when set, fail the job loudly (idempotent retry) instead.
-            let outcome = ir_stream::ingest_ir_bytes(builder, &ir_bytes);
+            let outcome = ir_stream::ingest_ir_bytes(builder, &ir_bytes, &[]);
             if let Some(reason) = outcome.degraded_reason {
                 return Err(ServerError::Internal(InternalError::IrStreamDegraded {
                     package: name.clone(),

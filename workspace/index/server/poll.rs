@@ -292,7 +292,7 @@ async fn materialize_vector<M: EmbeddingModel>(
         let fingerprint = crate::frontier::vector::PointId {
             package: smol_str::SmolStr::new(symbol.package.as_uuid().to_string()),
             intro_hex: smol_str::SmolStr::new(symbol.id.as_uuid().to_string()),
-            content_hash: blake3::hash(embedding_bytes(embedding.as_slice())).into(),
+            content_hash: blake3::hash(&embedding_bytes(embedding.as_slice())).into(),
         };
         staged.push((fingerprint, VectorPoint {
             id: PointId::from_symbol(&symbol.id),
