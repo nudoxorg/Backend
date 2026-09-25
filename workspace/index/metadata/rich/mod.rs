@@ -106,8 +106,10 @@ pub fn extract(
     }
 
     // 7. Dependency keywords as `dep:name` (weight 0.2, invisible).
+    // The keyword is folded for search. The facet list below keeps the
+    // manifest spelling so it agrees with catalog edge names.
     for dep in input.dependencies {
-        let dep_kw = SmolStr::from(format!("dep:{dep}"));
+        let dep_kw = SmolStr::from(format!("dep:{}", dep.trim().to_ascii_lowercase()));
         add!(dep_kw, 0.2);
     }
 
@@ -136,12 +138,12 @@ pub fn extract(
 
     let quality = compute_quality(input);
 
-    // Dependency slugs: lowercase + trim, deduplicated, sorted for determinism.
-    // No `normalize_keyword` — names must round-trip exactly for the reverse-dep join.
+    // Facet names: trim, drop blanks, sort, dedup. Case stays as written so
+    // `ZLIB` and `zlib` remain distinct and match catalog edges.
     let mut dependencies: Vec<SmolStr> = input
         .dependencies
         .iter()
-        .map(|d| SmolStr::from(d.trim().to_ascii_lowercase()))
+        .map(|d| SmolStr::from(d.trim()))
         .filter(|d| !d.is_empty())
         .collect();
     dependencies.sort_unstable();

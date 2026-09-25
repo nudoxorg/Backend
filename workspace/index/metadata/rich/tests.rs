@@ -4,12 +4,15 @@ use smol_str::SmolStr;
 
 use crate::ecosystem::search::SearchNorms;
 
-use super::extract;
-use super::quality::compute_quality;
-use super::score::Score;
-use super::types::{ExtractionInput, SearchFacets};
+use super::{
+    extract,
+    quality::compute_quality,
+    score::Score,
+    types::{ExtractionInput, SearchFacets},
+};
 
-/// Rust norms: suitable for tests that just need a valid `&'static SearchNorms`.
+/// Rust norms: suitable for tests that just need a valid `&'static
+/// SearchNorms`.
 fn rust_norms() -> &'static SearchNorms {
     crate::ecosystem::spec(crate::ecosystem::Language::Rust).search_norms()
 }
@@ -121,13 +124,14 @@ fn extract_uses_ecosystem_norms_for_stopwords() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn dependencies_dedup_sort_lowercase() {
+fn dependencies_dedup_sort_keep_manifest_case() {
     let deps = vec![
         "Serde".to_string(),
         "tokio".to_string(),
         "SERDE".to_string(),
         "Anyhow".to_string(),
         "tokio".to_string(),
+        "  ".to_string(),
     ];
     let input = ExtractionInput {
         name: "mylib",
@@ -135,16 +139,49 @@ fn dependencies_dedup_sort_lowercase() {
         ..Default::default()
     };
     let meta = extract(&input, rust_norms(), None, None);
-    // Expect sorted, deduplicated, lowercased.
-    assert_eq!(
-        meta.dependencies,
+    assert_eq!(meta.dependencies, vec![
+        SmolStr::from("Anyhow"),
+        SmolStr::from("SERDE"),
+        SmolStr::from("Serde"),
+        SmolStr::from("tokio"),
+    ],);
+}
+
+#[test]
+fn facet_dependency_names_agree_with_runtime_edges() {
+    use heart::Language;
+
+    use crate::record::{DepEdge, PackageRecord, edge_names_agree};
+
+    let deps = vec![
+        "ZLIB".to_string(),
+        "zlib".to_string(),
+        "  OpenSSL  ".to_string(),
+        "ZLIB".to_string(),
+    ];
+    let input = ExtractionInput {
+        name: "demo",
+        dependencies: &deps,
+        ..Default::default()
+    };
+    let meta = extract(&input, rust_norms(), None, None);
+    let record = PackageRecord::from_parts(
+        Language::Cpp,
+        "demo",
+        "1.0.0",
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
         vec![
-            SmolStr::from("anyhow"),
-            SmolStr::from("serde"),
-            SmolStr::from("tokio"),
+            DepEdge::runtime("ZLIB"),
+            DepEdge::runtime("zlib"),
+            DepEdge::runtime("OpenSSL"),
         ],
-        "dependencies must be sorted, deduped, and lowercased"
     );
+    assert!(edge_names_agree(&record, &meta.dependencies));
 }
 
 #[test]
@@ -379,10 +416,10 @@ fn search_facets_legacy_json_decodes_with_defaults() {
     // Simulate a stored facet that predates all new fields.
     let legacy = r#"{"keywords":["async","runtime"],"quality_ppm":500000}"#;
     let decoded: SearchFacets = serde_json::from_str(legacy).expect("legacy decode");
-    assert_eq!(
-        decoded.keywords,
-        vec![SmolStr::from("async"), SmolStr::from("runtime")]
-    );
+    assert_eq!(decoded.keywords, vec![
+        SmolStr::from("async"),
+        SmolStr::from("runtime")
+    ]);
     assert_eq!(decoded.quality_ppm, 500_000);
     assert!(decoded.dependencies.is_empty());
     assert!(decoded.dependents.is_none());
