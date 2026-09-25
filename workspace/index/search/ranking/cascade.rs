@@ -477,23 +477,13 @@ fn fuse_scores<T>(
     let mut fused = Vec::with_capacity(candidates.len());
 
     for c in candidates {
-        // ── BM25 × quality kink (tweak_score / assign_doc_score) ─────────────
-        let q = if c.quality > cfg.quality_kink_threshold {
-            c.quality + 1.0
-        } else {
-            c.quality
-        };
-        let mut score = c.bm25 * q;
-
-        // ── Explore quality/popularity path ─────────────────────────────────
-        // Additive: scale * quality * log2(pop_weight + 1) / 20.
-        // Default scale is 0 (Navigate / historic); Explore raises it so a
-        // high-quality popular package can beat pure keyword-spam BM25 names.
-        if cfg.quality_popularity_path_scale > 0.0 {
-            let pop = c.popularity_weight(1) as f32;
-            let pop_factor = (pop + 1.0).log2() / 20.0;
-            score = (cfg.quality_popularity_path_scale * c.quality).mul_add(pop_factor, score);
-        }
+        // ID-8 factor sum. Replaces the lib.rs BM25 × quality kink and the
+        // explore log-popularity add-on. Exact and contains bonuses below stay:
+        // they are query-relative and are not ID-8 coefficients.
+        let mut score = crate::search::factors::fused_before_gates(
+            &crate::search::id8::ranking_factors(c),
+            &crate::search::factors::FusionWeights::ID8,
+        ) as f32;
 
         // ── Exact / contains name bonus (assign_doc_score / contains_query) ───
         let name_lower = c.name.to_ascii_lowercase();
@@ -1526,10 +1516,9 @@ mod tests {
     #[test]
     fn adversarial_withdrawn_cannot_outrank_via_popularity() {
         let candidates = vec![
-            make("healthy", 1.0, 0.6, Some(10_000), &[]),
+            make("healthy", 1.0, 0.6, Some(50_000_000), &[]),
             Candidate {
                 withdrawn: true,
-                downloads: Some(50_000_000),
                 ..make("withdrawn-popular", 1.0, 0.6, Some(50_000_000), &[])
             },
         ];
@@ -1537,7 +1526,7 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(
             result[0].name, "healthy",
-            "withdrawn demotion must beat pure popularity even with equal BM25"
+            "equal BM25, quality, and downloads: withdrawn gate must rank the live package first"
         );
         assert_eq!(result[1].name, "withdrawn-popular");
     }
@@ -1633,9 +1622,11 @@ mod tests {
         ];
         let result = rank("q", candidates, 10, None);
         assert_eq!(result.len(), 2);
-        // Same fused score → name ascending: aaa-none before zzz-floor.
-        assert_eq!(result[0].name, "aaa-none");
-        assert_eq!(result[1].name, "zzz-floor");
+        // ID-8 reads raw downloads. `None` contributes 0 mass; the floor value
+        // contributes a small popularity term, so the floor package ranks first.
+        // Both stay on the page: missing downloads is not a drop.
+        assert_eq!(result[0].name, "zzz-floor");
+        assert_eq!(result[1].name, "aaa-none");
     }
 
     /// Default `rank` (no intent) still preserves exact-match dominance.

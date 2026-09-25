@@ -31,7 +31,7 @@ fn id8_score<T>(candidate: &Candidate<T>) -> factors::Score {
     factors::score(&ranking_factors(candidate), &factors::FusionWeights::ID8)
 }
 
-fn ranking_factors<T>(candidate: &Candidate<T>) -> RankingFactors {
+pub(crate) fn ranking_factors<T>(candidate: &Candidate<T>) -> RankingFactors {
     RankingFactors {
         bm25: bm25_or_zero(candidate.bm25),
         quality_ppm: quality_ppm(candidate.quality),

@@ -342,6 +342,16 @@ impl Ord for Score {
 /// the matching flag is set.
 #[must_use]
 pub fn score(factors: &RankingFactors, weights: &FusionWeights) -> Score {
+    Score::new(apply_gates(fused_before_gates(factors, weights), factors))
+}
+
+/// ID-8 sum before [`Gate`] multipliers.
+///
+/// The cascade applies exact-name and contains-name bonuses, then its own
+/// gate pass. It must start from this sum so a bonus is not glued on after
+/// the demotion, and so the gates are not applied twice.
+#[must_use]
+pub fn fused_before_gates(factors: &RankingFactors, weights: &FusionWeights) -> f64 {
     let unit = popularity_unit(factors);
     // One coefficient. Not `dependents * unit + downloads * unit`.
     let popularity_weight = finite_or_zero(weights.dependents) + finite_or_zero(weights.downloads);
@@ -351,8 +361,9 @@ pub fn score(factors: &RankingFactors, weights: &FusionWeights) -> Score {
     // independently; a fused multiply-add would make the two paths disagree
     // on hardware that contracts the operation.
     #[allow(clippy::suboptimal_flops)]
-    let fused = popularity_weight * unit + text + quality;
-    Score::new(apply_gates(fused, factors))
+    {
+        popularity_weight * unit + text + quality
+    }
 }
 
 /// Sort key whose [`Ord`] is score descending, then name ascending.
