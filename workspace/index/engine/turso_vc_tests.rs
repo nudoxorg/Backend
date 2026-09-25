@@ -635,6 +635,44 @@ fn degree_histogram_matches_the_tip_walk_across_writes() {
 }
 
 #[test]
+fn observe_keeps_the_body_and_takes_an_artifact_digest() {
+    use crate::{pid::ContentDigest, record::PackageRecord};
+    use heart::Language;
+
+    let mut catalog = VersionedCatalog::open().expect("open");
+    let mut stored = PackageRecord::published(Language::Rust, "app", "1.0.0", &["serde"]);
+    stored.description = Some("keeps its summary".into());
+    catalog.put_record(&stored).expect("seed");
+
+    let Some(mut observed) =
+        crate::edge_project::feed_observation(Language::Rust, "app", "1.0.0", &["tokio"])
+    else {
+        panic!("names");
+    };
+    observed.record = observed
+        .record
+        .clone()
+        .with_content(ContentDigest::Sha256([7; 32]));
+    catalog
+        .observe(&observed.record, &observed.snapshot)
+        .expect("observe");
+
+    let tip = catalog
+        .materialize("rust", "app", "1.0.0")
+        .expect("read")
+        .expect("row");
+    assert_eq!(tip.description.as_deref(), Some("keeps its summary"));
+    assert_eq!(tip.content, Some(ContentDigest::Sha256([7; 32])));
+    assert_eq!(
+        tip.edges
+            .iter()
+            .map(|edge| edge.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["tokio"]
+    );
+}
+
+#[test]
 fn a_feed_republish_replaces_runtime_names_and_keeps_build() {
     use crate::{
         enums::{EdgeKind, EdgeSource},

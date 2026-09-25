@@ -666,11 +666,9 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
 /// Each name is one [`EdgeKind::Runtime`] edge from [`EdgeSource::Feed`]. The
 /// requirement is empty because the catalog publish carried a name only.
 pub fn feed_edge_wires(ecosystem: heart::Language, names: &[smol_str::SmolStr]) -> Vec<EdgeWire> {
-    crate::edge_project::project_edges(
-        ecosystem,
-        &crate::record::runtime_edges_from_names(names),
-        crate::enums::EdgeSource::Feed,
-    )
+    crate::edge_project::feed_observation(ecosystem, "", "", names)
+        .map(|observed| observed.snapshot.wires().to_vec())
+        .unwrap_or_default()
 }
 
 /// Pack a 16-byte [`SymbolId`] into the BLOB32 `intro_id` slot (zero-padded).

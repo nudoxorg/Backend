@@ -175,13 +175,14 @@ impl VersionedCatalog {
         if matches!(snapshot, crate::protocol::EdgeSnapshot::Unobserved) {
             return Ok(FactWrite::Unchanged);
         }
-        let body = self
+        let mut body = self
             .materialize(
                 identity.ecosystem.as_token(),
                 identity.canonical_name.as_str(),
                 identity.version.as_str(),
             )?
             .unwrap_or_else(|| identity.clone());
+        body.content = super::content::merge_content(body.content, identity.content);
         self.put_observed(&body, snapshot)
     }
 

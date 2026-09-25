@@ -42,7 +42,7 @@ impl VersionedCatalog {
     }
 }
 
-fn merge_content(
+pub(super) fn merge_content(
     prior: Option<ContentDigest>,
     observed: Option<ContentDigest>,
 ) -> Option<ContentDigest> {

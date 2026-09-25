@@ -235,30 +235,43 @@ impl<M: EmbeddingModel> Server<M> {
         let enqueued = matches!(decision, InitializationDecision::Enqueue) && !already_pending;
         let wants_work = matches!(decision, InitializationDecision::Enqueue);
 
-        let mut published = crate::record::PackageRecord::published(
+        let mut observed = crate::edge_project::feed_observation(
             coordinates.ecosystem(),
-            coordinates.name.canonical(),
-            coordinates.version.canonical(),
+            coordinates.name.canonical().as_ref(),
+            coordinates.version.canonical().as_ref(),
             dependencies,
         );
-        if let Some(digest) = checksum.and_then(crate::pid::artifact_digest) {
-            published = published.with_content(digest);
+        if let (Some(observed), Some(digest)) = (
+            observed.as_mut(),
+            checksum.and_then(crate::pid::artifact_digest),
+        ) {
+            observed.record = observed.record.clone().with_content(digest);
         }
         let fact_write = {
             let mut facts = self
                 .package_facts
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if dependencies.is_empty()
-                && facts
-                    .get(
-                        coordinates.ecosystem().as_token(),
-                        coordinates.name.canonical().as_ref(),
-                        coordinates.version.canonical().as_ref(),
-                    )
-                    .is_some()
+            if let Some(observed) = observed {
+                facts
+                    .observe(&observed.record, &observed.snapshot)
+                    .map_err(|error| {
+                        ServerError::Runtime(
+                            crate::server::registry::runtime::error::TextError::Io(
+                                std::io::Error::other(error.to_string()),
+                            )
+                            .into(),
+                        )
+                    })?
+            } else if facts
+                .get(
+                    coordinates.ecosystem().as_token(),
+                    coordinates.name.canonical().as_ref(),
+                    coordinates.version.canonical().as_ref(),
+                )
+                .is_some()
             {
-                match published.content {
+                match checksum.and_then(crate::pid::artifact_digest) {
                     Some(digest) => facts
                         .bind_content(
                             coordinates.ecosystem().as_token(),
@@ -277,20 +290,25 @@ impl<M: EmbeddingModel> Server<M> {
                     None => crate::engine::turso_vc::FactWrite::Unchanged,
                 }
             } else {
-                let snapshot =
-                    crate::protocol::EdgeSnapshot::feed(crate::edge_project::project_edges(
-                        coordinates.ecosystem(),
-                        &published.edges,
-                        crate::enums::EdgeSource::Feed,
-                    ));
-                facts.put_observed(&published, &snapshot).map_err(|error| {
-                    ServerError::Runtime(
-                        crate::server::registry::runtime::error::TextError::Io(
-                            std::io::Error::other(error.to_string()),
+                let mut published = crate::record::PackageRecord::published(
+                    coordinates.ecosystem(),
+                    coordinates.name.canonical(),
+                    coordinates.version.canonical(),
+                    &[] as &[&str],
+                );
+                if let Some(digest) = checksum.and_then(crate::pid::artifact_digest) {
+                    published = published.with_content(digest);
+                }
+                facts
+                    .observe(&published, &crate::protocol::EdgeSnapshot::feed(Vec::new()))
+                    .map_err(|error| {
+                        ServerError::Runtime(
+                            crate::server::registry::runtime::error::TextError::Io(
+                                std::io::Error::other(error.to_string()),
+                            )
+                            .into(),
                         )
-                        .into(),
-                    )
-                })?
+                    })?
             }
         };
         let touch = catalog_touch(

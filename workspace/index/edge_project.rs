@@ -35,7 +35,7 @@ pub fn feed_observation(
     ecosystem: Language,
     name: &str,
     version: &str,
-    names: &[smol_str::SmolStr],
+    names: &[impl AsRef<str>],
 ) -> Option<FeedObservation> {
     if names.is_empty() {
         return None;
