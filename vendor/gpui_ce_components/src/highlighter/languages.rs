@@ -4,6 +4,7 @@ use crate::highlighter::LanguageConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, enum_iterator::Sequence)]
 pub enum Language {
+    #[cfg(feature = "tree-sitter-json")]
     Json,
     Plain,
     #[cfg(feature = "tree-sitter-astro")]
@@ -93,6 +94,7 @@ impl Language {
 
     pub fn name(&self) -> &'static str {
         match self {
+            #[cfg(feature = "tree-sitter-json")]
             Self::Json => "json",
             Self::Plain => "text",
             #[cfg(feature = "tree-sitter-astro")]
@@ -178,6 +180,7 @@ impl Language {
     pub(crate) fn from_name(s: &str) -> Option<Self> {
         match s {
             "text" | "plain" | "plaintext" => Some(Self::Plain),
+            #[cfg(feature = "tree-sitter-json")]
             "json" | "jsonc" => Some(Self::Json),
             #[cfg(feature = "tree-sitter-astro")]
             "astro" => Some(Self::Astro),
@@ -371,6 +374,7 @@ impl Language {
     pub(super) fn config(&self) -> LanguageConfig {
         let (language, query, injection, locals) = match self {
             Self::Plain => return LanguageConfig::plain(self.name()),
+            #[cfg(feature = "tree-sitter-json")]
             Self::Json => (
                 tree_sitter_json::LANGUAGE,
                 include_str!("languages/json/highlights.scm"),
@@ -427,9 +431,10 @@ impl Language {
                 "",
             ),
             #[cfg(feature = "tree-sitter-cpp")]
+            // NUDOX: C's query plus C++'s (upstream's C++ query needs `inherits: c`).
             Self::Cpp => (
                 tree_sitter_cpp::LANGUAGE,
-                tree_sitter_cpp::HIGHLIGHT_QUERY,
+                include_str!("languages/cpp/highlights.scm"),
                 "",
                 "",
             ),
@@ -513,7 +518,13 @@ impl Language {
                 "",
             ),
             #[cfg(feature = "tree-sitter-csharp")]
-            Self::CSharp => (tree_sitter_c_sharp::LANGUAGE, "", "", ""),
+            // NUDOX: the grammar ships its highlight query; upstream left it empty.
+            Self::CSharp => (
+                tree_sitter_c_sharp::LANGUAGE,
+                tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
+                "",
+                "",
+            ),
             #[cfg(feature = "tree-sitter-graphql")]
             Self::GraphQL => (tree_sitter_graphql::LANGUAGE, "", "", ""),
             #[cfg(feature = "tree-sitter-proto")]
@@ -626,6 +637,7 @@ mod tests {
     #[test]
     fn test_language_name() {
         assert_eq!(Language::Plain.name(), "text");
+        #[cfg(feature = "tree-sitter-json")]
         assert_eq!(Language::Json.name(), "json");
 
         #[cfg(feature = "tree-sitter-markdown")]
@@ -669,6 +681,7 @@ mod tests {
     #[test]
     fn test_language_aliases_only_resolve_enabled_features() {
         assert_eq!(Language::from_name("text"), Some(Language::Plain));
+        #[cfg(feature = "tree-sitter-json")]
         assert_eq!(Language::from_name("jsonc"), Some(Language::Json));
         assert_eq!(Language::from_name("unknown"), None);
 
