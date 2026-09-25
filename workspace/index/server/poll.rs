@@ -204,6 +204,7 @@ async fn materialize<M: EmbeddingModel>(
                     materialize_vector(
                         server.embedder(),
                         server.embedding_cache(),
+                        server.vector_ledger(),
                         stores,
                         &symbols,
                     )
@@ -258,6 +259,7 @@ async fn materialize<M: EmbeddingModel>(
 async fn materialize_vector<M: EmbeddingModel>(
     embedder: &HttpEmbedder<M>,
     cache: &EmbeddingCache<M>,
+    ledger: &std::sync::Mutex<crate::frontier::vector::UpsertLedger>,
     stores: &SourceStores<M>,
     symbols: &[heart::Symbol],
 ) -> ServerResult<()> {
@@ -265,7 +267,7 @@ async fn materialize_vector<M: EmbeddingModel>(
         return Ok(());
     }
 
-    let mut points = Vec::with_capacity(symbols.len());
+    let mut staged = Vec::with_capacity(symbols.len());
     for symbol in symbols {
         let text = symbol.name.fully_qualified.as_str();
         let embedding = cache
@@ -276,20 +278,55 @@ async fn materialize_vector<M: EmbeddingModel>(
             )
             .await
             .map_err(|error| crate::server::error::ServerError::from(error))?;
-        points.push(VectorPoint {
-            id: PointId::from_symbol(&symbol.id),
-            vector: embedding,
-            payload: crate::server::bakery::symbol_payload(symbol),
-        });
+        let fingerprint = crate::frontier::vector::PointId {
+            package: smol_str::SmolStr::new(symbol.package.as_uuid().to_string()),
+            intro_hex: smol_str::SmolStr::new(symbol.id.as_uuid().to_string()),
+            content_hash: blake3::hash(embedding_bytes(embedding.as_slice())).into(),
+        };
+        staged.push((
+            fingerprint,
+            VectorPoint {
+                id: PointId::from_symbol(&symbol.id),
+                vector: embedding,
+                payload: crate::server::bakery::symbol_payload(symbol),
+            },
+        ));
     }
 
-    // `VectorStore::upsert` is idempotent (deterministic ids) and chunks to the
-    // backend batch ceiling internally.
+    let pending: Vec<_> = {
+        let guard = ledger.lock().unwrap_or_else(|poison| poison.into_inner());
+        staged
+            .into_iter()
+            .filter(|(fingerprint, _)| guard.needs_write(fingerprint))
+            .collect()
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let points: Vec<_> = pending.iter().map(|(_, point)| point.clone()).collect();
     stores
         .semantics
         .upsert(points)
         .await
-        .map_err(|error| crate::server::error::ServerError::from(error))
+        .map_err(|error| crate::server::error::ServerError::from(error))?;
+
+    let mut guard = ledger.lock().unwrap_or_else(|poison| poison.into_inner());
+    guard.commit(
+        &pending
+            .iter()
+            .map(|(fingerprint, _)| fingerprint.clone())
+            .collect::<Vec<_>>(),
+    );
+    Ok(())
+}
+
+fn embedding_bytes(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

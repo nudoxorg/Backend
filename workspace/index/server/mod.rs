@@ -210,6 +210,11 @@ pub struct Driver<M: EmbeddingModel> {
     /// The content-addressed embedding cache in front of the embedder.
     embedding_cache: EmbeddingCache<M>,
 
+    /// Points whose Qdrant upsert has already succeeded. A re-delivery with the
+    /// same vector hash is not written again. Entries are recorded only after
+    /// `upsert` returns.
+    vector_ledger: std::sync::Mutex<crate::frontier::vector::UpsertLedger>,
+
     /// Per-session exploration graphs (join-semilattice merge), backed by the
     /// ephemeral `scratch.sqlite` store (INDEX-PLAN ID-2/ID-19). The backing
     /// `sessions` table is created when the scratch store is opened.
@@ -294,6 +299,7 @@ impl<M: EmbeddingModel> Driver<M> {
             endpoints.embeddings_api_key.clone(),
         );
         let embedding_cache = EmbeddingCache::new(EMBEDDING_CACHE_CAPACITY);
+        let vector_ledger = std::sync::Mutex::new(crate::frontier::vector::UpsertLedger::new());
 
         // Exploration-graph sessions live in the ephemeral scratch store
         // (`scratch.sqlite`) under the definitive source's data directory — working
@@ -345,6 +351,7 @@ impl<M: EmbeddingModel> Driver<M> {
             planner: crate::server::search::SearchPlanner::new(),
             embedder,
             embedding_cache,
+            vector_ledger,
             sessions,
             heuristics,
             compiled_store,
@@ -552,6 +559,11 @@ impl<M: EmbeddingModel> Driver<M> {
     /// The content-addressed embedding cache in front of the embedder.
     pub(crate) fn embedding_cache(&self) -> &EmbeddingCache<M> {
         &self.embedding_cache
+    }
+
+    /// Hashes of vector points already upserted in this process.
+    pub(crate) fn vector_ledger(&self) -> &std::sync::Mutex<crate::frontier::vector::UpsertLedger> {
+        &self.vector_ledger
     }
 
     /// The per-session exploration graphs (scratch-backed; process-local).
