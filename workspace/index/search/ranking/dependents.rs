@@ -45,9 +45,9 @@ pub fn names_for_sweep(runtime_edges: &[SmolStr], facet_names: &[SmolStr]) -> Ve
 }
 
 /// Count direct dependents per `(ecosystem, name)`. Each depending package
-/// counts once per target even if it appears with multiple versions — pass one
-/// row per package (latest generation); duplicate `(ecosystem, name)` rows are
-/// collapsed, self-dependencies ignored.
+/// counts once per target. Rows for the same package are one set: a dependency
+/// named by any row counts, and a repeated name does not count again. A
+/// package that depends on itself does not increment its own count.
 ///
 /// The resulting counts are the values persisted into `SearchFacets.dependents`
 /// and later consumed by ranking popularity when downloads are `None`.
@@ -97,13 +97,15 @@ mod tests {
 
     #[test]
     fn duplicate_depender_rows_collapse() {
-        // Same (ecosystem, name) depender appears twice — should count only once.
+        // The same package counted twice still contributes one in-degree.
+        // A dependency that appears only on the later row is part of the union.
         let rows = vec![
             row(Language::Rust, "a", &["serde"]),
-            row(Language::Rust, "a", &["serde"]),
+            row(Language::Rust, "a", &["serde", "tokio"]),
         ];
         let counts = count_dependents(rows);
         assert_eq!(counts[&(Language::Rust, SmolStr::new("serde"))], 1);
+        assert_eq!(counts[&(Language::Rust, SmolStr::new("tokio"))], 1);
     }
 
     #[test]

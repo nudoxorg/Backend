@@ -22,9 +22,10 @@ use crate::search::ranking::dependents::DependencyRow;
 /// Count direct dependents the way [`crate::search::ranking::dependents::count_dependents`]
 /// does, but on interned ids.
 ///
-/// Duplicate `(ecosystem, name)` dependers count once. A self-edge is ignored.
-/// The returned map has one owned name per package that is depended on, not one
-/// per edge.
+/// A package name counts once. Its dependencies are the union of every row
+/// for that name, so a later version can name a dependency the earlier row
+/// omitted. A self-edge is ignored. The returned map has one owned name per
+/// package that is depended on, not one per edge.
 pub fn count_dependents(rows: impl IntoIterator<Item = DependencyRow>) -> HashMap<(Language, SmolStr), u32> {
     count_slice(&rows.into_iter().collect::<Vec<_>>())
 }
@@ -37,23 +38,23 @@ pub fn count_dependents(rows: impl IntoIterator<Item = DependencyRow>) -> HashMa
 /// edge fails [`tests::lane_beats_string_map_when_names_repeat`].
 pub fn count_slice(rows: &[DependencyRow]) -> HashMap<(Language, SmolStr), u32> {
     let mut intern = Intern::with_capacity(rows.len().saturating_mul(4).max(16));
-    let mut depender_seen: Vec<bool> = Vec::new();
+    let mut seen_deps: Vec<Vec<u32>> = Vec::new();
     let mut counts: Vec<u32> = Vec::new();
     for row in rows {
         let self_id = intern.id(row.ecosystem, row.name.as_str(), &mut counts);
-        if (self_id as usize) >= depender_seen.len() {
-            depender_seen.resize(self_id as usize + 1, false);
+        if (self_id as usize) >= seen_deps.len() {
+            seen_deps.resize(self_id as usize + 1, Vec::new());
         }
-        if depender_seen[self_id as usize] {
-            continue;
-        }
-        depender_seen[self_id as usize] = true;
         for dep in &row.dependencies {
             if dep.as_str() == row.name.as_str() {
                 continue;
             }
             let dep_id = intern.id(row.ecosystem, dep.as_str(), &mut counts);
-            counts[dep_id as usize] = counts[dep_id as usize].saturating_add(1);
+            let bucket = &mut seen_deps[self_id as usize];
+            if let Err(pos) = bucket.binary_search(&dep_id) {
+                bucket.insert(pos, dep_id);
+                counts[dep_id as usize] = counts[dep_id as usize].saturating_add(1);
+            }
         }
     }
     let mut out = HashMap::new();
@@ -176,18 +177,16 @@ fn fx_hash(ecosystem: Language, name: &str) -> u64 {
 /// The string-cloning sweep, kept as the oracle the bench has to beat.
 pub fn count_dependents_mapped(rows: &[DependencyRow]) -> HashMap<(Language, SmolStr), u32> {
     use std::collections::HashSet;
-    let mut seen: HashSet<(Language, SmolStr)> = HashSet::new();
+    let mut seen: HashSet<(Language, SmolStr, SmolStr)> = HashSet::new();
     let mut counts: HashMap<(Language, SmolStr), u32> = HashMap::new();
     for row in rows {
-        let name = row.name.clone();
-        if !seen.insert((row.ecosystem, name.clone())) {
-            continue;
-        }
         for dep in &row.dependencies {
-            if *dep == name {
+            if *dep == row.name {
                 continue;
             }
-            *counts.entry((row.ecosystem, dep.clone())).or_default() += 1;
+            if seen.insert((row.ecosystem, row.name.clone(), dep.clone())) {
+                *counts.entry((row.ecosystem, dep.clone())).or_default() += 1;
+            }
         }
     }
     counts
@@ -280,14 +279,27 @@ mod tests {
         let rows = vec![
             row("a", &["serde", "tokio"]),
             row("b", &["serde"]),
-            row("a", &["ignored-duplicate"]),
+            row("a", &["tokio", "later-version"]),
             row("c", &["c", "serde"]),
         ];
         let lane = count_dependents(rows.clone());
         let mapped = count_dependents_mapped(&rows);
         assert_eq!(lane, mapped);
         assert_eq!(lane.get(&(Language::Rust, SmolStr::new("serde"))), Some(&3));
+        assert_eq!(
+            lane.get(&(Language::Rust, SmolStr::new("later-version"))),
+            Some(&1)
+        );
+        assert_eq!(lane.get(&(Language::Rust, SmolStr::new("tokio"))), Some(&1));
         assert!(!lane.contains_key(&(Language::Rust, SmolStr::new("c"))));
+
+        let reversed = vec![
+            row("a", &["tokio", "later-version"]),
+            row("c", &["c", "serde"]),
+            row("b", &["serde"]),
+            row("a", &["serde", "tokio"]),
+        ];
+        assert_eq!(count_dependents(reversed), lane);
     }
 
     #[test]
