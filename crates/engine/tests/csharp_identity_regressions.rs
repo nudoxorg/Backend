@@ -70,6 +70,28 @@ public static class Host
 /// `IndexCapacity { phase: Reference }`. Occurrences must own to the true
 /// nearest declaration — the field declarator — and every part must still
 /// lower under the definition row without truncation.
+/// Two explicit interface events share `IEventSymbol.Name`. Roslyn's doc-id
+/// is what keeps them apart; the member discriminator must not collapse them.
+const EXPLICIT_INTERFACE_EVENTS: &[u8] = br#"
+namespace IdentityProbe;
+
+public interface I1
+{
+    event System.Action Changed;
+}
+
+public interface I2
+{
+    event System.Action Changed;
+}
+
+public sealed class Host : I1, I2
+{
+    event System.Action I1.Changed { add { } remove { } }
+    event System.Action I2.Changed { add { } remove { } }
+}
+"#;
+
 const CROSS_PART_REFERENCES: &[u8] = br#"
 namespace IdentityProbe;
 
@@ -214,6 +236,28 @@ fn oracle_image(dotnet: &Path, source: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     fs::read(&image).ok()
+}
+
+#[test]
+fn explicit_interface_events_with_the_same_name_both_survive() {
+    let Some(dotnet) = dotnet() else {
+        return;
+    };
+    let image = oracle_image(&dotnet, EXPLICIT_INTERFACE_EVENTS).expect("Roslyn authority image");
+    let authority =
+        backend_frontend_csharp::legacy::CSharpImage::open(&image).expect("valid image");
+    let changed: Vec<_> = authority
+        .declarations()
+        .filter_map(|declared| declared.ok())
+        .filter(|declared| declared.kind == DeclarationKind::Event)
+        .filter(|declared| declared.name.bytes == b"Changed")
+        .collect();
+    assert_eq!(
+        changed.len(),
+        2,
+        "both explicit Changed events must be declared"
+    );
+    lower_to_completion(&dotnet, "explicit-interface-events", EXPLICIT_INTERFACE_EVENTS);
 }
 
 #[test]

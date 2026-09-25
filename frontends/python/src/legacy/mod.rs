@@ -18,6 +18,8 @@ pub use self::checker::{
     PyreflyExecutableError, SymbolOutcome, SymbolResolution,
 };
 
+use std::collections::HashSet;
+
 use backend_semantic::vocabulary::PythonVersion;
 use ruff_python_ast::{
     self as ast,
@@ -501,6 +503,8 @@ fn project(
             decorator_ranges: Vec::new(),
             decorator_owner: None,
             error: None,
+            module_declared: HashSet::new(),
+            last_module_function: None,
         };
         for statement in &syntax.body {
             projection.visit_stmt(statement);
@@ -876,9 +880,31 @@ struct Projection<'a> {
     decorator_ranges: Vec<ruff_text_size::TextRange>,
     decorator_owner: Option<String>,
     error: Option<ExtractionError>,
+    /// Module-level names already declared. The first declaration of a name
+    /// wins; later rebindings are dropped. Consecutive overloads of one name
+    /// are exempt via [`last_module_function`].
+    module_declared: HashSet<String>,
+    /// The most recent module-level function name, so overload runs stay
+    /// distinct from later rebindings of the same spelling.
+    last_module_function: Option<String>,
 }
 impl<'a> Projection<'a> {
     fn add_declaration(&mut self, declaration: DeclarationFact) {
+        if self.function_depth == 0 && self.class_depth == 0 {
+            let allow_overload = declaration.kind == DeclarationKind::Function
+                && self.last_module_function.as_deref() == Some(declaration.name.as_str());
+            if self.module_declared.contains(&declaration.name) && !allow_overload {
+                return;
+            }
+            if !allow_overload {
+                self.module_declared.insert(declaration.name.clone());
+            }
+            if declaration.kind == DeclarationKind::Function {
+                self.last_module_function = Some(declaration.name.clone());
+            } else {
+                self.last_module_function = None;
+            }
+        }
         self.facts.declarations.push(declaration);
     }
 
@@ -1483,6 +1509,8 @@ impl Projection<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use ruff_text_size::{TextRange, TextSize};
 
     use backend_semantic::vocabulary::PythonVersion;
@@ -1525,6 +1553,8 @@ mod tests {
             decorator_ranges: Vec::new(),
             decorator_owner: None,
             error: None,
+            module_declared: HashSet::new(),
+            last_module_function: None,
         };
         assert!(projection.source_owned(range).is_none());
         match projection.error.take() {

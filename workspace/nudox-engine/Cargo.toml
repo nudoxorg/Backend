@@ -1,0 +1,538 @@
+[package]
+name = "nudox-engine"
+description = "Local-first backend: corpus store, Trustfall graph, MCP server, and embedder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+# L3 of GUI-LOCAL-PLAN §L0: the streaming facade. Owns the runtimes (LR-9),
+# the wire protocol (§L2) and the chunker (LR-3/LR-4). This is the ONLY crate
+# `lindsey` talks to, and it is deliberately gpui-free so the whole protocol
+# is testable without a window.
+#
+# The store, graph, embedder and MCP planes — formerly four sibling crates
+# — were merged into this crate as the `store`, `graph`,
+# `embed` and `mcp` modules (see `src/lib.rs`). Their dependencies, features
+# and integration tests are merged below.
+
+[features]
+# `local-persistence` is on by default — see that feature's own comment for
+# why a build that wants to shed libpijul/iroh/sanakirja should build with
+# `--no-default-features --features <whatever else it needs>` instead.
+default = ["local-persistence"]
+# `store::source::fixtures` — deterministic synthetic corpora for tests and dev
+# (LR-5). Same feature NAME as the store plane used, so consumers like
+# `lindsey` keep working unchanged.
+fixtures = []
+# Forwards to `nudox-languages`'s own `pyrefly` feature (off by default there).
+# Without it `PythonProducer::invoke` always returns `Ok(PythonOracle::default())`.
+pyrefly = ["nudox-languages/pyrefly"]
+# Forwards to `nudox-languages`'s own `seal-census` feature, which forwards to
+# `nudox-ir`'s: test-only per-declaration disambiguator-tier instrumentation
+# used by the `store_disambiguator_census` corpus measurement (`tests/store/
+# disambiguator_census.rs`). Off by default; changes no production behaviour.
+seal-census = ["nudox-languages/seal-census"]
+# Wires `EngineConfig::ir_repo_root` to a real on-disk `ir-vcs::IrRepository`
+# per resident package lineage (`store::persistence`), so produced IR survives
+# a process restart — IR-STORAGE-PLAN §1a/P5.
+#
+# `ir-vcs` is a heavy, libpijul-linked dependency (GPL, pinned exactly; also
+# pulls iroh and sanakirja — see `ir-vcs/Cargo.toml`'s own header). `index`
+# gates the same crate behind its `server` feature and leaves it OFF by
+# default for exactly this dependency-weight reason (see
+# `workspace/index/Cargo.toml`'s `server` feature comment, which also records
+# that the historical `ir-vcs → libpijul → zstd-seekable` / `index::pack`
+# `zstd-sys` duplicate-symbol clash is fixed at the source in
+# `workspace/vendor/zstd-seekable`, not merely avoided by feature gating — so
+# enabling this feature alongside anything that links `zstd-sys` is safe, just
+# heavier to build).
+#
+# This crate defaults it ON regardless, because `tests/local_persistence.rs`
+# — the hook-free, non-vacuous proof that produced IR survives a restart —
+# must pass under a plain `cargo test -p nudox-engine`, and because a host
+# that never sets `EngineConfig::ir_repo_root` (the common case today) pays
+# only the link-time cost, not a behavioural one: with `ir_repo_root: None`
+# nothing under this feature ever touches disk. A build that must shed the
+# dependency graph entirely (embedding this crate somewhere link size is
+# fixed) should build with `--no-default-features`; `ir_repo_root` is still
+# present on `EngineConfig` in that build (so the type is stable across
+# feature combinations) but is silently inert — see that field's doc comment.
+local-persistence = ["dep:ir-vcs"]
+
+[dependencies]
+nudox-ir = { path = "../ir/model" }
+nudox-languages = { path = "../compiler/languages" }
+heart = { path = "../heart" }
+# Local, libpijul-backed IR persistence (`store::persistence`). Optional —
+# see the `local-persistence` feature above.
+ir-vcs = { path = "../ir/vcs", optional = true }
+bytes = "1"
+# The ONNX embedder runtime (`embed::onnx`), compiled in unconditionally —
+# there is no `onnx` cargo feature. `features = ["onnx"]` is what turns on
+# `registry`'s `FastembedOrt`. This is a ~483-crate addition to the graph
+# whose `ort-sys` build fetches a prebuilt runtime at build time on every
+# build of this crate, including a bare `cargo check`; see `embed/mod.rs`'s
+# module docs for what that means for a build with no network access.
+registry = { path = "../registry", features = ["onnx"] }
+
+flume = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+pulldown-cmark = { workspace = true }
+rustc-hash = { workspace = true }
+# `heart::surface::{SigToken, SymbolHit}` fields are `smol_str::SmolStr`
+# (`crate::surface`, the `Serve<Symbols>` adapter) — same version `heart`
+# itself pins, so this adds no new dependency to the graph.
+smol_str = { version = "0.2", features = ["serde"] }
+# `schemars` + `serde` are what let the wire types *be* the MCP schema (LR-2):
+# the MCP tools derive their schemas from these types rather than mirroring them
+# by hand, so the protocol has exactly one definition.
+schemars = { workspace = true }
+serde = { workspace = true }
+# Used only by `query.rs`'s `find_line_column` to walk a serialized `ParseError`.
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
+# No `sync` feature: `tokio_util::sync::CancellationToken` is unconditional in 0.7.
+tokio-util = { version = "0.7", default-features = false }
+tracing = { workspace = true }
+triomphe = { workspace = true }
+trustfall = { workspace = true }
+# For downcasting `execute_query_async`'s `anyhow::Error` back to `FrontendError`.
+trustfall_core = { workspace = true }
+
+# ── On-demand package acquisition (`crate::acquire`) ─────────────────────────
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "charset",
+    "http2",
+    "stream",
+    "json",
+] }
+sha2 = "0.10"
+sha1 = "0.10"
+base64 = "0.22"
+flate2 = "1"
+tar = "0.4"
+zip = { workspace = true }
+
+# ── MCP server (`crate::mcp`, GUI-LOCAL-PLAN §L6) ────────────────────────────
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+rand = "0.10"
+rmcp = { version = "2.2", features = ["server", "transport-streamable-http-server", "macros"] }
+
+# ── Platform credential store for the account key at rest
+#    (`crate::mcp::account::store`) ────────────────────────────────────────────
+# macOS reaches the Keychain directly via `security-framework`. Linux and
+# Windows go through `keyring`, a thin facade over each OS's own vault:
+# the freedesktop Secret Service (GNOME Keyring / KWallet) on Linux, and
+# `CredReadW`/`CredWriteW` (Credential Manager) on Windows. Neither pulls a
+# native build toolchain — both are FFI to system libraries.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[dev-dependencies]
+# Integration tests wrap their measured regions in `heart::cost::measured`
+# (doctrine §4, formerly the `nudox-test-support` crate).
+heart = { path = "../heart" }
+# `tests/engine/purl_url_parity.rs` and `tests/store/corpus_contract.rs` read
+# `nix/corpus.nix` and `nix/entry-baseline.toml`.
+toml = { workspace = true }
+# `tests/engine/serve_symbols.rs` builds the `heart::PackageVersion::Cargo`
+# variant directly, to assert the engine mints the *same* `PackageId` the index
+# would from full coordinates. Test-only: the engine itself never parses
+# versions, it only carries the string its `IrSource` supplied.
+semver = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }
+trustfall = { workspace = true }
+tempfile = "3"
+
+[[test]]
+name = "engine_error_enrichment"
+path = "tests/engine/error_enrichment.rs"
+
+[[test]]
+name = "engine_generic_signature_shapes"
+path = "tests/engine/generic_signature_shapes.rs"
+
+[[test]]
+name = "engine_hyperlink_flows"
+path = "tests/engine/hyperlink_flows.rs"
+
+[[test]]
+name = "engine_impls_refs_flows"
+path = "tests/engine/impls_refs_flows.rs"
+
+[[test]]
+name = "engine_link_repair_audit"
+path = "tests/engine/link_repair_audit.rs"
+
+[[test]]
+name = "engine_multi_package_flows"
+path = "tests/engine/multi_package_flows.rs"
+
+[[test]]
+name = "engine_packages_subscription"
+path = "tests/engine/packages_subscription.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_protocol_adversarial"
+path = "tests/engine/protocol_adversarial.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_purl_index"
+path = "tests/engine/purl_index.rs"
+
+[[test]]
+name = "engine_purl_url_parity"
+path = "tests/engine/purl_url_parity.rs"
+
+[[test]]
+name = "archive_cache"
+path = "tests/archive_cache.rs"
+
+[[test]]
+name = "remote_store"
+path = "tests/remote_store.rs"
+
+# Red-first spec for local IR persistence (IR-STORAGE-PLAN §1a/P5): produce a
+# package, delete its source tree, restart, and confirm it still resolves —
+# possible only if `EngineConfig::ir_repo_root` actually persisted the IR.
+[[test]]
+name = "local_persistence"
+path = "tests/local_persistence.rs"
+required-features = ["local-persistence"]
+
+[[test]]
+name = "engine_real_lineage"
+path = "tests/engine/real_lineage.rs"
+
+[[test]]
+name = "engine_real_memchr_generic_return"
+path = "tests/engine/real_memchr_generic_return.rs"
+
+[[test]]
+name = "engine_real_memchr_impl_labels"
+path = "tests/engine/real_memchr_impl_labels.rs"
+
+[[test]]
+name = "engine_real_memchr_signature_index"
+path = "tests/engine/real_memchr_signature_index.rs"
+
+[[test]]
+name = "engine_real_producer_links"
+path = "tests/engine/real_producer_links.rs"
+
+[[test]]
+name = "engine_real_search_benchmarks"
+path = "tests/engine/real_search_benchmarks.rs"
+
+[[test]]
+name = "engine_real_source_locations"
+path = "tests/engine/real_source_locations.rs"
+
+[[test]]
+name = "engine_non_rust_producer"
+path = "tests/engine/non_rust_producer.rs"
+
+[[test]]
+name = "mcp_diagnose_source_format"
+path = "tests/mcp/diagnose_source_format.rs"
+
+[[test]]
+name = "mcp_universal_producer_pipeline"
+path = "tests/mcp/universal_producer_pipeline.rs"
+
+[[test]]
+name = "engine_search_adversarial"
+path = "tests/engine/search_adversarial.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_search_determinism"
+path = "tests/engine/search_determinism.rs"
+
+[[test]]
+name = "engine_serve_symbols"
+path = "tests/engine/serve_symbols.rs"
+
+[[test]]
+name = "engine_semantic_failure_modes"
+path = "tests/engine/semantic_failure_modes.rs"
+
+[[test]]
+name = "engine_semantic_local_mode"
+path = "tests/engine/semantic_local_mode.rs"
+
+[[test]]
+name = "engine_semantic_section_contract"
+path = "tests/engine/semantic_section_contract.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_semantic_real_model"
+path = "tests/engine/semantic_real_model.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_signature_search"
+path = "tests/engine/signature_search.rs"
+
+[[test]]
+name = "engine_symbol_head_cfg"
+path = "tests/engine/symbol_head_cfg.rs"
+
+[[test]]
+name = "engine_versions_adversarial"
+path = "tests/engine/versions_adversarial.rs"
+
+[[test]]
+name = "engine_zero_jump"
+path = "tests/engine/zero_jump.rs"
+required-features = ["fixtures"]
+
+# ── store plane ───────────────────────────────────────────
+[[test]]
+name = "store_bytes_bench_name_collision_regression"
+path = "tests/store/bytes_bench_name_collision_regression.rs"
+
+[[test]]
+name = "store_corpus_contract"
+path = "tests/store/corpus_contract.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "store_feature_gated_api"
+path = "tests/store/feature_gated_api.rs"
+
+[[test]]
+name = "store_real_crate"
+path = "tests/store/real_crate.rs"
+
+[[test]]
+name = "store_real_package"
+path = "tests/store/real_package.rs"
+
+# ── graph plane ───────────────────────────────────────────
+[[test]]
+name = "graph_error_channel"
+path = "tests/graph/error_channel.rs"
+
+[[test]]
+name = "graph_fixture_queries"
+path = "tests/graph/fixture_queries.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "graph_plan"
+path = "tests/graph/plan.rs"
+
+[[test]]
+name = "graph_pushdown"
+path = "tests/graph/pushdown.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "graph_queries_parse"
+path = "tests/graph/queries_parse.rs"
+
+[[test]]
+name = "graph_schema_parses"
+path = "tests/graph/schema_parses.rs"
+
+[[test]]
+name = "graph_schema_projection"
+path = "tests/graph/schema_projection.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "graph_typename_invariant"
+path = "tests/graph/typename_invariant.rs"
+required-features = ["fixtures"]
+
+# ── mcp plane ───────────────────────────────────────────────
+[[test]]
+name = "mcp_address_resolution"
+path = "tests/mcp/address_resolution.rs"
+
+# Cross-tool composition: the address `search` emits must open in `read`.
+# `fixtures` because the whole file runs against the rich fixture corpus.
+[[test]]
+name = "mcp_compose_search_read"
+path = "tests/mcp/compose_search_read.rs"
+required-features = ["fixtures"]
+
+# `refs` over a non-Rust producer: only the Rust producer records occurrences,
+# so every other language's reference graph is empty by construction and
+# `refs` reports that emptiness as a result. Runs the live TypeScript
+# producer, which is in-process (OXC) and needs no npm.
+[[test]]
+name = "mcp_refs_non_rust_languages"
+path = "tests/mcp/refs_non_rust_languages.rs"
+
+# One engine load. packages, search, read, refs, and graph are one conversation:
+# a key from search must open in read, the same key must come back on the next
+# search, and an empty graph edge must say why. The schema card must stay
+# smaller than the full SDL.
+[[test]]
+name = "mcp_multi_turn_surfaces"
+path = "tests/mcp/multi_turn_surfaces.rs"
+
+# Two generations of one TypeScript package. select_version and diff are the
+# surfaces the single-version conversation never reaches.
+[[test]]
+name = "mcp_two_version_conversation"
+path = "tests/mcp/two_version_conversation.rs"
+
+# axios 1.6.7 and the three packages its manifest names, in one engine.
+# The tarballs are not in the repo; extract them under /tmp/medium/npm/src
+# (or set NUDOX_MEDIUM_NPM) and run with --ignored.
+[[test]]
+name = "mcp_medium_npm_conversation"
+path = "tests/mcp/medium_npm_conversation.rs"
+
+# serde 1.0.229 and serde_core 1.0.229 in one engine. The crates are not in
+# the repo; extract them under /tmp/medium/crates and run with --ignored.
+# One rust-analyzer boot for the binary: both packages load in this test.
+[[test]]
+name = "mcp_medium_crates_conversation"
+path = "tests/mcp/medium_crates_conversation.rs"
+
+# Real corpus/package occurrence regressions for every non-Rust producer.
+[[test]]
+name = "mcp_real_package_references"
+path = "tests/mcp/real_package_references.rs"
+required-features = ["pyrefly"]
+
+# `index` over local roots, several targets at once, and opt-in dependency
+# following. Runs the real Rust producer over a temporary two-crate workspace.
+[[test]]
+name = "mcp_index_locals_and_dependencies"
+path = "tests/mcp/index_locals_and_dependencies.rs"
+
+# `index` of a local TypeScript package, then search, read, and graph on
+# what that call loaded. No rust-analyzer.
+[[test]]
+name = "mcp_index_typescript_conversation"
+path = "tests/mcp/index_typescript_conversation.rs"
+
+# An unfiltered `search` must return API, not the parameter names that
+# outnumber it. Runs the real Rust producer over a temporary crate.
+[[test]]
+name = "mcp_search_member_noise"
+path = "tests/mcp/search_member_noise.rs"
+
+# The port and token an agent was configured against must survive a restart.
+[[test]]
+name = "mcp_endpoint_stability"
+path = "tests/mcp/endpoint_stability.rs"
+
+# `NoEmbedder` collapses "no runtime compiled in" with "no model directory
+# configured" — two states whose remedies share nothing.
+[[test]]
+name = "engine_semantic_unconfigured_is_actionable"
+path = "tests/engine/semantic_unconfigured_is_actionable.rs"
+
+[[test]]
+name = "mcp_account_platform_store"
+path = "tests/mcp/account_platform_store.rs"
+
+[[test]]
+name = "mcp_account_against_a_fake_service"
+path = "tests/mcp/account_against_a_fake_service.rs"
+
+[[test]]
+name = "mcp_account_against_the_real_service"
+path = "tests/mcp/account_against_the_real_service.rs"
+
+[[test]]
+name = "mcp_account_secret_hygiene"
+path = "tests/mcp/account_secret_hygiene.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "mcp_endpoint"
+path = "tests/mcp/endpoint.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "mcp_host_lifecycle"
+path = "tests/mcp/host_lifecycle.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "mcp_project_watch"
+path = "tests/mcp/project_watch.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "mcp_purl_index_end_to_end"
+path = "tests/mcp/purl_index_end_to_end.rs"
+
+[[test]]
+name = "mcp_real_crate_dogfood_workflows"
+path = "tests/mcp/real_crate_dogfood_workflows.rs"
+
+[[test]]
+name = "mcp_real_crate_memchr"
+path = "tests/mcp/real_crate_memchr.rs"
+
+[[test]]
+name = "mcp_real_crate_memchr_versions"
+path = "tests/mcp/real_crate_memchr_versions.rs"
+
+[[test]]
+name = "mcp_real_crate_tokio"
+path = "tests/mcp/real_crate_tokio.rs"
+
+[[test]]
+name = "mcp_address_adversarial"
+path = "tests/mcp/address_adversarial.rs"
+
+[[test]]
+name = "mcp_schema_card_queries"
+path = "tests/mcp/schema_card_queries.rs"
+
+[[test]]
+name = "mcp_schema_source"
+path = "tests/mcp/schema_source.rs"
+
+[[test]]
+name = "mcp_schemas"
+path = "tests/mcp/schemas.rs"
+
+[[test]]
+name = "mcp_tool_integration"
+path = "tests/mcp/tool_integration.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "mcp_token_budget_matrix"
+path = "tests/mcp/token_budget_matrix.rs"
+required-features = ["fixtures"]
+
+[lints]
+workspace = true
+
+# A graph edge that is empty by construction for a package's language must say
+# so and name the edge that does carry the relationship — the "two wrong graph
+# queries" a field report burned before landing on `members`.
+[[test]]
+name = "mcp_graph_edge_language_fit"
+path = "tests/mcp/graph_edge_language_fit.rs"
+required-features = ["fixtures"]

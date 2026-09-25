@@ -71,6 +71,11 @@ impl Output {
     /// changed. `#[serde(default)]` cannot express that distinction, so the
     /// handshake is the only thing that can.
     ///
+    /// v3 reads `Package.unresolved_cgo` and widens `references` to method
+    /// bodies and cross-package calls. An older binary omits the cgo list
+    /// (so a cgo package looks fully resolved) and under-reports the call
+    /// graph.
+    ///
     /// v4 widens `references` from the free-function call graph to the full
     /// go/types Uses map: every use of a keyable named object with a closed
     /// `kind` (call/read/typeref/import), a closed object `class`, the
@@ -146,6 +151,13 @@ pub struct Package {
     /// Go/types-resolved same-package function calls.
     #[serde(default)]
     pub references: Box<[Reference]>,
+
+    /// Incomplete cgo types this package touched, qualified as
+    /// `import/path.Name`. Empty when the package has none — and also empty
+    /// when the oracle binary predates schema 3, which [`Output::staleness`]
+    /// is what distinguishes.
+    #[serde(default)]
+    pub unresolved_cgo: Box<[String]>,
 }
 
 /// One resolved named-object use edge in a package — the go/types Uses

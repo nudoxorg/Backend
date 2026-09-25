@@ -579,8 +579,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
 
     /// Pass two: functions (parameters and result slots first), then
     /// variables and aliases, all in source order. Shadowed bindings are
-    /// skipped: Python rebinds the name in place and the later binding wins,
-    /// so only the live row reaches the lane.
+    /// skipped: the extractor already dropped later module-level rebindings,
+    /// and identical twins keep the first declaration.
     fn emit_non_class_declarations(&mut self) -> Result<(), PythonCollectError> {
         let tables = self.type_tables()?;
         for index in 0..self.module.declarations.len() {
@@ -734,6 +734,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let mut any_resolved = false;
         let mut any_checked = false;
         for parameter in &declaration.parameters {
+            if is_receiver_parameter(declaration.receiver, &parameter.name) {
+                continue;
+            }
             let unannotated = matches!(
                 parameter.annotation,
                 Annotation::Unknown(ExtractedReason::Unannotated { .. })
@@ -2115,13 +2118,24 @@ const fn span_contains(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
 
-/// Python legally rebinds a name in the same scope: the later binding wins
-/// and the earlier one is dead at runtime. The identity model is
-/// coordinate-free, so two byte-identical twins in one scope share one
-/// family and one structural variant and the image build rejects the honest
-/// duplicate as `DuplicateDeclarationIdentity`. This pass keeps the live
-/// binding per `(owner, kind, name)` signature group instead of minting
-/// coordinates into identity.
+/// `self` on an instance method and `cls` on a classmethod are receivers, not
+/// parameters. Any other parameter with those names stays.
+fn is_receiver_parameter(receiver: ReceiverKind, name: &str) -> bool {
+    match receiver {
+        ReceiverKind::Plain => name == "self",
+        ReceiverKind::ClassMethod => name == "cls",
+        ReceiverKind::StaticMethod | ReceiverKind::Property => false,
+    }
+}
+
+/// Python legally rebinds a name in the same scope at runtime, but the syntax
+/// extractor already drops later module-level rebindings and keeps overload
+/// branches distinct. The identity model is coordinate-free, so two
+/// byte-identical twins in one scope share one family and one structural
+/// variant and the image build rejects the honest duplicate as
+/// `DuplicateDeclarationIdentity`. This pass keeps the first live binding per
+/// `(owner, kind, name)` signature group instead of minting coordinates into
+/// identity.
 ///
 /// Grouping is by lexical owner (the innermost enclosing class or function,
 /// or the module root), declaration kind, and name, so two different scopes
@@ -2186,8 +2200,8 @@ fn compute_live_set(module: &ModuleFacts) -> Vec<bool> {
             }
             let mut ordered = twins.clone();
             ordered.sort_by_key(|index| (module.declarations[*index].span.start, *index));
-            // Keep the last (live) binding; earlier twins are shadowed.
-            for shadowed in &ordered[..ordered.len() - 1] {
+            // Keep the first (live) binding; later twins are shadowed.
+            for shadowed in &ordered[1..] {
                 live[*shadowed] = false;
             }
         }

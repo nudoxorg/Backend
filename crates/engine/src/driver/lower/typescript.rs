@@ -275,6 +275,7 @@ impl TypeParamRows {
 struct ParamRow {
     name: Span,
     annotation: Option<Span>,
+    default: Option<Span>,
     flags: u8,
 }
 
@@ -293,6 +294,7 @@ impl ParamRows {
             rows: [ParamRow {
                 name: Span::new(0, 0),
                 annotation: None,
+                default: None,
                 flags: 0,
             }; MAX_FACT_CHILDREN + 1],
             len: 0,
@@ -904,6 +906,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let ordinal = self.push(fact)?;
             self.register(ordinal, row.name, row.name, EntityKind::Parameter)?;
             self.claim_staged_members(member_base, ordinal);
+            if let Some(default) = row.default {
+                self.declare_expression_bindings(default.start, default.end, 0)?;
+            }
             if let Some(slot) = ordinals.get_mut(index) {
                 *slot = ordinal;
             }
@@ -1727,6 +1732,324 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.synthetic_cells_fact(fallback_name, TypeCells::unknown(TypeReason::Unannotated))
     }
 
+    /// Declares one formal parameter as a `Parameter` fact when the binding
+    /// site is not already registered, then walks its annotation for nested
+    /// function bindings.
+    fn declare_formal_parameter_binding(
+        &mut self,
+        name_span: Span,
+        annotation: Option<Span>,
+        flags: u8,
+        depth: u8,
+    ) -> Result<(), TypeScriptCollectError> {
+        if self.text_span(name_span).is_some_and(|name| name == "this") {
+            return Ok(());
+        }
+        if self.fact_at_name_start(name_span.start).is_none() {
+            let mut params = ParamRows::new();
+            params.push(ParamRow {
+                name: name_span,
+                annotation,
+                default: None,
+                flags,
+            })?;
+            self.push_parameter_facts(&params)?;
+        }
+        if let Some(span) = annotation {
+            self.declare_bindings_in_span(span.start, span.end, depth.saturating_add(1))?;
+        }
+        Ok(())
+    }
+
+    /// Walks one expression span and declares bindings reachable through
+    /// `satisfies`, `as`, and non-null assertions on the initializer plane.
+    fn declare_expression_bindings(
+        &mut self,
+        start: u32,
+        end: u32,
+        depth: u8,
+    ) -> Result<(), TypeScriptCollectError> {
+        if depth > MAX_TYPE_DEPTH {
+            return Ok(());
+        }
+        let span = Span::new(start, end);
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        let last = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) <= (span.start, span.end));
+        for (_, node_id) in self.node_index[first..last].iter() {
+            let kind = self.semantic.nodes().get_node(*node_id).kind();
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                let inner = parenthesized.expression.span();
+                return self.declare_expression_bindings(inner.start, inner.end, depth);
+            }
+            if let Some(non_null) = kind.as_ts_non_null_expression() {
+                let inner = non_null.expression.span();
+                self.declare_expression_bindings(inner.start, inner.end, depth)?;
+                return Ok(());
+            }
+            if let Some(satisfied) = kind.as_ts_satisfies_expression() {
+                let inner = satisfied.expression.span();
+                self.declare_expression_bindings(inner.start, inner.end, depth)?;
+                let ty = satisfied.type_annotation.span();
+                return self.declare_bindings_in_span(ty.start, ty.end, depth.saturating_add(1));
+            }
+            if let Some(cast) = kind.as_ts_as_expression() {
+                let ty = cast.type_annotation.span();
+                self.declare_bindings_in_span(ty.start, ty.end, depth.saturating_add(1))?;
+                let inner = cast.expression.span();
+                return self.declare_expression_bindings(inner.start, inner.end, depth);
+            }
+            if let Some(cast) = kind.as_ts_type_assertion() {
+                let ty = cast.type_annotation.span();
+                self.declare_bindings_in_span(ty.start, ty.end, depth.saturating_add(1))?;
+                let inner = cast.expression.span();
+                return self.declare_expression_bindings(inner.start, inner.end, depth);
+            }
+        }
+        Ok(())
+    }
+
+    /// Declares every function-binding name reachable inside one type span.
+    fn declare_bindings_in_span(
+        &mut self,
+        start: u32,
+        end: u32,
+        depth: u8,
+    ) -> Result<(), TypeScriptCollectError> {
+        if depth > MAX_TYPE_DEPTH {
+            return Ok(());
+        }
+        let span = Span::new(start, end);
+        let next_depth = depth.saturating_add(1);
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        let last = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) <= (span.start, span.end));
+        for (_, node_id) in self.node_index[first..last].iter() {
+            let kind = self.semantic.nodes().get_node(*node_id).kind();
+            if let Some(parenthesized) = kind.as_ts_parenthesized_type() {
+                let inner = parenthesized.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+            if let Some(optional) = kind.as_ts_optional_type() {
+                let inner = optional.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+            if let Some(rest) = kind.as_ts_rest_type() {
+                let inner = rest.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+            if let Some(union) = kind.as_ts_union_type() {
+                for member in union.types.iter() {
+                    let member_span = member.span();
+                    self.declare_bindings_in_span(
+                        member_span.start,
+                        member_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(intersection) = kind.as_ts_intersection_type() {
+                for member in intersection.types.iter() {
+                    let member_span = member.span();
+                    self.declare_bindings_in_span(
+                        member_span.start,
+                        member_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(tuple) = kind.as_ts_tuple_type() {
+                for element in tuple.element_types.iter() {
+                    let element_span = element.span();
+                    self.declare_bindings_in_span(
+                        element_span.start,
+                        element_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(literal) = kind.as_ts_type_literal() {
+                for member in literal.members.iter() {
+                    let member_span = member.span();
+                    self.declare_bindings_in_span(
+                        member_span.start,
+                        member_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(function_type) = kind.as_ts_function_type() {
+                for parameter in function_type.params.items.iter() {
+                    let annotation = parameter
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span());
+                    let flags = if parameter.optional {
+                        SemanticTypeChild::FLAG_OPTIONAL
+                    } else {
+                        0
+                    };
+                    self.declare_formal_parameter_binding(
+                        parameter.pattern.span(),
+                        annotation,
+                        flags,
+                        next_depth,
+                    )?;
+                    if let Some(init) = parameter.initializer.as_ref() {
+                        let init_span = init.span();
+                        self.declare_expression_bindings(
+                            init_span.start,
+                            init_span.end,
+                            next_depth,
+                        )?;
+                    }
+                }
+                if let Some(rest) = function_type.params.rest.as_ref() {
+                    let annotation = rest
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span());
+                    self.declare_formal_parameter_binding(
+                        rest.rest.span(),
+                        annotation,
+                        SemanticTypeChild::FLAG_REST,
+                        next_depth,
+                    )?;
+                }
+                let returned = function_type.return_type.type_annotation.span();
+                self.declare_bindings_in_span(returned.start, returned.end, next_depth)?;
+                return Ok(());
+            }
+            if let Some(reference) = kind.as_ts_type_reference() {
+                if let Some(arguments) = reference.type_arguments.as_ref() {
+                    for argument in arguments.params.iter() {
+                        let argument_span = argument.span();
+                        self.declare_bindings_in_span(
+                            argument_span.start,
+                            argument_span.end,
+                            next_depth,
+                        )?;
+                    }
+                }
+                return Ok(());
+            }
+            if let Some(mapped) = kind.as_ts_mapped_type() {
+                let constraint = mapped.constraint.span();
+                self.declare_bindings_in_span(constraint.start, constraint.end, next_depth)?;
+                if let Some(name_type) = mapped.name_type.as_ref() {
+                    let name_span = name_type.span();
+                    self.declare_bindings_in_span(name_span.start, name_span.end, next_depth)?;
+                }
+                if let Some(value) = mapped.type_annotation.as_ref() {
+                    let value_span = value.span();
+                    self.declare_bindings_in_span(value_span.start, value_span.end, next_depth)?;
+                }
+                return Ok(());
+            }
+            if let Some(conditional) = kind.as_ts_conditional_type() {
+                let check = conditional.check_type.span();
+                let extends = conditional.extends_type.span();
+                let true_branch = conditional.true_type.span();
+                let false_branch = conditional.false_type.span();
+                self.declare_bindings_in_span(check.start, check.end, next_depth)?;
+                self.declare_bindings_in_span(extends.start, extends.end, next_depth)?;
+                self.declare_bindings_in_span(true_branch.start, true_branch.end, next_depth)?;
+                self.declare_bindings_in_span(false_branch.start, false_branch.end, next_depth)?;
+                return Ok(());
+            }
+            if let Some(array) = kind.as_ts_array_type() {
+                let element = array.element_type.span();
+                return self.declare_bindings_in_span(element.start, element.end, next_depth);
+            }
+            if let Some(operator) = kind.as_ts_type_operator() {
+                let inner = operator.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+            if let Some(template) = kind.as_ts_template_literal_type() {
+                for substitution in template.types.iter() {
+                    let substitution_span = substitution.span();
+                    self.declare_bindings_in_span(
+                        substitution_span.start,
+                        substitution_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(infer) = kind.as_ts_infer_type() {
+                if let Some(constraint) = infer.type_parameter.constraint.as_ref() {
+                    let constraint_span = constraint.span();
+                    self.declare_bindings_in_span(
+                        constraint_span.start,
+                        constraint_span.end,
+                        next_depth,
+                    )?;
+                }
+                if let Some(default) = infer.type_parameter.default.as_ref() {
+                    let default_span = default.span();
+                    self.declare_bindings_in_span(
+                        default_span.start,
+                        default_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(signature) = kind.as_ts_call_signature_declaration() {
+                for parameter in signature.params.items.iter() {
+                    if let Some(annotation) = parameter.type_annotation.as_ref() {
+                        let inner = annotation.type_annotation.span();
+                        self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                    }
+                }
+                if let Some(returned) = signature.return_type.as_ref() {
+                    let inner = returned.type_annotation.span();
+                    self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                }
+                return Ok(());
+            }
+            if let Some(property) = kind.as_ts_property_signature() {
+                if let Some(annotation) = property.type_annotation.as_ref() {
+                    let inner = annotation.type_annotation.span();
+                    return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+                }
+                return Ok(());
+            }
+            if let Some(method) = kind.as_ts_method_signature() {
+                for parameter in method.params.items.iter() {
+                    if let Some(annotation) = parameter.type_annotation.as_ref() {
+                        let inner = annotation.type_annotation.span();
+                        self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                    }
+                }
+                if let Some(returned) = method.return_type.as_ref() {
+                    let inner = returned.type_annotation.span();
+                    self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                }
+                return Ok(());
+            }
+            if let Some(index_signature) = kind.as_ts_index_signature() {
+                for parameter in index_signature.parameters.iter() {
+                    let inner = parameter.type_annotation.type_annotation.span();
+                    self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                }
+                let inner = index_signature.type_annotation.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+        }
+        Ok(())
+    }
+
     /// Lowers one type expression for direct application to the fact being
     /// declared (an annotation position, not a child position). A resolved
     /// type parameter stays a `TypeVar` naming it; any other resolved fact
@@ -1737,6 +2060,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         end: u32,
         depth: u8,
     ) -> Result<TypeCells<'source>, TypeScriptCollectError> {
+        self.declare_bindings_in_span(start, end, depth)?;
         match self.lower_type(start, end, depth)? {
             TypeOutcome::Existing(fact) => {
                 let index = usize::try_from(fact).map_err(|_| lane_rejection())?;
@@ -1765,6 +2089,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         end: u32,
         depth: u8,
     ) -> Result<u32, TypeScriptCollectError> {
+        self.declare_bindings_in_span(start, end, depth)?;
         let member_base = self.staged_members.len();
         match self.lower_type(start, end, depth)? {
             TypeOutcome::Existing(fact) => Ok(fact),
@@ -2413,6 +2738,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -2467,6 +2793,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -2481,6 +2808,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -2524,6 +2852,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -2538,6 +2867,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -3004,6 +3334,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3018,6 +3349,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -3078,6 +3410,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 let ordinal = self.push(fact)?;
                 self.register(ordinal, declaration_span, name_span, entity_kind)?;
                 self.claim_staged_members(member_base, ordinal);
+                if let Some(init) = declarator.init.as_ref() {
+                    let init_span = init.span();
+                    self.declare_expression_bindings(init_span.start, init_span.end, 0)?;
+                }
             } else if let Some(property) = kind.as_ts_property_signature() {
                 if self.fact_at_name_start(property.key.span().start).is_some() {
                     continue;
@@ -3142,6 +3478,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3208,6 +3545,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 let ordinal = self.push(fact)?;
                 self.register(ordinal, declaration_span, key_span, EntityKind::Field)?;
                 self.claim_staged_members(member_base, ordinal);
+                if let Some(value) = definition.value.as_ref() {
+                    let value_span = value.span();
+                    self.declare_expression_bindings(value_span.start, value_span.end, 0)?;
+                }
             } else if let Some(definition) = kind.as_method_definition() {
                 let key_span = definition.key.span();
                 if self.fact_at_name_start(key_span.start).is_some() {
@@ -3235,6 +3576,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3290,6 +3632,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3304,6 +3647,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -3347,6 +3691,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3361,6 +3706,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }

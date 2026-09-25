@@ -15,9 +15,9 @@ use core::{fmt, str};
 
 use crate::ir::{
     AnnotationKind, ArrayShape, BuiltinType, ChannelDirection, ComputedType, ConcreteType,
-    DocFragment, EntityId, Ir, ItemKind, ItemView, LinkTarget, LiteralType, MappedModifier,
-    Mutability, ObjectMember, PropertyKey, TemplatePart, TupleElementKind, TypeExpr, TypeId,
-    TypeQuery, VariadicForm, Visibility, WildcardBound,
+    DocFragment, EntityId, Ir, ItemKind, ItemView, LinkKind, LinkTarget, LiteralType,
+    MappedModifier, Mutability, ObjectMember, PropertyKey, TemplatePart, TupleElementKind,
+    TypeExpr, TypeId, TypeQuery, VariadicForm, Visibility, WildcardBound,
 };
 
 const MAX_TYPE_DEPTH: u8 = 96;
@@ -111,6 +111,11 @@ impl Ir {
 impl fmt::Display for SignatureDisplay<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_visibility(formatter, self.item.visibility())?;
+        if self.item.kind() == ItemKind::Reexport {
+            formatter.write_str("use ")?;
+            write_reexport_target(formatter, self.ir, self.item)?;
+            return Ok(());
+        }
         match self.item.kind() {
             ItemKind::Module => formatter.write_str("mod ")?,
             ItemKind::Record => formatter.write_str("struct ")?,
@@ -122,7 +127,7 @@ impl fmt::Display for SignatureDisplay<'_> {
             ItemKind::Enum => formatter.write_str("enum ")?,
             ItemKind::Constant => formatter.write_str("const ")?,
             ItemKind::Static => formatter.write_str("static ")?,
-            ItemKind::Reexport => formatter.write_str("use ")?,
+            ItemKind::Reexport => unreachable!("handled above"),
             ItemKind::Macro => formatter.write_str("macro ")?,
             ItemKind::Namespace => formatter.write_str("namespace ")?,
         }
@@ -876,6 +881,50 @@ fn write_link_target(output: &mut impl fmt::Write, ir: &Ir, target: LinkTarget) 
             None => output.write_str("#unresolved"),
         },
     }
+}
+
+/// A re-export's target is the fact the entry holds. A foreign path is that
+/// target; a local alias keeps the name, which is the only path this entry has.
+fn write_reexport_target(
+    output: &mut impl fmt::Write,
+    ir: &Ir,
+    item: ItemView<'_>,
+) -> fmt::Result {
+    if let Some((_, link)) = item
+        .links_from()
+        .find(|(_, link)| link.kind == LinkKind::Reexports)
+    {
+        write_reexport_link_target(output, ir, link.target)
+    } else {
+        write_atom(output, item.name())
+    }
+}
+
+fn write_reexport_link_target(
+    output: &mut impl fmt::Write,
+    ir: &Ir,
+    target: LinkTarget,
+) -> fmt::Result {
+    match target {
+        LinkTarget::Local(entity) => match ir.item(entity) {
+            Some(item) => write_atom(output, item.name()),
+            None => output.write_str("?dangling"),
+        },
+        LinkTarget::External(external) => match ir.external(external).and_then(external_path) {
+            Some(path) => {
+                let path_text = ir.atom(path).unwrap_or(b"?external");
+                write_atom(output, source_path(path_text))
+            }
+            None => output.write_str("?unresolved"),
+        },
+    }
+}
+
+/// `!m` and `!v` are lowering namespace tags, not Rust syntax.
+fn source_path(path: &[u8]) -> &[u8] {
+    path.strip_suffix(b"!m")
+        .or_else(|| path.strip_suffix(b"!v"))
+        .unwrap_or(path)
 }
 
 fn write_embedding_target(

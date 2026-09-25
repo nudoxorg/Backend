@@ -431,12 +431,28 @@ impl Harness {
                 // the image. When present it is the preserved diagnostic; the
                 // captured stderr stays as the fallback.
                 let sidecar = run.join("authority.diagnostics");
-                if let HarnessError::Command { stderr, .. } = &mut error {
+                if let HarnessError::Command {
+                    command,
+                    status,
+                    stderr,
+                } = &mut error
+                {
                     if let Ok(bytes) = fs::read(&sidecar) {
                         if !bytes.is_empty() {
                             let capped = &bytes[..bytes.len().min(STDERR_LIMIT as usize)];
                             *stderr = String::from_utf8_lossy(capped).into_owned();
                         }
+                    }
+                    if let Some(packages) = unresolved_dependency_packages(stderr) {
+                        return Err(HarnessError::UnresolvedDependencies {
+                            packages,
+                            exit_code: status
+                                .code()
+                                .map(|code| code.to_string())
+                                .unwrap_or_else(|| status.to_string()),
+                            command: command.clone(),
+                            stderr: stderr.clone(),
+                        });
                     }
                 }
                 return Err(error);
@@ -584,6 +600,36 @@ fn validate_name(path: &Path) -> Result<(), HarnessError> {
     Ok(())
 }
 
+/// `Some` when every `error:` line is a missing package or a symbol that
+/// follows from one. `None` when there is no missing package, or when any
+/// other `error:` is present.
+fn unresolved_dependency_packages(stderr: &str) -> Option<String> {
+    let mut packages = Vec::new();
+    for line in stderr.lines() {
+        let Some((_, rest)) = line.split_once("error:") else {
+            continue;
+        };
+        let rest = rest.trim();
+        if let Some(name) = rest
+            .strip_prefix("package ")
+            .and_then(|suffix| suffix.strip_suffix(" does not exist"))
+        {
+            packages.push(name.trim().to_owned());
+            continue;
+        }
+        if rest.starts_with("cannot find symbol") {
+            continue;
+        }
+        return None;
+    }
+    if packages.is_empty() {
+        return None;
+    }
+    packages.sort();
+    packages.dedup();
+    Some(packages.join(", "))
+}
+
 fn run_command(
     mut command: Command,
     program: &'static str,
@@ -683,6 +729,23 @@ pub enum HarnessError {
         /// At most 64 KiB of stderr.
         stderr: String,
     },
+    /// `javac` exited because named packages are not on the source or class
+    /// path. The compiler was not relaxed: the same invocation still fails.
+    #[error(
+        "javac could not resolve dependency package(s) {packages}; the compiler was \
+         not weakened (exit {exit_code}, {command}). Put the missing jars on \
+         NUDOX_JAVA_CLASS_PATH. {stderr}"
+    )]
+    UnresolvedDependencies {
+        /// Packages named by `error: package … does not exist`, sorted and joined.
+        packages: String,
+        /// `javac`'s exit status.
+        exit_code: String,
+        /// The command label `run_command` reported.
+        command: String,
+        /// The full diagnostic, so the missing types stay readable.
+        stderr: String,
+    },
 }
 
 impl HarnessError {
@@ -708,6 +771,42 @@ impl HarnessError {
     /// to provision it from the fleet corpus.
     fn names_missing_module(&self) -> bool {
         matches!(self, Self::Command { stderr, .. } if stderr.contains("module not found: "))
+    }
+}
+
+#[cfg(test)]
+mod dependency_tests {
+    use super::unresolved_dependency_packages;
+
+    #[test]
+    fn a_missing_package_is_an_unresolved_dependency() {
+        let stderr = "\
+App.java:1: error: package com.google.common.base does not exist
+import com.google.common.base.Preconditions;
+App.java:4: error: cannot find symbol
+        Preconditions.checkNotNull(name);
+  symbol:   variable Preconditions
+1 error
+";
+        assert_eq!(
+            unresolved_dependency_packages(stderr).as_deref(),
+            Some("com.google.common.base")
+        );
+    }
+
+    #[test]
+    fn a_language_error_stays_a_compiler_failure_even_beside_a_missing_package() {
+        let stderr = "\
+App.java:3: error: records are not supported in -source 8
+App.java:1: error: package com.google.common.base does not exist
+";
+        assert!(unresolved_dependency_packages(stderr).is_none());
+    }
+
+    #[test]
+    fn a_bare_cannot_find_symbol_is_not_relabeled_as_a_missing_dependency() {
+        let stderr = "App.java:2: error: cannot find symbol\n  symbol: class Typo\n";
+        assert!(unresolved_dependency_packages(stderr).is_none());
     }
 }
 

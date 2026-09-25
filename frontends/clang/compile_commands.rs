@@ -7,18 +7,18 @@
 //!
 //! # Why this exists
 //!
-//! [`super::producer::find_sources`] discovers translation units by walking
-//! the package root for `.c`/`.cpp` extensions — it has no way to know a
-//! project's `-I`/`-isystem` include paths, because those live outside the
-//! source tree, in whatever built the project. A real project almost always
-//! splits headers from implementation (`include/` vs `src/`, or a `vendor/`
-//! tree, or an unrelated system dependency's headers) and passes `-I` flags
-//! for all of it. Without them, libclang cannot resolve `#include "..."` /
-//! `#include <...>` directives that reach outside the single file's own
-//! directory: it treats the miss as a diagnostic, not a hard parse error, so
-//! the practical effect is silent: declarations that depend on the missing
-//! header's types are skipped or degrade to the bounded lane's unknown-type
-//! rows, not an error a caller can see.
+//! [`ClangProject`] discovers translation units from the caller-selected entry
+//! and the package root — it has no way to know a project's `-I`/`-isystem`
+//! include paths, because those live outside the source tree, in whatever built
+//! the project. A real project almost always splits headers from
+//! implementation (`include/` vs `src/`, or a `vendor/` tree, or an unrelated
+//! system dependency's headers) and passes `-I` flags for all of it. Without
+//! them, libclang cannot resolve `#include "..."` / `#include <...>` directives
+//! that reach outside the single file's own directory: it treats the miss as a
+//! diagnostic, not a hard parse error, so the practical effect is silent:
+//! declarations that depend on the missing header's types are skipped or
+//! degrade to the bounded lane's unknown-type rows, not an error a caller can
+//! see.
 //!
 //! # What this does *not* do
 //!
@@ -33,9 +33,10 @@
 //! still fall back to the hardcoded defaults, same as before this module
 //! existed.
 //!
-//! This also does not change *which* files [`super::producer::find_sources`]
-//! decides are translation units — a `compile_commands.json` entry only
-//! enriches the argument list for a file the directory walk already found;
+//! This also does not change *which* file [`ClangProject`] opens as the entry
+//! translation unit — a `compile_commands.json` entry only enriches the
+//! argument list for that entry (a `.c`/`.cpp`, or a package header opened as
+//! its own main file);
 //! it is not (yet) used as the authoritative file list. A project whose real
 //! build compiles a strict subset of the `.c`/`.cpp` files under its root
 //! (platform-specific files behind build-system `if`s, vendored files not
@@ -359,19 +360,16 @@ mod tests {
             "-std=c11".to_owned(),
         ];
         let rewritten = rewrite_relative_include_paths(&args, directory);
-        assert_eq!(
-            rewritten,
-            vec![
-                "cc".to_owned(),
-                "-I/project/root/include".to_owned(),
-                "-I".to_owned(),
-                "/project/root/vendor/include".to_owned(),
-                "-isystem".to_owned(),
-                "/project/root/third_party".to_owned(),
-                "-I/already/absolute".to_owned(),
-                "-std=c11".to_owned(),
-            ]
-        );
+        assert_eq!(rewritten, vec![
+            "cc".to_owned(),
+            "-I/project/root/include".to_owned(),
+            "-I".to_owned(),
+            "/project/root/vendor/include".to_owned(),
+            "-isystem".to_owned(),
+            "/project/root/third_party".to_owned(),
+            "-I/already/absolute".to_owned(),
+            "-std=c11".to_owned(),
+        ]);
     }
 
     #[test]

@@ -1330,3 +1330,51 @@ fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
         }
     }
 }
+
+fn parameter_count(view: &FragmentView<'_>, name: &[u8]) -> usize {
+    entities(view)
+        .into_iter()
+        .filter(|(_, entity_name, kind)| entity_name == name && *kind == EntityKind::Parameter)
+        .count()
+}
+
+#[test]
+fn nested_function_types_declare_each_parameter_binding() {
+    const SOURCE: &[u8] = b"export interface Bag { read: (left: number) => void; write: (left: string) => void; }\nexport type Call = (mid: number) => void;\n";
+    let view = view(SOURCE, None);
+    assert_eq!(
+        parameter_count(&view, b"left"),
+        2,
+        "each field function keeps its own left"
+    );
+    assert_eq!(
+        parameter_count(&view, b"mid"),
+        1,
+        "a top-level function type parameter is declared"
+    );
+}
+
+#[test]
+fn mapped_name_type_and_initializer_bindings_are_declared() {
+    const SOURCE: &[u8] = b"export type Bag = { [Key in string as ((left: number) => void)]: number };\nexport const call = (null as (right: number) => void)!;\n";
+    let view = view(SOURCE, None);
+    assert_eq!(parameter_count(&view, b"left"), 1);
+    assert_eq!(parameter_count(&view, b"right"), 1);
+    let bag = named(&view, b"Bag");
+    let mapped = fact(&view, bag.0);
+    assert_eq!(mapped.record.tag, SemanticTypeTag::Mapped);
+    assert_eq!(
+        mapped.record.children.length,
+        3,
+        "mapped type keeps its as clause"
+    );
+}
+
+#[test]
+fn parameter_defaults_declare_nested_function_bindings() {
+    const SOURCE: &[u8] = b"export function take(cb = null as (left: number) => void): void {}\nexport function held(cb: (right: number) => void = null as (mid: number) => void): void {}\n";
+    let view = view(SOURCE, None);
+    assert_eq!(parameter_count(&view, b"left"), 1);
+    assert_eq!(parameter_count(&view, b"right"), 1);
+    assert_eq!(parameter_count(&view, b"mid"), 1);
+}

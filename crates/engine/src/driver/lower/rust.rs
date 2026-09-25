@@ -1214,7 +1214,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let semantic = receiver.ty(self.database);
             let lowered = self.lower_pending_type(&semantic, None, MAX_TYPE_DEPTH)?;
             let ownership = receiver_ownership(receiver.access(self.database));
-            let ordinal = self.push_parameter(SELF_NAME, lowered, ownership)?;
+            let ordinal = self.push_parameter(SELF_NAME, lowered, ownership, None)?;
             parameter_ordinals.push(ordinal);
             signature_children.push(ordinal);
         }
@@ -1235,7 +1235,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             );
             let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
             let ownership = parameter_ownership(self.database, &semantic);
-            let ordinal = self.push_parameter(name, lowered, ownership)?;
+            let wildcard = name == b"_";
+            let ordinal = self.push_parameter(name, lowered, ownership, wildcard.then_some(position))?;
             parameter_ordinals.push(ordinal);
             signature_children.push(ordinal);
         }
@@ -1301,12 +1302,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         name: &'source [u8],
         lowered: Lowered<'source>,
         ownership: RustOwnership,
+        wildcard_position: Option<usize>,
     ) -> Result<u32, RustAuthorityError> {
         let mut fact = SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)
             .typed(lowered.record)
             .with_extension(EmissionExtension::Rust(self.empty_extension(ownership)?));
         for target in lowered.children {
             fact = fact.type_child(target, None, 0);
+        }
+        if let Some(position) = wildcard_position {
+            fact = fact.with_identity_discriminator(wildcard_param_discriminator(position));
         }
         coordinate(push(self.facts, fact)?)
     }
@@ -1315,14 +1320,15 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// pattern spells one, otherwise the analyzer's own parameter name found
     /// in the source text, otherwise the static fallback binding name. A
     /// wildcard pattern binds nothing, so two same-typed `_` parameters would
-    /// otherwise mint byte-identical siblings; such a position keeps the
-    /// lane's canonical positional spelling (the same spellings Rust uses for
-    /// tuple fields) so a repeated wildcard stays distinct.
+    /// otherwise mint byte-identical siblings; the display name stays `_` and
+    /// the positional index is carried in the identity discriminator so a
+    /// wildcard cannot collide with a parameter the source actually named
+    /// `_0`.
     fn parameter_name(
         &self,
         written: Option<&ast::Param>,
         hir_name: Option<ra_ap_hir::Name>,
-        position: usize,
+        _position: usize,
     ) -> &'source [u8] {
         if let Some(param) = written {
             if let Some(pattern) = param.pat() {
@@ -1332,10 +1338,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 {
                     return bytes;
                 }
-                if matches!(&pattern, ast::Pat::WildcardPat(_))
-                    && let Some(name) = TUPLE_FIELD_NAMES.get(position)
-                {
-                    return name;
+                if matches!(&pattern, ast::Pat::WildcardPat(_)) {
+                    return b"_";
                 }
                 if let Ok(bytes) = self.bytes_of_node(pattern.syntax()) {
                     return bytes;
@@ -3294,6 +3298,16 @@ fn written_type_argument_count(anchor: Option<&ast::Type>) -> usize {
                 .count()
         })
         .unwrap_or(0)
+}
+
+/// Keeps repeated wildcard parameters distinct while their display name stays `_`.
+fn wildcard_param_discriminator(position: usize) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"compiler.rust.wildcard-param.v1\0");
+    hash.update((position as u64).to_le_bytes());
+    let mut discriminator = [0_u8; 16];
+    discriminator.copy_from_slice(&hash.finalize()[..16]);
+    discriminator
 }
 
 /// Extracts the written anchor of one callable parameter or return position.
