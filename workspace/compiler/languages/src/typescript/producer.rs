@@ -1347,6 +1347,37 @@ mod tests {
     }
 
     #[test]
+    fn a_local_function_and_a_reexport_of_the_same_name_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"reexport-local","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("other.d.ts"),
+            "export function bar(b: string): void;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export function foo(a: number): void;\nexport { bar as foo } from \"./other\";\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "reexport-local", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("reexport-local"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a local function and a same-named reexport must both seal");
+        let foos = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "foo")
+            .count();
+        assert_eq!(foos, 2, "the local function and the reexport both survive");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.

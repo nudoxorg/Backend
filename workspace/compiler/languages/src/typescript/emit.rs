@@ -1382,14 +1382,12 @@ fn emit_reexports(
                 let target_ref = refer_declared(out, declared, root);
                 let sym =
                     reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
-                let reexport_id = TsId::new(
-                    twins.canonical(&module.path).to_path_buf(),
+                let reexport_id = vacant_reexport_id(
+                    out,
+                    twins.canonical(&module.path),
                     export_name.as_str(),
                     0,
                 );
-                if out.is_declared(&reexport_id) {
-                    continue;
-                }
                 let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
             }
             continue;
@@ -1440,14 +1438,12 @@ fn emit_reexports(
         // consistent with how overloads are represented everywhere else in
         // this producer, not a special case invented for re-exports.
         for (discriminant, tid) in target_ids.into_iter().enumerate() {
-            let reexport_id = TsId::new(
-                twins.canonical(&module.path).to_path_buf(),
+            let reexport_id = vacant_reexport_id(
+                out,
+                twins.canonical(&module.path),
                 export_name,
                 discriminant as u32,
             );
-            if out.is_declared(&reexport_id) {
-                continue;
-            }
             let target_ref: Ref<Module> = refer_declared(out, declared, tid);
             let _: Ref<Module> =
                 out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
@@ -1517,14 +1513,12 @@ fn emit_reexports(
                         continue;
                     }
                     expanded = true;
-                    let reexport_id = TsId::new(
-                        twins.canonical(&module.path).to_path_buf(),
+                    let reexport_id = vacant_reexport_id(
+                        out,
+                        twins.canonical(&module.path),
                         export_name,
                         discriminant as u32,
                     );
-                    if out.is_declared(&reexport_id) {
-                        continue;
-                    }
                     let target_ref: Ref<Module> = refer_declared(out, declared, target_id);
                     let _: Ref<Module> =
                         out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
@@ -1560,6 +1554,23 @@ fn reexport_symbol(module: &ModuleFacts, name: &str, start: u32, end: u32) -> Sy
         doc_links: Box::new([]),
         attrs: Box::new([]),
         cfg: None,
+    }
+}
+
+/// The first disc at or above `start` that this module has not already
+/// declared under `name`.
+///
+/// A local function and `export { bar as foo }` are different declarations.
+/// Skipping the reexport because disc 0 is taken drops it. Two paths that
+/// name one target still share an id: the export-name set emits only once.
+fn vacant_reexport_id(out: &Lowering<TsId>, module: &Path, name: &str, start: u32) -> TsId {
+    let mut disc = start;
+    loop {
+        let id = TsId::new(module.to_path_buf(), name, disc);
+        if !out.is_declared(&id) || disc == u32::MAX {
+            return id;
+        }
+        disc += 1;
     }
 }
 
@@ -1607,14 +1618,7 @@ fn emit_unexpanded_star(
             Box::<str>::from("$module"),
         ))
     };
-    let reexport_id = TsId::new(
-        twins.canonical(&module.path).to_path_buf(),
-        stem.as_str(),
-        0,
-    );
-    if out.is_declared(&reexport_id) {
-        return;
-    }
+    let reexport_id = vacant_reexport_id(out, twins.canonical(&module.path), stem.as_str(), 0);
     let sym = reexport_symbol(module, &stem, star.span_start, star.span_end);
     let _: Ref<Module> = out.declare_ref(reexport_id, parent, sym, target_ref);
 }
