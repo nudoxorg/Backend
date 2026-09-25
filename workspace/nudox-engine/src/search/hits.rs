@@ -430,6 +430,7 @@ fn collect_signature_hits(
     }
 
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut worst = 0usize;
 
     for pkg in packages {
         if !query.package_matches(pkg.lineage()) {
@@ -486,24 +487,32 @@ fn collect_signature_hits(
             let leaf: SharedStr = SharedStr::from(leaf_str);
             let qualified = qualified_display_name(indexes, intro, leaf_str, pkg_name);
 
-            candidates.push(Candidate {
-                row: HitRow {
-                    key,
-                    display_name: leaf,
-                    sig_preview,
-                    kind: KindTag::Known(disc),
-                    provenance: provenance.clone(),
-                    // A signature hit is an *exact structural* match: the
-                    // declaration really does name that type in that position.
-                    // So it takes the same 1.0 reference relevance an exact
-                    // name match takes, discounted by the same two quality
-                    // factors. There is nothing to tune here — every row in the
-                    // section satisfies every facet, so relevance cannot
-                    // separate them and visibility/kind are what remain.
-                    score: score_of(1.0, ir_entry.sym().visibility, disc),
+            // Same bounded top set as name search. A later, higher-ranked
+            // declaration replaces the current worst instead of retaining
+            // every match until the final truncate.
+            consider(
+                &mut candidates,
+                &mut worst,
+                limit,
+                Candidate {
+                    row: HitRow {
+                        key,
+                        display_name: leaf,
+                        sig_preview,
+                        kind: KindTag::Known(disc),
+                        provenance: provenance.clone(),
+                        // A signature hit is an *exact structural* match: the
+                        // declaration really does name that type in that position.
+                        // So it takes the same 1.0 reference relevance an exact
+                        // name match takes, discounted by the same two quality
+                        // factors. There is nothing to tune here — every row in the
+                        // section satisfies every facet, so relevance cannot
+                        // separate them and visibility/kind are what remain.
+                        score: score_of(1.0, ir_entry.sym().visibility, disc),
+                    },
+                    qualified,
                 },
-                qualified,
-            });
+            );
         }
     }
 
@@ -690,5 +699,68 @@ mod tests {
         super::consider(&mut kept, &mut worst, 1, candidate(0.9, "later", 2));
         assert_eq!(kept.len(), 1);
         assert_eq!(&*kept[0].row.display_name, "later");
+    }
+
+    /// The bounded top set is the same set a full sort would keep.
+    ///
+    /// Scores come from a fixed LCG so the check is a differential, not one
+    /// hand-picked pair. Restoring `push` + truncate still passes this; a
+    /// `consider` that drops a better row does not.
+    #[test]
+    fn bounded_top_set_matches_a_full_sort() {
+        fn candidate(score: f32, name: &str, n: u16) -> super::Candidate {
+            use nudox_ir::{
+                change::{EcosystemId, PackageLineageId, PackageName, StableRef},
+                kind::KindDiscriminant,
+            };
+
+            use crate::wire::{HitRow, KindTag, Provenance, SharedStr};
+
+            let mut raw = [0u8; 32];
+            raw[0] = (n >> 8) as u8;
+            raw[1] = n as u8;
+            super::Candidate {
+                row: HitRow {
+                    key: StableRef::new(
+                        PackageLineageId::new(EcosystemId::new("test"), PackageName::new("pkg")),
+                        IntroId::from_raw(raw),
+                    ),
+                    display_name: SharedStr::from(name),
+                    sig_preview: Vec::new(),
+                    kind: KindTag::Known(KindDiscriminant::Function),
+                    provenance: Provenance::TrustedLocal,
+                    score,
+                },
+                qualified: SharedStr::from(name),
+            }
+        }
+
+        let mut state = 0x1234_5678u32;
+        let mut specs = Vec::new();
+        for n in 0..200u16 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let score = (state % 10_000) as f32 / 10_000.0;
+            specs.push((score, format!("n{n}"), n));
+        }
+
+        let mut kept = Vec::new();
+        let mut worst = 0usize;
+        for (score, name, n) in &specs {
+            super::consider(&mut kept, &mut worst, 7, candidate(*score, name, *n));
+        }
+        kept.sort_by(super::compare_candidates);
+
+        let mut oracle: Vec<_> = specs
+            .iter()
+            .map(|(score, name, n)| candidate(*score, name, *n))
+            .collect();
+        oracle.sort_by(super::compare_candidates);
+        oracle.truncate(7);
+
+        assert_eq!(kept.len(), 7);
+        for (left, right) in kept.iter().zip(oracle.iter()) {
+            assert_eq!(left.row.key, right.row.key);
+            assert_eq!(left.row.score, right.row.score);
+        }
     }
 }
