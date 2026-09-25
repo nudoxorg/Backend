@@ -180,6 +180,7 @@ fn lower_ts_type_impl<'a>(
                 },
                 this_ty,
                 abstract_construct: false,
+                body_text: None,
                 span_start: span.start,
                 span_end: span.end,
             }))
@@ -394,6 +395,7 @@ fn lower_ts_type_impl<'a>(
                                 receiver: ReceiverKind::None,
                 this_ty: None,
                 abstract_construct: false,
+                body_text: None,
                                 span_start: span.start,
                                 span_end: span.end,
                             })),
@@ -473,6 +475,7 @@ fn lower_ts_type_impl<'a>(
                 receiver: ReceiverKind::None,
                 this_ty: None,
                 abstract_construct: c.r#abstract,
+                body_text: None,
                 span_start: span.start,
                 span_end: span.end,
             }))
@@ -720,6 +723,7 @@ fn signature_body<'a>(
         },
         this_ty,
         abstract_construct,
+        body_text: None,
         span_start: span.start,
         span_end: span.end,
     }
@@ -733,7 +737,7 @@ fn lower_formal_params<'a>(
     let mut out: Vec<ParamFact> = Vec::with_capacity(params.items.len());
 
     for param in &params.items {
-        let name = binding_pattern_name(&param.pattern);
+        let name = binding_pattern_name(&param.pattern, source);
         // Skip the `this` parameter pseudo-binding.
         if name.as_deref() == Some("this") {
             continue;
@@ -759,7 +763,7 @@ fn lower_formal_params<'a>(
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
-        let name = binding_pattern_name(&rest.rest.argument);
+        let name = binding_pattern_name(&rest.rest.argument, source);
         let span = rest.span();
         out.push(ParamFact {
             name: name.unwrap_or_else(|| "...rest".to_string()),
@@ -775,12 +779,15 @@ fn lower_formal_params<'a>(
     out
 }
 
-fn binding_pattern_name(pat: &oxc_ast::ast::BindingPattern<'_>) -> Option<String> {
+fn binding_pattern_name(
+    pat: &oxc_ast::ast::BindingPattern<'_>,
+    source: &str,
+) -> Option<String> {
     use oxc_ast::ast::BindingPattern;
     match pat {
         BindingPattern::BindingIdentifier(id) => Some(id.name.to_string()),
-        BindingPattern::AssignmentPattern(ap) => binding_pattern_name(&ap.left),
-        BindingPattern::ObjectPattern(_) => Some("{...}".to_string()),
-        BindingPattern::ArrayPattern(_) => Some("[...]".to_string()),
+        BindingPattern::AssignmentPattern(ap) => binding_pattern_name(&ap.left, source),
+        BindingPattern::ObjectPattern(pat) => Some(pat.span().source_text(source).to_string()),
+        BindingPattern::ArrayPattern(pat) => Some(pat.span().source_text(source).to_string()),
     }
 }

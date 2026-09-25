@@ -554,6 +554,7 @@ fn emit_interface(
             receiver: crate::typescript::extract::ReceiverKind::SharedRef,
             this_ty: None,
             abstract_construct: false,
+            body_text: None,
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
@@ -761,6 +762,7 @@ fn emit_class(
                     receiver: ReceiverKind::None,
                     this_ty: None,
             abstract_construct: false,
+            body_text: None,
                     span_start: member.span_start,
                     span_end: member.span_end,
                 };
@@ -807,6 +809,7 @@ fn emit_class(
             receiver: ReceiverKind::None,
             this_ty: None,
             abstract_construct: false,
+            body_text: None,
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
@@ -2230,6 +2233,10 @@ fn function_skeleton(f: &FunctionBody) -> String {
     );
     if f.abstract_construct {
         s.push_str("abstract-new;");
+    }
+    if let Some(body) = &f.body_text {
+        s.push_str(body);
+        s.push(';');
     }
     if let Some(this_ty) = &f.this_ty {
         s.push_str("this:");

@@ -572,14 +572,17 @@ fn require_specifier(expr: &Expression<'_>) -> Option<String> {
     }
 }
 
-fn require_bindings(body: &[Statement<'_>]) -> std::collections::HashMap<String, String> {
+fn require_bindings<'a>(
+    body: &'a [Statement<'a>],
+    source: &'a str,
+) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     for stmt in body {
         let Statement::VariableDeclaration(var) = stmt else {
             continue;
         };
         for declarator in &var.declarations {
-            let Some(name) = binding_pattern_name(&declarator.id) else {
+            let Some(name) = binding_pattern_name(&declarator.id, source) else {
                 continue;
             };
             let Some(init) = declarator.init.as_ref() else {
@@ -628,7 +631,7 @@ fn push_commonjs_value_decls<'a>(
 ) {
     use nudox_ir::entry::Visibility;
 
-    let bindings = require_bindings(body);
+    let bindings = require_bindings(body, source);
     for stmt in body {
         let Statement::ExpressionStatement(expr_stmt) = stmt else {
             continue;
@@ -1243,6 +1246,10 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
         receiver,
         this_ty,
         abstract_construct: false,
+        body_text: f
+            .body
+            .as_ref()
+            .map(|body| body.span().source_text(source).to_string()),
         span_start: span.start,
         span_end: span.end,
     }
@@ -1262,7 +1269,7 @@ fn lower_formal_parameters<'a>(
 
     let mut out: Vec<ParamFact> = Vec::with_capacity(items.len() + 1);
     for param in items {
-        let name = binding_pattern_name(&param.pattern).unwrap_or_else(|| "_".to_string());
+        let name = binding_pattern_name(&param.pattern, source).unwrap_or_else(|| "_".to_string());
         let ty = param.type_annotation.as_ref().map(|ann| match type_params {
             Some(set) => lower_ts_type_with_params(&ann.type_annotation, source, set),
             None => lower_ts_type(&ann.type_annotation, source),
@@ -1285,7 +1292,7 @@ fn lower_formal_parameters<'a>(
             .as_ref()
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
         let name =
-            binding_pattern_name(&rest.rest.argument).unwrap_or_else(|| "...rest".to_string());
+            binding_pattern_name(&rest.rest.argument, source).unwrap_or_else(|| "...rest".to_string());
         let span = rest.span();
         out.push(ParamFact {
             name,
@@ -1405,7 +1412,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
             if param.accessibility.is_none() && !param.readonly {
                 continue;
             }
-            let name = binding_pattern_name(&param.pattern).unwrap_or_else(|| "_".to_string());
+            let name = binding_pattern_name(&param.pattern, source).unwrap_or_else(|| "_".to_string());
             if !declared_field_names.insert(name.clone()) {
                 continue; // already declared as a PropertyDefinition
             }
@@ -1813,6 +1820,7 @@ fn lower_interface<'a>(
                     },
                     this_ty,
                     abstract_construct: false,
+                    body_text: None,
                     span_start: m_span.start,
                     span_end: m_span.end,
                 };
@@ -1890,6 +1898,7 @@ fn lower_interface<'a>(
                     },
                     this_ty,
                     abstract_construct: false,
+                    body_text: None,
                     span_start: c_span.start,
                     span_end: c_span.end,
                 });
@@ -1938,6 +1947,7 @@ fn lower_interface<'a>(
                     receiver: ReceiverKind::None,
                     this_ty: None,
                     abstract_construct: false,
+                    body_text: None,
                     span_start: cs_span.start,
                     span_end: cs_span.end,
                 });
@@ -2002,7 +2012,7 @@ fn lower_variable<'a>(
     let is_const = matches!(v.kind, VariableDeclarationKind::Const);
     let mut out = Vec::new();
     for d in &v.declarations {
-        let Some(name) = binding_pattern_name(&d.id) else {
+        let Some(name) = binding_pattern_name(&d.id, source) else {
             continue;
         };
 
@@ -2423,12 +2433,12 @@ fn ts_accessibility(acc: &Option<TSAccessibility>) -> Accessibility {
     }
 }
 
-fn binding_pattern_name(pat: &BindingPattern<'_>) -> Option<String> {
+fn binding_pattern_name(pat: &BindingPattern<'_>, source: &str) -> Option<String> {
     match pat {
         BindingPattern::BindingIdentifier(id) => Some(id.name.to_string()),
-        BindingPattern::AssignmentPattern(ap) => binding_pattern_name(&ap.left),
-        BindingPattern::ObjectPattern(_) => Some("{...}".to_string()),
-        BindingPattern::ArrayPattern(_) => Some("[...]".to_string()),
+        BindingPattern::AssignmentPattern(ap) => binding_pattern_name(&ap.left, source),
+        BindingPattern::ObjectPattern(pat) => Some(pat.span().source_text(source).to_string()),
+        BindingPattern::ArrayPattern(pat) => Some(pat.span().source_text(source).to_string()),
     }
 }
 

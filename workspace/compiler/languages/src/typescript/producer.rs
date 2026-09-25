@@ -741,6 +741,30 @@ mod tests {
                 "__static",
             ),
             (
+                "function-body",
+                "namespace N { export function f() { return 1; } }\n\
+                 namespace N { export function f() { return 2; } }\n",
+                "f",
+            ),
+            (
+                "method-body",
+                "namespace N { export class C { m() { return 1; } } }\n\
+                 namespace N { export class C { m() { return 2; } } }\n",
+                "m",
+            ),
+            (
+                "object-pattern",
+                "namespace N { export function f({ x }: { x: number }): void; }\n\
+                 namespace N { export function f({ y }: { x: number }): void; }\n",
+                "f",
+            ),
+            (
+                "array-pattern",
+                "namespace N { export function f([a]: number[]): void; }\n\
+                 namespace N { export function f([b]: number[]): void; }\n",
+                "f",
+            ),
+            (
                 "docs",
                 "namespace N { /** one */ export interface I { x: string; } }\n\
                  namespace N { /** two */ export interface I { x: string; } }\n",

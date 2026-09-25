@@ -327,6 +327,8 @@ pub struct FunctionBody {
     pub this_ty: Option<TypeOwned>,
     /// `abstract new` constructor types. Ordinary functions leave this false.
     pub abstract_construct: bool,
+    /// Source of the function body, when one was written.
+    pub body_text: Option<String>,
     /// Byte span of the declaring node: the `Function` AST node for a
     /// top-level function or a class method/constructor's value, or the
     /// whole signature node (`TSMethodSignature`, `TSCallSignatureDeclaration`,
