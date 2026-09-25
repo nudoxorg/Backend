@@ -19,14 +19,17 @@ use smol_str::SmolStr;
 
 use crate::search::ranking::dependents::DependencyRow;
 
-/// Count direct dependents the way [`crate::search::ranking::dependents::count_dependents`]
-/// does, but on interned ids.
+/// Count direct dependents the way
+/// [`crate::search::ranking::dependents::count_dependents`] does, but on
+/// interned ids.
 ///
 /// A package name counts once. Its dependencies are the union of every row
 /// for that name, so a later version can name a dependency the earlier row
 /// omitted. A self-edge is ignored. The returned map has one owned name per
 /// package that is depended on, not one per edge.
-pub fn count_dependents(rows: impl IntoIterator<Item = DependencyRow>) -> HashMap<(Language, SmolStr), u32> {
+pub fn count_dependents(
+    rows: impl IntoIterator<Item = DependencyRow>,
+) -> HashMap<(Language, SmolStr), u32> {
     count_slice(&rows.into_iter().collect::<Vec<_>>())
 }
 
@@ -41,15 +44,17 @@ pub fn count_slice(rows: &[DependencyRow]) -> HashMap<(Language, SmolStr), u32> 
     let mut seen_deps: Vec<Vec<u32>> = Vec::new();
     let mut counts: Vec<u32> = Vec::new();
     for row in rows {
-        let self_id = intern.id(row.ecosystem, row.name.as_str(), &mut counts);
+        let self_name = row.name.trim();
+        let self_id = intern.id(row.ecosystem, self_name, &mut counts);
         if (self_id as usize) >= seen_deps.len() {
             seen_deps.resize(self_id as usize + 1, Vec::new());
         }
         for dep in &row.dependencies {
-            if dep.as_str() == row.name.as_str() {
+            let Some(dep_name) = crate::record::counted_dependency_name(self_name, dep.as_str())
+            else {
                 continue;
-            }
-            let dep_id = intern.id(row.ecosystem, dep.as_str(), &mut counts);
+            };
+            let dep_id = intern.id(row.ecosystem, dep_name, &mut counts);
             let bucket = &mut seen_deps[self_id as usize];
             if let Err(pos) = bucket.binary_search(&dep_id) {
                 bucket.insert(pos, dep_id);
@@ -180,24 +185,29 @@ pub fn count_dependents_mapped(rows: &[DependencyRow]) -> HashMap<(Language, Smo
     let mut seen: HashSet<(Language, SmolStr, SmolStr)> = HashSet::new();
     let mut counts: HashMap<(Language, SmolStr), u32> = HashMap::new();
     for row in rows {
+        let package = row.name.trim();
         for dep in &row.dependencies {
-            if *dep == row.name {
+            let Some(dep_name) = crate::record::counted_dependency_name(package, dep.as_str())
+            else {
                 continue;
-            }
-            if seen.insert((row.ecosystem, row.name.clone(), dep.clone())) {
-                *counts.entry((row.ecosystem, dep.clone())).or_default() += 1;
+            };
+            let package_name = SmolStr::new(package);
+            let counted = SmolStr::new(dep_name);
+            if seen.insert((row.ecosystem, package_name, counted.clone())) {
+                *counts.entry((row.ecosystem, counted)).or_default() += 1;
             }
         }
     }
     counts
 }
 
-/// Indices of `scores` ordered by score descending, then by `name(i)` ascending.
+/// Indices of `scores` ordered by score descending, then by `name(i)`
+/// ascending.
 ///
-/// The score half is the bitwise inversion of [`f32::total_cmp`]'s ordering key,
-/// so NaN sorts as IEEE defines and a higher finite score still comes first.
-/// The name half is the ordinal of that name in ascending order, packed into
-/// the low 32 bits. Four counting-sort passes order the `u64` key.
+/// The score half is the bitwise inversion of [`f32::total_cmp`]'s ordering
+/// key, so NaN sorts as IEEE defines and a higher finite score still comes
+/// first. The name half is the ordinal of that name in ascending order, packed
+/// into the low 32 bits. Four counting-sort passes order the `u64` key.
 pub fn order_desc_score_asc_name<'a>(
     scores: &[f32],
     name_at: impl Fn(usize) -> &'a str,
@@ -275,6 +285,16 @@ mod tests {
     }
 
     #[test]
+    fn a_padded_name_matches_the_trimmed_count() {
+        let rows = vec![row("app", &[" serde ", "", "app", "  "])];
+        let lane = count_dependents(rows.clone());
+        let mapped = count_dependents_mapped(&rows);
+        assert_eq!(lane, mapped);
+        assert_eq!(lane.get(&(Language::Rust, SmolStr::new("serde"))), Some(&1));
+        assert_eq!(lane.len(), 1);
+    }
+
+    #[test]
     fn lane_matches_the_string_map() {
         let rows = vec![
             row("a", &["serde", "tokio"]),
@@ -341,7 +361,9 @@ mod tests {
                 std::hint::black_box(count_dependents_mapped(&rows));
             }
         });
-        eprintln!("cost case=lane/dependents rows=8000 loops={loops} lane_ns={lane_ns} map_ns={map_ns}");
+        eprintln!(
+            "cost case=lane/dependents rows=8000 loops={loops} lane_ns={lane_ns} map_ns={map_ns}"
+        );
         assert!(
             lane_ns + lane_ns / 2 < map_ns,
             "histogram {lane_ns} ns was not 1.5× under the cloning sweep {map_ns} ns"
