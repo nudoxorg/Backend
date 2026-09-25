@@ -1166,6 +1166,35 @@ mod tests {
     }
 
     #[test]
+    fn an_interface_property_does_not_take_a_method_discriminant() {
+        // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
+        // Method 2000 and property 0 are the same number.
+        let mut source_text = String::from("export interface Bag {\n  slot: number;\n");
+        for n in 0..2000 {
+            source_text.push_str(&format!("  m{n}(): void;\n"));
+        }
+        source_text.push_str("  slot(): void;\n}\n");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"wide-iface","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("index.d.ts"), &source_text).unwrap();
+        let source = PackageSource::new(dir.path(), "wide-iface", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("wide-iface"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("an interface property on the method lattice must seal");
+        let slots = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "slot")
+            .count();
+        assert_eq!(slots, 2, "the method and the property both survive");
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

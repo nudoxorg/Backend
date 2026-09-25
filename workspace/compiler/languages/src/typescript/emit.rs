@@ -475,7 +475,7 @@ fn emit_interface(
 
     // Emit properties as child Field entries.
     for (idx, prop) in body.properties.iter().enumerate() {
-        let prop_id = child_id(&id, &prop.name, 2_000_000 + idx as u32);
+        let prop_id = child_id(&id, &prop.name, interface_property_disc(body, idx));
         let prop_sym = Symbol {
             name: prop.name.clone(),
             visibility: accessibility_to_visibility(prop.modifiers.accessibility),
@@ -2352,6 +2352,36 @@ fn param_id_for(owner: &TsId, param_name: &str, index: u32) -> TsId {
         ),
         index,
     )
+}
+
+/// An interface property's discriminant.
+///
+/// The usual value is `2_000_000 + index`, so a property that never meets
+/// the method lattice keeps the id it already sealed with. Method
+/// discriminants are `index * 1000`, so method 2000 is the same number as
+/// property 0. Same name, same id, `finish` rejects the package. Step off
+/// that disc. The next integer is not a method disc: those are multiples
+/// of 1000.
+fn interface_property_disc(body: &InterfaceBody, prop_idx: usize) -> u32 {
+    let name = &body.properties[prop_idx].name;
+    let mut disc = 2_000_000 + prop_idx as u32;
+    loop {
+        let method_taken = body
+            .methods
+            .iter()
+            .enumerate()
+            .any(|(method_idx, method)| method.name == *name && (method_idx * 1000) as u32 == disc);
+        let property_taken = body.properties.iter().enumerate().any(|(other, prop)| {
+            other != prop_idx && prop.name == *name && 2_000_000 + other as u32 == disc
+        });
+        if !method_taken && !property_taken {
+            return disc;
+        }
+        if disc == u32::MAX {
+            return disc;
+        }
+        disc += 1;
+    }
 }
 
 /// A class field's discriminant.
