@@ -1,8 +1,9 @@
 //! Advisory ingestion (REGISTRYLESS-PLAN §12): an OSV JSON document becomes one
 //! [`AdvisorySource`] per affected package, then a [`CatalogOp::UpsertAdvisory`].
-//! [`parse_osv`] is the mapping. It does not fetch the feed and it does not
-//! resolve a package name to a stem; `stem_id` stays empty until that resolver
-//! runs. Git-range ancestry translation stays out of this module.
+//! [`parse_osv`] is the mapping. It does not fetch the feed. [`resolve_osv`]
+//! fills `stem_id` when the OSV ecosystem token maps onto a catalog language
+//! and the package name parses. Git-range ancestry translation stays out of
+//! this module.
 //!
 //! The mapping is deliberately mechanical: an [`AdvisoryWire`] as OSV would give
 //! it (id, affected slug, range, severity) becomes one `UpsertAdvisory` op, and
@@ -251,6 +252,60 @@ fn days_before_month(year: i64, month: u32) -> i64 {
     days
 }
 
+/// Map an OSV ecosystem token onto a catalog language.
+///
+/// The feed spells ecosystems as registry names (`crates.io`, `npm`, `PyPI`).
+/// An unrecognized token leaves the advisory unresolved.
+fn language_for_osv(token: &str) -> Option<crate::ecosystem::Language> {
+    use crate::ecosystem::Language;
+    match token {
+        "crates.io" | "crates" => Some(Language::Rust),
+        "npm" => Some(Language::Typescript),
+        "Go" => Some(Language::Go),
+        "PyPI" => Some(Language::Python),
+        "Maven" => Some(Language::Java),
+        "NuGet" => Some(Language::CSharp),
+        other => crate::ecosystem::Language::from_token(other),
+    }
+}
+
+/// Fill [`AdvisorySource::stem_id`] from the feed's ecosystem and package name.
+///
+/// The stem is the same `(language token, canonical name)` hash the catalog
+/// uses for a package. A name that does not parse, or an ecosystem this index
+/// does not speak, stays unresolved.
+pub fn resolve_stem(source: &mut AdvisorySource) -> bool {
+    use crate::ecosystem::LanguageExt;
+    let (Some(name), Some(ecosystem)) = (
+        source.affected_name.as_deref(),
+        source.affected_ecosystem.as_deref(),
+    ) else {
+        return false;
+    };
+    let Some(language) = language_for_osv(ecosystem) else {
+        return false;
+    };
+    let Some(parsed) = language.spec().parse_name(name) else {
+        return false;
+    };
+    let id = heart::identity::derive::package_id_from_parts([
+        language.as_token().as_bytes(),
+        parsed.canonical().as_bytes(),
+    ]);
+    source.stem_id = Some(PackageStemId::from_uuid(*id.as_uuid()));
+    true
+}
+
+/// Parse an OSV document and resolve every affected package that this index
+/// can name.
+pub fn resolve_osv(body: &[u8], recorded_at: i64) -> Result<Vec<AdvisorySource>, String> {
+    let mut sources = parse_osv(body, recorded_at)?;
+    for source in &mut sources {
+        resolve_stem(source);
+    }
+    Ok(sources)
+}
+
 pub fn advisory_listing_event(version: PackageId, valid_from: i64, upstream_id: &str) -> CatalogOp {
     CatalogOp::SetListing {
         version,
@@ -301,5 +356,40 @@ mod tests {
         let sources = parse_osv(body, 9).expect("osv");
         assert_eq!(sources[0].version_range.as_deref(), Some("1.1.2,1.0.0"));
         assert_eq!(sources[0].valid_from, 9);
+    }
+
+    #[test]
+    fn resolve_osv_assigns_one_stem_per_language_and_keeps_unknown_ecosystems_open() {
+        let body = br#"{
+            "id": "GHSA-9",
+            "withdrawn": "2024-01-01T00:00:00Z",
+            "affected": [
+                {"package": {"ecosystem": "crates.io", "name": "Serde_JSON"}},
+                {"package": {"ecosystem": "crates.io", "name": "serde-json"}},
+                {"package": {"ecosystem": "npm", "name": "serde-json"}},
+                {"package": {"ecosystem": "Packagist", "name": "serde-json"}},
+                {"package": {"ecosystem": "crates.io", "name": "not a crate"}}
+            ]
+        }"#;
+        let sources = resolve_osv(body, 1).expect("resolve");
+        assert_eq!(sources.len(), 5);
+        let rust_a = sources[0].stem_id.expect("Serde_JSON resolves");
+        let rust_b = sources[1].stem_id.expect("serde-json resolves");
+        assert_eq!(rust_a, rust_b, "crates.io folds case and underscores");
+        let npm = sources[2].stem_id.expect("npm resolves");
+        assert_ne!(npm, rust_a, "the same spelling in two ecosystems is two stems");
+        assert!(sources[3].stem_id.is_none(), "an unknown ecosystem stays unresolved");
+        assert!(sources[4].stem_id.is_none(), "a name that fails the grammar stays unresolved");
+        assert!(sources[0].valid_to.is_some(), "withdrawal still resolves");
+        let direct = {
+            use crate::ecosystem::{Language, LanguageExt};
+            let parsed = Language::Rust.spec().parse_name("serde-json").expect("parse");
+            let id = heart::identity::derive::package_id_from_parts([
+                Language::Rust.as_token().as_bytes(),
+                parsed.canonical().as_bytes(),
+            ]);
+            PackageStemId::from_uuid(*id.as_uuid())
+        };
+        assert_eq!(rust_a, direct);
     }
 }
