@@ -32,7 +32,7 @@ fn write_packages() -> (tempfile::TempDir, tempfile::TempDir) {
     .unwrap();
     fs::write(
         ts.path().join("index.d.ts"),
-        "export class B {}\nexport class A extends B {}\nexport class AxiosResponse {}\nexport function f(): AxiosResponse;\n",
+        "export class B {}\nexport class A extends B {}\nexport class AxiosResponse {}\nexport function f(): AxiosResponse;\nexport interface Marker {}\n",
     )
     .unwrap();
     fs::create_dir(ts.path().join("cjs")).unwrap();
@@ -278,10 +278,113 @@ async fn one_conversation_across_packages_search_read_refs_and_graph() {
 
     let subtypes = graph(&tools, "B", "subtypes").await;
     assert_relation(&subtypes, "A", "subtypes");
+    let subtypes_again = graph(&tools, "B", "subtypes").await;
+    assert_eq!(
+        subtypes.to_markdown(),
+        subtypes_again.to_markdown(),
+        "the same graph query on the next turn must be the same page"
+    );
     let returned = graph(&tools, "AxiosResponse", "returnedBy").await;
     assert_relation(&returned, "f", "returnedBy");
+    let returned_again = graph(&tools, "AxiosResponse", "returnedBy").await;
+    assert_eq!(returned.to_markdown(), returned_again.to_markdown());
+    for (page, edge) in [(&subtypes, "subtypes"), (&returned, "returnedBy")] {
+        let tokens = estimated_text_tokens(&page.to_markdown());
+        assert!(
+            tokens < 800,
+            "{edge} page is {tokens} tokens; one edge of one symbol must stay small:\n{}",
+            page.to_markdown()
+        );
+    }
 
-    let card_tokens = estimated_text_tokens(nudox_engine::mcp::SCHEMA_CARD);
+    let child_hits = tools
+        .do_unified_search(SearchSymbolsArgs {
+            query: "A".to_owned(),
+            kinds: Some(vec!["Record".to_owned()]),
+            packages: Some(vec![npm()]),
+            limit: Some(20),
+            cursor: None,
+        })
+        .await
+        .expect("search the subtype named by the graph turn");
+    let child_page = child_hits.to_markdown();
+    let child_tokens = estimated_text_tokens(&child_page);
+    assert!(
+        child_tokens < 1_500,
+        "search of the graph result is {child_tokens} tokens:\n{child_page}"
+    );
+    let child = child_hits
+        .hits
+        .iter()
+        .find(|hit| &*hit.hit.display_name == "A")
+        .expect("the subtype A from the previous turn must be a search hit");
+    let child_key = SymbolKeyDto::from_wire(&child.hit.key);
+    let child_read = tools
+        .do_read(ReadArgs {
+            keys: vec![child_key].into(),
+            format: SymbolFormat::Source,
+        })
+        .await
+        .expect("read the subtype from the graph turn");
+    let child_source = child_read.symbols[0].source.as_deref().unwrap_or("");
+    assert!(
+        child_source.contains("extends B"),
+        "reading the graph result must show the relation, not only the name: {child_source}"
+    );
+    assert!(child_source.len() < 400, "one class must not dump the file: {child_source}");
+
+    let refs_again = tools
+        .do_refs(RefsArgs {
+            key: SymbolKeyDto::from_wire(&f_hits[0].hit.key),
+            direction: RefsDirection::Out,
+            limit: Some(20),
+            cursor: None,
+        })
+        .await
+        .expect("refs out again");
+    assert_eq!(
+        refs_page,
+        refs_again.to_markdown(),
+        "refs of the same key on the next turn must be the same page"
+    );
+    let refs_tokens = estimated_text_tokens(&refs_page);
+    assert!(
+        refs_tokens < 800,
+        "refs of one function is {refs_tokens} tokens:\n{refs_page}"
+    );
+
+    let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), "Marker".to_owned());
+    let implementors = tools
+        .do_graph_query(GraphQueryArgs {
+            query: "{
+                  Symbols {
+                    ... on Trait {
+                      name @filter(op: \"=\", value: [\"$name\"])
+                      implementors { name @output }
+                    }
+                  }
+                }"
+            .to_owned(),
+            args: Some(args),
+            limit: Some(20),
+            cursor: None,
+        })
+        .await
+        .expect("implementors is a Trait edge and must parse");
+    let implementors_page = implementors.to_markdown();
+    assert!(
+        implementors_page.contains("~graph:edge_empty(implementors")
+            && implementors_page.contains("subtypes"),
+        "TypeScript implementors is Rust-only and must point at subtypes:\n{implementors_page}"
+    );
+
+    let card = nudox_engine::mcp::SCHEMA_CARD;
+    assert!(
+        card.contains("subtypes") && card.contains("returnedBy"),
+        "the schema card must name the edges this conversation queried"
+    );
+    let card_tokens = estimated_text_tokens(card);
     let sdl_tokens = estimated_text_tokens(nudox_engine::mcp::SCHEMA_SDL);
     assert!(
         card_tokens * 4 < sdl_tokens,
