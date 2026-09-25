@@ -83,6 +83,78 @@ impl<M: EmbeddingModel> EmbeddingCache<M> {
         Ok(embedding)
     }
 
+    /// Resolve `texts` in order. Cache hits are not embedded. Identical misses
+    /// share one vector. The embedder sees only the distinct misses, in chunks
+    /// of its `max_batch`.
+    pub async fn get_or_embed_batch<E: Embedder<Model = M>>(
+        &self,
+        embedder: &E,
+        role: EmbedRole,
+        texts: &[&str],
+    ) -> Result<Vec<Embedding<M>>, EmbedError> {
+        use std::collections::HashMap;
+
+        let model = M::id();
+        let mut slots: Vec<Option<Embedding<M>>> = Vec::with_capacity(texts.len());
+        let mut missing: Vec<(EmbeddingKey, String)> = Vec::new();
+        let mut missing_at: Vec<Option<usize>> = Vec::with_capacity(texts.len());
+        let mut seen: HashMap<EmbeddingKey, usize> = HashMap::new();
+
+        for text in texts {
+            let key = EmbeddingKey::new(model.clone(), role, text);
+            if let Some(hit) = self.inner.get(&key).await {
+                slots.push(Some(hit));
+                missing_at.push(None);
+                continue;
+            }
+            slots.push(None);
+            if let Some(&index) = seen.get(&key) {
+                missing_at.push(Some(index));
+                continue;
+            }
+            let index = missing.len();
+            seen.insert(key.clone(), index);
+            missing.push((key, (*text).to_owned()));
+            missing_at.push(Some(index));
+        }
+
+        if !missing.is_empty() {
+            let max_batch = embedder.runtime().max_batch.max(1);
+            let mut embedded: Vec<Embedding<M>> = Vec::with_capacity(missing.len());
+            for chunk in missing.chunks(max_batch) {
+                let chunk_texts: Vec<&str> = chunk.iter().map(|(_, text)| text.as_str()).collect();
+                let batch = embedder.embed_batch(&chunk_texts, role).await?;
+                if batch.len() != chunk.len() {
+                    return Err(EmbedError::Backend(format!(
+                        "embed_batch returned {} vectors for {} texts",
+                        batch.len(),
+                        chunk.len()
+                    )));
+                }
+                for ((key, _), embedding) in chunk.iter().zip(batch) {
+                    self.inner.insert(key.clone(), embedding.clone()).await;
+                    embedded.push(embedding);
+                }
+            }
+            for (slot, miss) in slots.iter_mut().zip(missing_at) {
+                if let Some(index) = miss {
+                    *slot = Some(embedded[index].clone());
+                }
+            }
+        }
+
+        let mut resolved = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let Some(embedding) = slot else {
+                return Err(EmbedError::Backend(
+                    "an embedding slot was left empty".to_owned(),
+                ));
+            };
+            resolved.push(embedding);
+        }
+        Ok(resolved)
+    }
+
     /// Best-effort peek without embedding — returns `None` on a miss.
     pub async fn get(&self, key: &EmbeddingKey) -> Option<Embedding<M>> {
         self.inner.get(key).await
@@ -119,5 +191,91 @@ mod tests {
         let k1 = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);
         let k2 = EmbeddingKey::new(model, EmbedRole::Query, text);
         assert_eq!(k1, k2);
+    }
+
+    /// A repeated miss is one embed. A text already cached is not embedded.
+    /// The returned order matches the input, including the repeat.
+    #[tokio::test]
+    async fn batch_embeds_only_distinct_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use async_trait::async_trait;
+
+        use crate::vector::{EmbedError, EmbedRole, EmbedRuntimeInfo, Embedder, Embedding};
+
+        struct Counting {
+            calls: AtomicUsize,
+            texts: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Embedder for Counting {
+            type Model = JinaCodeV2;
+
+            async fn embed(
+                &self,
+                text: &str,
+                role: EmbedRole,
+            ) -> Result<Embedding<JinaCodeV2>, EmbedError> {
+                let mut batch = self.embed_batch(&[text], role).await?;
+                Ok(batch.pop().expect("one vector"))
+            }
+
+            async fn embed_batch(
+                &self,
+                texts: &[&str],
+                _role: EmbedRole,
+            ) -> Result<Vec<Embedding<JinaCodeV2>>, EmbedError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.texts.fetch_add(texts.len(), Ordering::SeqCst);
+                texts
+                    .iter()
+                    .map(|text| {
+                        let mut values = vec![0.0; JinaCodeV2::DIMENSIONS];
+                        values[0] = 1.0;
+                        values[1] = text.len() as f32;
+                        Embedding::from_vec(values)
+                    })
+                    .collect()
+            }
+
+            fn runtime(&self) -> EmbedRuntimeInfo {
+                EmbedRuntimeInfo {
+                    model_id: JinaCodeV2::id(),
+                    accel: crate::vector::AccelKind::Cpu,
+                    durable_canonical: false,
+                    max_batch: 8,
+                    max_seq_len: 8,
+                    weights_sha256: None,
+                    ort_package_id: "counting".into(),
+                }
+            }
+        }
+
+        let cache = EmbeddingCache::<JinaCodeV2>::new(16);
+        let embedder = Counting {
+            calls: AtomicUsize::new(0),
+            texts: AtomicUsize::new(0),
+        };
+        let cached = EmbeddingKey::new(JinaCodeV2::id(), EmbedRole::Document, "cached");
+        cache
+            .get_or_embed(cached, &embedder, "cached")
+            .await
+            .expect("seed");
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 1);
+
+        let vectors = cache
+            .get_or_embed_batch(
+                &embedder,
+                EmbedRole::Document,
+                &["fresh", "cached", "fresh"],
+            )
+            .await
+            .expect("batch");
+        assert_eq!(vectors.len(), 3);
+        assert_eq!(vectors[0], vectors[2]);
+        assert_ne!(vectors[0], vectors[1]);
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(embedder.texts.load(Ordering::SeqCst), 2);
     }
 }

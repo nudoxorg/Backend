@@ -14,7 +14,7 @@ use std::{sync::Arc, time::Duration};
 use crate::server::registry::coordination::{OutboxEntry, OutboxOp, SinkKind};
 use heart::PackageId;
 use registry::vector::{
-    EmbedRole, EmbeddingCache, EmbeddingKey, EmbeddingModel, PointId, VectorPoint, VectorStore,
+    EmbedRole, EmbeddingCache, EmbeddingModel, PointId, VectorPoint, VectorStore,
 };
 
 use crate::server::{
@@ -283,14 +283,16 @@ async fn materialize_vector<M: EmbeddingModel>(
         let guard = ledger.lock().unwrap_or_else(|poison| poison.into_inner());
         symbols
             .iter()
-            .filter(|symbol| {
+            .filter_map(|symbol| {
                 let fingerprint = crate::frontier::vector::symbol_fingerprint(
                     &symbol.package.as_uuid().to_string(),
                     &symbol.id.as_uuid().to_string(),
                     model.as_str(),
                     symbol.name.fully_qualified.as_str(),
                 );
-                guard.needs_write(&fingerprint)
+                guard
+                    .needs_write(&fingerprint)
+                    .then_some((symbol, fingerprint))
             })
             .collect()
     };
@@ -298,41 +300,32 @@ async fn materialize_vector<M: EmbeddingModel>(
         return Ok(());
     }
 
-    let mut pending = Vec::with_capacity(due.len());
-    for symbol in due {
-        let text = symbol.name.fully_qualified.as_str();
-        let embedding = cache
-            .get_or_embed(
-                EmbeddingKey::new(M::id(), EmbedRole::Document, text),
-                embedder,
-                text,
-            )
-            .await
-            .map_err(|error| crate::server::error::ServerError::from(error))?;
-        let fingerprint = crate::frontier::vector::symbol_fingerprint(
-            &symbol.package.as_uuid().to_string(),
-            &symbol.id.as_uuid().to_string(),
-            model.as_str(),
-            text,
-        );
-        pending.push((fingerprint, VectorPoint {
+    let texts: Vec<&str> = due
+        .iter()
+        .map(|(symbol, _)| symbol.name.fully_qualified.as_str())
+        .collect();
+    let embeddings = cache
+        .get_or_embed_batch(embedder, EmbedRole::Document, &texts)
+        .await
+        .map_err(|error| crate::server::error::ServerError::from(error))?;
+
+    let mut points = Vec::with_capacity(due.len());
+    let mut committed = Vec::with_capacity(due.len());
+    for ((symbol, fingerprint), embedding) in due.into_iter().zip(embeddings) {
+        committed.push(fingerprint);
+        points.push(VectorPoint {
             id: PointId::from_symbol(&symbol.id),
             vector: embedding,
             payload: crate::server::bakery::symbol_payload(symbol),
-        }));
+        });
     }
 
-    let points: Vec<_> = pending.iter().map(|(_, point)| point.clone()).collect();
     stores
         .semantics
         .upsert(points)
         .await
         .map_err(|error| crate::server::error::ServerError::from(error))?;
 
-    let committed: Vec<_> = pending
-        .iter()
-        .map(|(fingerprint, _)| fingerprint.clone())
-        .collect();
     {
         let scratch = scratch.lock().unwrap_or_else(|poison| poison.into_inner());
         scratch.record_vector_points(&committed).map_err(|error| {
