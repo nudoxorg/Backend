@@ -943,6 +943,9 @@ fn declare_alias_params(
             declare_nested_params(alias, owner, &param.name, ty, out, names);
         }
     }
+    if let Some(ret) = &function.return_type {
+        declare_nested_params(alias, owner, "return", ret, out, names);
+    }
 }
 
 /// Bindings inside a parameter's type. A callback `(cb: ({ left }) => void)`
