@@ -260,3 +260,48 @@ mod l51_proc_macro_degraded {
         );
     }
 }
+
+#[cfg(test)]
+mod medium_crates {
+    use super::RustProducer;
+    use crate::{produce, PackageSource};
+    use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
+    use nudox_ir::foreign::Unlinked;
+
+    /// serde 1.0.229 and serde_core 1.0.229, each as its own package.
+    /// Crates live under `/tmp/medium/crates`.
+    #[test]
+    #[ignore = "extract serde 1.0.229 and serde_core 1.0.229 under /tmp/medium/crates"]
+    fn serde_1_0_229_and_serde_core_seal() {
+        for (dir, name) in [
+            ("serde-1.0.229", "serde"),
+            ("serde_core-1.0.229", "serde_core"),
+        ] {
+            let root = std::path::PathBuf::from("/tmp/medium/crates").join(dir);
+            let source = PackageSource::new(&root, name, "1.0.229");
+            let lineage =
+                PackageLineageId::new(EcosystemId::new("crates"), PackageName::new(name));
+            let produced = produce(&RustProducer::default(), &source, &lineage, &Unlinked)
+                .unwrap_or_else(|error| panic!("{name} failed to seal: {error}"));
+            assert!(
+                produced.table.iter().any(|(_, entry)| {
+                    entry.sym().name == "Serialize" || entry.sym().name == "Serializer"
+                }),
+                "{name} must declare Serialize or Serializer"
+            );
+            if name == "serde" {
+                let points_at_core = produced.table.iter().any(|(_, entry)| {
+                    matches!(
+                        entry.kind(),
+                        nudox_ir::entry::EntryInner::Reference(nudox_ir::index::Ref::Foreign { key, .. })
+                            if key.origin.lineage().is_some_and(|lineage| lineage.name.as_str() == "serde_core")
+                    )
+                });
+                assert!(
+                    points_at_core,
+                    "serde must name serde_core as a foreign package, not as an undeclared local"
+                );
+            }
+        }
+    }
+}

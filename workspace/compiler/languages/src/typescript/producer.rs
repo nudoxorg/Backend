@@ -557,6 +557,49 @@ mod tests {
         }
     }
 
+    /// axios 1.6.7 plus the three packages its manifest names.
+    /// Extract them under `/tmp/medium/npm/src` before running.
+    #[test]
+    #[ignore = "extract axios 1.6.7 and its dependencies under /tmp/medium/npm/src"]
+    fn axios_1_6_7_and_its_dependencies_seal() {
+        let root = std::path::PathBuf::from("/tmp/medium/npm/src");
+        let mut failures = Vec::new();
+        let mut sealed = Vec::new();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let path = entry.unwrap().path();
+            let manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path.join("package.json")).unwrap())
+                    .unwrap();
+            let name = manifest["name"].as_str().unwrap().to_string();
+            let version = manifest["version"].as_str().unwrap().to_string();
+            let source = PackageSource::new(&path, name.clone(), version);
+            let lineage =
+                PackageLineageId::new(EcosystemId::new("npm"), PackageName::new(name.clone()));
+            match produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked) {
+                Ok(produced) => {
+                    assert!(
+                        produced.table.iter().any(|(_, entry)| !entry.sym().name.is_empty()),
+                        "{name} sealed with no named declaration"
+                    );
+                    sealed.push(name);
+                }
+                Err(error) => {
+                    let detail = std::error::Error::source(&error)
+                        .map(|source| source.to_string())
+                        .unwrap_or_else(|| error.to_string());
+                    failures.push(format!("{name}: {detail}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        for required in ["axios", "follow-redirects", "form-data", "proxy-from-env"] {
+            assert!(
+                sealed.iter().any(|name| name == required),
+                "missing {required} in {sealed:?}"
+            );
+        }
+    }
+
     /// The 21 packages that used to die in `Lowering::finish`. Extract each
     /// latest npm tarball under `/tmp/npm21/src/<name>` before running.
     /// Not part of the default gate: the tarballs are not in the repo.
