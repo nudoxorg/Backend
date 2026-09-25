@@ -42,7 +42,7 @@ use super::{
     ExportTable, FunctionBody, ImportFact, ImportName, IndexSignatureFact, IndirectExport,
     InterfaceBody, LocalExport, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts,
     NamespaceBody, OccurrenceFact, OccurrenceKind, ParamFact, PropertyFact, ReceiverKind,
-    SignatureKind, StarExport, StaticBody, TypeAliasBody, VariantFact, jsdoc,
+    SignatureKind, StarExport, StaticBody, TypeAliasBody, TypeOwned, VariantFact, jsdoc,
     types::{lower_ts_type, lower_ts_type_with_params, lower_type_params},
 };
 
@@ -831,6 +831,7 @@ fn push_commonjs_object_properties<'a>(
             body: DeclBody::Const(ConstBody {
                 ty: None,
                 value: Some(value),
+                satisfies: None,
             }),
             module: path.to_path_buf(),
             span_start: span.start,
@@ -1437,6 +1438,7 @@ fn export_assignment<'a>(
             DeclBody::Const(ConstBody {
                 ty: None,
                 value: Some(other.span().source_text(source).to_string()),
+                satisfies: None,
             }),
         ),
     };
@@ -1763,6 +1765,7 @@ fn extract_default_export<'a>(
                 body: DeclBody::Const(ConstBody {
                     ty: None,
                     value: Some(span.source_text(source).to_string()),
+                    satisfies: None,
                 }),
                 module: path.to_path_buf(),
                 span_start: span.start,
@@ -2664,6 +2667,21 @@ fn lower_enum<'a>(e: &TSEnumDeclaration<'a>, source: &'a str) -> EnumBody {
     EnumBody { is_const, variants }
 }
 
+/// The type in `expr satisfies T`, through parentheses. Not an `as` cast:
+/// a cast replaces the expression's type, and that type is not stored here.
+fn satisfies_type<'a>(expr: &Expression<'a>, source: &'a str) -> Option<TypeOwned> {
+    let mut current = expr;
+    loop {
+        match current {
+            Expression::ParenthesizedExpression(inner) => current = &inner.expression,
+            Expression::TSSatisfiesExpression(satisfied) => {
+                return Some(lower_ts_type(&satisfied.type_annotation, source));
+            }
+            _ => return None,
+        }
+    }
+}
+
 fn lower_variable<'a>(
     v: &VariableDeclaration<'a>,
     source: &'a str,
@@ -2719,6 +2737,7 @@ fn lower_variable<'a>(
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
+        let satisfied = d.init.as_ref().and_then(|e| satisfies_type(e, source));
         let value = d
             .init
             .as_ref()
@@ -2740,6 +2759,7 @@ fn lower_variable<'a>(
                 DeclBody::Const(ConstBody {
                     ty: ty.clone(),
                     value: value.clone(),
+                    satisfies: satisfied.clone(),
                 })
             } else {
                 DeclBody::Static(StaticBody {

@@ -1536,6 +1536,9 @@ fn emit_const(
     if let Some(ty) = &body.ty {
         declare_nested_params(&id, &id, "ty", ty, out, names);
     }
+    if let Some(ty) = &body.satisfies {
+        declare_nested_params(&id, &id, "satisfies", ty, out, names);
+    }
 }
 
 fn emit_static(
@@ -3253,7 +3256,9 @@ fn body_match(a: &DeclBody, b: &DeclBody) -> bool {
             generics_match(&a.generics, &b.generics) && type_match(&a.target, &b.target)
         }
         (DeclBody::Const(a), DeclBody::Const(b)) => {
-            opt_type_match(a.ty.as_ref(), b.ty.as_ref()) && opt_empty(&a.value, &b.value)
+            opt_type_match(a.ty.as_ref(), b.ty.as_ref())
+                && opt_type_match(a.satisfies.as_ref(), b.satisfies.as_ref())
+                && opt_empty(&a.value, &b.value)
         }
         (DeclBody::Static(a), DeclBody::Static(b)) => {
             a.is_mutable == b.is_mutable

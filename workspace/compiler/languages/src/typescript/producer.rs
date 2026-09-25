@@ -2697,6 +2697,38 @@ mod tests {
     }
 
     #[test]
+    fn a_satisfies_clause_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"satisfies-fn","version":"1.0.0","types":"index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.ts"),
+            "export const call = ((s: string) => s) satisfies (left: number) => void;\n\
+             export const held: (right: number) => void = ((s: string) => s) satisfies (mid: number) => void;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "satisfies-fn", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("satisfies-fn"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function in a satisfies clause must seal");
+        for name in ["left", "right", "mid"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn an_infer_constraint_declares_each_function_binding() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

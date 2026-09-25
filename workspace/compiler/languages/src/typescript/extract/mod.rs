@@ -351,6 +351,9 @@ pub enum ReceiverKind {
 pub struct ConstBody {
     pub ty: Option<TypeOwned>,
     pub value: Option<String>,
+    /// The type in `expr satisfies T`. Not the const's declared type: `T` only
+    /// checks the initializer. Walked so a function inside `T` is declared.
+    pub satisfies: Option<TypeOwned>,
 }
 
 #[derive(Debug)]
