@@ -284,15 +284,23 @@ async fn materialize_vector<M: EmbeddingModel>(
         symbols
             .iter()
             .filter_map(|symbol| {
-                let fingerprint = crate::frontier::vector::symbol_fingerprint(
-                    &symbol.package.as_uuid().to_string(),
-                    &symbol.id.as_uuid().to_string(),
+                let hash = crate::frontier::vector::content_fingerprint(
                     model.as_str(),
                     symbol.name.fully_qualified.as_str(),
                 );
                 guard
-                    .needs_write(&fingerprint)
-                    .then_some((symbol, fingerprint))
+                    .needs_write_ids(symbol.package.as_uuid(), symbol.id.as_uuid(), &hash)
+                    .then(|| {
+                        (
+                            symbol,
+                            crate::frontier::vector::symbol_fingerprint(
+                                &symbol.package.as_uuid().to_string(),
+                                &symbol.id.as_uuid().to_string(),
+                                model.as_str(),
+                                symbol.name.fully_qualified.as_str(),
+                            ),
+                        )
+                    })
             })
             .collect()
     };

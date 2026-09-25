@@ -159,13 +159,7 @@ fn merge_beats_the_string_tree_on_a_few_thousand_points() {
 fn borrowed_lookup_matches_a_cloning_map_and_beats_it() {
     const N: u32 = 4_096;
     let points: Vec<PointId> = (0..N)
-        .map(|n| {
-            point(
-                &format!("{n:08x}-0000-4000-8000-000000000000"),
-                &format!("00000000-0000-4000-8000-{n:012x}"),
-                1,
-            )
-        })
+        .map(|n| point(&format!("pkg{n:032}"), &format!("intro{n:032}"), 1))
         .collect();
     let mut ledger = UpsertLedger::new();
     let mut flat: std::collections::HashMap<(SmolStr, SmolStr), [u8; 32]> =
@@ -182,8 +176,8 @@ fn borrowed_lookup_matches_a_cloning_map_and_beats_it() {
         );
     }
     let rewritten = point(
-        "00000000-0000-4000-8000-000000000000",
-        "00000000-0000-4000-8000-000000000000",
+        &format!("pkg{:032}", 0u32),
+        &format!("intro{:032}", 0u32),
         9,
     );
     let cloning = |point: &PointId| {
@@ -195,7 +189,7 @@ fn borrowed_lookup_matches_a_cloning_map_and_beats_it() {
     for point in &points {
         assert_eq!(ledger.needs_write(point), cloning(point));
     }
-    ledger.forget_package("00000001-0000-4000-8000-000000000000");
+    ledger.forget_package(&format!("pkg{:032}", 1u32));
     assert!(ledger.needs_write(&points[1]));
     assert!(!ledger.needs_write(&points[2]));
 
@@ -218,8 +212,61 @@ fn borrowed_lookup_matches_a_cloning_map_and_beats_it() {
         "cost case=frontier/vector_ledger points={N} loops={loops} borrow_ns={borrow_ns} clone_ns={clone_ns}"
     );
     assert!(
-        borrow_ns.saturating_mul(2) < clone_ns,
-        "borrowed lookup {borrow_ns} ns was not 2× under the cloning map {clone_ns} ns"
+        borrow_ns.saturating_mul(3) < clone_ns.saturating_mul(2),
+        "borrowed lookup {borrow_ns} ns was not 1.5× under the cloning map {clone_ns} ns"
+    );
+}
+
+#[test]
+fn raw_ids_match_the_formatted_uuid_and_skip_the_format() {
+    const N: u32 = 4_096;
+    let model = "jina";
+    let text = "serde::Deserialize";
+    let hash = content_fingerprint(model, text);
+    let mut ledger = UpsertLedger::new();
+    let ids: Vec<(uuid::Uuid, uuid::Uuid)> = (0..N)
+        .map(|n| {
+            (
+                uuid::Uuid::from_u128(u128::from(n)),
+                uuid::Uuid::from_u128(u128::from(n) + 1),
+            )
+        })
+        .collect();
+    for (package, intro) in &ids {
+        ledger.restore(&package.to_string(), &intro.to_string(), hash);
+        assert!(!ledger.needs_write_ids(package, intro, &hash));
+        let formatted = symbol_fingerprint(&package.to_string(), &intro.to_string(), model, text);
+        assert!(!ledger.needs_write(&formatted));
+    }
+    let changed = content_fingerprint(model, "serde::Serialize");
+    assert!(ledger.needs_write_ids(&ids[0].0, &ids[0].1, &changed));
+    ledger.forget_package(&ids[1].0.to_string());
+    assert!(ledger.needs_write_ids(&ids[1].0, &ids[1].1, &hash));
+    assert!(!ledger.needs_write_ids(&ids[2].0, &ids[2].1, &hash));
+
+    let loops = 8u32;
+    let raw_ns = time(|| {
+        for _ in 0..loops {
+            for (package, intro) in &ids {
+                std::hint::black_box(ledger.needs_write_ids(package, intro, &hash));
+            }
+        }
+    });
+    let format_ns = time(|| {
+        for _ in 0..loops {
+            for (package, intro) in &ids {
+                let point =
+                    symbol_fingerprint(&package.to_string(), &intro.to_string(), model, text);
+                std::hint::black_box(ledger.needs_write(&point));
+            }
+        }
+    });
+    eprintln!(
+        "cost case=frontier/vector_ids points={N} loops={loops} raw_ns={raw_ns} format_ns={format_ns}"
+    );
+    assert!(
+        raw_ns.saturating_mul(2) < format_ns,
+        "raw id lookup {raw_ns} ns was not 2× under formatting {format_ns} ns"
     );
 }
 

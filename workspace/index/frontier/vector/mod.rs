@@ -35,15 +35,21 @@ pub struct PointId {
 /// the work this fingerprint exists to avoid.
 #[must_use]
 pub fn symbol_fingerprint(package: &str, intro_hex: &str, model: &str, text: &str) -> PointId {
+    PointId {
+        package: SmolStr::new(package),
+        intro_hex: SmolStr::new(intro_hex),
+        content_hash: content_fingerprint(model, text),
+    }
+}
+
+/// BLAKE3 of the model id and the text. The embedding bytes are not an input.
+#[must_use]
+pub fn content_fingerprint(model: &str, text: &str) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(model.as_bytes());
     hasher.update(&[0xff]);
     hasher.update(text.as_bytes());
-    PointId {
-        package: SmolStr::new(package),
-        intro_hex: SmolStr::new(intro_hex),
-        content_hash: *hasher.finalize().as_bytes(),
-    }
+    *hasher.finalize().as_bytes()
 }
 
 impl PointId {
@@ -145,34 +151,75 @@ fn required_ids_via_keys(
         .collect()
 }
 
-/// Owned ledger key. Its hash is the two borrowed strings, so a lookup can
-/// pass `(&str, &str)` without cloning either one.
+/// Owned ledger key. Uuid package and intro ids are the raw 16 bytes. Any
+/// other name stays a string, borrowed on lookup.
 #[derive(Debug, PartialEq, Eq)]
-struct WrittenKey {
-    package: SmolStr,
-    intro: SmolStr,
+enum WrittenKey {
+    Ids([u8; 16], [u8; 16]),
+    Text(SmolStr, SmolStr),
+}
+
+/// Borrowed lookup. A uuid pair hashes the same bytes as [`WrittenKey::Ids`].
+enum WrittenRef<'a> {
+    Ids([u8; 16], [u8; 16]),
+    Text(&'a str, &'a str),
 }
 
 impl Hash for WrittenKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.package.as_str().hash(state);
-        self.intro.as_str().hash(state);
+        match self {
+            Self::Ids(package, intro) => WrittenRef::Ids(*package, *intro).hash(state),
+            Self::Text(package, intro) => {
+                WrittenRef::Text(package.as_str(), intro.as_str()).hash(state)
+            }
+        }
     }
 }
 
-/// Borrowed lookup. Hashes the same bytes as [`WrittenKey`].
-struct WrittenRef<'a>(&'a str, &'a str);
-
 impl Hash for WrittenRef<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-        self.1.hash(state);
+        match self {
+            Self::Ids(package, intro) => {
+                0u8.hash(state);
+                package.hash(state);
+                intro.hash(state);
+            }
+            Self::Text(package, intro) => {
+                1u8.hash(state);
+                package.hash(state);
+                intro.hash(state);
+            }
+        }
     }
 }
 
 impl hashbrown::Equivalent<WrittenKey> for WrittenRef<'_> {
     fn equivalent(&self, key: &WrittenKey) -> bool {
-        self.0 == key.package.as_str() && self.1 == key.intro.as_str()
+        match (self, key) {
+            (Self::Ids(package, intro), WrittenKey::Ids(stored_pkg, stored_intro)) => {
+                package == stored_pkg && intro == stored_intro
+            }
+            (Self::Text(package, intro), WrittenKey::Text(stored_pkg, stored_intro)) => {
+                *package == stored_pkg.as_str() && *intro == stored_intro.as_str()
+            }
+            _ => false,
+        }
+    }
+}
+
+fn written_ref<'a>(package: &'a str, intro: &'a str) -> WrittenRef<'a> {
+    match (uuid::Uuid::try_parse(package), uuid::Uuid::try_parse(intro)) {
+        (Ok(package), Ok(intro)) => WrittenRef::Ids(*package.as_bytes(), *intro.as_bytes()),
+        _ => WrittenRef::Text(package, intro),
+    }
+}
+
+fn written_key(package: &str, intro: &str) -> WrittenKey {
+    match written_ref(package, intro) {
+        WrittenRef::Ids(package, intro) => WrittenKey::Ids(package, intro),
+        WrittenRef::Text(package, intro) => {
+            WrittenKey::Text(SmolStr::new(package), SmolStr::new(intro))
+        }
     }
 }
 
@@ -201,8 +248,24 @@ impl UpsertLedger {
             .is_none_or(|hash| hash != point.content_hash)
     }
 
+    /// Whether the symbol ids are absent or their content hash differs.
+    ///
+    /// This does not format the ids. [`Self::needs_write`] on the same ids
+    /// rendered as hyphenated text answers the same question.
+    #[must_use]
+    pub fn needs_write_ids(
+        &self,
+        package: &uuid::Uuid,
+        intro: &uuid::Uuid,
+        content_hash: &[u8; 32],
+    ) -> bool {
+        self.written
+            .get(&WrittenRef::Ids(*package.as_bytes(), *intro.as_bytes()))
+            .is_none_or(|hash| hash != content_hash)
+    }
+
     fn hash_of(&self, package: &str, intro_hex: &str) -> Option<[u8; 32]> {
-        self.written.get(&WrittenRef(package, intro_hex)).copied()
+        self.written.get(&written_ref(package, intro_hex)).copied()
     }
 
     /// Record points whose upsert returned successfully.
@@ -219,18 +282,19 @@ impl UpsertLedger {
     /// Install one hash loaded from scratch. Same effect as [`Self::commit`]
     /// for a single point that is already known to have been written.
     pub fn restore(&mut self, package: &str, intro_hex: &str, content_hash: [u8; 32]) {
-        self.written.insert(
-            WrittenKey {
-                package: SmolStr::new(package),
-                intro: SmolStr::new(intro_hex),
-            },
-            content_hash,
-        );
+        self.written
+            .insert(written_key(package, intro_hex), content_hash);
     }
 
     /// Drop every hash for `package` after its Qdrant points are deleted.
     pub fn forget_package(&mut self, package: &str) {
-        self.written.retain(|key, _| key.package != package);
+        let ids = uuid::Uuid::try_parse(package)
+            .ok()
+            .map(|package| *package.as_bytes());
+        self.written.retain(|key, _| match key {
+            WrittenKey::Ids(stored, _) => ids.as_ref() != Some(stored),
+            WrittenKey::Text(stored, _) => stored != package,
+        });
     }
 }
 
