@@ -324,12 +324,13 @@ fn lower_ts_type_impl<'a>(
             for member in &lit.members {
                 match member {
                     TSSignature::TSPropertySignature(p) => {
+                        let comment = leading_block_comment(source, p.span().start);
                         let name = p
                             .key
                             .static_name()
                             .map_or_else(
-                                || p.key.span().source_text(source).to_string(),
-                                |s| s.to_string(),
+                                || format!("{comment}{}", p.key.span().source_text(source)),
+                                |s| format!("{comment}{s}"),
                             );
                         let ty = p.type_annotation.as_ref().map_or(TypeOwned::Any, |a| {
                             lower_ts_type_impl(&a.type_annotation, source, type_params)
