@@ -64,6 +64,7 @@ let
           "smolfile-1.6.1" = "sha256-3TpuKwjHwazr4EJTfRaK7sK20ONosqKtUBt+GmTfmGQ=";
           "tsz-binder-0.1.48" = "sha256-dmOcoNcf+c8op4y3x3426gGcR9qbPiXOUXJuDn010h4=";
           "trustfall-0.8.1" = "sha256-BeT7dLLJvurdpO0HkFA3wtn202OQFSLkoTZrNMPiI9w=";
+          "turso_versioning-0.8.0-pre.7" = "sha256-7KTwfmax5uB6IlwIGlgzH6UIxGe5ihoZfZPn4X16cSU=";
         };
       };
       cargoBuildFlags = [
