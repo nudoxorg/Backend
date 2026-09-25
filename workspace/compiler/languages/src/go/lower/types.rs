@@ -17,6 +17,16 @@ use crate::go::{oracle, types};
 
 // ── Struct ────────────────────────────────────────────────────────────────────
 
+fn field_member_name(name: &str, index: usize) -> String {
+    // A blank field does not bind. Several can sit in one struct, and the
+    // name `_` is the same string for each of them.
+    if name.is_empty() || name == "_" {
+        format!("_:{index}")
+    } else {
+        name.to_string()
+    }
+}
+
 pub(super) fn lower_struct(
     pkg: &oracle::Package,
     decl: &oracle::Decl,
@@ -38,11 +48,11 @@ pub(super) fn lower_struct(
     let fields_slice: &[oracle::StructField] = underlying.map_or(&[], |u| u.fields.as_ref());
 
     let mut field_refs: Vec<Ref<Field>> = Vec::with_capacity(fields_slice.len());
-    for f in fields_slice {
+    for (index, f) in fields_slice.iter().enumerate() {
         let fid = GoId::Member {
             import_path: pkg.import_path.clone(),
             type_name: decl.name.clone(),
-            member_name: f.name.clone(),
+            member_name: field_member_name(&f.name, index),
             promoted_from: None,
         };
         field_refs.push(low.refer(fid));
@@ -72,11 +82,11 @@ pub(super) fn lower_struct(
     low.declare(item_id.clone(), Some(parent), sym, record);
 
     // Declare fields as children of the struct.
-    for f in fields_slice {
+    for (index, f) in fields_slice.iter().enumerate() {
         let fid = GoId::Member {
             import_path: pkg.import_path.clone(),
             type_name: decl.name.clone(),
-            member_name: f.name.clone(),
+            member_name: field_member_name(&f.name, index),
             promoted_from: None,
         };
         let fdoc = decl.field_docs.get(&f.name).map_or("", String::as_str);

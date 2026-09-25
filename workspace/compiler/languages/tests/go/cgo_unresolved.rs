@@ -100,6 +100,44 @@ fn unresolved_cgo_seals_and_lists_the_foreign_name() {
     );
 }
 
+/// Go allows several blank fields in one struct (`_ int; _ string`). They do
+/// not bind a name, so the field id cannot be the name `_` or `finish`
+/// returns Duplicate.
+#[test]
+fn blank_struct_fields_do_not_share_one_id() {
+    let payload = r#"{
+      "schemaVersion": 3,
+      "packages": [{
+        "importPath": "example.com/pad",
+        "name": "pad",
+        "decls": [{
+          "kind": "type",
+          "name": "Pad",
+          "underlying": {
+            "kind": "struct",
+            "fields": [
+              { "name": "_", "type": { "kind": "basic", "name": "int" } },
+              { "name": "_", "type": { "kind": "basic", "name": "string" } }
+            ]
+          }
+        }]
+      }]
+    }"#;
+    let lineage = PackageLineageId::new(EcosystemId::new("go"), PackageName::new("example.com/pad"));
+    let pkg = GoProducer
+        .lower_bytes(
+            payload.as_bytes(),
+            PackageId::path("example.com/pad"),
+            &lineage,
+        )
+        .expect("blank fields must seal, not Duplicate");
+    let blanks = pkg
+        .iter()
+        .filter(|(_, entry)| entry.sym().name == "_")
+        .count();
+    assert_eq!(blanks, 2, "both blank fields must be declared");
+}
+
 fn oracle_bin() -> &'static Path {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
