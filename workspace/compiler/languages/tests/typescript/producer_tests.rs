@@ -671,7 +671,7 @@ fn test_accessor_property() {
         .expect("`accessor value` must appear as a member");
 
     match &accessor.kind {
-        MemberKind::Accessor { ty } => {
+        MemberKind::Accessor { ty, .. } => {
             assert!(
                 matches!(ty, Some(TypeOwned::String)),
                 "accessor value type should be string, got {ty:?}"

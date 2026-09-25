@@ -2102,7 +2102,11 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
             let span = param.span();
             members.push(MemberFact {
                 name,
-                kind: MemberKind::Property { ty },
+                kind: MemberKind::Property {
+                    ty,
+                    satisfies: None,
+                    cast: None,
+                },
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators: Vec::new(),
@@ -2138,7 +2142,11 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
                         let span = assign.span();
                         members.push(MemberFact {
                             name: prop_name,
-                            kind: MemberKind::Property { ty: None },
+                            kind: MemberKind::Property {
+                                ty: None,
+                                satisfies: None,
+                                cast: None,
+                            },
                             modifiers: MemberModifiers::default(),
                             doc: jsdoc::jsdoc_for_span(semantic, span),
                             decorators: Vec::new(),
@@ -2285,10 +2293,11 @@ fn lower_class_element<'a>(
                 is_optional,
                 is_abstract,
             };
-            let ty = p
+            let annotation = p
                 .type_annotation
                 .as_ref()
                 .map(|ann| lower_ts_type(&ann.type_annotation, source));
+            let (ty, satisfied, cast) = initializer_types(annotation, p.value.as_ref(), source);
             // Decorators on the property (item 7).
             let decorators: Vec<AttrTok> = p
                 .decorators
@@ -2300,7 +2309,11 @@ fn lower_class_element<'a>(
             let span = p.span();
             Some(MemberFact {
                 name,
-                kind: MemberKind::Property { ty },
+                kind: MemberKind::Property {
+                    ty,
+                    satisfies: satisfied,
+                    cast,
+                },
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
@@ -2340,10 +2353,11 @@ fn lower_class_element<'a>(
                 is_optional: false,
                 is_abstract,
             };
-            let ty = ap
+            let annotation = ap
                 .type_annotation
                 .as_ref()
                 .map(|ann| lower_ts_type(&ann.type_annotation, source));
+            let (ty, satisfied, cast) = initializer_types(annotation, ap.value.as_ref(), source);
             // Decorators on the accessor (item 7).
             let mut decorators: Vec<AttrTok> = ap
                 .decorators
@@ -2360,7 +2374,11 @@ fn lower_class_element<'a>(
             let span = ap.span();
             Some(MemberFact {
                 name,
-                kind: MemberKind::Accessor { ty },
+                kind: MemberKind::Accessor {
+                    ty,
+                    satisfies: satisfied,
+                    cast,
+                },
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
@@ -2675,6 +2693,20 @@ fn lower_enum<'a>(e: &TSEnumDeclaration<'a>, source: &'a str) -> EnumBody {
         })
         .collect();
     EnumBody { is_const, variants }
+}
+
+/// Annotation, or the initializer's `as` type when the annotation is absent.
+/// A `satisfies` clause and an extra assertion are returned beside that type.
+fn initializer_types<'a>(
+    annotation: Option<TypeOwned>,
+    init: Option<&Expression<'a>>,
+    source: &'a str,
+) -> (Option<TypeOwned>, Option<TypeOwned>, Option<TypeOwned>) {
+    let asserted = init.and_then(|e| asserted_type(e, source));
+    let ty = annotation.clone().or_else(|| asserted.clone());
+    let cast = if annotation.is_some() { asserted } else { None };
+    let satisfied = init.and_then(|e| satisfies_type(e, source));
+    (ty, satisfied, cast)
 }
 
 /// The type in `expr as T` or `<T>expr`, through parentheses and `satisfies`.

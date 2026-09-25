@@ -465,12 +465,16 @@ pub struct MemberFact {
 pub enum MemberKind {
     Property {
         ty: Option<TypeOwned>,
+        satisfies: Option<TypeOwned>,
+        cast: Option<TypeOwned>,
     },
     Method(Vec<FunctionBody>),
     Constructor(FunctionBody),
     /// TC39 `accessor x: T` — auto-generates a getter/setter pair.
     Accessor {
         ty: Option<TypeOwned>,
+        satisfies: Option<TypeOwned>,
+        cast: Option<TypeOwned>,
     },
     /// `static { … }` initializer block — synthetic `__static[_N]` function.
     StaticBlock {

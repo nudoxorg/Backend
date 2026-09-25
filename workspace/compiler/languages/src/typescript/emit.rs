@@ -677,7 +677,16 @@ fn emit_class(
 
     for (idx, member) in body.members.iter().enumerate() {
         match &member.kind {
-            MemberKind::Property { ty } | MemberKind::Accessor { ty } => {
+            MemberKind::Property {
+                ty,
+                satisfies,
+                cast,
+            }
+            | MemberKind::Accessor {
+                ty,
+                satisfies,
+                cast,
+            } => {
                 let field_id = child_id(&id, &member.name, class_field_disc(body, idx));
                 let fref: Ref<Field> = out.refer(field_id.clone());
                 field_refs.push(fref);
@@ -718,6 +727,26 @@ fn emit_class(
                 );
                 if let Some(ty) = ty {
                     declare_nested_params(&id, &id, &member.name, ty, out, names);
+                }
+                if let Some(ty) = satisfies {
+                    declare_nested_params(
+                        &id,
+                        &id,
+                        &format!("{}::satisfies", member.name),
+                        ty,
+                        out,
+                        names,
+                    );
+                }
+                if let Some(ty) = cast {
+                    declare_nested_params(
+                        &id,
+                        &id,
+                        &format!("{}::cast", member.name),
+                        ty,
+                        out,
+                        names,
+                    );
                 }
             }
             _ => {} // Methods / StaticBlock get their own emit below.
@@ -3369,9 +3398,33 @@ fn member_kind_match(a: &MemberKind, b: &MemberKind) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| function_match(x, y))
         }
         (MemberKind::Constructor(a), MemberKind::Constructor(b)) => function_match(a, b),
-        (MemberKind::Property { ty: a }, MemberKind::Property { ty: b })
-        | (MemberKind::Accessor { ty: a }, MemberKind::Accessor { ty: b }) => {
+        (
+            MemberKind::Property {
+                ty: a,
+                satisfies: a_sat,
+                cast: a_cast,
+            },
+            MemberKind::Property {
+                ty: b,
+                satisfies: b_sat,
+                cast: b_cast,
+            },
+        )
+        | (
+            MemberKind::Accessor {
+                ty: a,
+                satisfies: a_sat,
+                cast: a_cast,
+            },
+            MemberKind::Accessor {
+                ty: b,
+                satisfies: b_sat,
+                cast: b_cast,
+            },
+        ) => {
             opt_type_match(a.as_ref(), b.as_ref())
+                && opt_type_match(a_sat.as_ref(), b_sat.as_ref())
+                && opt_type_match(a_cast.as_ref(), b_cast.as_ref())
         }
         (MemberKind::StaticBlock { name: a }, MemberKind::StaticBlock { name: b }) => a == b,
         _ => false,
@@ -3851,7 +3904,11 @@ mod cc2_tests {
     fn field_named(name: &str) -> MemberFact {
         MemberFact {
             name: name.to_string(),
-            kind: MemberKind::Property { ty: None },
+            kind: MemberKind::Property {
+                ty: None,
+                satisfies: None,
+                cast: None,
+            },
             modifiers: MemberModifiers::default(),
             doc: DocFacts::default(),
             decorators: Vec::new(),

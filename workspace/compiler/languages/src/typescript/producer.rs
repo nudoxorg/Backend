@@ -2697,6 +2697,41 @@ mod tests {
     }
 
     #[test]
+    fn a_class_field_initializer_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"field-init","version":"1.0.0","types":"index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.ts"),
+            "export class Bag {\n\
+               call = null as (left: number) => void;\n\
+               held: (right: number) => void = null as (mid: number) => void;\n\
+               checked = ((s: string) => s) satisfies (far: number) => void;\n\
+             }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "field-init", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("field-init"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function on a class field initializer must seal");
+        for name in ["left", "right", "mid", "far"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn a_let_initializer_declares_each_function_binding() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
