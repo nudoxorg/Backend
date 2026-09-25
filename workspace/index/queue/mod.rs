@@ -189,6 +189,10 @@ struct JobPayload {
     /// has no separate column for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     not_before: Option<i64>,
+    /// The last failure message. Present after [`Queue::fail`]. A dead-lettered
+    /// job keeps this text; the state token becomes `deadlettered`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
 }
 
 /// The retry schedule the queue applies when a job fails. Combined with
@@ -382,6 +386,7 @@ impl Queue {
             priority: priority.get(),
             state_token: "unindexed".to_owned(),
             not_before: None,
+            last_error: None,
         };
         let payload_json = serde_json::to_string(&payload).map_err(QueueError::Codec)?;
         let row = JobRow {
@@ -574,7 +579,6 @@ impl Queue {
         kind: FailureKind,
         message: String,
     ) -> Result<RetryDecision, QueueError> {
-        let _ = message; // recorded as the Failure payload in the global index by the caller.
         let now = now_unix();
         let now_ms = self.now_ms();
         let key = leased.id().job_key();
@@ -586,15 +590,17 @@ impl Queue {
         if !self.owns_claim(&store, &key, now)? {
             return Err(QueueError::LeaseLost { package });
         }
+        let row = store
+            .get_job(&key)
+            .map_err(QueueError::Scratch)?
+            .ok_or(QueueError::NotFound { package })?;
+        let mut payload = decode_payload(row.payload.as_deref())?;
+        payload.last_error = Some(message);
         match decision {
             RetryDecision::Retry { after } => {
                 // Back to Queued, but invisible to dequeue until `after` elapses.
-                let not_before = now_ms.saturating_add(duration_millis(after));
-                let row = store
-                    .get_job(&key)
-                    .map_err(QueueError::Scratch)?
-                    .ok_or(QueueError::NotFound { package })?;
-                let encoded = encode_not_before(row.payload.as_deref(), Some(not_before))?;
+                payload.not_before = Some(now_ms.saturating_add(duration_millis(after)));
+                let encoded = serde_json::to_string(&payload).map_err(QueueError::Codec)?;
                 store
                     .set_job_payload(&key, Some(&encoded))
                     .map_err(QueueError::Scratch)?;
@@ -603,6 +609,12 @@ impl Queue {
                     .map_err(QueueError::Scratch)?;
             }
             RetryDecision::DeadLetter => {
+                payload.state_token = "deadlettered".to_owned();
+                payload.not_before = None;
+                let encoded = serde_json::to_string(&payload).map_err(QueueError::Codec)?;
+                store
+                    .set_job_payload(&key, Some(&encoded))
+                    .map_err(QueueError::Scratch)?;
                 store
                     .set_job_state(&key, JobState::Failed, now)
                     .map_err(QueueError::Scratch)?;
@@ -768,6 +780,7 @@ fn row_to_job(row: &JobRow, lease_until: Option<DateTime<Utc>>) -> Result<Job, Q
         &payload.state_token,
         row.attempts.max(0) as u32,
         enqueued_at,
+        payload.last_error.as_deref(),
     );
     Ok(Job {
         id,
@@ -794,19 +807,30 @@ fn row_to_job(row: &JobRow, lease_until: Option<DateTime<Utc>>) -> Result<Job, Q
 /// - `"stored"` → `Stored { hash: ContentHash::of_bytes(&[]) }` — a sentinel
 ///   hash; a stored job is terminal and will never be claimed again.
 /// - `"unindexed"` (and any unknown token) → `Unindexed { needed: false }`.
-fn state_from_discriminant(token: &str, attempts: u32, at: DateTime<Utc>) -> ResolutionState {
+fn decode_payload(raw: Option<&str>) -> Result<JobPayload, QueueError> {
+    let text = raw.unwrap_or("null");
+    serde_json::from_str(text).map_err(QueueError::Codec)
+}
+
+fn state_from_discriminant(
+    token: &str,
+    attempts: u32,
+    at: DateTime<Utc>,
+    last_error: Option<&str>,
+) -> ResolutionState {
     match token {
         "progressing" => ResolutionState::Progressing(heart::Phase::Acquiring),
         "stored" => ResolutionState::Stored {
             hash: heart::ContentHash::of_bytes(&[]),
         },
         "failed" | "deadlettered" => {
+            let message = last_error.map(str::to_owned).unwrap_or_else(|| {
+                format!("[stub] job payload discriminant `{token}`; real failure in global index")
+            });
             let failure = heart::Failure {
                 attempts,
                 phase: heart::Phase::Acquiring,
-                message: format!(
-                    "[stub] job payload discriminant `{token}`; real failure in global index"
-                ),
+                message,
                 cause: None,
                 at,
             };
@@ -861,24 +885,24 @@ mod state_discriminant_tests {
     fn all_discriminants_decode_to_correct_variant() {
         let t = now();
         assert!(matches!(
-            state_from_discriminant("unindexed", 0, t),
+            state_from_discriminant("unindexed", 0, t, None),
             ResolutionState::Unindexed { .. }
         ));
         assert!(matches!(
-            state_from_discriminant("progressing", 1, t),
+            state_from_discriminant("progressing", 1, t, None),
             ResolutionState::Progressing(_)
         ));
         assert!(matches!(
-            state_from_discriminant("stored", 0, t),
+            state_from_discriminant("stored", 0, t, None),
             ResolutionState::Stored { .. }
         ));
         assert!(matches!(
-            state_from_discriminant("failed", 2, t),
+            state_from_discriminant("failed", 2, t, None),
             ResolutionState::Failed(_)
         ));
         // The key regression: `deadlettered` must not silently become Unindexed.
         assert!(matches!(
-            state_from_discriminant("deadlettered", 3, t),
+            state_from_discriminant("deadlettered", 3, t, None),
             ResolutionState::DeadLettered(_)
         ));
     }
@@ -886,16 +910,17 @@ mod state_discriminant_tests {
     /// Unknown tokens fall back to `Unindexed` rather than panicking.
     #[test]
     fn unknown_discriminant_falls_back_to_unindexed() {
-        let state = state_from_discriminant("bogus_future_variant", 0, now());
+        let state = state_from_discriminant("bogus_future_variant", 0, now(), None);
         assert!(matches!(state, ResolutionState::Unindexed { .. }));
     }
 
     /// A dead-lettered stub carries the attempt count from the row.
     #[test]
     fn dead_lettered_stub_carries_attempt_count() {
-        let state = state_from_discriminant("deadlettered", 7, now());
+        let state = state_from_discriminant("deadlettered", 7, now(), Some("poison toml"));
         if let ResolutionState::DeadLettered(f) = state {
             assert_eq!(f.attempts, 7);
+            assert_eq!(f.message, "poison toml");
         } else {
             panic!("expected DeadLettered");
         }
@@ -1066,5 +1091,34 @@ mod queue_scratch_tests {
             })
             .await;
         assert!(matches!(result, Err(QueueError::LeaseLost { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_non_retriable_failure_is_dead_lettered_with_its_message() {
+        let q = queue("worker-a");
+        let pkg = package();
+        q.enqueue(pkg).await.unwrap();
+        let leased = q.dequeue_batch(10, Duration::from_secs(30)).await.unwrap();
+        let job = leased.into_iter().next().unwrap();
+        let decision = q
+            .fail(job, FailureKind::Malformed, "poison toml".to_owned())
+            .await
+            .unwrap();
+        assert_eq!(decision, RetryDecision::DeadLetter);
+        assert_eq!(q.pending_count().await.unwrap(), 0);
+        let row = q
+            .locked()
+            .get_job(&JobId(*pkg.as_uuid()).job_key())
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, JobState::Failed);
+        let payload: JobPayload = serde_json::from_str(row.payload.as_deref().unwrap()).unwrap();
+        assert_eq!(payload.state_token, "deadlettered");
+        assert_eq!(payload.last_error.as_deref(), Some("poison toml"));
+        let decoded = row_to_job(&row, None).unwrap();
+        match decoded.state {
+            ResolutionState::DeadLettered(failure) => assert_eq!(failure.message, "poison toml"),
+            other => panic!("expected DeadLettered, got {other:?}"),
+        }
     }
 }
