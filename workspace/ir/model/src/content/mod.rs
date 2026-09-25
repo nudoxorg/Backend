@@ -54,14 +54,15 @@
 //! [`entry_storage_hash`] is the fix: the same total, deterministic encoding as
 //! [`entry_content_hash`], minus `sym.source`/`sym.span`. Two hashes, two
 //! questions — this mirrors an existing split in this codebase,
-//! `index::blob::BlobManifest`'s Hash①/Hash② (`workspace/index/blob/mod.rs:67-105`),
-//! whose own doc comment warns that unifying a change-detection hash with a
-//! storage-address hash is a bug class, not a simplification. Where does
-//! position go instead? It becomes **generation-scoped, not content-scoped** —
-//! it belongs on the (as yet unbuilt) `GenerationRoot`, which is rewritten every
-//! generation anyway, rather than inside the content-addressed body, which is
-//! precisely what must stay stable across a pure move. See
-//! `workspace/ir/model/tests/storage_hash.rs` for the pinned spec.
+//! `index::blob::BlobManifest`'s Hash①/Hash②
+//! (`workspace/index/blob/mod.rs:67-105`), whose own doc comment warns that
+//! unifying a change-detection hash with a storage-address hash is a bug class,
+//! not a simplification. Where does position go instead? It becomes
+//! **generation-scoped, not content-scoped** — it belongs on the (as yet
+//! unbuilt) `GenerationRoot`, which is rewritten every generation anyway,
+//! rather than inside the content-addressed body, which is precisely what must
+//! stay stable across a pure move. See `workspace/ir/model/tests/storage_hash.
+//! rs` for the pinned spec.
 //!
 //! # Why the two layers are kept orthogonal
 //!
@@ -355,7 +356,7 @@
 use crate::{
     change::{
         ContentBlake3,
-        encode::{encode_str, write_u16le, write_u32le, write_u64le},
+        encode::{ByteSink, HasherSink, encode_str, write_u16le, write_u32le, write_u64le},
     },
     entry::{AttrTok, CfgExpr, Deprecation, DocLink, Entry, EntryInner, Symbol, Visibility},
     index::{RawRef, Ref},
@@ -458,18 +459,26 @@ pub fn entry_content_hash(entry: &Entry) -> ContentBlake3 {
 /// # Domain separation
 ///
 /// This hash uses [`ENTRY_STORAGE_DOMAIN`], a sibling of
-/// [`ENTRY_CONTENT_DOMAIN`], never the same constant. `ContentBlake3::from_domain`
-/// folds the domain string into the BLAKE3 preimage ahead of the encoded
-/// bytes, so distinct domain strings guarantee the two hashes never coincide
-/// — including on an entry whose position fields are already empty, where the
-/// two encoders would otherwise diverge only in the domain tag.
+/// [`ENTRY_CONTENT_DOMAIN`], never the same constant.
+/// `ContentBlake3::from_domain` folds the domain string into the BLAKE3
+/// preimage ahead of the encoded bytes, so distinct domain strings guarantee
+/// the two hashes never coincide — including on an entry whose position fields
+/// are already empty, where the two encoders would otherwise diverge only in
+/// the domain tag.
 ///
 /// # Panics (debug)
 ///
 /// Same as [`entry_content_hash`]: a `debug_assert!` fires on an unlowered
 /// `Ref::Local`, since both hashes share the same `Kind`/`Ref` encoders.
 pub fn entry_storage_hash(entry: &Entry) -> ContentBlake3 {
-    ContentBlake3::from_raw(*blake3::hash(&entry_storage_payload(entry)).as_bytes())
+    let mut hasher = blake3::Hasher::new();
+    {
+        let mut out = HasherSink::new(&mut hasher);
+        out.extend_from_slice(ENTRY_STORAGE_DOMAIN.as_bytes());
+        encode_symbol(&mut out, entry.sym(), SymbolPosition::Excluded);
+        encode_entry_inner(&mut out, entry.kind());
+    }
+    ContentBlake3::from_raw(*hasher.finalize().as_bytes())
 }
 
 /// The exact byte string [`entry_storage_hash`] digests — and therefore the
@@ -539,7 +548,7 @@ enum SymbolPosition {
     Excluded,
 }
 
-fn encode_symbol(out: &mut Vec<u8>, sym: &Symbol, position: SymbolPosition) {
+fn encode_symbol(out: &mut impl ByteSink, sym: &Symbol, position: SymbolPosition) {
     encode_str(out, &sym.name);
     encode_visibility(out, &sym.visibility);
     encode_str(out, &sym.documentation);
@@ -571,7 +580,7 @@ fn encode_symbol(out: &mut Vec<u8>, sym: &Symbol, position: SymbolPosition) {
     encode_opt_cfg(out, sym.cfg.as_ref());
 }
 
-fn encode_visibility(out: &mut Vec<u8>, vis: &Visibility) {
+fn encode_visibility(out: &mut impl ByteSink, vis: &Visibility) {
     // No _ wildcard — every new Visibility variant must get an opcode here.
     match vis {
         Visibility::Public => out.push(0x01),
@@ -583,7 +592,7 @@ fn encode_visibility(out: &mut Vec<u8>, vis: &Visibility) {
     }
 }
 
-fn encode_opt_deprecation(out: &mut Vec<u8>, dep: Option<&Deprecation>) {
+fn encode_opt_deprecation(out: &mut impl ByteSink, dep: Option<&Deprecation>) {
     match dep {
         None => out.push(0x00),
         Some(d) => {
@@ -594,7 +603,7 @@ fn encode_opt_deprecation(out: &mut Vec<u8>, dep: Option<&Deprecation>) {
     }
 }
 
-fn encode_doc_link(out: &mut Vec<u8>, dl: &DocLink) {
+fn encode_doc_link(out: &mut impl ByteSink, dl: &DocLink) {
     encode_str(out, &dl.target);
     encode_opt_str(out, dl.label.as_deref());
     match &dl.source_span {
@@ -607,12 +616,12 @@ fn encode_doc_link(out: &mut Vec<u8>, dl: &DocLink) {
     }
 }
 
-fn encode_attr_tok(out: &mut Vec<u8>, attr: &AttrTok) {
+fn encode_attr_tok(out: &mut impl ByteSink, attr: &AttrTok) {
     encode_str(out, &attr.token);
     encode_opt_str(out, attr.arg.as_deref());
 }
 
-fn encode_opt_cfg(out: &mut Vec<u8>, cfg: Option<&CfgExpr>) {
+fn encode_opt_cfg(out: &mut impl ByteSink, cfg: Option<&CfgExpr>) {
     match cfg {
         None => out.push(0x00),
         Some(c) => {
@@ -622,7 +631,7 @@ fn encode_opt_cfg(out: &mut Vec<u8>, cfg: Option<&CfgExpr>) {
     }
 }
 
-fn encode_cfg_expr(out: &mut Vec<u8>, cfg: &CfgExpr) {
+fn encode_cfg_expr(out: &mut impl ByteSink, cfg: &CfgExpr) {
     // No _ wildcard — every new CfgExpr variant must get an opcode here.
     match cfg {
         CfgExpr::All(inner) => {
@@ -666,7 +675,7 @@ fn encode_cfg_expr(out: &mut Vec<u8>, cfg: &CfgExpr) {
 // EntryInner encoding
 // ---------------------------------------------------------------------------
 
-fn encode_entry_inner(out: &mut Vec<u8>, inner: &EntryInner) {
+fn encode_entry_inner(out: &mut impl ByteSink, inner: &EntryInner) {
     // No _ wildcard — every new EntryInner variant must get an opcode here.
     match inner {
         EntryInner::Owned(kind) => {
@@ -680,7 +689,7 @@ fn encode_entry_inner(out: &mut Vec<u8>, inner: &EntryInner) {
     }
 }
 
-fn encode_kind(out: &mut Vec<u8>, kind: &Kind) {
+fn encode_kind(out: &mut impl ByteSink, kind: &Kind) {
     // The opcode is the wire discriminant from register_kinds! (u16le).
     // No _ wildcard — every new Kind variant must get a discriminant and an
     // encoder here.
@@ -744,12 +753,12 @@ fn encode_kind(out: &mut Vec<u8>, kind: &Kind) {
 // Per-kind encoders
 // ---------------------------------------------------------------------------
 
-fn encode_module(_out: &mut Vec<u8>, _m: &Module) {
+fn encode_module(_out: &mut impl ByteSink, _m: &Module) {
     // Module is a unit struct — no fields to encode. The opcode above
     // (u16le = 1) already distinguishes it.
 }
 
-fn encode_record(out: &mut Vec<u8>, r: &Record) {
+fn encode_record(out: &mut impl ByteSink, r: &Record) {
     encode_record_form(out, &r.form);
     // fields: refs to child Field entries — encode by ref so the hash
     // captures the identity of the referenced field declarations.
@@ -764,7 +773,7 @@ fn encode_record(out: &mut Vec<u8>, r: &Record) {
     encode_auto_facts(out, &r.auto);
 }
 
-fn encode_record_form(out: &mut Vec<u8>, form: &RecordForm) {
+fn encode_record_form(out: &mut impl ByteSink, form: &RecordForm) {
     // No _ wildcard.
     match form {
         RecordForm::Struct => out.push(0x01),
@@ -774,7 +783,7 @@ fn encode_record_form(out: &mut Vec<u8>, form: &RecordForm) {
     }
 }
 
-fn encode_field(out: &mut Vec<u8>, f: &Field) {
+fn encode_field(out: &mut impl ByteSink, f: &Field) {
     encode_field_key(out, &f.key);
     encode_opt_type(out, f.ty.as_ref());
     // attributes
@@ -784,7 +793,7 @@ fn encode_field(out: &mut Vec<u8>, f: &Field) {
     }
 }
 
-fn encode_field_key(out: &mut Vec<u8>, key: &FieldKey) {
+fn encode_field_key(out: &mut impl ByteSink, key: &FieldKey) {
     // No _ wildcard.
     match key {
         FieldKey::Named => out.push(0x01),
@@ -795,7 +804,7 @@ fn encode_field_key(out: &mut Vec<u8>, key: &FieldKey) {
     }
 }
 
-fn encode_field_attribute(out: &mut Vec<u8>, attr: &FieldAttribute) {
+fn encode_field_attribute(out: &mut impl ByteSink, attr: &FieldAttribute) {
     // No _ wildcard.
     match attr {
         FieldAttribute::Mutable => out.push(0x01),
@@ -804,7 +813,7 @@ fn encode_field_attribute(out: &mut Vec<u8>, attr: &FieldAttribute) {
     }
 }
 
-fn encode_function(out: &mut Vec<u8>, f: &Function) {
+fn encode_function(out: &mut impl ByteSink, f: &Function) {
     // receiver
     match &f.receiver {
         None => out.push(0x00),
@@ -838,7 +847,7 @@ fn encode_function(out: &mut Vec<u8>, f: &Function) {
     encode_type_seq(out, &f.throws);
 }
 
-fn encode_receiver(out: &mut Vec<u8>, r: &Receiver) {
+fn encode_receiver(out: &mut impl ByteSink, r: &Receiver) {
     // No _ wildcard.
     match r {
         Receiver::Owned => out.push(0x01),
@@ -848,7 +857,7 @@ fn encode_receiver(out: &mut Vec<u8>, r: &Receiver) {
     }
 }
 
-fn encode_fn_modifier(out: &mut Vec<u8>, m: &FnModifier) {
+fn encode_fn_modifier(out: &mut impl ByteSink, m: &FnModifier) {
     // No _ wildcard.
     match m {
         FnModifier::Async => out.push(0x01),
@@ -859,7 +868,7 @@ fn encode_fn_modifier(out: &mut Vec<u8>, m: &FnModifier) {
     }
 }
 
-fn encode_alias(out: &mut Vec<u8>, a: &Alias) {
+fn encode_alias(out: &mut impl ByteSink, a: &Alias) {
     encode_opt_type(out, a.target.as_ref());
     encode_generic_params(out, &a.generics);
     encode_where_preds(out, &a.wheres);
@@ -867,21 +876,21 @@ fn encode_alias(out: &mut Vec<u8>, a: &Alias) {
     encode_auto_facts(out, &a.auto);
 }
 
-fn encode_trait(out: &mut Vec<u8>, t: &Trait) {
+fn encode_trait(out: &mut impl ByteSink, t: &Trait) {
     encode_trait_flags(out, &t.flags);
     encode_type_seq(out, &t.supers);
     encode_generic_params(out, &t.generics);
     encode_where_preds(out, &t.wheres);
 }
 
-fn encode_trait_flags(out: &mut Vec<u8>, f: &TraitFlags) {
+fn encode_trait_flags(out: &mut impl ByteSink, f: &TraitFlags) {
     out.push(u8::from(f.is_unsafe));
     out.push(u8::from(f.is_auto));
     encode_tristate(out, &f.dyn_compat);
     encode_sealed(out, &f.sealed);
 }
 
-fn encode_tristate(out: &mut Vec<u8>, t: &TriState) {
+fn encode_tristate(out: &mut impl ByteSink, t: &TriState) {
     // No _ wildcard.
     match t {
         TriState::Yes => out.push(0x01),
@@ -890,7 +899,7 @@ fn encode_tristate(out: &mut Vec<u8>, t: &TriState) {
     }
 }
 
-fn encode_sealed(out: &mut Vec<u8>, s: &Sealed) {
+fn encode_sealed(out: &mut impl ByteSink, s: &Sealed) {
     // No _ wildcard.
     match s {
         Sealed::None => out.push(0x01),
@@ -899,7 +908,7 @@ fn encode_sealed(out: &mut Vec<u8>, s: &Sealed) {
     }
 }
 
-fn encode_impl(out: &mut Vec<u8>, i: &Impl) {
+fn encode_impl(out: &mut impl ByteSink, i: &Impl) {
     encode_impl_flags(out, &i.flags);
     encode_opt_type(out, i.of.as_ref());
     encode_type(out, &i.self_ty);
@@ -907,12 +916,12 @@ fn encode_impl(out: &mut Vec<u8>, i: &Impl) {
     encode_where_preds(out, &i.wheres);
 }
 
-fn encode_impl_flags(out: &mut Vec<u8>, f: &ImplFlags) {
+fn encode_impl_flags(out: &mut impl ByteSink, f: &ImplFlags) {
     out.push(u8::from(f.negative));
     out.push(u8::from(f.blanket));
 }
 
-fn encode_enum(out: &mut Vec<u8>, e: &Enum) {
+fn encode_enum(out: &mut impl ByteSink, e: &Enum) {
     // variants: typed refs to Variant entries
     write_u32le(out, e.variants.len() as u32);
     for rf in &e.variants {
@@ -923,7 +932,7 @@ fn encode_enum(out: &mut Vec<u8>, e: &Enum) {
     encode_auto_facts(out, &e.auto);
 }
 
-fn encode_variant(out: &mut Vec<u8>, v: &Variant) {
+fn encode_variant(out: &mut impl ByteSink, v: &Variant) {
     encode_variant_form(out, &v.form);
     // fields: typed refs to Field entries
     write_u32le(out, v.fields.len() as u32);
@@ -933,7 +942,7 @@ fn encode_variant(out: &mut Vec<u8>, v: &Variant) {
     encode_opt_str(out, v.discr.as_deref());
 }
 
-fn encode_variant_form(out: &mut Vec<u8>, form: &VariantForm) {
+fn encode_variant_form(out: &mut impl ByteSink, form: &VariantForm) {
     // No _ wildcard.
     match form {
         VariantForm::Unit => out.push(0x01),
@@ -942,22 +951,22 @@ fn encode_variant_form(out: &mut Vec<u8>, form: &VariantForm) {
     }
 }
 
-fn encode_const(out: &mut Vec<u8>, c: &Const) {
+fn encode_const(out: &mut impl ByteSink, c: &Const) {
     encode_type(out, &c.ty);
     encode_opt_const_expr(out, c.value.as_ref());
 }
 
-fn encode_static(out: &mut Vec<u8>, s: &Static) {
+fn encode_static(out: &mut impl ByteSink, s: &Static) {
     encode_type(out, &s.ty);
     out.push(u8::from(s.mutable));
 }
 
-fn encode_reexport(_out: &mut Vec<u8>, _rx: &Reexport) {
+fn encode_reexport(_out: &mut impl ByteSink, _rx: &Reexport) {
     // Reexport is a unit struct. The target lives in EntryInner::Reference
     // (already encoded by encode_entry_inner). No fields here.
 }
 
-fn encode_param(out: &mut Vec<u8>, p: &Param) {
+fn encode_param(out: &mut impl ByteSink, p: &Param) {
     encode_opt_type(out, p.ty.as_ref());
     encode_opt_const_expr(out, p.default_value.as_ref());
     write_u32le(out, p.attributes.len() as u32);
@@ -966,7 +975,7 @@ fn encode_param(out: &mut Vec<u8>, p: &Param) {
     }
 }
 
-fn encode_opt_const_expr(out: &mut Vec<u8>, expr: Option<&ConstExpr>) {
+fn encode_opt_const_expr(out: &mut impl ByteSink, expr: Option<&ConstExpr>) {
     match expr {
         None => out.push(0x00),
         Some(expr) => {
@@ -1002,7 +1011,7 @@ fn encode_opt_const_expr(out: &mut Vec<u8>, expr: Option<&ConstExpr>) {
     }
 }
 
-fn encode_param_attribute(out: &mut Vec<u8>, attr: &ParamAttribute) {
+fn encode_param_attribute(out: &mut impl ByteSink, attr: &ParamAttribute) {
     // No _ wildcard.
     match attr {
         ParamAttribute::Inout => out.push(0x01),
@@ -1014,7 +1023,7 @@ fn encode_param_attribute(out: &mut Vec<u8>, attr: &ParamAttribute) {
         ParamAttribute::Optional => out.push(0x07),
         ParamAttribute::KeywordOnly => out.push(0x08),
         ParamAttribute::Kwargs => out.push(0x09),
-        ParamAttribute::Out => out.push(0x0A),
+        ParamAttribute::Out => out.push(0x0a),
     }
 }
 
@@ -1022,14 +1031,14 @@ fn encode_param_attribute(out: &mut Vec<u8>, attr: &ParamAttribute) {
 // Generics / where-clauses
 // ---------------------------------------------------------------------------
 
-fn encode_generic_params(out: &mut Vec<u8>, params: &[GenericParam]) {
+fn encode_generic_params(out: &mut impl ByteSink, params: &[GenericParam]) {
     write_u32le(out, params.len() as u32);
     for p in params {
         encode_generic_param(out, p);
     }
 }
 
-fn encode_generic_param(out: &mut Vec<u8>, p: &GenericParam) {
+fn encode_generic_param(out: &mut impl ByteSink, p: &GenericParam) {
     // Unlike skeleton.rs, we DO encode generic-parameter names — this is a
     // content hash, not a skeleton. `fn<T>(…)` and `fn<U>(…)` are the same
     // declaration (alpha-equivalent), but a content hash records what the
@@ -1069,7 +1078,7 @@ fn encode_generic_param(out: &mut Vec<u8>, p: &GenericParam) {
     }
 }
 
-fn encode_where_preds(out: &mut Vec<u8>, preds: &[WherePred]) {
+fn encode_where_preds(out: &mut impl ByteSink, preds: &[WherePred]) {
     write_u32le(out, preds.len() as u32);
     for pred in preds {
         encode_type(out, &pred.target);
@@ -1081,14 +1090,14 @@ fn encode_where_preds(out: &mut Vec<u8>, preds: &[WherePred]) {
 // Type encoding
 // ---------------------------------------------------------------------------
 
-fn encode_type_seq(out: &mut Vec<u8>, types: &[Type]) {
+fn encode_type_seq(out: &mut impl ByteSink, types: &[Type]) {
     write_u32le(out, types.len() as u32);
     for t in types {
         encode_type(out, t);
     }
 }
 
-fn encode_opt_type(out: &mut Vec<u8>, ty: Option<&Type>) {
+fn encode_opt_type(out: &mut impl ByteSink, ty: Option<&Type>) {
     match ty {
         None => out.push(0x00),
         Some(t) => {
@@ -1098,7 +1107,7 @@ fn encode_opt_type(out: &mut Vec<u8>, ty: Option<&Type>) {
     }
 }
 
-fn encode_type(out: &mut Vec<u8>, ty: &Type) {
+fn encode_type(out: &mut impl ByteSink, ty: &Type) {
     // No _ wildcard — every new Type variant must get an opcode here.
     match ty {
         Type::SelfType => out.push(0x01),
@@ -1260,7 +1269,7 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
 
 /// Encode an [`UnknownType`] reason. No `_` wildcard — every new reason must
 /// get an opcode here, or two different gaps hash to the same content.
-fn encode_unknown(out: &mut Vec<u8>, r: &UnknownType) {
+fn encode_unknown(out: &mut impl ByteSink, r: &UnknownType) {
     match r {
         UnknownType::Unannotated => out.push(0x01),
         UnknownType::DynamicallyTyped => out.push(0x02),
@@ -1281,7 +1290,7 @@ fn encode_unknown(out: &mut Vec<u8>, r: &UnknownType) {
     }
 }
 
-fn encode_tuple_elements(out: &mut Vec<u8>, elems: &[TupleElement]) {
+fn encode_tuple_elements(out: &mut impl ByteSink, elems: &[TupleElement]) {
     write_u32le(out, elems.len() as u32);
     for elem in elems {
         // No _ wildcard.
@@ -1299,7 +1308,7 @@ fn encode_tuple_elements(out: &mut Vec<u8>, elems: &[TupleElement]) {
     }
 }
 
-fn encode_variance(out: &mut Vec<u8>, v: &Variance) {
+fn encode_variance(out: &mut impl ByteSink, v: &Variance) {
     // No _ wildcard.
     out.push(match v {
         Variance::Invariant => 0x01,
@@ -1308,7 +1317,7 @@ fn encode_variance(out: &mut Vec<u8>, v: &Variance) {
     });
 }
 
-fn encode_mapped_modifier(out: &mut Vec<u8>, m: &MappedModifier) {
+fn encode_mapped_modifier(out: &mut impl ByteSink, m: &MappedModifier) {
     // No _ wildcard.
     out.push(match m {
         MappedModifier::Add => 0x01,
@@ -1317,7 +1326,7 @@ fn encode_mapped_modifier(out: &mut Vec<u8>, m: &MappedModifier) {
     });
 }
 
-fn encode_anon_record_form(out: &mut Vec<u8>, f: &AnonRecordForm) {
+fn encode_anon_record_form(out: &mut impl ByteSink, f: &AnonRecordForm) {
     // No _ wildcard.
     out.push(match f {
         AnonRecordForm::Struct => 0x01,
@@ -1325,7 +1334,7 @@ fn encode_anon_record_form(out: &mut Vec<u8>, f: &AnonRecordForm) {
     });
 }
 
-fn encode_primitive(out: &mut Vec<u8>, p: &Primitive) {
+fn encode_primitive(out: &mut impl ByteSink, p: &Primitive) {
     // No _ wildcard.
     match p {
         Primitive::Integer { signed, width } => {
@@ -1368,7 +1377,7 @@ fn encode_primitive(out: &mut Vec<u8>, p: &Primitive) {
     }
 }
 
-fn encode_width(out: &mut Vec<u8>, w: &Width) {
+fn encode_width(out: &mut impl ByteSink, w: &Width) {
     // No _ wildcard.
     match w {
         Width::Fixed(n) => {
@@ -1395,7 +1404,7 @@ fn encode_width(out: &mut Vec<u8>, w: &Width) {
 /// to be total (never panics in release) so that content hashing can still
 /// proceed on partially-sealed arenas during development/testing, but the
 /// debug_assert ensures the bug is caught in tests.
-fn encode_ref(out: &mut Vec<u8>, r: &RawRef) {
+fn encode_ref(out: &mut impl ByteSink, r: &RawRef) {
     // No _ wildcard.
     match r {
         Ref::Local(_) => {
@@ -1432,7 +1441,7 @@ fn encode_ref(out: &mut Vec<u8>, r: &RawRef) {
 // Auto-fact encoding
 // ---------------------------------------------------------------------------
 
-fn encode_auto_facts(out: &mut Vec<u8>, facts: &[AutoFact]) {
+fn encode_auto_facts(out: &mut impl ByteSink, facts: &[AutoFact]) {
     write_u32le(out, facts.len() as u32);
     for f in facts {
         encode_auto_trait(out, &f.trait_);
@@ -1440,7 +1449,7 @@ fn encode_auto_facts(out: &mut Vec<u8>, facts: &[AutoFact]) {
     }
 }
 
-fn encode_auto_trait(out: &mut Vec<u8>, t: &AutoTrait) {
+fn encode_auto_trait(out: &mut impl ByteSink, t: &AutoTrait) {
     // No _ wildcard.
     match t {
         AutoTrait::Send => out.push(0x01),
@@ -1451,7 +1460,7 @@ fn encode_auto_trait(out: &mut Vec<u8>, t: &AutoTrait) {
     }
 }
 
-fn encode_auto_state(out: &mut Vec<u8>, s: &AutoState) {
+fn encode_auto_state(out: &mut impl ByteSink, s: &AutoState) {
     // No _ wildcard.
     match s {
         AutoState::Yes => out.push(0x01),
@@ -1464,7 +1473,7 @@ fn encode_auto_state(out: &mut Vec<u8>, s: &AutoState) {
 // Primitive helpers
 // ---------------------------------------------------------------------------
 
-fn encode_opt_str(out: &mut Vec<u8>, s: Option<&str>) {
+fn encode_opt_str(out: &mut impl ByteSink, s: Option<&str>) {
     match s {
         None => out.push(0x00),
         Some(v) => {
@@ -1474,7 +1483,7 @@ fn encode_opt_str(out: &mut Vec<u8>, s: Option<&str>) {
     }
 }
 
-fn encode_str_seq(out: &mut Vec<u8>, ss: &[String]) {
+fn encode_str_seq(out: &mut impl ByteSink, ss: &[String]) {
     write_u32le(out, ss.len() as u32);
     for s in ss {
         encode_str(out, s);
