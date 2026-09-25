@@ -88,10 +88,12 @@ impl TursoProjection {
                     }
                 }
                 DependencyFacts::Unknown(reason) => {
-                    desired_states.insert(source.as_str().to_owned(), (1_i64, reason.as_str()));
+                    desired_states
+                        .insert(source.as_str().to_owned(), (1_i64, reason.as_str(), source));
                 }
                 DependencyFacts::Unavailable(reason) => {
-                    desired_states.insert(source.as_str().to_owned(), (2_i64, reason.as_str()));
+                    desired_states
+                        .insert(source.as_str().to_owned(), (2_i64, reason.as_str(), source));
                 }
             }
         }
@@ -321,11 +323,12 @@ async fn delete_absent_edges(
 async fn retain_matching_states(
     connection: &turso::Connection,
     root: &[u8; 32],
-    desired: &BTreeMap<String, (i64, &str)>,
+    desired: &BTreeMap<String, (i64, &str, &PackageReference)>,
 ) -> Result<(), ProjectionError> {
     let mut rows = connection
         .query(
-            "SELECT root, source, state, reason FROM backend_projection_package_states",
+            "SELECT root, source, state, reason FROM backend_projection_package_states \
+             ORDER BY root, source",
             (),
         )
         .await?;
@@ -338,7 +341,7 @@ async fn retain_matching_states(
         let reason: String = row.get(3)?;
         let matches = desired
             .get(&source)
-            .is_some_and(|(wanted_kind, wanted_reason)| {
+            .is_some_and(|(wanted_kind, wanted_reason, _)| {
                 *wanted_kind == kind && *wanted_reason == reason
             });
         if matches && kept.insert(source.clone()) {
@@ -355,14 +358,11 @@ async fn retain_matching_states(
             )
             .await?;
     }
-    for (source, (kind, reason)) in desired {
+    for (source, (kind, reason, reference)) in desired {
         if kept.contains(source) {
             continue;
         }
-        let source = PackageReference::parse(source).map_err(|_| {
-            ProjectionError::Database(turso::Error::Misuse("invalid graph source".to_owned()))
-        })?;
-        put_package_state(connection, root, &source, *kind, reason).await?;
+        put_package_state(connection, root, reference, *kind, reason).await?;
     }
     Ok(())
 }
