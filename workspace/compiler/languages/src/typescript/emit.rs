@@ -904,6 +904,19 @@ fn emit_type_alias(
                 declare_alias_params(&id, &owner, function, out, names);
             }
         }
+        TypeOwned::Union(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                declare_nested_params(&id, &id, &format!("union{index}"), part, out, names);
+            }
+        }
+        TypeOwned::Intersection(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                declare_nested_params(&id, &id, &format!("inter{index}"), part, out, names);
+            }
+        }
+        TypeOwned::Array(inner) => {
+            declare_nested_params(&id, &id, "array", inner, out, names);
+        }
         _ => {}
     }
 }
@@ -981,6 +994,33 @@ fn declare_nested_params(
                 );
                 declare_alias_params(alias, &inner_owner, function, out, names);
             }
+        }
+        TypeOwned::Union(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                declare_nested_params(
+                    alias,
+                    owner,
+                    &format!("{param_name}::union{index}"),
+                    part,
+                    out,
+                    names,
+                );
+            }
+        }
+        TypeOwned::Intersection(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                declare_nested_params(
+                    alias,
+                    owner,
+                    &format!("{param_name}::inter{index}"),
+                    part,
+                    out,
+                    names,
+                );
+            }
+        }
+        TypeOwned::Array(inner) => {
+            declare_nested_params(alias, owner, &format!("{param_name}::array"), inner, out, names);
         }
         _ => {}
     }
