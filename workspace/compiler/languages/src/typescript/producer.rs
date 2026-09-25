@@ -1046,6 +1046,45 @@ mod tests {
         );
     }
 
+    /// Overload discriminants are adjacent integers. The parameter
+    /// discriminant is `function_disc * 1000 + index`, so parameter 1000 of
+    /// one overload is the same id as parameter 0 of the next when the
+    /// names match.
+    #[test]
+    fn thousandth_parameter_does_not_collide_with_the_next_overload() {
+        let mut params = String::new();
+        for i in 0..1000 {
+            if i > 0 {
+                params.push_str(", ");
+            }
+            params.push_str(&format!("a{i}: number"));
+        }
+        params.push_str(", x: number");
+        let src = format!(
+            "export function tail({params}): void;\nexport function tail(x: string): void;\n"
+        );
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"wide-fn","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(dir.path().join("index.d.ts"), src).expect("write declarations");
+
+        let source = PackageSource::new(dir.path(), "wide-fn", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("wide-fn"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a 1001-parameter overload must not share a parameter id with the next overload");
+
+        let tails = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "tail")
+            .count();
+        assert_eq!(tails, 2, "both tail overloads must be declared");
+    }
+
     /// axios 1.6.7 plus the three packages its manifest names.
     /// Extract them under `/tmp/medium/npm/src` before running.
     #[test]

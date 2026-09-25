@@ -2111,22 +2111,28 @@ fn child_name(parent: &TsId, member: &str) -> String {
 /// Parameter id for one function overload.
 ///
 /// The common case folds the function's discriminant into the numeric half
-/// (`disc * 1000 + index`). That product does not fit in `u32` once a
-/// function's own discriminant is at least `u32::MAX / 1000` — an interface
-/// method past member 4294, because the method id is already `index * 1000`.
-/// `saturating_mul` then pinned every such parameter at `u32::MAX`, and two
-/// overloads that shared a parameter name were one id declared twice.
+/// (`disc * 1000 + index`). Two facts make that product unsafe:
 ///
-/// When the product fits, the id is unchanged. When it does not, the
-/// function discriminant moves into the name, which is the same trick
-/// `child_name` uses for a parent overload, and the parameter index stays
-/// the discriminant.
+/// - It does not fit in `u32` once a function's own discriminant is at least
+///   `u32::MAX / 1000` — an interface method past member 4294, because the
+///   method id is already `index * 1000`. `saturating_mul` then pinned every
+///   such parameter at `u32::MAX`.
+/// - Overload discriminants are adjacent. Parameter 1000 of one overload is
+///   the same number as parameter 0 of the next (`disc * 1000 + 1000` versus
+///   `(disc + 1) * 1000`).
+///
+/// Indices below 1000 keep the old id, so packages that already seal do not
+/// move. A wider parameter list, or a product that does not fit, puts the
+/// function discriminant in the name — the same trick `child_name` uses for
+/// a parent overload — and keeps the parameter index as the discriminant.
 fn param_id_for(owner: &TsId, param_name: &str, index: u32) -> TsId {
-    if let Some(disc) = owner
-        .discriminant
-        .checked_mul(1000)
-        .and_then(|base| base.checked_add(index))
-    {
+    let packed = (index < 1000).then(|| {
+        owner
+            .discriminant
+            .checked_mul(1000)
+            .and_then(|base| base.checked_add(index))
+    });
+    if let Some(disc) = packed.flatten() {
         return TsId::new(
             owner.module.clone(),
             format!("{}::param::{}", owner.name, param_name),
