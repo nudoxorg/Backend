@@ -889,10 +889,11 @@ const DEPTH_LIMIT: usize = 64;
 /// unavailable, and for an anonymous embedded interface term.
 const UNNAMED: &[u8] = b"_";
 
-/// Bounded width of the positional absent-name table. A signature's carrier
-/// facts are themselves bounded by the lane's type-child width, far below
-/// this, so every representable signature position has a spelling.
-const ABSENT_NAME_LIMIT: usize = 128;
+/// Bounded width of the positional absent-name table. A signature carrier
+/// is bounded by the fact-child lane (255), so every representable position
+/// has its own spelling. Past the table the name falls back to `_`, which
+/// would collide with another blank of the same type.
+const ABSENT_NAME_LIMIT: usize = 256;
 
 /// Coordinate-free spellings for absent parameter and result names, indexed
 /// by the carrier's position inside its signature. Position zero keeps the
@@ -4704,6 +4705,22 @@ mod tests {
         {
             return Err(TestError::Missing("directional channel"));
         }
+        Ok(())
+    }
+
+    /// A signature of 129 same-typed blanks used to collapse every position
+    /// past 127 onto `_` and duplicate. Position 128 keeps the spelling `_128`.
+    #[test]
+    fn a_wide_blank_signature_keeps_distinct_positional_names() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let parameters = vec![int; 129];
+        let wide = fix.func(&parameters, &[], false);
+        fix.declaration(KIND_FUNC, b"Wide", Some(wide));
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        entity_of(&view, b"_")?;
+        entity_of(&view, b"_128")?;
         Ok(())
     }
 
