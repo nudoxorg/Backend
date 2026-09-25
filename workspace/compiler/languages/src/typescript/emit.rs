@@ -2415,22 +2415,21 @@ fn class_index_disc(body: &ClassBody, sig_idx: usize) -> u32 {
     let mut disc = 3_000_000 + sig_idx as u32;
     loop {
         let taken = body.members.iter().enumerate().any(|(idx, member)| {
-            let same_name = match &member.kind {
-                MemberKind::StaticBlock { name: block } => block == &name,
-                _ => member.name == name,
-            };
-            if !same_name {
-                return false;
-            }
             match &member.kind {
-                MemberKind::Method(sigs) => sigs
+                MemberKind::Method(sigs) if member.name == name => sigs
                     .iter()
                     .enumerate()
                     .any(|(overload_idx, _)| (idx * 1000 + overload_idx) as u32 == disc),
-                MemberKind::Constructor(_) => (idx * 1000) as u32 == disc,
-                MemberKind::Property { .. }
-                | MemberKind::Accessor { .. }
-                | MemberKind::StaticBlock { .. } => idx as u32 == disc,
+                MemberKind::Constructor(_) if member.name == name => (idx * 1000) as u32 == disc,
+                // A field already steps off this signature's base disc. Compare
+                // the disc it actually took, or both land on the next integer.
+                MemberKind::Property { .. } | MemberKind::Accessor { .. } if member.name == name => {
+                    class_field_disc(body, idx) == disc
+                }
+                MemberKind::StaticBlock { name: block } if block == &name => {
+                    class_static_block_disc(body, idx) == disc
+                }
+                _ => false,
             }
         });
         if !taken || disc == u32::MAX {
@@ -3265,6 +3264,21 @@ mod cc2_tests {
     use nudox_ir::kinds::UnknownType;
     use std::path::Path;
 
+    fn field_named(name: &str) -> MemberFact {
+        MemberFact {
+            name: name.to_string(),
+            kind: MemberKind::Property { ty: None },
+            modifiers: MemberModifiers::default(),
+            doc: DocFacts::default(),
+            decorators: Vec::new(),
+            class_flags: ClassFlags::default(),
+            initializer: None,
+            signature_kind: SignatureKind::Method,
+            span_start: 0,
+            span_end: 0,
+        }
+    }
+
     fn prop_named(name: &str) -> PropertyFact {
         PropertyFact {
             name: name.to_string(),
@@ -3376,6 +3390,37 @@ mod cc2_tests {
             vec![2_000_002, 2_000_001],
             "property 1 keeps 2000001; property 0 steps past it"
         );
+    }
+
+    #[test]
+    fn a_class_index_signature_keeps_its_disc_when_the_field_steps_off() {
+        // Member 3000000 named `__index` is the signature's base disc. The
+        // field moves to 3000001. The signature must stay on 3000000.
+        let mut members = Vec::with_capacity(3_000_001);
+        for _ in 0..3_000_000 {
+            members.push(field_named("pad"));
+        }
+        members.push(field_named("__index"));
+        let body = ClassBody {
+            generics: Vec::new(),
+            extends: Vec::new(),
+            implements: Vec::new(),
+            members,
+            index_signatures: vec![IndexSignatureFact {
+                key_name: "k".to_string(),
+                key_ty: TypeOwned::String,
+                value_ty: TypeOwned::Unknown,
+                readonly: false,
+                is_static: false,
+                doc: None,
+                span_start: 0,
+                span_end: 0,
+            }],
+            is_abstract: false,
+            decorators: Vec::new(),
+        };
+        assert_eq!(class_index_disc(&body, 0), 3_000_000);
+        assert_eq!(class_field_disc(&body, 3_000_000), 3_000_001);
     }
 
     #[test]
