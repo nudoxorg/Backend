@@ -191,15 +191,34 @@ pub fn require_opaque(local_name: &str) -> Result<(), PidError> {
 /// A full git SHA-1 as a content PID. Anything shorter or non-hex is not one.
 #[must_use]
 pub fn git_sha1(rev: &str) -> Option<ContentDigest> {
-    if rev.len() != 40 || !rev.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    hex_bytes(rev).map(ContentDigest::GitSha1)
+}
+
+/// A 64-hex registry checksum as a SHA-256 content PID.
+#[must_use]
+pub fn sha256(checksum: &str) -> Option<ContentDigest> {
+    hex_bytes(checksum).map(ContentDigest::Sha256)
+}
+
+/// Artifact checksum wins over a git revision. A missing or short string is
+/// not a digest.
+#[must_use]
+pub fn observed_content(checksum: Option<&str>, source_rev: Option<&str>) -> Option<ContentDigest> {
+    checksum
+        .and_then(sha256)
+        .or_else(|| source_rev.and_then(git_sha1))
+}
+
+fn hex_bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
+    if text.len() != N * 2 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
-    let mut bytes = [0u8; 20];
-    for (index, chunk) in rev.as_bytes().chunks(2).enumerate() {
+    let mut bytes = [0u8; N];
+    for (index, chunk) in text.as_bytes().chunks(2).enumerate() {
         let hex = std::str::from_utf8(chunk).ok()?;
         bytes[index] = u8::from_str_radix(hex, 16).ok()?;
     }
-    Some(ContentDigest::GitSha1(bytes))
+    Some(bytes)
 }
 
 /// Package URL rendering of a version coordinate.

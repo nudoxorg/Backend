@@ -133,7 +133,7 @@ pub fn effects_from_ops(
                 });
             }
             _ => {
-                let Some((stem_id, version, edges, license, source_rev)) = version_view(op) else {
+                let Some((stem_id, version, edges, license, source)) = version_view(op) else {
                     continue;
                 };
                 let Some((ecosystem, name)) = name_of(stem_id) else {
@@ -151,7 +151,10 @@ pub fn effects_from_ops(
                     false,
                     edges.iter().map(edge_from_wire).collect(),
                 );
-                if let Some(digest) = source_rev.and_then(crate::pid::git_sha1) {
+                if let Some(digest) = crate::pid::observed_content(
+                    source.and_then(|source| source.registry_checksum.as_deref()),
+                    source.and_then(|source| source.source_rev.as_deref()),
+                ) {
                     record = record.with_content(digest);
                 }
                 effects.push(LedgerEffect::Upsert(record));
@@ -168,7 +171,7 @@ fn version_view(
     &str,
     &[EdgeWire],
     Option<&str>,
-    Option<&str>,
+    Option<&crate::protocol::SourceAcquisitionWire>,
 )> {
     use crate::protocol::{CatalogOp, VersionDelta};
 
@@ -184,9 +187,7 @@ fn version_view(
             coordinates.version_canonical.as_str(),
             edges,
             license.as_deref(),
-            source
-                .as_ref()
-                .and_then(|source| source.source_rev.as_deref()),
+            source.as_ref(),
         )),
         CatalogOp::VersionDelta {
             delta: VersionDelta::Added { version } | VersionDelta::Changed { version },
@@ -195,10 +196,7 @@ fn version_view(
             version.coordinates.version_canonical.as_str(),
             &version.edges,
             version.license.as_deref(),
-            version
-                .source
-                .as_ref()
-                .and_then(|source| source.source_rev.as_deref()),
+            version.source.as_ref(),
         )),
         _ => None,
     }

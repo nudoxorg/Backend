@@ -531,3 +531,56 @@ fn a_full_git_sha_binds_content_and_a_short_rev_does_not() {
     assert_eq!(rebuilt_kernel.checksum, rebuilt.content);
     assert_ne!(rebuilt_kernel.checksum, kernel.checksum);
 }
+
+#[test]
+fn a_registry_sha256_beats_a_git_sha_and_keeps_the_version_pid() {
+    use crate::{
+        edge_project::records_from_ops_named,
+        enums::SourceKind,
+        ids::PackageStemId,
+        pid::{ContentDigest, Resolve},
+        protocol::{CatalogOp, FacetWire, SourceAcquisitionWire, VersionCoordinates},
+    };
+    use heart::{Language, PackageId};
+
+    let checksum = "ab".repeat(32);
+    let stem_id = PackageStemId::from_uuid(uuid::Uuid::from_u128(21));
+    let artifact = CatalogOp::UpsertVersion {
+        coordinates: VersionCoordinates {
+            version_id: PackageId::from_uuid(uuid::Uuid::from_u128(22)),
+            stem_id,
+            version_canonical: "1.0.0".into(),
+            version_original: "1.0.0".into(),
+        },
+        published_at: None,
+        toolchain: None,
+        license: None,
+        edges: Vec::new(),
+        facets: FacetWire::default(),
+        source: Some(SourceAcquisitionWire {
+            source_kind: SourceKind::Git,
+            source_pack: None,
+            source_rev: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            registry_checksum: Some(checksum),
+            registry_package_uri: None,
+        }),
+    };
+    let records = records_from_ops_named(&[artifact], Some((Language::Rust, "memchr")));
+    assert!(matches!(records[0].content, Some(ContentDigest::Sha256(_))));
+    let mut catalog = VersionedCatalog::open().expect("open");
+    catalog.put_record(&records[0]).expect("artifact");
+    let mut git_record = records[0].clone();
+    git_record.content = crate::pid::git_sha1("fedcba9876543210fedcba9876543210fedcba98");
+    catalog
+        .put_record(&git_record)
+        .expect("git does not replace sha256");
+    let Resolve::Live(kernel) = catalog
+        .resolve_version("rust", "memchr", "1.0.0")
+        .expect("resolve")
+        .expect("row")
+    else {
+        panic!("live");
+    };
+    assert_eq!(kernel.checksum, records[0].content);
+    assert!(crate::pid::sha256("abc").is_none());
+}

@@ -1,8 +1,9 @@
 //! A later upsert that did not observe a digest keeps the one already stored.
+//! A git SHA-1 does not replace a registry SHA-256 or a BLAKE3.
 
 use turso_versioning::orm::OrmResult;
 
-use crate::record::PackageRecord;
+use crate::{pid::ContentDigest, record::PackageRecord};
 
 use super::turso_vc::VersionedCatalog;
 
@@ -11,18 +12,37 @@ impl VersionedCatalog {
         &mut self,
         record: &PackageRecord,
     ) -> OrmResult<PackageRecord> {
-        if record.content.is_some() {
-            return Ok(record.clone());
-        }
-        let Some(prior) = self.get(
-            record.ecosystem.as_token(),
-            record.canonical_name.as_str(),
-            record.version.as_str(),
-        ) else {
-            return Ok(record.clone());
-        };
+        let prior = self
+            .get(
+                record.ecosystem.as_token(),
+                record.canonical_name.as_str(),
+                record.version.as_str(),
+            )
+            .map(|fact| fact.to_record())
+            .transpose()?
+            .and_then(|prior| prior.content);
         let mut kept = record.clone();
-        kept.content = prior.to_record()?.content;
+        kept.content = merge_content(prior, record.content);
         Ok(kept)
+    }
+}
+
+fn merge_content(
+    prior: Option<ContentDigest>,
+    observed: Option<ContentDigest>,
+) -> Option<ContentDigest> {
+    match observed {
+        Some(ContentDigest::Sha256(bytes)) => Some(ContentDigest::Sha256(bytes)),
+        Some(ContentDigest::Blake3(bytes)) => Some(ContentDigest::Blake3(bytes)),
+        Some(ContentDigest::GitSha1(_))
+            if matches!(
+                prior,
+                Some(ContentDigest::Sha256(_)) | Some(ContentDigest::Blake3(_))
+            ) =>
+        {
+            prior
+        }
+        Some(observed) => Some(observed),
+        None => prior,
     }
 }
