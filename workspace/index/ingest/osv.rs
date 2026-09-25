@@ -24,6 +24,14 @@ struct ModifiedRow {
     modified: String,
 }
 
+/// Whether `mirror.follow` asked for the Rust catalog, which is the ecosystem
+/// this follower's modified index covers.
+pub fn rust_feed_enabled(follow: &[impl AsRef<str>]) -> bool {
+    follow
+        .iter()
+        .any(|lang| lang.as_ref().eq_ignore_ascii_case("rust"))
+}
+
 /// Poll the crates.io OSV modified index and the vulnerability documents it names.
 pub struct OsvFollower<Transport> {
     transport: Transport,
@@ -225,5 +233,13 @@ mod tests {
         assert_eq!(batch.ops.len(), 1);
         let cursor = batch.next_watermark.last_ref.expect("cursor");
         assert!(cursor.starts_with("2023-02-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn rust_feed_enabled_matches_the_mirror_token() {
+        assert!(rust_feed_enabled(&["Rust"]));
+        assert!(rust_feed_enabled(&["npm", "rust"]));
+        assert!(!rust_feed_enabled(&["npm", "go"]));
+        assert!(!rust_feed_enabled(&["rustc"]));
     }
 }

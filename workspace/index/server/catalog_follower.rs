@@ -237,3 +237,44 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
         }
     }
 }
+
+/// Drive [`crate::ingest::osv::OsvFollower`] against the definitive catalog.
+///
+/// The watermark file lives under the definitive data directory. A poll runs
+/// on the blocking pool because the feed client is synchronous. The cursor
+/// advances only after `FollowerDriver` commits the batch.
+pub(crate) async fn osv_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>>) {
+    let interval = server.config().limits.poll_interval;
+    let data_dir = server.config().definitive.data_directory();
+    let watermarks = match crate::ingest::watermark::FileWatermarkStore::open(
+        data_dir.join("osv-watermarks"),
+    ) {
+        Ok(store) => std::sync::Arc::new(store),
+        Err(error) => {
+            tracing::warn!(error = %error, "osv follower watermark store failed to open");
+            return;
+        }
+    };
+    let writer = std::sync::Arc::clone(server.base().global_store.writer());
+    tracing::info!("osv follower started");
+    loop {
+        let writer = std::sync::Arc::clone(&writer);
+        let watermarks = std::sync::Arc::clone(&watermarks);
+        let joined = tokio::task::spawn_blocking(move || {
+            let follower = crate::ingest::osv::OsvFollower::new(crate::ingest::HttpTransport::new());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as i64)
+                .unwrap_or(0);
+            crate::ingest::FollowerDriver::new(writer.as_ref(), watermarks.as_ref())
+                .drive_once(&follower, now)
+        })
+        .await;
+        match joined {
+            Ok(Ok(outcome)) => tracing::debug!(?outcome, "osv follower poll"),
+            Ok(Err(error)) => tracing::warn!(error = %error, "osv follower poll failed"),
+            Err(error) => tracing::warn!(error = %error, "osv follower task failed"),
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
