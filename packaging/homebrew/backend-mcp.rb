@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Homebrew formula for the loopback MCP service.
 #
 # Blank-state install (does not reuse a developer target directory):
@@ -12,6 +14,7 @@
 # backend-mcp and backend-locald are installed as siblings; the MCP process
 # finds the daemon beside its own executable.
 
+# Loopback MCP service formula. The class comment is the Homebrew desc.
 class BackendMcp < Formula
   desc "Loopback MCP service for the Nudox local code-intelligence daemon"
   homepage "https://github.com/nudoxorg/backend"
@@ -36,10 +39,9 @@ class BackendMcp < Formula
     chmod 0555, bin/"backend-mcp-service"
   end
 
-  def post_install
-    (var/"lib/backend-mcp").mkpath
-    (var/"log").mkpath
-    (etc/"backend-mcp").mkpath
+  post_install_steps do
+    mkdir_p "lib/backend-mcp", base: :var
+    mkdir_p "log", base: :var
   end
 
   def caveats
