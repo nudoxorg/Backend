@@ -1257,6 +1257,35 @@ mod tests {
     }
 
     #[test]
+    fn a_call_signature_and_namespace_function_of_the_same_name_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"call-ns","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export interface I { (value: number): string; }\n\
+             export namespace I { export function __call(): void; }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "call-ns", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("call-ns"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a call signature and a namespace function must both seal");
+        let calls = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "__call"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(calls, 2, "the call signature and the namespace function both survive");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.

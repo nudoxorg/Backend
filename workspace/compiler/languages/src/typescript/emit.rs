@@ -514,14 +514,7 @@ fn emit_interface(
         } else {
             format!("__call_{call_num}")
         };
-        let taken = body.methods.iter().enumerate().any(|(method_idx, method)| {
-            method.name == call_member && (method_idx * 1000) as u32 == call_num as u32
-        });
-        let call_disc = if taken {
-            call_num as u32 + 1
-        } else {
-            call_num as u32
-        };
+        let call_disc = interface_call_disc(body, call_num);
         let call_id = child_id(&id, &call_member, call_disc);
         let call_sym = Symbol {
             name: call_member,
@@ -2139,6 +2132,22 @@ fn reserve_enum_variants(
                             (idx * 1000) as u32,
                         );
                     }
+                    // A call signature is `__call` at disc 0. A merged
+                    // namespace function of that name would take the same id.
+                    for (call_num, _) in body.call_signatures.iter().enumerate() {
+                        let name = if call_num == 0 {
+                            "__call".to_string()
+                        } else {
+                            format!("__call_{call_num}")
+                        };
+                        reserve_member(
+                            canonical,
+                            reserved,
+                            &qual,
+                            &name,
+                            interface_call_disc(body, call_num),
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -2359,6 +2368,27 @@ fn param_id_for(owner: &TsId, param_name: &str, index: u32) -> TsId {
         ),
         index,
     )
+}
+
+/// A call signature's discriminant.
+///
+/// The usual value is the signature index, so the first `__call` stays 0.
+/// A method of that name at `index * 1000` keeps its id and this signature
+/// moves to the next integer, which is not a method disc.
+fn interface_call_disc(body: &InterfaceBody, call_num: usize) -> u32 {
+    let name = if call_num == 0 {
+        "__call".to_string()
+    } else {
+        format!("__call_{call_num}")
+    };
+    let taken = body.methods.iter().enumerate().any(|(method_idx, method)| {
+        method.name == name && (method_idx * 1000) as u32 == call_num as u32
+    });
+    if taken {
+        call_num as u32 + 1
+    } else {
+        call_num as u32
+    }
 }
 
 /// A construct signature's discriminant.
