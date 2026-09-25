@@ -285,6 +285,22 @@ fn largest_source_file(
         source_unavailable(language, kind)
     })?;
     files.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    // Keep the per-row byte bound strict, but do not reject a real package
+    // merely because its largest file is too large when another real source
+    // in that same package fits. The ordering below still selects the
+    // largest admissible candidate deterministically.
+    let had_files = !files.is_empty();
+    files.retain(|(_, length)| *length <= REAL_SOURCE_BYTE_LIMIT);
+    if files.is_empty() {
+        return Err(source_unavailable(
+            language,
+            if had_files {
+                SourceUnavailableKind::SourceTooLarge
+            } else {
+                SourceUnavailableKind::SourceFileMissing
+            },
+        ));
+    }
     // Go's authority oracle loads test-augmented packages, so a `_test.go`
     // selection forces the fixture to reconstruct a test compilation unit
     // whose helper files are not part of the real package. Prefer the largest
@@ -772,10 +788,11 @@ fn collect_source_files(
 }
 
 #[cfg(test)]
-mod go_selection_tests {
+mod source_selection_tests {
     use super::{
+        CorpusLanguage, REAL_SOURCE_BYTE_LIMIT, SourceExtension, SourceUnavailableKind,
         corpus_module_checkout, corpus_module_checkout_exact, go_closure_imports_resolve_under,
-        go_path_import_literals,
+        go_path_import_literals, largest_source_file,
     };
     use std::{
         fs,
@@ -815,6 +832,41 @@ mod go_selection_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn oversized_source_falls_back_to_real_bounded_sibling() {
+        let package = Scratch::new("source-bound-fallback");
+        fs::File::create(package.path().join("giant.c"))
+            .expect("large source")
+            .set_len(REAL_SOURCE_BYTE_LIMIT + 1)
+            .expect("large source length");
+        let selected = package.write("actual.c", "int answer(void) { return 42; }\n");
+        assert_eq!(
+            largest_source_file(
+                package.path(),
+                SourceExtension::CFamily,
+                CorpusLanguage::Clang
+            )
+            .expect("bounded source"),
+            selected
+        );
+    }
+
+    #[test]
+    fn all_oversized_sources_remain_typed_unavailable() {
+        let package = Scratch::new("source-bound-unavailable");
+        fs::File::create(package.path().join("giant.c"))
+            .expect("large source")
+            .set_len(REAL_SOURCE_BYTE_LIMIT + 1)
+            .expect("large source length");
+        let error = largest_source_file(
+            package.path(),
+            SourceExtension::CFamily,
+            CorpusLanguage::Clang,
+        )
+        .expect_err("all sources exceed the bound");
+        assert_eq!(error.kind, SourceUnavailableKind::SourceTooLarge);
     }
 
     fn module(corpus: &Path, import: &str, version: &str) -> PathBuf {

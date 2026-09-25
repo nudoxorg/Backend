@@ -1245,8 +1245,11 @@ fn supervisor_enforces_workspace_growth() -> Result<(), Box<dyn Error>> {
 #[cfg(unix)]
 #[test]
 fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> {
+    // Bash can print several bounded fork-failure diagnostics before exiting
+    // under RLIMIT_NPROC. The assertion is about the process-count terminal;
+    // a tiny stderr ceiling would test OutputLimit instead.
     let process_limits =
-        limits(64, 64, Duration::from_secs(2), 128)?.with_process_count_limit(1)?;
+        limits(64, 4096, Duration::from_secs(2), 4096)?.with_process_count_limit(1)?;
     let script = format!("{} 1 & wait", test_coreutils_executable("sleep").display());
     let process = command(test_shell_executable(), &["-c", &script], process_limits)?;
     let receipt = process.run()?;
