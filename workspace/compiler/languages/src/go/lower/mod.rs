@@ -92,8 +92,6 @@ pub enum GoId {
 struct IotaEnums<'a> {
     /// type-name → ordered list of const Decls that are variants of that type.
     variants_by_type: std::collections::HashMap<&'a str, Vec<&'a oracle::Decl>>,
-    /// Every const name consumed as a variant (so we skip them in const loop).
-    variant_names: std::collections::HashSet<&'a str>,
 }
 
 fn detect_iota_enums(pkg: &oracle::Package) -> IotaEnums<'_> {
@@ -146,16 +144,7 @@ fn detect_iota_enums(pkg: &oracle::Package) -> IotaEnums<'_> {
         });
     }
 
-    let variant_names: std::collections::HashSet<&str> = variants_by_type
-        .values()
-        .flatten()
-        .map(|d| d.name.as_str())
-        .collect();
-
-    IotaEnums {
-        variants_by_type,
-        variant_names,
-    }
+    IotaEnums { variants_by_type }
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +394,15 @@ fn report_build_constraints(pkg: &oracle::Package) {
     }
 }
 
+pub(super) fn unbound_name(name: &str, index: usize) -> String {
+    // `_` does not bind. A package may declare it any number of times.
+    if name.is_empty() || name == "_" {
+        format!("_:{index}")
+    } else {
+        name.to_string()
+    }
+}
+
 /// Lower all packages in an oracle `Output` into one [`IrPackage`].
 ///
 /// The returned package's root module wraps every Go package as a sub-module.
@@ -436,8 +434,8 @@ fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSe
 
     let enums = detect_iota_enums(pkg);
 
-    for decl in &pkg.decls {
-        lower_decl(pkg, decl, &enums, low, local);
+    for (index, decl) in pkg.decls.iter().enumerate() {
+        lower_decl(pkg, decl, index, &enums, low, local);
     }
     types::lower_unresolved_cgo(pkg, pkg_id, low);
     record_references(pkg, low);
@@ -489,6 +487,7 @@ fn record_references(pkg: &oracle::Package, low: &mut Lowering<GoId>) {
 fn lower_decl(
     pkg: &oracle::Package,
     decl: &oracle::Decl,
+    index: usize,
     enums: &IotaEnums<'_>,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
@@ -502,13 +501,22 @@ fn lower_decl(
         DeclKind::Alias => values::lower_alias(pkg, decl, parent_pkg, low, local),
         DeclKind::Func => values::lower_func(pkg, decl, parent_pkg, low, local),
         DeclKind::Const => {
-            // Skip constants that were consumed as enum variants.
-            if !enums.variant_names.contains(decl.name.as_str()) {
-                values::lower_const(pkg, decl, parent_pkg, low, local);
+            // Skip this const only when it is one of the iota variants.
+            // Matching on the name dropped every other `_` in the package.
+            if !is_enum_variant(enums, decl) {
+                values::lower_const(pkg, decl, index, parent_pkg, low, local);
             }
         }
-        DeclKind::Var => values::lower_var(pkg, decl, parent_pkg, low, local),
+        DeclKind::Var => values::lower_var(pkg, decl, index, parent_pkg, low, local),
     }
+}
+
+fn is_enum_variant(enums: &IotaEnums<'_>, decl: &oracle::Decl) -> bool {
+    enums
+        .variants_by_type
+        .values()
+        .flatten()
+        .any(|variant| std::ptr::eq(*variant, decl))
 }
 
 // ---------------------------------------------------------------------------

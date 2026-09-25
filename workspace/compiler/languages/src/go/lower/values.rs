@@ -100,13 +100,14 @@ pub(super) fn lower_func(
 pub(super) fn lower_const(
     pkg: &oracle::Package,
     decl: &oracle::Decl,
+    index: usize,
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
-        name: decl.name.clone(),
+        name: super::unbound_name(&decl.name, index),
     };
     let sym = sym_for(
         &decl.name,
@@ -142,13 +143,14 @@ pub(super) fn lower_const(
 pub(super) fn lower_var(
     pkg: &oracle::Package,
     decl: &oracle::Decl,
+    index: usize,
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
-        name: decl.name.clone(),
+        name: super::unbound_name(&decl.name, index),
     };
     let sym = sym_for(
         &decl.name,

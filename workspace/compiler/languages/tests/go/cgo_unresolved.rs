@@ -138,6 +138,42 @@ fn blank_struct_fields_do_not_share_one_id() {
     assert_eq!(blanks, 2, "both blank fields must be declared");
 }
 
+/// Package-level `var _` may be repeated. The name does not bind, so each
+/// declaration needs its own id. A named var stays keyed by that name.
+#[test]
+fn blank_package_vars_do_not_share_one_id() {
+    let payload = r#"{
+      "schemaVersion": 3,
+      "packages": [{
+        "importPath": "example.com/blank",
+        "name": "blank",
+        "decls": [
+          { "kind": "var", "name": "_", "type": { "kind": "basic", "name": "int" } },
+          { "kind": "var", "name": "Keep", "type": { "kind": "basic", "name": "int" } },
+          { "kind": "var", "name": "_", "type": { "kind": "basic", "name": "string" } }
+        ]
+      }]
+    }"#;
+    let lineage =
+        PackageLineageId::new(EcosystemId::new("go"), PackageName::new("example.com/blank"));
+    let pkg = GoProducer
+        .lower_bytes(
+            payload.as_bytes(),
+            PackageId::path("example.com/blank"),
+            &lineage,
+        )
+        .expect("repeated blank vars must seal, not Duplicate");
+    let blanks = pkg
+        .iter()
+        .filter(|(_, entry)| entry.sym().name == "_")
+        .count();
+    assert_eq!(blanks, 2, "both blank vars must be declared");
+    assert!(
+        pkg.iter().any(|(_, entry)| entry.sym().name == "Keep"),
+        "a named var must still be declared under its name"
+    );
+}
+
 fn oracle_bin() -> &'static Path {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {

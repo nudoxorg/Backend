@@ -18,13 +18,7 @@ use crate::go::{oracle, types};
 // ── Struct ────────────────────────────────────────────────────────────────────
 
 fn field_member_name(name: &str, index: usize) -> String {
-    // A blank field does not bind. Several can sit in one struct, and the
-    // name `_` is the same string for each of them.
-    if name.is_empty() || name == "_" {
-        format!("_:{index}")
-    } else {
-        name.to_string()
-    }
+    super::unbound_name(name, index)
 }
 
 pub(super) fn lower_struct(
@@ -378,11 +372,11 @@ pub(super) fn lower_iota_enum(
     );
 
     let mut variant_refs: Vec<Ref<Variant>> = Vec::with_capacity(variants.len());
-    for v in variants {
+    for (index, v) in variants.iter().enumerate() {
         let vid = GoId::Variant {
             import_path: pkg.import_path.clone(),
             type_name: decl.name.clone(),
-            variant_name: v.name.clone(),
+            variant_name: super::unbound_name(&v.name, index),
         };
         variant_refs.push(low.refer(vid));
     }
@@ -399,11 +393,11 @@ pub(super) fn lower_iota_enum(
         .build();
     low.declare(item_id.clone(), Some(parent), sym, enum_kind);
 
-    for v in variants {
+    for (index, v) in variants.iter().enumerate() {
         let vid = GoId::Variant {
             import_path: pkg.import_path.clone(),
             type_name: decl.name.clone(),
-            variant_name: v.name.clone(),
+            variant_name: super::unbound_name(&v.name, index),
         };
         let vsym = sym_for(&v.name, &v.doc, v.exported, v.pos.as_ref(), v.span.as_ref());
         let discr = if v.value.is_empty() {
