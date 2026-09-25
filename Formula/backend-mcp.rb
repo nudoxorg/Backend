@@ -3,11 +3,9 @@
 # Homebrew formula for the loopback MCP service.
 #
 # Blank-state install (does not reuse a developer target directory).
-# The GitHub default branch is main and does not contain this formula, so
-# the tap has to select canonical or this integration branch:
+# The GitHub default branch is canonical and carries this formula:
 #
-#   brew tap nudoxorg/backend https://github.com/nudoxorg/Backend.git \
-#     --branch jimmy/merge-open-prs-088a
+#   brew tap nudoxorg/backend https://github.com/nudoxorg/Backend.git
 #   brew install --HEAD nudoxorg/backend/backend-mcp
 #   mkdir -p "$(brew --prefix)/etc"
 #   printf '%s\n' /absolute/path/to/project > "$(brew --prefix)/etc/backend-mcp.project"
@@ -24,10 +22,10 @@ class BackendMcp < Formula
   homepage "https://github.com/nudoxorg/backend"
   license "MIT OR Apache-2.0"
 
-  # Moving integration branch. `brew install --HEAD` clones this branch into
-  # a fresh Homebrew build cell, so the compile does not see a developer
-  # checkout or its Cargo target directory.
-  head "https://github.com/nudoxorg/backend.git", branch: "jimmy/merge-open-prs-088a"
+  # The GitHub default branch (canonical) carries the formula. `brew install
+  # --HEAD` clones it into a fresh Homebrew build cell, so the compile does
+  # not see a developer checkout or its Cargo target directory.
+  head "https://github.com/nudoxorg/backend.git"
 
   depends_on "git" => :build
   depends_on "rust" => :build
