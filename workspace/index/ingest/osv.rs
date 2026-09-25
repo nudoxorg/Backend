@@ -115,7 +115,7 @@ impl<Transport: FeedTransport> Follower for OsvFollower<Transport> {
                     };
                     match resolve_osv(&body, now_unix_ms) {
                         Ok(sources) => {
-                            ops.extend(sources.into_iter().map(|source| source.to_upsert_op()))
+                            ops.extend(sources.into_iter().flat_map(|source| source.catalog_ops()))
                         }
                         Err(_) => continue,
                     }

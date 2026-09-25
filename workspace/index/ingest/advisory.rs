@@ -1,19 +1,21 @@
 //! Advisory ingestion (REGISTRYLESS-PLAN §12): an OSV JSON document becomes one
-//! [`AdvisorySource`] per affected package, then a [`CatalogOp::UpsertAdvisory`].
-//! [`parse_osv`] is the mapping. It does not fetch the feed. [`resolve_osv`]
-//! fills `stem_id` when the OSV ecosystem token maps onto a catalog language
-//! and the package name parses. Git-range ancestry translation stays out of
-//! this module.
+//! [`AdvisorySource`] per affected package, then a
+//! [`CatalogOp::UpsertAdvisory`]. [`parse_osv`] is the mapping. It does not
+//! fetch the feed. [`resolve_osv`] fills `stem_id` when the OSV ecosystem token
+//! maps onto a catalog language and the package name parses. Git-range ancestry
+//! translation stays out of this module.
 //!
-//! The mapping is deliberately mechanical: an [`AdvisoryWire`] as OSV would give
-//! it (id, affected slug, range, severity) becomes one `UpsertAdvisory` op, and
-//! for each affected version the caller has already resolved, one
-//! `SetListing { status: Advisory }` op (the bitemporal `listing_events` row the
-//! Trustfall security policy plane reads — no new query surface, per §12).
+//! The mapping is deliberately mechanical: an [`AdvisoryWire`] as OSV would
+//! give it (id, affected slug, range, severity) becomes one `UpsertAdvisory`
+//! op, and for each affected version the caller has already resolved, one
+//! `SetListing { status: Advisory }` op (the bitemporal `listing_events` row
+//! the Trustfall security policy plane reads — no new query surface, per §12).
 
-use crate::enums::ListingStatus;
-use crate::ids::{AdvisoryId, PackageId, PackageStemId};
-use crate::protocol::{AdvisoryWire, CatalogOp};
+use crate::{
+    enums::ListingStatus,
+    ids::{AdvisoryId, PackageId, PackageStemId},
+    protocol::{AdvisoryWire, CatalogOp},
+};
 use heart::identity::{Id, namespace};
 
 /// A typed, transport-neutral advisory as an upstream feed (OSV) presents it,
@@ -79,6 +81,54 @@ impl AdvisorySource {
             advisory: self.to_wire(),
         }
     }
+
+    /// Upsert plus one advisory listing per explicitly named version.
+    ///
+    /// A range written as `introduced` / `fixed` / `last_affected` events is
+    /// not a version list, so it contributes the upsert only. A withdrawn
+    /// advisory (`valid_to` set) and an unresolved stem do the same. Repeated
+    /// version tokens collapse.
+    pub fn catalog_ops(&self) -> Vec<CatalogOp> {
+        let mut ops = vec![self.to_upsert_op()];
+        ops.extend(self.listing_ops());
+        ops
+    }
+
+    fn listing_ops(&self) -> Vec<CatalogOp> {
+        if self.valid_to.is_some() {
+            return Vec::new();
+        }
+        let Some(stem) = self.stem_id else {
+            return Vec::new();
+        };
+        let Some(range) = self.version_range.as_deref() else {
+            return Vec::new();
+        };
+        if range.contains("introduced:")
+            || range.contains("fixed:")
+            || range.contains("last_affected:")
+        {
+            return Vec::new();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut ops = Vec::new();
+        for version in range.split(',') {
+            let version = version.trim();
+            if version.is_empty() || !seen.insert(version.to_owned()) {
+                continue;
+            }
+            let id = heart::identity::derive::package_id_from_parts([
+                stem.to_blob().as_slice(),
+                version.as_bytes(),
+            ]);
+            ops.push(advisory_listing_event(
+                id,
+                self.valid_from,
+                &self.upstream_id,
+            ));
+        }
+        ops
+    }
 }
 
 /// Emit an `advisory` listing event for one affected version (REGISTRYLESS-PLAN
@@ -86,7 +136,8 @@ impl AdvisorySource {
 /// reads. The follower calls this once per version it has determined the
 /// advisory's git range covers (`introduced ≤ rev < fixed`); that ancestry
 /// translation is S-A proper and out of scope here.
-/// Parse one OSV JSON document into one [`AdvisorySource`] per affected package.
+/// Parse one OSV JSON document into one [`AdvisorySource`] per affected
+/// package.
 ///
 /// A document with no `id` is rejected. An affected entry with no package name
 /// is dropped. `withdrawn` sets `valid_to` and does not drop the advisory: a
@@ -184,8 +235,14 @@ pub fn parse_osv(body: &[u8], recorded_at: i64) -> Result<Vec<AdvisorySource>, S
 }
 
 fn version_range(entry: &serde_json::Value) -> Option<String> {
-    if let Some(versions) = entry.get("versions").and_then(|versions| versions.as_array()) {
-        let listed: Vec<&str> = versions.iter().filter_map(|version| version.as_str()).collect();
+    if let Some(versions) = entry
+        .get("versions")
+        .and_then(|versions| versions.as_array())
+    {
+        let listed: Vec<&str> = versions
+            .iter()
+            .filter_map(|version| version.as_str())
+            .collect();
         if !listed.is_empty() {
             return Some(listed.join(","));
         }
@@ -222,13 +279,12 @@ fn rfc3339_millis(raw: &str) -> Option<i64> {
     let mut time_parts = time.split(':');
     let hour: u32 = time_parts.next()?.parse().ok()?;
     let minute: u32 = time_parts.next()?.parse().ok()?;
-    let second: u32 = time_parts
-        .next()?
-        .split('.')
-        .next()?
-        .parse()
-        .ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60
+    let second: u32 = time_parts.next()?.split('.').next()?.parse().ok()?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
     {
         return None;
     }
@@ -340,7 +396,10 @@ mod tests {
         assert_eq!(sources[0].upstream_id, "RUSTSEC-2021-0001");
         assert_eq!(sources[0].affected_name.as_deref(), Some("smallvec"));
         assert_eq!(sources[0].affected_ecosystem.as_deref(), Some("crates.io"));
-        assert_eq!(sources[0].version_range.as_deref(), Some("introduced:0,fixed:1.6.1"));
+        assert_eq!(
+            sources[0].version_range.as_deref(),
+            Some("introduced:0,fixed:1.6.1")
+        );
         assert_eq!(sources[0].severity.as_deref(), Some("HIGH"));
         assert!(sources[0].stem_id.is_none());
         assert!(sources[0].valid_to.is_some());
@@ -377,13 +436,25 @@ mod tests {
         let rust_b = sources[1].stem_id.expect("serde-json resolves");
         assert_eq!(rust_a, rust_b, "crates.io folds case and underscores");
         let npm = sources[2].stem_id.expect("npm resolves");
-        assert_ne!(npm, rust_a, "the same spelling in two ecosystems is two stems");
-        assert!(sources[3].stem_id.is_none(), "an unknown ecosystem stays unresolved");
-        assert!(sources[4].stem_id.is_none(), "a name that fails the grammar stays unresolved");
+        assert_ne!(
+            npm, rust_a,
+            "the same spelling in two ecosystems is two stems"
+        );
+        assert!(
+            sources[3].stem_id.is_none(),
+            "an unknown ecosystem stays unresolved"
+        );
+        assert!(
+            sources[4].stem_id.is_none(),
+            "a name that fails the grammar stays unresolved"
+        );
         assert!(sources[0].valid_to.is_some(), "withdrawal still resolves");
         let direct = {
             use crate::ecosystem::{Language, LanguageExt};
-            let parsed = Language::Rust.spec().parse_name("serde-json").expect("parse");
+            let parsed = Language::Rust
+                .spec()
+                .parse_name("serde-json")
+                .expect("parse");
             let id = heart::identity::derive::package_id_from_parts([
                 Language::Rust.as_token().as_bytes(),
                 parsed.canonical().as_bytes(),
@@ -391,5 +462,46 @@ mod tests {
             PackageStemId::from_uuid(*id.as_uuid())
         };
         assert_eq!(rust_a, direct);
+    }
+
+    #[test]
+    fn explicit_versions_emit_one_listing_and_ranges_do_not() {
+        let listed = br#"{"id":"GHSA-1","affected":[{"package":{"ecosystem":"npm","name":"left-pad"},"versions":["1.0.0"," 1.0.0 "," "]}]}"#;
+        let sources = resolve_osv(listed, 9).expect("resolve");
+        let ops = sources[0].catalog_ops();
+        assert!(matches!(ops[0], CatalogOp::UpsertAdvisory { .. }));
+        match &ops[1] {
+            CatalogOp::SetListing {
+                status: ListingStatus::Advisory,
+                reason,
+                version,
+                ..
+            } => {
+                assert_eq!(reason.as_deref(), Some("GHSA-1"));
+                let stem = sources[0].stem_id.expect("stem");
+                let expected = heart::identity::derive::package_id_from_parts([
+                    stem.to_blob().as_slice(),
+                    b"1.0.0".as_slice(),
+                ]);
+                assert_eq!(*version, expected);
+            }
+            other => panic!("expected one advisory listing, got {other:?}"),
+        }
+        assert_eq!(ops.len(), 2);
+
+        let ranged = br#"{"id":"RUSTSEC-1","affected":[{"package":{"ecosystem":"crates.io","name":"smallvec"},"ranges":[{"events":[{"introduced":"0"},{"fixed":"1.6.1"}]}]}]}"#;
+        assert_eq!(
+            resolve_osv(ranged, 1).expect("range")[0]
+                .catalog_ops()
+                .len(),
+            1
+        );
+        let withdrawn = br#"{"id":"GHSA-2","withdrawn":"2024-01-01T00:00:00Z","affected":[{"package":{"ecosystem":"npm","name":"left-pad"},"versions":["1.0.0"]}]}"#;
+        assert_eq!(
+            resolve_osv(withdrawn, 1).expect("withdrawn")[0]
+                .catalog_ops()
+                .len(),
+            1
+        );
     }
 }
