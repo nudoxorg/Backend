@@ -78,11 +78,11 @@ const _: () = assert!(MAX_TYPE_CHILDREN <= u8::MAX as usize);
 /// This is the protocol ceiling for the *pooled* occurrence lane, which
 /// [`ResourcePlan::for_source`] budgets from entered bytes; it exists so a
 /// genuine measured overrun is a typed `OccurrenceCapacity` fault rather than
-/// an eager maximum allocation. Raised from 8,192 to the declaration-fact
-/// budget because real multi-package fragments emit more occurrences than
-/// declarations, and the old bound rejected them before the measured budget
-/// could be consumed.
-pub(super) const MAX_EMISSION_OCCURRENCES: usize = MAX_EMISSION_FACTS;
+/// an eager maximum allocation. The Clang authority records four references
+/// per declaration (`MAX_CLANG_REFERENCES`), so a translation unit past the
+/// declaration ceiling was still `OccurrenceCapacity` while its source bytes
+/// had room. The ceiling matches that four-times ratio.
+pub(super) const MAX_EMISSION_OCCURRENCES: usize = 4 * MAX_EMISSION_FACTS;
 /// Dense bound of the documentation lane; measured maximum is 13,529 fragments (`StringUtils.java`), so 16,384 is next.
 pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 16384;
 /// Dense bound of extension atoms admitted beside declaration names.

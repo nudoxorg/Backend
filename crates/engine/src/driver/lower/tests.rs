@@ -348,6 +348,47 @@ fn capacity_pending_plan() -> FactSet<'static> {
     FactSet::with_plan(plan)
 }
 
+#[test]
+fn c_occurrences_pass_the_declaration_ceiling() -> Result<(), TestError> {
+    let source_len = MAX_EMISSION_FACTS + 8_192;
+    let plan = super::ResourcePlan::for_source(
+        LanguageProfile::C(backend_semantic::vocabulary::CStandard::C23),
+        source_len,
+    );
+    if plan.occurrences <= MAX_EMISSION_FACTS {
+        return Err(TestError::Rejected {
+            fact: plan.occurrences,
+            name_len: 0,
+            cause: FactFault::OccurrenceCapacity,
+        });
+    }
+    let mut facts = FactSet::with_plan(plan);
+    push_pending_seed(&mut facts)?;
+    let occurrence = Occurrence {
+        target: backend_semantic::ir::OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+            origin: backend_semantic::ir::ForeignOrigin::Universe {
+                ecosystem: "c",
+            },
+            path: "header.h",
+            display: "symbol",
+            kind: None,
+        }),
+        kind: backend_semantic::ir::ReferenceKind::VariableUse,
+        confidence: backend_semantic::ir::OccurrenceConfidence::Syntactic,
+        span: backend_semantic::ir::RelSpan { start: 0, end: 0 },
+    };
+    for _ in 0..=MAX_EMISSION_FACTS {
+        facts
+            .push_occurrence(0, occurrence)
+            .map_err(|cause| rejected(RejectedFact {
+                fact: 0,
+                name: b"symbol",
+                cause,
+            }))?;
+    }
+    Ok(())
+}
+
 fn push_pending_seed(facts: &mut FactSet<'static>) -> Result<(), TestError> {
     facts
         .push(SemanticFact::new(
