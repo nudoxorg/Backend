@@ -139,6 +139,13 @@ pub struct DocumentFacts {
 
 impl DocumentFacts {
     /// A document that names dependencies and no checksum.
+    pub fn edges(dependencies: Vec<crate::record::DepEdge>) -> Self {
+        Self {
+            dependencies,
+            checksum: None,
+        }
+    }
+
     pub fn names(dependencies: Vec<String>) -> Self {
         Self {
             dependencies: crate::record::runtime_edges_from_names(&dependencies),

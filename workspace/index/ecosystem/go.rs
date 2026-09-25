@@ -336,9 +336,7 @@ fn repo_from_module_path(module_path: &str) -> Option<String> {
 
 /// Parse a `go.mod` file: extract module path + require dependencies.
 pub fn parse_go_mod(text: &str) -> ExtractedFacts {
-    let mut dependencies: Vec<String> = vec![];
     let mut module_path: Option<&str> = None;
-    let mut in_require_block = false;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -352,32 +350,11 @@ pub fn parse_go_mod(text: &str) -> ExtractedFacts {
                 module_path = Some(path);
             }
         }
-
-        // Block `require (...)`.
-        if trimmed == "require (" {
-            in_require_block = true;
-            continue;
-        }
-        if trimmed == ")" && in_require_block {
-            in_require_block = false;
-            continue;
-        }
-
-        if in_require_block {
-            // Each line: `module/path version [// indirect]`
-            if let Some(path) = extract_require_path(trimmed) {
-                dependencies.push(path);
-            }
-            continue;
-        }
-
-        // Single-line `require module/path version`.
-        if let Some(rest) = trimmed.strip_prefix("require ")
-            && let Some(path) = extract_require_path(rest.trim())
-        {
-            dependencies.push(path);
-        }
     }
+    let dependencies = scan_requires(text)
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
 
     let repository = module_path.and_then(repo_from_module_path);
 
@@ -400,10 +377,73 @@ pub fn parse_go_mod(text: &str) -> ExtractedFacts {
 /// Indirect requirements are included: they are still module edges. A comment
 /// and the version token are not part of the name.
 pub fn require_names(text: &str) -> Vec<String> {
-    let mut names = parse_go_mod(text).dependencies;
-    names.sort();
-    names.dedup();
-    names
+    require_edges(text)
+        .into_iter()
+        .map(|edge| edge.name.to_string())
+        .collect()
+}
+
+/// Module edges from `go.mod`, with the version token as the requirement.
+///
+/// Indirect requirements stay. A repeated path keeps the first version.
+/// Names are sorted.
+#[must_use]
+pub fn require_edges(text: &str) -> Vec<crate::record::DepEdge> {
+    let mut edges: Vec<crate::record::DepEdge> = Vec::new();
+    for (path, version) in scan_requires(text) {
+        if edges.iter().any(|edge| edge.name == path) {
+            continue;
+        }
+        let mut edge = crate::record::DepEdge::runtime(path);
+        if let Some(version) = version {
+            edge.requirement = Some(version.into());
+        }
+        edges.push(edge);
+    }
+    edges.sort_by(|left, right| left.name.cmp(&right.name));
+    edges
+}
+
+fn scan_requires(text: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    let mut in_require_block = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == "require (" {
+            in_require_block = true;
+            continue;
+        }
+        if trimmed == ")" && in_require_block {
+            in_require_block = false;
+            continue;
+        }
+        if in_require_block {
+            if let Some(pair) = split_require(trimmed) {
+                out.push(pair);
+            }
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("require ")
+            && let Some(pair) = split_require(rest.trim())
+        {
+            out.push(pair);
+        }
+    }
+    out
+}
+
+fn split_require(line: &str) -> Option<(String, Option<String>)> {
+    let line = line.split("//").next().unwrap_or(line).trim();
+    let mut parts = line.split_ascii_whitespace();
+    let path = parts.next()?;
+    if path.is_empty() || path.starts_with('(') || path.starts_with(')') {
+        return None;
+    }
+    let version = parts
+        .next()
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned);
+    Some((path.to_owned(), version))
 }
 
 /// Retracted version expressions from a `go.mod` file, in source order.
@@ -606,16 +646,6 @@ fn retract_range_covers(inner: &str, version: &version::GoVersion) -> bool {
 }
 
 /// Extract the module path from a `require` line entry.
-fn extract_require_path(line: &str) -> Option<String> {
-    // Strip `// indirect` comment.
-    let line = line.split("//").next().unwrap_or(line).trim();
-    // `module/path version` — take the first whitespace-delimited token.
-    let path = line.split_ascii_whitespace().next()?;
-    if path.is_empty() || path.starts_with('(') || path.starts_with(')') {
-        return None;
-    }
-    Some(path.to_owned())
-}
 
 /// Strip a trailing `/vN` major-version suffix where N ≥ 2.
 /// Returns (path_without_suffix, Some(N)) or (path, None).
@@ -677,6 +707,9 @@ require (
             "golang.org/x/text".to_owned(),
             "rsc.io/quote".to_owned(),
         ]);
+        let edges = require_edges(text);
+        assert_eq!(edges[0].requirement.as_deref(), Some("v0.3.0"));
+        assert_eq!(edges[1].requirement.as_deref(), Some("v1.5.2"));
         assert!(require_names("module example.com/foo\n").is_empty());
     }
 

@@ -38,7 +38,7 @@ mod ts;
 
 pub use go::{
     escape_module_path, latest_version, mark_retracted, proxy_latest_url, proxy_mod_url,
-    require_names, unescape_module_path,
+    require_edges, require_names, unescape_module_path,
 };
 pub use heart::Language;
 pub use java::pom_dependency_names;

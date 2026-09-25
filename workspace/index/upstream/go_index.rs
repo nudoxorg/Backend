@@ -126,9 +126,9 @@ impl GoIndexFollower {
                 ))
             },
             |body| {
-                super::catalog::DocumentFacts::names(
+                super::catalog::DocumentFacts::edges(
                     std::str::from_utf8(body)
-                        .map(crate::ecosystem::require_names)
+                        .map(crate::ecosystem::require_edges)
                         .unwrap_or_default(),
                 )
             },
