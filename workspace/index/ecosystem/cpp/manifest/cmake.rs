@@ -108,12 +108,11 @@ pub fn parse(text: &str) -> CppManifest {
                 manifest.push_dependency(record);
             }
         } else if command.eq_ignore_ascii_case("fetchcontent_declare")
-            && let Some(url) = extract_fetchcontent_url(&arguments)
+            && let Some((url, tag)) = extract_fetchcontent(&arguments)
         {
-            manifest.push_dependency(DependencyRecord::new(
-                url,
-                DependencyMechanism::FetchContent,
-            ));
+            let mut record = DependencyRecord::new(url, DependencyMechanism::FetchContent);
+            record.requirement = tag;
+            manifest.push_dependency(record);
         }
     }
 
@@ -319,21 +318,24 @@ fn split_version_constraint(spec: &str) -> (&str, Option<&str>) {
 ///
 /// Returns the value following the `GIT_REPOSITORY` keyword, or `None` when
 /// absent.
-fn extract_fetchcontent_url(arguments: &[String]) -> Option<String> {
-    let mut iterator = arguments.iter();
-    // Skip the content name argument.
-    let _ = iterator.next();
-    while let Some(arg) = iterator.next() {
-        if arg.eq_ignore_ascii_case("GIT_REPOSITORY")
-            && let Some(url) = iterator.next()
-        {
-            let trimmed = url.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
-            }
+fn extract_fetchcontent(arguments: &[String]) -> Option<(String, Option<String>)> {
+    let mut url = None;
+    let mut tag = None;
+    let mut index = 1;
+    while index < arguments.len() {
+        let keyword = &arguments[index];
+        let value = arguments
+            .get(index + 1)
+            .map(|text| text.trim())
+            .filter(|text| !text.is_empty());
+        if keyword.eq_ignore_ascii_case("GIT_REPOSITORY") {
+            url = value.map(str::to_owned);
+        } else if keyword.eq_ignore_ascii_case("GIT_TAG") {
+            tag = value.map(str::to_owned);
         }
+        index += 1;
     }
-    None
+    url.map(|url| (url, tag))
 }
 
 #[cfg(test)]
@@ -400,6 +402,10 @@ FetchContent_Declare(
         assert_eq!(
             manifest.dependencies[0].mechanism,
             DependencyMechanism::FetchContent
+        );
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some("v3.11.2")
         );
     }
 

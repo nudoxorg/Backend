@@ -56,8 +56,8 @@ pub fn parse(text: &str) -> CppManifest {
 
     if let Some(deps) = value["dependencies"].as_array() {
         for dep in deps {
-            if let Some(token) = extract_dependency_token(dep) {
-                manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
+            if let Some(record) = extract_dependency(dep) {
+                manifest.push_dependency(record);
             }
         }
     }
@@ -96,35 +96,34 @@ fn extract_description(value: &Value) -> Option<String> {
     }
 }
 
-/// Extract a dependency token from a vcpkg dependency entry.
-///
-/// vcpkg allows two forms:
-/// - A bare string: `"zlib"` → token `"zlib"`.
-/// - An object with a `"name"` key: `{"name": "zlib", "features": [...]}` →
-///   token `"zlib"`.
-///
-/// Returns `None` for null, numbers, and other unexpected shapes.
-fn extract_dependency_token(entry: &Value) -> Option<String> {
-    match entry {
-        Value::String(s) => {
-            let trimmed = s.trim();
+/// A vcpkg dependency is a bare name or an object. `version>=` is the
+/// constraint the object declared.
+fn extract_dependency(entry: &Value) -> Option<DependencyRecord> {
+    let (token, requirement) = match entry {
+        Value::String(text) => {
+            let trimmed = text.trim();
             if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_owned())
+                return None;
             }
+            (trimmed.to_owned(), None)
         }
         Value::Object(_) => {
-            let name = entry["name"].as_str()?;
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_owned())
+            let name = entry["name"].as_str()?.trim();
+            if name.is_empty() {
+                return None;
             }
+            let requirement = entry["version>="]
+                .as_str()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| format!(">={text}"));
+            (name.to_owned(), requirement)
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    let mut record = DependencyRecord::new(token, DependencyMechanism::Recipe);
+    record.requirement = requirement;
+    Some(record)
 }
 
 #[cfg(test)]
@@ -139,7 +138,7 @@ mod tests {
             "description": "A useful C++ library",
             "license": "MIT",
             "homepage": "https://github.com/example/mylib",
-            "dependencies": ["zlib", "openssl", {"name": "boost-filesystem"}]
+            "dependencies": ["zlib", "openssl", {"name": "boost-filesystem", "version>=": "1.70.0"}]
         }"#;
         let manifest = parse(text);
         assert_eq!(
@@ -155,6 +154,11 @@ mod tests {
         assert_eq!(manifest.dependencies[0].token, "zlib");
         assert_eq!(manifest.dependencies[1].token, "openssl");
         assert_eq!(manifest.dependencies[2].token, "boost-filesystem");
+        assert_eq!(
+            manifest.dependencies[2].requirement.as_deref(),
+            Some(">=1.70.0")
+        );
+        assert!(manifest.dependencies[0].requirement.is_none());
         assert!(
             manifest
                 .dependencies

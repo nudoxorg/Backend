@@ -62,17 +62,14 @@ pub fn parse(text: &str) -> CppManifest {
                     continue;
                 }
                 CallKeyword::Subproject => {
-                    if let Some((token, after_call)) =
-                        extract_first_string_arg(bytes, rest_position)
-                    {
-                        manifest.push_dependency(DependencyRecord::new(
-                            token,
-                            DependencyMechanism::Wrap,
-                        ));
-                        position = after_call;
-                        continue;
+                    let (span, after_call) = extract_call_raw_span(bytes, rest_position);
+                    if let Some((token, _)) = extract_first_string_arg(bytes, rest_position) {
+                        let mut record = DependencyRecord::new(token, DependencyMechanism::Wrap);
+                        record.requirement = extract_meson_kwarg_strings(&span, "version")
+                            .and_then(|values| values.into_iter().find(|value| !value.is_empty()));
+                        manifest.push_dependency(record);
                     }
-                    position = rest_position;
+                    position = after_call;
                     continue;
                 }
                 CallKeyword::Project => {
@@ -425,6 +422,17 @@ subproject('googletest')
         let pairs = dependency_tokens(&manifest);
         assert!(pairs.contains(&("zlib", DependencyMechanism::PkgConfig)));
         assert!(pairs.contains(&("googletest", DependencyMechanism::Wrap)));
+    }
+
+    #[test]
+    fn parse_subproject_keeps_version() {
+        let manifest = parse("subproject('googletest', version: '1.12.1')\n");
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.dependencies[0].token, "googletest");
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some("1.12.1")
+        );
     }
 
     #[test]

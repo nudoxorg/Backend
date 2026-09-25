@@ -94,8 +94,8 @@ fn parse_conanfile_txt(text: &str) -> CppManifest {
             continue;
         }
 
-        if in_requires_section && let Some(token) = conan_dep_token(trimmed) {
-            manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
+        if in_requires_section && let Some(spec) = conan_dep_token(trimmed) {
+            push_recipe(&mut manifest, spec);
         }
     }
 
@@ -176,8 +176,8 @@ fn parse_conanfile_py(text: &str) -> CppManifest {
 
         // `self.requires("dep/ver")` or `self.tool_requires("dep/ver")`
         if trimmed.contains("self.requires(") || trimmed.contains("self.tool_requires(") {
-            if let Some(token) = extract_single_call_dep(trimmed) {
-                manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
+            if let Some(spec) = extract_single_call_dep(trimmed) {
+                push_recipe(&mut manifest, spec);
             }
             index += 1;
             continue;
@@ -185,8 +185,8 @@ fn parse_conanfile_py(text: &str) -> CppManifest {
 
         // `requires = "dep/ver"` — single string assignment.
         if let Some(value) = extract_string_assignment(effective, "requires") {
-            if let Some(token) = conan_dep_token(&value) {
-                manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
+            if let Some(spec) = conan_dep_token(&value) {
+                push_recipe(&mut manifest, spec);
             }
             index += 1;
             continue;
@@ -212,8 +212,8 @@ fn parse_conanfile_py(text: &str) -> CppManifest {
                 index += 1;
             }
             // Extract all quoted strings from `collected`.
-            for token in extract_all_quoted_dep_tokens(&collected) {
-                manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
+            for spec in extract_all_quoted_dep_tokens(&collected) {
+                push_recipe(&mut manifest, spec);
             }
             continue;
         }
@@ -226,22 +226,32 @@ fn parse_conanfile_py(text: &str) -> CppManifest {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Extract the package name token from a Conan requirement spec like
-/// `"zlib/1.2.11"` or `"zlib"`. Returns the text before the first `/`, or
-/// the whole string when no `/` is present. Returns `None` for empty or
-/// comment-only lines.
-fn conan_dep_token(spec: &str) -> Option<String> {
+/// Split a Conan requirement spec (`zlib/1.2.11`, `zlib/1.2.11@user/channel`)
+/// into the package name and the reference written after the first `/`.
+fn conan_dep_token(spec: &str) -> Option<(String, Option<String>)> {
     let spec = spec.trim().trim_matches(|c| c == '"' || c == '\'');
     let spec = spec.trim();
     if spec.is_empty() || spec.starts_with('#') {
         return None;
     }
-    let token = spec.split('/').next().unwrap_or(spec).trim();
-    if token.is_empty() {
+    let (name, rest) = spec.split_once('/').unwrap_or((spec, ""));
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let rest = rest.trim();
+    let requirement = if rest.is_empty() {
         None
     } else {
-        Some(token.to_owned())
-    }
+        Some(rest.to_owned())
+    };
+    Some((name.to_owned(), requirement))
+}
+
+fn push_recipe(manifest: &mut CppManifest, (token, requirement): (String, Option<String>)) {
+    let mut record = DependencyRecord::new(token, DependencyMechanism::Recipe);
+    record.requirement = requirement;
+    manifest.push_dependency(record);
 }
 
 /// Extract a single-line `key = "value"` or `key = 'value'` assignment.
@@ -369,7 +379,7 @@ fn extract_all_quoted_strings(text: &str) -> Vec<String> {
 }
 
 /// Extract all dep tokens from a string containing quoted dep specs.
-fn extract_all_quoted_dep_tokens(text: &str) -> Vec<String> {
+fn extract_all_quoted_dep_tokens(text: &str) -> Vec<(String, Option<String>)> {
     extract_all_quoted_strings(text)
         .into_iter()
         .filter_map(|s| conan_dep_token(&s))
@@ -438,7 +448,7 @@ fn line_copies_license_file(line: &str) -> bool {
 }
 
 /// Extract the dep token from a `self.requires("dep/ver")` call.
-fn extract_single_call_dep(line: &str) -> Option<String> {
+fn extract_single_call_dep(line: &str) -> Option<(String, Option<String>)> {
     // Find the opening paren of the `requires(` call.
     let after_paren = line
         .find("self.requires(")
@@ -467,7 +477,15 @@ mod tests {
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 2);
         assert_eq!(manifest.dependencies[0].token, "zlib");
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some("1.2.11")
+        );
         assert_eq!(manifest.dependencies[1].token, "openssl");
+        assert_eq!(
+            manifest.dependencies[1].requirement.as_deref(),
+            Some("3.0.0")
+        );
         assert!(
             manifest
                 .dependencies
