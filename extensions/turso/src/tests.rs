@@ -490,7 +490,7 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             .await
             .expect("forward");
         assert_eq!(forward.root.as_ref(), root_b.as_bytes());
-        assert_eq!(forward.edges.as_ref(), &[edge]);
+        assert_eq!(forward.edges.as_ref(), &[edge.clone()]);
         let reverse = projection
             .package_dependents(&target)
             .await
