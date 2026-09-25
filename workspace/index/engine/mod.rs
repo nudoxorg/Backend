@@ -38,6 +38,7 @@ mod edge_fact;
 pub mod turso_vc;
 
 mod content;
+mod degree;
 mod withdraw;
 
 pub use stmt::{exec, query};

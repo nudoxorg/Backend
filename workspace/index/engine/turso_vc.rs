@@ -108,17 +108,17 @@ pub enum FactWrite {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct PackageKey {
-    ecosystem: SmolStr,
-    package: SmolStr,
-    version: SmolStr,
+pub(super) struct PackageKey {
+    pub(super) ecosystem: SmolStr,
+    pub(super) package: SmolStr,
+    pub(super) version: SmolStr,
 }
 
 #[derive(Clone)]
-struct EdgeTip {
-    name: SmolStr,
-    class: SmolStr,
-    hash: SmolStr,
+pub(super) struct EdgeTip {
+    pub(super) name: SmolStr,
+    pub(super) class: SmolStr,
+    pub(super) hash: SmolStr,
 }
 
 /// In-memory versioned catalog on branch `main`.
@@ -126,8 +126,8 @@ pub struct VersionedCatalog {
     db: VersionedDb,
     /// Coordinate to version PID. Kept after a drop so an as-of read still
     /// names the row.
-    coords: BTreeMap<PackageKey, SmolStr>,
-    edge_tips: BTreeMap<SmolStr, Vec<EdgeTip>>,
+    pub(super) coords: BTreeMap<PackageKey, SmolStr>,
+    pub(super) edge_tips: BTreeMap<SmolStr, Vec<EdgeTip>>,
 }
 
 impl VersionedCatalog {
