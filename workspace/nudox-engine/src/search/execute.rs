@@ -36,7 +36,8 @@ pub(super) async fn run_search(
         return;
     }
 
-    // Collect all packages synchronously (corpus is an in-memory Arc map).
+    // Semantic search still reads the resident corpus. Name and kind search
+    // use the corpus indexes and do not.
     let packages = corpus.packages().await;
 
     // Both local sections read the resident corpus directly, so they are
@@ -94,9 +95,8 @@ pub(super) async fn run_search(
     }
 
     // ── Section 1: Type / kind search ──────────────────────────────────────
-    // Signature facets resolve type *names* through the same index. Kind
-    // facets still read every resident package, because "all functions" is
-    // the whole corpus.
+    // Signature facets resolve type names through the declaration index.
+    // A kind query opens only packages that declare one of those kinds.
     let type_start = Instant::now();
     let (declared, type_packages) = match crate::typequery::TypeQuery::parse(&query.text) {
         Some(parsed) => {
@@ -112,7 +112,11 @@ pub(super) async fn run_search(
             };
             (declared, users)
         }
-        None => (std::collections::BTreeMap::new(), packages.clone()),
+        None => {
+            let kinds = hits::kind_targets(&query);
+            let owners = corpus.packages_with_kinds(&kinds).await;
+            (std::collections::BTreeMap::new(), owners)
+        }
     };
     let type_rows = collect_type_hits(&type_packages, &query, &declared);
     let type_elapsed = type_start.elapsed();

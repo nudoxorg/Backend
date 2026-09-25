@@ -42,6 +42,7 @@ use std::{
 use nudox_ir::{
     change::{IntroId, PackageLineageId, StableRef},
     entry::Entry,
+    kind::KindDiscriminant,
     view::IrView,
 };
 use tokio::sync::RwLock;
@@ -64,6 +65,11 @@ struct CorpusState {
     ///
     /// Signature search intersects these sets instead of opening every package.
     refs: BTreeMap<StableRef, BTreeSet<PackageLineageId>>,
+    /// Kind → packages that declare at least one symbol of that kind.
+    ///
+    /// A kind query opens these packages. A package with no function is not
+    /// part of a function search.
+    kinds: BTreeMap<KindDiscriminant, BTreeSet<PackageLineageId>>,
 }
 
 struct CorpusInner {
@@ -94,6 +100,7 @@ impl Corpus {
                     packages: BTreeMap::new(),
                     names: BTreeMap::new(),
                     refs: BTreeMap::new(),
+                    kinds: BTreeMap::new(),
                 }),
             }),
         }
@@ -108,9 +115,11 @@ impl Corpus {
         if let Some(previous) = state.packages.get(&id).cloned() {
             detach_names(&mut state.names, &previous);
             detach_refs(&mut state.refs, &previous);
+            detach_kinds(&mut state.kinds, &previous);
         }
         attach_names(&mut state.names, &package);
         attach_refs(&mut state.refs, &package);
+        attach_kinds(&mut state.kinds, &package);
         state.packages.insert(id, package);
     }
 
@@ -197,6 +206,24 @@ impl Corpus {
             .collect()
     }
 
+    /// Packages that declare any of `kinds`. Lineage order. An empty list
+    /// matches nothing: a query that names no kind is not a kind search.
+    pub async fn packages_with_kinds(&self, kinds: &[KindDiscriminant]) -> Vec<Arc<PackageView>> {
+        if kinds.is_empty() {
+            return Vec::new();
+        }
+        let state = self.inner.state.read().await;
+        let mut ids = BTreeSet::new();
+        for kind in kinds {
+            if let Some(owners) = state.kinds.get(kind) {
+                ids.extend(owners.iter().cloned());
+            }
+        }
+        ids.into_iter()
+            .filter_map(|id| state.packages.get(&id).cloned())
+            .collect()
+    }
+
     /// Look up a package by its lineage identity.
     ///
     /// Returns `None` if the package has not yet been loaded (or if it
@@ -264,6 +291,32 @@ fn detach_refs(refs: &mut BTreeMap<StableRef, BTreeSet<PackageLineageId>>, packa
         owners.remove(id);
         if owners.is_empty() {
             refs.remove(target);
+        }
+    }
+}
+
+fn attach_kinds(
+    kinds: &mut BTreeMap<KindDiscriminant, BTreeSet<PackageLineageId>>,
+    package: &PackageView,
+) {
+    let id = package.lineage().clone();
+    for kind in package.indexes().by_kind.keys() {
+        kinds.entry(*kind).or_default().insert(id.clone());
+    }
+}
+
+fn detach_kinds(
+    kinds: &mut BTreeMap<KindDiscriminant, BTreeSet<PackageLineageId>>,
+    package: &PackageView,
+) {
+    let id = package.lineage();
+    for kind in package.indexes().by_kind.keys() {
+        let Some(owners) = kinds.get_mut(kind) else {
+            continue;
+        };
+        owners.remove(id);
+        if owners.is_empty() {
+            kinds.remove(kind);
         }
     }
 }
@@ -460,6 +513,62 @@ mod tests {
             .await;
         assert!(corpus.packages_with_name_prefix("wid").await.is_empty());
         assert_eq!(corpus.packages_with_name_prefix("oth").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn kind_index_skips_packages_that_do_not_declare_the_kind() {
+        use nudox_ir::{kind::Kind, kinds::Function};
+
+        let corpus = Corpus::new();
+        corpus.insert(make_package("module-only")).await;
+        corpus.insert(make_function_package("fns")).await;
+
+        let matched = corpus
+            .packages_with_kinds(&[KindDiscriminant::Function])
+            .await;
+        let names: Vec<_> = matched
+            .iter()
+            .map(|pkg| pkg.lineage().name.as_str().to_owned())
+            .collect();
+        assert_eq!(names, vec!["fns".to_owned()]);
+        assert!(corpus.packages_with_kinds(&[]).await.is_empty());
+
+        corpus.insert(make_package("fns")).await;
+        assert!(
+            corpus
+                .packages_with_kinds(&[KindDiscriminant::Function])
+                .await
+                .is_empty()
+        );
+        let modules = corpus
+            .packages_with_kinds(&[KindDiscriminant::Module])
+            .await;
+        assert_eq!(modules.len(), 2);
+
+        fn make_function_package(name: &str) -> Arc<PackageView> {
+            let lid = lineage(name);
+            let mut table = PristineIntroTable::new();
+            table.insert_live(
+                intro(1),
+                nudox_ir::entry::Entry::new(
+                    sym("root"),
+                    Node::build(None::<nudox_ir::index::RawRef>, []),
+                    Kind::Module(Module),
+                ),
+                None,
+            );
+            table.insert_live(
+                intro(2),
+                nudox_ir::entry::Entry::new(
+                    sym("find"),
+                    Node::build(None::<nudox_ir::index::RawRef>, []),
+                    Kind::Function(Function::builder().build()),
+                ),
+                Some(intro(1)),
+            );
+            let view = IrView::with_package(lid, table);
+            Arc::new(PackageView::build(view, Provenance::TrustedLocal))
+        }
     }
 
     #[tokio::test]

@@ -525,6 +525,19 @@ fn collect_signature_hits(
     finalize_candidates(candidates)
 }
 
+/// Kinds the type section will emit for this query.
+///
+/// A kind keyword in the text wins. Otherwise an explicit `kinds` filter.
+/// Neither means the type section emits nothing.
+pub(crate) fn kind_targets(query: &SearchQuery) -> Vec<KindDiscriminant> {
+    if query.kinds.is_empty() {
+        let lower = query.text.to_lowercase();
+        keyword_to_kinds(&lower)
+    } else {
+        query.kinds.clone()
+    }
+}
+
 /// Collect hits from the kind facet index.
 ///
 /// If the query text matches a kind label (e.g. `"fn"` → `Function`) we emit
@@ -539,17 +552,7 @@ fn collect_kind_facet_hits(
         query.limit
     };
 
-    // Determine which kind discriminant(s) to emit for the "type" section.
-    // Priority:
-    //   1. If the query text matches a kind keyword, use that kind.
-    //   2. If an explicit kind filter is set, use that filter.
-    //   3. Otherwise, emit nothing (name section already covers everything).
-    let target_kinds: Vec<KindDiscriminant> = if query.kinds.is_empty() {
-        let lower = query.text.to_lowercase();
-        keyword_to_kinds(&lower)
-    } else {
-        query.kinds.clone()
-    };
+    let target_kinds = kind_targets(query);
 
     if target_kinds.is_empty() {
         return Vec::new();
