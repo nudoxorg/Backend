@@ -200,6 +200,38 @@ mod tests {
     }
 
     #[test]
+    fn star_reexport_of_a_missing_file_seals_without_a_star_symbol() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"star-gap","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export function keep(): void;\nexport * from \"./gone\";\n",
+        )
+        .expect("write entry module");
+
+        let source = PackageSource::new(dir.path(), "star-gap", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("star-gap"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a star that names nothing must not reject the package");
+
+        assert!(
+            produced.table.iter().all(|(_, entry)| entry.sym().name != "*"),
+            "no symbol may be named *"
+        );
+        assert!(
+            produced
+                .table
+                .iter()
+                .any(|(_, entry)| entry.sym().name == "keep"),
+            "the real declaration must still seal"
+        );
+    }
+
+    #[test]
     fn an_empty_package_is_rejected_instead_of_sealing_the_root_stub() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

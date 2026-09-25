@@ -1025,6 +1025,16 @@ fn resolve_export_target(
 ) -> Vec<TsId> {
     use crate::typescript::extract::LocalExport;
 
+    // `export *` and `ExportImportName::All` store the import name as `"*"`.
+    // Nothing declares that id. The star names the module, not a symbol.
+    if name == "*" {
+        return vec![TsId::new(
+            table_path.to_path_buf(),
+            MODULE_ROOT_NAME,
+            0,
+        )];
+    }
+
     match table.locals.get(name) {
         Some(LocalExport::Named {
             local_name,
@@ -1072,7 +1082,20 @@ fn emit_reexports(
         let target_name = &indirect.import_name;
         let export_name = &indirect.export_name;
 
-        if !reexported.insert(export_name.clone()) {
+        if export_name == "*" || !reexported.insert(export_name.clone()) {
+            continue;
+        }
+
+        // `export * as ns from "m"` arrives here with import name `"*"`.
+        // The target is the module root, never a symbol named `"*"`.
+        if target_name == "*" {
+            if let Some(p) = target_path.as_ref() {
+                let root = TsId::new(p.clone(), MODULE_ROOT_NAME, 0);
+                let target_ref = refer_resolved(out, root);
+                let sym = reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
+                let reexport_id = TsId::new(module.path.clone(), export_name.as_str(), 0);
+                let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
+            }
             continue;
         }
 
@@ -1139,9 +1162,10 @@ fn emit_reexports(
         // `format.d.ts` fans through `export { format as formatDate }`,
         // both bare local renames the target module itself declares under
         // the *pre*-rename name.
+        let mut expanded = false;
         if let Some(target_table) = export_index.get(tp.as_path()) {
             for export_name in &target_table.exported_names {
-                if !reexported.insert(export_name.clone()) {
+                if export_name == "*" || !reexported.insert(export_name.clone()) {
                     continue;
                 }
                 let target_ids =
@@ -1172,6 +1196,10 @@ fn emit_reexports(
                 // `emit_class`/`emit_interface`'s own overload-discriminant
                 // convention rather than inventing a new one.
                 for (discriminant, target_id) in target_ids.into_iter().enumerate() {
+                    if target_id.name == "*" {
+                        continue;
+                    }
+                    expanded = true;
                     let reexport_id =
                         TsId::new(module.path.clone(), export_name, discriminant as u32);
                     let target_ref: Ref<Module> = refer_resolved(out, target_id);
@@ -1180,6 +1208,42 @@ fn emit_reexports(
                 }
             }
         }
+        // A star that named nothing this package declared is one reference to
+        // the module root. The symbol is the file stem, never `"*"`.
+        if !expanded {
+            let root = TsId::new(tp.clone(), MODULE_ROOT_NAME, 0);
+            if !out.is_declared(&root) {
+                continue;
+            }
+            let stem = tp
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("module")
+                .trim_end_matches(".d")
+                .to_string();
+            if stem == "*" || !reexported.insert(stem.clone()) {
+                continue;
+            }
+            let sym = reexport_symbol(module, &stem, star.span_start, star.span_end);
+            let reexport_id = TsId::new(module.path.clone(), stem.as_str(), 0);
+            let target_ref = refer_resolved(out, root);
+            let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
+        }
+    }
+}
+
+fn reexport_symbol(module: &ModuleFacts, name: &str, start: u32, end: u32) -> Symbol {
+    Symbol {
+        name: name.to_string(),
+        visibility: Visibility::Public,
+        documentation: String::new(),
+        source: module.path.clone(),
+        span: (start as usize)..(end as usize),
+        aliases: Box::new([]),
+        deprecation: None,
+        doc_links: Box::new([]),
+        attrs: Box::new([]),
+        cfg: None,
     }
 }
 
@@ -1215,7 +1279,12 @@ fn emit_inline_reexport(
 ) {
     let target_path = resolve_module_path(resolver, &id.module, module_request);
     if let Some(tp) = target_path {
-        let target_id = TsId::new(tp, import_name, 0);
+        let target_name = if import_name == "*" {
+            MODULE_ROOT_NAME
+        } else {
+            import_name
+        };
+        let target_id = TsId::new(tp, target_name, 0);
         let target_ref: Ref<Module> = refer_resolved(out, target_id);
         let _: Ref<Module> = out.declare_ref(id, parent, sym, target_ref);
     }
