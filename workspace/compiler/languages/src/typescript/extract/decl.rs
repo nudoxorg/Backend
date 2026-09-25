@@ -1282,6 +1282,17 @@ fn lower_formal_parameters<'a>(
             is_optional: param.optional,
             is_rest: false,
             is_readonly,
+            initializer: param
+                .initializer
+                .as_ref()
+                .map(|init| init.span().source_text(source).to_string()),
+            decorators: param
+                .decorators
+                .iter()
+                .map(|decorator| AttrTok {
+                    token: decorator.span.source_text(source).to_string(),
+                })
+                .collect(),
             span_start: span.start,
             span_end: span.end,
         });
@@ -1300,6 +1311,8 @@ fn lower_formal_parameters<'a>(
             is_optional: false,
             is_rest: true,
             is_readonly: false,
+            initializer: None,
+            decorators: Vec::new(),
             span_start: span.start,
             span_end: span.end,
         });
@@ -1436,7 +1449,11 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators: Vec::new(),
-                class_flags: ClassFlags::default(),
+                class_flags: ClassFlags {
+                    declare: false,
+                    override_: param.r#override,
+                    definite: false,
+                },
                 initializer: None,
                 signature_kind: SignatureKind::Method,
                 span_start: span.start,

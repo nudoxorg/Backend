@@ -472,6 +472,8 @@ pub struct ParamFact {
     pub is_optional: bool,
     pub is_rest: bool,
     pub is_readonly: bool,
+    pub initializer: Option<String>,
+    pub decorators: Vec<AttrTok>,
     /// Byte span of the `FormalParameter` (or `BindingRestElement` for a
     /// rest parameter) node.
     pub span_start: u32,

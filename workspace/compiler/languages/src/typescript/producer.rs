@@ -765,6 +765,24 @@ mod tests {
                 "f",
             ),
             (
+                "param-default",
+                "namespace N { export function f(a = 1) { return a; } }\n\
+                 namespace N { export function f(a = 2) { return a; } }\n",
+                "f",
+            ),
+            (
+                "param-decorator",
+                "namespace N { export class C { m(@dec a: string) {} } }\n\
+                 namespace N { export class C { m(@other a: string) {} } }\n",
+                "m",
+            ),
+            (
+                "ctor-override",
+                "namespace N { export class C { constructor(public x: number) {} } }\n\
+                 namespace N { export class C { constructor(override public x: number) {} } }\n",
+                "x",
+            ),
+            (
                 "docs",
                 "namespace N { /** one */ export interface I { x: string; } }\n\
                  namespace N { /** two */ export interface I { x: string; } }\n",

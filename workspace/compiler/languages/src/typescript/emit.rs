@@ -541,6 +541,8 @@ fn emit_interface(
             is_optional: false,
             is_rest: false,
             is_readonly: false,
+            initializer: None,
+            decorators: Vec::new(),
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
@@ -799,6 +801,8 @@ fn emit_class(
                 is_optional: false,
                 is_rest: false,
                 is_readonly: false,
+                initializer: None,
+                decorators: Vec::new(),
                 span_start: idx_sig.span_start,
                 span_end: idx_sig.span_end,
             }],
@@ -2247,7 +2251,15 @@ fn function_skeleton(f: &FunctionBody) -> String {
         if param.is_readonly {
             s.push_str("ro ");
         }
+        for decorator in &param.decorators {
+            s.push('@');
+            s.push_str(&decorator.token);
+        }
         s.push_str(&param.name);
+        if let Some(initializer) = &param.initializer {
+            s.push('=');
+            s.push_str(initializer);
+        }
         if param.is_optional {
             s.push('?');
         }

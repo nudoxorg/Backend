@@ -13,7 +13,7 @@ use oxc_ast::ast::{TSLiteral, TSType, TSTypeName, TSTypeParameterDeclaration};
 use oxc_span::GetSpan;
 
 use super::{
-    AnonFieldOwned, FunctionBody, GenericParamOwned, LiteralOwned, ParamFact, ReceiverKind,
+    AnonFieldOwned, AttrTok, FunctionBody, GenericParamOwned, LiteralOwned, ParamFact, ReceiverKind,
     TemplatePart, TypeOwned,
 };
 
@@ -384,6 +384,8 @@ fn lower_ts_type_impl<'a>(
                                         is_optional: false,
                                         is_rest: false,
                                         is_readonly: false,
+                                        initializer: None,
+                                        decorators: Vec::new(),
                                         span_start: span.start,
                                         span_end: span.end,
                                     })
@@ -753,6 +755,17 @@ fn lower_formal_params<'a>(
             is_optional: param.optional,
             is_rest: false,
             is_readonly: param.readonly,
+            initializer: param
+                .initializer
+                .as_ref()
+                .map(|init| init.span().source_text(source).to_string()),
+            decorators: param
+                .decorators
+                .iter()
+                .map(|decorator| AttrTok {
+                    token: decorator.span.source_text(source).to_string(),
+                })
+                .collect(),
             span_start: span.start,
             span_end: span.end,
         });
@@ -771,6 +784,8 @@ fn lower_formal_params<'a>(
             is_optional: false,
             is_rest: true,
             is_readonly: false,
+            initializer: None,
+            decorators: Vec::new(),
             span_start: span.start,
             span_end: span.end,
         });
