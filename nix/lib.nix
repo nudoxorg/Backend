@@ -82,8 +82,21 @@ let
         if mainProgram == "" then
           "mkdir -p $out"
         else
+          let
+            rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget or null;
+            releaseBinary =
+              if rustTarget != null then
+                "target/${rustTarget}/release/${mainProgram}"
+              else
+                "target/release/${mainProgram}";
+          in
           ''
-            install -Dm755 "target/release/${mainProgram}" "$out/bin/${mainProgram}"
+            if [ ! -f "${releaseBinary}" ]; then
+              echo "expected release binary at ${releaseBinary}" >&2
+              find target -name ${mainProgram} -type f >&2 || true
+              exit 1
+            fi
+            install -Dm755 "${releaseBinary}" "$out/bin/${mainProgram}"
           '';
       meta = {
         inherit description mainProgram;
