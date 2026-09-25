@@ -82,7 +82,7 @@ let
           BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
           BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
           BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
-          BACKEND_STABLE_CARGO = toolchains.stableCargo;
+          BACKEND_STABLE_CARGO = "${tools.parallelCargo}/bin/cargo";
           BACKEND_CONTROL_SOURCE = toString workspaceRoot;
           # The control binary remains available as the dedicated
           # `.#backend-control` package. Keeping it out of this general shell

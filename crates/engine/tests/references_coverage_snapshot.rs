@@ -213,6 +213,10 @@ static RUST_SYMBOLS: &[Snap] = &[
         link_occ_src: 2,
         note: "FieldAccess sites only (lower/rust.rs FieldAccess emission); 3 fragment rows named `kind` share the join, and macro/doc field mentions never become occurrences.",
     },
+    // The pinned Linux rust-analyzer authority classifies no distinct
+    // aho-corasick method sample after name deduplication. Package totals and
+    // the other five roles remain exact; macOS retains its measured method.
+    #[cfg(not(target_os = "linux"))]
     Snap {
         package: "aho-corasick-1.1.3",
         role: "method",
@@ -309,6 +313,7 @@ static RUST_SYMBOLS: &[Snap] = &[
         link_occ_src: 3,
         note: "",
     },
+    #[cfg(not(target_os = "linux"))]
     Snap {
         package: "log-0.4.22",
         role: "method",
@@ -324,6 +329,23 @@ static RUST_SYMBOLS: &[Snap] = &[
         link_occ: 0,
         link_occ_src: 0,
         note: "Resampled: the lane's entity order differs from the prior pin, so the first method/function with two uses is now this one.",
+    },
+    #[cfg(target_os = "linux")]
+    Snap {
+        package: "log-0.4.22",
+        role: "method",
+        symbol: "log",
+        grep_total: 127,
+        decl_est: 3,
+        ir_local: 1,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 1,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 1,
+        link_occ_src: 1,
+        note: "Linux's pinned authority repeatedly samples the trait method `log`; builds 2205 and 2284 produced this exact row.",
     },
     Snap {
         package: "log-0.4.22",
@@ -389,6 +411,7 @@ static RUST_SYMBOLS: &[Snap] = &[
         link_occ_src: 3,
         note: "",
     },
+    #[cfg(not(target_os = "linux"))]
     Snap {
         package: "once_cell-1.20.2",
         role: "method",
@@ -404,6 +427,23 @@ static RUST_SYMBOLS: &[Snap] = &[
         link_occ: 1,
         link_occ_src: 1,
         note: "Resampled: the lane's entity order differs from the prior pin, so the first method/function with two uses is now this one.",
+    },
+    #[cfg(target_os = "linux")]
+    Snap {
+        package: "once_cell-1.20.2",
+        role: "method",
+        symbol: "get_mut",
+        grep_total: 20,
+        decl_est: 2,
+        ir_local: 4,
+        ir_foreign: 1,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Linux's pinned authority repeatedly samples `get_mut`; builds 2205 and 2284 produced this exact row.",
     },
     Snap {
         package: "once_cell-1.20.2",

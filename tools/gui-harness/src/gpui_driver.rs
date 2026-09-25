@@ -936,6 +936,9 @@ mod tests {
         }
     }
 
+    // GPUI exposes this direct offscreen renderer through Metal only. Linux
+    // and Windows are verified by their real window/compositor lanes instead.
+    #[cfg(target_os = "macos")]
     #[test]
     fn headless_scale_preflight_renders_the_right_edge_landmark() {
         let _guard = gpui_headless_guard();
@@ -965,6 +968,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn headless_resize_after_first_frame_records_per_frame_geometry() {
         let _guard = gpui_headless_guard();

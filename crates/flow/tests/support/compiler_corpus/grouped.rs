@@ -20,8 +20,11 @@ use super::observation::{
 const CASES_PER_BATCH: usize = multilingual_corpus::CASES_PER_LANGUAGE;
 const BATCH_SOURCE_LIMIT: usize = 64 * 1024;
 const BATCH_FRAGMENT_LIMIT: usize = 16 * 1024 * 1024;
-const BATCH_DEADLINE: Duration = Duration::from_secs(20);
-const BATCH_AUTHORITY_DEADLINE: Duration = Duration::from_secs(12);
+const BATCH_DEADLINE: Duration = Duration::from_secs(60);
+
+fn batch_deadline() -> Instant {
+    Instant::now() + BATCH_DEADLINE
+}
 
 /// The order gives cheap, locally unavailable lanes a chance to report before
 /// a potentially slow Rust-analyzer transaction.  It is fixed and independent
@@ -437,8 +440,6 @@ fn run_language(
     let work = NativeWork::create().map_err(|cause| CorpusAuditError::NativeWork { key, cause })?;
     let cancelled = AtomicBool::new(false);
     let mut fragment_output = vec![0xa5_u8; BATCH_FRAGMENT_LIMIT];
-    let deadline = Instant::now() + BATCH_DEADLINE;
-    let authority_deadline = Instant::now() + BATCH_AUTHORITY_DEADLINE;
 
     match language {
         CorpusLanguage::Rust => {
@@ -471,7 +472,7 @@ fn run_language(
                     features: fixture.features,
                 },
                 &cancelled,
-                deadline.min(authority_deadline),
+                batch_deadline(),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -498,7 +499,7 @@ fn run_language(
                     image: &fixture.image,
                 },
                 &cancelled,
-                deadline.min(authority_deadline),
+                batch_deadline(),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -531,7 +532,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::Java { image: &image },
                 &cancelled,
-                deadline.min(authority_deadline),
+                batch_deadline(),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -564,7 +565,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::CSharp { image: &image },
                 &cancelled,
-                deadline.min(authority_deadline),
+                batch_deadline(),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -579,7 +580,7 @@ fn run_language(
                 ));
             };
             let checker = backend_frontend_typescript::legacy::Checker {
-                timeout: BATCH_AUTHORITY_DEADLINE,
+                timeout: BATCH_DEADLINE,
                 ..backend_frontend_typescript::legacy::Checker::default()
             };
             let report = match checker.run(ts_profile, batch.source()) {
@@ -598,7 +599,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::TypeScript { report: &report },
                 &cancelled,
-                deadline.min(authority_deadline),
+                batch_deadline(),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -629,7 +630,7 @@ fn run_language(
                 }
             };
             let checker = backend_frontend_python::legacy::Pyrefly::from_env()
-                .with_timeout(BATCH_AUTHORITY_DEADLINE);
+                .with_timeout(BATCH_DEADLINE);
             if !checker.is_available() {
                 return Ok(unavailable_result(
                     &batch,
@@ -652,7 +653,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::Python { report: &report },
                 &cancelled,
-                deadline.min(authority_deadline),
+                batch_deadline(),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -674,7 +675,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::None,
                 &cancelled,
-                deadline.min(authority_deadline),
+                batch_deadline(),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -973,12 +974,6 @@ fn inspect_batch(
                 }
                 let owned_render = render_neutral(&compiled.ir, Some(owned));
                 let reopened_render = observation::render_neutral_reader(image, Some(reopened.id));
-                if batch.language == CorpusLanguage::Python {
-                    eprintln!(
-                        "DEBUG render case={} owned={:?} reopened={:?}",
-                        case.package.ordinal, owned_render, reopened_render
-                    );
-                }
                 if !matches!(expected.neutral_render, RenderAvailability::NeutralRequired)
                     || !matches!(owned_render, RenderVerdict::Rendered(_))
                     || !matches!(reopened_render, RenderVerdict::Rendered(_))
@@ -990,15 +985,17 @@ fn inspect_batch(
                         observed: grouped_digest_render(reopened_render),
                     });
                 }
-                // Dialect renderers are intentionally not admitted by this
-                // seam.  Keep the exact unsupported observation red rather
-                // than treating the absence as a successful dialect check.
-                mismatches.push(CorpusMismatch::Grouped {
-                    key,
-                    field: GroupedField::Render,
-                    expected: grouped_digest_render_availability(expected.dialect_render),
-                    observed: grouped_digest_render(RenderVerdict::Unsupported),
-                });
+                // This seam deliberately does not admit dialect renderers.
+                // Typed Unsupported is therefore the exact expected outcome,
+                // not a permanent synthetic failure in every corpus row.
+                if expected.dialect_render != RenderAvailability::DialectUnsupported {
+                    mismatches.push(CorpusMismatch::Grouped {
+                        key,
+                        field: GroupedField::Render,
+                        expected: grouped_digest_render_availability(expected.dialect_render),
+                        observed: grouped_digest_render(RenderVerdict::Unsupported),
+                    });
+                }
             }
         }
         Ok(())

@@ -631,6 +631,20 @@ in
             };
           }
           {
+            # This journey performs two real Rust indexing generations and a
+            # restart. Keep it out of the ordinary process pool so native
+            # compiler contention cannot consume its internal bounded index
+            # deadline.
+            filter = "test(semantic_version_selection_is_exact_and_durable_across_restart)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+            slow-timeout = {
+              period = "90s";
+              terminate-after = 6;
+            };
+          }
+          {
             # `rust_real_corpus_repro`'s two whole-fleet probes and
             # `compiler_corpus`'s `real_package_inventory_...` all match the
             # general `/corpus|...|real_package/` filter below, so they
@@ -772,7 +786,10 @@ in
       concurrency-proof.max-threads = 2;
       display-global.max-threads = 1;
       live-qdrant.max-threads = 1;
-      native-compiler.max-threads = 2;
+      # Resource tokens, not OS threads. Native tests request two tokens, so
+      # the 20-core/62-GiB Linux worker runs at most two compiler authorities
+      # concurrently instead of serializing the entire seven-language suite.
+      native-compiler.max-threads = 4;
       process-global.max-threads = 1;
       telemetry-global.max-threads = 1;
     };

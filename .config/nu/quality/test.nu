@@ -160,12 +160,25 @@ def "main test workspace" []: nothing -> record {
     }
 }
 
-# Required PR workspace lane. The 1,000-package sequential fleet audit has a
-# separate deep lane (`test workspace`), but every other workspace test stays
-# required here. Keep the exclusion exact so new tests join the gate by default.
+# Required PR workspace lane. Three diagnostic corpus sweeps remain in the
+# deep lane (`test workspace`): the 1,000-package sequential fleet audit, the
+# 210-case semantic-gap census, and the 20-crate Rust feature/publication
+# census. They report product-roadmap gaps, not platform build/runtime health.
+# Keep every exclusion exact so new tests join the required gate by default.
 # @class closure
 def "main test pr" []: nothing -> record {
     require-command "test-workspace"
+    # A test compile is not a product build. Require every shipped process
+    # surface explicitly before running the platform's behavioral closure.
+    process-require $env.BACKEND_STABLE_CARGO [
+        "build"
+        "--locked"
+        "--package" "backend-cli"
+        "--package" "backend-mcp"
+        "--package" "backend-locald"
+        "--package" "backend-worker"
+        "--package" "backend-desktop"
+    ] | ignore
     let invocation = (nextest-invocation "pr")
     process-require $env.BACKEND_STABLE_CARGO [
         "nextest"
@@ -177,7 +190,7 @@ def "main test pr" []: nothing -> record {
         "--config-file" $invocation.config
         "--profile" "pr"
         "-E"
-        "not test(real_package_inventory_keeps_source_provenance_and_closed_terminals)"
+        "not test(real_package_inventory_keeps_source_provenance_and_closed_terminals) and not test(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render) and not test(twenty_real_crates_compile_with_decoded_lanes)"
     ] | ignore
     {
         level: "pr"

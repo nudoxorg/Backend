@@ -270,15 +270,15 @@ pub fn search_identities(value: &Value) -> BTreeMap<String, RowIdentity> {
         .as_array()
         .unwrap_or_else(|| panic!("search omitted records: {value}"))
         .iter()
-        .map(|record| {
+        .filter_map(|record| {
             let identity = &record["identity"];
+            // Search also returns semantic identities. Those intentionally
+            // have no package-relative source path, so they are not rows in
+            // this source-surface matrix.
+            let path = identity["path"].as_str()?.to_owned();
             let coordinate = identity["coordinate"]
                 .as_str()
                 .unwrap_or_else(|| panic!("record omitted coordinate: {record}"))
-                .to_owned();
-            let path = identity["path"]
-                .as_str()
-                .unwrap_or_else(|| panic!("record omitted path: {record}"))
                 .to_owned();
             let name = identity["name"]
                 .as_str()
@@ -292,7 +292,7 @@ pub fn search_identities(value: &Value) -> BTreeMap<String, RowIdentity> {
                 .as_str()
                 .unwrap_or_else(|| panic!("record omitted language: {record}"))
                 .to_owned();
-            (
+            Some((
                 coordinate.clone(),
                 RowIdentity {
                     coordinate,
@@ -301,7 +301,7 @@ pub fn search_identities(value: &Value) -> BTreeMap<String, RowIdentity> {
                     key,
                     language,
                 },
-            )
+            ))
         })
         .collect()
 }

@@ -370,9 +370,13 @@ fn structured(result: &Value) -> Value {
 fn first_coordinate(structured: &Value) -> String {
     structured["records"]
         .as_array()
-        .and_then(|records| records.first())
+        .and_then(|records| {
+            records
+                .iter()
+                .find(|record| record["identity"]["path"].is_string())
+        })
         .and_then(|record| record["identity"]["coordinate"].as_str())
-        .unwrap_or_else(|| panic!("search published no record: {structured}"))
+        .unwrap_or_else(|| panic!("search published no source-bound record: {structured}"))
         .to_owned()
 }
 

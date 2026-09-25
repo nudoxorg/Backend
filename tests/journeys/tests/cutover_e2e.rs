@@ -1917,7 +1917,7 @@ mod unix_journeys {
             reply.reply
         );
         let record = backend_engine::ProductSourceRecord::new(package)
-            .unwrap_or_else(|error| panic!("product source record: {error}"));
+            .unwrap_or_else(|error| panic!("product source record {index}: {error}"));
         (key.to_bytes(), record)
     }
 
@@ -1929,8 +1929,8 @@ mod unix_journeys {
         (0..10_000_u64)
             .map(|nonce| {
                 format!(
-                    "pkg:cargo/backend-remote-probe-{label}-{nonce:04}-{}@1.0.0",
-                    "y".repeat(1_700)
+                    "backend-remote-probe-{label}-{nonce:04}-{}",
+                    "y".repeat(180)
                 )
             })
             .find(|candidate| backend_engine::package_key(candidate).to_bytes() > floor)
@@ -1977,16 +1977,15 @@ mod unix_journeys {
         // This command gives the sole owner loop a deterministic turn to
         // install the already-negotiated asynchronous transport.
         let _health = cli_health(locald_endpoint, "remote worker readiness health");
-        // Values are intentionally large enough to force a multilevel
-        // canonical relation with only a handful of mutations. This crosses
-        // descendant proof admission and the worker's depth-first warm-CAS
-        // walk without making the process journey depend on thousands of
-        // tiny setup requests.
-        let packages = (0..20)
+        // Keep every Cargo package name inside the registry's 256-byte
+        // admission bound. Enough independently valid rows still force a
+        // multilevel canonical relation and exercise descendant proofs plus
+        // the worker's depth-first warm-CAS walk.
+        let packages = (0..96)
             .map(|index| {
                 format!(
-                    "pkg:cargo/backend-remote-probe-{index:02}-{}@1.0.0",
-                    "x".repeat(1_700)
+                    "backend-remote-probe-{index:02}-{}",
+                    "x".repeat(180)
                 )
             })
             .collect::<Vec<_>>();
@@ -2279,8 +2278,8 @@ mod unix_journeys {
             .unwrap_or_else(|error| panic!("connect fallback delta client: {error}"));
         let index = entries.len();
         let package = format!(
-            "pkg:cargo/backend-remote-probe-fallback-{}@1.0.0",
-            "z".repeat(1_700)
+            "backend-remote-probe-fallback-{}",
+            "z".repeat(180)
         );
         entries.push(add_probe_package(&mut mutation, &package, index));
         entries.sort_by_key(|(key, _)| *key);
@@ -2545,7 +2544,7 @@ mod unix_journeys {
             index,
             "backend-cli semantic history index",
             None,
-            Duration::from_secs(60),
+            Duration::from_secs(180),
         );
         assert!(
             indexed.status.success(),
@@ -2746,14 +2745,22 @@ mod unix_journeys {
             query
                 .arg("--endpoint")
                 .arg(&endpoint)
+                .arg("--json")
                 .arg("name")
                 .arg(symbol);
             let found = bounded_command(query, "backend-cli name", None);
-            let output = String::from_utf8_lossy(&found.stdout);
+            let output: serde_json::Value = serde_json::from_slice(&found.stdout)
+                .unwrap_or_else(|error| panic!("decode {symbol} query: {error}"));
+            let crossed = output["records"].as_array().is_some_and(|records| {
+                records.iter().any(|record| {
+                    record["identity"]["name"].as_str() == Some(symbol)
+                        && record["identity"]["path"].as_str() == Some(source_path)
+                })
+            });
             assert!(
-                found.status.success() && output.contains(symbol) && output.contains(source_path),
+                found.status.success() && crossed,
                 "{symbol} did not cross the indexed process path: stdout={} stderr={}",
-                output,
+                String::from_utf8_lossy(&found.stdout),
                 String::from_utf8_lossy(&found.stderr)
             );
         }

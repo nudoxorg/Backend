@@ -2717,14 +2717,7 @@ pub(super) fn render_neutral(ir: &Ir, primary: Option<EntityObservation>) -> Ren
     let Some(primary) = primary else {
         return RenderVerdict::Unavailable;
     };
-    let Some(signature) = ir.signature(primary.id) else {
-        return RenderVerdict::Unavailable;
-    };
-    let mut text = String::new();
-    if write!(&mut text, "{signature}").is_err() {
-        return RenderVerdict::Unavailable;
-    }
-    RenderVerdict::Rendered(digest_bytes(text.as_bytes()))
+    canonical_type_render(ir, Some(primary.id))
 }
 
 /// Canonical language-neutral signature rendering for any complete semantic

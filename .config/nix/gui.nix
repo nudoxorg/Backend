@@ -145,8 +145,10 @@ let
     pkgs.dbus
     pkgs.fontconfig
     pkgs.grim
+    pkgs.openbox
     pkgs.weston
     pkgs.xvfb
+    pkgs.xdotool
   ];
   linuxGpuPackages = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
     pkgs.gawk
