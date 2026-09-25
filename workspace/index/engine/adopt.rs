@@ -15,7 +15,7 @@ use crate::{
     engine::{CatalogEngine, EngineError},
     entity::{edges, packages, versions},
     enums::{EdgeKind, TextEnum},
-    record::{DepClass, DepEdge, PackageRecord},
+    record::{DepEdge, PackageRecord},
 };
 
 use super::turso_vc::{FactWrite, VersionedCatalog};
@@ -119,17 +119,7 @@ fn edge_rows<E: CatalogEngine>(engine: &E) -> Result<BTreeMap<String, Vec<DepEdg
         let Ok(kind) = EdgeKind::from_token(&kind) else {
             return Ok(None);
         };
-        let class = match kind {
-            EdgeKind::Runtime | EdgeKind::Recipe => DepClass::Runtime,
-            EdgeKind::Build
-            | EdgeKind::FindPackage
-            | EdgeKind::PkgConfig
-            | EdgeKind::Submodule
-            | EdgeKind::FetchContent
-            | EdgeKind::Wrap
-            | EdgeKind::BazelDep
-            | EdgeKind::Vendored => DepClass::Build,
-        };
+        let class = super::class_of_kind(kind);
         let dep_ecosystem = row.get_text(1)?;
         let requirement = row.get_text(4)?;
         Ok(Some((id, DepEdge {

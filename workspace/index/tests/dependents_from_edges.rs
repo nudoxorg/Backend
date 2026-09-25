@@ -482,6 +482,11 @@ async fn a_homebrew_recipe_edge_counts_on_the_sweep_and_the_adopted_ledger() {
     );
     store.refresh_dependents().await.expect("sweep");
     assert_eq!(dependents_of(writer.engine(), 2), 1);
+    let scanned = lifecycle::scan_runtime_edges(writer.engine()).expect("scan");
+    assert!(
+        scanned.iter().any(|(_, name)| name == "openssl"),
+        "a recipe edge is an in-degree edge"
+    );
 
     let mut ledger = index::engine::turso_vc::VersionedCatalog::open().expect("ledger");
     ledger.adopt_catalog(writer.engine()).expect("adopt");

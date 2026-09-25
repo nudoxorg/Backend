@@ -609,10 +609,10 @@ pub fn delete_version_edges<E: CatalogEngine>(
     Ok(())
 }
 
-/// Runtime edges whose `dep_ecosystem` is the dependent package's ecosystem.
+/// In-degree edges whose `dep_ecosystem` is the dependent package's ecosystem.
 ///
-/// Cross-ecosystem names and non-runtime kinds stay out: the sweep keys
-/// targets by the depender's language, so those rows must not increment it.
+/// The kind filter is [`in_degree_kind`]: runtime and recipe. Cross-ecosystem
+/// names and build mechanisms stay out.
 pub fn scan_runtime_edges<E: CatalogEngine>(
     engine: &E,
 ) -> Result<Vec<(PackageId, String)>, MetaError> {
@@ -633,7 +633,7 @@ pub fn scan_runtime_edges<E: CatalogEngine>(
             Expr::col((versions::Entity, versions::Column::StemId))
                 .equals((packages::Entity, packages::Column::StemId)),
         )
-        .and_where(Expr::col((edges::Entity, edges::Column::Kind)).eq("runtime"))
+        .and_where(in_degree_kind().into())
         .and_where(
             Expr::col((edges::Entity, edges::Column::DepEcosystem))
                 .equals((packages::Entity, packages::Column::Ecosystem)),

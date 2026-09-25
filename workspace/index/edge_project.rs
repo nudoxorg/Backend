@@ -205,17 +205,7 @@ fn version_view(
 fn edge_from_wire(wire: &EdgeWire) -> DepEdge {
     use smol_str::SmolStr;
 
-    let class = match wire.kind {
-        EdgeKind::Runtime | EdgeKind::Recipe => DepClass::Runtime,
-        EdgeKind::Build
-        | EdgeKind::FindPackage
-        | EdgeKind::PkgConfig
-        | EdgeKind::Submodule
-        | EdgeKind::FetchContent
-        | EdgeKind::Wrap
-        | EdgeKind::BazelDep
-        | EdgeKind::Vendored => DepClass::Build,
-    };
+    let class = crate::engine::class_of_kind(wire.kind);
     DepEdge {
         name: SmolStr::new(&wire.dep_name_canonical),
         requirement: if wire.requirement.is_empty() {

@@ -161,8 +161,12 @@ impl EdgeFact {
                 None
             } else {
                 Some(
-                    heart::Language::from_token(&self.dep_ecosystem)
-                        .ok_or_else(|| OrmError::Decode(format!("package_edges.dep_ecosystem {}", self.dep_ecosystem)))?,
+                    heart::Language::from_token(&self.dep_ecosystem).ok_or_else(|| {
+                        OrmError::Decode(format!(
+                            "package_edges.dep_ecosystem {}",
+                            self.dep_ecosystem
+                        ))
+                    })?,
                 )
             },
             requirement: if self.requirement.is_empty() {
@@ -178,6 +182,25 @@ impl EdgeFact {
 
 pub(in crate::engine) fn class_token_of(class: DepClass) -> &'static str {
     class_token(class)
+}
+
+/// Catalog `edges.kind` folded into the versioned [`DepClass`].
+///
+/// A recipe dependency is a runtime edge. Build-system mechanisms fold to
+/// build. The live projection and the SQL adopt path both call this, so a
+/// new [`EdgeKind`] has to choose a class here.
+pub(crate) fn class_of_kind(kind: crate::enums::EdgeKind) -> DepClass {
+    match kind {
+        crate::enums::EdgeKind::Runtime | crate::enums::EdgeKind::Recipe => DepClass::Runtime,
+        crate::enums::EdgeKind::Build
+        | crate::enums::EdgeKind::FindPackage
+        | crate::enums::EdgeKind::PkgConfig
+        | crate::enums::EdgeKind::Submodule
+        | crate::enums::EdgeKind::FetchContent
+        | crate::enums::EdgeKind::Wrap
+        | crate::enums::EdgeKind::BazelDep
+        | crate::enums::EdgeKind::Vendored => DepClass::Build,
+    }
 }
 
 fn class_token(class: DepClass) -> &'static str {
@@ -210,7 +233,11 @@ pub(in crate::engine) fn hash_edge(edge: &DepEdge) -> String {
     hasher.update(&[0xff]);
     hasher.update(class_token(edge.class).as_bytes());
     hasher.update(&[0xff]);
-    hasher.update(if edge.optional { b"1".as_slice() } else { b"0".as_slice() });
+    hasher.update(if edge.optional {
+        b"1".as_slice()
+    } else {
+        b"0".as_slice()
+    });
     hasher.update(&[0xff]);
     hasher.update(
         edge.dep_ecosystem

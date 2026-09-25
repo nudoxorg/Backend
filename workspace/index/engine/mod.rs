@@ -34,6 +34,8 @@ pub mod dolt;
 
 mod edge_fact;
 
+pub(crate) use edge_fact::class_of_kind;
+
 /// Row-versioned ledger on the philocalyst Turso fork (`turso_versioning`).
 pub mod turso_vc;
 
