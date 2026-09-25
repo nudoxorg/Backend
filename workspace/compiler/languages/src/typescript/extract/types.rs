@@ -69,7 +69,18 @@ fn lower_ts_type_impl<'a>(
         TSType::TSVoidKeyword(_) => TypeOwned::Void,
         TSType::TSUndefinedKeyword(_) => TypeOwned::Undefined,
         TSType::TSNullKeyword(_) => TypeOwned::Null,
-        TSType::TSBooleanKeyword(_) | TSType::TSTypePredicate(_) => TypeOwned::Bool,
+        TSType::TSBooleanKeyword(_) => TypeOwned::Bool,
+        TSType::TSTypePredicate(pred) => {
+            let Some(ann) = &pred.type_annotation else {
+                return TypeOwned::Bool;
+            };
+            let inner = lower_ts_type_impl(&ann.type_annotation, source, type_params);
+            let token = if pred.asserts { "asserts" } else { "is" };
+            TypeOwned::Apply {
+                base: Box::new(TypeOwned::Nominal(token.to_string())),
+                args: vec![inner],
+            }
+        }
         TSType::TSNumberKeyword(_) => TypeOwned::Number,
         TSType::TSBigIntKeyword(_) => TypeOwned::BigInt,
         TSType::TSStringKeyword(_) => TypeOwned::String,
