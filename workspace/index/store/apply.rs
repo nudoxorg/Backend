@@ -498,6 +498,7 @@ pub(crate) fn write_edge_snapshot(
             requirement: Set(edge.requirement.clone()),
             resolved_stem: Set(edge.resolved_stem),
             source: Set(edge.source),
+            optional: Set(edge.optional),
         })
         .collect();
     if models.is_empty() {
@@ -515,6 +516,7 @@ pub(crate) fn write_edge_snapshot(
                 edges::Column::Requirement,
                 edges::Column::ResolvedStem,
                 edges::Column::Source,
+                edges::Column::Optional,
             ])
             .action_and_where(edge_payload_differs())
             .to_owned(),
@@ -572,6 +574,7 @@ fn edge_payload_differs() -> sea_orm::sea_query::SimpleExpr {
     differs(edges::Column::Requirement)
         .or(differs(edges::Column::ResolvedStem))
         .or(differs(edges::Column::Source))
+        .or(differs(edges::Column::Optional))
 }
 
 /// Batch-write the `versions`, `edges`, and `facets` rows for a run of

@@ -111,6 +111,7 @@ fn edge(requirement: &str) -> EdgeWire {
         kind: EdgeKind::Runtime,
         source: EdgeSource::Feed,
         resolved_stem: None,
+        optional: false,
     }
 }
 
@@ -423,6 +424,7 @@ fn named_edge(name: &str) -> EdgeWire {
         kind: EdgeKind::Runtime,
         source: EdgeSource::Manifest,
         resolved_stem: None,
+        optional: false,
     }
 }
 
@@ -496,4 +498,39 @@ fn a_runtime_replace_leaves_a_recipe_edge() {
         "openssl".to_owned(),
         "serde".to_owned()
     ]);
+}
+
+#[test]
+fn an_optional_wire_lands_in_sql_and_on_the_ledger() {
+    use index::engine::turso_vc::VersionedCatalog;
+
+    let writer = migrated_writer();
+    let mut seeded = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut seeded {
+        let mut wire = named_edge("serde");
+        wire.optional = true;
+        wire.requirement = "^1".into();
+        *edges = index::protocol::EdgeSnapshot::feed(vec![wire]);
+    }
+    let ops = [upsert_package(1), seeded];
+    writer.apply_ops(&ops).expect("optional feed");
+    let stored = writer
+        .engine()
+        .query_rows("SELECT optional, requirement FROM edges", &[], &mut |row| {
+            Ok((row.get_integer(0)?, row.get_text(1)?))
+        })
+        .expect("read");
+    assert_eq!(stored, vec![(1, "^1".to_owned())]);
+
+    let mut ledger = VersionedCatalog::open().expect("ledger");
+    for effect in index::edge_project::effects_from_ops(&ops, None) {
+        ledger.apply_effect(&effect).expect("ledger");
+    }
+    let tip = ledger
+        .materialize("rust", "pkg1", "1.0.1")
+        .expect("read")
+        .expect("row");
+    assert_eq!(tip.edges.len(), 1);
+    assert!(tip.edges[0].optional);
+    assert_eq!(tip.edges[0].requirement.as_deref(), Some("^1"));
 }

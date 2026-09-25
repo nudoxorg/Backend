@@ -112,6 +112,7 @@ fn edge_rows<E: CatalogEngine>(engine: &E) -> Result<BTreeMap<String, Vec<DepEdg
         .column((edges::Entity, edges::Column::DepNameCanonical))
         .column((edges::Entity, edges::Column::Kind))
         .column((edges::Entity, edges::Column::Requirement))
+        .column((edges::Entity, edges::Column::Optional))
         .from(edges::Entity);
     let rows = crate::engine::stmt::query_select(engine, select, &mut |row| {
         let id = uuid_text(&row.get_blob(0)?)?;
@@ -131,7 +132,7 @@ fn edge_rows<E: CatalogEngine>(engine: &E) -> Result<BTreeMap<String, Vec<DepEdg
             },
             class,
             kind,
-            optional: false,
+            optional: row.get_integer(5)? != 0,
             dep_ecosystem: Language::from_token(&dep_ecosystem),
         })))
     })?;

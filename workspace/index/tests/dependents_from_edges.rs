@@ -75,6 +75,7 @@ fn runtime(ecosystem: heart::Language, name: &str) -> EdgeWire {
         kind: EdgeKind::Runtime,
         source: EdgeSource::Feed,
         resolved_stem: None,
+        optional: false,
     }
 }
 
@@ -121,6 +122,7 @@ async fn sweep_counts_runtime_edges_and_falls_back_to_facets() {
                 kind: EdgeKind::Build,
                 source: EdgeSource::Manifest,
                 resolved_stem: None,
+                optional: false,
             }],
             facets_of(&[]),
         ),
@@ -254,6 +256,7 @@ fn build_edge(name: &str) -> EdgeWire {
         kind: EdgeKind::Build,
         source: EdgeSource::Manifest,
         resolved_stem: None,
+        optional: false,
     }
 }
 
@@ -515,6 +518,7 @@ async fn ledger_degree_matches_the_sql_sweep_on_same_ecosystem_edges() {
                     kind: EdgeKind::Build,
                     source: EdgeSource::Manifest,
                     resolved_stem: None,
+                    optional: false,
                 },
             ],
             facets_of(&["tokio"]),
@@ -585,6 +589,7 @@ async fn a_homebrew_recipe_edge_counts_on_the_sweep_and_the_adopted_ledger() {
                     kind: EdgeKind::Recipe,
                     source: EdgeSource::Feed,
                     resolved_stem: None,
+                    optional: false,
                 }],
                 facets_of(&[]),
             ),
@@ -684,6 +689,7 @@ async fn a_driven_batch_keeps_sql_and_the_ledger_on_one_union() {
                 kind: EdgeKind::Runtime,
                 source: EdgeSource::Manifest,
                 resolved_stem: None,
+                optional: false,
             },
         ]),
         facets: facets_of(&[]),
@@ -705,6 +711,7 @@ async fn a_driven_batch_keeps_sql_and_the_ledger_on_one_union() {
                 kind: EdgeKind::Build,
                 source: EdgeSource::Manifest,
                 resolved_stem: None,
+                optional: false,
             }],
             facets_of(&["leftover"]),
         ),

@@ -9,7 +9,7 @@ use index::{
     engine::turso_vc::{FactWrite, VersionedCatalog},
     record::{PackageRecord, edge_names_agree},
     search::ranking::dependents::{DependencyRow, count_dependents},
-    upstream::{crates_catalog::normal_dependency_names, maven_search::pom_url},
+    upstream::{crates_catalog::normal_dependency_edges, maven_search::pom_url},
 };
 use smol_str::SmolStr;
 
@@ -43,7 +43,10 @@ fn four_manifests_agree_on_one_dependents_sweep() {
     let java = pom_dependency_names(pom);
     let go = require_names(go_mod);
     let python = requires_dist_names(pypi);
-    let rust = normal_dependency_names(crates);
+    let rust: Vec<String> = normal_dependency_edges(crates)
+        .into_iter()
+        .map(|edge| edge.name.to_string())
+        .collect();
 
     assert_eq!(java, vec!["org.slf4j:slf4j-api".to_owned()]);
     assert_eq!(go, vec![

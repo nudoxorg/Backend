@@ -242,6 +242,7 @@ fn recipe_edges(formula: &Formula) -> Vec<EdgeWire> {
             kind: EdgeKind::Recipe,
             source: EdgeSource::Feed,
             resolved_stem: None,
+            optional: false,
         });
     }
     for dependency in &formula.build_dependencies {
@@ -252,6 +253,7 @@ fn recipe_edges(formula: &Formula) -> Vec<EdgeWire> {
             kind: EdgeKind::Recipe,
             source: EdgeSource::Feed,
             resolved_stem: None,
+            optional: false,
         });
     }
     edges

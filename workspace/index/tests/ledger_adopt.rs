@@ -51,6 +51,7 @@ fn a_fresh_ledger_adopts_the_sql_tip_and_a_second_pass_is_unchanged() {
                     kind: EdgeKind::Runtime,
                     source: EdgeSource::Manifest,
                     resolved_stem: None,
+                    optional: false,
                 }]),
                 facets: FacetWire {
                     keywords,

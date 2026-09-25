@@ -68,6 +68,9 @@ pub struct EdgeWire {
     /// by the pure resolution pass, so normally `None`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_stem: Option<PackageStemId>,
+    /// Optional at install time. Absent on older wires, which means required.
+    #[serde(default)]
+    pub optional: bool,
 }
 
 /// What one catalog write knows about a version's dependency edges.

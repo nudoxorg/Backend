@@ -61,10 +61,10 @@ pub mod health;
 pub mod identity;
 /// Catalog id newtypes (blob ids) plus heart `PackageId`.
 pub mod ids;
-/// Interned dependency counts and radix rank order.
-pub mod lane;
 /// Upstream feed and git ingestion (followers, drivers, watermarks).
 pub mod ingest;
+/// Interned dependency counts and radix rank order.
+pub mod lane;
 /// Package metadata and facet extraction heuristics.
 pub mod metadata;
 /// Schema DDL rendering plus `pre-migrate-vN` snapshot branches.
@@ -75,12 +75,12 @@ pub mod overlays;
 pub mod pack;
 /// Package vocabulary re-exports (heart::package).
 pub mod package;
+/// Persistent identifiers: concept, version, and content stay distinct.
+pub mod pid;
 /// The catalog op/edge protocol vocabulary.
 pub mod protocol;
 /// Durable scratch-backed indexing job queue.
 pub mod queue;
-/// Persistent identifiers: concept, version, and content stay distinct.
-pub mod pid;
 /// The one package-information model every ingest path emits.
 pub mod record;
 /// The registryless edge-resolution pass.
@@ -126,7 +126,7 @@ pub use entity as tables;
 /// (several test files under `index/tests/` call it directly and are owned
 /// by other in-flight work) but it has always migrated to `SCHEMA_VERSION`
 /// dynamically, never a hardcoded 4, so the rename-free bump is safe.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 pub use codec::CodecError;
 pub use enums::{
@@ -141,7 +141,8 @@ pub use ids::{
 pub use protocol::CatalogOp;
 pub use store::{Catalog, MetaStore};
 
-/// A package as it lives in a single registry/source, before global syndication.
+/// A package as it lives in a single registry/source, before global
+/// syndication.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Package {
     /// The full, validated addressing tuple (origin × name × version).

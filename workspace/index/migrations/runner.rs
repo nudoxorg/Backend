@@ -1,18 +1,24 @@
 //! Migration runner for the schema-v4 catalog (INDEX-PLAN §13, ID-5).
 //!
 //! Protocol (§13):
-//! 1. Read `schema_meta.user_version`; if already `SCHEMA_VERSION` return early.
+//! 1. Read `schema_meta.user_version`; if already `SCHEMA_VERSION` return
+//!    early.
 //! 2. Create a `pre-migrate-v<N>` branch as a rollback point.
 //! 3. Execute entity-derived DDL from [`super::ddl::schema_v4_statements`].
 //! 4. On DDL failure: checkout the pre-migrate branch and surface the error.
 //! 5. On success: write `user_version = SCHEMA_VERSION`.
 
-use sea_orm::sea_query::{Query, SqliteQueryBuilder};
-use sea_orm::{ActiveValue::Set, DbBackend, EntityTrait, QuerySelect, QueryTrait};
+use sea_orm::{
+    ActiveValue::Set,
+    DbBackend, EntityTrait, QuerySelect, QueryTrait,
+    sea_query::{Query, SqliteQueryBuilder},
+};
 
-use crate::SCHEMA_VERSION;
-use crate::engine::{self, BranchName, CatalogEngine, EngineError, VersioningEngine};
-use crate::entity::schema_meta;
+use crate::{
+    SCHEMA_VERSION,
+    engine::{self, BranchName, CatalogEngine, EngineError, VersioningEngine},
+    entity::schema_meta,
+};
 
 use super::ddl;
 
@@ -61,6 +67,23 @@ pub fn set_user_version<E: CatalogEngine>(engine: &E, version: u32) -> Result<()
     Ok(())
 }
 
+/// Add `edges.optional` when a catalog was created before that column existed.
+///
+/// `CREATE TABLE IF NOT EXISTS` does not alter an existing table. A fresh
+/// database already has the column from the entity DDL.
+fn ensure_edge_optional<E: CatalogEngine>(engine: &E) -> Result<(), MigrationError> {
+    let stmt = sea_orm::Statement::from_string(DbBackend::Sqlite, "PRAGMA table_info(edges)");
+    let names = engine::query(engine, stmt, &mut |row| row.get_text(1))?;
+    if names.iter().any(|name| name == "optional") {
+        return Ok(());
+    }
+    engine.execute(
+        "ALTER TABLE edges ADD COLUMN optional INTEGER NOT NULL DEFAULT 0",
+        &[],
+    )?;
+    Ok(())
+}
+
 /// Apply the schema-v4 DDL to `engine` (INDEX-PLAN §13, ID-5).
 pub fn migrate_to_v4<E: VersioningEngine>(engine: &E) -> Result<(), MigrationError> {
     let current = current_user_version(engine)?;
@@ -94,6 +117,8 @@ pub fn migrate_to_v4<E: VersioningEngine>(engine: &E) -> Result<(), MigrationErr
             return Err(MigrationError::Engine(ddl_err));
         }
     }
+
+    ensure_edge_optional(engine)?;
 
     set_user_version(engine, SCHEMA_VERSION)?;
 

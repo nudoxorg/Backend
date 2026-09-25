@@ -1,10 +1,12 @@
 //! `edges` — dependency graph edges (INDEX-PLAN §8, REGISTRYLESS RL-5).
 //!
-//! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
+//! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`],
+//! [`Entity`].
 
-use crate::enums::EdgeKind;
-use crate::enums::EdgeSource;
-use crate::ids::PackageStemId;
+use crate::{
+    enums::{EdgeKind, EdgeSource},
+    ids::PackageStemId,
+};
 use sea_orm::entity::prelude::*;
 use uuid::Uuid;
 
@@ -22,6 +24,9 @@ pub struct Model {
     pub requirement: String,
     pub resolved_stem: Option<PackageStemId>,
     pub source: EdgeSource,
+    /// The dependency is optional at install time. `false` when the feed
+    /// did not say.
+    pub optional: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

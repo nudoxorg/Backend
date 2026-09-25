@@ -73,6 +73,7 @@ pub fn project_edges(ecosystem: Language, edges: &[DepEdge], source: EdgeSource)
             kind: edge.kind,
             source,
             resolved_stem: None,
+            optional: edge.optional,
         });
     }
     wires
@@ -262,7 +263,7 @@ fn edge_from_wire(wire: &EdgeWire) -> DepEdge {
         },
         class,
         kind: wire.kind,
-        optional: false,
+        optional: wire.optional,
         dep_ecosystem: Some(wire.dep_ecosystem),
     }
 }

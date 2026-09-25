@@ -106,6 +106,7 @@ fn ingest_consumer(writer: &CatalogWriter<index::engine::Configured>) {
                         kind: EdgeKind::FindPackage,
                         source: EdgeSource::Manifest,
                         resolved_stem: None,
+                        optional: false,
                     },
                     EdgeWire {
                         dep_ecosystem: Language::Cpp,
@@ -114,6 +115,7 @@ fn ingest_consumer(writer: &CatalogWriter<index::engine::Configured>) {
                         kind: EdgeKind::FindPackage,
                         source: EdgeSource::Manifest,
                         resolved_stem: None,
+                        optional: false,
                     },
                     EdgeWire {
                         dep_ecosystem: Language::Cpp,
@@ -122,6 +124,7 @@ fn ingest_consumer(writer: &CatalogWriter<index::engine::Configured>) {
                         kind: EdgeKind::FindPackage,
                         source: EdgeSource::Manifest,
                         resolved_stem: None,
+                        optional: false,
                     },
                 ]),
                 facets: FacetWire::default(),

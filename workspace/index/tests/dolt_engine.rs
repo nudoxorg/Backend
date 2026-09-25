@@ -71,6 +71,7 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
                 kind: EdgeKind::Runtime,
                 source: EdgeSource::Manifest,
                 resolved_stem: None,
+                optional: false,
             }]),
             facets: FacetWire {
                 keywords: Some("web http".to_owned()),

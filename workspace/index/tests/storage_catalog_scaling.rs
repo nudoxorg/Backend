@@ -146,6 +146,7 @@ fn ops_for_fixture(fixture: &CorpusFixture) -> Option<(CatalogOp, CatalogOp)> {
                         kind: EdgeKind::Runtime,
                         source: EdgeSource::Manifest,
                         resolved_stem: None,
+                        optional: false,
                     })
                     .collect::<Vec<_>>();
                 (license, edges)
