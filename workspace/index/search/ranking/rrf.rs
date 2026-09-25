@@ -62,11 +62,7 @@ pub fn fuse<K: Eq + std::hash::Hash + Ord + Copy>(lists: &[&[K]], k: f32) -> Vec
 
     let mut result: Vec<(K, f32)> = scores.into_iter().collect();
     // Sort: fused score descending, then key ascending for deterministic ties.
-    result.sort_unstable_by(|(ka, sa), (kb, sb)| {
-        sb.partial_cmp(sa)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| ka.cmp(kb))
-    });
+    result.sort_unstable_by(|(ka, sa), (kb, sb)| sb.total_cmp(sa).then_with(|| ka.cmp(kb)));
     result
 }
 

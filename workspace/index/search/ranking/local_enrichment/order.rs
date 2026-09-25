@@ -53,8 +53,7 @@ pub(super) fn reorder_with_climb_cap(items: Vec<Working>, max_rank_climb: usize)
 /// when bonuses are zero), then lower package id for full determinism.
 fn cmp_working(a: &Working, b: &Working) -> std::cmp::Ordering {
     a.boosted
-        .partial_cmp(&b.boosted)
-        .unwrap_or(std::cmp::Ordering::Equal)
+        .total_cmp(&b.boosted)
         .then_with(|| b.original_idx.cmp(&a.original_idx)) // smaller original_idx wins under max_by
         .then_with(|| b.item.id.cmp(&a.item.id))
 }

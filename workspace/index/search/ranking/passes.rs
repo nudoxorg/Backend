@@ -7,7 +7,8 @@
 
 use super::cascade::{Candidate, RankingConfig};
 
-// ── Stage (c): diversity pass ─────────────────────────────────────────────────
+// ── Stage (c): diversity pass
+// ─────────────────────────────────────────────────
 
 /// Diversity pass: find the keyword that best splits the result set into two
 /// meaning-groups and demote items over-represented in one group.
@@ -16,14 +17,18 @@ use super::cascade::{Candidate, RankingConfig};
 ///
 /// The algorithm:
 /// 1. Deduplicate identical keyword-sets (spammy boilerplate families).
-/// 2. Find the keyword with population in `(min_pop, too_common_pop]`
-///    that maximises a weighted count (items in the top half count double).
+/// 2. Find the keyword with population in `(min_pop, too_common_pop]` that
+///    maximises a weighted count (items in the top half count double).
 /// 3. Items in the `[good_pop_min, N/3]` band get weight ×2.
 /// 4. `query-` prefix and `-query` suffix keywords count double because they
 ///    signal a meaningful sub-domain rather than a synonym.
 /// 5. Demote (halve the fused score) for candidates that carry the chosen
 ///    keyword, beyond the first few.
-pub(super) fn diversity_pass<T>(cfg: &RankingConfig, candidates: &mut [Candidate<T>], scores: &mut [f32]) {
+pub(super) fn diversity_pass<T>(
+    cfg: &RankingConfig,
+    candidates: &mut [Candidate<T>],
+    scores: &mut [f32],
+) {
     let n = candidates.len();
     if n < cfg.dividing_min_set_size {
         return;
@@ -96,18 +101,11 @@ pub(super) fn diversity_pass<T>(cfg: &RankingConfig, candidates: &mut [Candidate
         }
     }
 
-    // Re-sort (stable relative to the name tiebreak already applied).
-    let n = candidates.len();
-    // Build index vec and sort by (score desc, name asc).
-    let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_unstable_by(|&a, &b| {
-        scores[b]
-            .partial_cmp(&scores[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| candidates[a].name.cmp(&candidates[b].name))
-    });
-    // Apply permutation in-place.
-    apply_permutation(candidates, scores, idx);
+    // Same total order as the lane radix: score descending, then name, then
+    // input index. A non-finite score takes its IEEE place instead of tying.
+    let order =
+        crate::lane::order_desc_score_asc_name(scores, |index| candidates[index].name.as_str());
+    apply_permutation(candidates, scores, order);
 }
 
 // ── Stage (d): representative pull-up ────────────────────────────────────────
@@ -120,16 +118,16 @@ pub(super) fn diversity_pass<T>(cfg: &RankingConfig, candidates: &mut [Candidate
 /// - Always keep the top-3 as-is (they are "already there").
 /// - From `docs[3..better_half]` (better_half ≈ min(N/3, 50)):
 ///   - Pull up ≤3 items whose `quality >= max(max_quality*0.97, 0.55)`.
-///   - Pull up ≤3 (minus already pulled) items whose
-///     `downloads >= max(max_downloads*0.9, 100_000)` and `quality >= 0.55`.
+///   - Pull up ≤3 (minus already pulled) items whose `downloads >=
+///     max(max_downloads*0.9, 100_000)` and `quality >= 0.55`.
 /// - Re-sort the pulled set by a mixed quality×downloads score.
 /// - Prepend to the remaining list, truncated to `retain`.
 ///
-/// `limit` tunes the eligibility (`take`, `better_half`) exactly as lib.rs does;
-/// `retain` is the length the reordered list is truncated to.  Passing a `retain`
-/// at least `candidates.len()` (e.g. `usize::MAX`) keeps the whole order (used by
-/// keyset pagination, which pages over the full order); passing `retain == limit`
-/// reproduces the classic single-page truncation.
+/// `limit` tunes the eligibility (`take`, `better_half`) exactly as lib.rs
+/// does; `retain` is the length the reordered list is truncated to.  Passing a
+/// `retain` at least `candidates.len()` (e.g. `usize::MAX`) keeps the whole
+/// order (used by keyset pagination, which pages over the full order); passing
+/// `retain == limit` reproduces the classic single-page truncation.
 ///
 /// Fairness guard: `popularity_weight(floor)` is used everywhere instead of
 /// raw `downloads` so `None`-downloads candidates participate at the floor and
@@ -214,16 +212,21 @@ pub(super) fn pull_up_representatives<T>(
         .collect();
     top_crates.reverse(); // restore original relative order
 
-    // Sort the pulled crates by mixed score using popularity_weight at floor.
-    top_crates.sort_unstable_by(|a, b| {
-        let mixed = |c: &Candidate<T>| {
-            (0.3 + c.quality) * c.quality * ((c.popularity_weight(dl_floor) + 25_000) as f32).log2()
-        };
-        mixed(b)
-            .partial_cmp(&mixed(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.name.cmp(&b.name))
+    let mixed_scores: Vec<f32> = top_crates
+        .iter()
+        .map(|candidate| {
+            (0.3 + candidate.quality)
+                * candidate.quality
+                * ((candidate.popularity_weight(dl_floor) + 25_000) as f32).log2()
+        })
+        .collect();
+    let order = crate::lane::order_desc_score_asc_name(&mixed_scores, |index| {
+        top_crates[index].name.as_str()
     });
+    let mut slots: Vec<Option<Candidate<T>>> = top_crates.drain(..).map(Some).collect();
+    for index in order {
+        top_crates.push(slots[index].take().expect("each pulled row is taken once"));
+    }
 
     // Truncate remaining, prepend top crates.
     candidates.truncate(retain.saturating_sub(top_crates.len()));
@@ -260,7 +263,8 @@ pub(super) fn downloads_bubble<T>(cfg: &RankingConfig, slice: &mut [Candidate<T>
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers
+// ───────────────────────────────────────────────────────────────────
 
 /// Apply a permutation (given as a vec of destination-to-source indices) to
 /// two parallel slices in-place.  The permutation must be a bijection over
@@ -295,4 +299,3 @@ fn apply_permutation<T>(items: &mut [Candidate<T>], scores: &mut [f32], mut perm
         done[current] = true;
     }
 }
-

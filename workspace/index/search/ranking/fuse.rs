@@ -118,9 +118,7 @@ pub(super) fn fold_ascii_lowercase(buffer: &mut String, name: &str) {
 
 fn fourth_by_sort<T>(candidates: &[Candidate<T>]) -> f32 {
     let mut top4_bm25: Vec<f32> = candidates.iter().map(|candidate| candidate.bm25).collect();
-    top4_bm25.sort_unstable_by(|left, right| {
-        right.partial_cmp(left).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    top4_bm25.sort_unstable_by(|left, right| right.total_cmp(left));
     top4_bm25
         .get(3)
         .copied()
@@ -163,10 +161,9 @@ fn insert_desc(top: &mut [f32; 4], filled: &mut usize, value: f32) {
     }
 }
 
-/// `value` belongs ahead of `existing` in the same order as
-/// `sort_unstable_by(|a, b| b.partial_cmp(a).unwrap_or(Equal))`.
+/// `value` belongs ahead of `existing` in descending [`f32::total_cmp`] order.
 fn comes_first(value: f32, existing: f32) -> bool {
-    matches!(existing.partial_cmp(&value), Some(std::cmp::Ordering::Less))
+    value.total_cmp(&existing).is_gt()
 }
 
 pub(super) fn contains_query_names_for_ecosystem(
@@ -232,9 +229,15 @@ mod tests {
 
         let base = fuse_scores(&off, "unrelated", &[quiet.clone(), known.clone()], None);
         let lifted = fuse_scores(&on, "unrelated", &[quiet.clone(), known.clone()], None);
-        assert!((lifted[0] - base[0]).abs() < 1e-5, "zero popularity adds nothing");
+        assert!(
+            (lifted[0] - base[0]).abs() < 1e-5,
+            "zero popularity adds nothing"
+        );
         let gain = lifted[1] - base[1];
-        assert!(gain > 2.0 && gain < 3.0, "scale 2.5 times quality 1 times popularity 1");
+        assert!(
+            gain > 2.0 && gain < 3.0,
+            "scale 2.5 times quality 1 times popularity 1"
+        );
     }
 
     #[test]
@@ -263,6 +266,7 @@ mod tests {
             vec![4.0],
             vec![1.0, 1.0, 1.0, 1.0, 1.0],
             vec![0.5, 0.4, 0.3],
+            vec![1.0, f32::NAN, 4.0, 2.0, f32::NEG_INFINITY, 3.0],
         ];
         for sample in samples {
             let candidates: Vec<_> = sample
