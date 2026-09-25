@@ -2257,6 +2257,40 @@ mod tests {
     }
 
     #[test]
+    fn a_tuple_and_conditional_declare_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"tuple-fn","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export type Tup = [(left: number) => void, (left: string) => void];\n\
+             export type Named = [value: (mid: number) => void];\n\
+             export type Cond = string extends string ? (right: number) => void : null;\n\
+             export type Wrap = (cb: [(far: number) => void]) => void;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "tuple-fn", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("tuple-fn"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function type inside a tuple or conditional must seal");
+        for name in ["left", "mid", "right", "far"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            let expected = if name == "left" { 2 } else { 1 };
+            assert_eq!(count, expected, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

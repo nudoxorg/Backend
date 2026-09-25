@@ -922,6 +922,25 @@ fn emit_type_alias(
                 declare_nested_params(&id, &id, &format!("arg{index}"), arg, out, names);
             }
         }
+        TypeOwned::Tuple(elems) => {
+            for (index, elem) in elems.iter().enumerate() {
+                declare_nested_params(&id, &id, &format!("elem{index}"), elem, out, names);
+            }
+        }
+        TypeOwned::NamedTupleElem { ty, .. } => {
+            declare_nested_params(&id, &id, "named", ty, out, names);
+        }
+        TypeOwned::Conditional {
+            check,
+            extends_ty,
+            then_ty,
+            else_ty,
+        } => {
+            declare_nested_params(&id, &id, "check", check, out, names);
+            declare_nested_params(&id, &id, "extends", extends_ty, out, names);
+            declare_nested_params(&id, &id, "then", then_ty, out, names);
+            declare_nested_params(&id, &id, "else", else_ty, out, names);
+        }
         _ => {}
     }
 }
@@ -1038,6 +1057,67 @@ fn declare_nested_params(
                     names,
                 );
             }
+        }
+        TypeOwned::Tuple(elems) => {
+            for (index, elem) in elems.iter().enumerate() {
+                declare_nested_params(
+                    alias,
+                    owner,
+                    &format!("{param_name}::elem{index}"),
+                    elem,
+                    out,
+                    names,
+                );
+            }
+        }
+        TypeOwned::NamedTupleElem { ty, .. } => {
+            declare_nested_params(
+                alias,
+                owner,
+                &format!("{param_name}::named"),
+                ty,
+                out,
+                names,
+            );
+        }
+        TypeOwned::Conditional {
+            check,
+            extends_ty,
+            then_ty,
+            else_ty,
+        } => {
+            declare_nested_params(
+                alias,
+                owner,
+                &format!("{param_name}::check"),
+                check,
+                out,
+                names,
+            );
+            declare_nested_params(
+                alias,
+                owner,
+                &format!("{param_name}::extends"),
+                extends_ty,
+                out,
+                names,
+            );
+            declare_nested_params(
+                alias,
+                owner,
+                &format!("{param_name}::then"),
+                then_ty,
+                out,
+                names,
+            );
+            declare_nested_params(
+                alias,
+                owner,
+                &format!("{param_name}::else"),
+                else_ty,
+                out,
+                names,
+            );
         }
         _ => {}
     }
