@@ -445,3 +445,50 @@ fn encode_decode_popularity_pct_ppm() {
     };
     assert!((facets.popularity_pct_f32().unwrap() - 0.25).abs() < 1e-6);
 }
+
+/// Trim, drop blanks, sort, dedup. Case is kept. Independent of `extract`.
+fn spelled_names(raw: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = raw
+        .iter()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+    #[test]
+    fn any_spelling_agrees_with_runtime_edges(
+        raw in proptest::collection::vec("([ -~]){0,8}", 0..8)
+    ) {
+        use heart::Language;
+        use crate::record::{DepEdge, PackageRecord, edge_names_agree};
+
+        let expected = spelled_names(&raw);
+        let input = ExtractionInput {
+            name: "demo",
+            dependencies: &raw,
+            ..Default::default()
+        };
+        let meta = extract(&input, rust_norms(), None, None);
+        let got: Vec<String> = meta.dependencies.iter().map(|name| name.to_string()).collect();
+        let record = PackageRecord::from_parts(
+            Language::Cpp,
+            "demo",
+            "1.0.0",
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            expected.iter().cloned().map(DepEdge::runtime).collect(),
+        );
+        proptest::prop_assert_eq!(got, expected);
+        proptest::prop_assert!(edge_names_agree(&record, &meta.dependencies));
+    }
+}
