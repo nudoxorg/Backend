@@ -2017,15 +2017,42 @@ fn reserve_enum_variants(
                 }
                 DeclBody::Class(body) => {
                     for (idx, member) in body.members.iter().enumerate() {
-                        if let MemberKind::Method(sigs) = &member.kind {
-                            for overload_idx in 0..sigs.len() {
+                        match &member.kind {
+                            MemberKind::Method(sigs) => {
+                                for overload_idx in 0..sigs.len() {
+                                    reserve_member(
+                                        canonical,
+                                        reserved,
+                                        &qual,
+                                        &member.name,
+                                        (idx * 1000 + overload_idx) as u32,
+                                    );
+                                }
+                            }
+                            MemberKind::Property { .. } | MemberKind::Accessor { .. } => {
+                                // Fields use the member index itself, not
+                                // `index * 1000`. The first field is
+                                // discriminant 0, which a merged namespace
+                                // value of the same name also claims.
                                 reserve_member(
                                     canonical,
                                     reserved,
                                     &qual,
                                     &member.name,
-                                    (idx * 1000 + overload_idx) as u32,
+                                    idx as u32,
                                 );
+                            }
+                            MemberKind::Constructor(_) => {
+                                reserve_member(
+                                    canonical,
+                                    reserved,
+                                    &qual,
+                                    &member.name,
+                                    (idx * 1000) as u32,
+                                );
+                            }
+                            MemberKind::StaticBlock { name } => {
+                                reserve_member(canonical, reserved, &qual, name, idx as u32);
                             }
                         }
                     }

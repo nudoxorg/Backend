@@ -1012,6 +1012,44 @@ mod tests {
     }
 
     #[test]
+    fn class_field_and_namespace_value_of_the_same_name_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"field-ns","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export class C { field: number; }\n\
+             export namespace C { export const field: number; }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "field-ns", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("field-ns"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a class field and a merged namespace const must both seal");
+        let fields = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "field"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Field(_)))
+            })
+            .count();
+        let consts = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "field"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Const(_)))
+            })
+            .count();
+        assert_eq!(fields, 1, "class field must be declared");
+        assert_eq!(consts, 1, "namespace const must be declared");
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
