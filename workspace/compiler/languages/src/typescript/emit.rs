@@ -830,7 +830,7 @@ fn emit_class(
         } else {
             format!("__index_{idx_num}")
         };
-        let idx_id = child_id(&id, &index_member, 3_000_000 + idx_num as u32);
+        let idx_id = child_id(&id, &index_member, class_index_disc(body, idx_num));
         let idx_sym = Symbol {
             name: index_member,
             visibility: Visibility::Public,
@@ -2397,6 +2397,47 @@ fn interface_property_discs(body: &InterfaceBody) -> Vec<u32> {
         }
     }
     chosen
+}
+
+/// A class index signature's discriminant.
+///
+/// The usual value is `3_000_000 + index`, so a signature that never meets
+/// the method lattice keeps the id it already sealed with. Method
+/// discriminants are `index * 1000`, so method 3000 named `__index` is the
+/// same id as the first index signature. Step off that disc, including an
+/// overload of the method (`index * 1000 + overload`).
+fn class_index_disc(body: &ClassBody, sig_idx: usize) -> u32 {
+    let name = if sig_idx == 0 {
+        "__index".to_string()
+    } else {
+        format!("__index_{sig_idx}")
+    };
+    let mut disc = 3_000_000 + sig_idx as u32;
+    loop {
+        let taken = body.members.iter().enumerate().any(|(idx, member)| {
+            let same_name = match &member.kind {
+                MemberKind::StaticBlock { name: block } => block == &name,
+                _ => member.name == name,
+            };
+            if !same_name {
+                return false;
+            }
+            match &member.kind {
+                MemberKind::Method(sigs) => sigs
+                    .iter()
+                    .enumerate()
+                    .any(|(overload_idx, _)| (idx * 1000 + overload_idx) as u32 == disc),
+                MemberKind::Constructor(_) => (idx * 1000) as u32 == disc,
+                MemberKind::Property { .. }
+                | MemberKind::Accessor { .. }
+                | MemberKind::StaticBlock { .. } => idx as u32 == disc,
+            }
+        });
+        if !taken || disc == u32::MAX {
+            return disc;
+        }
+        disc += 1;
+    }
 }
 
 /// A static block's discriminant.
