@@ -61,10 +61,15 @@ fn fuse<T>(
     let mut fused = Vec::with_capacity(candidates.len());
 
     for candidate in candidates {
+        let factors = crate::search::id8::ranking_factors(candidate);
         let mut score = crate::search::factors::fused_before_gates(
-            &crate::search::id8::ranking_factors(candidate),
+            &factors,
             &crate::search::factors::FusionWeights::ID8,
         ) as f32;
+        let scale = cfg.quality_popularity_path_scale;
+        if scale > 0.0 {
+            score += scale * crate::search::factors::quality_times_popularity(&factors) as f32;
+        }
 
         if allocate {
             name_lower = candidate.name.to_ascii_lowercase();
@@ -205,6 +210,31 @@ mod tests {
             ecosystem: Language::Rust,
             keywords: Vec::new(),
         }
+    }
+
+    #[test]
+    fn explore_scale_lifts_quality_times_popularity_and_zero_scale_does_not() {
+        let mut quiet = candidate("quiet", 1.0);
+        quiet.quality = 0.1;
+        quiet.downloads = Some(0);
+        quiet.dependents = Some(0);
+        let mut known = candidate("known", 1.0);
+        known.quality = 1.0;
+        known.popularity_pct = Some(1.0);
+        known.downloads = None;
+        known.dependents = None;
+
+        let mut off = RankingConfig::default();
+        off.quality_popularity_path_scale = 0.0;
+        off.exact_name_bonus = 0.0;
+        let mut on = off.clone();
+        on.quality_popularity_path_scale = 2.5;
+
+        let base = fuse_scores(&off, "unrelated", &[quiet.clone(), known.clone()], None);
+        let lifted = fuse_scores(&on, "unrelated", &[quiet.clone(), known.clone()], None);
+        assert!((lifted[0] - base[0]).abs() < 1e-5, "zero popularity adds nothing");
+        let gain = lifted[1] - base[1];
+        assert!(gain > 2.0 && gain < 3.0, "scale 2.5 times quality 1 times popularity 1");
     }
 
     #[test]

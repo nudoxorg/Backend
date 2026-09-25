@@ -398,6 +398,21 @@ pub fn rank_key(score: Score, name: &str) -> RankKey<'_> {
     RankKey { score, name }
 }
 
+/// Quality unit times the popularity unit.
+///
+/// Explore ranking adds `quality_popularity_path_scale` times this term.
+/// Navigate leaves the scale at zero, so the ID-8 sum is unchanged.
+#[must_use]
+pub fn quality_times_popularity(factors: &RankingFactors) -> f64 {
+    let quality = f64::from(factors.quality_ppm.get()) / f64::from(QualityPpm::MAX);
+    let quality = if quality.is_finite() {
+        quality.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    quality * popularity_unit(factors)
+}
+
 fn popularity_unit(factors: &RankingFactors) -> f64 {
     // `match` keeps the two policies (filled percentile vs synthesized mass)
     // as separate arms. `map_or_else` would bury that branch.
