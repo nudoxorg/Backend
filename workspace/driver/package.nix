@@ -13,5 +13,6 @@ mkRustService {
   inherit version src;
   cargoPackage = "index";
   mainProgram = "nudox-serve";
+  buildFeatures = [ "server" ];
   description = "NuDox backend HTTP serving service";
 }

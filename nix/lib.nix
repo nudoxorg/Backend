@@ -52,6 +52,7 @@ let
       cargoPackage,
       mainProgram ? "",
       description ? "",
+      buildFeatures ? [ ],
     }:
     pkgs.rustPlatform.buildRustPackage {
       inherit pname version src;
@@ -61,6 +62,7 @@ let
       depsExtraArgs = {
         GIT_CONFIG_GLOBAL = ./git-https-instead-of-ssh.config;
       };
+      inherit buildFeatures;
       cargoBuildFlags = [
         "-p"
         cargoPackage
