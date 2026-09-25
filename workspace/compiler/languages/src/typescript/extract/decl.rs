@@ -598,6 +598,39 @@ fn require_bindings<'a>(
     out
 }
 
+/// `Foo.prototype.bar = function (s) { ... }` is a method, not an export
+/// assignment. The constructor stays the function it already is.
+fn prototype_method<'a>(
+    assign: &'a oxc_ast::ast::AssignmentExpression<'a>,
+    source: &'a str,
+) -> Option<(String, FunctionBody, Span)> {
+    let AssignmentTarget::StaticMemberExpression(method) = &assign.left else {
+        return None;
+    };
+    let Expression::StaticMemberExpression(proto) = &method.object else {
+        return None;
+    };
+    if proto.property.name != "prototype" {
+        return None;
+    }
+    let Expression::Identifier(_) = &proto.object else {
+        return None;
+    };
+    let name = method.property.name.to_string();
+    if name.is_empty() {
+        return None;
+    }
+    match &assign.right {
+        Expression::FunctionExpression(function) => {
+            Some((name, lower_function(function, source), function.span()))
+        }
+        Expression::ArrowFunctionExpression(arrow) => {
+            Some((name, lower_arrow(arrow, source), arrow.span()))
+        }
+        _ => None,
+    }
+}
+
 fn is_whole_module_exports(mem: &oxc_ast::ast::StaticMemberExpression<'_>) -> bool {
     matches!(&mem.object, Expression::Identifier(id) if id.name == "module")
         && mem.property.name == "exports"
@@ -864,6 +897,18 @@ fn push_commonjs_value_decls<'a>(
             continue;
         };
         if assign.operator != AssignmentOperator::Assign {
+            continue;
+        }
+        if let Some((name, body, span)) = prototype_method(assign, source) {
+            push_commonjs_function(
+                &name,
+                body,
+                span,
+                semantic,
+                path,
+                declarations,
+                name_counts,
+            );
             continue;
         }
         let AssignmentTarget::StaticMemberExpression(mem) = &assign.left else {
