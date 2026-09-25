@@ -2697,6 +2697,42 @@ mod tests {
     }
 
     #[test]
+    fn a_constructor_assignment_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"ctor-assign","version":"1.0.0","types":"index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.ts"),
+            "export class Bag {\n\
+               constructor() {\n\
+                 this.call = null as (left: number) => void;\n\
+                 this.checked = ((s: string) => s) satisfies (right: number) => void;\n\
+               }\n\
+             }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "ctor-assign", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("ctor-assign"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function assigned in a constructor must seal");
+        for name in ["left", "right"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn a_class_field_initializer_declares_each_function_binding() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

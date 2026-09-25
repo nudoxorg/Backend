@@ -2140,12 +2140,14 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
                     {
                         declared_field_names.insert(prop_name.clone());
                         let span = assign.span();
+                        let (ty, satisfied, cast) =
+                            initializer_types(None, Some(&assign.right), source);
                         members.push(MemberFact {
                             name: prop_name,
                             kind: MemberKind::Property {
-                                ty: None,
-                                satisfies: None,
-                                cast: None,
+                                ty,
+                                satisfies: satisfied,
+                                cast,
                             },
                             modifiers: MemberModifiers::default(),
                             doc: jsdoc::jsdoc_for_span(semantic, span),
