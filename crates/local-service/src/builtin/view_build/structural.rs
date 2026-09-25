@@ -1,0 +1,845 @@
+use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
+use super::identity::{declaration_coordinate, declaration_symbol};
+use super::semantic_profile_is_complete;
+use backend_engine::{DeclarationKind, RowId, RowIdentityPreimage};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub(super) fn duplicate_declaration_coordinates(
+    containment: &FileContainment<'_>,
+    declarations: &[backend_compile::SourceDeclaration],
+) -> BTreeSet<String> {
+    let mut counts = BTreeMap::<String, u32>::new();
+    for declaration in declarations {
+        let coordinate = containment.coordinate(declaration);
+        let count = counts.entry(coordinate).or_default();
+        *count = count.saturating_add(1);
+    }
+    counts
+        .into_iter()
+        .filter_map(|(coordinate, count)| (count > 1).then_some(coordinate))
+        .collect()
+}
+pub(super) fn is_file_module(declaration: &backend_compile::SourceDeclaration, path: &str) -> bool {
+    declaration.kind() == DeclarationKind::Module
+        && declaration.line() == 1
+        && std::path::Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem == declaration.name())
+}
+const fn declares_a_type(kind: DeclarationKind) -> bool {
+    matches!(
+        kind,
+        DeclarationKind::Struct
+            | DeclarationKind::Enum
+            | DeclarationKind::Union
+            | DeclarationKind::Class
+            | DeclarationKind::Trait
+            | DeclarationKind::Interface
+            | DeclarationKind::Type
+    )
+}
+type TypeIdentity = ([u8; 32], String);
+
+/// The file and line one declaration was declared at.
+type DeclarationSite = (String, u32);
+
+#[derive(Default)]
+pub(super) struct ProjectTypeIndex {
+    by_name: BTreeMap<TypeIdentity, DeclarationSite>,
+}
+
+impl ProjectTypeIndex {
+    pub(super) fn of(sources: &IndexedSources) -> Self {
+        let mut index = Self::default();
+        for (_, record) in &sources.files {
+            let Some(file) = record.file_fields() else {
+                continue;
+            };
+            for declaration in file.declarations.iter() {
+                if !declares_a_type(declaration.kind()) {
+                    continue;
+                }
+                let entry = (file.path.to_owned(), declaration.line());
+                index
+                    .by_name
+                    .entry((file.project, declaration.name().to_owned()))
+                    .and_modify(|held| {
+                        if entry < *held {
+                            *held = entry.clone();
+                        }
+                    })
+                    .or_insert(entry);
+            }
+        }
+        index
+    }
+
+    fn resolve(&self, project: [u8; 32], type_name: &str) -> Option<(&str, u32)> {
+        self.by_name
+            .get(&(project, type_name.to_owned()))
+            .map(|(path, line)| (path.as_str(), *line))
+    }
+}
+
+/// One structural declaration retained for an emitting source file.
+///
+/// The coordinate, parent coordinate, occurrence-disambiguated identity, and
+/// identity preimage are prepared once. Both the product-row and Trustfall
+/// producers borrow this exact entry, so they cannot disagree about which
+/// duplicate declaration owns an edge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct StructuralDeclaration {
+    pub(super) coordinate: String,
+    pub(super) parent: Option<String>,
+    pub(super) id: RowId,
+    pub(super) identity_preimage: Option<RowIdentityPreimage>,
+    pub(super) is_file_module: bool,
+}
+
+/// Structural declarations retained for one file that remains in the
+/// structural lane. Semantic-complete files intentionally have no entry: a
+/// structural parent may never resolve to an identity that will be
+/// suppressed from the product or query corpus.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct StructuralFilePlan {
+    project: [u8; 32],
+    package: backend_engine::PackageKey,
+    module_coordinate: String,
+    pub(super) declarations: Box<[StructuralDeclaration]>,
+}
+
+/// The emitted structural graph for one projection.
+///
+/// A tags query can select two declarations at one coordinate (for example a
+/// C `struct` and its `typedef`, or two frontend tags for the same namespace).
+/// [`declaration_symbol`] deliberately gives every such declaration its own
+/// checked identity preimage. Parentage cannot hash the bare coordinate in
+/// that case: there is no row with that unsuffixed identity. This table keeps
+/// every disambiguated row and resolves a parent to one of those retained
+/// identities, preferring a declaration kind that can own members and then a
+/// stable kind/id order. No declaration is discarded.
+#[derive(Default)]
+pub(super) struct StructuralProjectionPlan {
+    files: BTreeMap<[u8; 32], StructuralFilePlan>,
+    pub(super) by_coordinate: BTreeMap<([u8; 32], String), Vec<StructuralSymbol>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct StructuralSymbol {
+    pub(super) id: RowId,
+    pub(super) kind: DeclarationKind,
+}
+
+/// A parent target is either a retained declaration or the package row. The
+/// latter is the final bounded fallback for a malformed/incomplete file
+/// module; product rows represent it through their package relation field,
+/// while Trustfall facts can point at the already-emitted package fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StructuralParent {
+    Symbol(RowId),
+    Package(backend_engine::PackageKey),
+}
+
+impl StructuralProjectionPlan {
+    pub(super) fn of(
+        sources: &IndexedSources,
+        complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+    ) -> Result<Self, BuiltinModelError> {
+        let types = ProjectTypeIndex::of(sources);
+        let mut plan = Self::default();
+        for (file_key, record) in &sources.files {
+            let Some(file) = record.file_fields() else {
+                continue;
+            };
+            let project = sources.projects.get(&file.project).ok_or_else(|| {
+                BuiltinModelError("structural source refers to a missing project".to_owned())
+            })?;
+            if semantic_profile_is_complete(complete, Some(project.package), file.path)? {
+                continue;
+            }
+            let containment =
+                FileContainment::new(&project.label, file.path, file.project, file.declarations);
+            let duplicate_coordinates =
+                duplicate_declaration_coordinates(&containment, file.declarations);
+            let mut occurrences = BTreeMap::new();
+            let mut declarations = Vec::with_capacity(file.declarations.len());
+            for declaration in file.declarations.iter() {
+                let coordinate = containment.coordinate(declaration);
+                let (id, identity_preimage) = declaration_symbol(
+                    &coordinate,
+                    declaration.kind(),
+                    declaration.signature(),
+                    duplicate_coordinates.contains(&coordinate),
+                    &mut occurrences,
+                );
+                let identity_preimage = identity_preimage
+                    .map(RowIdentityPreimage::try_from)
+                    .transpose()
+                    .map_err(|error| {
+                        BuiltinModelError(format!("structural row identity preimage: {error}"))
+                    })?;
+                let parent = containment.parent_coordinate(declaration, &types);
+                plan.by_coordinate
+                    .entry((file.project, coordinate.clone()))
+                    .or_default()
+                    .push(StructuralSymbol {
+                        id,
+                        kind: declaration.kind(),
+                    });
+                declarations.push(StructuralDeclaration {
+                    coordinate,
+                    parent,
+                    id,
+                    identity_preimage,
+                    is_file_module: is_file_module(declaration, file.path),
+                });
+            }
+            plan.files.insert(
+                *file_key,
+                StructuralFilePlan {
+                    project: file.project,
+                    package: project.package,
+                    module_coordinate: containment.module_coordinate,
+                    declarations: declarations.into_boxed_slice(),
+                },
+            );
+        }
+        for symbols in plan.by_coordinate.values_mut() {
+            symbols.sort_unstable_by_key(|symbol| {
+                (structural_parent_rank(symbol.kind), symbol.kind, symbol.id)
+            });
+        }
+        Ok(plan)
+    }
+
+    pub(super) fn file(&self, file_key: [u8; 32]) -> Option<&StructuralFilePlan> {
+        self.files.get(&file_key)
+    }
+
+    pub(super) fn declaration(
+        &self,
+        file_key: [u8; 32],
+        index: usize,
+    ) -> Result<&StructuralDeclaration, BuiltinModelError> {
+        self.file(file_key)
+            .and_then(|file| file.declarations.get(index))
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "structural declaration plan is out of sync with source".to_owned(),
+                )
+            })
+    }
+
+    pub(super) fn parent_id(
+        &self,
+        file_key: [u8; 32],
+        coordinate: &str,
+    ) -> Result<StructuralParent, BuiltinModelError> {
+        let file = self.file(file_key).ok_or_else(|| {
+            BuiltinModelError("structural parent requested for a suppressed source file".to_owned())
+        })?;
+        if let Some(symbol) = self
+            .by_coordinate
+            .get(&(file.project, coordinate.to_owned()))
+            .and_then(|symbols| symbols.first())
+        {
+            return Ok(StructuralParent::Symbol(symbol.id));
+        }
+        if let Some(symbol) = self
+            .by_coordinate
+            .get(&(file.project, file.module_coordinate.clone()))
+            .and_then(|symbols| symbols.first())
+        {
+            return Ok(StructuralParent::Symbol(symbol.id));
+        }
+        Ok(StructuralParent::Package(file.package))
+    }
+}
+
+/// Orders duplicate declarations for parent resolution without dropping any
+/// of their identities. Concrete type declarations are preferred over aliases
+/// and other tags because they are the declaration that structurally owns
+/// fields and methods; ties remain deterministic by the closed kind and row
+/// identity.
+pub(super) const fn structural_parent_rank(kind: DeclarationKind) -> u8 {
+    match kind {
+        DeclarationKind::Struct
+        | DeclarationKind::Enum
+        | DeclarationKind::Class
+        | DeclarationKind::Interface
+        | DeclarationKind::Trait
+        | DeclarationKind::Union => 0,
+        DeclarationKind::Type => 1,
+        _ => 2,
+    }
+}
+
+/// Resolves the coordinates of one file's declarations and of their parents.
+///
+/// The frontend states containment structurally - a name and a line, or a
+/// type name to look up - because only a row projection knows what a row's
+/// coordinate is. Turning that into a parent coordinate is therefore done
+/// here, once, for both the row path and the query-fact path.
+pub(super) struct FileContainment<'a> {
+    label: &'a str,
+    path: &'a str,
+    project: [u8; 32],
+    module_coordinate: String,
+    local_types: BTreeMap<&'a str, u32>,
+}
+
+impl<'a> FileContainment<'a> {
+    fn new(
+        label: &'a str,
+        path: &'a str,
+        project: [u8; 32],
+        declarations: &'a [backend_compile::SourceDeclaration],
+    ) -> Self {
+        let mut local_types = BTreeMap::new();
+        for declaration in declarations {
+            if !declares_a_type(declaration.kind()) {
+                continue;
+            }
+            local_types
+                .entry(declaration.name())
+                .and_modify(|line: &mut u32| *line = (*line).min(declaration.line()))
+                .or_insert(declaration.line());
+        }
+        Self {
+            label,
+            path,
+            project,
+            module_coordinate: format!("{label}::{path}"),
+            local_types,
+        }
+    }
+
+    /// Returns the coordinate a declaration's own row is addressed by.
+    fn coordinate(&self, declaration: &backend_compile::SourceDeclaration) -> String {
+        if is_file_module(declaration, self.path) {
+            return self.module_coordinate.clone();
+        }
+        declaration_coordinate(
+            self.label,
+            self.path,
+            declaration.line(),
+            declaration.name(),
+        )
+    }
+
+    /// Returns the coordinate of the row a declaration hangs under.
+    ///
+    /// Every unresolved containment falls back to the file module rather than
+    /// to no parent at all: a declaration that vanished from every outline
+    /// would be worse than one shown at file level.
+    fn parent_coordinate(
+        &self,
+        declaration: &backend_compile::SourceDeclaration,
+        types: &ProjectTypeIndex,
+    ) -> Option<String> {
+        if is_file_module(declaration, self.path) {
+            return None;
+        }
+        Some(match declaration.container() {
+            backend_compile::Container::Module => self.module_coordinate.clone(),
+            backend_compile::Container::Enclosing { name, line } => {
+                declaration_coordinate(self.label, self.path, line.get(), name)
+            }
+            backend_compile::Container::Attached { type_name } => self
+                .attached_coordinate(type_name, types)
+                .unwrap_or_else(|| self.module_coordinate.clone()),
+        })
+    }
+
+    fn attached_coordinate(&self, type_name: &str, types: &ProjectTypeIndex) -> Option<String> {
+        if let Some(line) = self.local_types.get(type_name) {
+            return Some(declaration_coordinate(
+                self.label, self.path, *line, type_name,
+            ));
+        }
+        let (path, line) = types.resolve(self.project, type_name)?;
+        Some(declaration_coordinate(self.label, path, line, type_name))
+    }
+}
+pub(super) fn projected_source_capacity(
+    sources: &IndexedSources,
+    complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+) -> Result<usize, BuiltinModelError> {
+    let count = sources
+        .files
+        .iter()
+        .try_fold(sources.projects.len(), |count, (_, record)| {
+            let rows = match record.file_fields() {
+                Some(fields)
+                    if semantic_profile_is_complete(
+                        complete,
+                        sources
+                            .projects
+                            .get(&fields.project)
+                            .map(|project| project.package),
+                        fields.path,
+                    )? =>
+                {
+                    0
+                }
+                Some(fields) => fields.declarations.len(),
+                None => 0,
+            };
+            count
+                .checked_add(rows)
+                .ok_or_else(|| BuiltinModelError("workspace view row count overflow".to_owned()))
+        })?;
+    if count > MAX_REBUILD_PACKAGES {
+        return Err(BuiltinModelError(
+            "workspace source declarations exceed the rebuild row bound".to_owned(),
+        ));
+    }
+    Ok(count)
+}
+
+/// Current compiled-source paths per (project relation key, semantic profile).
+pub(super) type ProfileSourcePaths =
+    BTreeMap<([u8; 32], backend_semantic::vocabulary::LanguageProfile), BTreeSet<String>>;
+
+/// The persisted semantic source content identity of every current file that
+/// states one, per (project relation key, semantic profile).
+///
+/// A file scanned before identities were persisted - or a file whose bytes
+/// could not be read - is absent from the inner map, so identity comparison
+/// is trusted only when it covers the profile's whole path set.
+pub(super) type ProfileSourceIdentities = BTreeMap<
+    ([u8; 32], backend_semantic::vocabulary::LanguageProfile),
+    BTreeMap<String, backend_version::ContentId<backend_version::SourceFactDomain>>,
+>;
+
+pub(super) fn profile_source_paths(
+    sources: &IndexedSources,
+) -> Result<ProfileSourcePaths, BuiltinModelError> {
+    let mut paths = BTreeMap::new();
+    for record in &sources.files {
+        let Some(file) = record.1.file_fields() else {
+            continue;
+        };
+        let Some(profile) = super::super::ingest::source_profile(std::path::Path::new(file.path))
+            .map_err(BuiltinModelError)?
+        else {
+            continue;
+        };
+        paths
+            .entry((file.project, profile))
+            .or_insert_with(BTreeSet::new)
+            .insert(file.path.to_owned());
+    }
+    Ok(paths)
+}
+
+/// Maps every (project, semantic profile) pair to each current file's
+/// persisted `SourceFactDomain` content identity.
+pub(super) fn profile_source_identities(
+    sources: &IndexedSources,
+) -> Result<ProfileSourceIdentities, BuiltinModelError> {
+    let mut identities = BTreeMap::new();
+    for record in &sources.files {
+        let Some(file) = record.1.file_fields() else {
+            continue;
+        };
+        let Some(identity) = file.source_identity else {
+            continue;
+        };
+        let Some(profile) = super::super::ingest::source_profile(std::path::Path::new(file.path))
+            .map_err(BuiltinModelError)?
+        else {
+            continue;
+        };
+        identities
+            .entry((file.project, profile))
+            .or_insert_with(BTreeMap::new)
+            .insert(file.path.to_owned(), identity);
+    }
+    Ok(identities)
+}
+
+fn structural_callable(kind: DeclarationKind) -> bool {
+    matches!(
+        kind,
+        DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor
+    )
+}
+
+fn structural_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn structural_ident_boundary_before(excerpt: &str, at: usize) -> bool {
+    at == 0 || !structural_ident_byte(excerpt.as_bytes()[at - 1])
+}
+
+fn structural_call_open_paren(excerpt: &str, after_name: usize) -> bool {
+    excerpt[after_name..]
+        .chars()
+        .next()
+        .is_some_and(|ch| ch == '(')
+}
+
+fn structural_fn_declarator_before(excerpt: &str, name_at: usize) -> bool {
+    let prefix = excerpt[..name_at].trim_end();
+    prefix.ends_with("fn") && prefix.len() >= 2 && {
+        let fn_at = prefix.len() - 2;
+        fn_at == 0 || !structural_ident_byte(prefix.as_bytes()[fn_at - 1])
+    }
+}
+
+/// Returns the first `{` that opens the declaration body, skipping comments
+/// and string/char literals so a signature like `fn parse_config(` is never
+/// scanned as a call site.
+fn structural_body_start(excerpt: &str) -> Option<usize> {
+    let bytes = excerpt.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = index.saturating_add(2).min(bytes.len());
+            }
+            b'"' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index = index.saturating_add(2).min(bytes.len());
+                        continue;
+                    }
+                    if bytes[index] == b'"' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'\'' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index = index.saturating_add(2).min(bytes.len());
+                        continue;
+                    }
+                    if bytes[index] == b'\'' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'{' => return Some(index + 1),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+/// Returns whether `excerpt` contains a syntactic call to `callee`.
+///
+/// Only the declaration body is scanned. Occurrences inside line or block
+/// comments, string literals, and char literals are ignored, and a function
+/// declarator such as `fn parse_config(` is never treated as a call.
+pub(super) fn structural_excerpt_calls(excerpt: &str, callee: &str) -> bool {
+    if callee.is_empty() {
+        return false;
+    }
+    let scan_from = structural_body_start(excerpt).unwrap_or(0);
+    let body = &excerpt[scan_from..];
+    let callee_len = callee.len();
+    let mut index = 0;
+    while index < body.len() {
+        match body.as_bytes()[index] {
+            b'/' if body.as_bytes().get(index + 1) == Some(&b'/') => {
+                index += 2;
+                while index < body.len() && body.as_bytes()[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'/' if body.as_bytes().get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < body.len()
+                    && !(body.as_bytes()[index] == b'*' && body.as_bytes()[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = index.saturating_add(2).min(body.len());
+            }
+            b'"' => {
+                index += 1;
+                while index < body.len() {
+                    if body.as_bytes()[index] == b'\\' {
+                        index = index.saturating_add(2).min(body.len());
+                        continue;
+                    }
+                    if body.as_bytes()[index] == b'"' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'\'' => {
+                index += 1;
+                while index < body.len() {
+                    if body.as_bytes()[index] == b'\\' {
+                        index = index.saturating_add(2).min(body.len());
+                        continue;
+                    }
+                    if body.as_bytes()[index] == b'\'' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            _ if body[index..].starts_with(callee)
+                && structural_ident_boundary_before(body, index)
+                && structural_call_open_paren(body, index + callee_len)
+                && !structural_fn_declarator_before(body, index) =>
+            {
+                return true;
+            }
+            _ => index += 1,
+        }
+    }
+    false
+}
+
+/// Same-file call edges inferred from bounded declaration excerpts when no
+/// complete semantic publication supplies compiler-proven `Calls` links.
+pub(super) fn structural_call_graph_relations(
+    view: &backend_engine::ViewRoot,
+    sources: &IndexedSources,
+    package: backend_engine::PackageKey,
+    source_id: RowId,
+    include_incoming: bool,
+) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
+    let source_row = view.row(source_id).ok_or_else(|| {
+        BuiltinModelError("structural call graph source is absent from the view".to_owned())
+    })?;
+    let source_label = source_row.label.as_str();
+    let project = sources
+        .projects
+        .values()
+        .find(|project| project.package == package)
+        .ok_or_else(|| {
+            BuiltinModelError(
+                "structural call graph package is absent from indexed sources".to_owned(),
+            )
+        })?;
+    let project_key = project.package.to_bytes();
+    let mut coordinate_ids = BTreeMap::<String, RowId>::new();
+    for row in view.rows() {
+        if row.package == Some(package) {
+            coordinate_ids.insert(row.label.clone(), row.id);
+        }
+    }
+    for (_, record) in &sources.files {
+        let file = record
+            .file_fields()
+            .ok_or_else(|| BuiltinModelError("expected structural source file".to_owned()))?;
+        if file.project != project_key {
+            continue;
+        }
+        let containment = FileContainment::new(
+            &project.label,
+            file.path,
+            file.project,
+            file.declarations,
+        );
+        let file_contains_source = file.declarations.iter().any(|declaration| {
+            containment.coordinate(declaration) == source_label
+        });
+        if !file_contains_source {
+            continue;
+        }
+        let mut relations = BTreeSet::new();
+        for caller in file.declarations.iter() {
+            if !structural_callable(caller.kind()) {
+                continue;
+            }
+            let excerpt = caller
+                .source_excerpt()
+                .text()
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "structural call graph caller omitted a source excerpt".to_owned(),
+                    )
+                })?;
+            let caller_coordinate = containment.coordinate(caller);
+            let caller_id = coordinate_ids.get(&caller_coordinate).ok_or_else(|| {
+                BuiltinModelError(
+                    "structural call graph caller is absent from the published view".to_owned(),
+                )
+            })?;
+            for callee in file.declarations.iter() {
+                if caller.name() == callee.name() || !structural_callable(callee.kind()) {
+                    continue;
+                }
+                if !structural_excerpt_calls(excerpt, callee.name()) {
+                    continue;
+                }
+                let callee_coordinate = containment.coordinate(callee);
+                let callee_id = coordinate_ids.get(&callee_coordinate).ok_or_else(|| {
+                    BuiltinModelError(
+                        "structural call graph callee is absent from the published view"
+                            .to_owned(),
+                    )
+                })?;
+                relations.insert(backend_engine::GraphRelation::new(
+                    *caller_id,
+                    *callee_id,
+                    backend_library::SemanticLinkKind::Calls,
+                ));
+            }
+        }
+        let relations = relations
+            .into_iter()
+            .filter(|relation| {
+                if include_incoming {
+                    relation.from == source_id || relation.to == source_id
+                } else {
+                    relation.from == source_id
+                }
+            })
+            .collect::<Vec<_>>();
+        if relations.is_empty() {
+            return Ok(None);
+        }
+        if relations.len() > usize::from(backend_engine::QueryLimit::MAX) {
+            return Err(BuiltinModelError(
+                "structural call graph exceeds the bounded result contract".to_owned(),
+            ));
+        }
+        return Ok(Some(relations));
+    }
+    Ok(None)
+}
+
+/// Incoming call sites for one declaration when semantic references are absent.
+pub(super) fn structural_reference_facts(
+    view: &backend_engine::ViewRoot,
+    sources: &super::super::IndexedSources,
+    target: &str,
+) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
+    let target_row = view
+        .rows()
+        .iter()
+        .find(|row| row.label == target)
+        .ok_or_else(|| {
+            BuiltinModelError("structural references target is absent from the view".to_owned())
+        })?;
+    let backend_engine::RowId::Symbol(target_symbol) = target_row.id else {
+        return Err(BuiltinModelError(
+            "structural references target is not a declaration row".to_owned(),
+        ));
+    };
+    let Some(package) = target_row.package else {
+        return Err(BuiltinModelError(
+            "structural references target is not attributed to a package".to_owned(),
+        ));
+    };
+    let Some(relations) =
+        structural_call_graph_relations(view, sources, package, target_row.id, true)?
+    else {
+        return Ok(Vec::new());
+    };
+    let target_name = target
+        .rsplit("::")
+        .next()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            BuiltinModelError("structural references target has no declaration name".to_owned())
+        })?;
+    let target_identity = structural_symbol_identity(target_symbol);
+    let mut facts = Vec::new();
+    for relation in relations {
+        if relation.to != target_row.id
+            || relation.relation != backend_library::SemanticLinkKind::Calls
+        {
+            continue;
+        }
+        let site_row = view.row(relation.from).ok_or_else(|| {
+            BuiltinModelError("structural references site is absent from the view".to_owned())
+        })?;
+        let backend_engine::RowId::Symbol(site_symbol) = site_row.id else {
+            return Err(BuiltinModelError(
+                "structural references site is not a declaration row".to_owned(),
+            ));
+        };
+        let (start, end) = site_row
+            .excerpt
+            .text()
+            .and_then(|excerpt| structural_call_span(excerpt, target_name))
+            .map(|(start, end)| {
+                (
+                    u32::try_from(start).unwrap_or(u32::MAX),
+                    u32::try_from(end).unwrap_or(u32::MAX),
+                )
+            })
+            .unwrap_or((0, target_name.len().min(u32::MAX as usize) as u32));
+        let source = match site_row.source.captured() {
+            Some(location) => Some(backend_engine::SemanticSourceSpan {
+                file: backend_engine::ProductText::new(location.path())
+                    .map_err(|error| {
+                        BuiltinModelError(format!("structural references path: {error:?}"))
+                    })?,
+                start,
+                end,
+            }),
+            None => None,
+        };
+        facts.push(backend_engine::ReferenceFact {
+            site: site_symbol,
+            target: backend_engine::SemanticLinkTarget::Local {
+                declaration: target_identity,
+            },
+            relation: backend_library::SemanticLinkKind::Calls,
+            evidence: backend_engine::SemanticLinkEvidence {
+                confidence: backend_library::SemanticConfidence::Syntactic,
+                source,
+            },
+        });
+        if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+            return Err(BuiltinModelError(
+                "structural references exceed the bounded result contract".to_owned(),
+            ));
+        }
+    }
+    Ok(facts)
+}
+
+fn structural_symbol_identity(
+    symbol: backend_engine::SymbolKey,
+) -> backend_engine::SemanticDeclarationIdentity {
+    let bytes = symbol.as_bytes();
+    let mut family = [0_u8; 16];
+    let mut variant = [0_u8; 16];
+    family[..bytes.len().min(16)].copy_from_slice(&bytes[..bytes.len().min(16)]);
+    if bytes.len() > 16 {
+        variant[..16].copy_from_slice(&bytes[bytes.len() - 16..]);
+    }
+    backend_engine::SemanticDeclarationIdentity { family, variant }
+}
+
+fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize, usize)> {
+    let scan_from = structural_body_start(excerpt).unwrap_or(0);
+    let body = &excerpt[scan_from..];
+    let needle = format!("{callee}(");
+    let relative = body.find(&needle)?;
+    let start = scan_from + relative;
+    Some((start, start + needle.len() - 1))
+}
