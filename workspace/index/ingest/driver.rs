@@ -24,7 +24,7 @@
 use crate::{
     engine::{CatalogEngine, VersioningEngine},
     protocol::{CatalogOp, VersionDelta, VersionRecordWire},
-    store::{Catalog, MetaStore, writer::CatalogWriter},
+    store::{ApplyReport, Catalog, MetaStore, writer::CatalogWriter},
 };
 
 use crate::ingest::{
@@ -258,18 +258,7 @@ where
                 message: error.to_string(),
             }
         })?;
-        let report = self.writer.apply_ops(&ops).map_err(|error| Error::Commit {
-            feed: feed.clone(),
-            message: error.to_string(),
-        })?;
-
-        self.writer
-            .commit_batch(&format!("ingestor: {feed} batch ({} ops)", report.applied))
-            .map_err(|error| Error::Commit {
-                feed: feed.clone(),
-                message: error.to_string(),
-            })?;
-        self.remember_facts(&ops, &feed, None)?;
+        let report = self.commit_observed(&ops, &feed, format!("ingestor: {feed} batch"), None)?;
 
         // Only now that the batch is durable do we advance the watermark.
         self.watermarks.put_feed_watermark(&batch.next_watermark)?;
@@ -323,20 +312,12 @@ where
             }
             TickOutcome::Moved { rev, ops } => {
                 let ops = self.reconcile_version_ops(stem, ops)?;
-                let report = self.writer.apply_ops(&ops).map_err(|error| Error::Commit {
-                    feed: repo_url.to_owned(),
-                    message: error.to_string(),
-                })?;
-                self.writer
-                    .commit_batch(&format!(
-                        "git monitor: {repo_slug} ({} ops)",
-                        report.applied
-                    ))
-                    .map_err(|error| Error::Commit {
-                        feed: repo_url.to_owned(),
-                        message: error.to_string(),
-                    })?;
-                self.remember_facts(&ops, repo_url, Some((heart::Language::Cpp, repo_slug)))?;
+                let report = self.commit_observed(
+                    &ops,
+                    repo_url,
+                    format!("git monitor: {repo_slug}"),
+                    Some((heart::Language::Cpp, repo_slug)),
+                )?;
                 self.watermarks.put_git_watermark(&GitWatermark {
                     stem_id: stem,
                     last_rev: Some(rev),
@@ -348,6 +329,29 @@ where
                 })
             }
         }
+    }
+
+    /// Stage `ops`, commit the SQL batch, then project the same ops onto the
+    /// versioned ledger. The watermark stays put until both writes succeed.
+    fn commit_observed(
+        &self,
+        ops: &[CatalogOp],
+        feed: &str,
+        message: String,
+        fallback: Option<(heart::Language, &str)>,
+    ) -> Result<ApplyReport, Error> {
+        let report = self.writer.apply_ops(ops).map_err(|error| Error::Commit {
+            feed: feed.to_owned(),
+            message: error.to_string(),
+        })?;
+        self.writer
+            .commit_batch(&format!("{message} ({} ops)", report.applied))
+            .map_err(|error| Error::Commit {
+                feed: feed.to_owned(),
+                message: error.to_string(),
+            })?;
+        self.remember_facts(ops, feed, fallback)?;
+        Ok(report)
     }
 
     fn remember_facts(
@@ -363,18 +367,12 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for effect in crate::edge_project::effects_from_ops(ops, fallback) {
-            let write = match effect {
-                crate::edge_project::LedgerEffect::Upsert(record) => catalog.put_record(&record),
-                crate::edge_project::LedgerEffect::Remove {
-                    ecosystem,
-                    name,
-                    version,
-                } => catalog.drop_version(ecosystem.as_token(), &name, &version),
-            };
-            write.map_err(|error| Error::Commit {
-                feed: feed.to_owned(),
-                message: error.to_string(),
-            })?;
+            catalog
+                .apply_effect(&effect)
+                .map_err(|error| Error::Commit {
+                    feed: feed.to_owned(),
+                    message: error.to_string(),
+                })?;
         }
         Ok(())
     }

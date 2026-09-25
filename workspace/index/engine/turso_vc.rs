@@ -1,10 +1,6 @@
 //! Row-versioned catalog ledger on the philocalyst Turso fork.
 //!
-//! [`turso_versioning::orm::VersionedDb`] is the storage engine: every upsert
-//! is one committed row revision (`TableHandle::version`), readable later with
-//! `try_get_at`. This is the index's single versioned-row store. DoltLite
-//! remains the SQL facade for the existing catalog tables; new frontier writes
-//! go through [`VersionedCatalog`].
+//! Every upsert is one committed row revision. DoltLite stays the SQL facade.
 
 use turso_versioning::{
     model::CommitId,
@@ -21,22 +17,16 @@ use crate::record::{DepEdge, PackageRecord};
 
 pub use edge_fact::{EdgeFact, EdgeSync};
 
-/// One package fact stored as a versioned row.
+/// One package fact. Primary key is `(ecosystem, name, version)`.
 ///
-/// Primary key is `(ecosystem, name, version)`. `body` is the
-/// [`PackageRecord`] JSON. `payload_hash` is the BLAKE3 of that body. An
-/// unchanged hash does not create a new revision.
+/// `body` is the identity [`PackageRecord`] JSON. `payload_hash` is its BLAKE3.
+/// An unchanged hash does not create a new revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageFact {
-    /// Ecosystem token (`rust`, `typescript`, …).
     pub ecosystem: String,
-    /// Canonical package name.
     pub name: String,
-    /// Version string as published.
     pub version: String,
-    /// BLAKE3 hex of [`Self::body`].
     pub payload_hash: String,
-    /// Canonical JSON of the [`PackageRecord`].
     pub body: String,
 }
 
@@ -168,10 +158,24 @@ impl VersionedCatalog {
         Ok(FactWrite::Revised(self.upsert(&fact)?))
     }
 
+    /// Apply one projected catalog effect: upsert the record, or tombstone it.
+    pub fn apply_effect(
+        &mut self,
+        effect: &crate::edge_project::LedgerEffect,
+    ) -> OrmResult<FactWrite> {
+        match effect {
+            crate::edge_project::LedgerEffect::Upsert(record) => self.put_record(record),
+            crate::edge_project::LedgerEffect::Remove {
+                ecosystem,
+                name,
+                version,
+            } => self.drop_version(ecosystem.as_token(), name, version),
+        }
+    }
+
     /// Tombstone one package version and every edge the tip still owns.
     ///
-    /// A second drop of the same key is [`FactWrite::Unchanged`]. The rows
-    /// remain readable at the commit that last wrote them.
+    /// A second drop of the same key is [`FactWrite::Unchanged`].
     pub fn drop_version(
         &mut self,
         ecosystem: &str,
@@ -215,11 +219,8 @@ impl VersionedCatalog {
         self.db.table().get(&pk(ecosystem, name, version))
     }
 
-    /// Version each edge of `record` on its own row.
-    ///
-    /// An edge whose requirement, class, and optional flag already match the
-    /// tip is left in place. An edge missing from `record` is deleted at the
-    /// tip and remains readable at the earlier commit.
+    /// Version each edge of `record`. A matching tip hash stays; a missing edge
+    /// is deleted at the tip and remains readable at the earlier commit.
     pub fn sync_edges(&mut self, record: &PackageRecord) -> OrmResult<EdgeSync> {
         let key = PackageKey {
             ecosystem: SmolStr::new(record.ecosystem.as_token()),
