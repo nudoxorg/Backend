@@ -226,7 +226,9 @@ pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
     let mut documentation = false;
     let mut repository: Option<String> = None;
     let mut license: Option<String> = None;
-    let mut dependencies: Vec<String> = vec![];
+    let mut dependencies = crate::record::RuntimeEdgeFold::keep_first();
+    let mut dep_version: Option<String> = None;
+    let mut dep_optional = false;
 
     // Track current path stack to avoid <parent> false positives.
     let mut path: Vec<String> = vec![];
@@ -248,6 +250,8 @@ pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
                 if current_tag == "dependency" {
                     dep_group = None;
                     dep_artifact = None;
+                    dep_version = None;
+                    dep_optional = false;
                 }
             }
             Ok(Event::End(ref e)) => {
@@ -257,7 +261,9 @@ pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
                 if local == "dependency"
                     && let (Some(g), Some(a)) = (dep_group.take(), dep_artifact.take())
                 {
-                    dependencies.push(format!("{g}:{a}"));
+                    let version = dep_version.take();
+                    dependencies.observe(format!("{g}:{a}"), version.as_deref(), dep_optional);
+                    dep_optional = false;
                 }
                 path.pop();
                 current_tag = path.last().cloned().unwrap_or_default();
@@ -312,6 +318,12 @@ pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
                         "artifactid" if path.iter().any(|p| p == "dependency") => {
                             dep_artifact = Some(text);
                         }
+                        "version" if path.iter().any(|p| p == "dependency") => {
+                            dep_version = Some(text);
+                        }
+                        "optional" if path.iter().any(|p| p == "dependency") => {
+                            dep_optional = text.eq_ignore_ascii_case("true");
+                        }
                         _ => {}
                     }
                 }
@@ -332,10 +344,7 @@ pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
         documentation,
         license,
         has_license_file: false,
-        dependencies: dependencies
-            .into_iter()
-            .map(crate::record::DepEdge::runtime)
-            .collect(),
+        dependencies: dependencies.finish(),
     })
 }
 
@@ -477,6 +486,8 @@ mod tests {
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-observation</artifactId>
+      <version>1.12.0</version>
+      <optional>true</optional>
     </dependency>
     <dependency>
       <groupId>com.google.code.findbugs</groupId>
@@ -498,11 +509,13 @@ mod tests {
             Some("scm:git:https://github.com/spring-projects/spring-framework"),
             "repository from <scm><connection>"
         );
-        assert!(
-            facts
-                .dependency_names()
-                .contains(&"io.micrometer:micrometer-observation".to_owned())
-        );
+        let micrometer = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "io.micrometer:micrometer-observation")
+            .expect("micrometer");
+        assert_eq!(micrometer.requirement.as_deref(), Some("1.12.0"));
+        assert!(micrometer.optional);
         assert!(
             facts
                 .dependency_names()

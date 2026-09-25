@@ -203,7 +203,7 @@ pub fn parse_nuspec(bytes: &[u8]) -> Option<ExtractedFacts> {
     let mut has_license_file = false;
     let mut repository: Option<String> = None;
     let mut project_url: Option<String> = None;
-    let mut dependencies: Vec<String> = vec![];
+    let mut dependencies = crate::record::RuntimeEdgeFold::keep_first();
     let mut current_tag = String::new();
     // Whether the current <license> element has type="expression".
     let mut license_is_expression = false;
@@ -219,16 +219,27 @@ pub fn parse_nuspec(bytes: &[u8]) -> Option<ExtractedFacts> {
                 match local.as_str() {
                     "metadata" => in_metadata = true,
                     "dependency" if in_metadata => {
+                        let mut id = None;
+                        let mut version = None;
                         for attr in e.attributes().flatten() {
-                            if std::str::from_utf8(attr.key.local_name().as_ref()).unwrap_or("")
-                                == "id"
-                                && let Ok(val) = attr.decode_and_unescape_value(reader.decoder())
-                            {
-                                let s = val.trim().to_owned();
-                                if !s.is_empty() {
-                                    dependencies.push(s);
-                                }
+                            let key = std::str::from_utf8(attr.key.local_name().as_ref())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            let Ok(val) = attr.decode_and_unescape_value(reader.decoder()) else {
+                                continue;
+                            };
+                            let text = val.trim();
+                            if text.is_empty() {
+                                continue;
                             }
+                            match key.as_str() {
+                                "id" => id = Some(text.to_owned()),
+                                "version" => version = Some(text.to_owned()),
+                                _ => {}
+                            }
+                        }
+                        if let Some(id) = id {
+                            dependencies.observe(id, version.as_deref(), false);
                         }
                     }
                     "repository" if in_metadata => {
@@ -354,10 +365,7 @@ pub fn parse_nuspec(bytes: &[u8]) -> Option<ExtractedFacts> {
         documentation,
         license,
         has_license_file,
-        dependencies: dependencies
-            .into_iter()
-            .map(crate::record::DepEdge::runtime)
-            .collect(),
+        dependencies: dependencies.finish(),
     })
 }
 
@@ -408,11 +416,12 @@ mod tests {
             Some("https://github.com/JamesNK/Newtonsoft.Json"),
             "repository url attribute from <repository>"
         );
-        assert!(
-            facts
-                .dependency_names()
-                .contains(&"Microsoft.CSharp".to_owned())
-        );
+        let csharp = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "Microsoft.CSharp")
+            .expect("csharp");
+        assert_eq!(csharp.requirement.as_deref(), Some("4.7.0"));
         assert!(
             facts
                 .dependency_names()

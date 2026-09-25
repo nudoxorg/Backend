@@ -325,16 +325,15 @@ pub fn parse_pyproject_toml(text: &str) -> ExtractedFacts {
 
     // PEP 508 dependency names: take the leading name token (stop at `[`, `>`, `<`,
     // `=`, `!`, `;`, ` `).
-    let dependencies: Vec<String> = project
-        .get("dependencies")
-        .and_then(toml::Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .filter_map(pep508_name)
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
+    if let Some(values) = project.get("dependencies").and_then(toml::Value::as_array) {
+        for value in values.iter().filter_map(toml::Value::as_str) {
+            if let Some(edge) = pep508_edge(value) {
+                fold.observe_edge(edge);
+            }
+        }
+    }
+    let dependencies = fold.finish();
 
     ExtractedFacts {
         description,
@@ -348,10 +347,7 @@ pub fn parse_pyproject_toml(text: &str) -> ExtractedFacts {
         documentation,
         license,
         has_license_file: has_license_file || license_from_classifier,
-        dependencies: dependencies
-            .into_iter()
-            .map(crate::record::DepEdge::runtime)
-            .collect(),
+        dependencies,
     }
 }
 
@@ -469,7 +465,7 @@ pub fn parse_pkg_info(text: &str) -> ExtractedFacts {
     // `License-Expression:` (PEP 639) takes precedence when present.
     let mut license_expression: Option<String> = None;
     let mut license_from_classifier = false;
-    let mut dependencies: Vec<String> = vec![];
+    let mut dependencies = crate::record::RuntimeEdgeFold::keep_first();
 
     for line in text.lines() {
         if let Some((key, val)) = line.split_once(':') {
@@ -542,8 +538,8 @@ pub fn parse_pkg_info(text: &str) -> ExtractedFacts {
                     }
                 }
                 "Requires-Dist" => {
-                    if let Some(name) = pep508_name(val) {
-                        dependencies.push(name);
+                    if let Some(edge) = pep508_edge(val) {
+                        dependencies.observe_edge(edge);
                     }
                 }
                 _ => {}
@@ -556,6 +552,7 @@ pub fn parse_pkg_info(text: &str) -> ExtractedFacts {
     // Classifier-only → has_license_file signal, no expression.
     let (final_license, has_license_file) =
         resolved_license.map_or((None, license_from_classifier), |expr| (Some(expr), false));
+    let dependencies = dependencies.finish();
 
     ExtractedFacts {
         description,
@@ -566,10 +563,7 @@ pub fn parse_pkg_info(text: &str) -> ExtractedFacts {
         documentation,
         license: final_license,
         has_license_file,
-        dependencies: dependencies
-            .into_iter()
-            .map(crate::record::DepEdge::runtime)
-            .collect(),
+        dependencies,
     }
 }
 
@@ -582,7 +576,7 @@ pub fn parse_setup_cfg(text: &str) -> ExtractedFacts {
     let mut documentation = false;
     let mut license: Option<String> = None;
     let mut license_from_classifier = false;
-    let mut dependencies: Vec<String> = vec![];
+    let mut dependencies = crate::record::RuntimeEdgeFold::keep_first();
     let mut in_metadata = false;
     let mut in_options = false;
     // Which multi-line key indented continuation lines belong to (ini values
@@ -611,8 +605,8 @@ pub fn parse_setup_cfg(text: &str) -> ExtractedFacts {
         if line.starts_with([' ', '\t']) {
             match continuation {
                 Some(Continuation::Dependencies) => {
-                    if let Some(name) = pep508_name(trimmed) {
-                        dependencies.push(name);
+                    if let Some(edge) = pep508_edge(trimmed) {
+                        dependencies.observe_edge(edge);
                     }
                 }
                 Some(Continuation::Classifiers) => {
@@ -698,8 +692,8 @@ pub fn parse_setup_cfg(text: &str) -> ExtractedFacts {
             } else if in_options && (key == "install_requires" || key == "install-requires") {
                 continuation = Some(Continuation::Dependencies);
                 for dep_line in val.split('\n').map(str::trim).filter(|s| !s.is_empty()) {
-                    if let Some(name) = pep508_name(dep_line) {
-                        dependencies.push(name);
+                    if let Some(edge) = pep508_edge(dep_line) {
+                        dependencies.observe_edge(edge);
                     }
                 }
             }
@@ -708,6 +702,7 @@ pub fn parse_setup_cfg(text: &str) -> ExtractedFacts {
 
     let (final_license, has_license_file) =
         license.map_or((None, license_from_classifier), |expr| (Some(expr), false));
+    let dependencies = dependencies.finish();
 
     ExtractedFacts {
         description,
@@ -718,10 +713,7 @@ pub fn parse_setup_cfg(text: &str) -> ExtractedFacts {
         documentation,
         license: final_license,
         has_license_file,
-        dependencies: dependencies
-            .into_iter()
-            .map(crate::record::DepEdge::runtime)
-            .collect(),
+        dependencies,
     }
 }
 
@@ -898,6 +890,16 @@ Documentation = "https://requests.readthedocs.io"
         assert!(facts.documentation);
         assert!(facts.dependency_names().contains(&"urllib3".to_owned()));
         assert!(facts.dependency_names().contains(&"certifi".to_owned()));
+        assert_eq!(
+            facts
+                .dependencies
+                .iter()
+                .find(|edge| edge.name == "urllib3")
+                .expect("urllib3")
+                .requirement
+                .as_deref(),
+            Some(">=1.21.1")
+        );
     }
 
     #[test]
@@ -916,6 +918,7 @@ Documentation = "https://requests.readthedocs.io"
             "Repository from Project-URL"
         );
         assert!(facts.dependency_names().contains(&"certifi".to_owned()));
+        assert_eq!(facts.dependencies[0].requirement.as_deref(), Some(">=2017"));
     }
 
     #[test]
