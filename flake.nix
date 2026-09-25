@@ -79,6 +79,7 @@
         let
           nixPackages = import nixpkgs {
             inherit system;
+            config.gitConfigFile = ./nix/git-https-instead-of-ssh.config;
             overlays = [
               fenix.overlays.default
               nuenv.overlays.default
