@@ -45,7 +45,6 @@ use crate::ecosystem::{Language, LanguageExt as _};
 const USER_AGENT: &str = "nudox-registry-mirror/0.1 (+https://github.com/philocalyst)";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const BASE_BACKOFF_MS: u64 = 250;
-const MAX_ATTEMPTS: u32 = 4; // 1 initial + 3 retries
 
 /// Shared upstream HTTP client with per-language rate limiting.
 #[derive(Clone)]
@@ -81,12 +80,14 @@ impl UpstreamClient {
 
     /// GET `url` on behalf of `language`, applying rate limiting and retry.
     ///
-    /// Retries on 429/5xx and transport errors up to `MAX_ATTEMPTS` attempts.
-    /// Honors `Retry-After` when the ecosystem policy requests it.
+    /// The first request plus the ecosystem `retry_budget` retries run.
+    /// 429 and 5xx, and transport errors, consume that budget. When the
+    /// policy asks, `Retry-After` on 429 and 503 replaces the computed backoff.
     pub async fn get(&self, language: Language, url: &str) -> Result<Bytes, Error> {
         let policy = language.spec().policy();
+        let limit = attempt_limit(policy.retry_budget);
 
-        for attempt in 0..MAX_ATTEMPTS {
+        for attempt in 0..limit {
             // Rate limiting: wait if the token bucket is depleted.
             if let Some(bucket) = self.buckets.get(&language) {
                 let wait = bucket.lock().await.try_consume();
@@ -98,34 +99,36 @@ impl UpstreamClient {
             let response = self.inner.get(url).send().await;
             match response {
                 Err(e) => {
-                    if attempt + 1 >= MAX_ATTEMPTS {
+                    if attempt + 1 >= limit {
                         return Err(Error::Transport(e));
                     }
                     tokio::time::sleep(backoff(attempt, url)).await;
                 }
                 Ok(resp) => {
                     let status = resp.status();
-
-                    // Honor Retry-After on 429 when policy says so.
-                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                        if attempt + 1 >= MAX_ATTEMPTS {
-                            return Err(Error::RateLimited);
+                    let code = status.as_u16();
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                    {
+                        let header = retry_after_secs(&resp);
+                        match retry_wait(
+                            policy.respect_retry_after,
+                            code,
+                            header,
+                            attempt,
+                            limit,
+                            url,
+                        ) {
+                            RetryWait::GiveUp
+                                if status == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+                            {
+                                return Err(Error::RateLimited);
+                            }
+                            RetryWait::GiveUp => return Err(Error::ServerError(code)),
+                            RetryWait::Again(wait) => {
+                                tokio::time::sleep(wait).await;
+                                continue;
+                            }
                         }
-                        let wait = if policy.respect_retry_after {
-                            retry_after_secs(&resp).map(Duration::from_secs)
-                        } else {
-                            None
-                        };
-                        tokio::time::sleep(wait.unwrap_or_else(|| backoff(attempt, url))).await;
-                        continue;
-                    }
-
-                    if status.is_server_error() {
-                        if attempt + 1 >= MAX_ATTEMPTS {
-                            return Err(Error::ServerError(status.as_u16()));
-                        }
-                        tokio::time::sleep(backoff(attempt, url)).await;
-                        continue;
                     }
 
                     if status == reqwest::StatusCode::NOT_FOUND {
@@ -252,6 +255,40 @@ fn backoff(attempt: u32, url: &str) -> Duration {
     Duration::from_millis(ms)
 }
 
+/// First request plus `retry_budget` retries.
+fn attempt_limit(retry_budget: u8) -> u32 {
+    u32::from(retry_budget).saturating_add(1)
+}
+
+/// Whether a transient status spends another attempt, and how long to wait.
+enum RetryWait {
+    GiveUp,
+    Again(Duration),
+}
+
+/// `retry_after` is the `Retry-After` header in seconds, when it parsed.
+///
+/// 429 and 503 consult that header when `respect_retry_after` is set. Other
+/// 5xx statuses use [`backoff`]. A spent budget gives up.
+fn retry_wait(
+    respect_retry_after: bool,
+    status: u16,
+    retry_after: Option<u64>,
+    attempt: u32,
+    limit: u32,
+    url: &str,
+) -> RetryWait {
+    let transient = status == 429 || (500..600).contains(&status);
+    if !transient || attempt + 1 >= limit {
+        return RetryWait::GiveUp;
+    }
+    let header = (respect_retry_after && (status == 429 || status == 503))
+        .then_some(retry_after)
+        .flatten()
+        .map(Duration::from_secs);
+    RetryWait::Again(header.unwrap_or_else(|| backoff(attempt, url)))
+}
+
 /// Parse `Retry-After` header as integer seconds, if present.
 fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
     let val = resp
@@ -263,3 +300,43 @@ fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::{RetryWait, attempt_limit, backoff, retry_wait};
+
+    #[test]
+    fn budget_is_the_attempt_limit() {
+        assert_eq!(attempt_limit(0), 1);
+        assert_eq!(attempt_limit(3), 4);
+        assert_eq!(attempt_limit(u8::MAX), u32::from(u8::MAX) + 1);
+    }
+
+    #[test]
+    fn spent_budget_gives_up_and_503_honors_retry_after() {
+        assert!(matches!(
+            retry_wait(true, 503, Some(12), 0, 1, "https://example"),
+            RetryWait::GiveUp
+        ));
+        match retry_wait(true, 503, Some(12), 0, 4, "https://example") {
+            RetryWait::Again(wait) => assert_eq!(wait.as_secs(), 12),
+            RetryWait::GiveUp => panic!("503 with budget left must retry"),
+        }
+        match retry_wait(false, 503, Some(12), 0, 4, "https://example") {
+            RetryWait::Again(wait) => assert_eq!(wait, backoff(0, "https://example")),
+            RetryWait::GiveUp => panic!("503 with the header ignored must use backoff"),
+        }
+        match retry_wait(true, 500, Some(12), 0, 4, "https://example") {
+            RetryWait::Again(wait) => assert_eq!(wait, backoff(0, "https://example")),
+            RetryWait::GiveUp => panic!("500 must ignore Retry-After"),
+        }
+        match retry_wait(true, 429, Some(0), 2, 4, "https://example") {
+            RetryWait::Again(wait) => assert_eq!(wait, std::time::Duration::ZERO),
+            RetryWait::GiveUp => panic!("a zero Retry-After is a real wait"),
+        }
+        assert!(matches!(
+            retry_wait(true, 404, Some(9), 0, 4, "https://example"),
+            RetryWait::GiveUp
+        ));
+    }
+}
