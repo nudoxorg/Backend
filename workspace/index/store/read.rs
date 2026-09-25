@@ -10,13 +10,14 @@ use sea_orm::{
 
 use heart::query::{AsOf, CatalogCommitHash};
 
-use crate::codec::CodecError;
-use crate::engine::{self, CatalogEngine, Row, VersioningEngine};
-use crate::entity::{outbox, packages, sink_watermarks, versions};
-use crate::enums::{OutboxOperation, SinkKind, TextEnum};
-use crate::ids::{GenerationStamp, PackageId, PackageStemId, version_id};
-use crate::tables::outbox::OutboxRow;
-use crate::tables::packages::PackageRow;
+use crate::{
+    codec::CodecError,
+    engine::{self, CatalogEngine, Row, VersioningEngine},
+    entity::{outbox, packages, sink_watermarks, versions},
+    enums::{OutboxOperation, SinkKind, TextEnum},
+    ids::{GenerationStamp, PackageId, PackageStemId, version_id},
+    tables::{outbox::OutboxRow, packages::PackageRow},
+};
 
 use super::{CatalogCursor, ChangedPage, MetaError, VersionSnapshot};
 
@@ -25,6 +26,40 @@ use super::{CatalogCursor, ChangedPage, MetaError, VersionSnapshot};
 pub struct CatalogAsOf {
     /// The concrete commit this view is pinned to.
     pub commit: CatalogCommitHash,
+}
+
+/// One C++ package the git monitor should poll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitPollTarget {
+    /// Catalog stem.
+    pub stem_id: PackageStemId,
+    /// Canonical name, the repo slug.
+    pub name: String,
+    /// Fetch URL.
+    pub repo_url: String,
+}
+
+/// C++ packages that named a repository URL.
+///
+/// Other ecosystems stay on their registry followers. An empty URL is omitted.
+pub fn git_poll_targets<E: CatalogEngine>(engine: &E) -> Result<Vec<GitPollTarget>, MetaError> {
+    let stmt = packages::Entity::find()
+        .filter(packages::Column::Ecosystem.eq("cpp"))
+        .build(DbBackend::Sqlite);
+    let rows = engine::query(engine, stmt, &mut |row| {
+        package_from_row(row).map_err(Into::into)
+    })?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let repo_url = row.repo_url.filter(|url| !url.is_empty())?;
+            Some(GitPollTarget {
+                stem_id: row.stem_id,
+                name: row.name_canonical,
+                repo_url,
+            })
+        })
+        .collect())
 }
 
 /// Fetch a package stem row by id.
@@ -74,7 +109,8 @@ pub fn changed_since<E: CatalogEngine>(
     Ok(ChangedPage { rows, next })
 }
 
-/// Read the durable version set for one stem without loading unrelated packages.
+/// Read the durable version set for one stem without loading unrelated
+/// packages.
 pub fn version_snapshots<E: CatalogEngine>(
     engine: &E,
     stem: PackageStemId,

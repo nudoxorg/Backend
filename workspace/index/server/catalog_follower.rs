@@ -366,3 +366,66 @@ pub(crate) async fn rustsec_follower_worker<M: EmbeddingModel>(server: Arc<Serve
         tokio::time::sleep(interval).await;
     }
 }
+
+/// Poll each C++ package that stored a repository URL.
+///
+/// The stem list is the catalog. Each tick goes through [`FollowerDriver::drive_git_once`],
+/// so an unchanged remote writes no versions.
+pub(crate) async fn git_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>>) {
+    let interval = server.config().limits.poll_interval;
+    let data_dir = server.config().definitive.data_directory();
+    let watermarks = match crate::ingest::watermark::FileWatermarkStore::open(
+        data_dir.join("git-watermarks"),
+    ) {
+        Ok(store) => std::sync::Arc::new(store),
+        Err(error) => {
+            tracing::warn!(error = %error, "git follower watermark store failed to open");
+            return;
+        }
+    };
+    let writer = std::sync::Arc::clone(server.base().global_store.writer());
+    let facts = server.package_facts();
+    tracing::info!("git follower started");
+    loop {
+        let targets = match crate::store::read::git_poll_targets(writer.engine()) {
+            Ok(targets) => targets,
+            Err(error) => {
+                tracing::warn!(error = %error, "git follower could not list packages");
+                tokio::time::sleep(interval).await;
+                continue;
+            }
+        };
+        for target in targets {
+            let writer = std::sync::Arc::clone(&writer);
+            let facts = std::sync::Arc::clone(&facts);
+            let watermarks = std::sync::Arc::clone(&watermarks);
+            let name = target.name.clone();
+            let repo_url = target.repo_url.clone();
+            let stem_id = target.stem_id;
+            let joined = tokio::task::spawn_blocking(move || {
+                let monitor =
+                    crate::ingest::GitMonitor::new(crate::ingest::DefaultGitAdapter::default());
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as i64)
+                    .unwrap_or(0);
+                crate::ingest::FollowerDriver::new(writer.as_ref(), watermarks.as_ref())
+                    .with_facts(facts.as_ref())
+                    .drive_git_once(&monitor, stem_id, &name, &repo_url, now, now as u64)
+            })
+            .await;
+            match joined {
+                Ok(Ok(outcome)) => {
+                    tracing::debug!(repo = %target.repo_url, ?outcome, "git follower poll")
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(repo = %target.repo_url, error = %error, "git follower poll failed")
+                }
+                Err(error) => {
+                    tracing::warn!(repo = %target.repo_url, error = %error, "git follower task failed")
+                }
+            }
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
