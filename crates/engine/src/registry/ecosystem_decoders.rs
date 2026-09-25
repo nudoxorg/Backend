@@ -762,6 +762,105 @@ impl EcosystemAdapter {
             .map_err(|_| TransportFailure::Protocol)
     }
 
+    /// JSON API document for one simple-index version.
+    ///
+    /// The simple index authenticates files. `requires_dist` lives on the
+    /// per-version JSON API, so dependency admission fetches only the versions
+    /// on the current page.
+    pub(crate) fn pypi_json_url(&self, version: &str) -> String {
+        format!(
+            "{}/pypi/{}/{}/json",
+            self.endpoint.url().trim_end_matches('/'),
+            super::normalized_pypi_name(self.package_name()),
+            component(version),
+        )
+    }
+
+    /// Admits `info.requires_dist` from one PyPI JSON API document.
+    ///
+    /// A missing or null field is unknown metadata. An array is the complete
+    /// declared set, including an empty set. Extras markers are optional
+    /// edges; the requirement text keeps the original PEP 508 spelling.
+    pub(crate) fn pypi_requires_dist(
+        &self,
+        bytes: &[u8],
+        source: &super::PackageCoordinate,
+        provenance: &[u8],
+    ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+        let root: Value = serde_json::from_slice(bytes).map_err(|_| TransportFailure::Protocol)?;
+        let info = root
+            .get("info")
+            .and_then(Value::as_object)
+            .ok_or(TransportFailure::Protocol)?;
+        let name = info
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(TransportFailure::Protocol)?;
+        if super::normalized_pypi_name(name) != super::normalized_pypi_name(self.package_name()) {
+            return Err(TransportFailure::Protocol);
+        }
+        let version = info
+            .get("version")
+            .and_then(Value::as_str)
+            .ok_or(TransportFailure::Protocol)?;
+        if version != source.version() {
+            return Err(TransportFailure::Protocol);
+        }
+        let Some(requires) = info.get("requires_dist") else {
+            return Ok(DependencyFacts::Unknown(
+                ProductText::new("PyPI JSON API omits requires_dist")
+                    .map_err(|_| TransportFailure::Protocol)?,
+            ));
+        };
+        if requires.is_null() {
+            return Ok(DependencyFacts::Unknown(
+                ProductText::new("PyPI JSON API omits requires_dist")
+                    .map_err(|_| TransportFailure::Protocol)?,
+            ));
+        }
+        let requires = requires.as_array().ok_or(TransportFailure::Protocol)?;
+        let limit = backend_library::MAX_PACKAGE_GRAPH_ROWS;
+        if requires.len() > limit {
+            return Err(TransportFailure::Overrun {
+                measured: u64::try_from(requires.len()).map_err(|_| TransportFailure::Bounds)?,
+                limit: u64::try_from(limit).map_err(|_| TransportFailure::Bounds)?,
+            });
+        }
+        let mut rows = Vec::with_capacity(requires.len());
+        let mut seen = BTreeSet::new();
+        for requirement in requires {
+            let requirement = requirement
+                .as_str()
+                .ok_or(TransportFailure::Protocol)?
+                .trim();
+            if requirement.is_empty() {
+                return Err(TransportFailure::Protocol);
+            }
+            let name = pypi_requirement_name(requirement)?;
+            let extra = pypi_requirement_is_extra(requirement);
+            let row = dependency_record(
+                source,
+                backend_semantic::vocabulary::RegistryEcosystem::Pypi,
+                name,
+                requirement,
+                if extra {
+                    DependencyScope::Optional
+                } else {
+                    DependencyScope::Runtime
+                },
+                extra,
+                provenance,
+            )?;
+            if !seen.insert(row.facts_version) {
+                return Err(TransportFailure::Protocol);
+            }
+            rows.push(row);
+        }
+        Ok(DependencyFacts::Known(
+            admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        ))
+    }
+
     pub(crate) fn maven_dependencies(
         &self,
         bytes: &[u8],
@@ -1693,6 +1792,81 @@ fn nuget_dependencies(
     Ok(DependencyFacts::Known(
         admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
     ))
+}
+
+fn pypi_requirement_name(requirement: &str) -> Result<&str, TransportFailure> {
+    let end = requirement
+        .find(|character: char| {
+            character.is_whitespace()
+                || matches!(character, '[' | ';' | '<' | '>' | '=' | '!' | '~' | '@')
+        })
+        .unwrap_or(requirement.len());
+    let name = &requirement[..end];
+    if name.is_empty()
+        || !name
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphanumeric())
+        || !name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        })
+    {
+        return Err(TransportFailure::Protocol);
+    }
+    Ok(name)
+}
+
+fn pypi_requirement_is_extra(requirement: &str) -> bool {
+    let Some((_, marker)) = requirement.split_once(';') else {
+        return false;
+    };
+    let bytes = marker.as_bytes();
+    let mut index = 0;
+    let mut quoted = false;
+    let mut quote = b'"';
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if quoted {
+            if byte == quote {
+                quoted = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' || byte == b'\'' {
+            quoted = true;
+            quote = byte;
+            index += 1;
+            continue;
+        }
+        if marker[index..].starts_with("extra") {
+            let before = index == 0 || !is_marker_identifier_byte(bytes[index - 1]);
+            let after = index + 5;
+            let after_boundary = after >= bytes.len() || !is_marker_identifier_byte(bytes[after]);
+            if before && after_boundary {
+                let rest = marker[after..].trim_start();
+                if rest.starts_with("===")
+                    || rest.starts_with("==")
+                    || rest.starts_with("!=")
+                    || rest.starts_with("~=")
+                    || rest.starts_with("<=")
+                    || rest.starts_with(">=")
+                    || rest.starts_with('<')
+                    || rest.starts_with('>')
+                    || rest.starts_with("in")
+                    || rest.starts_with("not")
+                {
+                    return true;
+                }
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+fn is_marker_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
 fn dependency_record(
