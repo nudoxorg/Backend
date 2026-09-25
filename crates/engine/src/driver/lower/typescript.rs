@@ -35,12 +35,6 @@ use crate::driver::{
     types::{FactFault, FactRejection, LoweringUnsupported},
 };
 
-/// Bound of one declaration's staged type-parameter rows; a source with more
-/// generic parameters on one declaration is a typed lane rejection. Real
-/// declaration files carry wide overload signatures (Hono's handler interface
-/// and Remeda's combinators exceed the former 16-row bound), so the staged
-/// bound must admit every declared generic the pooled lane can hold.
-const MAX_DECL_TYPE_PARAMETERS: usize = 64;
 /// Recursion bound for type-expression lowering; deeper expressions are
 /// honestly unknown with [`TypeReason::TruncatedAtDepthLimit`].
 const MAX_TYPE_DEPTH: u8 = 24;
@@ -228,41 +222,25 @@ struct TypeParamRow {
     default: Option<Span>,
 }
 
-/// Bounded staging for one declaration's generic parameters.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Staging for one declaration's generic parameters. The pooled
+/// type-parameter lane is the capacity; this list is not a second cap.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TypeParamRows {
-    rows: [TypeParamRow; MAX_DECL_TYPE_PARAMETERS],
-    len: usize,
+    rows: Vec<TypeParamRow>,
 }
 
 impl TypeParamRows {
-    const fn new() -> Self {
-        Self {
-            rows: [TypeParamRow {
-                name: Span::new(0, 0),
-                constraint: None,
-                default: None,
-            }; MAX_DECL_TYPE_PARAMETERS],
-            len: 0,
-        }
+    fn new() -> Self {
+        Self { rows: Vec::new() }
     }
 
-    /// Stages one row; a source declaring more generics on one declaration
-    /// than the staged bound is the typed lane rejection the bounded
-    /// extension-pool lane would raise anyway.
     fn push(&mut self, row: TypeParamRow) -> Result<(), TypeScriptCollectError> {
-        match self.rows.get_mut(self.len) {
-            Some(slot) => {
-                *slot = row;
-                self.len += 1;
-                Ok(())
-            }
-            None => Err(fault(FactFault::TypeParameterCapacity)),
-        }
+        self.rows.push(row);
+        Ok(())
     }
 
     fn iter(&self) -> impl Iterator<Item = &TypeParamRow> {
-        self.rows.iter().take(self.len)
+        self.rows.iter()
     }
 }
 

@@ -1359,6 +1359,22 @@ fn parameter_count(view: &FragmentView<'_>, name: &[u8]) -> usize {
 }
 
 #[test]
+fn a_type_with_sixty_five_parameters_keeps_every_parameter() {
+    let mut params = String::new();
+    for index in 0..65 {
+        if index != 0 {
+            params.push_str(", ");
+        }
+        params.push_str(&format!("T{index}"));
+    }
+    let source = format!("export type Wide<{params}> = T0;\n");
+    let source: &'static [u8] = Box::leak(source.into_bytes().into_boxed_slice());
+    let view = view(source, None);
+    assert_eq!(parameter_count(&view, b"T0"), 1);
+    assert_eq!(parameter_count(&view, b"T64"), 1);
+}
+
+#[test]
 fn nested_function_types_declare_each_parameter_binding() {
     const SOURCE: &[u8] = b"export interface Bag { read: (left: number) => void; write: (left: string) => void; }\nexport type Call = (mid: number) => void;\n";
     let view = view(SOURCE, None);
