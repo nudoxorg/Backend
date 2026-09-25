@@ -78,9 +78,13 @@ mkServiceImage {
     pkgs.rustc
     pkgs.stdenv.cc
   ];
+  # Pyroscope's SIGPROF sampler aborts nudox-serve when indexing
+  # spawns threads (tantivy merge, cargo). Plain logs and /metrics
+  # stay on; the OTLP exporter stays off until that race is gone.
   env = [
     "NUDOX_SERVING_ADDRESS=0.0.0.0:8080"
     "NUDOX_ROLE=all"
+    "OTEL_SDK_DISABLED=true"
     "OTEL_SERVICE_NAME=nudox-backend"
     "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318"
     "RUST_LOG=info"
