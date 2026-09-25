@@ -403,6 +403,13 @@ fn withdrawing_keeps_the_edges_and_a_second_withdraw_is_unchanged() {
     let FactWrite::Revised(written) = catalog.put_record(&record).expect("put") else {
         panic!("first write revises");
     };
+    let live = catalog
+        .resolve_version("rust", "memchr", "2.8.3")
+        .expect("resolve")
+        .expect("present");
+    let crate::pid::Resolve::Live(live_kernel) = live else {
+        panic!("published tip is live");
+    };
     let FactWrite::Revised(_) = catalog
         .withdraw("rust", "memchr", "2.8.3")
         .expect("withdraw")
@@ -431,5 +438,19 @@ fn withdrawing_keeps_the_edges_and_a_second_withdraw_is_unchanged() {
             .withdraw("rust", "missing", "0.1.0")
             .expect("absent"),
         FactWrite::Unchanged
+    );
+    let yanked = catalog
+        .resolve_version("rust", "memchr", "2.8.3")
+        .expect("resolve")
+        .expect("present");
+    let crate::pid::Resolve::Tombstone(tombstone) = yanked else {
+        panic!("yanked tip is a tombstone");
+    };
+    assert_eq!(tombstone.pid, live_kernel.pid);
+    assert!(
+        catalog
+            .resolve_version("rust", "missing", "0.1.0")
+            .expect("miss")
+            .is_none()
     );
 }
