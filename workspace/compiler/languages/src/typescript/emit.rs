@@ -2004,22 +2004,65 @@ fn reserve_enum_variants(
             Some(parent) => format!("{parent}::{}", decl.name),
             None => decl.name.clone(),
         };
-        if let DeclBody::Enum(body) = &decl.body
-            && decl.decl_index == 0
-        {
-            for (idx, variant) in body.variants.iter().enumerate() {
-                reserved
-                    .entry(canonical.to_path_buf())
-                    .or_default()
-                    .entry(format!("{qual}::{}", variant.name))
-                    .or_default()
-                    .insert(idx as u32);
+        if decl.decl_index == 0 {
+            // `child_name` omits the parent's discriminant only when it is 0,
+            // so these member ids are `Parent::name` at the discriminant
+            // `emit_*` will use. A merged namespace member of that name would
+            // otherwise take the same id.
+            match &decl.body {
+                DeclBody::Enum(body) => {
+                    for (idx, variant) in body.variants.iter().enumerate() {
+                        reserve_member(canonical, reserved, &qual, &variant.name, idx as u32);
+                    }
+                }
+                DeclBody::Class(body) => {
+                    for (idx, member) in body.members.iter().enumerate() {
+                        if let MemberKind::Method(sigs) = &member.kind {
+                            for overload_idx in 0..sigs.len() {
+                                reserve_member(
+                                    canonical,
+                                    reserved,
+                                    &qual,
+                                    &member.name,
+                                    (idx * 1000 + overload_idx) as u32,
+                                );
+                            }
+                        }
+                    }
+                }
+                DeclBody::Interface(body) => {
+                    for (idx, method) in body.methods.iter().enumerate() {
+                        reserve_member(
+                            canonical,
+                            reserved,
+                            &qual,
+                            &method.name,
+                            (idx * 1000) as u32,
+                        );
+                    }
+                }
+                _ => {}
             }
         }
         if let DeclBody::Namespace(body) = &decl.body {
             reserve_enum_variants(&body.children, Some(&qual), canonical, reserved);
         }
     }
+}
+
+fn reserve_member(
+    canonical: &Path,
+    reserved: &mut HashMap<PathBuf, HashMap<String, HashSet<u32>>>,
+    parent: &str,
+    member: &str,
+    disc: u32,
+) {
+    reserved
+        .entry(canonical.to_path_buf())
+        .or_default()
+        .entry(format!("{parent}::{member}"))
+        .or_default()
+        .insert(disc);
 }
 
 fn admit_decls<'a>(

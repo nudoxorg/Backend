@@ -978,6 +978,40 @@ mod tests {
     }
 
     #[test]
+    fn class_and_interface_namespace_methods_of_the_same_name_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"class-ns","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export class C { method(): void; }\n\
+             export namespace C { export function method(): void; }\n\
+             export interface I { call(): void; }\n\
+             export namespace I { export function call(): void; }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "class-ns", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("class-ns"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a type's method and a merged namespace function must both seal");
+        let named = |name: &str| {
+            produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+                })
+                .count()
+        };
+        assert_eq!(named("method"), 2, "class method and namespace function");
+        assert_eq!(named("call"), 2, "interface method and namespace function");
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
