@@ -2218,6 +2218,45 @@ mod tests {
     }
 
     #[test]
+    fn a_type_application_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"apply-fn","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export type Take = Promise<(left: number) => void>;\n\
+             export type Wrap = (cb: Promise<(right: number) => void>) => void;\n\
+             export type Pair = Map<(left: number) => void, (left: string) => void>;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "apply-fn", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("apply-fn"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function type inside a type application must seal");
+        let left = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "left"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(left, 3, "each applied function must declare its own left");
+        let right = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "right"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(right, 1, "a function nested in a parameter application must declare right");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

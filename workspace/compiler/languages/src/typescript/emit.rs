@@ -917,6 +917,11 @@ fn emit_type_alias(
         TypeOwned::Array(inner) => {
             declare_nested_params(&id, &id, "array", inner, out, names);
         }
+        TypeOwned::Apply { args, .. } => {
+            for (index, arg) in args.iter().enumerate() {
+                declare_nested_params(&id, &id, &format!("arg{index}"), arg, out, names);
+            }
+        }
         _ => {}
     }
 }
@@ -1021,6 +1026,18 @@ fn declare_nested_params(
         }
         TypeOwned::Array(inner) => {
             declare_nested_params(alias, owner, &format!("{param_name}::array"), inner, out, names);
+        }
+        TypeOwned::Apply { args, .. } => {
+            for (index, arg) in args.iter().enumerate() {
+                declare_nested_params(
+                    alias,
+                    owner,
+                    &format!("{param_name}::arg{index}"),
+                    arg,
+                    out,
+                    names,
+                );
+            }
         }
         _ => {}
     }
