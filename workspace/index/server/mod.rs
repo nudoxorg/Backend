@@ -253,6 +253,10 @@ pub struct Driver<M: EmbeddingModel> {
     /// `edgepack_artifacts` table). `None` when `config.bakery.enabled` is
     /// false — callers check with [`Self::edgepacks`] before using.
     edgepacks: Option<std::sync::Arc<crate::server::bakery::CatalogEdgepackStore>>,
+
+    /// Versioned package records. A publish writes here when the payload hash
+    /// changes. The store is the in-memory Turso branch opened at assembly.
+    package_facts: std::sync::Mutex<crate::engine::turso_vc::VersionedCatalog>,
 }
 
 /// The metadata keyword-normalization tables, loaded once at assembly and
@@ -375,6 +379,17 @@ impl<M: EmbeddingModel> Driver<M> {
             None
         };
 
+        let package_facts = std::sync::Mutex::new(
+            crate::engine::turso_vc::VersionedCatalog::open().map_err(|error| {
+                ServerError::Runtime(
+                    registry::runtime::error::TextError::Io(std::io::Error::other(
+                        error.to_string(),
+                    ))
+                    .into(),
+                )
+            })?,
+        );
+
         Ok(Self {
             config,
             federation,
@@ -387,6 +402,7 @@ impl<M: EmbeddingModel> Driver<M> {
             heuristics,
             compiled_store,
             edgepacks,
+            package_facts,
         })
     }
 

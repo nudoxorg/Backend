@@ -9,7 +9,11 @@ use crate::server::registry::{
 use heart::{Edition, Freshness, Language, PackageId, ResolutionState, Toolchain};
 use serde::{Deserialize, Serialize};
 
-use crate::server::{Server, authz::WriteCap, error::ServerResult};
+use crate::server::{
+    Server,
+    authz::WriteCap,
+    error::{ServerError, ServerResult},
+};
 use registry::vector::EmbeddingModel;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +212,26 @@ impl<M: EmbeddingModel> Server<M> {
             // converges even if the process dies between the two writes.
             let mut record = provisional_global_package(coordinates);
             record.facets = facets_from_dependency_names(dependencies);
+            let published = crate::record::PackageRecord::published(
+                coordinates.ecosystem(),
+                coordinates.name.canonical(),
+                coordinates.version.canonical(),
+                dependencies,
+            );
+            {
+                let mut facts = self
+                    .package_facts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                facts.put_record(&published).map_err(|error| {
+                    ServerError::Runtime(
+                        crate::server::registry::runtime::error::TextError::Io(
+                            std::io::Error::other(error.to_string()),
+                        )
+                        .into(),
+                    )
+                })?;
+            }
             stores
                 .global_store
                 .upsert(&record)
