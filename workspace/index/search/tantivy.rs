@@ -4,11 +4,12 @@
 //! - `package_id` STRING|STORED — upsert/delete key
 //! - `name_exact` STRING — search_surface lowercased + canonical lowercased
 //!   + original lowercased (multiple values per doc)
-//! - `name_tokens` TEXT(ident) — search_surface + original, identifier-tokenized
+//! - `name_tokens` TEXT(ident) — search_surface + original,
+//!   identifier-tokenized
 //! - `name_ns` TEXT(ident) — namespace segments space-joined
 //! - `description` TEXT — from SearchFacets.description (S2)
-//! - `keywords` TEXT — from SearchFacets.keyword_text() plus
-//!   index-time name separator parts ([`super::ranking::enrich`]; no separate `extra` field)
+//! - `keywords` TEXT — from SearchFacets.keyword_text() plus index-time name
+//!   separator parts ([`super::ranking::enrich`]; no separate `extra` field)
 //! - `ecosystem` STRING|STORED — language token (Must filter, Q4)
 //! - `record` STORED — full serialized GlobalPackage (hydrate)
 //! - `deps` STRING — one value per facets.dependencies slug (multi-valued)
@@ -25,9 +26,10 @@
 //! re-registered on this index after every open (same mechanism as TextIndex).
 
 use super::structured::StructuredQuery;
-use crate::ecosystem::PackageNameExt as _;
-use crate::runtime::text::tokenizer;
-use crate::{GlobalPackage, error::SearchError, schema::codec};
+use crate::{
+    GlobalPackage, ecosystem::PackageNameExt as _, error::SearchError, runtime::text::tokenizer,
+    schema::codec,
+};
 use heart::PackageId;
 use tantivy::{Index, IndexReader, schema::Field};
 
@@ -91,7 +93,8 @@ pub struct FastRankingSignals {
     pub popularity_pct_ppm: u64,
 }
 
-/// Schema field handles — resolved once at open so writer and reader always agree.
+/// Schema field handles — resolved once at open so writer and reader always
+/// agree.
 #[derive(Clone, Copy)]
 struct Fields {
     package_id: Field,
@@ -140,7 +143,8 @@ impl PackageIndex {
         let index =
             Index::open_or_create(directory, Self::schema()).map_err(SearchError::Tantivy)?;
 
-        // Register the identifier tokenizer (same mechanism as TextIndex::open_or_create).
+        // Register the identifier tokenizer (same mechanism as
+        // TextIndex::open_or_create).
         tokenizer::register(&index);
 
         let reader = index.reader().map_err(SearchError::Tantivy)?;
@@ -334,18 +338,27 @@ impl PackageIndex {
     /// Delegates to [`Self::query_structured`] via `StructuredQuery::parse`.
     pub fn query(&self, text: &str, limit: usize) -> Result<Vec<(PackageId, f32)>, SearchError> {
         let structured = StructuredQuery::parse(text, None);
-        self.query_structured(&structured, limit)
+        Ok(self
+            .query_structured(&structured, limit)?
+            .into_iter()
+            .map(|(package, score)| (package.id, score))
+            .collect())
     }
 
-    /// Execute a structured query, returning matching package ids with raw tantivy scores.
+    /// Execute a structured query, returning each hit's stored package with its
+    /// score.
     ///
-    /// Builds a hand-written BooleanQuery tree (§8.3). No tantivy QueryParser is
-    /// used — terms are raw, no grammar escaping needed (Q1 fix).
+    /// The search already opens the stored document to read the package id. The
+    /// record JSON is in that same document, so the caller does not search
+    /// again.
+    ///
+    /// Builds a hand-written BooleanQuery tree (§8.3). No tantivy QueryParser
+    /// is used — terms are raw, no grammar escaping needed (Q1 fix).
     pub fn query_structured(
         &self,
         structured: &StructuredQuery,
         limit: usize,
-    ) -> Result<Vec<(PackageId, f32)>, SearchError> {
+    ) -> Result<Vec<(GlobalPackage, f32)>, SearchError> {
         use tantivy::{
             Term,
             collector::TopDocs,
@@ -535,7 +548,17 @@ impl PackageIndex {
                 let identifier = stored_text(&document, fields.package_id)?
                     .parse::<uuid::Uuid>()
                     .map_err(|_| SearchError::StoredIdNotUuid)?;
-                Ok((codec::package_id_from_uuid(identifier), score))
+                let json = stored_text(&document, fields.record)?;
+                let mut package: GlobalPackage =
+                    serde_json::from_str(&json).map_err(|error| SearchError::JsonDecode {
+                        domain: "GlobalPackage",
+                        source: error,
+                    })?;
+                // The stored id is the term the index was built under. Ranking
+                // looks the BM25 score up by `package.id`, so the decoded
+                // record must carry that same id.
+                package.id = codec::package_id_from_uuid(identifier);
+                Ok((package, score))
             })
             .collect()
     }
@@ -623,7 +646,8 @@ impl PackageIndex {
         }))
     }
 
-    /// Snapshot of index health for ops dashboards (doc count, watermark, schema).
+    /// Snapshot of index health for ops dashboards (doc count, watermark,
+    /// schema).
     pub fn health_snapshot(&self) -> super::health::PackageIndexHealth {
         super::health::PackageIndexHealth {
             schema_version: SCHEMA_VERSION,
@@ -648,8 +672,9 @@ impl PackageIndex {
     /// so the removal is visible to the next searcher reload. Analogous to the
     /// `absorb`'s delete-before-add but without the subsequent add.
     ///
-    /// Called by the outbox consumer on a `Delete` intent — the mirror tombstone
-    /// path. Blob / CAS data is retained; only the search projection is removed.
+    /// Called by the outbox consumer on a `Delete` intent — the mirror
+    /// tombstone path. Blob / CAS data is retained; only the search
+    /// projection is removed.
     pub fn remove(&mut self, package: PackageId) -> Result<(), SearchError> {
         let package_token = package.to_string();
         let mut writer: tantivy::IndexWriter<tantivy::TantivyDocument> = self

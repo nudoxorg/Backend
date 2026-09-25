@@ -1,8 +1,8 @@
 //! Single retrieval + rank entry for package discovery.
 //!
 //! All high-level package search (server, registry tests, hybrid) **must** go
-//! through [`retrieve_and_rank`] / [`retrieve_and_rank_page`]. There is no second
-//! ranking path that bypasses structured parse + multi-stage rank.
+//! through [`retrieve_and_rank`] / [`retrieve_and_rank_page`]. There is no
+//! second ranking path that bypasses structured parse + multi-stage rank.
 //!
 //! # Pipeline stages
 //! 1. Parse raw text into [`StructuredQuery`] (ecosystem / namespace / deps /
@@ -10,8 +10,8 @@
 //! 2. Optionally expand free terms via [`PackageSearchDeps::synonyms`].
 //! 3. Over-fetch from the tantivy replica (`query_structured`).
 //! 4. Optionally RRF-fuse with semantic package ids.
-//! 5. Hydrate → multi-parent merge → entity dedup (unscoped) →
-//!    intent-aware rank on free terms (`sq.terms`):
+//! 5. Hydrate → multi-parent merge → entity dedup (unscoped) → intent-aware
+//!    rank on free terms (`sq.terms`):
 //!    - **scoped** → single [`policy::RankingPolicy::rank_full_candidates`]
 //!    - **unscoped** → per-ecosystem rank then
 //!      [`interleave::rank_per_ecosystem_and_interleave`]
@@ -29,8 +29,12 @@ use heart::{Language, PackageId, Scored, cursor::Cursor, search::Page};
 
 use crate::{GlobalPackage, error::SearchError, metadata::Synonyms};
 
-use super::ranking::{entity, interleave, multi_parent, policy, popularity, rrf};
-use super::{SearchKey, finite_score, ranking, structured::StructuredQuery, tantivy::PackageIndex};
+use super::{
+    SearchKey, finite_score, ranking,
+    ranking::{entity, interleave, multi_parent, policy, popularity, rrf},
+    structured::StructuredQuery,
+    tantivy::PackageIndex,
+};
 
 /// The quality assigned to a package with no extracted facets yet — a neutral
 /// midpoint so the fusion multiplier neither erases (`0.0`) nor inflates such a
@@ -55,7 +59,8 @@ pub struct PackageSearchRequest {
     pub limit: usize,
 
     /// Keyset cursor to resume after, or `None` for the first page. Only
-    /// consumed by [`retrieve_and_rank_page`]; ignored by [`retrieve_and_rank`].
+    /// consumed by [`retrieve_and_rank_page`]; ignored by
+    /// [`retrieve_and_rank`].
     pub after: Option<Cursor<SearchKey>>,
 
     /// Optional semantic (vector) ranking ids, best-first. Empty = pure BM25.
@@ -82,9 +87,9 @@ pub struct PackageSearchDeps<'a> {
 /// **The only high-level entry** for package discovery.
 ///
 /// Builds a [`StructuredQuery`], expands synonyms when provided, over-fetches
-/// from `index`, hydrates, collapses multi-parent fan-in, entity-dedups unscoped
-/// results, ranks via [`policy::RankingPolicy`] on free terms (intent-aware),
-/// and stamps rank scores for seam-free keyset pagination.
+/// from `index`, hydrates, collapses multi-parent fan-in, entity-dedups
+/// unscoped results, ranks via [`policy::RankingPolicy`] on free terms
+/// (intent-aware), and stamps rank scores for seam-free keyset pagination.
 ///
 /// LocalEnrichment is **not** applied (see module docs).
 pub async fn retrieve_and_rank(
@@ -106,9 +111,18 @@ pub async fn retrieve_and_rank(
     }
     let raw = index.query_structured(&sq, over_fetch)?;
 
-    // Build the id order and score map from BM25 results.
-    let bm25_ids: Vec<PackageId> = raw.iter().map(|(id, _)| *id).collect();
-    let bm25_scores: HashMap<PackageId, f32> = raw.into_iter().collect();
+    // The text search already decoded each stored record. Keep those packages
+    // so a later semantic-only id is the only one that needs a second lookup.
+    let mut decoded: HashMap<PackageId, GlobalPackage> = HashMap::with_capacity(raw.len());
+    let bm25_ids: Vec<PackageId> = raw.iter().map(|(package, _)| package.id).collect();
+    let bm25_scores: HashMap<PackageId, f32> = raw
+        .into_iter()
+        .map(|(package, score)| {
+            let id = package.id;
+            decoded.insert(id, package);
+            (id, score)
+        })
+        .collect();
 
     // Determine the final id order and per-id relevance score.
     // When semantic is empty this is a no-op (pure BM25 path).
@@ -140,10 +154,19 @@ pub async fn retrieve_and_rank(
             (all_ids, score_map)
         };
 
-    let scored: Vec<Scored<GlobalPackage>> = index
-        .hydrate(&hydrate_ids)
-        .await?
-        .into_iter()
+    let missing: Vec<PackageId> = hydrate_ids
+        .iter()
+        .copied()
+        .filter(|id| !decoded.contains_key(id))
+        .collect();
+    if !missing.is_empty() {
+        for package in index.hydrate(&missing).await? {
+            decoded.insert(package.id, package);
+        }
+    }
+    let scored: Vec<Scored<GlobalPackage>> = hydrate_ids
+        .iter()
+        .filter_map(|id| decoded.remove(id))
         // Ecosystem filtering happens in the index (Must TermQuery, Q4); this
         // assert is a belt-and-braces rollout guard only, never a filter.
         .inspect(|package| {
@@ -288,7 +311,8 @@ pub async fn retrieve_and_rank(
 ///
 /// Runs the full pipeline once, then slices the stamped total order with
 /// `req.after` / `req.limit`. Page 1 and page N are always slices of the same
-/// order — no first-page/resumed-page split and no scoring seam at the boundary.
+/// order — no first-page/resumed-page split and no scoring seam at the
+/// boundary.
 ///
 /// LocalEnrichment is **not** applied (see module docs).
 pub async fn retrieve_and_rank_page(
