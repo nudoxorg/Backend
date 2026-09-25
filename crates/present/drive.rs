@@ -222,7 +222,15 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
         } => neighbourhood(engine, coordinate, *incoming),
         Request::Search { text, limit } => {
             let snapshot = snapshot(engine, Probe::Search { text, limit: *limit }, "search")?;
-            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+            let list = record_list(text, &snapshot);
+            let list = if list.is_empty() {
+                list.with_empty_reason(
+                    "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword",
+                )
+            } else {
+                list
+            };
+            Ok(Answer::Records(Box::new(list)))
         }
         Request::Resolve { text, limit } => {
             let snapshot = snapshot(engine, Probe::Names { text, limit: *limit }, "resolve")?;
@@ -251,7 +259,15 @@ pub fn answer_paged(
                 continuation,
                 "search",
             )?;
-            Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+            let list = record_list(text, &snapshot);
+            let list = if list.is_empty() {
+                list.with_empty_reason(
+                    "no indexed declarations matched this query text; try a declaration name, signature fragment, or documentation keyword",
+                )
+            } else {
+                list
+            };
+            Ok(Answer::Records(Box::new(list)))
         }
         Request::Resolve { text, limit } => {
             let snapshot = snapshot_page(

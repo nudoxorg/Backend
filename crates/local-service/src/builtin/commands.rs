@@ -180,6 +180,41 @@ fn execute_semantic_graph(
     Ok(None)
 }
 
+fn execute_structural_call_graph(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    query: backend_engine::GraphNeighborhoodQuery,
+    include_incoming: bool,
+) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
+    let library = daemon.engine().daemon().library();
+    let view = library.view();
+    let source_symbol = query.resolve_symbol(view).ok_or_else(|| {
+        BuiltinModelError("structural call graph source is absent from the selected view".to_owned())
+    })?;
+    let source_id = backend_engine::RowId::Symbol(source_symbol);
+    let source = view.row(source_id).ok_or_else(|| {
+        BuiltinModelError("structural call graph source is absent from the selected view".to_owned())
+    })?;
+    let Some(package) = source.package else {
+        return Ok(None);
+    };
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let sources = super::read_indexed_sources(&snapshot)?;
+    let relations = super::view_build::structural_call_graph_relations(
+        view,
+        &sources,
+        package,
+        source_id,
+        include_incoming,
+    )?;
+    let Some(relations) = relations else {
+        return Ok(None);
+    };
+    library
+        .graph_from_semantic_relations(query, &relations)
+        .map(Some)
+        .map_err(|error| BuiltinModelError(error.to_string()))
+}
+
 fn semantic_graph_relations(
     image: &backend_semantic::ir::SemanticImageView<'_>,
     package: backend_engine::PackageKey,
@@ -765,14 +800,164 @@ fn execute_semantic_diff(
     from: &backend_engine::PackageReference,
     to: &backend_engine::PackageReference,
 ) -> Result<Box<[backend_engine::DiffRecord]>, BuiltinModelError> {
-    let before = semantic_package_snapshot(daemon, compiler, from)?.ok_or_else(|| {
-        BuiltinModelError("older package has no complete semantic publication".to_owned())
-    })?;
-    let after = semantic_package_snapshot(daemon, compiler, to)?.ok_or_else(|| {
-        BuiltinModelError("newer package has no complete semantic publication".to_owned())
-    })?;
+    let before = semantic_package_snapshot(daemon, compiler, from)?;
+    let after = semantic_package_snapshot(daemon, compiler, to)?;
+    if let (Some(before), Some(after)) = (before, after) {
+        return diff_semantic_snapshots(&before, &after);
+    }
+    structural_package_diff(daemon, from, to)
+}
 
-    diff_semantic_snapshots(&before, &after)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StructuralDeclarationSummary {
+    identity: backend_semantic::ir::DeclarationIdentity,
+    fingerprint: [u8; 32],
+}
+
+fn structural_declaration_name(label: &str) -> Option<&str> {
+    label
+        .rsplit("::")
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn structural_declaration_fingerprint(row: &backend_engine::Row) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    if let Some(signature) = &row.signature {
+        hasher.update(signature.as_bytes());
+    }
+    for fragment in row.document.iter() {
+        match fragment {
+            backend_library::Fragment::Text(text) => {
+                hasher.update(text.as_bytes());
+            }
+            backend_library::Fragment::Code(text) => {
+                hasher.update(text.as_bytes());
+            }
+            backend_library::Fragment::Link { label, .. } => {
+                hasher.update(label.as_bytes());
+            }
+            backend_library::Fragment::Break => {
+                hasher.update(b"\n");
+            }
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn structural_declaration_identity(
+    name: &str,
+    fingerprint: [u8; 32],
+) -> backend_semantic::ir::DeclarationIdentity {
+    let family = blake3::hash(name.as_bytes());
+    backend_semantic::ir::DeclarationIdentity {
+        family: backend_semantic::ir::DeclarationFamilyId::from_raw({
+            let mut bytes = [0_u8; 16];
+            bytes.copy_from_slice(&family.as_bytes()[..16]);
+            bytes
+        }),
+        variant: backend_semantic::ir::VariantFingerprint::from_raw({
+            let mut bytes = [0_u8; 16];
+            bytes.copy_from_slice(&fingerprint[..16]);
+            bytes
+        }),
+    }
+}
+
+fn structural_package_declarations(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: &backend_engine::PackageReference,
+) -> Result<BTreeMap<String, StructuralDeclarationSummary>, BuiltinModelError> {
+    let view = daemon.engine().daemon().library().view();
+    let package_key = backend_engine::package_key(package.as_str());
+    if view
+        .row_ref(backend_engine::RowId::Package(package_key))
+        .filter(|row| row.label == package.as_str())
+        .is_none()
+    {
+        return Err(BuiltinModelError("diff package is not indexed".to_owned()));
+    }
+    let mut declarations = BTreeMap::new();
+    let mut cursor = backend_engine::ViewPageCursor::first(view);
+    loop {
+        let page = view
+            .page(cursor, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|error| {
+                BuiltinModelError(format!("page structural diff view: {error:?}"))
+            })?;
+        for row in page.rows() {
+            if row.package != Some(package_key) || row.kind.is_none() {
+                continue;
+            }
+            let name = structural_declaration_name(&row.label)
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "structural diff declaration coordinate omitted a name".to_owned(),
+                    )
+                })?
+                .to_owned();
+            let fingerprint = structural_declaration_fingerprint(row);
+            let summary = StructuralDeclarationSummary {
+                identity: structural_declaration_identity(&name, fingerprint),
+                fingerprint,
+            };
+            if declarations.insert(name, summary).is_some() {
+                return Err(BuiltinModelError(
+                    "structural diff package contains a duplicate declaration name".to_owned(),
+                ));
+            }
+        }
+        let Some(next) = page.next() else {
+            break;
+        };
+        cursor = next;
+    }
+    Ok(declarations)
+}
+
+fn structural_package_diff(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    from: &backend_engine::PackageReference,
+    to: &backend_engine::PackageReference,
+) -> Result<Box<[backend_engine::DiffRecord]>, BuiltinModelError> {
+    let before = structural_package_declarations(daemon, from)?;
+    let after = structural_package_declarations(daemon, to)?;
+    let mut rows = Vec::new();
+    let mut remaining = before;
+    for (name, after_summary) in after {
+        match remaining.remove(&name) {
+            None => push_diff(
+                &mut rows,
+                &name,
+                backend_engine::DeclarationChange::Added,
+                None,
+                Some(after_summary.identity),
+            )?,
+            Some(before_summary)
+                if before_summary.fingerprint != after_summary.fingerprint =>
+            {
+                push_diff(
+                    &mut rows,
+                    &name,
+                    backend_engine::DeclarationChange::Changed,
+                    Some(before_summary.identity),
+                    Some(after_summary.identity),
+                )?;
+            }
+            Some(_) => {}
+        }
+    }
+    for (name, before_summary) in remaining {
+        push_diff(
+            &mut rows,
+            &name,
+            backend_engine::DeclarationChange::Removed,
+            Some(before_summary.identity),
+            None,
+        )?;
+    }
+    rows.sort_by(|left, right| left.label.as_str().cmp(right.label.as_str()));
+    Ok(rows.into_boxed_slice())
 }
 
 fn diff_semantic_snapshots(
@@ -2210,18 +2395,18 @@ impl CommandAdapter {
             Command::Graph(query)
         };
         let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
-        let reply = execute_semantic_graph(daemon, &self.compiler, query, include_incoming)?
-            .map_or_else(
-                || {
-                    daemon
-                        .engine()
-                        .daemon()
-                        .library()
-                        .execute(command.clone())
-                        .unwrap_or_else(|error| CommandReply::Failed(error.into()))
-                },
-                CommandReply::Graph,
-            );
+        let reply = match execute_semantic_graph(daemon, &self.compiler, query, include_incoming)? {
+            Some(snapshot) => CommandReply::Graph(snapshot),
+            None => match execute_structural_call_graph(daemon, query, include_incoming)? {
+                Some(snapshot) => CommandReply::Graph(snapshot),
+                None => daemon
+                    .engine()
+                    .daemon()
+                    .library()
+                    .execute(command.clone())
+                    .unwrap_or_else(|error| CommandReply::Failed(error.into())),
+            },
+        };
         Self::certify(daemon, &command, reply, certificate)
     }
 
