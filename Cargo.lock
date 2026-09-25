@@ -4693,6 +4693,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "transport",
+ "turso_versioning",
  "url",
  "uuid",
  "uv-pep440",
@@ -13989,6 +13990,17 @@ dependencies = [
  "log",
  "rand 0.9.5",
  "sha1 0.10.7",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "turso_versioning"
+version = "0.8.0-pre.7"
+source = "git+https://github.com/philocalyst/turso?rev=052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0#052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0"
+dependencies = [
+ "blake3",
+ "hex",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
 

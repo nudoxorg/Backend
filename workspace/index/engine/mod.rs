@@ -32,6 +32,9 @@ pub mod memory;
 #[cfg(feature = "dolt-engine")]
 pub mod dolt;
 
+/// Row-versioned ledger on the philocalyst Turso fork (`turso_versioning`).
+pub mod turso_vc;
+
 pub use stmt::{exec, query};
 
 // ─────────────────────────────────────────────────────────────────────────────

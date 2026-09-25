@@ -17,6 +17,9 @@ use crate::{GlobalPackage, error::SearchError, metadata::Synonyms};
 
 // Retrieval / query-parse plane (the `search` root).
 pub mod alias;
+/// Typed ID-8 ranking factors. The cascade in `ranking` is the lexical
+/// pipeline; this module is the scored fusion with named weights.
+pub mod factors;
 pub mod health;
 pub mod pipeline;
 pub mod spell;

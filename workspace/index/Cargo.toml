@@ -149,6 +149,9 @@ ron = "0.12"
 grit-lib = { git = "https://github.com/gitbutlerapp/grit", rev = "dfb079967b9cbc99e533c21e65f674bb3f5e8b07", features = ["http-ureq"] }
 sha2 = "0.10"
 rusqdoltlite = { path = "../vendor/rusqdoltlite", optional = true }
+# Philocalyst fork of Turso: prolly-tree row versioning (`VersionedDb`).
+# Pinned to the fork tip that adds `extensions/versioning` (dolt-compatible ORM).
+turso_versioning = { git = "https://github.com/philocalyst/turso", rev = "052ad81a7dbb6efed34ea482ae6c7e2e6f6682e0" }
 
 # The ephemeral scratch store (jobs/wanted/sessions/claims) is plain rusqlite,
 # delete-anytime semantics, never on remotes (INDEX-PLAN ID-2). Also backs the

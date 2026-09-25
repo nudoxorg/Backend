@@ -25,6 +25,10 @@
 
 /// Deterministic TEXT/JSON codec for catalog enums and ids.
 pub mod codec;
+/// Delta-aware poll/project vocabulary (cursors, content hashes, diffs).
+pub mod delta;
+/// IR and vector projection that rewrites only changed content hashes.
+pub mod frontier;
 /// The shared iroh/bao content-transfer plane (re-exported `transport` crate).
 pub use ::transport;
 /// Shard-bakery ledger (`edgepack_artifacts` claim store).
@@ -71,6 +75,8 @@ pub mod package;
 pub mod protocol;
 /// Durable scratch-backed indexing job queue.
 pub mod queue;
+/// The one package-information model every ingest path emits.
+pub mod record;
 /// The registryless edge-resolution pass.
 pub mod resolution;
 /// Version resolution (name + request → `PackageVersion`).
