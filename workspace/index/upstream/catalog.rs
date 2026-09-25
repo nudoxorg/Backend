@@ -145,13 +145,6 @@ impl DocumentFacts {
             checksum: None,
         }
     }
-
-    pub fn names(dependencies: Vec<String>) -> Self {
-        Self {
-            dependencies: crate::record::runtime_edges_from_names(&dependencies),
-            checksum: None,
-        }
-    }
 }
 
 /// Copy a document onto a publish. Dependencies replace the list. A checksum
