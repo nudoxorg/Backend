@@ -651,10 +651,21 @@ pub fn distinct_runtime_dependents<E: CatalogEngine>(
         .group_by_col((packages::Entity, packages::Column::Ecosystem))
         .group_by_col((packages::Entity, packages::Column::NameCanonical))
         .group_by_col((edges::Entity, edges::Column::DepNameCanonical));
-    crate::engine::stmt::query_select(engine, select, &mut |row| {
+    let rows = crate::engine::stmt::query_select(engine, select, &mut |row| {
         Ok((row.get_text(0)?, row.get_text(1)?, row.get_text(2)?))
     })
-    .map_err(MetaError::from)
+    .map_err(MetaError::from)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for (ecosystem, package, dependency) in rows {
+        let Some(dependency) = crate::record::counted_dependency_name(&package, &dependency) else {
+            continue;
+        };
+        if seen.insert((ecosystem.clone(), package.clone(), dependency.to_owned())) {
+            out.push((ecosystem, package, dependency.to_owned()));
+        }
+    }
+    Ok(out)
 }
 
 /// Versions that stored at least one same-ecosystem runtime edge.

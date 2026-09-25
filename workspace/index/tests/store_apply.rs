@@ -417,6 +417,29 @@ fn as_of_time_resolves_each_instant_to_the_newest_commit_at_or_before_it() {
     assert!(matches!(before, Err(MetaError::NoCommitAtInstant)));
 }
 
+#[test]
+fn sql_sweep_trims_a_runtime_name_and_drops_a_blank() {
+    let writer = migrated_writer();
+    let mut version = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut version {
+        *edges = index::protocol::EdgeSnapshot::feed(vec![
+            named_edge(" serde "),
+            named_edge(""),
+            named_edge("pkg1"),
+        ]);
+    }
+    writer
+        .apply_ops(&[upsert_package(1), version])
+        .expect("sql");
+    let rows =
+        index::store::lifecycle::distinct_runtime_dependents(writer.engine()).expect("sweep");
+    assert_eq!(rows, vec![(
+        "rust".to_owned(),
+        "pkg1".to_owned(),
+        "serde".to_owned()
+    )]);
+}
+
 fn named_edge(name: &str) -> EdgeWire {
     EdgeWire {
         dep_ecosystem: heart::Language::Rust,

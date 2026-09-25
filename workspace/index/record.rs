@@ -312,6 +312,20 @@ impl PackageRecord {
     }
 }
 
+/// The name the dependents sweep counts, or nothing for a blank or a self-edge.
+///
+/// Both the SQL sweep and the ledger histogram call this, so padding and an
+/// empty token cannot become a second key.
+#[must_use]
+pub fn counted_dependency_name<'a>(package: &str, dependency: &'a str) -> Option<&'a str> {
+    let dependency = dependency.trim();
+    if dependency.is_empty() || dependency == package.trim() {
+        None
+    } else {
+        Some(dependency)
+    }
+}
+
 /// Runtime and optional dependency names, trimmed, sorted, and de-duplicated.
 ///
 /// This is the facet list. Build, dev, and peer edges are absent, so the list

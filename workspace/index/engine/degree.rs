@@ -104,16 +104,10 @@ fn apply_diff(
 }
 
 fn counting_names(tips: &[EdgeTip], ecosystem: &str, package: &str) -> BTreeSet<SmolStr> {
-    let package = package.trim();
     tips.iter()
         .filter(|tip| tip_counts(tip, ecosystem))
         .filter_map(|tip| {
-            let name = tip.name.trim();
-            if name.is_empty() || name == package {
-                None
-            } else {
-                Some(SmolStr::new(name))
-            }
+            crate::record::counted_dependency_name(package, tip.name.as_str()).map(SmolStr::new)
         })
         .collect()
 }
