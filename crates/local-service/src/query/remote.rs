@@ -1480,10 +1480,10 @@ mod tests {
             r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
         let server = thread::spawn(move || {
             let mut projected_point = None;
-            for request_index in 0..6 {
+            for request_index in 0..7 {
                 let (mut stream, _) = listener.accept().expect("fixture connection");
                 let request = read_request(&mut stream);
-                if request_index == 2 {
+                if request_index == 3 {
                     let body_start = request
                         .windows(4)
                         .position(|window| window == b"\r\n\r\n")
@@ -1503,13 +1503,16 @@ mod tests {
                 let owned;
                 let body = match request_index {
                     0 | 1 => metadata,
-                    2 => r#"{"result":{"status":"completed"}}"#,
-                    3 => {
+                    // The client retrieves coordinate keys before the first PUT.
+                    // An empty result marks every point due.
+                    2 => r#"{"result":[]}"#,
+                    3 => r#"{"result":{"status":"completed"}}"#,
+                    4 => {
                         owned =
                             serde_json::json!({"result": {"count": expected_points}}).to_string();
                         &owned
                     }
-                    4 | 5 => {
+                    5 | 6 => {
                         owned = serde_json::json!({
                             "result": { "points": [projected_point.clone().expect("upsert point")] }
                         })
