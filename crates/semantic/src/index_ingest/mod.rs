@@ -1,10 +1,10 @@
 //! Allocation-free admission and reconciliation of observed index versions.
 
-use crate::ir::DeclarationIdentity;
 use crate::index_vocabulary::{
     IndexLocatorFacts, PackageCoordinate, SemanticImageLocator, VerifiedCanonicalEntityLocator,
     VerifiedSemanticPublication,
 };
+use crate::ir::DeclarationIdentity;
 
 /// Maximum number of versions admitted from either side of one reconciliation page/batch.
 ///
@@ -59,6 +59,40 @@ pub enum IngestedVersionFault {
     },
 }
 
+/// Checks entity count, image containment, duplicate declarations, and strict order.
+pub(crate) fn verify_entity_locators(
+    publication: VerifiedSemanticPublication,
+    entities: &[VerifiedCanonicalEntityLocator],
+) -> Result<(), IngestedVersionFault> {
+    if entities.len() != publication.entity_count() {
+        return Err(IngestedVersionFault::EntityCountMismatch {
+            expected: publication.entity_count(),
+            observed: entities.len(),
+        });
+    }
+    let mut left = 0;
+    while left < entities.len() {
+        let current = entities[left].as_locator();
+        if current.image != publication.image() {
+            return Err(IngestedVersionFault::EntityImageMismatch);
+        }
+        if left != 0 {
+            let previous = entities[left - 1].as_locator().declaration;
+            if previous == current.declaration {
+                return Err(IngestedVersionFault::DuplicateDeclaration(previous));
+            }
+            if previous > current.declaration {
+                return Err(IngestedVersionFault::EntityLocatorOutOfOrder {
+                    previous,
+                    observed: current.declaration,
+                });
+            }
+        }
+        left += 1;
+    }
+    Ok(())
+}
+
 impl<'coordinate, 'entities> IngestedVersion<'coordinate, 'entities> {
     /// Admits a version after checking image containment and declaration uniqueness.
     /// Entity inputs must be strictly increasing by declaration identity; each locator
@@ -69,32 +103,7 @@ impl<'coordinate, 'entities> IngestedVersion<'coordinate, 'entities> {
         publication: VerifiedSemanticPublication,
         entities: &'entities [VerifiedCanonicalEntityLocator],
     ) -> Result<Self, IngestedVersionFault> {
-        if entities.len() != publication.entity_count() {
-            return Err(IngestedVersionFault::EntityCountMismatch {
-                expected: publication.entity_count(),
-                observed: entities.len(),
-            });
-        }
-        let mut left = 0;
-        while left < entities.len() {
-            let current = entities[left].as_locator();
-            if current.image != publication.image() {
-                return Err(IngestedVersionFault::EntityImageMismatch);
-            }
-            if left != 0 {
-                let previous = entities[left - 1].as_locator().declaration;
-                if previous == current.declaration {
-                    return Err(IngestedVersionFault::DuplicateDeclaration(previous));
-                }
-                if previous > current.declaration {
-                    return Err(IngestedVersionFault::EntityLocatorOutOfOrder {
-                        previous,
-                        observed: current.declaration,
-                    });
-                }
-            }
-            left += 1;
-        }
+        verify_entity_locators(publication, entities)?;
         Ok(Self {
             origin,
             coordinate,

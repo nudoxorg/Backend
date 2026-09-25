@@ -6,14 +6,6 @@ use core::fmt::{Display, Formatter};
 use std::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use backend_semantic::ir::{
-    BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
-    FactAvailability, IrBuilder, ItemKind, PackageLineage, ParentageAuthority,
-    SemanticImageIdentity, SemanticImageView, SemanticReader, TreeItemInput, VariantFingerprint,
-    Visibility, encode_full_semantic_image, full_semantic_image_len,
-};
-use futures_executor::block_on;
-use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
 use backend_semantic::catalog::{
     CatalogError, CatalogPageError, CatalogPageOperation, CatalogPublication,
     CatalogPublishOutcome, FeedCheckpoint, FeedContentChecksum, FeedIdentity, FeedObservation,
@@ -25,6 +17,14 @@ use backend_semantic::index_vocabulary::{
     SemanticImageExtent, SemanticImageLocator, VerifiedCanonicalEntityLocator,
     VerifiedSemanticPublication,
 };
+use backend_semantic::ir::{
+    BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
+    FactAvailability, IrBuilder, ItemKind, PackageLineage, ParentageAuthority,
+    SemanticImageIdentity, SemanticImageView, SemanticReader, TreeItemInput, VariantFingerprint,
+    Visibility, encode_full_semantic_image, full_semantic_image_len,
+};
+use backend_version::{CompilePublicationDomain, ContentId, GenerationId};
+use futures_executor::block_on;
 
 #[derive(Debug)]
 struct TestFailure(&'static str);
@@ -341,6 +341,90 @@ fn identical_image_is_unchanged_but_changed_image_appends_history() -> TestResul
             }
         }
         assert_eq!(catalog.history(coordinate).await?.len(), 2);
+        Ok(())
+    })
+}
+
+#[test]
+fn identical_republish_is_unchanged_distinct_image_appends_and_entity_count_mismatch_rolls_back()
+-> TestResult {
+    block_on(async {
+        let database = temp_catalog("adversarial-republish")?;
+        let coordinate = package("3.0.2")?;
+        let original = image_fixture(35)?;
+        let changed = image_fixture(36)?;
+        let mut catalog = TursoCatalog::open(&database.path).await?;
+        let first_sequence = match catalog
+            .publish(publication(coordinate, &original, authority(35))?)
+            .await?
+        {
+            CatalogPublishOutcome::Inserted { sequence } => sequence,
+            CatalogPublishOutcome::Unchanged { .. } => {
+                return Err(TestFailure("first catalog publication was unchanged").into());
+            }
+        };
+        let history_after_first = catalog.history(coordinate).await?.len();
+        assert_eq!(history_after_first, 1);
+        match catalog
+            .publish(publication(coordinate, &original, authority(35))?)
+            .await?
+        {
+            CatalogPublishOutcome::Unchanged { sequence } => assert_eq!(sequence, first_sequence),
+            CatalogPublishOutcome::Inserted { .. } => {
+                return Err(TestFailure("identical catalog publication was inserted").into());
+            }
+        }
+        assert_eq!(
+            catalog.history(coordinate).await?.len(),
+            history_after_first
+        );
+        match catalog
+            .publish(publication(coordinate, &original, authority(35))?)
+            .await?
+        {
+            CatalogPublishOutcome::Unchanged { sequence } => assert_eq!(sequence, first_sequence),
+            CatalogPublishOutcome::Inserted { .. } => {
+                return Err(
+                    TestFailure("repeated identical catalog publication was inserted").into(),
+                );
+            }
+        }
+        let history_before_change = catalog.history(coordinate).await?.len();
+        match catalog
+            .publish(publication(coordinate, &changed, authority(36))?)
+            .await?
+        {
+            CatalogPublishOutcome::Inserted { sequence } => assert_ne!(sequence, first_sequence),
+            CatalogPublishOutcome::Unchanged { .. } => {
+                return Err(TestFailure("changed catalog image was unchanged").into());
+            }
+        }
+        assert_eq!(
+            catalog.history(coordinate).await?.len(),
+            history_before_change + 1
+        );
+        let entity = changed
+            .entities
+            .first()
+            .copied()
+            .ok_or(TestFailure("fixture did not contain an entity"))?;
+        let narrowed = [entity];
+        let before_mismatch = catalog.history(coordinate).await?;
+        match catalog
+            .publish(CatalogPublication {
+                entities: &narrowed,
+                ..publication(coordinate, &changed, authority(36))?
+            })
+            .await
+        {
+            Err(CatalogError::EntityCountMismatch {
+                expected: 2,
+                observed: 1,
+            }) => {}
+            Err(error) => return Err(unexpected(error)),
+            Ok(_) => return Err(TestFailure("incomplete entity set was persisted").into()),
+        }
+        assert_eq!(catalog.history(coordinate).await?, before_mismatch);
         Ok(())
     })
 }
