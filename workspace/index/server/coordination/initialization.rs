@@ -3,14 +3,13 @@
 
 #[allow(unused_imports)]
 use crate::server::registry;
-use crate::server::registry::identity::PackageCoordinates;
-use crate::server::registry::{GlobalPackage, Package, RegistryError, error::IndexError};
+use crate::server::registry::{
+    GlobalPackage, Package, RegistryError, error::IndexError, identity::PackageCoordinates,
+};
 use heart::{Edition, Freshness, Language, PackageId, ResolutionState, Toolchain};
 use serde::{Deserialize, Serialize};
 
-use crate::server::Server;
-use crate::server::authz::WriteCap;
-use crate::server::error::ServerResult;
+use crate::server::{Server, authz::WriteCap, error::ServerResult};
 use registry::vector::EmbeddingModel;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +68,27 @@ pub fn provisional_global_package(coordinates: &PackageCoordinates) -> GlobalPac
     }
 }
 
+/// Facets that carry feed-supplied dependency names, or `None` when there are
+/// none. Names are trimmed, emptied names dropped, then sorted and deduped.
+pub fn facets_from_dependency_names(names: &[String]) -> Option<crate::metadata::SearchFacets> {
+    use smol_str::SmolStr;
+    let mut dependencies: Vec<SmolStr> = names
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(SmolStr::new)
+        .collect();
+    if dependencies.is_empty() {
+        return None;
+    }
+    dependencies.sort();
+    dependencies.dedup();
+    Some(crate::metadata::SearchFacets {
+        dependencies,
+        ..crate::metadata::SearchFacets::default()
+    })
+}
+
 /// The stand-in toolchain recorded before a package has ever been compiled.
 ///
 /// # Also the fleet-wide content-hash identity anchor (W9)
@@ -118,8 +138,19 @@ impl<M: EmbeddingModel> Server<M> {
     /// The caller must hold a [`WriteCap`] proving authorization has occurred.
     pub async fn ensure_initialized(
         &self,
+        cap: &WriteCap,
+        coordinates: &PackageCoordinates,
+    ) -> ServerResult<Initialized> {
+        self.ensure_initialized_with(cap, coordinates, &[]).await
+    }
+
+    /// Like [`Self::ensure_initialized`], and when `dependencies` is non-empty
+    /// the first upsert stores those names on [`SearchFacets::dependencies`].
+    pub async fn ensure_initialized_with(
+        &self,
         _cap: &WriteCap,
         coordinates: &PackageCoordinates,
+        dependencies: &[String],
     ) -> ServerResult<Initialized> {
         let stores = self.base();
         let package = coordinates.id();
@@ -164,7 +195,8 @@ impl<M: EmbeddingModel> Server<M> {
             // Publishing the record and enqueueing the job are each idempotent
             // (identity upsert; unique live job per package), so this pair
             // converges even if the process dies between the two writes.
-            let record = provisional_global_package(coordinates);
+            let mut record = provisional_global_package(coordinates);
+            record.facets = facets_from_dependency_names(dependencies);
             stores
                 .global_store
                 .upsert(&record)
@@ -226,5 +258,28 @@ impl<M: EmbeddingModel> Server<M> {
             state,
             enqueued,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::facets_from_dependency_names;
+
+    #[test]
+    fn dependency_names_are_trimmed_sorted_and_deduped() {
+        let facets = facets_from_dependency_names(&[
+            " ms ".into(),
+            "debug".into(),
+            "debug".into(),
+            "  ".into(),
+        ])
+        .expect("names");
+        let names: Vec<_> = facets
+            .dependencies
+            .iter()
+            .map(|name| name.as_str())
+            .collect();
+        assert_eq!(names, vec!["debug", "ms"]);
+        assert!(facets_from_dependency_names(&[" ".into()]).is_none());
     }
 }

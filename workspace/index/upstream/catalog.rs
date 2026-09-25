@@ -4,8 +4,8 @@
 //! Each follower represents one ecosystem's catalog: it knows how to talk to
 //! its registry's native feed format (NuGet V3 catalog, crates.io new-crates
 //! RSS, etc.) and produce a stream of `CatalogEvent`s that the driver
-//! (`server/catalog_follower.rs::catalog_follower_worker`) converts into idempotent
-//! package-registration calls.
+//! (`server/catalog_follower.rs::catalog_follower_worker`) converts into
+//! idempotent package-registration calls.
 //!
 //! # Design constraints
 //!
@@ -22,8 +22,7 @@
 //!   cursor, the follower sets `CatalogBatch::exhausted = true`. The driver
 //!   sleeps `poll_interval` before calling again rather than tight-looping.
 
-use std::future::Future;
-use std::pin::Pin;
+use std::{future::Future, pin::Pin};
 
 use crate::ecosystem::Language;
 
@@ -61,6 +60,9 @@ pub enum CatalogEvent {
         name: String,
         /// Version string, exactly as the registry records it.
         version: String,
+        /// Direct dependency names the feed already carried. Empty when the
+        /// feed has no manifest body.
+        dependencies: Vec<String>,
     },
     /// A version was withdrawn (yanked/unlisted/deprecated).
     Withdrawn {
@@ -85,6 +87,14 @@ impl CatalogEvent {
             CatalogEvent::Published { version, .. } | CatalogEvent::Withdrawn { version, .. } => {
                 version
             }
+        }
+    }
+
+    /// Direct dependency names carried by a publish event.
+    pub fn dependencies(&self) -> &[String] {
+        match self {
+            CatalogEvent::Published { dependencies, .. } => dependencies,
+            CatalogEvent::Withdrawn { .. } => &[],
         }
     }
 }
@@ -124,15 +134,17 @@ pub trait CatalogFollower: Send + Sync + 'static {
     /// idempotent registration entry point.
     fn language(&self) -> Language;
 
-    /// Fetch the next batch of events after `cursor` from the upstream registry.
+    /// Fetch the next batch of events after `cursor` from the upstream
+    /// registry.
     ///
     /// The returned [`CatalogBatch`] carries a `next` cursor the driver should
-    /// pass on the subsequent call. The driver **does not commit the cursor until
-    /// all events in the batch have been registered**, so a `poll` that returns
-    /// `Ok` but is followed by a crash still re-delivers the batch.
+    /// pass on the subsequent call. The driver **does not commit the cursor
+    /// until all events in the batch have been registered**, so a `poll`
+    /// that returns `Ok` but is followed by a crash still re-delivers the
+    /// batch.
     ///
-    /// When the feed is fully caught up, return `CatalogBatch::exhausted = true`
-    /// and the driver will sleep before calling again.
+    /// When the feed is fully caught up, return `CatalogBatch::exhausted =
+    /// true` and the driver will sleep before calling again.
     fn poll<'a>(
         &'a self,
         client: &'a crate::upstream::UpstreamClient,

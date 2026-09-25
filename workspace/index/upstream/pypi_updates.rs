@@ -112,6 +112,7 @@ fn event_from_item(title: &str, published: &str, since: &str) -> Option<(Catalog
         CatalogEvent::Published {
             name: name.to_owned(),
             version: version.to_owned(),
+            dependencies: Vec::new(),
         },
         stamp,
     ))
@@ -232,15 +233,16 @@ mod tests {
             "#,
         );
         let page = parse_updates(&body, "2020-01-01T00:00:00").expect("updates");
-        assert_eq!(
-            page.events,
-            vec![CatalogEvent::Published {
-                name: "zope.interface".into(),
-                version: "6.0".into(),
-            }]
-        );
+        assert_eq!(page.events, vec![CatalogEvent::Published {
+            name: "zope.interface".into(),
+            version: "6.0".into(),
+            dependencies: Vec::new(),
+        }]);
         assert_eq!(page.latest, "2020-01-03T12:30:00");
-        assert_eq!(parse_updates(&body, "2020-01-01T00:00:00").expect("replay"), page);
+        assert_eq!(
+            parse_updates(&body, "2020-01-01T00:00:00").expect("replay"),
+            page
+        );
     }
 
     #[test]

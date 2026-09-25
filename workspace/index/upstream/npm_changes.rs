@@ -11,6 +11,8 @@
 //! The cursor is the numeric `last_seq`. Rows at or below the caller's `since`
 //! are ignored, so a replay of an old page does not re-publish.
 
+use std::collections::BTreeMap;
+
 use crate::ecosystem::Language;
 use serde::Deserialize;
 
@@ -52,6 +54,14 @@ struct ChangeRow {
 struct PackageDoc {
     #[serde(default, rename = "dist-tags")]
     dist_tags: Option<DistTags>,
+    #[serde(default)]
+    versions: BTreeMap<String, VersionDoc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VersionDoc {
+    #[serde(default)]
+    dependencies: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,11 +115,28 @@ fn event_from_row(row: &ChangeRow) -> Option<CatalogEvent> {
             version,
         }),
         (false, Some(version)) => Some(CatalogEvent::Published {
+            dependencies: dependency_names(row.doc.as_ref(), &version),
             name: row.id.clone(),
             version,
         }),
         _ => None,
     }
+}
+
+/// Dependency names declared on `version` inside the packument. Keys only:
+/// the requirement string is not a name. Sorted so two parses of the same
+/// document compare equal.
+fn dependency_names(doc: Option<&PackageDoc>, version: &str) -> Vec<String> {
+    let Some(doc) = doc else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = doc
+        .versions
+        .get(version)
+        .map(|body| body.dependencies.keys().cloned().collect())
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 fn seq_number(value: &serde_json::Value) -> Option<u64> {
@@ -198,21 +225,43 @@ mod tests {
             0,
         )
         .expect("page");
-        assert_eq!(
-            page.events,
-            vec![
-                CatalogEvent::Published {
-                    name: "lodash".into(),
-                    version: "4.17.21".into(),
-                },
-                CatalogEvent::Withdrawn {
-                    name: "left-pad".into(),
-                    version: "1.1.2".into(),
-                },
-            ]
-        );
+        assert_eq!(page.events, vec![
+            CatalogEvent::Published {
+                name: "lodash".into(),
+                version: "4.17.21".into(),
+                dependencies: Vec::new(),
+            },
+            CatalogEvent::Withdrawn {
+                name: "left-pad".into(),
+                version: "1.1.2".into(),
+            },
+        ]);
         assert_eq!(page.last_seq, 6);
         assert!(!page.exhausted);
+    }
+
+    #[test]
+    fn published_event_keeps_dependency_names_from_the_latest_version() {
+        let page = parse_changes(
+            &body(
+                r#"{"results":[
+                    {"seq":1,"id":"left-pad","doc":{
+                        "dist-tags":{"latest":"1.1.2"},
+                        "versions":{
+                            "1.0.0":{"dependencies":{"old":"1.0.0"}},
+                            "1.1.2":{"dependencies":{"ms":"^2.0.0","debug":"4.0.0"}}
+                        }
+                    }}
+                ],"last_seq":1}"#,
+            ),
+            0,
+        )
+        .expect("page");
+        assert_eq!(page.events, vec![CatalogEvent::Published {
+            name: "left-pad".into(),
+            version: "1.1.2".into(),
+            dependencies: vec!["debug".into(), "ms".into()],
+        }]);
     }
 
     #[test]
@@ -224,13 +273,11 @@ mod tests {
             ],"last_seq":"3"}"#,
         );
         let page = parse_changes(&raw, 2).expect("page");
-        assert_eq!(
-            page.events,
-            vec![CatalogEvent::Published {
-                name: "@scope/pkg".into(),
-                version: "2.0.0".into(),
-            }]
-        );
+        assert_eq!(page.events, vec![CatalogEvent::Published {
+            name: "@scope/pkg".into(),
+            version: "2.0.0".into(),
+            dependencies: Vec::new(),
+        }]);
         let again = parse_changes(&raw, 2).expect("replay");
         assert_eq!(page, again);
     }

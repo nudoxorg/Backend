@@ -62,6 +62,7 @@ pub fn parse_index(body: &[u8], since: &str) -> Result<IndexPage, UpstreamError>
         events.push(CatalogEvent::Published {
             name: row.path,
             version: row.version,
+            dependencies: Vec::new(),
         });
     }
     Ok(IndexPage {
@@ -140,13 +141,11 @@ mod tests {
     fn publishes_rows_after_the_cursor_and_skips_garbage() {
         let body = b"\n{\"Path\":\"golang.org/x/text\",\"Version\":\"v0.3.0\",\"Timestamp\":\"2020-01-01T00:00:00Z\"}\nnot-json\n{\"Path\":\"\",\"Version\":\"v1.0.0\",\"Timestamp\":\"2020-02-01T00:00:00Z\"}\n{\"Path\":\"rsc.io/quote\",\"Version\":\"v1.5.2\",\"Timestamp\":\"2020-03-01T00:00:00Z\"}\n";
         let page = parse_index(body, "2020-01-01T00:00:00Z").expect("index");
-        assert_eq!(
-            page.events,
-            vec![CatalogEvent::Published {
-                name: "rsc.io/quote".into(),
-                version: "v1.5.2".into(),
-            }]
-        );
+        assert_eq!(page.events, vec![CatalogEvent::Published {
+            name: "rsc.io/quote".into(),
+            version: "v1.5.2".into(),
+            dependencies: Vec::new(),
+        }]);
         assert_eq!(page.latest, "2020-03-01T00:00:00Z");
         assert!(!page.exhausted);
         let again = parse_index(body, "2020-01-01T00:00:00Z").expect("replay");

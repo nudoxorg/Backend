@@ -6,9 +6,9 @@
 //! The NuGet V3 catalog is a set of append-only JSON pages that record every
 //! package state change. The protocol is:
 //!
-//! 1. **Catalog index** (`/v3/catalog0/index.json`) — a list of catalog *pages*,
-//!    each with a `commitTimeStamp` ISO 8601 string. Pages are ordered by commit
-//!    time, and each page covers all changes up to its timestamp.
+//! 1. **Catalog index** (`/v3/catalog0/index.json`) — a list of catalog
+//!    *pages*, each with a `commitTimeStamp` ISO 8601 string. Pages are ordered
+//!    by commit time, and each page covers all changes up to its timestamp.
 //!
 //! 2. **Catalog page** (`/v3/catalog0/page{N}.json`) — a list of catalog *leaf*
 //!    URLs plus their `commitTimeStamp`. Each leaf covers one package/version
@@ -29,8 +29,8 @@
 //! # Cursor encoding
 //!
 //! The cursor is the last `commitTimeStamp` we fully processed, as an ISO 8601
-//! string. We only process pages whose `commitTimeStamp > cursor`, so the cursor
-//! advances monotonically.
+//! string. We only process pages whose `commitTimeStamp > cursor`, so the
+//! cursor advances monotonically.
 //!
 //! A null cursor (`CatalogCursor::zero()`) starts from the very first page.
 //!
@@ -68,8 +68,9 @@ struct PageEntry {
     /// The catalog page URL.
     #[serde(rename = "@id")]
     url: String,
-    /// RFC 3339 commit timestamp for this page. We compare this lexicographically
-    /// (ISO 8601 sorts correctly as a string for our purposes).
+    /// RFC 3339 commit timestamp for this page. We compare this
+    /// lexicographically (ISO 8601 sorts correctly as a string for our
+    /// purposes).
     #[serde(rename = "commitTimeStamp")]
     commit_time_stamp: String,
 }
@@ -107,7 +108,8 @@ struct CatalogLeaf {
     /// The package id (name): `nuget:id` on page items, `id` on leaf bodies.
     #[serde(rename = "nuget:id", alias = "id")]
     package_id: Option<String>,
-    /// The package version: `nuget:version` on page items, `version` on leaf bodies.
+    /// The package version: `nuget:version` on page items, `version` on leaf
+    /// bodies.
     #[serde(rename = "nuget:version", alias = "version")]
     package_version: Option<String>,
     /// `false` means the version is unlisted (soft Withdrawn).
@@ -173,7 +175,11 @@ fn event_from_leaf(leaf: CatalogLeaf) -> Option<CatalogEvent> {
     match leaf.leaf_type {
         LeafType::PackageDelete => Some(CatalogEvent::Withdrawn { name, version }),
         LeafType::PackageDetails if !leaf.listed => Some(CatalogEvent::Withdrawn { name, version }),
-        LeafType::PackageDetails => Some(CatalogEvent::Published { name, version }),
+        LeafType::PackageDetails => Some(CatalogEvent::Published {
+            name,
+            version,
+            dependencies: Vec::new(),
+        }),
         LeafType::Unknown => None,
     }
 }
@@ -335,6 +341,7 @@ mod tests {
             Some(CatalogEvent::Published {
                 name: got_name,
                 version: got_version,
+                ..
             }) => {
                 assert_eq!(got_name, name);
                 assert_eq!(got_version, version);

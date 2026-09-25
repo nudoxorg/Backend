@@ -1,4 +1,5 @@
-//! The catalog-follower driver: poll upstream feeds, register events, persist cursors.
+//! The catalog-follower driver: poll upstream feeds, register events, persist
+//! cursors.
 
 #[allow(unused_imports)]
 use crate::server::registry;
@@ -59,19 +60,17 @@ fn persist_cursor(path: &std::path::Path, cursor: &registry::upstream::CatalogCu
 ///
 /// Per-follower discipline:
 /// 1. Load the durable cursor from disk (zero on first run or corrupt file).
-/// 2. Loop:
-///    a. **Backpressure check**: if the definitive source's queue depth exceeds
-///       `mirror.queue_ceiling`, sleep `poll_interval` and retry. This prevents
-///       the catalog follower from outrunning the compile workers.
-///    b. Poll the follower for the next batch.
-///    c. For each event in the batch, call the idempotent registration entry
-///       point (same as `POST /packages`).
+/// 2. Loop: a. **Backpressure check**: if the definitive source's queue depth
+///    exceeds `mirror.queue_ceiling`, sleep `poll_interval` and retry. This
+///    prevents the catalog follower from outrunning the compile workers. b.
+///    Poll the follower for the next batch. c. For each event in the batch,
+///    call the idempotent registration entry point (same as `POST /packages`).
 ///    d. **Commit** — persist the cursor to disk only after ALL events in the
-///       batch have been registered. A crash between (c) and (d) re-delivers the
-///       whole batch on restart; the registration call is idempotent.
-///    e. If `exhausted`, sleep `poll_interval` before the next poll.
-///    f. On error, log + sleep + retry (exponential is NOT used for catalog
-///       followers — the poll_interval is already the correct cadence).
+///    batch have been registered. A crash between (c) and (d) re-delivers the
+///    whole batch on restart; the registration call is idempotent. e. If
+///    `exhausted`, sleep `poll_interval` before the next poll. f. On error, log
+///    + sleep + retry (exponential is NOT used for catalog followers — the
+///    poll_interval is already the correct cadence).
 ///
 /// The task never returns under normal operation; it is torn down by abort at
 /// the next await point during shutdown.
@@ -81,8 +80,10 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
 ) {
     use crate::server::authz::WriteCap;
     use heart::{Language, PackageVersion, RegistryOrigin};
-    use registry::package::{Coordinates, PackageName};
-    use registry::upstream::CatalogEvent;
+    use registry::{
+        package::{Coordinates, PackageName},
+        upstream::CatalogEvent,
+    };
 
     let lang = follower.language();
     let interval = server.config().limits.poll_interval;
@@ -167,7 +168,12 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
             match event {
                 CatalogEvent::Published { .. } => {
                     // Idempotent: ensures the package is known and enqueued.
-                    match server.ensure_initialized(&cap, &coords).await {
+                    // Dependency names from the feed land on the provisional
+                    // record so the dependents sweep can run before compile.
+                    match server
+                        .ensure_initialized_with(&cap, &coords, event.dependencies())
+                        .await
+                    {
                         Ok(_) => {
                             registered += 1;
                         }

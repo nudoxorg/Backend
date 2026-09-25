@@ -9,8 +9,8 @@
 //!    `updated_at` timestamp.
 //!
 //! 2. **Yanked crates check** — for packages we have held from previous polls,
-//!    periodically re-check `/api/v1/crates/{name}/{version}` to see if
-//!    `yanked == true`.
+//!    periodically re-check `/api/v1/crates/{name}/{version}` to see if `yanked
+//!    == true`.
 //!
 //! # Simplifications (V1)
 //!
@@ -137,6 +137,7 @@ impl CratesCatalogFollower {
                 CatalogEvent::Published {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
+                    dependencies: Vec::new(),
                 }
             };
             events.push(event);

@@ -55,7 +55,11 @@ pub fn parse_search(body: &[u8], since_ms: i64) -> Result<SearchPage, UpstreamEr
         .map_err(|err| UpstreamError::Parse(format!("maven search: {err}")))?;
     let mut events = Vec::new();
     let mut latest_ms = since_ms;
-    for doc in parsed.response.map(|response| response.docs).unwrap_or_default() {
+    for doc in parsed
+        .response
+        .map(|response| response.docs)
+        .unwrap_or_default()
+    {
         if doc.g.is_empty() || doc.a.is_empty() || doc.v.is_empty() {
             continue;
         }
@@ -68,6 +72,7 @@ pub fn parse_search(body: &[u8], since_ms: i64) -> Result<SearchPage, UpstreamEr
         events.push(CatalogEvent::Published {
             name: format!("{}:{}", doc.g, doc.a),
             version: doc.v,
+            dependencies: Vec::new(),
         });
     }
     Ok(SearchPage {
@@ -146,13 +151,11 @@ mod tests {
             {"g":"com.example","a":"lib","v":"","timestamp":400}
         ]}}"#;
         let page = parse_search(body, 100).expect("search");
-        assert_eq!(
-            page.events,
-            vec![CatalogEvent::Published {
-                name: "org.slf4j:slf4j-api".into(),
-                version: "2.0.9".into(),
-            }]
-        );
+        assert_eq!(page.events, vec![CatalogEvent::Published {
+            name: "org.slf4j:slf4j-api".into(),
+            version: "2.0.9".into(),
+            dependencies: Vec::new(),
+        }]);
         assert_eq!(page.latest_ms, 200);
         assert!(!page.exhausted);
         assert_eq!(parse_search(body, 100).expect("replay"), page);
