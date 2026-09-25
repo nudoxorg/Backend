@@ -238,42 +238,55 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
     }
 }
 
-/// Drive [`crate::ingest::osv::OsvFollower`] against the definitive catalog.
+/// Drive one [`crate::ingest::osv::OsvFollower`] per mirrored ecosystem.
 ///
-/// The watermark file lives under the definitive data directory. A poll runs
-/// on the blocking pool because the feed client is synchronous. The cursor
-/// advances only after `FollowerDriver` commits the batch.
+/// Every bucket shares one watermark directory. Feed ids differ (`osv-npm`
+/// versus `osv-crates.io`), and polls run one after another so a single
+/// `feeds.json` rewrite is the only writer. A poll runs on the blocking pool
+/// because the feed client is synchronous. Each cursor advances only after
+/// `FollowerDriver` commits that bucket's batch.
 pub(crate) async fn osv_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>>) {
     let interval = server.config().limits.poll_interval;
+    let buckets = crate::ingest::osv::buckets_for_follow(&server.config().mirror.follow);
+    if buckets.is_empty() {
+        return;
+    }
     let data_dir = server.config().definitive.data_directory();
-    let watermarks = match crate::ingest::watermark::FileWatermarkStore::open(
-        data_dir.join("osv-watermarks"),
-    ) {
-        Ok(store) => std::sync::Arc::new(store),
-        Err(error) => {
-            tracing::warn!(error = %error, "osv follower watermark store failed to open");
-            return;
-        }
-    };
+    let watermarks =
+        match crate::ingest::watermark::FileWatermarkStore::open(data_dir.join("osv-watermarks")) {
+            Ok(store) => std::sync::Arc::new(store),
+            Err(error) => {
+                tracing::warn!(error = %error, "osv follower watermark store failed to open");
+                return;
+            }
+        };
     let writer = std::sync::Arc::clone(server.base().global_store.writer());
-    tracing::info!("osv follower started");
+    tracing::info!(?buckets, "osv follower started");
     loop {
-        let writer = std::sync::Arc::clone(&writer);
-        let watermarks = std::sync::Arc::clone(&watermarks);
-        let joined = tokio::task::spawn_blocking(move || {
-            let follower = crate::ingest::osv::OsvFollower::new(crate::ingest::HttpTransport::new());
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_millis() as i64)
-                .unwrap_or(0);
-            crate::ingest::FollowerDriver::new(writer.as_ref(), watermarks.as_ref())
-                .drive_once(&follower, now)
-        })
-        .await;
-        match joined {
-            Ok(Ok(outcome)) => tracing::debug!(?outcome, "osv follower poll"),
-            Ok(Err(error)) => tracing::warn!(error = %error, "osv follower poll failed"),
-            Err(error) => tracing::warn!(error = %error, "osv follower task failed"),
+        for bucket in &buckets {
+            let writer = std::sync::Arc::clone(&writer);
+            let watermarks = std::sync::Arc::clone(&watermarks);
+            let bucket_name = bucket.to_owned();
+            let joined = tokio::task::spawn_blocking(move || {
+                let follower = crate::ingest::osv::OsvFollower::for_bucket(
+                    crate::ingest::HttpTransport::new(),
+                    &bucket_name,
+                );
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as i64)
+                    .unwrap_or(0);
+                crate::ingest::FollowerDriver::new(writer.as_ref(), watermarks.as_ref())
+                    .drive_once(&follower, now)
+            })
+            .await;
+            match joined {
+                Ok(Ok(outcome)) => tracing::debug!(bucket, ?outcome, "osv follower poll"),
+                Ok(Err(error)) => {
+                    tracing::warn!(bucket, error = %error, "osv follower poll failed")
+                }
+                Err(error) => tracing::warn!(bucket, error = %error, "osv follower task failed"),
+            }
         }
         tokio::time::sleep(interval).await;
     }

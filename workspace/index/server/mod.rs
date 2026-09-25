@@ -726,7 +726,7 @@ impl<M: EmbeddingModel> Driver<M> {
                     follower,
                 ));
             }
-            if crate::ingest::osv::rust_feed_enabled(&self.config.mirror.follow) {
+            if !crate::ingest::osv::buckets_for_follow(&self.config.mirror.follow).is_empty() {
                 tracing::info!("starting osv follower");
                 pollers.spawn(catalog_follower::osv_follower_worker(Arc::clone(self)));
             }
