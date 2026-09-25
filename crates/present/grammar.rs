@@ -483,7 +483,7 @@ pub const GRAMMARS: [CommandGrammar; 40] = [
             "Exact declaration coordinate to centre the neighbourhood on.",
         )],
         options: &[],
-        when: "Use to widen from one declaration to its callers, implementers, and nearest neighbours in one call.",
+        when: "Use after you have a coordinate to see callers and callees. For a change's impact across packages, query referencedBy.",
     },
     CommandGrammar {
         name: "references",
@@ -562,7 +562,7 @@ pub const GRAMMARS: [CommandGrammar; 40] = [
             "Text to find in names, signatures, and documentation.",
         )],
         options: &[LIMIT],
-        when: "Start here when you do not have a coordinate; every lane reports its own coverage so a thin answer is visible as one.",
+        when: "Start here for a question like where error handling lives. Match names, signatures, and documentation, then open a coordinate.",
     },
     CommandGrammar {
         name: "graph",
@@ -574,7 +574,7 @@ pub const GRAMMARS: [CommandGrammar; 40] = [
             "Exact declaration coordinate to traverse from.",
         )],
         options: &[],
-        when: "Use to follow one declaration outward along calls, implementations, and references.",
+        when: "Use to follow one declaration outward. Impact of editing it is the reverse edge, referencedBy, on backend.query.",
     },
     CommandGrammar {
         name: "health",

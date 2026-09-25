@@ -19,8 +19,8 @@ use backend_engine::{
 };
 use backend_engine::application::{DocumentationFragment, DocumentationSession, LocalCompilerClient};
 use backend_semantic::ir::{
-    DeclarationIdentity, ExternalTargetIdentity, ItemKind, LinkTarget, SemanticCoreReader as _,
-    SemanticImageView, SemanticReader as _,
+    DeclarationIdentity, ExternalTarget, ExternalTargetIdentity, ItemKind, LinkTarget,
+    SemanticCoreReader as _, SemanticImageView, SemanticReader as _,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1708,7 +1708,8 @@ pub(super) fn semantic_query_corpus(
         ));
     }
 
-    let complete = append_compiler_query_facts(snapshot, compiler, sources, &mut facts)?;
+    let declared = indexed_declarations(snapshot, compiler, sources)?;
+    let complete = append_compiler_query_facts(snapshot, compiler, sources, &declared, &mut facts)?;
     let structural_plan = StructuralProjectionPlan::of(sources, &complete)?;
     append_structural_query_facts(sources, &structural_plan, &mut facts)?;
     if facts.len() > MAX_REBUILD_PACKAGES {
@@ -1730,10 +1731,73 @@ pub(super) fn semantic_query_corpus(
     .map_err(|error| BuiltinModelError(error.to_string()))
 }
 
+fn indexed_declarations(
+    snapshot: &WorkspaceSnapshot,
+    compiler: &LocalCompilerClient,
+    sources: &IndexedSources,
+) -> Result<BTreeMap<DeclarationIdentity, Vec<String>>, BuiltinModelError> {
+    let mut declared = BTreeMap::<DeclarationIdentity, Vec<String>>::new();
+    let relation = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(format!("open semantic query relation: {error}")))?;
+    let mut after = None;
+    loop {
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|error| BuiltinModelError(format!("read semantic query page: {error}")))?;
+        for (key, record) in page.entries() {
+            if !key.is_selected() {
+                continue;
+            }
+            let ProductSemanticPublicationRecord::Published {
+                coverage: backend_engine::builtin::SemanticPublicationCoverage::Complete,
+                claim,
+            } = record
+            else {
+                continue;
+            };
+            let project = sources
+                .projects
+                .get(key.package_key().as_bytes())
+                .ok_or_else(|| {
+                    BuiltinModelError(
+                        "semantic query publication refers to a missing package frontier"
+                            .to_owned(),
+                    )
+                })?;
+            let activated = activate_semantic_publication(compiler, key, *claim)?;
+            for image_bytes in activated.images() {
+                let image = SemanticImageView::reopen(image_bytes.as_ref()).map_err(|error| {
+                    BuiltinModelError(format!("reopen semantic query image: {error}"))
+                })?;
+                let session = DocumentationSession::new(&image);
+                for entity in session.canonical_entities() {
+                    let entity = entity.map_err(|error| {
+                        BuiltinModelError(format!("read semantic query declaration: {error}"))
+                    })?;
+                    declared
+                        .entry(entity.entity.version.identity())
+                        .or_default()
+                        .push(query_semantic_id(
+                            project.package,
+                            entity.entity.version.identity(),
+                        ));
+                }
+            }
+        }
+        let Some(next) = page.next().cloned() else {
+            break;
+        };
+        after = Some(next);
+    }
+    Ok(declared)
+}
+
 fn append_compiler_query_facts(
     snapshot: &WorkspaceSnapshot,
     compiler: &LocalCompilerClient,
     sources: &IndexedSources,
+    declared: &BTreeMap<DeclarationIdentity, Vec<String>>,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
 ) -> Result<BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>, BuiltinModelError> {
     let relation = snapshot
@@ -1846,6 +1910,16 @@ fn append_compiler_query_facts(
                                 }
                             }
                             LinkTarget::External(target) => {
+                                if let Some(ExternalTarget::Stable { target: stable }) =
+                                    image.external(target)
+                                {
+                                    if let Some([resolved]) =
+                                        declared.get(&stable.declaration).map(Vec::as_slice)
+                                    {
+                                        related.push(resolved.clone());
+                                        continue;
+                                    }
+                                }
                                 let identity = ExternalTargetIdentity::capture(&image, target)
                                     .map_err(|error| {
                                         BuiltinModelError(format!(

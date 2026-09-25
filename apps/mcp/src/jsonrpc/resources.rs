@@ -53,8 +53,10 @@ to *find* coordinates and `backend.document` is the way to read them.
 
 ## edges from a row
 
-`project`, `parent`, `children`, `related`, `sameProject`. An edge that may be
-empty needs `@optional`, or its row is dropped.
+`project`, `parent`, `children`, `related`, `referencedBy`, `sameProject`.
+`related` walks outward. `referencedBy` walks inward: who is affected if this
+declaration changes. An edge that may be empty needs `@optional`, or its row
+is dropped.
 
 ## worked queries
 
@@ -92,6 +94,21 @@ Each declaration and what it is nested inside:
     parent @optional {
       name @output(name: "parent")
       kind @output(name: "parentKind")
+    }
+  }
+}
+```
+
+Who is affected if one named declaration changes:
+
+```graphql
+{
+  Declaration {
+    name @filter(op: "=", value: ["$name"])
+    referencedBy @optional {
+      name @output(name: "caller")
+      coordinate @output(name: "callerAt")
+      kind @output(name: "callerKind")
     }
   }
 }

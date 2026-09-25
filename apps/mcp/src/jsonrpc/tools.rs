@@ -191,10 +191,10 @@ fn query_tool() -> Value {
     json!({
         "name": QUERY_TOOL,
         "title": "Query the code graph",
-        "description": "Run a typed Trustfall query over the current immutable revision. \
-    Use when a question is a join rather than a lookup — every declaration that calls one function, \
-    every child of a module — and read `backend://schema/query` first for the starting edges, the \
-    fields, and worked queries you can run unchanged.",
+        "description": "Run a typed Trustfall query over the indexed semantic graph. \
+    Use it after backend.index: outward neighbours are `related`, impact of a change is `referencedBy`, \
+    and a natural-language place to start is filtering `documentation` or `name`. \
+    Read `backend://schema/query` first for the edges and worked queries.",
         "inputSchema": {
             "type": "object",
             "properties": {
