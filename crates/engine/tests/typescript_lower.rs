@@ -1378,3 +1378,13 @@ fn parameter_defaults_declare_nested_function_bindings() {
     assert_eq!(parameter_count(&view, b"right"), 1);
     assert_eq!(parameter_count(&view, b"mid"), 1);
 }
+
+#[test]
+fn constructor_assignments_declare_nested_function_bindings() {
+    const SOURCE: &[u8] = b"export class Bag {\n  constructor() {\n    this.read = null as (left: number) => void;\n    { this.bang = (null as (nested: number) => void)!; }\n    try {} catch { this.catchBind = null as (caught: number) => void; }\n  }\n  set() { this.write = null satisfies (mid: number) => void; }\n}\n";
+    let view = view(SOURCE, None);
+    assert_eq!(parameter_count(&view, b"left"), 1);
+    assert_eq!(parameter_count(&view, b"nested"), 1);
+    assert_eq!(parameter_count(&view, b"caught"), 1);
+    assert_eq!(parameter_count(&view, b"mid"), 1);
+}
