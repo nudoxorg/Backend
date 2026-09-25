@@ -27,6 +27,24 @@ pub struct PointId {
     pub content_hash: [u8; 32],
 }
 
+/// Fingerprint of a symbol's embedding input.
+///
+/// The hash is the model id and the text, so a re-delivery of the same name
+/// can skip the embedder. The embedding bytes are not the identity: they are
+/// the work this fingerprint exists to avoid.
+#[must_use]
+pub fn symbol_fingerprint(package: &str, intro_hex: &str, model: &str, text: &str) -> PointId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(model.as_bytes());
+    hasher.update(&[0xff]);
+    hasher.update(text.as_bytes());
+    PointId {
+        package: SmolStr::new(package),
+        intro_hex: SmolStr::new(intro_hex),
+        content_hash: *hasher.finalize().as_bytes(),
+    }
+}
+
 impl PointId {
     fn identity(&self) -> SmolStr {
         let package_len = self.package.len();
@@ -186,6 +204,22 @@ mod tests {
             intro_hex: SmolStr::new(intro_hex),
             content_hash: [hash_byte; 32],
         }
+    }
+
+    #[test]
+    fn the_same_symbol_text_skips_a_second_write() {
+        let first = symbol_fingerprint("pkg", "intro", "jina", "serde::Deserialize");
+        let again = symbol_fingerprint("pkg", "intro", "jina", "serde::Deserialize");
+        let renamed = symbol_fingerprint("pkg", "intro", "jina", "serde::Serialize");
+        let other_model = symbol_fingerprint("pkg", "intro", "other", "serde::Deserialize");
+        assert_eq!(first.content_hash, again.content_hash);
+        assert_ne!(first.content_hash, renamed.content_hash);
+        assert_ne!(first.content_hash, other_model.content_hash);
+        let mut ledger = UpsertLedger::new();
+        assert!(ledger.needs_write(&first));
+        ledger.commit(&[first.clone()]);
+        assert!(!ledger.needs_write(&again));
+        assert!(ledger.needs_write(&renamed));
     }
 
     #[test]

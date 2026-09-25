@@ -278,8 +278,28 @@ async fn materialize_vector<M: EmbeddingModel>(
         return Ok(());
     }
 
-    let mut staged = Vec::with_capacity(symbols.len());
-    for symbol in symbols {
+    let model = M::id();
+    let due: Vec<_> = {
+        let guard = ledger.lock().unwrap_or_else(|poison| poison.into_inner());
+        symbols
+            .iter()
+            .filter(|symbol| {
+                let fingerprint = crate::frontier::vector::symbol_fingerprint(
+                    &symbol.package.as_uuid().to_string(),
+                    &symbol.id.as_uuid().to_string(),
+                    model.as_str(),
+                    symbol.name.fully_qualified.as_str(),
+                );
+                guard.needs_write(&fingerprint)
+            })
+            .collect()
+    };
+    if due.is_empty() {
+        return Ok(());
+    }
+
+    let mut pending = Vec::with_capacity(due.len());
+    for symbol in due {
         let text = symbol.name.fully_qualified.as_str();
         let embedding = cache
             .get_or_embed(
@@ -289,27 +309,17 @@ async fn materialize_vector<M: EmbeddingModel>(
             )
             .await
             .map_err(|error| crate::server::error::ServerError::from(error))?;
-        let fingerprint = crate::frontier::vector::PointId {
-            package: smol_str::SmolStr::new(symbol.package.as_uuid().to_string()),
-            intro_hex: smol_str::SmolStr::new(symbol.id.as_uuid().to_string()),
-            content_hash: blake3::hash(&embedding_bytes(embedding.as_slice())).into(),
-        };
-        staged.push((fingerprint, VectorPoint {
+        let fingerprint = crate::frontier::vector::symbol_fingerprint(
+            &symbol.package.as_uuid().to_string(),
+            &symbol.id.as_uuid().to_string(),
+            model.as_str(),
+            text,
+        );
+        pending.push((fingerprint, VectorPoint {
             id: PointId::from_symbol(&symbol.id),
             vector: embedding,
             payload: crate::server::bakery::symbol_payload(symbol),
         }));
-    }
-
-    let pending: Vec<_> = {
-        let guard = ledger.lock().unwrap_or_else(|poison| poison.into_inner());
-        staged
-            .into_iter()
-            .filter(|(fingerprint, _)| guard.needs_write(fingerprint))
-            .collect()
-    };
-    if pending.is_empty() {
-        return Ok(());
     }
 
     let points: Vec<_> = pending.iter().map(|(_, point)| point.clone()).collect();
@@ -334,14 +344,6 @@ async fn materialize_vector<M: EmbeddingModel>(
     let mut guard = ledger.lock().unwrap_or_else(|poison| poison.into_inner());
     guard.commit(&committed);
     Ok(())
-}
-
-fn embedding_bytes(values: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(values.len() * 4);
-    for value in values {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
