@@ -240,7 +240,7 @@ impl<M: EmbeddingModel> Server<M> {
             coordinates.version.canonical(),
             dependencies,
         );
-        if let Some(digest) = checksum.and_then(crate::pid::sha256) {
+        if let Some(digest) = checksum.and_then(crate::pid::artifact_digest) {
             published = published.with_content(digest);
         }
         let fact_write = {

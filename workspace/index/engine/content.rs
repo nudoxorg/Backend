@@ -1,5 +1,5 @@
 //! A later upsert that did not observe a digest keeps the one already stored.
-//! A git SHA-1 does not replace a registry SHA-256 or a BLAKE3.
+//! A git SHA-1 does not replace an artifact digest (SHA-256, SHA-512, BLAKE3).
 
 use turso_versioning::orm::OrmResult;
 
@@ -47,17 +47,9 @@ fn merge_content(
     observed: Option<ContentDigest>,
 ) -> Option<ContentDigest> {
     match observed {
-        Some(ContentDigest::Sha256(bytes)) => Some(ContentDigest::Sha256(bytes)),
-        Some(ContentDigest::Blake3(bytes)) => Some(ContentDigest::Blake3(bytes)),
-        Some(ContentDigest::GitSha1(_))
-            if matches!(
-                prior,
-                Some(ContentDigest::Sha256(_)) | Some(ContentDigest::Blake3(_))
-            ) =>
-        {
-            prior
-        }
-        Some(observed) => Some(observed),
+        Some(next) if next.is_artifact() => Some(next),
+        Some(_) if prior.is_some_and(ContentDigest::is_artifact) => prior,
+        Some(next) => Some(next),
         None => prior,
     }
 }

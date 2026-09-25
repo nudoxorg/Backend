@@ -118,6 +118,12 @@ struct CatalogLeaf {
     /// Framework groups. Absent on page items and on delete leaves.
     #[serde(default, rename = "dependencyGroups")]
     dependency_groups: Vec<DependencyGroup>,
+    /// Base64 hash of the nupkg. Algorithm is [`Self::package_hash_algorithm`].
+    #[serde(default, rename = "packageHash")]
+    package_hash: Option<String>,
+    /// Typically `SHA512`.
+    #[serde(default, rename = "packageHashAlgorithm")]
+    package_hash_algorithm: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -201,6 +207,24 @@ fn dependency_names(groups: &[DependencyGroup]) -> Vec<String> {
     names
 }
 
+/// `SHA512` + base64 becomes an SRI token the artifact parser accepts.
+/// A missing algorithm or a SHA-1 nupkg hash is not a content PID.
+fn leaf_checksum(algorithm: Option<&str>, hash: Option<&str>) -> Option<String> {
+    let token = format!(
+        "{}-{}",
+        algorithm?.trim().to_ascii_lowercase(),
+        hash?.trim()
+    );
+    crate::pid::artifact_digest(&token).map(|_| token)
+}
+
+/// One catalog leaf body. `Ok(None)` is an unrecognized type.
+pub fn parse_leaf(body: &[u8]) -> Result<Option<CatalogEvent>, crate::upstream::UpstreamError> {
+    let leaf: CatalogLeaf = serde_json::from_slice(body)
+        .map_err(|err| crate::upstream::UpstreamError::Parse(format!("nuget leaf: {err}")))?;
+    Ok(event_from_leaf(leaf))
+}
+
 fn event_from_leaf(leaf: CatalogLeaf) -> Option<CatalogEvent> {
     let dependencies = dependency_names(&leaf.dependency_groups);
     let (Some(name), Some(version)) = (leaf.package_id, leaf.package_version) else {
@@ -213,7 +237,10 @@ fn event_from_leaf(leaf: CatalogLeaf) -> Option<CatalogEvent> {
             name,
             version,
             dependencies,
-            checksum: None,
+            checksum: leaf_checksum(
+                leaf.package_hash_algorithm.as_deref(),
+                leaf.package_hash.as_deref(),
+            ),
         }),
         LeafType::Unknown => None,
     }
@@ -367,8 +394,7 @@ mod tests {
     use super::*;
 
     fn parse_event(json: &str) -> Option<CatalogEvent> {
-        let leaf: CatalogLeaf = serde_json::from_str(json).expect("catalog leaf JSON");
-        event_from_leaf(leaf)
+        parse_leaf(json.as_bytes()).expect("catalog leaf JSON")
     }
 
     fn assert_published(event: Option<CatalogEvent>, name: &str, version: &str) {
@@ -533,5 +559,43 @@ mod tests {
             }"#,
         );
         assert_published(permalink_first, "Newtonsoft.Json", "13.0.3");
+
+        let hashed = parse_event(
+            r#"{
+                "@type": "PackageDetails",
+                "id": "Newtonsoft.Json",
+                "version": "13.0.3",
+                "packageHash": "gNTwQWwUA3adfelbX8plB64gYNCnXT1uKLszJM5i0fFEMxJrITma0J6ON/bDJui4te8/UIFNgWNg5T1Nk4JyQQ==",
+                "packageHashAlgorithm": "SHA512"
+            }"#,
+        );
+        match hashed {
+            Some(CatalogEvent::Published {
+                checksum: Some(token),
+                ..
+            }) => {
+                assert!(token.starts_with("sha512-"));
+                assert!(
+                    crate::pid::artifact_digest(&token).is_some_and(|digest| matches!(
+                        digest,
+                        crate::pid::ContentDigest::Sha512(_)
+                    ))
+                );
+            }
+            other => panic!("expected a sha512 checksum, got {other:?}"),
+        }
+        let sha1 = parse_event(
+            r#"{
+                "@type": "PackageDetails",
+                "id": "Newtonsoft.Json",
+                "version": "6.0.1",
+                "packageHash": "QsfKwaItloXI7UjFbiE7DiF26VI=",
+                "packageHashAlgorithm": "SHA1"
+            }"#,
+        );
+        assert!(matches!(
+            sha1,
+            Some(CatalogEvent::Published { checksum: None, .. })
+        ));
     }
 }

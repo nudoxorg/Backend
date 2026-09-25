@@ -4629,6 +4629,7 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "bao-tree",
+ "base64 0.22.1",
  "blake3",
  "bytes",
  "chrono",

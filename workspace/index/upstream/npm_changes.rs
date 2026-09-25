@@ -62,6 +62,14 @@ struct PackageDoc {
 struct VersionDoc {
     #[serde(default)]
     dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    dist: Option<Dist>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Dist {
+    #[serde(default)]
+    integrity: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,12 +122,15 @@ fn event_from_row(row: &ChangeRow) -> Option<CatalogEvent> {
             name: row.id.clone(),
             version,
         }),
-        (false, Some(version)) => Some(CatalogEvent::Published {
-            dependencies: dependency_names(row.doc.as_ref(), &version),
-            name: row.id.clone(),
-            version,
-            checksum: None,
-        }),
+        (false, Some(version)) => {
+            let checksum = version_integrity(row.doc.as_ref(), &version);
+            Some(CatalogEvent::Published {
+                dependencies: dependency_names(row.doc.as_ref(), &version),
+                name: row.id.clone(),
+                version,
+                checksum,
+            })
+        }
         _ => None,
     }
 }
@@ -138,6 +149,19 @@ fn dependency_names(doc: Option<&PackageDoc>, version: &str) -> Vec<String> {
         .unwrap_or_default();
     names.sort();
     names
+}
+
+/// `dist.integrity` when it names an artifact digest. A tarball `shasum`
+/// (SHA-1) is left behind: that is not a git object id.
+fn version_integrity(doc: Option<&PackageDoc>, version: &str) -> Option<String> {
+    let raw = doc?
+        .versions
+        .get(version)?
+        .dist
+        .as_ref()?
+        .integrity
+        .as_deref()?;
+    crate::pid::artifact_digest(raw).map(|_| raw.to_owned())
 }
 
 fn seq_number(value: &serde_json::Value) -> Option<u64> {
@@ -284,6 +308,55 @@ mod tests {
         }]);
         let again = parse_changes(&raw, 2).expect("replay");
         assert_eq!(page, again);
+    }
+
+    #[test]
+    fn integrity_is_kept_and_a_tarball_shasum_is_not() {
+        let integrity = "sha512-MH93Wm7R3U7jSJ/8hQmRR4eAW6CZ1vyi3tn3nhjDdQrx8G5dXLmpUte6ITcewxiwATgcMfBiVj+I5D6zhdC0dA== sha1-QsfKwaItloXI7UjFbiE7DiF26VI=";
+        let page = parse_changes(
+            &body(&format!(
+                r#"{{"results":[{{"seq":1,"id":"lodash","doc":{{
+                    "dist-tags":{{"latest":"4.17.21"}},
+                    "versions":{{"4.17.21":{{
+                        "dependencies":{{"ms":"^2"}},
+                        "dist":{{"integrity":"{integrity}","shasum":"abcdef","tarball":"https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"}}
+                    }}}}
+                }}}}],"last_seq":1}}"#
+            )),
+            0,
+        )
+        .expect("page");
+        match &page.events[..] {
+            [
+                CatalogEvent::Published {
+                    dependencies,
+                    checksum,
+                    ..
+                },
+            ] => {
+                assert_eq!(dependencies, &vec!["ms".to_owned()]);
+                assert_eq!(checksum.as_deref(), Some(integrity));
+                assert!(
+                    crate::pid::artifact_digest(checksum.as_deref().unwrap())
+                        .is_some_and(|digest| digest.is_artifact())
+                );
+            }
+            other => panic!("expected a published lodash, got {other:?}"),
+        }
+        let sha1_only = parse_changes(
+            &body(
+                r#"{"results":[{"seq":2,"id":"left-pad","doc":{
+                    "dist-tags":{"latest":"1.1.2"},
+                    "versions":{"1.1.2":{"dist":{"shasum":"0123456789abcdef0123456789abcdef01234567","integrity":"sha1-QsfKwaItloXI7UjFbiE7DiF26VI="}}}
+                }}],"last_seq":2}"#,
+            ),
+            0,
+        )
+        .expect("sha1 page");
+        assert!(matches!(&sha1_only.events[..], [CatalogEvent::Published {
+            checksum: None,
+            ..
+        }]));
     }
 
     #[test]

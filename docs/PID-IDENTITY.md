@@ -25,7 +25,8 @@ Software adds two more layers those systems already use, under different names:
 Package URL names a **version coordinate** (`pkg:type/namespace/name@version`).
 It does not name bytes: one version string can be rebuilt. SWHID names
 **bytes**, and only git SHA-1 objects. BLAKE3 and SHA-256 are content PIDs of
-other algorithms; they are not SWHIDs. CPE is not used (no content binding, no
+other algorithms; they are not SWHIDs. SHA-512 (npm integrity, NuGet
+`packageHash`) is an artifact digest of the same class. CPE is not used (no content binding, no
 canonical C/C++ names).
 
 `docs/GLOBAL-IR-GRAPH.md` §1 says package identity *is* the purl. That

@@ -40,10 +40,22 @@ pub enum PidError {
 pub enum ContentDigest {
     /// Catalog CAS digest.
     Blake3([u8; 32]),
-    /// Registry checksum (crates.io `cksum`, PyPI `digests.sha256`).
+    /// Registry checksum (crates.io `cksum`, PyPI `digests.sha256`, Homebrew).
     Sha256([u8; 32]),
+    /// npm `dist.integrity` and NuGet `packageHash` when the algorithm is
+    /// SHA-512. Serde has no `[u8; 64]`, so the bytes are a raw sequence.
+    Sha512(#[serde(with = "sha512_bytes")] [u8; 64]),
     /// Git blob/commit digest. The only digest a SWHID rendering can name.
     GitSha1([u8; 20]),
+}
+
+impl ContentDigest {
+    /// Registry and content-addressed bytes. A git object id is not one of
+    /// these.
+    #[must_use]
+    pub const fn is_artifact(self) -> bool {
+        matches!(self, Self::Blake3(_) | Self::Sha256(_) | Self::Sha512(_))
+    }
 }
 
 /// The work, across every version. Opaque [`PackageId`].
@@ -200,13 +212,87 @@ pub fn sha256(checksum: &str) -> Option<ContentDigest> {
     hex_bytes(checksum).map(ContentDigest::Sha256)
 }
 
+/// One artifact digest from a registry spelling.
+///
+/// Accepts 64-hex SHA-256, 128-hex SHA-512, and a Subresource Integrity token
+/// (`sha256-`, `sha512-`, `blake3-`, standard base64). A whitespace-separated
+/// list keeps the strongest artifact and drops `sha1-`. A 40-hex git id is
+/// not an artifact.
+#[must_use]
+pub fn artifact_digest(text: &str) -> Option<ContentDigest> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.contains(char::is_whitespace) {
+        return text.split_whitespace().filter_map(one_artifact).max_by_key(
+            |digest| match digest {
+                ContentDigest::Sha512(_) => 3,
+                ContentDigest::Blake3(_) => 2,
+                ContentDigest::Sha256(_) => 1,
+                ContentDigest::GitSha1(_) => 0,
+            },
+        );
+    }
+    one_artifact(text)
+}
+
+fn one_artifact(text: &str) -> Option<ContentDigest> {
+    if let Some((algo, payload)) = text.split_once('-')
+        && !payload.contains('-')
+        && algo.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return sri(algo, payload);
+    }
+    match text.len() {
+        64 => hex_bytes(text).map(ContentDigest::Sha256),
+        128 => hex_bytes(text).map(ContentDigest::Sha512),
+        _ => None,
+    }
+}
+
+fn sri(algo: &str, payload: &str) -> Option<ContentDigest> {
+    let bytes = decode_b64(payload)?;
+    match algo.to_ascii_lowercase().as_str() {
+        "sha256" if bytes.len() == 32 => Some(ContentDigest::Sha256(bytes.try_into().ok()?)),
+        "sha512" if bytes.len() == 64 => Some(ContentDigest::Sha512(bytes.try_into().ok()?)),
+        "blake3" if bytes.len() == 32 => Some(ContentDigest::Blake3(bytes.try_into().ok()?)),
+        _ => None,
+    }
+}
+
+fn decode_b64(payload: &str) -> Option<Vec<u8>> {
+    use base64::{
+        Engine,
+        engine::general_purpose::{STANDARD, STANDARD_NO_PAD},
+    };
+    STANDARD
+        .decode(payload)
+        .or_else(|_| STANDARD_NO_PAD.decode(payload))
+        .ok()
+}
+
 /// Artifact checksum wins over a git revision. A missing or short string is
 /// not a digest.
 #[must_use]
 pub fn observed_content(checksum: Option<&str>, source_rev: Option<&str>) -> Option<ContentDigest> {
     checksum
-        .and_then(sha256)
+        .and_then(artifact_digest)
         .or_else(|| source_rev.and_then(git_sha1))
+}
+
+mod sha512_bytes {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 64], D::Error> {
+        let raw = Vec::<u8>::deserialize(deserializer)?;
+        raw.try_into()
+            .map_err(|_| D::Error::custom("sha512 digest is 64 bytes"))
+    }
 }
 
 fn hex_bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
@@ -241,7 +327,7 @@ pub fn render_purl(ecosystem: &str, namespace: &str, name: &str, version: &str) 
 pub fn render_swhid(pid: ContentPid) -> Option<String> {
     match pid.digest() {
         ContentDigest::GitSha1(bytes) => Some(format!("swh:1:cnt:{}", hex_encode(&bytes))),
-        ContentDigest::Blake3(_) | ContentDigest::Sha256(_) => None,
+        ContentDigest::Blake3(_) | ContentDigest::Sha256(_) | ContentDigest::Sha512(_) => None,
     }
 }
 
@@ -334,6 +420,30 @@ mod tests {
         assert_eq!(require_opaque(&purl), Err(PidError::NotOpaque));
         let version = VersionPid::mint("cargo", "serde", "1.0.0");
         assert_ne!(version.local_name(), purl);
+    }
+
+    #[test]
+    fn artifact_spellings_share_one_parser_and_ignore_sha1() {
+        let hex = "ab".repeat(32);
+        assert!(matches!(
+            artifact_digest(&hex),
+            Some(ContentDigest::Sha256(_))
+        ));
+        let sha512_hex = "cd".repeat(64);
+        assert!(matches!(
+            artifact_digest(&sha512_hex),
+            Some(ContentDigest::Sha512(_))
+        ));
+        let sri = "sha512-MH93Wm7R3U7jSJ/8hQmRR4eAW6CZ1vyi3tn3nhjDdQrx8G5dXLmpUte6ITcewxiwATgcMfBiVj+I5D6zhdC0dA== sha1-QsfKwaItloXI7UjFbiE7DiF26VI=";
+        assert!(matches!(
+            artifact_digest(sri),
+            Some(ContentDigest::Sha512(_))
+        ));
+        assert!(artifact_digest("sha1-QsfKwaItloXI7UjFbiE7DiF26VI=").is_none());
+        assert!(git_sha1("abcdef").is_none());
+        assert!(sha256("abc").is_none());
+        let mixed = observed_content(Some(sri), Some("0123456789abcdef0123456789abcdef01234567"));
+        assert!(matches!(mixed, Some(ContentDigest::Sha512(_))));
     }
 
     #[test]
