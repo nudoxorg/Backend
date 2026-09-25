@@ -425,6 +425,12 @@ required-features = ["pyrefly"]
 name = "mcp_index_locals_and_dependencies"
 path = "tests/mcp/index_locals_and_dependencies.rs"
 
+# `index` of a local TypeScript package, then search, read, and graph on
+# what that call loaded. No rust-analyzer.
+[[test]]
+name = "mcp_index_typescript_conversation"
+path = "tests/mcp/index_typescript_conversation.rs"
+
 # An unfiltered `search` must return API, not the parameter names that
 # outnumber it. Runs the real Rust producer over a temporary crate.
 [[test]]
