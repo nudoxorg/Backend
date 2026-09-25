@@ -13,7 +13,7 @@
 //!
 //! 1. `QueryEvent::Columns` — exactly once, before any rows.
 //! 2. `QueryEvent::Rows { rows }` — one or more batches.
-//! 3. `QueryEvent::Done { total }` — terminal.
+//! 3. `QueryEvent::Done { total, empty_edge }` — terminal.
 //!
 //! On error: `QueryEvent::Failed` — terminal.
 //!
@@ -31,7 +31,7 @@ use futures::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::graph::CorpusAdapter;
+use crate::graph::{CorpusAdapter, EdgeEmptyLog};
 use crate::store::corpus::Corpus;
 use trustfall::FieldValue;
 
@@ -123,7 +123,8 @@ pub(crate) async fn run_query(
         return;
     }
 
-    let adapter = Arc::new(CorpusAdapter::new(corpus));
+    let edge_log = Arc::new(EdgeEmptyLog::new());
+    let adapter = Arc::new(CorpusAdapter::new(corpus).with_empty_edge_log(Arc::clone(&edge_log)));
 
     // Convert args: String -> FieldValue, coerced to each variable's actual
     // declared type (`GraphQueryArgs::args`'s doc comment on the MCP side
@@ -306,7 +307,13 @@ pub(crate) async fn run_query(
     }
 
     if !cancel.is_cancelled() {
-        let _ = tx.send_async(QueryEvent::Done { generation, total }).await;
+        let _ = tx
+            .send_async(QueryEvent::Done {
+                generation,
+                total,
+                empty_edge: edge_log.take(),
+            })
+            .await;
     }
 }
 

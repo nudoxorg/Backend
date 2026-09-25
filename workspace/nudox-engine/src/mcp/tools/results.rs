@@ -3,8 +3,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::mcp::key::{PackageLineageDto, SymbolKeyDto};
-use crate::wire::{HitRow, KindTag, PackageDiff, RenderSection, SymbolHead, Timeline, Visibility};
+pub use crate::graph::EdgeEmptyReason;
+use crate::{
+    mcp::key::{PackageLineageDto, SymbolKeyDto},
+    wire::{HitRow, KindTag, PackageDiff, RenderSection, SymbolHead, Timeline, Visibility},
+};
 
 /// `skip_serializing_if` predicate for a `bool` that defaults to `false` —
 /// absence *is* the false case, matching the boolean-omission discipline the
@@ -639,8 +642,8 @@ pub struct VersionSummary {
 ///
 /// * `graph_query` publishes `Symbol.keyTier` — `Structural`, `Span`,
 ///   `Ordinal`, or `Unrecorded` — plus `keyIsContentDerived`. Read it
-///   **before** you cache a key across a switch; once the lookup fails there
-///   is no vertex left to ask.
+///   **before** you cache a key across a switch; once the lookup fails there is
+///   no vertex left to ask.
 /// * `diff_versions` re-pairs churned declarations across two generations and
 ///   reports them as one `rekeyed` row carrying both keys, so you can find out
 ///   what a stale key *became* rather than only that it is stale.
@@ -836,18 +839,16 @@ pub struct QueryResult {
     /// `None` when this is the last page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    /// Present only when [`Self::rows`] is empty *and* the reason is that a
-    /// traversed edge is empty by construction for every package currently
-    /// loaded — not because the question genuinely has no answer. Omitted
-    /// otherwise (the common case, including an ordinary empty result), so
-    /// this costs nothing there. See [`EdgeCoverageNote`]'s doc comment for
-    /// the incident this closes.
+    /// Present only when [`Self::rows`] is empty because a covered reverse
+    /// edge's posting list was empty for a symbol the query resolved.
+    /// Omitted when the page has rows, so a query that answered pays nothing
+    /// for it. See [`EdgeCoverageNote`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_coverage: Option<EdgeCoverageNote>,
 }
 
-/// A traversed graph edge that cannot answer for the packages currently
-/// loaded, paired with the edge that does.
+/// Why a covered reverse edge returned no neighbors for the symbol the query
+/// resolved, and what to try next.
 ///
 /// # The problem this closes
 ///
@@ -864,21 +865,29 @@ pub struct QueryResult {
 /// finding that out by hand (`graph_edge_language_fit.rs`'s module docs carry
 /// the full incident).
 ///
+/// The same shape hides three other empty answers on `returnedBy`,
+/// `acceptedBy`, `heldBy`, `subtypes`, and `usages`: the nominal was written
+/// and did not link, occurrences were never attached, or the posting list
+/// really is empty. Each of those is a [`EdgeEmptyReason`], decided for the
+/// symbol the edge was resolved against — a package that records `Return`
+/// for a different symbol does not make this symbol's unlinked return type
+/// into a bare page.
+///
 /// This is the same discipline `RefsResult::coverage`
 /// (`ReferenceCoverage::NotRecorded`) already applies to `refs`, and
 /// `SearchResult::excluded_kinds` applies to a defaulted scope: the degraded
 /// case gets a shape of its own rather than borrowing the ordinary case's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EdgeCoverageNote {
-    /// The edge the query traversed that is empty by construction for every
-    /// package currently loaded.
+    /// The edge whose posting list was empty.
     pub edge: String,
-    /// The edge that DOES carry this relationship for those packages — the
-    /// caller's next query should use this one, not guess again.
+    /// What to query or run next. `implementors` that is Rust-only says
+    /// `subtypes`. The other reasons do not name `signatureTypes`: a forward
+    /// signature walk cannot recover a nominal that never became a
+    /// `StableRef`.
     pub answers_instead: String,
-    /// Why, in prose: which relationship the dead edge cannot express for
-    /// these languages.
-    pub reason: String,
+    /// Which of the four empty-edge reasons this symbol hit.
+    pub reason: EdgeEmptyReason,
 }
 
 /// The result of `graph_schema`.
