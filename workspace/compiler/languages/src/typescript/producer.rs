@@ -2697,6 +2697,37 @@ mod tests {
     }
 
     #[test]
+    fn a_non_null_assertion_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"non-null","version":"1.0.0","types":"index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.ts"),
+            "export const call = (null as (left: number) => void)!;\n\
+             export const held = (((s: string) => s) satisfies (right: number) => void)!;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "non-null", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("non-null"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function under a non-null assertion must seal");
+        for name in ["left", "right"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn a_constructor_assignment_declares_each_function_binding() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

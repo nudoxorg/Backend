@@ -2718,6 +2718,7 @@ fn asserted_type<'a>(expr: &Expression<'a>, source: &'a str) -> Option<TypeOwned
     loop {
         match current {
             Expression::ParenthesizedExpression(inner) => current = &inner.expression,
+            Expression::TSNonNullExpression(inner) => current = &inner.expression,
             Expression::TSSatisfiesExpression(satisfied) => current = &satisfied.expression,
             Expression::TSAsExpression(cast) => {
                 return Some(lower_ts_type(&cast.type_annotation, source));
@@ -2737,6 +2738,7 @@ fn satisfies_type<'a>(expr: &Expression<'a>, source: &'a str) -> Option<TypeOwne
     loop {
         match current {
             Expression::ParenthesizedExpression(inner) => current = &inner.expression,
+            Expression::TSNonNullExpression(inner) => current = &inner.expression,
             Expression::TSSatisfiesExpression(satisfied) => {
                 return Some(lower_ts_type(&satisfied.type_annotation, source));
             }
