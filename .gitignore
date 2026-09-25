@@ -131,6 +131,7 @@
 # Integration checks (Nix glue + Nushell scripts/modules).
 !/tests/**/*.nix
 !/tests/**/*.nu
+!/tests/**/*.sh
 # lindsey's bundled themes. A theme is *data* — `workspace/gui/src/theme/spec.rs`
 # deserialises these and `registry.rs` `include_str!`s them into `BUNDLED`, so a
 # theme is added by dropping a file here, with no Rust change.
