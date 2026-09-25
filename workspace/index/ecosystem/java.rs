@@ -219,132 +219,17 @@ fn normalize_maven_query(terms: &str) -> NormalizedQuery {
 
 /// Parse a `pom.xml` file into [`ExtractedFacts`].
 pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
-    let mut reader = Reader::from_reader(bytes);
-    reader.config_mut().trim_text(true);
-
-    let mut description: Option<String> = None;
-    let mut documentation = false;
-    let mut repository: Option<String> = None;
-    let mut license: Option<String> = None;
-    let mut dependencies = crate::record::RuntimeEdgeFold::keep_first();
-    let mut dep_version: Option<String> = None;
-    let mut dep_optional = false;
-
-    // Track current path stack to avoid <parent> false positives.
-    let mut path: Vec<String> = vec![];
-    // Pending group/artifact within <dependency>.
-    let mut dep_group: Option<String> = None;
-    let mut dep_artifact: Option<String> = None;
-    let mut current_tag = String::new();
-
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                let local = std::str::from_utf8(e.local_name().as_ref())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                path.push(local.clone());
-                current_tag = local;
-                // Reset dep fields when entering a new <dependency>.
-                if current_tag == "dependency" {
-                    dep_group = None;
-                    dep_artifact = None;
-                    dep_version = None;
-                    dep_optional = false;
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                let local = std::str::from_utf8(e.local_name().as_ref())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if local == "dependency"
-                    && let (Some(g), Some(a)) = (dep_group.take(), dep_artifact.take())
-                {
-                    let version = dep_version.take();
-                    dependencies.observe(format!("{g}:{a}"), version.as_deref(), dep_optional);
-                    dep_optional = false;
-                }
-                path.pop();
-                current_tag = path.last().cloned().unwrap_or_default();
-            }
-            Ok(Event::Text(ref e)) => {
-                if let Ok(text) = e.unescape() {
-                    let text = text.trim().to_owned();
-                    if text.is_empty() {
-                        buf.clear();
-                        continue;
-                    }
-                    // Only read <description> at project level (not inside parent).
-                    let depth = path.len();
-                    match current_tag.as_str() {
-                        "description" if depth == 2 && description.is_none() => {
-                            let s = text.chars().filter(|c| !c.is_control()).collect::<String>();
-                            if !s.is_empty() {
-                                description = Some(s);
-                            }
-                        }
-                        "url" if depth == 2 => {
-                            if !text.is_empty() {
-                                documentation = true;
-                            }
-                        }
-                        // <scm><url> is the canonical repository URL; prefer it over
-                        // <connection>/<developerConnection> (which carry protocol prefixes).
-                        "url" if path.iter().any(|p| p == "scm") && repository.is_none() => {
-                            if !text.is_empty() {
-                                repository = Some(text.clone());
-                            }
-                        }
-                        "connection" | "developerconnection"
-                            if path.iter().any(|p| p == "scm") && repository.is_none() =>
-                        {
-                            if !text.is_empty() {
-                                repository = Some(text.clone());
-                            }
-                        }
-                        // First <licenses><license><name> is the license expression.
-                        "name"
-                            if license.is_none()
-                                && path.iter().any(|p| p == "license" || p == "licenses") =>
-                        {
-                            if !text.is_empty() {
-                                license = Some(text.clone());
-                            }
-                        }
-                        "groupid" if path.iter().any(|p| p == "dependency") => {
-                            dep_group = Some(text);
-                        }
-                        "artifactid" if path.iter().any(|p| p == "dependency") => {
-                            dep_artifact = Some(text);
-                        }
-                        "version" if path.iter().any(|p| p == "dependency") => {
-                            dep_version = Some(text);
-                        }
-                        "optional" if path.iter().any(|p| p == "dependency") => {
-                            dep_optional = text.eq_ignore_ascii_case("true");
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => return None,
-            _ => {}
-        }
-        buf.clear();
-    }
-
+    let document = read_pom(bytes, false)?;
     Some(ExtractedFacts {
-        description,
+        description: document.description,
         keywords: vec![],
         categories: vec![],
         readme_hint: None,
-        repository,
-        documentation,
-        license,
+        repository: document.repository,
+        documentation: document.documentation,
+        license: document.license,
         has_license_file: false,
-        dependencies: dependencies.finish(),
+        dependencies: document.edges,
     })
 }
 
@@ -369,8 +254,30 @@ pub fn pom_dependency_names(bytes: &[u8]) -> Vec<String> {
 /// optional bit. A repeated coordinate keeps the first row.
 #[must_use]
 pub fn pom_dependency_edges(bytes: &[u8]) -> Vec<crate::record::DepEdge> {
+    read_pom(bytes, true)
+        .map(|document| document.edges)
+        .unwrap_or_default()
+}
+
+struct PomDocument {
+    description: Option<String>,
+    documentation: bool,
+    repository: Option<String>,
+    license: Option<String>,
+    edges: Vec<crate::record::DepEdge>,
+}
+
+/// One POM walk. `direct_only` keeps the registry rule (compile/runtime
+/// dependencies under `dependencies`). The manifest walk keeps every
+/// coordinate the file named.
+fn read_pom(bytes: &[u8], direct_only: bool) -> Option<PomDocument> {
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(true);
+    let mut description = None;
+    let mut documentation = false;
+    let mut repository = None;
+    let mut license = None;
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
     let mut path: Vec<String> = Vec::new();
     let mut tag = String::new();
     let mut group: Option<String> = None;
@@ -378,7 +285,6 @@ pub fn pom_dependency_edges(bytes: &[u8]) -> Vec<crate::record::DepEdge> {
     let mut scope: Option<String> = None;
     let mut version: Option<String> = None;
     let mut optional = false;
-    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
@@ -396,12 +302,20 @@ pub fn pom_dependency_edges(bytes: &[u8]) -> Vec<crate::record::DepEdge> {
             }
             Ok(Event::End(ref element)) => {
                 let local = local_xml_name(element.local_name().as_ref());
-                if local == "dependency"
-                    && let Some(name) =
-                        direct_pom_dep(&path, group.take(), artifact.take(), scope.take())
-                {
+                if local == "dependency" {
                     let requirement = version.take().filter(|text| !text.is_empty());
-                    fold.observe(name, requirement.as_deref(), optional);
+                    let name = if direct_only {
+                        direct_pom_dep(&path, group.take(), artifact.take(), scope.take())
+                    } else {
+                        scope.take();
+                        match (group.take(), artifact.take()) {
+                            (Some(group), Some(artifact)) => Some(format!("{group}:{artifact}")),
+                            _ => None,
+                        }
+                    };
+                    if let Some(name) = name {
+                        fold.observe(name, requirement.as_deref(), optional);
+                    }
                     optional = false;
                 }
                 path.pop();
@@ -414,25 +328,57 @@ pub fn pom_dependency_edges(bytes: &[u8]) -> Vec<crate::record::DepEdge> {
                         buf.clear();
                         continue;
                     }
-                    if path.iter().any(|part| part == "dependency") {
-                        match tag.as_str() {
-                            "groupid" => group = Some(text.to_owned()),
-                            "artifactid" => artifact = Some(text.to_owned()),
-                            "scope" => scope = Some(text.to_ascii_lowercase()),
-                            "version" => version = Some(text.to_owned()),
-                            "optional" => optional = text.eq_ignore_ascii_case("true"),
-                            _ => {}
+                    let depth = path.len();
+                    let in_dependency = path.iter().any(|part| part == "dependency");
+                    match tag.as_str() {
+                        "description" if depth == 2 && description.is_none() => {
+                            let cleaned =
+                                text.chars().filter(|c| !c.is_control()).collect::<String>();
+                            if !cleaned.is_empty() {
+                                description = Some(cleaned);
+                            }
                         }
+                        "url" if depth == 2 => documentation = true,
+                        "url" if path.iter().any(|part| part == "scm") && repository.is_none() => {
+                            repository = Some(text.to_owned());
+                        }
+                        "connection" | "developerconnection"
+                            if path.iter().any(|part| part == "scm") && repository.is_none() =>
+                        {
+                            repository = Some(text.to_owned());
+                        }
+                        "name"
+                            if license.is_none()
+                                && path
+                                    .iter()
+                                    .any(|part| part == "license" || part == "licenses") =>
+                        {
+                            license = Some(text.to_owned());
+                        }
+                        "groupid" if in_dependency => group = Some(text.to_owned()),
+                        "artifactid" if in_dependency => artifact = Some(text.to_owned()),
+                        "scope" if in_dependency => scope = Some(text.to_ascii_lowercase()),
+                        "version" if in_dependency => version = Some(text.to_owned()),
+                        "optional" if in_dependency => {
+                            optional = text.eq_ignore_ascii_case("true");
+                        }
+                        _ => {}
                     }
                 }
             }
             Ok(Event::Eof) => break,
-            Err(_) => return Vec::new(),
+            Err(_) => return None,
             _ => {}
         }
         buf.clear();
     }
-    fold.finish()
+    Some(PomDocument {
+        description,
+        documentation,
+        repository,
+        license,
+        edges: fold.finish(),
+    })
 }
 
 fn local_xml_name(bytes: &[u8]) -> String {
