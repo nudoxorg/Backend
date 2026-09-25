@@ -279,7 +279,24 @@ fn lower_ts_type_impl<'a>(
         }
 
         // ── Infer ─────────────────────────────────────────────────────────
-        TSType::TSInferType(i) => TypeOwned::TypeVar(i.type_parameter.name.to_string()),
+        TSType::TSInferType(i) => {
+            let name = i.type_parameter.name.to_string();
+            let mut args = Vec::new();
+            if let Some(constraint) = &i.type_parameter.constraint {
+                args.push(lower_ts_type_impl(constraint, source, type_params));
+            }
+            if let Some(default) = &i.type_parameter.default {
+                args.push(lower_ts_type_impl(default, source, type_params));
+            }
+            if args.is_empty() {
+                TypeOwned::TypeVar(name)
+            } else {
+                TypeOwned::Apply {
+                    base: Box::new(TypeOwned::Nominal(format!("infer {name}"))),
+                    args,
+                }
+            }
+        }
 
         // ── Type operators (keyof, typeof, readonly, unique) ───────────────
         TSType::TSTypeOperatorType(op) => {
