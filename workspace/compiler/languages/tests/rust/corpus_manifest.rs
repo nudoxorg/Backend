@@ -285,3 +285,23 @@ fn a_checkout_path_that_does_not_exist_is_refused() {
     );
     eprintln!("absent-root refusal chain:\n  {}", common::chain(&err));
 }
+
+/// The Nix catalog is the suite. 50× the ~20-package samples is 1000 version
+/// lines, and the expansion has to name packages nobody would pick as a demo.
+#[test]
+fn the_nix_corpus_holds_at_least_a_thousand_versions_including_obscure_ones() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../nix/corpus.nix");
+    let src = std::fs::read_to_string(&manifest)
+        .unwrap_or_else(|err| panic!("read {}: {err}", manifest.display()));
+    let versions = src.matches("version = ").count();
+    assert!(
+        versions >= 1000,
+        "nix/corpus.nix has {versions} version lines; the suite floor is 1000"
+    );
+    for name in ["neura-shader", "jzz-synth-tiny", "django-field-translate"] {
+        assert!(
+            src.contains(&format!("name = \"{name}\"")),
+            "{name} must be in the catalog, not only a famous crate"
+        );
+    }
+}
