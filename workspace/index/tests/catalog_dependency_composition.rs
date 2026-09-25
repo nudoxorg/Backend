@@ -45,8 +45,16 @@ fn four_manifests_agree_on_one_dependents_sweep() {
     let java = pom_dependency_names(pom);
     let go = require_names(go_mod);
     let python = requires_dist_names(pypi);
-    let rust: Vec<String> = normal_dependency_edges(crates)
-        .into_iter()
+    let rust_edges = normal_dependency_edges(crates);
+    let tokio = rust_edges
+        .iter()
+        .find(|edge| edge.name == "tokio")
+        .expect("dev edge");
+    assert_eq!(tokio.class, index::record::DepClass::Dev);
+    assert_eq!(tokio.kind, index::enums::EdgeKind::Build);
+    let rust: Vec<String> = rust_edges
+        .iter()
+        .filter(|edge| edge.class.is_runtime_or_optional())
         .map(|edge| edge.name.to_string())
         .collect();
 

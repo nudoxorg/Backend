@@ -246,11 +246,13 @@ pub fn checksum_from_version_document(body: &[u8]) -> Option<String> {
     crate::pid::sha256(&checksum).map(|_| checksum)
 }
 
-/// Normal dependencies from a crates.io dependencies document.
+/// Dependencies from a crates.io dependencies document.
 ///
-/// `normal` or an absent kind is kept. Dev and build rows are dropped. A
-/// repeated name keeps the required row when one of the rows is required.
-/// Names are sorted.
+/// Each row is the same catalog edge a `Cargo.toml` table would emit.
+/// `normal` or an absent kind is runtime. `dev` and `build` keep those
+/// classes and use a build kind, so they do not count as dependents. A
+/// repeated name keeps the higher class, and a required runtime row replaces
+/// an optional one. Names are sorted. An unknown kind is dropped.
 pub fn normal_dependency_edges(body: &[u8]) -> Vec<crate::record::DepEdge> {
     #[derive(Deserialize)]
     struct Body {
@@ -271,12 +273,12 @@ pub fn normal_dependency_edges(body: &[u8]) -> Vec<crate::record::DepEdge> {
     let Ok(parsed) = serde_json::from_slice::<Body>(body) else {
         return Vec::new();
     };
-    let mut fold = crate::record::RuntimeEdgeFold::prefer_required();
+    let mut fold = crate::ecosystem::CargoEdgeSet::new();
     for dep in parsed.dependencies {
-        if !(dep.kind.is_empty() || dep.kind == "normal") {
+        let Some(class) = crate::ecosystem::cargo_class(&dep.kind) else {
             continue;
-        }
-        fold.observe(dep.crate_id.trim(), Some(dep.req.trim()), dep.optional);
+        };
+        fold.observe(&dep.crate_id, Some(dep.req.as_str()), class, dep.optional);
     }
     fold.finish()
 }
@@ -300,25 +302,50 @@ mod tests {
     }
 
     #[test]
-    fn normal_dependencies_are_kept_and_dev_dependencies_are_dropped() {
+    fn dev_and_build_rows_keep_the_cargo_class() {
+        use crate::{enums::EdgeKind, record::DepClass};
+
         let body = br#"{
             "dependencies": [
-                {"crate_id": "serde", "req": "^1", "kind": "normal", "optional": false},
                 {"crate_id": "serde", "req": "^1", "kind": "normal", "optional": true},
+                {"crate_id": "serde", "req": "^1", "kind": "normal", "optional": false},
                 {"crate_id": "tokio", "req": "1", "kind": "dev"},
+                {"crate_id": "tokio", "req": "1", "kind": "normal"},
                 {"crate_id": "cc", "req": "1", "kind": "build"},
                 {"crate_id": " libc ", "req": "0.2"},
-                {"crate_id": " ", "kind": "normal"}
+                {"crate_id": " ", "kind": "normal"},
+                {"crate_id": "mystery", "kind": "other"}
             ]
         }"#;
         let edges = normal_dependency_edges(body);
-        assert_eq!(edges.len(), 2);
-        assert_eq!(edges[0].name.as_str(), "libc");
-        assert_eq!(edges[0].requirement.as_deref(), Some("0.2"));
-        assert!(!edges[0].optional);
-        assert_eq!(edges[1].name.as_str(), "serde");
-        assert_eq!(edges[1].requirement.as_deref(), Some("^1"));
+        assert_eq!(edges.len(), 4);
+        assert_eq!(edges[0].name.as_str(), "cc");
+        assert_eq!(edges[0].class, DepClass::Build);
+        assert_eq!(edges[0].kind, EdgeKind::Build);
+        assert_eq!(edges[0].requirement.as_deref(), Some("1"));
+        assert_eq!(edges[1].name.as_str(), "libc");
+        assert_eq!(edges[1].class, DepClass::Runtime);
+        assert_eq!(edges[1].kind, EdgeKind::Runtime);
+        assert_eq!(edges[1].requirement.as_deref(), Some("0.2"));
         assert!(!edges[1].optional);
+        assert_eq!(edges[2].name.as_str(), "serde");
+        assert_eq!(edges[2].class, DepClass::Runtime);
+        assert!(!edges[2].optional);
+        assert_eq!(edges[2].requirement.as_deref(), Some("^1"));
+        assert_eq!(edges[3].name.as_str(), "tokio");
+        assert_eq!(edges[3].class, DepClass::Runtime);
+        assert_eq!(edges[3].kind, EdgeKind::Runtime);
+        let serde = normal_dependency_edges(
+            br#"{"dependencies":[
+                {"crate_id":"serde","req":"^1","kind":"normal","optional":true},
+                {"crate_id":"serde","req":"^1","kind":"dev"},
+                {"crate_id":"serde","req":"^1","kind":"normal","optional":false}
+            ]}"#,
+        );
+        assert_eq!(serde.len(), 1);
+        assert_eq!(serde[0].class, DepClass::Runtime);
+        assert!(!serde[0].optional);
+        assert_eq!(serde[0].requirement.as_deref(), Some("^1"));
         assert!(normal_dependency_edges(b"not-json").is_empty());
         assert!(normal_dependency_edges(b"{}").is_empty());
     }

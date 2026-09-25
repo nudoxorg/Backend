@@ -209,36 +209,19 @@ pub fn parse_cargo_toml(text: &str) -> ExtractedFacts {
 }
 
 fn cargo_dependency_edges(value: &toml::Value) -> Vec<crate::record::DepEdge> {
-    use crate::{enums::EdgeKind, record::DepClass};
+    use crate::record::DepClass;
 
-    let mut edges = Vec::new();
-    push_cargo_table(
-        &mut edges,
-        value.get("dev-dependencies"),
-        DepClass::Dev,
-        EdgeKind::Build,
-    );
-    push_cargo_table(
-        &mut edges,
-        value.get("build-dependencies"),
-        DepClass::Build,
-        EdgeKind::Build,
-    );
-    push_cargo_table(
-        &mut edges,
-        value.get("dependencies"),
-        DepClass::Runtime,
-        EdgeKind::Runtime,
-    );
-    edges.sort_by(|left, right| left.name.cmp(&right.name));
-    edges
+    let mut edges = CargoEdgeSet::new();
+    push_cargo_table(&mut edges, value.get("dev-dependencies"), DepClass::Dev);
+    push_cargo_table(&mut edges, value.get("build-dependencies"), DepClass::Build);
+    push_cargo_table(&mut edges, value.get("dependencies"), DepClass::Runtime);
+    edges.finish()
 }
 
 fn push_cargo_table(
-    edges: &mut Vec<crate::record::DepEdge>,
+    edges: &mut CargoEdgeSet,
     table: Option<&toml::Value>,
     class: crate::record::DepClass,
-    kind: crate::enums::EdgeKind,
 ) {
     let Some(table) = table.and_then(toml::Value::as_table) else {
         return;
@@ -255,23 +238,91 @@ fn push_cargo_table(
             ),
             _ => (None, false),
         };
-        let mut edge = crate::record::DepEdge::runtime(name);
+        edges.observe(name, requirement, class, optional);
+    }
+}
+
+/// Cargo dependencies from a manifest table or a crates.io dependencies
+/// document.
+///
+/// A repeated name keeps the higher class. Runtime outranks build, and build
+/// outranks dev. At the same class a required row replaces an optional one.
+/// Dev and build edges use [`crate::enums::EdgeKind::Build`], so the dependents
+/// sweep does not count them.
+#[derive(Debug, Default)]
+pub(crate) struct CargoEdgeSet {
+    edges: Vec<crate::record::DepEdge>,
+}
+
+impl CargoEdgeSet {
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record one Cargo dependency. An empty name is ignored. The optional
+    /// flag is kept only on a runtime edge.
+    pub(crate) fn observe(
+        &mut self,
+        name: &str,
+        requirement: Option<&str>,
+        class: crate::record::DepClass,
+        optional: bool,
+    ) {
+        let name = name.trim();
         if name.is_empty() {
-            continue;
+            return;
         }
+        let mut edge = crate::record::DepEdge::runtime(name);
         edge.class = class;
-        edge.kind = kind;
+        edge.kind = cargo_kind(class);
         edge.optional = optional && class == crate::record::DepClass::Runtime;
         if let Some(requirement) = requirement.map(str::trim).filter(|text| !text.is_empty()) {
             edge.requirement = Some(requirement.into());
         }
-        if let Some(existing) = edges.iter_mut().find(|stored| stored.name == edge.name) {
-            if cargo_rank(edge.class) > cargo_rank(existing.class) {
+        if let Some(existing) = self
+            .edges
+            .iter_mut()
+            .find(|stored| stored.name == edge.name)
+        {
+            let outranks = cargo_rank(edge.class) > cargo_rank(existing.class);
+            let required_wins = cargo_rank(edge.class) == cargo_rank(existing.class)
+                && existing.optional
+                && !edge.optional;
+            if outranks || required_wins {
                 *existing = edge;
             }
-            continue;
+            return;
         }
-        edges.push(edge);
+        self.edges.push(edge);
+    }
+
+    /// Sort by name and return the rows.
+    #[must_use]
+    pub(crate) fn finish(mut self) -> Vec<crate::record::DepEdge> {
+        self.edges.sort_by(|left, right| left.name.cmp(&right.name));
+        self.edges
+    }
+}
+
+/// Class for a crates.io `kind` token. An unknown token is not a Cargo edge.
+#[must_use]
+pub(crate) fn cargo_class(kind: &str) -> Option<crate::record::DepClass> {
+    match kind {
+        "" | "normal" => Some(crate::record::DepClass::Runtime),
+        "dev" => Some(crate::record::DepClass::Dev),
+        "build" => Some(crate::record::DepClass::Build),
+        _ => None,
+    }
+}
+
+fn cargo_kind(class: crate::record::DepClass) -> crate::enums::EdgeKind {
+    match class {
+        crate::record::DepClass::Runtime => crate::enums::EdgeKind::Runtime,
+        crate::record::DepClass::Dev | crate::record::DepClass::Build => {
+            crate::enums::EdgeKind::Build
+        }
+        _ => crate::enums::EdgeKind::Runtime,
     }
 }
 

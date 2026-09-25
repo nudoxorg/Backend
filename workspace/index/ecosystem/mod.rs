@@ -41,6 +41,7 @@ pub use go::{
     require_edges, require_names, unescape_module_path,
 };
 pub use heart::Language;
+pub(crate) use rust::{CargoEdgeSet, cargo_class};
 pub(crate) use ts::npm_package_edges;
 pub use java::{pom_dependency_edges, pom_dependency_names};
 pub use python::{pypi_release, requires_dist_edges, requires_dist_names};
