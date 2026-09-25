@@ -1813,6 +1813,52 @@ mod tests {
     }
 
     #[test]
+    fn a_commonjs_function_export_is_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"cjs-fn","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.js"),
+            "module.exports = function pad(s) { return s; };\n\
+             exports.left = (s) => s;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "cjs-fn", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("cjs-fn"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a CommonJS function export must seal");
+        let pad = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "pad"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(pad, 1, "module.exports = function pad must declare pad");
+        let param = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "s" && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(param, 2, "pad and left must each declare parameter s");
+        let left = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "left"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(left, 1, "exports.left = (s) => s must declare left");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

@@ -728,6 +728,37 @@ fn push_commonjs_object_properties<'a>(
     }
 }
 
+fn push_commonjs_function<'a>(
+    name: &str,
+    body: FunctionBody,
+    span: Span,
+    semantic: &'a Semantic<'a>,
+    path: &Path,
+    declarations: &mut Vec<DeclFact>,
+    name_counts: &mut std::collections::HashMap<String, u32>,
+) {
+    use nudox_ir::entry::Visibility;
+
+    if declarations
+        .iter()
+        .any(|decl| decl.name == name && decl.span_start == span.start)
+    {
+        return;
+    }
+    let decl_index = bump_count(name, name_counts);
+    declarations.push(DeclFact {
+        name: name.to_string(),
+        visibility: Visibility::Public,
+        doc: jsdoc::jsdoc_for_span(semantic, span),
+        body: DeclBody::Function(body),
+        module: path.to_path_buf(),
+        span_start: span.start,
+        span_end: span.end,
+        is_default: false,
+        decl_index,
+    });
+}
+
 fn push_commonjs_class<'a>(
     class: &'a Class<'a>,
     name: &str,
@@ -836,12 +867,55 @@ fn push_commonjs_value_decls<'a>(
                     name_counts,
                 );
                 cjs_exports.whole_module.get_or_insert(name);
+            } else if let Expression::FunctionExpression(function) = &assign.right {
+                let name = function
+                    .id
+                    .as_ref()
+                    .map(|id| id.name.to_string())
+                    .unwrap_or_else(|| "default".to_string());
+                push_commonjs_function(
+                    &name,
+                    lower_function(function, source),
+                    function.span(),
+                    semantic,
+                    path,
+                    declarations,
+                    name_counts,
+                );
+                cjs_exports.whole_module.get_or_insert(name);
+            } else if let Expression::ArrowFunctionExpression(arrow) = &assign.right {
+                push_commonjs_function(
+                    "default",
+                    lower_arrow(arrow, source),
+                    arrow.span(),
+                    semantic,
+                    path,
+                    declarations,
+                    name_counts,
+                );
+                cjs_exports
+                    .whole_module
+                    .get_or_insert_with(|| "default".to_string());
             }
             continue;
         }
         let Some(export_name) = export_property_name(mem, cjs_exports) else {
             continue;
         };
+
+        if let Expression::ArrowFunctionExpression(arrow) = &assign.right {
+            push_commonjs_function(
+                &export_name,
+                lower_arrow(arrow, source),
+                arrow.span(),
+                semantic,
+                path,
+                declarations,
+                name_counts,
+            );
+            cjs_exports.named.push((export_name.clone(), export_name));
+            continue;
+        }
 
         if let Expression::ClassExpression(class) = &assign.right {
             push_commonjs_class(
@@ -1628,6 +1702,41 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
             .body
             .as_ref()
             .map(|body| body.span().source_text(source).to_string()),
+        leading_doc: None,
+        span_start: span.start,
+        span_end: span.end,
+    }
+}
+
+fn lower_arrow<'a>(
+    arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>,
+    source: &'a str,
+) -> FunctionBody {
+    let span = arrow.span();
+    let type_params = arrow.type_parameters.as_ref().map(|tp| {
+        tp.params
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect::<std::collections::HashSet<_>>()
+    });
+    FunctionBody {
+        generics: arrow
+            .type_parameters
+            .as_ref()
+            .map(|tp| lower_type_params(tp, source))
+            .unwrap_or_default(),
+        params: lower_formal_parameters(&arrow.params, source, false, type_params.as_ref()),
+        return_type: arrow.return_type.as_ref().map(|ann| match &type_params {
+            Some(set) => lower_ts_type_with_params(&ann.type_annotation, source, set),
+            None => lower_ts_type(&ann.type_annotation, source),
+        }),
+        is_async: arrow.r#async,
+        is_generator: false,
+        has_body: true,
+        receiver: ReceiverKind::None,
+        this_ty: None,
+        abstract_construct: false,
+        body_text: Some(arrow.body.span().source_text(source).to_string()),
         leading_doc: None,
         span_start: span.start,
         span_end: span.end,
