@@ -344,14 +344,23 @@ async fn run_search(
     // facets still read every resident package, because "all functions" is
     // the whole corpus.
     let type_start = Instant::now();
-    let declared = match crate::typequery::TypeQuery::parse(&query.text) {
+    let (declared, type_packages) = match crate::typequery::TypeQuery::parse(&query.text) {
         Some(parsed) => {
-            let names: Vec<String> = parsed.facets.iter().map(|facet| facet.type_name.clone()).collect();
-            corpus.packages_declaring(&names).await
+            let names: Vec<String> = parsed
+                .facets
+                .iter()
+                .map(|facet| facet.type_name.clone())
+                .collect();
+            let declared = corpus.packages_declaring(&names).await;
+            let users = match hits::resolved_type_facets(&parsed, &declared) {
+                Some(facets) => corpus.packages_referencing_facets(&facets).await,
+                None => Vec::new(),
+            };
+            (declared, users)
         }
-        None => std::collections::BTreeMap::new(),
+        None => (std::collections::BTreeMap::new(), packages.clone()),
     };
-    let type_rows = collect_type_hits(&packages, &query, &declared);
+    let type_rows = collect_type_hits(&type_packages, &query, &declared);
     let type_elapsed = type_start.elapsed();
 
     if cancel.is_cancelled() {

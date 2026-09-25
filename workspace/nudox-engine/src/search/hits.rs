@@ -351,6 +351,39 @@ pub(crate) fn collect_name_hits(
 /// facet, so nothing that worked before stops working. See
 /// [`crate::typequery`] for the grammar and for why it is a grammar rather than
 /// free text.
+/// Declarations named by each signature facet, in facet order.
+///
+/// `None` when any facet names a type no loaded package declares. Resolution
+/// uses `declared`, not the package filter: `packages: [memchr]` plus
+/// `param:Path` still means a `Path` declared anywhere.
+pub(crate) fn resolved_type_facets(
+    type_query: &crate::typequery::TypeQuery,
+    declared: &std::collections::BTreeMap<
+        String,
+        Vec<std::sync::Arc<crate::store::package::PackageView>>,
+    >,
+) -> Option<Vec<Vec<nudox_ir::change::StableRef>>> {
+    use nudox_ir::change::StableRef;
+
+    let mut resolved = Vec::with_capacity(type_query.facets.len());
+    for facet in &type_query.facets {
+        let owners = declared.get(&facet.type_name)?;
+        let mut targets = Vec::new();
+        for pkg in owners {
+            for entry in pkg.indexes().by_name.get_exact(&facet.type_name) {
+                targets.push(StableRef::new(pkg.lineage().clone(), entry.intro));
+            }
+        }
+        if targets.is_empty() {
+            return None;
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        resolved.push(targets);
+    }
+    Some(resolved)
+}
+
 pub(crate) fn collect_type_hits(
     packages: &[std::sync::Arc<crate::store::package::PackageView>],
     query: &SearchQuery,
@@ -390,44 +423,15 @@ fn collect_signature_hits(
         Vec<std::sync::Arc<crate::store::package::PackageView>>,
     >,
 ) -> Vec<HitRow> {
-    use nudox_ir::change::StableRef;
-
     let limit = if query.limit == 0 {
         usize::MAX
     } else {
         query.limit
     };
 
-    // ── Resolve every facet's type name to declarations, corpus-wide ────────
-    //
-    // Resolution deliberately ignores `query.packages`: that filter restricts
-    // which packages may *answer*, not which may *declare the type asked
-    // about*. Filtering here as well would make `packages: [memchr]` +
-    // `param:Path` silently mean "a `Path` declared inside memchr", which is
-    // never what the reader meant.
-    let mut resolved: Vec<Vec<StableRef>> = Vec::with_capacity(type_query.facets.len());
-    for facet in &type_query.facets {
-        let mut targets: Vec<StableRef> = Vec::new();
-        let Some(owners) = declared.get(&facet.type_name) else {
-            return Vec::new();
-        };
-        for pkg in owners {
-            for entry in pkg.indexes().by_name.get_exact(&facet.type_name) {
-                targets.push(StableRef::new(pkg.lineage().clone(), entry.intro));
-            }
-        }
-        // A facet naming a type no loaded package declares can never be
-        // satisfied, so the whole conjunction is empty. Returning early keeps
-        // that a cheap answer rather than an empty intersection computed the
-        // long way — and it is the common case for foreign types (see the
-        // module docs on what the index cannot see).
-        if targets.is_empty() {
-            return Vec::new();
-        }
-        targets.sort_unstable();
-        targets.dedup();
-        resolved.push(targets);
-    }
+    let Some(resolved) = resolved_type_facets(type_query, declared) else {
+        return Vec::new();
+    };
 
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut worst = 0usize;

@@ -60,6 +60,10 @@ struct CorpusState {
     ///
     /// Name search ranges this map instead of opening every package.
     names: BTreeMap<String, BTreeSet<PackageLineageId>>,
+    /// Type `StableRef` → packages whose indexes reference it.
+    ///
+    /// Signature search intersects these sets instead of opening every package.
+    refs: BTreeMap<StableRef, BTreeSet<PackageLineageId>>,
 }
 
 struct CorpusInner {
@@ -89,6 +93,7 @@ impl Corpus {
                 state: RwLock::new(CorpusState {
                     packages: BTreeMap::new(),
                     names: BTreeMap::new(),
+                    refs: BTreeMap::new(),
                 }),
             }),
         }
@@ -102,8 +107,10 @@ impl Corpus {
         let id = package.lineage().clone();
         if let Some(previous) = state.packages.get(&id).cloned() {
             detach_names(&mut state.names, &previous);
+            detach_refs(&mut state.refs, &previous);
         }
         attach_names(&mut state.names, &package);
+        attach_refs(&mut state.refs, &package);
         state.packages.insert(id, package);
     }
 
@@ -150,6 +157,44 @@ impl Corpus {
             out.insert(name.clone(), owners);
         }
         out
+    }
+
+    /// Packages that can satisfy a signature conjunction.
+    ///
+    /// Each inner vec is one facet's resolved declarations (a union: any
+    /// `Point` counts). A package must reference at least one declaration of
+    /// every facet. An empty facet matches nothing. Lineage order.
+    pub async fn packages_referencing_facets(
+        &self,
+        facets: &[Vec<StableRef>],
+    ) -> Vec<Arc<PackageView>> {
+        if facets.is_empty() {
+            return Vec::new();
+        }
+        let state = self.inner.state.read().await;
+        let mut ids: Option<BTreeSet<PackageLineageId>> = None;
+        for facet in facets {
+            if facet.is_empty() {
+                return Vec::new();
+            }
+            let mut owners = BTreeSet::new();
+            for target in facet {
+                if let Some(set) = state.refs.get(target) {
+                    owners.extend(set.iter().cloned());
+                }
+            }
+            if owners.is_empty() {
+                return Vec::new();
+            }
+            ids = Some(match ids {
+                None => owners,
+                Some(previous) => previous.intersection(&owners).cloned().collect(),
+            });
+        }
+        ids.unwrap_or_default()
+            .into_iter()
+            .filter_map(|id| state.packages.get(&id).cloned())
+            .collect()
     }
 
     /// Look up a package by its lineage identity.
@@ -200,6 +245,26 @@ impl Corpus {
     /// True if no packages have been loaded.
     pub async fn is_empty(&self) -> bool {
         self.inner.state.read().await.packages.is_empty()
+    }
+}
+
+fn attach_refs(refs: &mut BTreeMap<StableRef, BTreeSet<PackageLineageId>>, package: &PackageView) {
+    let id = package.lineage().clone();
+    for (target, _) in package.indexes().type_refs.iter() {
+        refs.entry(target.clone()).or_default().insert(id.clone());
+    }
+}
+
+fn detach_refs(refs: &mut BTreeMap<StableRef, BTreeSet<PackageLineageId>>, package: &PackageView) {
+    let id = package.lineage();
+    for (target, _) in package.indexes().type_refs.iter() {
+        let Some(owners) = refs.get_mut(target) else {
+            continue;
+        };
+        owners.remove(id);
+        if owners.is_empty() {
+            refs.remove(target);
+        }
     }
 }
 
@@ -395,6 +460,64 @@ mod tests {
             .await;
         assert!(corpus.packages_with_name_prefix("wid").await.is_empty());
         assert_eq!(corpus.packages_with_name_prefix("oth").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn type_ref_index_skips_packages_that_do_not_use_the_type() {
+        use nudox_ir::{
+            index::Ref,
+            kind::Kind,
+            kinds::{Field, FieldKey, Record, Type},
+        };
+
+        let corpus = Corpus::new();
+        let point = lineage("point");
+        let point_intro = intro(3);
+        let mut table = PristineIntroTable::new();
+        table.insert_live(
+            point_intro,
+            nudox_ir::entry::Entry::new(
+                sym("Point"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Record(Record::builder().build()),
+            ),
+            None,
+        );
+        table.insert_live(
+            intro(4),
+            nudox_ir::entry::Entry::new(
+                sym("origin"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Field(
+                    Field::builder()
+                        .key(FieldKey::Named)
+                        .ty(Type::Nominal(Ref::Intro(point_intro)))
+                        .build(),
+                ),
+            ),
+            Some(point_intro),
+        );
+        let view = IrView::with_package(point.clone(), table);
+        corpus
+            .insert(Arc::new(PackageView::build(view, Provenance::TrustedLocal)))
+            .await;
+        corpus.insert(make_package("other")).await;
+
+        let target = nudox_ir::change::StableRef::new(point, point_intro);
+        let matched = corpus.packages_referencing_facets(&[vec![target.clone()]]).await;
+        let names: Vec<_> = matched
+            .iter()
+            .map(|pkg| pkg.lineage().name.as_str().to_owned())
+            .collect();
+        assert_eq!(names, vec!["point".to_owned()]);
+
+        corpus.insert(make_package("point")).await;
+        assert!(
+            corpus
+                .packages_referencing_facets(&[vec![target]])
+                .await
+                .is_empty()
+        );
     }
 
     /// `packages()` is ordered by lineage, and that order does not depend on
