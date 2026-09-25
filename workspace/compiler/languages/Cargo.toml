@@ -246,6 +246,10 @@ name = "typescript_real_npm_packages"
 path = "tests/typescript/real_npm_packages.rs"
 
 [[test]]
+name = "typescript_popular_census"
+path = "tests/typescript/popular_census.rs"
+
+[[test]]
 name = "python_corpus_sweep"
 path = "tests/python/corpus_sweep.rs"
 

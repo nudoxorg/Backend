@@ -85,6 +85,19 @@ impl SymbolKeyDto {
         if name.is_empty() {
             return Err(malformed("package name segment is empty"));
         }
+        // An address is `ecosystem:name[::sym-path][#hex]`. The legacy key is
+        // only the no-path form. `split_once('#')` still succeeds on
+        // `npm:axios::axios.Axios.request[function]#<64 hex>`, and the name
+        // half then becomes the whole symbol path — a package that is never
+        // loaded, so `read` rejects the address `search` just emitted.
+        // `::` is the package/symbol boundary in the address grammar and is
+        // not a legal package-name character, so its presence means this
+        // string is an address and must be resolved, not decoded as a key.
+        if name.contains("::") {
+            return Err(malformed(
+                "symbol path after the package name is an address, not a legacy key",
+            ));
+        }
         let intro = parse_intro_hex(intro_hex)
             .ok_or_else(|| malformed("intro segment must be exactly 64 hex characters"))?;
 
@@ -206,6 +219,22 @@ mod tests {
         let wire = dto.to_wire().expect("sample key parses");
         let back = SymbolKeyDto::from_wire(&wire);
         assert_eq!(dto, back, "wire -> string -> wire must be lossless");
+    }
+
+    #[test]
+    fn hashed_address_is_not_decoded_as_a_legacy_key() {
+        let address = format!(
+            "npm:axios::axios.axios.Axios.request[function]#{}",
+            "ab".repeat(32)
+        );
+        let err = SymbolKeyDto(address).to_wire().expect_err("address");
+        let McpError::MalformedKey { reason, .. } = err else {
+            panic!("expected MalformedKey");
+        };
+        assert!(
+            reason.contains("address"),
+            "agent-facing reason must say this is an address, got {reason}"
+        );
     }
 
     #[test]

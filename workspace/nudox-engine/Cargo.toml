@@ -492,6 +492,10 @@ name = "mcp_token_budget_matrix"
 path = "tests/mcp/token_budget_matrix.rs"
 required-features = ["fixtures"]
 
+[[test]]
+name = "mcp_ts_agent_walk"
+path = "tests/mcp/ts_agent_walk.rs"
+
 [lints]
 workspace = true
 

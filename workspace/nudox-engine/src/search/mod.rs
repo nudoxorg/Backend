@@ -185,9 +185,11 @@ impl SearchQuery {
     /// `true` when `kind` passes both the optional kind filter and the
     /// default-scope exclusion.
     ///
-    /// Exclusion is checked first and is unconditional: a caller that named
-    /// kinds explicitly leaves `exclude_kinds` empty, so the two can never
-    /// disagree about the same kind.
+    /// Exclusion is checked first and is unconditional. Callers that want a
+    /// kind restriction without also listing every symbol of that kind — the
+    /// MCP `kinds` argument — express it as an exclusion of the complement
+    /// and leave `kinds` empty. A non-empty `kinds` is the type section's
+    /// browse facet, which ignores the query text.
     fn kind_matches(&self, kind: KindDiscriminant) -> bool {
         if self.exclude_kinds.contains(&kind) {
             return false;

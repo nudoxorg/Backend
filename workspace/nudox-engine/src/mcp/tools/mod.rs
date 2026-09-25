@@ -2116,7 +2116,18 @@ fn resolve_search_scope(
     let explicit = kinds.is_some();
     let (parsed_kinds, packages) = parse_search_filters(kinds, packages)?;
     if explicit {
-        return Ok((parsed_kinds, Vec::new(), packages, None));
+        // Same reason `default_excluded_kinds` excludes instead of listing
+        // the kinds to keep: a non-empty `SearchQuery::kinds` turns on the
+        // type section's kind facet, which emits every symbol of those kinds
+        // whether or not the query text matched. `kinds: ["Function"]` on a
+        // search for `Router` then filled the page with unrelated functions
+        // once the name section was empty. The complement-as-exclusion keeps
+        // the filter and leaves the facet armed only when the query text
+        // itself is a kind keyword.
+        let excluded: Vec<KindDiscriminant> = known_kinds()
+            .filter(|kind| !parsed_kinds.contains(kind))
+            .collect();
+        return Ok((Vec::new(), excluded, packages, None));
     }
     let excluded = default_excluded_kinds();
     let disclosed = excluded.iter().copied().map(KindTag::from).collect();

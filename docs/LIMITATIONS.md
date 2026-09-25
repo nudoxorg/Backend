@@ -3771,6 +3771,14 @@ library run completed with five mutants caught, zero survivors, and one
 unviable result; the baseline and zero-limit regression pass. Automated
 mutation execution is no longer blocked on a missing tool.
 
+## L50 — TypeScript MCP corpus: 21 of 100 popular packages do not lower, and several tools answer the wrong question
+
+**Blast radius:** every agent that indexes a real npm package and then searches, reads, or follows references. The packages that fail are not obscure: `next`, `zod`, `react` types, `graphql`, `mongoose`, `three`, `openai`.
+
+**Evidence:** `docs/MCP-TS-CORPUS-REPORT.md`. 100 published tarballs, registry `latest` on 2026-09-25, lowered by `TypescriptProducer` (OXC). 79 sealed (252,048 entries). 21 failed in `Lowering::finish` — 11 `referred but never declared`, 10 `declared more than once` — which discards the whole package. A live MCP walk of 8 packages that did seal is in the same report.
+
+**Status:** OPEN for the producer identity failures, the missing `exports.X = function` / `exports.X = require(...)` surface (`useState`, `express.Router`), empty `refs` on a body that contains a call, and semantic search with no model. Two MCP answer-shape bugs found in that walk are fixed in the same change: a hashed address was decoded as a legacy key, and an explicit `kinds` filter dumped unrelated symbols.
+
 ## Unresolved categories that still prevent deletion
 
 At minimum, deletion would still be dishonest because these categories remain
