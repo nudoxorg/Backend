@@ -344,6 +344,7 @@ pub struct Identity {
     line: Option<LineNumber>,
     trail: SymbolTrail,
     key: IdentityKey,
+    manifest_name: Option<String>,
 }
 
 impl Identity {
@@ -378,6 +379,13 @@ impl Identity {
         identity.project = Some(project.clone());
         identity.key = key;
         identity
+    }
+
+    /// Names one indexed package with the manifest identity the owner read.
+    #[must_use]
+    pub fn with_manifest_name(mut self, name: impl Into<String>) -> Self {
+        self.manifest_name = Some(name.into());
+        self
     }
 
     /// Fills in a source path and line for a coordinate whose own closed
@@ -446,6 +454,9 @@ impl Identity {
     /// Returns the declaration's own name, or the project name for a shelf row.
     #[must_use]
     pub fn name(&self) -> &str {
+        if let Some(name) = self.manifest_name.as_deref() {
+            return name;
+        }
         self.trail.leaf().map_or_else(
             || {
                 self.path.as_ref().map_or_else(
@@ -507,6 +518,7 @@ fn parse_parts(label: &str) -> Identity {
             line: None,
             trail: SymbolTrail::default(),
             key: IdentityKey::Absent,
+            manifest_name: None,
         };
     };
     let mut identity = parse_tail(rest);
@@ -562,6 +574,7 @@ fn parse_tail(rest: &str) -> Identity {
         line,
         trail,
         key: IdentityKey::Absent,
+        manifest_name: None,
     }
 }
 

@@ -622,11 +622,18 @@ fn view_for_workspace(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
+    filesystem_workspace: &std::path::Path,
 ) -> Result<ViewRoot, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_indexed_sources(&snapshot)?;
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
-    let projected = rows_for_indexed_sources(&initial, &sources, &snapshot, compiler)?;
+    let projected = rows_for_indexed_sources(
+        &initial,
+        &sources,
+        &snapshot,
+        compiler,
+        filesystem_workspace,
+    )?;
     let coverage = view_coverage(&snapshot, &projected.activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
     ViewRoot::new_checked(
@@ -644,9 +651,10 @@ fn publish_builtin_view(
     daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
+    filesystem_workspace: &std::path::Path,
 ) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
     let mut current = daemon.engine().daemon().library().view().clone();
-    let target = view_for_workspace(daemon, compiler, deployment)?;
+    let target = view_for_workspace(daemon, compiler, deployment, filesystem_workspace)?;
     if current.basis() == target.basis()
         && current.coverage() == target.coverage()
         && current.rows() == target.rows()
@@ -848,7 +856,7 @@ pub(crate) fn compose_owner(
             )
             .map_err(|error| ProcessError::Profile(error.to_string()))?;
     } else {
-        let view = view_for_workspace(&daemon, &compiler, semantic_deployment)
+        let view = view_for_workspace(&daemon, &compiler, semantic_deployment, &config.workspace)
             .map_err(|error| ProcessError::Profile(error.to_string()))?;
         let cursor = backend_engine::Cursor::for_view_root(&view);
         let admission = BuiltinViewAdmission {
@@ -864,8 +872,9 @@ pub(crate) fn compose_owner(
     // The workspace journal is authoritative. A crash can occur after a
     // workspace commit and between several bounded view-row publications;
     // repair that derived suffix before the listener becomes visible.
-    let _recovered_view_deltas = publish_builtin_view(&mut daemon, &compiler, semantic_deployment)
-        .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
+    let _recovered_view_deltas =
+        publish_builtin_view(&mut daemon, &compiler, semantic_deployment, &config.workspace)
+            .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
     let mut sql_projection = futures_executor::block_on(
         backend_extension_turso::TursoProjection::open_or_rebuild(&projection_path),

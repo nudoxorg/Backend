@@ -591,6 +591,7 @@ pub(super) fn rows_for_indexed_sources(
     sources: &IndexedSources,
     snapshot: &WorkspaceSnapshot,
     compiler: &LocalCompilerClient,
+    workspace: &std::path::Path,
 ) -> Result<ProjectedRows, BuiltinModelError> {
     if sources.projects.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -626,6 +627,7 @@ pub(super) fn rows_for_indexed_sources(
         total_capacity,
         &semantics.targets,
         &structural_plan,
+        workspace,
     )?;
     for (file_key, record) in &sources.files {
         projection.append_file(
@@ -662,15 +664,29 @@ impl<'a> SourceRowProjection<'a> {
         capacity: usize,
         targets: &'a SemanticTargets,
         structural_plan: &'a StructuralProjectionPlan,
+        workspace: &'a std::path::Path,
     ) -> Result<Self, BuiltinModelError> {
         let mut rows = Vec::with_capacity(capacity);
         let mut selected_files = BTreeSet::new();
         for (project_key, project) in projects {
-            rows.push(Row::new(
+            let row = Row::new(
                 RowId::Package(project.package),
                 initial.basis(),
                 &project.label,
-            ));
+            );
+            rows.push(match package_manifest_name(&project.label, workspace) {
+                Ok(name) => row.with_signature(name),
+                Err(error) => {
+                    if project.label.starts_with("pkg:")
+                        || std::path::Path::new(&project.label)
+                            .join("Cargo.toml")
+                            .is_file()
+                    {
+                        return Err(BuiltinModelError(error));
+                    }
+                    row
+                }
+            });
             for file_key in project.files.iter().copied() {
                 if !selected_files.insert((*project_key, file_key)) {
                     return Err(BuiltinModelError(
@@ -2137,6 +2153,10 @@ fn structural_body_start(excerpt: &str) -> Option<usize> {
 /// Only the declaration body is scanned. Occurrences inside line or block
 /// comments, string literals, and char literals are ignored, and a function
 /// declarator such as `fn parse_config(` is never treated as a call.
+fn package_manifest_name(label: &str, workspace: &std::path::Path) -> Result<String, String> {
+    super::local_manifest::indexed_package_manifest_name(label, workspace)
+}
+
 fn structural_excerpt_calls(excerpt: &str, callee: &str) -> bool {
     if callee.is_empty() {
         return false;
@@ -2627,6 +2647,7 @@ pub fn execute() {}
                 64,
                 &targets,
                 &structural_plan,
+                std::path::Path::new("/tmp"),
             )
                 .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
@@ -3072,6 +3093,7 @@ pub fn execute() {}
             64,
             &targets,
             &plan,
+            std::path::Path::new("/tmp"),
         )
         .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
@@ -3379,6 +3401,7 @@ pub fn execute() {}
             64,
             &targets,
             &structural_plan,
+            std::path::Path::new("/tmp"),
         )
         .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
@@ -3467,6 +3490,7 @@ pub fn execute() {}
             64,
             &targets,
             &structural_plan,
+            std::path::Path::new("/tmp"),
         )
         .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
@@ -3549,6 +3573,7 @@ pub fn execute() {}
             64,
             &targets,
             &structural_plan,
+            std::path::Path::new("/tmp"),
         )
         .map_err(|e| e.to_string())?;
         for (key, file) in &sources.files {
