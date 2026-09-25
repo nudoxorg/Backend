@@ -21,8 +21,17 @@ let
       "${dataRoot}/catalog" \
       "${dataRoot}/data" \
       "${dataRoot}/blobs" \
-      "${dataRoot}/qdrant"
+      "${dataRoot}/qdrant" \
+      "${dataRoot}/home" \
+      "${dataRoot}/cargo"
     chmod 1777 /tmp
+
+    # No guest rootfs: Rust packages are indexed in-process, which runs
+    # `cargo metadata` and build-script `cargo check`. Those need cargo,
+    # rustc, and a `cc` linker, plus a writable cargo home.
+    export HOME="${dataRoot}/home"
+    export CARGO_HOME="${dataRoot}/cargo"
+    export PATH="${pkgs.cargo}/bin:${pkgs.rustc}/bin:${pkgs.stdenv.cc}/bin:''${PATH:-/bin}"
 
     export NUDOX_DEFINITIVE__ENDPOINTS__CATALOG_DIRECTORY="${dataRoot}/catalog"
     export NUDOX_DEFINITIVE__DATA_DIRECTORY="${dataRoot}/data"
@@ -65,6 +74,9 @@ mkServiceImage {
     qdrantBinary
     pkgs.curl
     pkgs.coreutils
+    pkgs.cargo
+    pkgs.rustc
+    pkgs.stdenv.cc
   ];
   env = [
     "NUDOX_SERVING_ADDRESS=0.0.0.0:8080"

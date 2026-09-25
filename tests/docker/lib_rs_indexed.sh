@@ -23,13 +23,13 @@ ensure_up() {
   fi
 }
 
-# Prints the response body. Sets HTTP_CODE.
+# Prints the HTTP status on the first line and the response body after it.
 request() {
   local method="$1" path="$2" body="${3:-}"
-  local out
+  local out code
   out="$(mktemp)"
   if [[ -n "${body}" ]]; then
-    HTTP_CODE="$(
+    code="$(
       curl -sS --connect-timeout 2 --max-time 60 \
         -o "${out}" -w '%{http_code}' \
         -X "${method}" "${BASE_URL}${path}" \
@@ -37,20 +37,30 @@ request() {
         -d "${body}" || echo 000
     )"
   else
-    HTTP_CODE="$(
+    code="$(
       curl -sS --connect-timeout 2 --max-time 30 \
         -o "${out}" -w '%{http_code}' \
         -X "${method}" "${BASE_URL}${path}" || echo 000
     )"
   fi
+  printf '%s\n' "${code}"
   cat "${out}"
   rm -f "${out}"
+}
+
+# raw="$(request ...)" then split_response into HTTP_CODE and BODY.
+split_response() {
+  local raw="$1"
+  HTTP_CODE="$(printf '%s\n' "${raw}" | head -n 1)"
+  BODY="$(printf '%s\n' "${raw}" | tail -n +2)"
 }
 
 ingest_serde() {
   log "==> ingest serde 1.0.210"
   local raw
   raw="$(request POST /packages '{"ecosystem":"rust","name":"serde","version":"1.0.210"}')"
+  split_response "${raw}"
+  raw="${BODY}"
   if [[ "${HTTP_CODE}" != "200" ]]; then
     fail "ingest: HTTP ${HTTP_CODE} ${raw}"
     return 1
@@ -64,7 +74,8 @@ ingest_serde() {
   state_key="$(jq -r '.state | keys[0]' <<<"${raw}")"
   if [[ "${state_key}" == "Failed" || "${state_key}" == "DeadLettered" ]]; then
     log "ingest: state ${state_key}; requesting sync"
-    request POST "/packages/${PACKAGE_ID}/sync" '{}' >/dev/null
+    raw="$(request POST "/packages/${PACKAGE_ID}/sync" '{}')"
+    split_response "${raw}"
     if [[ "${HTTP_CODE}" != "200" ]]; then
       fail "sync: HTTP ${HTTP_CODE}"
       return 1
@@ -80,6 +91,8 @@ wait_stored() {
   start="$(date +%s)"
   while true; do
     raw="$(request GET "/packages/${PACKAGE_ID}")"
+    split_response "${raw}"
+    raw="${BODY}"
     if [[ "${HTTP_CODE}" != "200" ]]; then
       fail "status: HTTP ${HTTP_CODE} ${raw}"
       return 1
@@ -108,6 +121,8 @@ assert_package_card() {
   log "==> package card for serde"
   local raw
   raw="$(request POST /packages/search '{"target":"Packages","text":"serde","page":{"limit":5}}')"
+  split_response "${raw}"
+  raw="${BODY}"
   if [[ "${HTTP_CODE}" != "200" ]]; then
     fail "package search: HTTP ${HTTP_CODE} ${raw}"
     return 1
@@ -146,6 +161,8 @@ assert_symbol_hit() {
   log "==> symbol search Serialize"
   local raw
   raw="$(request POST /search '{"target":"Symbols","text":"Serialize","page":{"limit":10}}')"
+  split_response "${raw}"
+  raw="${BODY}"
   if [[ "${HTTP_CODE}" != "200" ]]; then
     fail "symbol search: HTTP ${HTTP_CODE} ${raw}"
     return 1
