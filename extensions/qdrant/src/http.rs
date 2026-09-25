@@ -1,6 +1,13 @@
 //! Bounded blocking Qdrant transport behind the extension's provider contract.
 
-use std::{io::Read, num::NonZeroU8, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Read,
+    num::NonZeroU8,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 use backend_version::CoverageWitness;
 use serde::{Deserialize, Serialize};
@@ -225,17 +232,53 @@ impl QdrantHttpClient {
         {
             return Err(HttpProviderError::BindingMismatch);
         }
+        if documents.is_empty() {
+            return Ok(QdrantMutationReceipt {
+                points: 0,
+                batches: 0,
+            });
+        }
+        let mut points = 0;
         let mut batches = 0;
         for batch in documents.chunks(self.transport.config.max_batch_points) {
-            let points = batch
+            let points_in_batch: Vec<UpsertPoint<'_>> = batch
                 .iter()
-                .map(|document| UpsertPoint {
-                    id: PhysicalPointId::for_candidate(binding, document.point().id()),
-                    vector: document.point().values(),
-                    payload: PointPayload::for_candidate(binding, document.point().id()),
+                .map(|document| {
+                    let values = document.point().values();
+                    UpsertPoint {
+                        id: PhysicalPointId::for_candidate(binding, document.point().id()),
+                        vector: values,
+                        payload: PointPayload::for_candidate(
+                            binding,
+                            document.point().id(),
+                            values,
+                        ),
+                    }
                 })
                 .collect();
-            let body = UpsertRequest { points };
+            let observed = self.retrieve_coordinate_keys(binding, &points_in_batch)?;
+            let mut due_points = Vec::new();
+            for point in &points_in_batch {
+                match coordinate_disposition(
+                    &point.payload.coordinate_key,
+                    observed.get(&point.id).map(String::as_str),
+                ) {
+                    CoordinateDisposition::Due => due_points.push(UpsertPoint {
+                        id: point.id.clone(),
+                        vector: point.vector,
+                        payload: point.payload.clone(),
+                    }),
+                    CoordinateDisposition::Unchanged => {}
+                    CoordinateDisposition::Conflict => {
+                        return Err(HttpProviderError::ImmutableVector);
+                    }
+                }
+            }
+            if due_points.is_empty() {
+                continue;
+            }
+            let submitted = due_points.len();
+            let body = UpsertRequest { points: due_points };
             let response = require_success(
                 self.transport.request(
                     Method::Put,
@@ -246,12 +289,48 @@ impl QdrantHttpClient {
                 )?,
             )?;
             completed(&response.body)?;
+            points += submitted;
             batches += 1;
         }
-        Ok(QdrantMutationReceipt {
-            points: documents.len(),
-            batches,
-        })
+        Ok(QdrantMutationReceipt { points, batches })
+    }
+
+    fn retrieve_coordinate_keys(
+        &self,
+        binding: Binding,
+        points: &[UpsertPoint<'_>],
+    ) -> Result<HashMap<PhysicalPointId, String>, HttpProviderError> {
+        let body = RetrieveRequest {
+            ids: points.iter().map(|point| point.id.clone()).collect(),
+            with_payload: true,
+            with_vector: false,
+        };
+        let response = require_success(self.transport.request(
+            Method::Post,
+            &self.transport.collection_url("/points"),
+            Some(&body),
+        )?)?;
+        let decoded: RetrieveResponse = decode(&response.body)?;
+        let expected_ids: HashSet<_> = points.iter().map(|point| point.id.clone()).collect();
+        let mut observed = HashMap::new();
+        for point in decoded.result {
+            if !expected_ids.contains(&point.id) {
+                return Err(HttpProviderError::BindingMismatch);
+            };
+            let Some(payload) = point.payload else {
+                return Err(HttpProviderError::BindingMismatch);
+            };
+            let Some(candidate) = payload.candidate() else {
+                return Err(HttpProviderError::BindingMismatch);
+            };
+            if !payload.matches_binding(binding)
+                || point.id != PhysicalPointId::for_candidate(binding, candidate)
+            {
+                return Err(HttpProviderError::BindingMismatch);
+            }
+            observed.insert(point.id, payload.coordinate_key);
+        }
+        Ok(observed)
     }
 
     /// Deletes logical candidate IDs in independently bounded, idempotent batches.
@@ -551,6 +630,9 @@ pub enum HttpProviderError {
     /// Request, document, payload, cursor, or projection binding disagrees.
     #[error("Qdrant request binding mismatch")]
     BindingMismatch,
+    /// An existing point already stores different coordinates.
+    #[error("Qdrant point already stores a different vector")]
+    ImmutableVector,
     /// Actual remote point count does not cover the publication.
     #[error("Qdrant projection contains {observed} points; expected {expected}")]
     IncompleteProjection {
@@ -650,6 +732,21 @@ struct UpsertPoint<'a> {
 struct DeleteRequest {
     points: Vec<PhysicalPointId>,
 }
+#[derive(Serialize)]
+struct RetrieveRequest {
+    ids: Vec<PhysicalPointId>,
+    with_payload: bool,
+    with_vector: bool,
+}
+#[derive(Deserialize)]
+struct RetrieveResponse {
+    result: Vec<RetrievedPoint>,
+}
+#[derive(Deserialize)]
+struct RetrievedPoint {
+    id: PhysicalPointId,
+    payload: Option<PointPayload>,
+}
 #[derive(Deserialize)]
 struct OperationResponse {
     result: OperationResult,
@@ -709,10 +806,12 @@ struct PointPayload {
     read_manifest: String,
     frontier: String,
     candidate: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    coordinate_key: String,
 }
 
 impl PointPayload {
-    fn for_candidate(binding: Binding, candidate: CandidateId) -> Self {
+    fn for_candidate(binding: Binding, candidate: CandidateId, values: &[f32]) -> Self {
         Self {
             workspace: hex(binding.workspace.as_bytes()),
             root: hex(binding.root.as_bytes()),
@@ -721,6 +820,7 @@ impl PointPayload {
             read_manifest: hex(binding.read_manifest.as_bytes()),
             frontier: hex(binding.frontier.as_bytes()),
             candidate: format!("{:016x}", candidate.0),
+            coordinate_key: coordinate_key(values),
         }
     }
 
@@ -781,7 +881,7 @@ impl BindingFilter {
 /// The logical candidate remains the extension's compact `u64` relation key. It must not be
 /// used directly as Qdrant's physical ID because separate workspace generations share one
 /// collection and could otherwise overwrite each other before payload validation.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 struct PhysicalPointId(String);
 
@@ -824,6 +924,35 @@ fn hex(bytes: &[u8]) -> String {
         result.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     result
+}
+
+fn coordinate_key(values: &[f32]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.qdrant.coordinate-key.v1\0");
+    let len = u32::try_from(values.len()).unwrap_or(u32::MAX);
+    hasher.update(&len.to_le_bytes());
+    for value in values {
+        hasher.update(&value.to_le_bytes());
+    }
+    hex(hasher.finalize().as_bytes())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CoordinateDisposition {
+    /// Absent, or present without a coordinate key (legacy point). Write it.
+    Due,
+    /// Present and the coordinate key matches. Do not PUT.
+    Unchanged,
+    /// Present with a different coordinate key. Vectors are immutable.
+    Conflict,
+}
+
+fn coordinate_disposition(expected: &str, observed: Option<&str>) -> CoordinateDisposition {
+    match observed {
+        None | Some("") => CoordinateDisposition::Due,
+        Some(key) if key == expected => CoordinateDisposition::Unchanged,
+        Some(_) => CoordinateDisposition::Conflict,
+    }
 }
 
 #[cfg(test)]
