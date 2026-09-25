@@ -359,14 +359,26 @@ pub fn parse_pyproject_toml(text: &str) -> ExtractedFacts {
 /// entry, a requirement with no name, or a name the grammar rejects is
 /// dropped. The result is sorted and de-duplicated.
 pub fn requires_dist_names(body: &[u8]) -> Vec<String> {
+    requires_dist_edges(body)
+        .into_iter()
+        .map(|edge| edge.name.to_string())
+        .collect()
+}
+
+/// Direct `requires_dist` edges. The text after the name is the requirement.
+///
+/// The same inclusion rules as [`requires_dist_names`]. A repeated canonical
+/// name keeps the first row. A marker that names `extra` sets the optional bit.
+#[must_use]
+pub fn requires_dist_edges(body: &[u8]) -> Vec<crate::record::DepEdge> {
     pypi_release(body).0
 }
 
-/// Dependency names and the sdist SHA-256 from one PyPI version JSON body.
+/// Dependency edges and the sdist SHA-256 from one PyPI version JSON body.
 ///
 /// The checksum is the `sdist` file's `digests.sha256` when that field is 64
 /// hex. A wheel digest is not the version's source artifact.
-pub fn pypi_release(body: &[u8]) -> (Vec<String>, Option<String>) {
+pub fn pypi_release(body: &[u8]) -> (Vec<crate::record::DepEdge>, Option<String>) {
     #[derive(serde::Deserialize)]
     struct Body {
         info: Option<Info>,
@@ -402,21 +414,23 @@ pub fn pypi_release(body: &[u8]) -> (Vec<String>, Option<String>) {
     let Some(requirements) = parsed.info.and_then(|info| info.requires_dist) else {
         return (Vec::new(), checksum);
     };
-    let mut names: Vec<String> = requirements
-        .into_iter()
-        .flatten()
-        .filter_map(|requirement| pep508_name(&requirement))
-        .filter_map(|token| Python::parse_name(&token))
-        .map(|parsed| Python::render_canonical(&parsed))
-        .collect();
-    names.sort();
-    names.dedup();
-    (names, checksum)
+    let mut edges: Vec<crate::record::DepEdge> = Vec::new();
+    for requirement in requirements.into_iter().flatten() {
+        let Some(edge) = pep508_edge(&requirement) else {
+            continue;
+        };
+        if edges.iter().any(|kept| kept.name == edge.name) {
+            continue;
+        }
+        edges.push(edge);
+    }
+    edges.sort_by(|left, right| left.name.cmp(&right.name));
+    (edges, checksum)
 }
 
-/// Extract the package name from a PEP 508 requirement string.
+/// Leading name token of a PEP 508 requirement.
 fn pep508_name(dep: &str) -> Option<String> {
-    let name: &str = dep
+    let name = dep
         .split(['[', '>', '<', '=', '!', ';', ' ', '\t'])
         .next()?;
     if name.is_empty() {
@@ -424,6 +438,25 @@ fn pep508_name(dep: &str) -> Option<String> {
     } else {
         Some(name.to_owned())
     }
+}
+
+/// One PEP 508 requirement as a runtime edge.
+///
+/// Everything after the name token is the requirement, kept as written. A
+/// marker that names `extra` is an optional install.
+fn pep508_edge(dep: &str) -> Option<crate::record::DepEdge> {
+    let dep = dep.trim();
+    let name = pep508_name(dep)?;
+    let parsed = Python::parse_name(&name)?;
+    let mut edge = crate::record::DepEdge::runtime(Python::render_canonical(&parsed));
+    let rest = dep[name.len()..].trim();
+    if !rest.is_empty() {
+        edge.requirement = Some(rest.into());
+        edge.optional = rest
+            .split_once(';')
+            .is_some_and(|(_, marker)| marker.split_whitespace().any(|token| token == "extra"));
+    }
+    Some(edge)
 }
 
 /// Parse a `PKG-INFO` (email-header style) file.
@@ -1068,6 +1101,14 @@ file = "LICENSE.txt"
             "foo-bar".to_owned(),
             "requests".to_owned()
         ]);
+        let edges = requires_dist_edges(body);
+        assert_eq!(
+            edges[0].requirement.as_deref(),
+            Some("[extra]>=1; extra == 'x'")
+        );
+        assert!(edges[0].optional);
+        assert_eq!(edges[1].requirement.as_deref(), Some(">=2"));
+        assert!(!edges[1].optional);
         assert!(requires_dist_names(b"{}").is_empty());
         assert!(requires_dist_names(b"not-json").is_empty());
     }
@@ -1081,8 +1122,14 @@ file = "LICENSE.txt"
                 {{"packagetype":"sdist","digests":{{"sha256":"{hex}"}}}}
             ]}}"#
         );
-        let (names, checksum) = pypi_release(body.as_bytes());
-        assert_eq!(names, vec!["requests".to_owned()]);
+        let (edges, checksum) = pypi_release(body.as_bytes());
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.name.to_string())
+                .collect::<Vec<_>>(),
+            vec!["requests".to_owned()]
+        );
         assert_eq!(checksum.as_deref(), Some(hex.as_str()));
         let wheel_only = format!(
             r#"{{"urls":[{{"packagetype":"bdist_wheel","digests":{{"sha256":"{hex}"}}}}]}}"#

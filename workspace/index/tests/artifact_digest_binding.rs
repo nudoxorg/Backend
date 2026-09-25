@@ -139,10 +139,9 @@ fn a_pypi_sdist_sha256_binds_through_the_follower_merge() {
     };
     merge_document_facts(&mut held, pypi_document_facts(body.as_bytes()));
     assert_eq!(held.checksum(), Some("ab".repeat(32).as_str()));
-    assert_eq!(
-        held.dependencies(),
-        &index::record::runtime_edges_from_names(&["charset-normalizer", "urllib3"])[..]
-    );
+    let mut expected = index::record::runtime_edges_from_names(&["charset-normalizer", "urllib3"]);
+    expected[1].requirement = Some(">=1.21.1".into());
+    assert_eq!(held.dependencies(), expected.as_slice());
 
     let record = published_from(&event, heart::Language::Python);
     let mut catalog = VersionedCatalog::open().expect("catalog");

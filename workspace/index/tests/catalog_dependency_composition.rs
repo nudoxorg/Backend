@@ -5,7 +5,9 @@
 //! parser drops must stay dropped in the sweep.
 
 use index::{
-    ecosystem::{Language, pom_dependency_names, require_names, requires_dist_names},
+    ecosystem::{
+        Language, pom_dependency_names, require_names, requires_dist_edges, requires_dist_names,
+    },
     engine::turso_vc::{FactWrite, VersionedCatalog},
     record::{PackageRecord, edge_names_agree},
     search::ranking::dependents::{DependencyRow, count_dependents},
@@ -54,6 +56,8 @@ fn four_manifests_agree_on_one_dependents_sweep() {
         "rsc.io/quote".to_owned()
     ]);
     assert_eq!(python, vec!["foo-bar".to_owned(), "requests".to_owned()]);
+    let python_edges = requires_dist_edges(pypi);
+    assert_eq!(python_edges[1].requirement.as_deref(), Some(">=2.0"));
     assert_eq!(rust, vec!["serde".to_owned()]);
 
     let counts = count_dependents([
@@ -90,7 +94,18 @@ fn four_manifests_agree_on_one_dependents_sweep() {
     let records = [
         published,
         PackageRecord::published(Language::Go, "example.com/app", "v0.1.0", &go),
-        PackageRecord::published(Language::Python, "app", "1.0.0", &python),
+        PackageRecord::from_parts(
+            Language::Python,
+            "app",
+            "1.0.0",
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            python_edges,
+        ),
         PackageRecord::published(Language::Rust, "app", "1.0.0", &rust),
     ];
     let mut first_java = None;
@@ -153,5 +168,15 @@ fn four_manifests_agree_on_one_dependents_sweep() {
             .expect("java")
             .runtime_names(),
         vec!["org.slf4j:slf4j-api"]
+    );
+    assert_eq!(
+        versions
+            .materialize("python", "app", "1.0.0")
+            .expect("join")
+            .expect("python")
+            .edges[1]
+            .requirement
+            .as_deref(),
+        Some(">=2.0")
     );
 }

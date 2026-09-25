@@ -164,11 +164,11 @@ fn month_number(name: &str) -> Option<u8> {
     })
 }
 
-/// Dependency names and the sdist SHA-256 from a PyPI version JSON body.
+/// Dependency edges and the sdist SHA-256 from a PyPI version JSON body.
 pub fn document_facts(body: &[u8]) -> DocumentFacts {
     let (dependencies, checksum) = crate::ecosystem::pypi_release(body);
     DocumentFacts {
-        dependencies: crate::record::runtime_edges_from_names(&dependencies),
+        dependencies,
         checksum,
     }
 }

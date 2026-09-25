@@ -42,7 +42,7 @@ pub use go::{
 };
 pub use heart::Language;
 pub use java::{pom_dependency_edges, pom_dependency_names};
-pub use python::{pypi_release, requires_dist_names};
+pub use python::{pypi_release, requires_dist_edges, requires_dist_names};
 
 use core::marker::PhantomData;
 
