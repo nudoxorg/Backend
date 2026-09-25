@@ -16,19 +16,26 @@ pub mod go_index;
 pub mod maven_search;
 pub mod npm_changes;
 pub mod nuget_catalog;
+pub mod percent;
 pub mod pypi_updates;
 
-pub use catalog::{CatalogBatch, CatalogCursor, CatalogEvent, CatalogFollower, PollFuture};
+pub use catalog::{
+    CatalogBatch, CatalogCursor, CatalogEvent, CatalogFollower, PollFuture,
+    attach_document_dependencies,
+};
 pub use crates_catalog::CratesCatalogFollower;
 pub use go_index::GoIndexFollower;
 pub use maven_search::MavenSearchFollower;
 pub use npm_changes::NpmChangesFollower;
 pub use nuget_catalog::NuGetCatalogFollower;
+pub use percent::path_segment;
 pub use pypi_updates::PypiUpdatesFollower;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use tokio::sync::Mutex;
@@ -230,9 +237,9 @@ fn backoff(attempt: u32, url: &str) -> Duration {
     // Simple hash for deterministic jitter: fold url bytes + attempt.
     let hash: u64 = url
         .bytes()
-        .fold(u64::from(attempt) ^ 0xDEAD_BEEF, |acc, b| {
+        .fold(u64::from(attempt) ^ 0xdead_beef, |acc, b| {
             acc.wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(u64::from(b) ^ 0x1405_7B7E_F767_814F)
+                .wrapping_add(u64::from(b) ^ 0x1405_7b7e_f767_814f)
         });
     // jitter: ±25% of base_ms.
     let jitter_range = base_ms / 4;

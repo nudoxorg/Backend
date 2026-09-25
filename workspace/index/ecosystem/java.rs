@@ -2,8 +2,7 @@
 
 use smol_str::SmolStr;
 
-use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::{Reader, events::Event};
 
 use crate::ecosystem::{
     EcosystemSpec, Language,
@@ -38,7 +37,8 @@ impl EcosystemSpec for Java {
 
     fn parse_name(raw: &str) -> Option<name::StructuredName> {
         // Two forms accepted:
-        //   1. bare `artifactId`  — legacy form (what `canonicalize_maven_artifact` accepted)
+        //   1. bare `artifactId`  — legacy form (what `canonicalize_maven_artifact`
+        //      accepted)
         //   2. `groupId:artifactId` — new capability; `:` is the NEW separator
         //
         // Both sides: ASCII alphanumeric + `-`/`_`/`.`, starts and ends alphanumeric.
@@ -336,6 +336,106 @@ pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
     })
 }
 
+/// Direct `group:artifact` names from a POM, sorted and de-duplicated.
+///
+/// A dependency counts when its parent element is `dependencies` and no
+/// ancestor is `dependencyManagement`, `plugin`, or `pluginManagement`.
+/// `test`, `provided`, and `system` scopes are omitted. A missing group or
+/// artifact, or a document that is not XML, yields an empty list.
+#[must_use]
+pub fn pom_dependency_names(bytes: &[u8]) -> Vec<String> {
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(true);
+    let mut path: Vec<String> = Vec::new();
+    let mut tag = String::new();
+    let mut group: Option<String> = None;
+    let mut artifact: Option<String> = None;
+    let mut scope: Option<String> = None;
+    let mut names = Vec::new();
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref element)) => {
+                let local = local_xml_name(element.local_name().as_ref());
+                path.push(local.clone());
+                tag = local;
+                if tag == "dependency" {
+                    group = None;
+                    artifact = None;
+                    scope = None;
+                }
+            }
+            Ok(Event::End(ref element)) => {
+                let local = local_xml_name(element.local_name().as_ref());
+                if local == "dependency"
+                    && let Some(name) =
+                        direct_pom_dep(&path, group.take(), artifact.take(), scope.take())
+                {
+                    names.push(name);
+                }
+                path.pop();
+                tag = path.last().cloned().unwrap_or_default();
+            }
+            Ok(Event::Text(ref element)) => {
+                if let Ok(text) = element.unescape() {
+                    let text = text.trim();
+                    if text.is_empty() {
+                        buf.clear();
+                        continue;
+                    }
+                    if path.iter().any(|part| part == "dependency") {
+                        match tag.as_str() {
+                            "groupid" => group = Some(text.to_owned()),
+                            "artifactid" => artifact = Some(text.to_owned()),
+                            "scope" => scope = Some(text.to_ascii_lowercase()),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => return Vec::new(),
+            _ => {}
+        }
+        buf.clear();
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn local_xml_name(bytes: &[u8]) -> String {
+    std::str::from_utf8(bytes)
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+fn direct_pom_dep(
+    path: &[String],
+    group: Option<String>,
+    artifact: Option<String>,
+    scope: Option<String>,
+) -> Option<String> {
+    let parent = path.get(path.len().saturating_sub(2))?;
+    if parent != "dependencies" {
+        return None;
+    }
+    if path.iter().any(|part| {
+        matches!(
+            part.as_str(),
+            "dependencymanagement" | "plugin" | "pluginmanagement"
+        )
+    }) {
+        return None;
+    }
+    if matches!(scope.as_deref(), Some("test" | "provided" | "system")) {
+        return None;
+    }
+    let group = group.filter(|name| !name.is_empty())?;
+    let artifact = artifact.filter(|name| !name.is_empty())?;
+    Some(format!("{group}:{artifact}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +511,33 @@ mod tests {
     fn parse_pom_xml_malformed_does_not_panic() {
         let xml = b"<broken xml <<< ";
         let _ = parse_pom_xml(xml);
+    }
+
+    #[test]
+    fn pom_dependency_names_keep_direct_compile_edges_only() {
+        let xml = br#"<?xml version="1.0"?>
+<project>
+  <dependencies>
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
+    <dependency><groupId>junit</groupId><artifactId>junit</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
+    <dependency><groupId></groupId><artifactId>blank</artifactId></dependency>
+  </dependencies>
+  <dependencyManagement>
+    <dependencies>
+      <dependency><groupId>com.managed</groupId><artifactId>bom</artifactId></dependency>
+    </dependencies>
+  </dependencyManagement>
+  <build><plugins><plugin>
+    <dependencies>
+      <dependency><groupId>com.plugin</groupId><artifactId>tool</artifactId></dependency>
+    </dependencies>
+  </plugin></plugins></build>
+</project>"#;
+        assert_eq!(pom_dependency_names(xml), vec![
+            "org.slf4j:slf4j-api".to_owned()
+        ]);
+        assert!(pom_dependency_names(b"<broken").is_empty());
     }
 
     #[test]

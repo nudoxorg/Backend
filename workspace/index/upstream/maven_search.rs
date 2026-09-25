@@ -9,7 +9,10 @@
 use crate::ecosystem::Language;
 use serde::Deserialize;
 
-use super::catalog::{CatalogBatch, CatalogCursor, CatalogEvent};
+use super::{
+    catalog::{CatalogBatch, CatalogCursor, CatalogEvent, attach_document_dependencies},
+    path_segment,
+};
 use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};
 
 const DEFAULT_BASE: &str = "https://search.maven.org/solrsearch/select";
@@ -82,6 +85,28 @@ pub fn parse_search(body: &[u8], since_ms: i64) -> Result<SearchPage, UpstreamEr
     })
 }
 
+/// Maven Central POM for a `group:artifact` coordinate.
+///
+/// Dots in the group become path separators before each piece is encoded.
+/// `None` when the name is not `group:artifact` or any piece is empty.
+#[must_use]
+pub fn pom_url(name: &str, version: &str) -> Option<String> {
+    let (group, artifact) = name.split_once(':')?;
+    if group.is_empty() || artifact.is_empty() || version.is_empty() {
+        return None;
+    }
+    let group_path = group
+        .split('.')
+        .map(path_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    let artifact = path_segment(artifact);
+    let version = path_segment(version);
+    Some(format!(
+        "https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/{artifact}-{version}.pom"
+    ))
+}
+
 fn cursor_ms(cursor: &CatalogCursor) -> i64 {
     match &cursor.0 {
         serde_json::Value::Number(number) => number.as_i64().unwrap_or(0),
@@ -119,7 +144,15 @@ impl MavenSearchFollower {
             self.base, since_ms
         );
         let bytes = client.get(Language::Java, &url).await?;
-        let page = parse_search(&bytes, since_ms)?;
+        let mut page = parse_search(&bytes, since_ms)?;
+        attach_document_dependencies(
+            client,
+            Language::Java,
+            &mut page.events,
+            pom_url,
+            crate::ecosystem::pom_dependency_names,
+        )
+        .await;
         Ok(CatalogBatch {
             events: page.events,
             next: CatalogCursor(serde_json::Value::from(page.latest_ms)),
@@ -169,5 +202,19 @@ mod tests {
         assert!(page.events.is_empty());
         assert!(page.exhausted);
         assert_eq!(page.latest_ms, 200);
+    }
+
+    #[test]
+    fn pom_url_splits_the_group_and_encodes_each_segment() {
+        assert_eq!(
+            pom_url("org.slf4j:slf4j-api", "2.0.9").as_deref(),
+            Some("https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.pom")
+        );
+        assert_eq!(
+            pom_url("com.example:lib+extra", "1.0").as_deref(),
+            Some("https://repo1.maven.org/maven2/com/example/lib%2Bextra/1.0/lib%2Bextra-1.0.pom")
+        );
+        assert!(pom_url("nosplit", "1.0").is_none());
+        assert!(pom_url("g:", "1.0").is_none());
     }
 }

@@ -118,6 +118,37 @@ pub struct CatalogBatch {
 // The trait
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Fill [`CatalogEvent::Published::dependencies`] from a second document.
+///
+/// `url_for` returns `None` when the coordinate cannot name a document; that
+/// event keeps the list it already has. A failed fetch does the same. A
+/// successful body replaces the list with `names_from`. Withdrawn events are
+/// skipped. Feeds whose manifest rides in the page itself do not call this.
+pub async fn attach_document_dependencies(
+    client: &crate::upstream::UpstreamClient,
+    language: Language,
+    events: &mut [CatalogEvent],
+    url_for: impl Fn(&str, &str) -> Option<String>,
+    names_from: impl Fn(&[u8]) -> Vec<String>,
+) {
+    for event in events {
+        let CatalogEvent::Published {
+            name,
+            version,
+            dependencies,
+        } = event
+        else {
+            continue;
+        };
+        let Some(url) = url_for(name, version) else {
+            continue;
+        };
+        if let Ok(body) = client.get(language, &url).await {
+            *dependencies = names_from(&body);
+        }
+    }
+}
+
 /// A boxed, object-safe future that drives one `poll` call.
 pub type PollFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CatalogBatch, UpstreamError>> + Send + 'a>>;

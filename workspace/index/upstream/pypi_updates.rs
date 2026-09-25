@@ -9,7 +9,10 @@
 
 use crate::ecosystem::Language;
 
-use super::catalog::{CatalogBatch, CatalogCursor, CatalogEvent};
+use super::{
+    catalog::{CatalogBatch, CatalogCursor, CatalogEvent, attach_document_dependencies},
+    path_segment,
+};
 use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};
 
 const DEFAULT_URL: &str = "https://pypi.org/rss/updates.xml";
@@ -158,19 +161,6 @@ fn month_number(name: &str) -> Option<u8> {
     })
 }
 
-fn path_segment(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for byte in raw.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
 fn cursor_since(cursor: &CatalogCursor) -> String {
     match &cursor.0 {
         serde_json::Value::String(text) => text.clone(),
@@ -204,24 +194,20 @@ impl PypiUpdatesFollower {
         let since = cursor_since(cursor);
         let bytes = client.get(Language::Python, &self.url).await?;
         let mut page = parse_updates(&bytes, &since)?;
-        for event in &mut page.events {
-            let CatalogEvent::Published {
-                name,
-                version,
-                dependencies,
-            } = event
-            else {
-                continue;
-            };
-            let url = format!(
-                "https://pypi.org/pypi/{}/{}/json",
-                path_segment(name),
-                path_segment(version)
-            );
-            if let Ok(body) = client.get(Language::Python, &url).await {
-                *dependencies = crate::ecosystem::requires_dist_names(&body);
-            }
-        }
+        attach_document_dependencies(
+            client,
+            Language::Python,
+            &mut page.events,
+            |name, version| {
+                Some(format!(
+                    "https://pypi.org/pypi/{}/{}/json",
+                    path_segment(name),
+                    path_segment(version)
+                ))
+            },
+            crate::ecosystem::requires_dist_names,
+        )
+        .await;
         let next = if page.latest.is_empty() {
             cursor.clone()
         } else {

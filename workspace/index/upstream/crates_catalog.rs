@@ -37,7 +37,10 @@
 use crate::ecosystem::Language;
 use serde::Deserialize;
 
-use super::catalog::{CatalogBatch, CatalogCursor, CatalogEvent};
+use super::{
+    catalog::{CatalogBatch, CatalogCursor, CatalogEvent},
+    path_segment,
+};
 use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};
 
 /// crates.io new-crates endpoint.
@@ -236,19 +239,6 @@ pub fn normal_dependency_names(body: &[u8]) -> Vec<String> {
     names.sort();
     names.dedup();
     names
-}
-
-fn path_segment(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for byte in raw.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

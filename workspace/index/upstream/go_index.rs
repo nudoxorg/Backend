@@ -9,7 +9,10 @@
 use crate::ecosystem::Language;
 use serde::Deserialize;
 
-use super::catalog::{CatalogBatch, CatalogCursor, CatalogEvent};
+use super::{
+    catalog::{CatalogBatch, CatalogCursor, CatalogEvent, attach_document_dependencies},
+    path_segment,
+};
 use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};
 
 const DEFAULT_BASE: &str = "https://index.golang.org";
@@ -72,19 +75,6 @@ pub fn parse_index(body: &[u8], since: &str) -> Result<IndexPage, UpstreamError>
     })
 }
 
-fn path_segment(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for byte in raw.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
 fn cursor_since(cursor: &CatalogCursor) -> String {
     match &cursor.0 {
         serde_json::Value::String(text) => text.clone(),
@@ -123,26 +113,24 @@ impl GoIndexFollower {
         };
         let bytes = client.get(Language::Go, &url).await?;
         let mut page = parse_index(&bytes, &since)?;
-        for event in &mut page.events {
-            let CatalogEvent::Published {
-                name,
-                version,
-                dependencies,
-            } = event
-            else {
-                continue;
-            };
-            let escaped = crate::ecosystem::escape_module_path(name);
-            let url = format!(
-                "https://proxy.golang.org/{escaped}/@v/{}.mod",
-                path_segment(version)
-            );
-            if let Ok(body) = client.get(Language::Go, &url).await
-                && let Ok(text) = std::str::from_utf8(&body)
-            {
-                *dependencies = crate::ecosystem::require_names(text);
-            }
-        }
+        attach_document_dependencies(
+            client,
+            Language::Go,
+            &mut page.events,
+            |name, version| {
+                let escaped = crate::ecosystem::escape_module_path(name);
+                Some(format!(
+                    "https://proxy.golang.org/{escaped}/@v/{}.mod",
+                    path_segment(version)
+                ))
+            },
+            |body| {
+                std::str::from_utf8(body)
+                    .map(crate::ecosystem::require_names)
+                    .unwrap_or_default()
+            },
+        )
+        .await;
         let next = if page.latest.is_empty() {
             cursor.clone()
         } else {
