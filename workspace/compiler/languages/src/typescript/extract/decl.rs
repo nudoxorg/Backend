@@ -1538,7 +1538,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
                 value_ty: lower_ts_type(&idx.type_annotation.type_annotation, source),
                 readonly: idx.readonly,
                 is_static: idx.r#static,
-                doc: jsdoc::jsdoc_for_span(semantic, idx_span).doc,
+                doc: signature_doc(&jsdoc::jsdoc_for_span(semantic, idx_span)),
                 span_start: idx_span.start,
                 span_end: idx_span.end,
             })
@@ -1925,7 +1925,7 @@ fn lower_interface<'a>(
                     this_ty,
                     abstract_construct: false,
                     body_text: None,
-                    leading_doc: jsdoc::jsdoc_for_span(semantic, c_span).doc,
+                    leading_doc: signature_doc(&jsdoc::jsdoc_for_span(semantic, c_span)),
                     span_start: c_span.start,
                     span_end: c_span.end,
                 });
@@ -1946,7 +1946,7 @@ fn lower_interface<'a>(
                         value_ty,
                         readonly: idx.readonly,
                         is_static: idx.r#static,
-                        doc: jsdoc::jsdoc_for_span(semantic, idx_span).doc,
+                        doc: signature_doc(&jsdoc::jsdoc_for_span(semantic, idx_span)),
                         span_start: idx_span.start,
                         span_end: idx_span.end,
                     });
@@ -1976,7 +1976,7 @@ fn lower_interface<'a>(
                     this_ty: None,
                     abstract_construct: false,
                     body_text: None,
-                    leading_doc: jsdoc::jsdoc_for_span(semantic, cs_span).doc,
+                    leading_doc: signature_doc(&jsdoc::jsdoc_for_span(semantic, cs_span)),
                     span_start: cs_span.start,
                     span_end: cs_span.end,
                 });
@@ -2460,6 +2460,27 @@ fn ts_accessibility(acc: &Option<TSAccessibility>) -> Accessibility {
         Some(TSAccessibility::Protected) => Accessibility::Protected,
         _ => Accessibility::Public,
     }
+}
+
+fn signature_doc(doc: &super::DocFacts) -> Option<String> {
+    let mut text = String::new();
+    if let Some(body) = &doc.doc {
+        text.push_str(body);
+    }
+    if let Some(deprecation) = &doc.deprecation {
+        text.push_str("~dep:");
+        if let Some(note) = &deprecation.note {
+            text.push_str(note);
+        }
+        if let Some(since) = &deprecation.since {
+            text.push('@');
+            text.push_str(since);
+        }
+    }
+    if doc.ignore {
+        text.push_str("~ignore");
+    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn binding_pattern_name(pat: &BindingPattern<'_>, source: &str) -> Option<String> {

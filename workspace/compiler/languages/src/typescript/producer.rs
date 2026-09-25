@@ -807,6 +807,30 @@ mod tests {
                 "I",
             ),
             (
+                "call-deprecated",
+                "namespace N { export interface I { /** @deprecated a */ (x: string): void; } }\n\
+                 namespace N { export interface I { /** @deprecated b */ (x: string): void; } }\n",
+                "I",
+            ),
+            (
+                "construct-deprecated",
+                "namespace N { export interface I { /** @deprecated a */ new (x: string): I; } }\n\
+                 namespace N { export interface I { /** @deprecated b */ new (x: string): I; } }\n",
+                "I",
+            ),
+            (
+                "index-deprecated",
+                "namespace N { export interface I { /** @deprecated a */ [k: string]: string; } }\n\
+                 namespace N { export interface I { /** @deprecated b */ [k: string]: string; } }\n",
+                "I",
+            ),
+            (
+                "call-ignore",
+                "namespace N { export interface I { /** @ignore */ (x: string): void; } }\n\
+                 namespace N { export interface I { (x: string): void; } }\n",
+                "I",
+            ),
+            (
                 "docs",
                 "namespace N { /** one */ export interface I { x: string; } }\n\
                  namespace N { /** two */ export interface I { x: string; } }\n",
