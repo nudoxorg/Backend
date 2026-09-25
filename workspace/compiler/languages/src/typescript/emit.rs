@@ -941,6 +941,10 @@ fn emit_type_alias(
             declare_nested_params(&id, &id, "then", then_ty, out, names);
             declare_nested_params(&id, &id, "else", else_ty, out, names);
         }
+        TypeOwned::Mapped { source, value, .. } => {
+            declare_nested_params(&id, &id, "source", source, out, names);
+            declare_nested_params(&id, &id, "value", value, out, names);
+        }
         _ => {}
     }
 }
@@ -1115,6 +1119,24 @@ fn declare_nested_params(
                 owner,
                 &format!("{param_name}::else"),
                 else_ty,
+                out,
+                names,
+            );
+        }
+        TypeOwned::Mapped { source, value, .. } => {
+            declare_nested_params(
+                alias,
+                owner,
+                &format!("{param_name}::source"),
+                source,
+                out,
+                names,
+            );
+            declare_nested_params(
+                alias,
+                owner,
+                &format!("{param_name}::value"),
+                value,
                 out,
                 names,
             );

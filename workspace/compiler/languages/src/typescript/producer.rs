@@ -2291,6 +2291,38 @@ mod tests {
     }
 
     #[test]
+    fn a_mapped_type_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"mapped-fn","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export type Bag = { [Key in string]: (left: number) => void };\n\
+             export type Wrap = (cb: { [Key in string]: (right: number) => void }) => void;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "mapped-fn", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("mapped-fn"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function type inside a mapped type must seal");
+        for name in ["left", "right"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
