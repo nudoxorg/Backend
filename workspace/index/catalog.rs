@@ -481,16 +481,36 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     /// facet write emits an outbox row, so the tantivy sync refolds exactly the
     /// packages whose counts moved.
     pub async fn refresh_dependents(&self) -> Result<u64, IndexError> {
-        use crate::search::ranking::dependents::{DependencyRow, count_dependents};
+        use std::collections::HashMap;
+
+        use crate::search::ranking::dependents::{DependencyRow, count_dependents, names_for_sweep};
 
         let pages = self.collect_facet_pages()?;
+        let mut edges_by_version: HashMap<PackageId, Vec<smol_str::SmolStr>> = HashMap::new();
+        for (version, name) in lifecycle::scan_runtime_edges(self.engine())? {
+            edges_by_version
+                .entry(version)
+                .or_default()
+                .push(smol_str::SmolStr::new(name));
+        }
         let rows: Vec<DependencyRow> = pages
             .iter()
-            .filter_map(|(_, ecosystem, name, facets)| {
+            .filter_map(|(package, ecosystem, name, facets)| {
+                let runtime = edges_by_version
+                    .get(package)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let facet_names = facets
+                    .as_ref()
+                    .map(|facets| facets.dependencies.as_slice())
+                    .unwrap_or(&[]);
+                if facets.is_none() && runtime.is_empty() {
+                    return None;
+                }
                 Some(DependencyRow {
                     ecosystem: *ecosystem,
                     name: name.clone(),
-                    dependencies: facets.as_ref()?.dependencies.clone(),
+                    dependencies: names_for_sweep(runtime, facet_names),
                 })
             })
             .collect();

@@ -3,11 +3,12 @@
 //!
 //! # How the signal reaches ranking
 //!
-//! 1. **Ingest** stores each package's direct deps in
-//!    [`SearchFacets::dependencies`](crate::metadata::SearchFacets::dependencies).
-//! 2. **Sweep** ([`crate::index::Index::refresh_dependents`]) builds
-//!    [`DependencyRow`]s from those facets, runs [`count_dependents`], and
-//!    writes the per-package in-degree back to
+//! 1. **Ingest** stores each package's direct deps as catalog `edges` and, as
+//!    a projection, on [`SearchFacets::dependencies`](crate::metadata::SearchFacets::dependencies).
+//! 2. **Sweep** ([`crate::catalog::GlobalStore::refresh_dependents`]) builds
+//!    [`DependencyRow`]s with [`names_for_sweep`]: runtime edges in the
+//!    package's own ecosystem when any exist, otherwise the facet names.
+//!    [`count_dependents`] then writes the in-degree back to
 //!    [`SearchFacets::dependents`](crate::metadata::SearchFacets::dependents).
 //! 3. **Search candidate build** (`search/mod.rs`) copies `facets.dependents`
 //!    onto [`ranking::Candidate::dependents`]. When downloads are absent,
@@ -25,8 +26,22 @@ pub struct DependencyRow {
     pub ecosystem: Language,
     /// Canonical lowercase package name.
     pub name: SmolStr,
-    /// Lowercase direct-dependency names (from `SearchFacets::dependencies`).
+    /// Lowercase direct-dependency names the sweep counts.
     pub dependencies: Vec<SmolStr>,
+}
+
+/// Names one version contributes to the in-degree sweep.
+///
+/// Runtime edges in the version's own ecosystem are the graph. Facet names
+/// are used only when that version stored no such edge, so a row written
+/// before feed edges existed still counts, and a leftover facet name cannot
+/// increment beside a real edge.
+pub fn names_for_sweep(runtime_edges: &[SmolStr], facet_names: &[SmolStr]) -> Vec<SmolStr> {
+    if runtime_edges.is_empty() {
+        facet_names.to_vec()
+    } else {
+        runtime_edges.to_vec()
+    }
 }
 
 /// Count direct dependents per `(ecosystem, name)`. Each depending package
@@ -54,6 +69,18 @@ mod tests {
             name: SmolStr::new(name),
             dependencies: deps.iter().map(|&d| SmolStr::new(d)).collect(),
         }
+    }
+
+    #[test]
+    fn edges_replace_facets_and_an_empty_edge_list_keeps_facets() {
+        let serde = SmolStr::new("serde");
+        let leftover = SmolStr::new("leftover");
+        let tokio = SmolStr::new("tokio");
+        let with_edges = names_for_sweep(&[serde.clone()], &[leftover.clone(), serde.clone()]);
+        let facet_only = names_for_sweep(&[], &[tokio.clone()]);
+        assert_eq!(with_edges, vec![serde]);
+        assert_eq!(facet_only, vec![tokio]);
+        assert!(!with_edges.contains(&leftover));
     }
 
     #[test]

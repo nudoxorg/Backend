@@ -9,7 +9,9 @@ use sea_orm::{
 };
 
 use crate::engine::{self, CatalogEngine};
-use crate::entity::{facets, generations, listing_events, packages, symbols_proj, versions};
+use crate::entity::{
+    edges, facets, generations, listing_events, packages, symbols_proj, versions,
+};
 use crate::enums::{IrStatus, OutboxOperation, ParseState, SinkKind, TextEnum};
 use crate::ids::{GenerationStamp, IntroIdHash, PackageId};
 use crate::store::MetaError;
@@ -538,6 +540,42 @@ pub fn scan_version_facets<E: CatalogEngine>(
             row.get_text(2)?,
             row.get_optional_text(3)?,
         ))
+    })
+    .map_err(MetaError::from)
+}
+
+/// Runtime edges whose `dep_ecosystem` is the dependent package's ecosystem.
+///
+/// Cross-ecosystem names and non-runtime kinds stay out: the sweep keys
+/// targets by the depender's language, so those rows must not increment it.
+pub fn scan_runtime_edges<E: CatalogEngine>(
+    engine: &E,
+) -> Result<Vec<(PackageId, String)>, MetaError> {
+    use sea_orm::sea_query::Query;
+
+    let mut select = Query::select();
+    select
+        .column((edges::Entity, edges::Column::DependentVersion))
+        .column((edges::Entity, edges::Column::DepNameCanonical))
+        .from(edges::Entity)
+        .inner_join(
+            versions::Entity,
+            Expr::col((edges::Entity, edges::Column::DependentVersion))
+                .equals((versions::Entity, versions::Column::Id)),
+        )
+        .inner_join(
+            packages::Entity,
+            Expr::col((versions::Entity, versions::Column::StemId))
+                .equals((packages::Entity, packages::Column::StemId)),
+        )
+        .and_where(Expr::col((edges::Entity, edges::Column::Kind)).eq("runtime"))
+        .and_where(
+            Expr::col((edges::Entity, edges::Column::DepEcosystem))
+                .equals((packages::Entity, packages::Column::Ecosystem)),
+        );
+    crate::engine::stmt::query_select(engine, select, &mut |row| {
+        let id = version_id_from_blob(&row.get_blob(0)?)?;
+        Ok((id, row.get_text(1)?))
     })
     .map_err(MetaError::from)
 }
