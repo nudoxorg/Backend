@@ -34,7 +34,7 @@
 pub const SCHEMA_CARD: &str = r#"# graph_query reference card
 
 Complete queryable surface, stated once each. Full `schema.graphql` SDL:
-call `graph_schema` again with `full: true`, or read `nudox://schema`.
+call `schema` again with `full: true`, or read `nudox://schema`.
 
 Root (`type RootSchemaQuery`): `Packages: [Package!]!`, `Symbols: [Symbol!]!`.
 

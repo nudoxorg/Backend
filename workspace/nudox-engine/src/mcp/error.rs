@@ -373,7 +373,7 @@ impl McpError {
                 Some("Pick from data.validKinds, case-insensitive.")
             }
             Self::InvalidArgument { argument, .. } if *argument == "packages" => Some(
-                "Each entry must be an 'ecosystem:name' lineage from list_packages, e.g. \
+                "Each entry must be an 'ecosystem:name' lineage from `packages`, e.g. \
                  \"cargo:serde\".",
             ),
             Self::InvalidArgument { argument, .. } if *argument == "cursor" => Some(
@@ -381,7 +381,7 @@ impl McpError {
                  construct or edit one.",
             ),
             Self::InvalidArgument { argument, .. } if *argument == "query" => {
-                Some("Call graph_schema for the queryable types and edges, then retry.")
+                Some("Call `schema` for the queryable types and edges, then retry.")
             }
             // No next step beyond what `message` says: these need no `help`.
             Self::InvalidArgument { .. } | Self::Unauthenticated |
@@ -395,26 +395,26 @@ Self::Serve(_) => None,
                  manifest, a missing toolchain) is fixed and the package is reloaded."
                 } else {
                     "This lineage was never loaded, or never existed under this exact \
-                 'ecosystem:name' spelling. Call list_packages to see what is actually loaded."
+                 'ecosystem:name' spelling. Call `packages` to see what is actually loaded."
                 })
             }
             Self::Engine(EngineError::SymbolNotFound { possibly_stale }) => {
                 Some(if possibly_stale.is_some() {
                     "This key resolves under a different loaded generation of the same package — see \
                  data.engine.possibly_stale. It may not have survived a select_version switch \
-                 rather than having been deleted; re-search by name with search_symbols, or call \
-                 diff_versions to see what it became."
+                 rather than having been deleted; re-search by name with `search`, or call \
+                 `diff` to see what it became."
                 } else {
-                    "Re-search by name with search_symbols rather than assuming this key still \
+                    "Re-search by name with `search` rather than assuming this key still \
                  identifies a declaration — it may have been renamed, removed, or never existed."
                 })
             }
             Self::Engine(EngineError::GraphQueryFailed { position, .. }) => {
                 Some(if position.is_some() {
                     "Fix the query at data.engine.position (1-based line:column) and retry. Call \
-                 graph_schema first if the problem is an unfamiliar type or edge name."
+                 `schema` first if the problem is an unfamiliar type or edge name."
                 } else {
-                    "Call graph_schema for the exact type, edge, and property names this query must \
+                    "Call `schema` for the exact type, edge, and property names this query must \
                  be written against, then retry."
                 })
             }
@@ -423,30 +423,30 @@ Self::Serve(_) => None,
                 crate::mcp::address::ResolveOutcome::Ambiguous { .. } => {
                     "See data.candidates for every match. Add a `[kind]` qualifier (e.g. \
                      `[method]`) to the address's last segment to disambiguate, or copy the exact \
-                     `#hash` from search_symbols instead of composing the address by hand."
+                     `#hash` from `search` instead of composing the address by hand."
                 }
                 crate::mcp::address::ResolveOutcome::NotFound { .. } => {
-                    "See data.nearMisses for names close to what you typed. Call search_symbols \
+                    "See data.nearMisses for names close to what you typed. Call `search` \
                      to find the exact declaration rather than guessing at the path."
                 }
                 crate::mcp::address::ResolveOutcome::PackageNotIndexed { .. } => {
                     "See data.residentSimilar for loaded packages with a similar name. Call \
-                     list_packages for the exact 'ecosystem:name' spelling, or index_package if \
+                     `packages` for the exact 'ecosystem:name' spelling, or `index` if \
                      this package genuinely is not loaded yet."
                 }
                 crate::mcp::address::ResolveOutcome::VersionMismatch { .. } => {
                     "See data.resident for the versions actually loaded. Drop the '@version' to \
-                     use whichever generation is current, or call list_versions first."
+                     use whichever generation is current, or call `packages` first."
                 }
                 crate::mcp::address::ResolveOutcome::StaleKey => {
                     "The '#hash' half decoded but does not name a live declaration in this \
-                     package/version. Re-search by name with search_symbols rather than reusing \
+                     package/version. Re-search by name with `search` rather than reusing \
                      a hash from a different generation."
                 }
                 crate::mcp::address::ResolveOutcome::AddressConflict { .. } => {
                     "The address's sym-path and its '#hash' disagree about which declaration is \
                      meant. Drop one half and retry: the path alone if you are unsure of the \
-                     hash, or the hash alone (search_symbols/get_symbol) if you trust it."
+                     hash, or the hash alone (`search` or `read`) if you trust it."
                 }
                 crate::mcp::address::ResolveOutcome::ParseError { .. } => {
                     "See data.offset for the exact byte position that failed to parse. This is a \
@@ -831,7 +831,10 @@ mod tests {
         let data = assert_structured(err);
         assert!(data["engine"]["possibly_stale"].is_null());
         let help = data["help"].as_str().expect("help must be present");
-        assert!(help.contains("search_symbols"));
+        assert!(
+            help.contains("`search`") && !help.contains("search_symbols"),
+            "help must name the public search tool, got {help:?}"
+        );
     }
 
     #[test]

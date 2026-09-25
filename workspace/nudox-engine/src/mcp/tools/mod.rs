@@ -1616,7 +1616,7 @@ impl NudoxTools {
         if args.query.trim().is_empty() {
             return Err(McpError::InvalidArgument {
                 argument: "query",
-                reason: "must not be empty; call graph_schema for the queryable types".to_owned(),
+                reason: "must not be empty; call `schema` for the queryable types".to_owned(),
             });
         }
         let limit = clamp_limit(args.limit);

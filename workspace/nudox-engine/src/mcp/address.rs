@@ -1248,7 +1248,7 @@ fn build_candidate_row(pkg: &PackageView, style: PathStyle, intro: IntroId) -> C
 fn refine_hint(candidates: &[Candidate]) -> String {
     format!(
         "{} candidates share this path. Add a `[kind]` qualifier (e.g. `[method]`) to the last \
-         segment, or resolve via search_symbols and address the exact `#hash` instead.",
+         segment, or resolve via `search` and address the exact `#hash` instead.",
         candidates.len()
     )
 }
