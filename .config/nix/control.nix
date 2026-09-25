@@ -581,8 +581,11 @@ in
             # measured 160.0s, 172.4s, 150.5s+ and a 180.0s kill across four
             # runs; `rust_hrtb_where_predicates_lower_into_the_free_lane`
             # 129.3s, 140.1s, 172.3s; `rust_impl_signature_key_dedups_twins_and_keeps_siblings`
-            # 126.3s. The override therefore names the binary.
-            filter = "binary(rust_remaining_terminals)";
+            # 126.3s. The override therefore names every test in the binary.
+            # nextest rejects the whole config when a `binary()` or
+            # `binary_id()` filter matches no binary, which is exactly the
+            # case in the control-plane fixture workspace, so name the tests.
+            filter = "test(/^(rust_remaining_lowering_crates_lower|rust_empty_crate_roots_are_the_typed_terminal|rust_macro_only_crate_roots_lower_with_macro_rows|rust_cfg_disabled_items_do_not_leak|rust_hrtb_where_predicates_lower_into_the_free_lane|rust_impl_self_type_names_discriminate_generic_argument_variants|rust_impl_signature_key_dedups_twins_and_keeps_siblings|rust_foreign_row_capacity_measures_real_corpus_demand|rust_gated_and_facade_crate_roots_admit_the_empty_product|diag_bisect_ga)$/)";
             test-group = "native-compiler";
             threads-required = 2;
             priority = 90;
@@ -601,7 +604,7 @@ in
             # (debug build, gate environment, idle machine): "finished in
             # 452.29s"; per crate 14.4-21.0s, backend-semantic 92.7s. The
             # budget is about twice that measurement to absorb gate load.
-            filter = "binary_id(backend-engine::rust_corpus) & test(twenty_real_crates_compile_with_decoded_lanes)";
+            filter = "test(=twenty_real_crates_compile_with_decoded_lanes)";
             test-group = "native-compiler";
             threads-required = 2;
             priority = 90;
@@ -644,7 +647,7 @@ in
             # the same uncached rust-analyzer sysroot bootstrap, but its name
             # misses every native-compiler filter. Build 2321 killed it at
             # the closure default of 60s x 3 = 180s.
-            filter = "binary_id(backend-semantic::render_snapshot_corpus) & test(render_snapshot_rust)";
+            filter = "test(=render_snapshot_rust)";
             test-group = "native-compiler";
             threads-required = 2;
             priority = 90;
