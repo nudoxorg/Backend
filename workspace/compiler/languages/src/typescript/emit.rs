@@ -1377,19 +1377,42 @@ fn emit_reexports(
         // `export * as ns from "m"` arrives here with import name `"*"`.
         // The target is the module root, never a symbol named `"*"`.
         if target_name == "*" {
+            let sym =
+                reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
+            let reexport_id = vacant_reexport_id(
+                out,
+                twins.canonical(&module.path),
+                export_name.as_str(),
+                0,
+            );
             if let Some(p) = target_path.as_ref() {
                 let root = TsId::new(twins.canonical(p).to_path_buf(), MODULE_ROOT_NAME, 0);
                 let target_ref = refer_declared(out, declared, root);
-                let sym =
-                    reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
-                let reexport_id = vacant_reexport_id(
-                    out,
-                    twins.canonical(&module.path),
-                    export_name.as_str(),
-                    0,
-                );
+                let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
+            } else if is_package_specifier(&indirect.module_request) {
+                let target_ref = out.refer_import(package_foreign_key(
+                    &indirect.module_request,
+                    MODULE_ROOT_NAME,
+                ));
                 let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
             }
+            continue;
+        }
+
+        if target_path.is_none() && is_package_specifier(&indirect.module_request) {
+            let sym =
+                reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
+            let reexport_id = vacant_reexport_id(
+                out,
+                twins.canonical(&module.path),
+                export_name.as_str(),
+                0,
+            );
+            let target_ref = out.refer_import(package_foreign_key(
+                &indirect.module_request,
+                target_name,
+            ));
+            let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
             continue;
         }
 

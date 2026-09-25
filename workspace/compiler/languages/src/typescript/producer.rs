@@ -1555,6 +1555,42 @@ mod tests {
     }
 
     #[test]
+    fn a_named_reexport_of_a_package_is_a_foreign_reference() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"reexport-pkg","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export { pad } from \"left-pad\";\nexport * as right from \"right-pad\";\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "reexport-pkg", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("reexport-pkg"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a package reexport must seal");
+        let pad = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "pad" && matches!(entry.kind(), EntryInner::Reference(_))
+            })
+            .count();
+        assert_eq!(pad, 1, "export {{ pad }} from a package must reference that package");
+        let right = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "right" && matches!(entry.kind(), EntryInner::Reference(_))
+            })
+            .count();
+        assert_eq!(right, 1, "export * as from a package must reference that package");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.
