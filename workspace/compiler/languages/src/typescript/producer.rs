@@ -1433,6 +1433,33 @@ mod tests {
     }
 
     #[test]
+    fn an_import_equals_require_is_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"import-eq","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "import Foo = require(\"left-pad\");\nexport = Foo;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "import-eq", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("import-eq"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("import equals must seal");
+        let foos = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "Foo" && matches!(entry.kind(), EntryInner::Reference(_))
+            })
+            .count();
+        assert_eq!(foos, 1, "import Foo = require must reference the package");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.

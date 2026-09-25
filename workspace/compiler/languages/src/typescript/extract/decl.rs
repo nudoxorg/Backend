@@ -25,7 +25,8 @@ use oxc_ast::{
         CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
         Function, MethodDefinitionKind, MethodDefinitionType, PropertyDefinitionType, PropertyKey,
         Statement, TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
-        TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName, TSSignature,
+        TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName, TSModuleReference,
+        TSSignature,
         VariableDeclaration, VariableDeclarationKind,
     },
 };
@@ -931,6 +932,35 @@ fn extract_statement<'a>(
                 exported_names,
                 name_counts,
             )
+        }
+
+        Statement::TSImportEqualsDeclaration(import) => {
+            let TSModuleReference::ExternalModuleReference(external) = &import.module_reference
+            else {
+                return vec![];
+            };
+            let name = import.id.name.to_string();
+            let span = import.span();
+            let decl_index = bump_count(&name, name_counts);
+            let is_exported = exported_names.contains(&name);
+            vec![DeclFact {
+                name,
+                visibility: if is_exported {
+                    nudox_ir::entry::Visibility::Public
+                } else {
+                    nudox_ir::entry::Visibility::Private
+                },
+                doc: jsdoc::jsdoc_for_span(semantic, span),
+                body: DeclBody::Reexport {
+                    module_request: external.expression.value.to_string(),
+                    import_name: "*".to_string(),
+                },
+                module: path.to_path_buf(),
+                span_start: span.start,
+                span_end: span.end,
+                is_default: false,
+                decl_index,
+            }]
         }
 
         Statement::TSModuleDeclaration(m) => {
