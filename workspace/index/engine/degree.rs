@@ -104,9 +104,17 @@ fn apply_diff(
 }
 
 fn counting_names(tips: &[EdgeTip], ecosystem: &str, package: &str) -> BTreeSet<SmolStr> {
+    let package = package.trim();
     tips.iter()
-        .filter(|tip| tip_counts(tip, ecosystem) && tip.name.as_str() != package)
-        .map(|tip| tip.name.clone())
+        .filter(|tip| tip_counts(tip, ecosystem))
+        .filter_map(|tip| {
+            let name = tip.name.trim();
+            if name.is_empty() || name == package {
+                None
+            } else {
+                Some(SmolStr::new(name))
+            }
+        })
         .collect()
 }
 
@@ -207,11 +215,10 @@ impl VersionedCatalog {
             let Some(tips) = self.edge_tips.get(pid) else {
                 continue;
             };
-            let dependencies: Vec<SmolStr> = tips
-                .iter()
-                .filter(|tip| tip_counts(tip, key.ecosystem.as_str()))
-                .map(|tip| tip.name.clone())
-                .collect();
+            let dependencies: Vec<SmolStr> =
+                counting_names(tips, key.ecosystem.as_str(), key.package.as_str())
+                    .into_iter()
+                    .collect();
             if dependencies.is_empty() {
                 continue;
             }

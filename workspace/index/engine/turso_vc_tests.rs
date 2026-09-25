@@ -762,3 +762,27 @@ fn a_feed_snapshot_wins_when_the_record_still_names_the_old_runtime_edge() {
     ]);
     assert_eq!(catalog.dependents(), catalog.dependents_from_tips());
 }
+
+#[test]
+fn a_padded_runtime_name_counts_once_and_a_blank_name_does_not() {
+    use crate::record::PackageRecord;
+    use heart::Language;
+
+    let mut catalog = VersionedCatalog::open().expect("open");
+    let mut record = PackageRecord::published(Language::Rust, "app", "1.0.0", &[" serde "]);
+    record.edges.push(crate::record::DepEdge::runtime(""));
+    record.edges.push(crate::record::DepEdge::runtime("   "));
+    record.edges.push(crate::record::DepEdge::runtime("app"));
+    catalog.put_record(&record).expect("seed");
+    assert_eq!(
+        catalog.dependents().get(&(Language::Rust, "serde".into())),
+        Some(&1)
+    );
+    assert!(
+        catalog
+            .dependents()
+            .keys()
+            .all(|(_, name)| !name.is_empty())
+    );
+    assert_eq!(catalog.dependents(), catalog.dependents_from_tips());
+}
