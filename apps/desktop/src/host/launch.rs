@@ -78,7 +78,11 @@ fn run(opened: Opened) {
                 // product state owner below it.
                 cx.new(|cx| gpui_component::Root::new(root, window, cx).bordered(false))
             }) {
+                // Without a window there is nothing to use or close; quit
+                // rather than linger as an invisible process.
                 eprintln!("backend-desktop: open window: {error}");
+                cx.quit();
+                return;
             }
             cx.activate(true);
         });

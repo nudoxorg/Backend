@@ -47,11 +47,25 @@ fn wait_for_x11(xvfb: &mut ChildGuard) {
     }
 }
 
-fn visible_window(pid: u32) -> String {
+/// The desktop writes its diagnostics to a file rather than a pipe: nothing
+/// drains a pipe while the window is awaited, so a chatty startup would block
+/// on a full pipe and never map its window.
+fn desktop_log(log: &Path) -> String {
+    fs::read_to_string(log).unwrap_or_else(|error| format!("<unreadable desktop log: {error}>"))
+}
+
+fn visible_window(desktop: &mut Child, log: &Path) -> String {
+    let pid = desktop.id().to_string();
     let deadline = Instant::now() + DEADLINE;
     loop {
+        if let Some(status) = desktop.try_wait().expect("poll desktop") {
+            panic!(
+                "backend-desktop exited with {status} before publishing a window:\n{}",
+                desktop_log(log)
+            );
+        }
         let output = Command::new("xdotool")
-            .args(["search", "--onlyvisible", "--pid", &pid.to_string()])
+            .args(["search", "--onlyvisible", "--pid", &pid])
             .env("DISPLAY", DISPLAY)
             .output()
             .expect("query visible desktop window");
@@ -64,7 +78,8 @@ fn visible_window(pid: u32) -> String {
         }
         assert!(
             Instant::now() < deadline,
-            "backend-desktop did not publish a visible X11 window"
+            "backend-desktop did not publish a visible X11 window:\n{}",
+            desktop_log(log)
         );
         thread::sleep(Duration::from_millis(50));
     }
@@ -111,7 +126,7 @@ fn linux_desktop_opens_captures_and_closes_a_real_window() {
         Command::new("Xvfb")
             .args([DISPLAY, "-screen", "0", "1280x720x24", "-nolisten", "tcp"])
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .expect("spawn Xvfb"),
     );
@@ -122,7 +137,7 @@ fn linux_desktop_opens_captures_and_closes_a_real_window() {
             .env("HOME", &home)
             .env("XDG_RUNTIME_DIR", &runtime)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .expect("spawn Openbox"),
     );
@@ -132,6 +147,8 @@ fn linux_desktop_opens_captures_and_closes_a_real_window() {
         "Openbox exited before the desktop launch"
     );
 
+    let log = root.join("desktop.log");
+    let log_file = fs::File::create(&log).expect("create desktop log");
     let mut desktop = ChildGuard(
         Command::new(env!("CARGO_BIN_EXE_backend-desktop"))
             .current_dir(&project)
@@ -144,13 +161,14 @@ fn linux_desktop_opens_captures_and_closes_a_real_window() {
             .env("LIBGL_ALWAYS_SOFTWARE", "1")
             .env("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe")
             .env("NO_AT_BRIDGE", "1")
+            .env("RUST_BACKTRACE", "1")
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(log_file)
             .spawn()
             .expect("spawn backend-desktop"),
     );
 
-    let window = visible_window(desktop.0.id());
+    let window = visible_window(&mut desktop.0, &log);
     let screenshot = root.join("desktop.png");
     let capture = Command::new("import")
         .args(["-display", DISPLAY, "-window", &window])
@@ -179,11 +197,10 @@ fn linux_desktop_opens_captures_and_closes_a_real_window() {
     if !wait_for_exit(&mut desktop.0, Duration::from_secs(10)) {
         let _ = desktop.0.kill();
         let _ = desktop.0.wait();
-        let mut stderr = String::new();
-        if let Some(stream) = desktop.0.stderr.as_mut() {
-            let _ = stream.read_to_string(&mut stderr);
-        }
-        panic!("backend-desktop did not exit after window close: {stderr}");
+        panic!(
+            "backend-desktop did not exit after window close:\n{}",
+            desktop_log(&log)
+        );
     }
 
     drop(desktop);
