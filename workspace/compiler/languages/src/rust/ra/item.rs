@@ -2258,13 +2258,24 @@ pub(crate) fn declare_params(
 ) -> Vec<Ref<Param>> {
     params
         .iter()
-        .map(|pd| {
-            let param_id = RaId::from(format!("{fn_id}::param::{}", pd.name).as_str());
+        .enumerate()
+        .map(|(index, pd)| {
+            // `_` is legal any number of times in one signature. A real
+            // parameter name never contains `:`, so `_:{index}` cannot collide
+            // with a parameter the source actually named.
+            let blank = pd.name.is_empty() || pd.name == "_";
+            let id_name = if blank {
+                format!("_:{index}")
+            } else {
+                pd.name.clone()
+            };
+            let param_id = RaId::from(format!("{fn_id}::param::{id_name}").as_str());
             let param_body = Param::builder()
                 .maybe_ty(pd.ty.clone())
                 .attributes(pd.attributes.iter().copied())
                 .build();
-            let param_sym = plain_sym(&pd.name);
+            let shown = if blank { "_" } else { pd.name.as_str() };
+            let param_sym = plain_sym(shown);
             ctx.check_unique(&param_id);
             out.declare_at(
                 param_id.clone(),

@@ -176,8 +176,14 @@ fn lower_input_params(
         .iter()
         .enumerate()
         .map(|(i, p)| {
+            // A wildcard (`_`) is `Pat::Wild`, so `Param::name` is `None`.
+            // It is not a missing name to invent (`_0`), and it is not unique:
+            // `fn take(_: u8, _0: u16)` would otherwise declare both parameters
+            // as `{fn}::param::_0`. The display name stays `_`; `declare_params`
+            // puts the index in the id.
             let name = p
-                .name(ctx.db).map_or_else(|| format!("_{i}"), |n| n.as_str().to_owned());
+                .name(ctx.db)
+                .map_or_else(|| "_".to_owned(), |n| n.as_str().to_owned());
             // The HIR reports more parameters than the AST produced types for,
             // which only happens on source that did not parse cleanly.
             let param_ty = ast_tys.get(i).cloned().unwrap_or(Type::ORACLE_GAP);

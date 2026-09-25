@@ -309,6 +309,62 @@ fn a_new_unrelated_sibling_does_not_change_existing_functions_param_ids() {
     }
 }
 
+/// Wildcard parameters do not bind, so one signature may repeat `_`.
+///
+/// Inventing `_0` for a missing binding collides with a parameter the source
+/// actually named `_0` (`fn clash(_: u8, _0: u16)`). Both parameters must be
+/// declared, and a wildcard's display name stays `_`.
+const WILDCARDS: &str = r#"
+pub fn take(_: u8, _: u16) -> u8 {
+    0
+}
+
+pub fn clash(_: u8, _0: u16) -> u16 {
+    _0
+}
+"#;
+
+fn param_names(table: &PristineIntroTable, fn_name: &str) -> Vec<String> {
+    let (_, func_entry) = table
+        .iter()
+        .find(|(_, e)| {
+            e.sym().name == fn_name && matches!(e.kind(), EntryInner::Owned(Kind::Function(_)))
+        })
+        .unwrap_or_else(|| panic!("function `{fn_name}` must be declared"));
+    let EntryInner::Owned(Kind::Function(f)) = func_entry.kind() else {
+        unreachable!("filtered above")
+    };
+    f.input_params
+        .iter()
+        .map(|r| match r {
+            Ref::Intro(id) => table
+                .get(*id)
+                .map(|entry| entry.sym().name.clone())
+                .unwrap_or_else(|| panic!("`{fn_name}` param {id:?} missing from the table")),
+            other => panic!("`{fn_name}` param ref did not seal to Ref::Intro: {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn repeated_wildcard_params_both_survive() {
+    let table = lower(
+        "nudox_fixture_param_identity_wildcards",
+        "nudox_fixture_param_identity_wildcards",
+        WILDCARDS,
+    );
+    assert_eq!(
+        param_names(&table, "take"),
+        ["_", "_"],
+        "both wildcards of `take` must keep the source name `_`"
+    );
+    assert_eq!(
+        param_names(&table, "clash"),
+        ["_", "_0"],
+        "a wildcard must not take the id of a parameter named `_0`"
+    );
+}
+
 /// Determinism: lowering and sealing the exact same source twice must yield
 /// the exact same `IntroId` for a given param. A real fix and the escalation
 /// mask both satisfy this in isolation (escalation is deterministic given a
