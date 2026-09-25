@@ -450,13 +450,33 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             .package_dependencies(&source)
             .await
             .expect("forward");
-        assert_eq!(forward.edges.as_ref(), &[edge]);
+        assert_eq!(forward.edges.as_ref(), &[edge.clone()]);
         let reverse = projection
             .package_dependents(&target)
             .await
             .expect("reverse");
         assert_eq!(reverse.edges.len(), 1);
         assert_eq!(reverse.edges[0].source, source);
+        let facts_version = edge.facts_version;
+        let (rowid, stored_root) = stored_edge(&projection, &facts_version).await;
+        let moved = view_state_root(&[("graph".to_owned(), "moved".to_owned())]);
+        assert_eq!(
+            projection
+                .synchronize_package_graph(moved, &facts)
+                .await
+                .expect("move graph root"),
+            ProjectionUpdate::Rebuilt { rows: 1 }
+        );
+        let (rowid_after, stored_root_after) = stored_edge(&projection, &facts_version).await;
+        assert_eq!(rowid_after, rowid);
+        assert_eq!(stored_root_after, stored_root);
+        assert_eq!(stored_root.as_slice(), view.root().as_bytes());
+        let moved_forward = projection
+            .package_dependencies(&source)
+            .await
+            .expect("forward after root move");
+        assert_eq!(moved_forward.root.as_ref(), moved.as_bytes());
+        assert_eq!(moved_forward.edges.as_ref(), &[edge]);
         let unknown = vec![(
             target.clone(),
             DependencyFacts::Unavailable(ProductText::new("metadata timeout").expect("reason")),
@@ -473,8 +493,44 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             .state
             .expect("state row");
         assert_eq!(state.kind, 2);
+        assert_eq!(
+            projection
+                .package_dependencies(&target)
+                .await
+                .expect("state root")
+                .root
+                .as_ref(),
+            next.as_bytes()
+        );
+        let gone = projection
+            .package_dependencies(&source)
+            .await
+            .expect("removed edge");
+        assert!(gone.edges.is_empty());
         std::fs::remove_file(&path).expect("remove projection");
     });
+}
+
+async fn stored_edge(projection: &TursoProjection, edge_id: &[u8; 32]) -> (i64, Vec<u8>) {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT rowid, root FROM backend_projection_package_edges WHERE edge_id = ?1",
+            turso::params![edge_id.as_slice()],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("edge query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("edge next: {error}"))
+        .unwrap_or_else(|| panic!("missing edge"));
+    (
+        row.get(0)
+            .unwrap_or_else(|error| panic!("edge rowid: {error}")),
+        row.get(1)
+            .unwrap_or_else(|error| panic!("edge root: {error}")),
+    )
 }
 
 #[test]
