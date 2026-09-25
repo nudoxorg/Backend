@@ -189,24 +189,7 @@ pub fn parse_cargo_toml(text: &str) -> ExtractedFacts {
             .unwrap_or_default()
     };
 
-    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
-    if let Some(table) = value.get("dependencies").and_then(toml::Value::as_table) {
-        for (name, spec) in table {
-            let (requirement, optional) = match spec {
-                toml::Value::String(requirement) => (Some(requirement.as_str()), false),
-                toml::Value::Table(fields) => (
-                    fields.get("version").and_then(toml::Value::as_str),
-                    fields
-                        .get("optional")
-                        .and_then(toml::Value::as_bool)
-                        .unwrap_or(false),
-                ),
-                _ => (None, false),
-            };
-            fold.observe(name, requirement, optional);
-        }
-    }
-    let dependencies = fold.finish();
+    let dependencies = cargo_dependency_edges(&value);
 
     let repository = string_field("repository").filter(|s| !s.is_empty());
     let license_expr = string_field("license").filter(|s| !s.is_empty());
@@ -222,6 +205,81 @@ pub fn parse_cargo_toml(text: &str) -> ExtractedFacts {
         license: license_expr,
         has_license_file,
         dependencies,
+    }
+}
+
+fn cargo_dependency_edges(value: &toml::Value) -> Vec<crate::record::DepEdge> {
+    use crate::{enums::EdgeKind, record::DepClass};
+
+    let mut edges = Vec::new();
+    push_cargo_table(
+        &mut edges,
+        value.get("dev-dependencies"),
+        DepClass::Dev,
+        EdgeKind::Build,
+    );
+    push_cargo_table(
+        &mut edges,
+        value.get("build-dependencies"),
+        DepClass::Build,
+        EdgeKind::Build,
+    );
+    push_cargo_table(
+        &mut edges,
+        value.get("dependencies"),
+        DepClass::Runtime,
+        EdgeKind::Runtime,
+    );
+    edges.sort_by(|left, right| left.name.cmp(&right.name));
+    edges
+}
+
+fn push_cargo_table(
+    edges: &mut Vec<crate::record::DepEdge>,
+    table: Option<&toml::Value>,
+    class: crate::record::DepClass,
+    kind: crate::enums::EdgeKind,
+) {
+    let Some(table) = table.and_then(toml::Value::as_table) else {
+        return;
+    };
+    for (name, spec) in table {
+        let (requirement, optional) = match spec {
+            toml::Value::String(requirement) => (Some(requirement.as_str()), false),
+            toml::Value::Table(fields) => (
+                fields.get("version").and_then(toml::Value::as_str),
+                fields
+                    .get("optional")
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(false),
+            ),
+            _ => (None, false),
+        };
+        let mut edge = crate::record::DepEdge::runtime(name);
+        if name.is_empty() {
+            continue;
+        }
+        edge.class = class;
+        edge.kind = kind;
+        edge.optional = optional && class == crate::record::DepClass::Runtime;
+        if let Some(requirement) = requirement.map(str::trim).filter(|text| !text.is_empty()) {
+            edge.requirement = Some(requirement.into());
+        }
+        if let Some(existing) = edges.iter_mut().find(|stored| stored.name == edge.name) {
+            if cargo_rank(edge.class) > cargo_rank(existing.class) {
+                *existing = edge;
+            }
+            continue;
+        }
+        edges.push(edge);
+    }
+}
+
+fn cargo_rank(class: crate::record::DepClass) -> u8 {
+    match class {
+        crate::record::DepClass::Runtime => 2,
+        crate::record::DepClass::Build => 1,
+        _ => 0,
     }
 }
 
@@ -303,6 +361,48 @@ serde = { version = "1.0", features = ["derive"] }
             .expect("serde");
         assert_eq!(serde.requirement.as_deref(), Some("1.0"));
         assert!(!serde.optional);
+    }
+
+    #[test]
+    fn dev_and_build_dependencies_keep_their_class() {
+        let toml = r#"
+[package]
+name = "my-crate"
+version = "0.1.0"
+
+[dependencies]
+tokio = "1"
+
+[dev-dependencies]
+tokio = "1"
+criterion = "0.5"
+
+[build-dependencies]
+cc = "1"
+"#;
+        let facts = parse_cargo_toml(toml);
+        let tokio = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "tokio")
+            .expect("tokio");
+        assert_eq!(tokio.class, crate::record::DepClass::Runtime);
+        assert_eq!(tokio.kind, crate::enums::EdgeKind::Runtime);
+        let criterion = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "criterion")
+            .expect("criterion");
+        assert_eq!(criterion.class, crate::record::DepClass::Dev);
+        assert_eq!(criterion.kind, crate::enums::EdgeKind::Build);
+        assert_eq!(criterion.requirement.as_deref(), Some("0.5"));
+        let cc = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "cc")
+            .expect("cc");
+        assert_eq!(cc.class, crate::record::DepClass::Build);
+        assert_eq!(cc.kind, crate::enums::EdgeKind::Build);
     }
 
     #[test]
