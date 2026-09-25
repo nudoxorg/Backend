@@ -17,12 +17,13 @@ use crate::record::{DepEdge, PackageRecord};
 
 pub use edge_fact::{EdgeFact, EdgeSync};
 
-/// One package fact. Primary key is `(ecosystem, name, version)`.
+/// One package fact. Primary key is the opaque version PID.
 ///
+/// `ecosystem`, `name`, and `version` are the coordinate that seeded the PID.
 /// `body` is the identity [`PackageRecord`] JSON. `payload_hash` is its BLAKE3.
-/// An unchanged hash does not create a new revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageFact {
+    pub version_pid: String,
     pub ecosystem: String,
     pub name: String,
     pub version: String,
@@ -31,9 +32,15 @@ pub struct PackageFact {
 }
 
 impl VersionedRow for PackageFact {
-    const COLUMNS: &'static [&'static str] =
-        &["ecosystem", "name", "version", "payload_hash", "body"];
-    const PK: &'static [&'static str] = &["ecosystem", "name", "version"];
+    const COLUMNS: &'static [&'static str] = &[
+        "version_pid",
+        "ecosystem",
+        "name",
+        "version",
+        "payload_hash",
+        "body",
+    ];
+    const PK: &'static [&'static str] = &["version_pid"];
     const TABLE: &'static str = "package_facts";
 
     fn from_row(row: &VcRow) -> Result<Self, OrmError> {
@@ -45,16 +52,18 @@ impl VersionedRow for PackageFact {
                 .ok_or_else(|| OrmError::Decode(format!("package_facts.{field}")))
         };
         Ok(Self {
-            ecosystem: text(0, "ecosystem")?,
-            name: text(1, "name")?,
-            version: text(2, "version")?,
-            payload_hash: text(3, "payload_hash")?,
-            body: text(4, "body")?,
+            version_pid: text(0, "version_pid")?,
+            ecosystem: text(1, "ecosystem")?,
+            name: text(2, "name")?,
+            version: text(3, "version")?,
+            payload_hash: text(4, "payload_hash")?,
+            body: text(5, "body")?,
         })
     }
 
     fn into_row(&self) -> VcRow {
         VcRow::new(vec![
+            VcValue::Text(self.version_pid.clone()),
             VcValue::Text(self.ecosystem.clone()),
             VcValue::Text(self.name.clone()),
             VcValue::Text(self.version.clone()),
@@ -65,8 +74,6 @@ impl VersionedRow for PackageFact {
 }
 
 impl PackageFact {
-    /// Encode `record` as the row body. Edges are stored on `package_edges`,
-    /// so the hash covers identity and metadata only.
     pub fn from_record(record: &PackageRecord) -> Result<Self, OrmError> {
         let mut identity = record.clone();
         identity.edges.clear();
@@ -74,6 +81,11 @@ impl PackageFact {
             .map_err(|err| OrmError::Decode(format!("package record json: {err}")))?;
         let payload_hash = blake3::hash(body.as_bytes()).to_hex().to_string();
         Ok(Self {
+            version_pid: edge_fact::version_pid_of(
+                record.ecosystem.as_token(),
+                record.canonical_name.as_str(),
+                record.version.as_str(),
+            ),
             ecosystem: record.ecosystem.as_token().to_owned(),
             name: record.canonical_name.to_string(),
             version: record.version.to_string(),
@@ -82,7 +94,6 @@ impl PackageFact {
         })
     }
 
-    /// Decode the stored [`PackageRecord`].
     pub fn to_record(&self) -> Result<PackageRecord, OrmError> {
         serde_json::from_str(&self.body)
             .map_err(|err| OrmError::Decode(format!("package record json: {err}")))
@@ -92,13 +103,10 @@ impl PackageFact {
 /// Result of writing a package record into the versioned catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FactWrite {
-    /// The tip already stores this payload hash. No new revision.
     Unchanged,
-    /// A new row revision was committed.
     Revised(CommitId),
 }
 
-/// Dependency names and hashes for one package version, in first-seen order.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PackageKey {
     ecosystem: SmolStr,
@@ -116,31 +124,30 @@ struct EdgeTip {
 /// In-memory versioned catalog on branch `main`.
 pub struct VersionedCatalog {
     db: VersionedDb,
-    /// Tip hashes for one package version. A requirement change looks here
-    /// instead of walking every edge row in the catalog.
-    edge_tips: BTreeMap<PackageKey, Vec<EdgeTip>>,
+    /// Coordinate to version PID. Kept after a drop so an as-of read still
+    /// names the row.
+    coords: BTreeMap<PackageKey, SmolStr>,
+    edge_tips: BTreeMap<SmolStr, Vec<EdgeTip>>,
 }
 
 impl VersionedCatalog {
-    /// Open an empty catalog on branch `main`.
     pub fn open() -> OrmResult<Self> {
         let mut db = VersionedDb::new("main")?;
         db.store_mut().config_set("user.name", "index");
         db.store_mut().config_set("user.email", "index@nudox.local");
         Ok(Self {
             db,
+            coords: BTreeMap::new(),
             edge_tips: BTreeMap::new(),
         })
     }
 
-    /// Insert or replace one fact and commit that row. Returns the new
-    /// revision.
     pub fn upsert(&mut self, fact: &PackageFact) -> OrmResult<CommitId> {
+        self.coords
+            .insert(coordinate(fact), SmolStr::new(&fact.version_pid));
         self.db.table().version(fact, "upsert package fact")
     }
 
-    /// Version identity and each edge. An edge-only change leaves the package
-    /// row on its previous commit and still reports [`FactWrite::Revised`].
     pub fn put_record(&mut self, record: &PackageRecord) -> OrmResult<FactWrite> {
         let edges = self.sync_edges(record)?;
         let fact = PackageFact::from_record(record)?;
@@ -158,7 +165,6 @@ impl VersionedCatalog {
         Ok(FactWrite::Revised(self.upsert(&fact)?))
     }
 
-    /// Apply one projected catalog effect: upsert the record, or tombstone it.
     pub fn apply_effect(
         &mut self,
         effect: &crate::edge_project::LedgerEffect,
@@ -173,39 +179,28 @@ impl VersionedCatalog {
         }
     }
 
-    /// Tombstone one package version and every edge the tip still owns.
-    ///
-    /// A second drop of the same key is [`FactWrite::Unchanged`].
     pub fn drop_version(
         &mut self,
         ecosystem: &str,
         name: &str,
         version: &str,
     ) -> OrmResult<FactWrite> {
-        let key = PackageKey {
-            ecosystem: SmolStr::new(ecosystem),
-            package: SmolStr::new(name),
-            version: SmolStr::new(version),
+        let Some(pid) = self.pid_owned(ecosystem, name, version) else {
+            return Ok(FactWrite::Unchanged);
         };
-        let tips = self.edge_tips.remove(&key).unwrap_or_default();
+        let tips = self.edge_tips.remove(pid.as_str()).unwrap_or_default();
         let mut commit = None;
         for tip in &tips {
             commit = Some(self.db.table::<EdgeFact>().version_delete(
-                &edge_fact::edge_pk(
-                    ecosystem,
-                    name,
-                    version,
-                    tip.name.as_str(),
-                    tip.class.as_str(),
-                ),
+                &edge_fact::edge_pk(&pid, tip.name.as_str(), tip.class.as_str()),
                 "drop edge",
             )?);
         }
-        if self.get(ecosystem, name, version).is_some() {
+        if self.db.table::<PackageFact>().get(&pid_pk(&pid)).is_some() {
             commit = Some(
                 self.db
                     .table::<PackageFact>()
-                    .version_delete(&pk(ecosystem, name, version), "drop package")?,
+                    .version_delete(&pid_pk(&pid), "drop package")?,
             );
         }
         match commit {
@@ -214,20 +209,18 @@ impl VersionedCatalog {
         }
     }
 
-    /// Tip read.
     pub fn get(&mut self, ecosystem: &str, name: &str, version: &str) -> Option<PackageFact> {
-        self.db.table().get(&pk(ecosystem, name, version))
+        let pid = self.pid_owned(ecosystem, name, version)?;
+        self.db.table().get(&pid_pk(&pid))
     }
 
-    /// Version each edge of `record`. A matching tip hash stays; a missing edge
-    /// is deleted at the tip and remains readable at the earlier commit.
     pub fn sync_edges(&mut self, record: &PackageRecord) -> OrmResult<EdgeSync> {
-        let key = PackageKey {
-            ecosystem: SmolStr::new(record.ecosystem.as_token()),
-            package: record.canonical_name.clone(),
-            version: record.version.clone(),
-        };
-        let current = self.edge_tips.get(&key).cloned().unwrap_or_default();
+        let pid = SmolStr::new(edge_fact::version_pid_of(
+            record.ecosystem.as_token(),
+            record.canonical_name.as_str(),
+            record.version.as_str(),
+        ));
+        let current = self.edge_tips.get(&pid).cloned().unwrap_or_default();
         let mut revised = 0;
         let mut unchanged = 0;
         let mut commit = None;
@@ -264,21 +257,15 @@ impl VersionedCatalog {
                 continue;
             }
             commit = Some(self.db.table::<EdgeFact>().version_delete(
-                &edge_fact::edge_pk(
-                    key.ecosystem.as_str(),
-                    key.package.as_str(),
-                    key.version.as_str(),
-                    stored.name.as_str(),
-                    stored.class.as_str(),
-                ),
+                &edge_fact::edge_pk(pid.as_str(), stored.name.as_str(), stored.class.as_str()),
                 "remove edge",
             )?);
             removed += 1;
         }
         if next.is_empty() {
-            self.edge_tips.remove(&key);
+            self.edge_tips.remove(&pid);
         } else {
-            self.edge_tips.insert(key, next);
+            self.edge_tips.insert(pid, next);
         }
         Ok(EdgeSync {
             revised,
@@ -288,7 +275,6 @@ impl VersionedCatalog {
         })
     }
 
-    /// Tip record with dependency edges joined back on.
     pub fn materialize(
         &mut self,
         ecosystem: &str,
@@ -303,7 +289,6 @@ impl VersionedCatalog {
         Ok(Some(record))
     }
 
-    /// Record as of `at`, with the edge rows that existed at that commit.
     pub fn materialize_at(
         &mut self,
         ecosystem: &str,
@@ -315,33 +300,30 @@ impl VersionedCatalog {
             return Ok(None);
         };
         let mut record = fact.to_record()?;
+        let Some(pid) = self.pid_owned(ecosystem, name, version) else {
+            return Ok(None);
+        };
         record.edges = self
             .db
             .table::<EdgeFact>()
             .iter_at(at)
-            .filter(|edge| {
-                edge.ecosystem == ecosystem && edge.package == name && edge.version == version
-            })
+            .filter(|edge| edge.version_pid == pid.as_str())
             .map(|edge| edge.to_edge())
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Some(record))
     }
 
     fn tip_edges(&mut self, ecosystem: &str, name: &str, version: &str) -> OrmResult<Vec<DepEdge>> {
-        let key = PackageKey {
-            ecosystem: SmolStr::new(ecosystem),
-            package: SmolStr::new(name),
-            version: SmolStr::new(version),
+        let Some(pid) = self.pid_owned(ecosystem, name, version) else {
+            return Ok(Vec::new());
         };
-        let Some(tips) = self.edge_tips.get(&key).cloned() else {
+        let Some(tips) = self.edge_tips.get(pid.as_str()).cloned() else {
             return Ok(Vec::new());
         };
         let mut edges = Vec::with_capacity(tips.len());
         for tip in tips {
             let Some(row) = self.db.table::<EdgeFact>().get(&edge_fact::edge_pk(
-                ecosystem,
-                name,
-                version,
+                &pid,
                 tip.name.as_str(),
                 tip.class.as_str(),
             )) else {
@@ -352,12 +334,10 @@ impl VersionedCatalog {
         Ok(edges)
     }
 
-    /// Every edge row at the tip. The scan the per-package tip replaces.
     pub fn scan_edges(&mut self) -> Vec<EdgeFact> {
         self.db.table::<EdgeFact>().iter().collect()
     }
 
-    /// Tip edge, when it has not been deleted.
     pub fn get_edge(
         &mut self,
         ecosystem: &str,
@@ -365,14 +345,24 @@ impl VersionedCatalog {
         version: &str,
         name: &str,
     ) -> Option<EdgeFact> {
+        let pid = self.pid_owned(ecosystem, package, version)?;
         edge_fact::class_tokens().iter().find_map(|class| {
-            self.db.table::<EdgeFact>().get(&edge_fact::edge_pk(
-                ecosystem, package, version, name, class,
-            ))
+            self.db
+                .table::<EdgeFact>()
+                .get(&edge_fact::edge_pk(&pid, name, class))
         })
     }
 
-    /// Historical read at `at`. `None` when the row did not exist then.
+    fn pid_owned(&self, ecosystem: &str, name: &str, version: &str) -> Option<SmolStr> {
+        self.coords
+            .get(&PackageKey {
+                ecosystem: SmolStr::new(ecosystem),
+                package: SmolStr::new(name),
+                version: SmolStr::new(version),
+            })
+            .cloned()
+    }
+
     pub fn get_at(
         &mut self,
         ecosystem: &str,
@@ -380,18 +370,23 @@ impl VersionedCatalog {
         version: &str,
         at: CommitId,
     ) -> OrmResult<Option<PackageFact>> {
-        self.db
-            .table()
-            .try_get_at(&pk(ecosystem, name, version), at)
+        let Some(pid) = self.pid_owned(ecosystem, name, version) else {
+            return Ok(None);
+        };
+        self.db.table().try_get_at(&pid_pk(&pid), at)
     }
 }
 
-fn pk(ecosystem: &str, name: &str, version: &str) -> Vec<VcValue> {
-    vec![
-        VcValue::Text(ecosystem.to_owned()),
-        VcValue::Text(name.to_owned()),
-        VcValue::Text(version.to_owned()),
-    ]
+fn coordinate(fact: &PackageFact) -> PackageKey {
+    PackageKey {
+        ecosystem: SmolStr::new(&fact.ecosystem),
+        package: SmolStr::new(&fact.name),
+        version: SmolStr::new(&fact.version),
+    }
+}
+
+fn pid_pk(version_pid: &str) -> Vec<VcValue> {
+    vec![VcValue::Text(version_pid.to_owned())]
 }
 
 #[cfg(test)]

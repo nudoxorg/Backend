@@ -2,6 +2,7 @@ use super::*;
 
 fn fact(hash: &str) -> PackageFact {
     PackageFact {
+        version_pid: super::edge_fact::version_pid_of("rust", "memchr", "2.8.3"),
         ecosystem: "rust".into(),
         name: "memchr".into(),
         version: "2.8.3".into(),
@@ -18,6 +19,8 @@ fn upsert_is_a_new_revision_and_history_reads_back() {
     assert_ne!(first, second);
     let tip = catalog.get("rust", "memchr", "2.8.3").expect("tip");
     assert_eq!(tip.payload_hash, "bbb");
+    assert_eq!(tip.version_pid, fact("bbb").version_pid);
+    assert_ne!(tip.version_pid, "memchr");
     let prior = catalog
         .get_at("rust", "memchr", "2.8.3", first)
         .expect("at")

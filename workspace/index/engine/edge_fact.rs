@@ -13,6 +13,8 @@ use crate::record::{DepClass, DepEdge, PackageRecord};
 /// previous commit until its own payload changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeFact {
+    /// Opaque [`crate::pid::VersionPid`] of the depending package version.
+    pub version_pid: String,
     /// Ecosystem token of the depending package.
     pub ecosystem: String,
     /// Canonical name of the depending package.
@@ -33,6 +35,7 @@ pub struct EdgeFact {
 
 impl VersionedRow for EdgeFact {
     const COLUMNS: &'static [&'static str] = &[
+        "version_pid",
         "ecosystem",
         "package",
         "version",
@@ -42,7 +45,7 @@ impl VersionedRow for EdgeFact {
         "optional",
         "payload_hash",
     ];
-    const PK: &'static [&'static str] = &["ecosystem", "package", "version", "name", "class"];
+    const PK: &'static [&'static str] = &["version_pid", "name", "class"];
     const TABLE: &'static str = "package_edges";
 
     fn from_row(row: &VcRow) -> Result<Self, OrmError> {
@@ -54,19 +57,21 @@ impl VersionedRow for EdgeFact {
                 .ok_or_else(|| OrmError::Decode(format!("package_edges.{field}")))
         };
         Ok(Self {
-            ecosystem: text(0, "ecosystem")?,
-            package: text(1, "package")?,
-            version: text(2, "version")?,
-            name: text(3, "name")?,
-            requirement: text(4, "requirement")?,
-            class: text(5, "class")?,
-            optional: text(6, "optional")?,
-            payload_hash: text(7, "payload_hash")?,
+            version_pid: text(0, "version_pid")?,
+            ecosystem: text(1, "ecosystem")?,
+            package: text(2, "package")?,
+            version: text(3, "version")?,
+            name: text(4, "name")?,
+            requirement: text(5, "requirement")?,
+            class: text(6, "class")?,
+            optional: text(7, "optional")?,
+            payload_hash: text(8, "payload_hash")?,
         })
     }
 
     fn into_row(&self) -> VcRow {
         VcRow::new(vec![
+            VcValue::Text(self.version_pid.clone()),
             VcValue::Text(self.ecosystem.clone()),
             VcValue::Text(self.package.clone()),
             VcValue::Text(self.version.clone()),
@@ -82,6 +87,11 @@ impl VersionedRow for EdgeFact {
 impl EdgeFact {
     pub(in crate::engine) fn from_edge(record: &PackageRecord, edge: &DepEdge) -> Self {
         Self {
+            version_pid: version_pid_of(
+                record.ecosystem.as_token(),
+                record.canonical_name.as_str(),
+                record.version.as_str(),
+            ),
             ecosystem: record.ecosystem.as_token().to_owned(),
             package: record.canonical_name.to_string(),
             version: record.version.to_string(),
@@ -108,17 +118,15 @@ pub struct EdgeSync {
     pub commit: Option<turso_versioning::model::CommitId>,
 }
 
-pub(in crate::engine) fn edge_pk(
-    ecosystem: &str,
-    package: &str,
-    version: &str,
-    name: &str,
-    class: &str,
-) -> Vec<VcValue> {
+/// Opaque version PID for a published coordinate. The coordinate is the seed,
+/// not the stored key.
+pub(in crate::engine) fn version_pid_of(ecosystem: &str, name: &str, version: &str) -> String {
+    crate::pid::VersionPid::mint(ecosystem, name, version).local_name()
+}
+
+pub(in crate::engine) fn edge_pk(version_pid: &str, name: &str, class: &str) -> Vec<VcValue> {
     vec![
-        VcValue::Text(ecosystem.to_owned()),
-        VcValue::Text(package.to_owned()),
-        VcValue::Text(version.to_owned()),
+        VcValue::Text(version_pid.to_owned()),
         VcValue::Text(name.to_owned()),
         VcValue::Text(class.to_owned()),
     ]
