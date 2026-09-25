@@ -18,13 +18,15 @@
 //!
 //! # Provisioning: why "shim" files
 //!
-//! `find_sources` only ever treats a `.c`/`.cpp`/... file as a translation
-//! unit, and `extract.rs`'s visitor only ever emits declarations physically
-//! written in *that* file (see `is_in_main_file`'s doc comment) — never
-//! declarations merely reachable through a `#include`. A header-only (or
-//! header-heavy) library's actual public API therefore never gets visited
-//! merely by `#include`-ing it from some `.cpp` file; the header's own bytes
-//! have to *be* a translation unit's main file.
+//! `find_sources` treats each package-root header as its own translation unit
+//! (once, not once per includer), and `extract.rs`'s visitor only ever emits
+//! declarations physically written in *that* main file (see
+//! `is_in_main_file`'s doc comment) — never declarations merely reachable
+//! through a `#include`. A header-only library's public API is visited because
+//! the header itself is opened, not because a `.nudox_probe.cpp` twin was
+//! written next to it. The shim below still exists so a
+//! `compile_commands.json` entry can attach that package's `-I` flags to a
+//! copy of the header; it is not what makes the header a main file.
 //!
 //! [`provision_shims`] makes that true, idempotently, for every header under
 //! each package's `header_roots`: it writes a same-directory twin file

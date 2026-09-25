@@ -25,43 +25,33 @@
 //! # The gap this fixture demonstrates
 //!
 //! `point_distance` and `default_shape` are defined in `src/*.c`, but their
-//! signatures name `Point`/`ShapeKind`, which are declared only in
-//! `include/mathutils.h` — reached via `#include "mathutils.h"`, a quote
-//! include that only searches the *including file's own directory* by
-//! default, i.e. `src/`, not `include/`. Resolving it requires the real
-//! build's `-Iinclude` flag. Without `compile_commands.json` ingestion, that
-//! flag does not exist anywhere `find_sources` can see, libclang cannot
-//! resolve the header, both functions become invalid declarations (an
-//! unknown type in the signature), and the oracle has zero functions instead
-//! of two. `compile_commands.json`-driven `-I` resolution is what turns that
-//! into two correctly-typed functions.
+//! signatures name `Point`/`ShapeKind`, which are declared in
+//! `include/mathutils.h` — reached from `src/` via `#include "mathutils.h"`,
+//! a quote include that only searches the *including file's own directory* by
+//! default. Resolving that include from `src/*.c` requires the real build's
+//! `-Iinclude` flag.
 //!
-//! # What the "without" side asserts, and why it changed
+//! The header is its own translation unit, so `Point`, `ShapeKind`, and the
+//! `point_distance` declaration written in `mathutils.h` are visible without
+//! that flag. `default_shape` is not: it exists only in `src/shapes.c`, and
+//! without `-Iinclude` libclang marks that definition invalid and the visitor
+//! skips it. `compile_commands.json` is what brings `default_shape` back.
 //!
-//! It used to assert that the zero-function run came back as a *successful*
-//! empty table — "no error, just an empty result indistinguishable from
-//! 'this package truly has no public API'", docs/LIMITATIONS.md L2's shape. That
-//! indistinguishability was the defect, not the contract, and
-//! [`nudox_languages::YieldContract`] closed it: [`produce`] now holds every
-//! producer to what it said it would contribute, so a run that ends with
-//! only the synthesized root is [`ProducerError::NoDeclarationsContributed`].
+//! # What the "without" side asserts
 //!
-//! The `RootOnly` escape hatch that error names is **not** available to this
-//! producer, and the pairing in this file is the proof:
-//! [`nudox_languages::Producer::yield_contract`] takes only `&self` — no
-//! [`PackageSource`] — so it is one standing claim about the producer, not a
-//! per-package one. `ClangProducer` declaring `RootOnly` would make the
-//! *with*-`compile_commands.json` test in this same file fail as
-//! [`ProducerError::YieldContractOutgrown`], because the same producer
-//! contributes two functions there. Clang is not degraded; this one input is
-//! unanalysable. That distinction is exactly what the typed error carries and
-//! an empty `Ok` table did not.
+//! The header's `Point` record seals, and its source file is `mathutils.h`,
+//! because that header was opened as a main file. `default_shape` does not.
+//! The *with*-`compile_commands.json` test is what makes
+//! `YieldContract::RootOnly` unavailable to `ClangProducer`:
+//! `Producer::yield_contract` takes only `&self`, and this producer
+//! contributes real declarations from the same fixture once the database
+//! supplies `-Iinclude`.
 
 use std::path::Path;
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
 use nudox_languages::clang::ClangProducer;
-use nudox_languages::{PackageSource, Produced, ProducerError, ProducerId, produce};
+use nudox_languages::{PackageSource, Produced, ProducerError, produce};
 
 /// `clang::Clang` (which `ClangProducer::invoke` constructs internally)
 /// allows only one instance in the whole process at a time — see
@@ -228,68 +218,53 @@ fn real_multi_file_c_package_lowers_end_to_end_with_compile_commands_json() {
 }
 
 #[test]
-fn same_fixture_without_compile_commands_json_fails_as_no_declarations_contributed() {
-    // The paired "before" case: same project, same real `-Iinclude`
-    // requirement, but with nothing to tell the producer about it. Both
-    // functions' signatures name a type (`Point`/`ShapeKind`) libclang cannot
-    // resolve without the header, so libclang marks the declarations invalid
-    // and `extract::visit_entity` skips them. The oracle is therefore empty,
-    // and the lowering holds nothing but the root `produce` synthesized —
-    // which is byte-for-byte what a producer that never opened the directory
-    // yields. `produce` refuses to hand that back as a success.
-    //
-    // Asserting the *variant* rather than "the names are absent" is the
-    // stronger form (docs/AGENTS-DOCTRINE.md §4: never assert on a message string
-    // where you can assert on a typed variant, and a test that would pass
-    // against a stub is not a test). The old assertion — "neither name is
-    // present" — was satisfied by a table containing only the root, and would
-    // equally have been satisfied by a producer that was deleted.
+fn header_record_seals_without_compile_commands_but_src_function_does_not() {
+    // The header is a translation unit, so `Point` (written in mathutils.h)
+    // seals even when nothing tells the producer about `-Iinclude`.
+    // `default_shape` is written only in `src/shapes.c`. That file's quote
+    // include does not search `include/`, the definition is invalid, and the
+    // visitor skips it. The database test above is what makes `default_shape`
+    // appear.
     let _guard = CLANG_SINGLETON
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::tempdir().expect("tempdir");
     write_fixture(dir.path(), false);
 
-    let (result, _cost) = heart::cost::measured(
+    let (produced, _cost) = heart::cost::measured(
         "clang/real_multi_file_c_package_no_compile_commands",
         dir.path(),
-        || produce_fixture(dir.path(), "fixture-mathutils-no-db"),
+        || lower_fixture(dir.path(), "fixture-mathutils-no-db"),
     );
 
-    match result {
-        Err(ProducerError::NoDeclarationsContributed {
-            package, producer, ..
-        }) => {
-            assert_eq!(
-                package, "fixture-mathutils-no-db",
-                "the failure must name the package it was analysing"
-            );
-            assert_eq!(
-                producer,
-                ProducerId("clang-libclang/1"),
-                "the failure must name the producer that promised declarations"
-            );
-        }
-        Err(other) => panic!(
-            "without compile_commands.json the run must fail as \
-             NoDeclarationsContributed — the one variant that says 'we did not \
-             actually look at this package'. Got: {}",
-            chain(&other)
-        ),
-        Ok(produced) => {
-            let names: Vec<String> = produced
-                .table
-                .iter()
-                .map(|(_, e)| e.sym().name.clone())
-                .collect();
-            panic!(
-                "without compile_commands.json neither function's signature can \
-                 resolve Point/ShapeKind, so the producer contributes nothing and \
-                 `produce` must reject the run rather than return a table that \
-                 looks like a successfully documented empty library. Got Ok with \
-                 contract {:?} and names {names:?}",
-                produced.contract
-            );
-        }
-    }
+    let table = produced.table;
+    let points: Vec<_> = table
+        .iter()
+        .filter(|(_, e)| {
+            e.sym().name == "Point"
+                && matches!(
+                    e.kind().as_owned_kind(),
+                    Some(nudox_ir::kind::Kind::Record(_))
+                )
+        })
+        .collect();
+    assert_eq!(
+        points.len(),
+        1,
+        "mathutils.h is a main file, so struct Point seals once"
+    );
+    assert_eq!(
+        points[0].1.sym().source.file_name().and_then(|s| s.to_str()),
+        Some("mathutils.h"),
+        "Point's source must be the header that was opened, not a .c that included it"
+    );
+    let names: Vec<String> = table.iter().map(|(_, e)| e.sym().name.clone()).collect();
+    assert!(
+        names.iter().any(|n| n == "point_distance"),
+        "point_distance is declared in the header, so it seals without -Iinclude; got {names:?}"
+    );
+    assert!(
+        names.iter().all(|n| n != "default_shape"),
+        "default_shape lives only in src/shapes.c and still needs -Iinclude; got {names:?}"
+    );
 }

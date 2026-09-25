@@ -628,12 +628,11 @@ pub enum ProducerError {
     ///
     /// They share a variant because they share a cause and a fix: something
     /// upstream erased the bytes that told two declarations apart. The
-    /// canonical instance is `result/cli11-v2.7.2/include/CLI/App.hpp`,
+    /// canonical instance was `result/cli11-v2.7.2/include/CLI/App.hpp`,
     /// where `parse(std::vector<std::string>&)` and
-    /// `parse(std::vector<std::string>&&)` both lower to the identical mutable
-    /// reference — `workspace/compiler/languages/src/clang/lower.rs` says so in
-    /// its own comment, "No dedicated RValueRef in the IR; model as mutable
-    /// reference" — so they mint one base key, one skeleton, one `IntroId`.
+    /// `parse(std::vector<std::string>&&)` both lowered to the identical mutable
+    /// reference — `T&&` was modeled as `Primitive::Reference`, which is `T&` —
+    /// so they minted one base key, one skeleton, one `IntroId`.
     ///
     /// Recover by making the lowering preserve whatever distinguishes the two
     /// declarations in the source. Do **not** recover by widening this gate:

@@ -6,9 +6,9 @@
 //! v3.11.3 but not this second version entry. Lineage queries need *both*
 //! versions to actually lower, not just the one the main sweep happened to
 //! pick, so this file provisions and verifies v3.10.5 on its own — same
-//! shim technique as `corpus_sweep.rs` (see that file's module docs for why
-//! a same-directory `.cpp` twin is what makes a header's own declarations
-//! visitable at all), scaled down to the one file this version needs it for.
+//! shim technique as `corpus_sweep.rs`. The producer opens `json.hpp` itself;
+//! the twin exists so `compile_commands.json` can attach `-Isingle_include`
+//! to a copy of that header.
 use std::path::{Path, PathBuf};
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};

@@ -9,23 +9,37 @@
 
 use clang::{Clang, Index};
 
-use crate::clang::{extract::extract_unsaved, lower::lower_oracle, oracle::OracleType};
+use crate::{
+    PackageSource, Producer,
+    clang::{
+        extract::extract_unsaved, lower::lower_oracle, oracle::OracleType, producer::ClangProducer,
+    },
+    produce,
+};
 use nudox_ir::{
+    apply::PristineIntroTable,
+    change::{EcosystemId, PackageLineageId, PackageName},
+    entry::Entry,
+    index::Ref,
     kind::Kind,
-    kinds::{Record, ty::Type},
+    kinds::{
+        Record,
+        ty::{Primitive, Type},
+    },
     lower::Lowering,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers
+// ───────────────────────────────────────────────────────────────────
 
 /// Acquire a libclang handle for a hermetic test, or fail loudly.
 ///
 /// `nudox-languages` links `clang-sys`'s `runtime` feature specifically
 /// so that a *missing* libclang is a graceful, typed `Err` at the point of
 /// use (`ClangProducer::invoke` → `ProducerError::OracleSpawn`) rather than a
-/// `dyld` abort at process load (docs/AGENTS-DOCTRINE.md §8) — every test in this
-/// file exercises exactly that "libclang present, drive it" path. libclang
+/// `dyld` abort at process load (docs/AGENTS-DOCTRINE.md §8) — every test in
+/// this file exercises exactly that "libclang present, drive it" path. libclang
 /// is expected to be resolvable on every host that runs this suite: pinned
 /// via `flake.nix`'s `LIBCLANG_PATH` inside `nix develop`, or via Xcode
 /// Command Line Tools' `libclang.dylib` outside it. A test suite that
@@ -93,7 +107,8 @@ fn parse_cpp<'a>(index: &'a Index<'a>, source: &str) -> crate::clang::oracle::Cl
     extract_unsaved(index, Path::new("/tmp/test.cpp"), source, &["-std=c++17"])
 }
 
-// ── Struct with fields ────────────────────────────────────────────────────────
+// ── Struct with fields
+// ────────────────────────────────────────────────────────
 
 #[test]
 fn struct_with_fields() {
@@ -127,29 +142,24 @@ struct Point {
         .iter()
         .find(|f| f.name == "x" && f.parent_usr == Some(rec.usr.clone()))
         .expect("field x not found");
-    assert!(matches!(
-        x.ty,
-        OracleType::Integer {
-            signed: true,
-            bits: 32
-        }
-    ));
+    assert!(matches!(x.ty, OracleType::Integer {
+        signed: true,
+        bits: 32
+    }));
 
     let y = oracle
         .fields
         .iter()
         .find(|f| f.name == "y" && f.parent_usr == Some(rec.usr.clone()))
         .expect("field y not found");
-    assert!(matches!(
-        y.ty,
-        OracleType::Integer {
-            signed: true,
-            bits: 32
-        }
-    ));
+    assert!(matches!(y.ty, OracleType::Integer {
+        signed: true,
+        bits: 32
+    }));
 }
 
-// ── Function with params ──────────────────────────────────────────────────────
+// ── Function with params
+// ──────────────────────────────────────────────────────
 
 #[test]
 fn function_with_params() {
@@ -173,16 +183,14 @@ int add(int a, int b) { return a + b; }
     assert_eq!(fun.params.len(), 2);
     assert_eq!(fun.params[0].name, "a");
     assert_eq!(fun.params[1].name, "b");
-    assert!(matches!(
-        fun.ret,
-        OracleType::Integer {
-            signed: true,
-            bits: 32
-        }
-    ));
+    assert!(matches!(fun.ret, OracleType::Integer {
+        signed: true,
+        bits: 32
+    }));
 }
 
-// ── Overload pair — each is its OWN declaration ───────────────────────────────
+// ── Overload pair — each is its OWN declaration
+// ───────────────────────────────
 
 #[test]
 fn overload_pair_two_distinct_declarations() {
@@ -234,7 +242,8 @@ void print(double x) {}
     assert!(takes_float, "one overload must take double");
 }
 
-// ── enum class with explicit discriminants ────────────────────────────────────
+// ── enum class with explicit discriminants
+// ────────────────────────────────────
 
 #[test]
 fn enum_class_explicit_values() {
@@ -273,7 +282,8 @@ enum class Color { Red = 1, Green = 2, Blue = 4 };
     assert_eq!(blue.discr, Some(4));
 }
 
-// ── typedef / using alias ─────────────────────────────────────────────────────
+// ── typedef / using alias
+// ─────────────────────────────────────────────────────
 
 #[test]
 fn typedef_and_using_alias() {
@@ -294,26 +304,24 @@ using MyInt = int;
         .iter()
         .find(|a| a.name == "uint32_t_alias")
         .expect("uint32_t_alias not found");
-    assert!(matches!(
-        td.target,
-        OracleType::Integer { signed: false, .. }
-    ));
+    assert!(matches!(td.target, OracleType::Integer {
+        signed: false,
+        ..
+    }));
 
     let ua = oracle
         .aliases
         .iter()
         .find(|a| a.name == "MyInt")
         .expect("MyInt not found");
-    assert!(matches!(
-        ua.target,
-        OracleType::Integer {
-            signed: true,
-            bits: 32
-        }
-    ));
+    assert!(matches!(ua.target, OracleType::Integer {
+        signed: true,
+        bits: 32
+    }));
 }
 
-// ── Namespace ─────────────────────────────────────────────────────────────────
+// ── Namespace
+// ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn namespace_emitted_as_module() {
@@ -350,7 +358,8 @@ namespace math {
     );
 }
 
-// ── Template function → TypeVar ───────────────────────────────────────────────
+// ── Template function → TypeVar
+// ───────────────────────────────────────────────
 
 #[test]
 fn template_function_type_var() {
@@ -551,7 +560,8 @@ union Value {
     );
 }
 
-// ── C function pointer → Type::FunctionPointer ────────────────────────────────
+// ── C function pointer → Type::FunctionPointer
+// ────────────────────────────────
 
 /// A typedef for a function pointer `typedef int (*BinaryOp)(int, int)`.
 ///
@@ -561,11 +571,13 @@ union Value {
 ///
 /// The lowering chain is therefore:
 ///   `MutPointer(FnPtr { .. })` →
-///   `Primitive::MutPointer(FunctionPointer { params: [i32, i32], ret: Some(i32), abi: None })`
+///   `Primitive::MutPointer(FunctionPointer { params: [i32, i32], ret:
+/// Some(i32), abi: None })`
 ///
-/// This is the correct structural representation: the typedef names a pointer to
-/// a function, not a bare function type. The `FunctionPointer` inside the pointer
-/// carries the parameter and return types without degrading to `Type::Any`.
+/// This is the correct structural representation: the typedef names a pointer
+/// to a function, not a bare function type. The `FunctionPointer` inside the
+/// pointer carries the parameter and return types without degrading to
+/// `Type::Any`.
 #[test]
 fn c_function_pointer_lowers_to_function_pointer() {
     let Some((_guard, clang)) = require_clang("c_function_pointer_lowers_to_function_pointer")
@@ -649,7 +661,8 @@ typedef int (*BinaryOp)(int, int);
     }
 }
 
-/// A function accepting a void-returning function pointer `typedef void (*Callback)(void)`.
+/// A function accepting a void-returning function pointer `typedef void
+/// (*Callback)(void)`.
 #[test]
 fn void_function_pointer_has_none_return() {
     let Some((_guard, clang)) = require_clang("void_function_pointer_has_none_return") else {
@@ -697,7 +710,8 @@ typedef void (*Callback)(void);
                 .target
                 .as_ref()
                 .expect("Callback alias must have a target");
-            // MutPointer(FunctionPointer { ret: None, .. }) — see BinaryOp test for rationale.
+            // MutPointer(FunctionPointer { ret: None, .. }) — see BinaryOp test for
+            // rationale.
             match target {
                 Type::Primitive(nudox_ir::kinds::ty::Primitive::MutPointer(inner)) => {
                     match inner.as_ref() {
@@ -786,5 +800,265 @@ int dummy;
          vars={:?} aliases={:?}",
         oracle.vars.iter().map(|v| &v.name).collect::<Vec<_>>(),
         oracle.aliases.iter().map(|a| &a.name).collect::<Vec<_>>(),
+    );
+}
+
+// ── Header translation units and reference kinds ─────────────────────────────
+
+fn lock_clang() -> std::sync::MutexGuard<'static, ()> {
+    CLANG_SINGLETON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn produce_tree(root: &Path, name: &str) -> crate::Produced {
+    let source = PackageSource::new(root, name, "0.0.0");
+    let lineage = PackageLineageId::new(EcosystemId::new("cpp"), PackageName::new(name));
+    produce(
+        &ClangProducer::new(),
+        &source,
+        &lineage,
+        &nudox_ir::foreign::Unlinked,
+    )
+    .unwrap_or_else(|err| panic!("{name} failed to produce: {err}"))
+}
+
+fn records_named<'a>(table: &'a PristineIntroTable, name: &str) -> Vec<&'a Entry> {
+    table
+        .iter()
+        .filter(|(_, entry)| {
+            entry.sym().name == name
+                && matches!(entry.kind().as_owned_kind(), Some(Kind::Record(_)))
+        })
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
+fn file_name(path: &Path) -> Option<&str> {
+    path.file_name().and_then(|s| s.to_str())
+}
+
+fn main_file_count(files: &[PathBuf], name: &str) -> usize {
+    files.iter().filter(|p| file_name(p) == Some(name)).count()
+}
+
+/// A header-only package has no `.c`/`.cpp` carrying the declarations. The
+/// header itself has to be the translation unit, or `is_in_main_file` drops
+/// every record in it.
+#[test]
+fn header_only_package_seals_session_from_the_header_main_file() {
+    let _guard = lock_clang();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("session.hpp"),
+        r#"
+#pragma once
+struct Session {
+    int id;
+};
+"#,
+    )
+    .unwrap();
+
+    let oracle = ClangProducer::new()
+        .invoke(&PackageSource::new(root, "session-hpp", "0.0.0"))
+        .expect("invoke header-only package");
+    assert_eq!(
+        main_file_count(&oracle.main_files, "session.hpp"),
+        1,
+        "session.hpp must be the main file of exactly one parse; mains={:?}",
+        oracle.main_files
+    );
+    assert!(
+        oracle.main_files.iter().all(|p| p.starts_with(root)),
+        "system headers must not be opened as translation units: {:?}",
+        oracle.main_files
+    );
+
+    let table = produce_tree(root, "session-hpp").table;
+    let sessions = records_named(&table, "Session");
+    assert_eq!(
+        sessions.len(),
+        1,
+        "the header's struct Session must seal as one Record"
+    );
+    assert_eq!(
+        file_name(&sessions[0].sym().source),
+        Some("session.hpp"),
+        "Session must be kept because session.hpp was the main file, not because a .cpp twin included it"
+    );
+}
+
+/// Two `.cpp` files include one package header. The header is parsed once, as
+/// its own main file, and the struct it declares seals once.
+#[test]
+fn included_package_header_is_parsed_once_and_seals_one_record() {
+    let _guard = lock_clang();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("widget.hpp"),
+        r#"
+#pragma once
+struct Widget {
+    int n;
+};
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("a.cpp"),
+        r#"
+#include "widget.hpp"
+#include <stdio.h>
+void use_a(Widget* w);
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("b.cpp"),
+        r#"
+#include "widget.hpp"
+void use_b(Widget* w);
+"#,
+    )
+    .unwrap();
+
+    let oracle = ClangProducer::new()
+        .invoke(&PackageSource::new(root, "widget", "0.0.0"))
+        .expect("invoke package with two sources");
+    assert_eq!(
+        main_file_count(&oracle.main_files, "widget.hpp"),
+        1,
+        "the package header must be a main file of one parse, not once per includer; mains={:?}",
+        oracle.main_files
+    );
+    assert_eq!(main_file_count(&oracle.main_files, "a.cpp"), 1);
+    assert_eq!(main_file_count(&oracle.main_files, "b.cpp"), 1);
+    assert!(
+        oracle.main_files.iter().all(|p| p.starts_with(root)),
+        "stdio.h and other system headers stay out of the translation-unit list: {:?}",
+        oracle.main_files
+    );
+    let oracle_widgets: Vec<_> = oracle
+        .records
+        .iter()
+        .filter(|r| r.name == "Widget")
+        .collect();
+    assert_eq!(
+        oracle_widgets.len(),
+        1,
+        "merge must keep one Widget record from the single header parse"
+    );
+
+    let table = produce_tree(root, "widget").table;
+    let widgets = records_named(&table, "Widget");
+    assert_eq!(
+        widgets.len(),
+        1,
+        "two cpp files including widget.hpp must seal one Widget Record"
+    );
+    assert_eq!(file_name(&widgets[0].sym().source), Some("widget.hpp"));
+    // Seal rewrites in-package paths to be relative to the package root
+    // (`widget.hpp`). A system header is absolute and does not strip, so its
+    // source becomes empty. Either form is outside this package.
+    let outside: Vec<_> = table
+        .iter()
+        .filter_map(|(_, entry)| {
+            if !matches!(entry.kind().as_owned_kind(), Some(Kind::Record(_))) {
+                return None;
+            }
+            let source = &entry.sym().source;
+            let in_package =
+                source.is_relative() && !source.as_os_str().is_empty() && !source.starts_with("..");
+            if in_package {
+                None
+            } else {
+                Some(format!("{} ({})", entry.sym().name, source.display()))
+            }
+        })
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "records from system headers must not seal: {outside:?}"
+    );
+}
+
+fn input_param_types<'a>(table: &'a PristineIntroTable, fn_name: &str) -> Vec<&'a Type> {
+    let mut tys = Vec::new();
+    for (_, entry) in table.iter() {
+        if entry.sym().name != fn_name {
+            continue;
+        }
+        let Some(Kind::Function(fun)) = entry.kind().as_owned_kind() else {
+            continue;
+        };
+        let Some(param_ref) = fun.input_params.first() else {
+            continue;
+        };
+        let Ref::Intro(id) = param_ref else {
+            panic!("{fn_name} param ref did not seal to Intro: {param_ref:?}");
+        };
+        let param = table.get(*id).expect("param entry");
+        let Some(Kind::Param(param)) = param.kind().as_owned_kind() else {
+            panic!("input param is not a Param");
+        };
+        tys.push(param.ty.as_ref().expect("param type"));
+    }
+    tys
+}
+
+fn is_lvalue_reference(ty: &Type) -> bool {
+    matches!(ty, Type::Primitive(Primitive::Reference { .. }))
+}
+
+fn contains_local_nominal(ty: &Type) -> bool {
+    match ty {
+        Type::Nominal(Ref::Intro(_)) => true,
+        Type::Primitive(Primitive::Reference { ty, .. })
+        | Type::Primitive(Primitive::MutPointer(ty))
+        | Type::Primitive(Primitive::ConstPointer(ty)) => contains_local_nominal(ty),
+        Type::Apply { base, args } => {
+            contains_local_nominal(base) || args.iter().any(contains_local_nominal)
+        }
+        Type::Annotated { inner, .. } => contains_local_nominal(inner),
+        _ => false,
+    }
+}
+
+/// `void f(T&)` and `void f(T&&)` are different parameter types. The rvalue
+/// side is not `Primitive::Reference` (that primitive is `T&`). `T` is declared
+/// in this package, so both sides name it with a local nominal.
+#[test]
+fn lvalue_and_rvalue_reference_parameters_do_not_share_a_type() {
+    let _guard = lock_clang();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("refs.cpp"),
+        r#"
+struct T {};
+void f(T&);
+void f(T&&);
+"#,
+    )
+    .unwrap();
+
+    let table = produce_tree(root, "ref-overloads").table;
+    let tys = input_param_types(&table, "f");
+    assert_eq!(tys.len(), 2, "both f(T&) and f(T&&) must seal; got {tys:?}");
+    assert_ne!(
+        tys[0], tys[1],
+        "T& and T&& must not share a parameter type: {tys:?}"
+    );
+    let lvalue = tys.iter().filter(|ty| is_lvalue_reference(ty)).count();
+    assert_eq!(
+        lvalue, 1,
+        "exactly the lvalue overload is Primitive::Reference; the rvalue side must not be; got {tys:?}"
+    );
+    assert!(
+        tys.iter().all(|ty| contains_local_nominal(ty)),
+        "struct T is declared in this package, so each parameter type must carry a local nominal; got {tys:?}"
     );
 }
