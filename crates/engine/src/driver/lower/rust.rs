@@ -62,7 +62,7 @@
 //! | bound | typed reason | behavior at overflow |
 //! |---|---|---|
 //! | `MAX_TYPE_DEPTH` (16) | `TruncatedAtDepthLimit` | retain an unknown row with that reason |
-//! | `MAX_COMPOUND_CHILDREN` (8) | `NoIrRepresentation`, or enclosing `OracleGap` without a written shape | retain spelling when available; otherwise retain the gap row |
+//! | `MAX_COMPOUND_CHILDREN` (the type-child lane, 255) | `NoIrRepresentation`, or enclosing `OracleGap` without a written shape | retain spelling when available; otherwise retain the gap row |
 //! | `MAX_DEDUPED_FOREIGN_ROWS` (512) | `NoSupportedDeclaration` | a distinct foreign spelling beyond the cap rejects exactly |
 //! | `TUPLE_FIELD_NAMES` (16 entries) | positional-name fold | positions beyond 15 are not materialized by the module walk |
 //! | computed rows (`MAX_COMPUTED_TYPE_ROWS`, 32768) | `ComputedRowCapacity` | a proven let-initializer or method-call result type beyond the cap is dropped, never truncated into a fabricated row |
@@ -104,9 +104,10 @@ const INTEGER_WIDTH_SHIFT: u32 = 1;
 /// Bound of the recursive declared-type walk; deeper positions fold to the
 /// lane's exact `TruncatedAtDepthLimit` reason instead of unbounded recursion.
 const MAX_TYPE_DEPTH: usize = 16;
-/// Maximum pooled children of one compound row or fact record; positions
-/// beyond it fold to the honest gap reason instead of a lane rejection.
-const MAX_COMPOUND_CHILDREN: usize = 8;
+/// Maximum children of one compound row. This is the shared type-child lane,
+/// not a separate Rust fold. A tuple, callable, or application inside the
+/// lane keeps every child; only a row past the lane still folds.
+const MAX_COMPOUND_CHILDREN: usize = super::MAX_TYPE_CHILDREN;
 /// Maximum entries of the anonymous foreign-leaf row dedup table. Measured
 /// against the real corpus demand: a fixture crate root re-exports whole
 /// dependency surfaces (`itertools`'s written re-export list alone names
@@ -4522,6 +4523,23 @@ mod tests {
             return Err(TestError::Missing(
                 "no imprecisely projected expansion field",
             ));
+        }
+        Ok(())
+    }
+
+    /// A function-pointer parameter with nine arguments used to fold the
+    /// whole pointer once the compound walk passed eight children. The
+    /// pointer stays a function row with one child per argument.
+    #[test]
+    fn a_nine_argument_fn_pointer_keeps_every_argument() -> Result<(), TestError> {
+        let view = lower(
+            "pub fn probe(value: fn(u8, u8, u8, u8, u8, u8, u8, u8, u8)) {}\n",
+        )?;
+        let parameter = fact_of(&view, b"value", EntityKind::Parameter)?;
+        let row = row_for_entity(&view, parameter)?;
+        let children = local_type_children(&view, row.record)?;
+        if row.record.tag != SemanticTypeTag::FunctionPointer || children.len() != 9 {
+            return Err(TestError::Missing("nine-argument function pointer"));
         }
         Ok(())
     }
