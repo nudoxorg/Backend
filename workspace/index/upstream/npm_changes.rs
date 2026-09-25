@@ -142,26 +142,13 @@ fn dependency_edges(doc: Option<&PackageDoc>, version: &str) -> Vec<crate::recor
     let Some(doc) = doc else {
         return Vec::new();
     };
-    let mut edges: Vec<_> = doc
-        .versions
-        .get(version)
-        .map(|body| {
-            body.dependencies
-                .iter()
-                .map(|(name, value)| {
-                    let mut edge = crate::record::DepEdge::runtime(name);
-                    if let Some(requirement) =
-                        value.as_str().map(str::trim).filter(|r| !r.is_empty())
-                    {
-                        edge.requirement = Some(requirement.into());
-                    }
-                    edge
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    edges.sort_by(|left, right| left.name.cmp(&right.name));
-    edges
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
+    if let Some(body) = doc.versions.get(version) {
+        for (name, value) in &body.dependencies {
+            fold.observe(name, value.as_str(), false);
+        }
+    }
+    fold.finish()
 }
 
 /// `dist.integrity` when it names an artifact digest. A tarball `shasum`

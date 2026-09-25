@@ -196,7 +196,7 @@ fn recognized_leaf_type(token: &str) -> Option<LeafType> {
 /// NuGet ids are case-insensitive, so each id is lowercased before the sort.
 /// An id that appears in two groups is kept once. A blank id is dropped.
 fn dependency_edges(groups: &[DependencyGroup]) -> Vec<crate::record::DepEdge> {
-    let mut edges: Vec<crate::record::DepEdge> = Vec::new();
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
     for dependency in groups.iter().flat_map(|group| group.dependencies.iter()) {
         let Some(id) = dependency
             .id
@@ -206,23 +206,9 @@ fn dependency_edges(groups: &[DependencyGroup]) -> Vec<crate::record::DepEdge> {
         else {
             continue;
         };
-        let name = id.to_ascii_lowercase();
-        if edges.iter().any(|edge| edge.name == name) {
-            continue;
-        }
-        let mut edge = crate::record::DepEdge::runtime(name);
-        if let Some(range) = dependency
-            .range
-            .as_deref()
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-        {
-            edge.requirement = Some(range.into());
-        }
-        edges.push(edge);
+        fold.observe(id.to_ascii_lowercase(), dependency.range.as_deref(), false);
     }
-    edges.sort_by(|left, right| left.name.cmp(&right.name));
-    edges
+    fold.finish()
 }
 
 /// `SHA512` + base64 becomes an SRI token the artifact parser accepts.

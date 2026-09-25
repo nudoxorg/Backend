@@ -414,18 +414,13 @@ pub fn pypi_release(body: &[u8]) -> (Vec<crate::record::DepEdge>, Option<String>
     let Some(requirements) = parsed.info.and_then(|info| info.requires_dist) else {
         return (Vec::new(), checksum);
     };
-    let mut edges: Vec<crate::record::DepEdge> = Vec::new();
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
     for requirement in requirements.into_iter().flatten() {
-        let Some(edge) = pep508_edge(&requirement) else {
-            continue;
-        };
-        if edges.iter().any(|kept| kept.name == edge.name) {
-            continue;
+        if let Some(edge) = pep508_edge(&requirement) {
+            fold.observe_edge(edge);
         }
-        edges.push(edge);
     }
-    edges.sort_by(|left, right| left.name.cmp(&right.name));
-    (edges, checksum)
+    (fold.finish(), checksum)
 }
 
 /// Leading name token of a PEP 508 requirement.

@@ -132,6 +132,76 @@ impl DepEdge {
     }
 }
 
+/// One runtime-edge set, de-duplicated by name, then sorted.
+///
+/// Followers that read a manifest into [`DepEdge`] share this fold so the
+/// first-row rule and the name order live in one place.
+/// [`Self::prefer_required`] replaces an optional row when a later row of the
+/// same name is required.
+#[derive(Debug, Default)]
+pub struct RuntimeEdgeFold {
+    edges: Vec<DepEdge>,
+    prefer_required: bool,
+}
+
+impl RuntimeEdgeFold {
+    /// A repeated name keeps the first row.
+    #[must_use]
+    pub fn keep_first() -> Self {
+        Self::default()
+    }
+
+    /// A repeated name keeps the first row, unless that row is optional and
+    /// the new row is required.
+    #[must_use]
+    pub fn prefer_required() -> Self {
+        Self {
+            edges: Vec::new(),
+            prefer_required: true,
+        }
+    }
+
+    /// Record one runtime edge. An empty name is ignored.
+    pub fn observe(&mut self, name: impl Into<SmolStr>, requirement: Option<&str>, optional: bool) {
+        let name = name.into();
+        if name.is_empty() {
+            return;
+        }
+        let mut edge = DepEdge::runtime(name);
+        if let Some(requirement) = requirement.map(str::trim).filter(|text| !text.is_empty()) {
+            edge.requirement = Some(requirement.into());
+        }
+        edge.optional = optional;
+        self.observe_edge(edge);
+    }
+
+    /// Record an edge that a parser already built. Kind and class stay as the
+    /// parser set them. An empty name is ignored.
+    pub fn observe_edge(&mut self, edge: DepEdge) {
+        if edge.name.is_empty() {
+            return;
+        }
+        if let Some(existing) = self
+            .edges
+            .iter_mut()
+            .find(|stored| stored.name == edge.name)
+        {
+            if self.prefer_required && existing.optional && !edge.optional {
+                *existing = edge;
+            }
+            return;
+        }
+        self.edges.push(edge);
+    }
+
+    /// Sort by name and return the rows.
+    #[must_use]
+    pub fn finish(mut self) -> Vec<DepEdge> {
+        self.edges.sort_by(|left, right| left.name.cmp(&right.name));
+        self.edges
+    }
+}
+
 /// Runtime edges from catalog dependency names.
 ///
 /// Blank names are dropped. Surviving names are trimmed and de-duplicated in
@@ -380,5 +450,56 @@ mod tests {
             serde_json::from_str(&encoded).expect("deserialize listed record");
         assert!(!decoded.yanked);
         assert_eq!(decoded, listed);
+    }
+
+    /// The fold and a second implementation of the same rules agree.
+    #[test]
+    fn runtime_edge_fold_matches_a_second_implementation() {
+        let rows = [
+            ("b", Some("^1"), true),
+            ("a", Some("1.0"), false),
+            ("b", Some("2"), false),
+            ("", Some("x"), false),
+            ("a", Some("9"), true),
+            ("c", None, false),
+        ];
+        let folded = finish(RuntimeEdgeFold::prefer_required(), &rows);
+        let oracle = oracle_prefer_required(&rows);
+        assert_eq!(folded, oracle);
+        let first = finish(RuntimeEdgeFold::keep_first(), &rows);
+        assert_eq!(first[0].name.as_str(), "a");
+        assert_eq!(first[1].requirement.as_deref(), Some("^1"));
+        assert!(first[1].optional);
+        assert_eq!(first.len(), 3);
+    }
+
+    fn finish(mut fold: RuntimeEdgeFold, rows: &[(&str, Option<&str>, bool)]) -> Vec<DepEdge> {
+        for (name, requirement, optional) in rows {
+            fold.observe(*name, *requirement, *optional);
+        }
+        fold.finish()
+    }
+
+    fn oracle_prefer_required(rows: &[(&str, Option<&str>, bool)]) -> Vec<DepEdge> {
+        let mut edges: Vec<DepEdge> = Vec::new();
+        for (name, requirement, optional) in rows {
+            if name.is_empty() {
+                continue;
+            }
+            let mut edge = DepEdge::runtime(*name);
+            if let Some(requirement) = requirement.filter(|text| !text.is_empty()) {
+                edge.requirement = Some((*requirement).into());
+            }
+            edge.optional = *optional;
+            if let Some(existing) = edges.iter_mut().find(|stored| stored.name == edge.name) {
+                if existing.optional && !edge.optional {
+                    *existing = edge;
+                }
+                continue;
+            }
+            edges.push(edge);
+        }
+        edges.sort_by(|left, right| left.name.cmp(&right.name));
+        edges
     }
 }

@@ -366,7 +366,7 @@ pub fn pom_dependency_edges(bytes: &[u8]) -> Vec<crate::record::DepEdge> {
     let mut scope: Option<String> = None;
     let mut version: Option<String> = None;
     let mut optional = false;
-    let mut edges: Vec<crate::record::DepEdge> = Vec::new();
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
@@ -388,19 +388,9 @@ pub fn pom_dependency_edges(bytes: &[u8]) -> Vec<crate::record::DepEdge> {
                     && let Some(name) =
                         direct_pom_dep(&path, group.take(), artifact.take(), scope.take())
                 {
-                    if edges.iter().any(|edge| edge.name == name) {
-                        path.pop();
-                        tag = path.last().cloned().unwrap_or_default();
-                        buf.clear();
-                        continue;
-                    }
-                    let mut edge = crate::record::DepEdge::runtime(name);
-                    if let Some(version) = version.take().filter(|text| !text.is_empty()) {
-                        edge.requirement = Some(version.into());
-                    }
-                    edge.optional = optional;
+                    let requirement = version.take().filter(|text| !text.is_empty());
+                    fold.observe(name, requirement.as_deref(), optional);
                     optional = false;
-                    edges.push(edge);
                 }
                 path.pop();
                 tag = path.last().cloned().unwrap_or_default();
@@ -430,8 +420,7 @@ pub fn pom_dependency_edges(bytes: &[u8]) -> Vec<crate::record::DepEdge> {
         }
         buf.clear();
     }
-    edges.sort_by(|left, right| left.name.cmp(&right.name));
-    edges
+    fold.finish()
 }
 
 fn local_xml_name(bytes: &[u8]) -> String {

@@ -389,19 +389,11 @@ pub fn require_names(text: &str) -> Vec<String> {
 /// Names are sorted.
 #[must_use]
 pub fn require_edges(text: &str) -> Vec<crate::record::DepEdge> {
-    let mut edges: Vec<crate::record::DepEdge> = Vec::new();
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
     for (path, version) in scan_requires(text) {
-        if edges.iter().any(|edge| edge.name == path) {
-            continue;
-        }
-        let mut edge = crate::record::DepEdge::runtime(path);
-        if let Some(version) = version {
-            edge.requirement = Some(version.into());
-        }
-        edges.push(edge);
+        fold.observe(path, version.as_deref(), false);
     }
-    edges.sort_by(|left, right| left.name.cmp(&right.name));
-    edges
+    fold.finish()
 }
 
 fn scan_requires(text: &str) -> Vec<(String, Option<String>)> {

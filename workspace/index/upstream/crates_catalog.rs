@@ -252,8 +252,6 @@ pub fn checksum_from_version_document(body: &[u8]) -> Option<String> {
 /// repeated name keeps the required row when one of the rows is required.
 /// Names are sorted.
 pub fn normal_dependency_edges(body: &[u8]) -> Vec<crate::record::DepEdge> {
-    use crate::record::DepEdge;
-
     #[derive(Deserialize)]
     struct Body {
         #[serde(default)]
@@ -273,31 +271,14 @@ pub fn normal_dependency_edges(body: &[u8]) -> Vec<crate::record::DepEdge> {
     let Ok(parsed) = serde_json::from_slice::<Body>(body) else {
         return Vec::new();
     };
-    let mut edges: Vec<DepEdge> = Vec::new();
+    let mut fold = crate::record::RuntimeEdgeFold::prefer_required();
     for dep in parsed.dependencies {
         if !(dep.kind.is_empty() || dep.kind == "normal") {
             continue;
         }
-        let name = dep.crate_id.trim();
-        if name.is_empty() {
-            continue;
-        }
-        let mut edge = DepEdge::runtime(name);
-        let requirement = dep.req.trim();
-        if !requirement.is_empty() {
-            edge.requirement = Some(requirement.into());
-        }
-        edge.optional = dep.optional;
-        if let Some(existing) = edges.iter_mut().find(|stored| stored.name == edge.name) {
-            if existing.optional && !edge.optional {
-                *existing = edge;
-            }
-            continue;
-        }
-        edges.push(edge);
+        fold.observe(dep.crate_id.trim(), Some(dep.req.trim()), dep.optional);
     }
-    edges.sort_by(|left, right| left.name.cmp(&right.name));
-    edges
+    fold.finish()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
