@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use sha2::{Digest, Sha256};
 
 use backend_frontend_typescript::legacy::{
-    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
+    AstKind, AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
     MappedModifier as CheckerMappedModifier, NodeId, Origin, OxcModule, ReferenceFlags, Semantic,
     Span, SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
     syntax_mapped_modifier, with_analysis, with_analysis_declaration,
@@ -1812,6 +1812,118 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(())
     }
 
+    fn ast_kind_at_exact_span(&self, start: u32, end: u32) -> Option<AstKind<'x>> {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= start);
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > start {
+                break;
+            }
+            if known.start == start && known.end == end {
+                return Some(self.semantic.nodes().get_node(*node_id).kind());
+            }
+        }
+        None
+    }
+
+    /// Walks one assignment-expression span, peeling parenthesized wrappers,
+    /// and declares nested function bindings on the right-hand side.
+    fn declare_assignment_bindings_in_assignment_expression_span(
+        &mut self,
+        start: u32,
+        end: u32,
+    ) -> Result<(), TypeScriptCollectError> {
+        let span = Span::new(start, end);
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        let last = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) <= (span.start, span.end));
+        for (_, node_id) in self.node_index[first..last].iter() {
+            let kind = self.semantic.nodes().get_node(*node_id).kind();
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                let inner = parenthesized.expression.span();
+                return self.declare_assignment_bindings_in_assignment_expression_span(
+                    inner.start,
+                    inner.end,
+                );
+            }
+            if let Some(assignment) = kind.as_assignment_expression() {
+                let right = assignment.right.span();
+                return self.declare_expression_bindings(right.start, right.end, 0);
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns nested statement spans reached from one statement during
+    /// assignment-binding walks.
+    fn assignment_binding_nested_statement_spans(kind: AstKind<'_>) -> Vec<Span> {
+        match kind {
+            AstKind::BlockStatement(block) => block
+                .body
+                .iter()
+                .map(|statement| statement.span())
+                .collect(),
+            AstKind::IfStatement(branch) => {
+                let mut spans = vec![branch.consequent.span()];
+                if let Some(alternate) = branch.alternate.as_ref() {
+                    spans.push(alternate.span());
+                }
+                spans
+            }
+            AstKind::WhileStatement(statement) => vec![statement.body.span()],
+            AstKind::DoWhileStatement(statement) => vec![statement.body.span()],
+            AstKind::ForStatement(statement) => vec![statement.body.span()],
+            AstKind::ForInStatement(statement) => vec![statement.body.span()],
+            AstKind::ForOfStatement(statement) => vec![statement.body.span()],
+            AstKind::LabeledStatement(statement) => vec![statement.body.span()],
+            AstKind::WithStatement(statement) => vec![statement.body.span()],
+            AstKind::TryStatement(try_statement) => {
+                let mut spans = vec![try_statement.block.span()];
+                if let Some(handler) = try_statement.handler.as_ref() {
+                    spans.push(handler.body.span());
+                }
+                if let Some(finalizer) = try_statement.finalizer.as_ref() {
+                    spans.push(finalizer.span());
+                }
+                spans
+            }
+            AstKind::SwitchStatement(switch_statement) => switch_statement
+                .cases
+                .iter()
+                .flat_map(|case| case.consequent.iter())
+                .map(|statement| statement.span())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Walks one statement span for assignment right-hand sides that carry
+    /// nested function bindings, including nested blocks.
+    fn declare_assignment_bindings_in_statement_span(
+        &mut self,
+        start: u32,
+        end: u32,
+    ) -> Result<(), TypeScriptCollectError> {
+        let Some(kind) = self.ast_kind_at_exact_span(start, end) else {
+            return Ok(());
+        };
+        if let AstKind::ExpressionStatement(expression) = kind {
+            let expression_span = expression.expression.span();
+            return self.declare_assignment_bindings_in_assignment_expression_span(
+                expression_span.start,
+                expression_span.end,
+            );
+        }
+        for span in Self::assignment_binding_nested_statement_spans(kind) {
+            self.declare_assignment_bindings_in_statement_span(span.start, span.end)?;
+        }
+        Ok(())
+    }
+
     /// Declares every function-binding name reachable inside one type span.
     fn declare_bindings_in_span(
         &mut self,
@@ -3166,6 +3278,29 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     id.span,
                     &rows,
                 )?;
+                for element in class.body.body.iter() {
+                    let element_span = element.span();
+                    let Some(element_kind) =
+                        self.ast_kind_at_exact_span(element_span.start, element_span.end)
+                    else {
+                        continue;
+                    };
+                    let Some(method) = element_kind.as_method_definition() else {
+                        continue;
+                    };
+                    if self.text_span(method.key.span()) != Some("constructor") {
+                        continue;
+                    }
+                    if let Some(body) = method.value.body.as_ref() {
+                        for statement in body.statements.iter() {
+                            let statement_span = statement.span();
+                            self.declare_assignment_bindings_in_statement_span(
+                                statement_span.start,
+                                statement_span.end,
+                            )?;
+                        }
+                    }
+                }
             } else if let Some(enumeration) = kind.as_ts_enum_declaration() {
                 self.push_self_nominal(
                     EntityKind::Enum,
@@ -3596,6 +3731,15 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     result,
                     definition.r#static,
                 )?;
+                if let Some(body) = value.body.as_ref() {
+                    for statement in body.statements.iter() {
+                        let statement_span = statement.span();
+                        self.declare_assignment_bindings_in_statement_span(
+                            statement_span.start,
+                            statement_span.end,
+                        )?;
+                    }
+                }
             } else if let Some(signature) = kind.as_ts_call_signature_declaration() {
                 // A call signature inside an anonymous object literal was
                 // already embodied while that literal lowered (its member

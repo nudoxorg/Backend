@@ -25,6 +25,8 @@
 //!   fresh buffer (slashed foreign paths, module-level owners, the module
 //!   docstring) are documented limitations, never synthesized data.
 
+use std::collections::{HashMap, HashSet};
+
 use backend_frontend_python::legacy::{
     Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
     DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
@@ -224,12 +226,68 @@ struct Emitter<'a, 'source> {
     reserved_anchor: Option<u32>,
 }
 
+/// How one module-level spelling is bound for nominal resolution.
+enum BindingResolution {
+    Nominal(u32),
+    Ambiguous,
+    External,
+}
+
+impl BindingResolution {
+    fn nominal_ordinal(&self) -> Option<u32> {
+        match self {
+            BindingResolution::Nominal(ordinal) => Some(*ordinal),
+            BindingResolution::Ambiguous => None,
+            BindingResolution::External => None,
+        }
+    }
+}
+
 /// The interned name tables annotation lowering resolves against.
 struct TypeTables<'source> {
-    /// Module classes: exact name bytes to their already-pushed ordinal.
     classes: Vec<(&'source [u8], u32)>,
-    /// Names bound by a `TypeVar(...)` assignment in this module.
     typevars: Vec<&'source [u8]>,
+    bindings: HashMap<String, BindingResolution>,
+}
+
+impl TypeTables<'_> {
+    fn bound_nominal(&self, name: &str) -> Option<u32> {
+        if let Some(ordinal) = self.direct_bound_nominal(name) {
+            return Some(ordinal);
+        }
+        self.qualified_bound_nominal(name)
+    }
+
+    fn direct_bound_nominal(&self, name: &str) -> Option<u32> {
+        match self.bindings.get(name) {
+            Some(resolution) => resolution.nominal_ordinal(),
+            None => None,
+        }
+    }
+
+    fn qualified_bound_nominal(&self, name: &str) -> Option<u32> {
+        let mut start = 0;
+        while let Some(rel) = name[start..].find('.') {
+            let dot = start + rel;
+            let prefix = &name[..dot];
+            let rest = &name[dot + 1..];
+            if self.direct_bound_nominal(prefix).is_some() {
+                if let Some((_, ordinal)) = self
+                    .classes
+                    .iter()
+                    .find(|(known, _)| *known == rest.as_bytes())
+                {
+                    return Some(*ordinal);
+                }
+            }
+            start = dot + 1;
+        }
+        None
+    }
+
+    fn binding_state(&self, name: &str) -> Option<&BindingResolution> {
+        self.bindings.get(name)
+    }
 }
 
 /// One annotation lowered into its lattice record plus the fact ordinals
@@ -304,6 +362,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let mut tables = TypeTables {
             classes: Vec::new(),
             typevars: self.module_typevar_names()?,
+            bindings: HashMap::new(),
         };
         for index in indices {
             let declaration = &self.module.declarations[index];
@@ -712,7 +771,54 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 typevars.push(self.slice(*parameter)?);
             }
         }
-        Ok(TypeTables { classes, typevars })
+        let bindings = self.name_bindings(&classes)?;
+        Ok(TypeTables { classes, typevars, bindings })
+    }
+
+    fn name_bindings(
+        &self,
+        classes: &[(&'source [u8], u32)],
+    ) -> Result<HashMap<String, BindingResolution>, PythonCollectError> {
+        let text = std::str::from_utf8(self.source).map_err(|error| {
+            let start = error.valid_up_to();
+            let end = error
+                .error_len()
+                .map_or(self.source.len(), |l| start.saturating_add(l))
+                .min(self.source.len());
+            PythonCollectError::Span {
+                start: u32::try_from(start).unwrap_or(0),
+                end: u32::try_from(end).unwrap_or(0),
+            }
+        })?;
+        let mut bound = import_name_bindings(text, &self.module.identity, classes);
+        let mut locals: HashMap<String, u32> = HashMap::new();
+        for (name, ordinal) in classes {
+            record_local_binding(&mut bound, &mut locals, name, *ordinal);
+        }
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if !self.live[index] || declaration.kind != DeclarationKind::Alias {
+                continue;
+            }
+            let is_type_alias =
+                declaration.value_span.is_none() && declaration.value_source.is_some();
+            if !is_type_alias {
+                continue;
+            }
+            let Some(annotation) = self.alias_value_annotation(declaration) else {
+                continue;
+            };
+            let Some(target) = annotation_root_name(&annotation.annotation) else {
+                continue;
+            };
+            let resolution = resolve_alias_target(&bound, classes, &target);
+            apply_type_alias_binding(
+                &mut bound,
+                &mut locals,
+                &declaration.name,
+                resolution,
+            );
+        }
+        Ok(bound)
     }
 
     /// Lowers one function: its parameter facts and annotated-return result
@@ -1523,13 +1629,24 @@ impl<'a, 'source> Emitter<'a, 'source> {
             };
             return leaf(record, true);
         }
-        // The written spelling is the exact evidence this lane can carry:
-        // imported names resolve outside the module and everything else is a
-        // local name one resolution pass away from a type.
-        let reason = if self.is_imported_name(name) {
-            TypeReason::UnresolvedExternal
-        } else {
-            TypeReason::UnresolvedLocalName
+        if let Some(ordinal) = tables.bound_nominal(name) {
+            let record = SemanticTypeRecord {
+                tag: SemanticTypeTag::Nominal,
+                payload0: 0,
+                payload1: 0,
+                text: None,
+                text2: None,
+                nominal: Some(NominalRef::Local(EntityId::new(ordinal))),
+                children: ListSpan::new(0, 0),
+            };
+            return leaf(record, true);
+        }
+        let reason = match tables.binding_state(name) {
+            Some(BindingResolution::External) => TypeReason::UnresolvedExternal,
+            Some(BindingResolution::Ambiguous) => TypeReason::UnresolvedLocalName,
+            Some(BindingResolution::Nominal(_)) => TypeReason::UnresolvedLocalName,
+            None if self.is_import_binding(name) => TypeReason::UnresolvedExternal,
+            None => TypeReason::UnresolvedLocalName,
         };
         Ok(LoweredType {
             record: spelled_unknown(reason, self.spelling_bytes(spelling)?),
@@ -1538,18 +1655,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
         })
     }
 
-    /// True when the name is a live import binding of this module.
-    /// Shadowed bindings are dead, so they never mark a name as imported.
-    fn is_imported_name(&self, name: &str) -> bool {
-        self.module
-            .declarations
-            .iter()
-            .enumerate()
-            .any(|(index, declaration)| {
-                self.live[index]
-                    && declaration.kind == DeclarationKind::Alias
-                    && declaration.name == name
-            })
+    fn is_import_binding(&self, name: &str) -> bool {
+        self.module.declarations.iter().enumerate().any(|(index, declaration)| {
+            self.live[index]
+                && declaration.kind == DeclarationKind::Alias
+                && declaration.value_span.is_some()
+                && declaration.name == name
+        })
     }
 
     /// Lowers a union: expressible exactly when every member lowers to a
@@ -2126,6 +2238,166 @@ fn is_receiver_parameter(receiver: ReceiverKind, name: &str) -> bool {
         ReceiverKind::ClassMethod => name == "cls",
         ReceiverKind::StaticMethod | ReceiverKind::Property => false,
     }
+}
+
+
+fn collect_import_bindings(source: &str, module_name: &str) -> (HashMap<String, String>, HashSet<String>) {
+    let is_package = module_name.ends_with("__init__");
+    let mut bound = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    for line in source.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("from ") {
+            if let Some((origin, names)) = rest.split_once(" import ") {
+                let (level, module) = parse_relative_origin(origin);
+                let origin = import_origin(module_name, is_package, level, module);
+                for part in names.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() || part == "*" { continue; }
+                    let (imported, local) = parse_import_alias(part);
+                    let target = if origin.is_empty() { imported.to_owned() } else { format!("{origin}.{imported}") };
+                    record_import_target(&mut bound, &mut ambiguous, local, target);
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("import ") {
+            for part in rest.split(',') {
+                let part = part.trim();
+                if part.is_empty() { continue; }
+                let (imported, local) = parse_import_alias(part);
+                record_import_target(&mut bound, &mut ambiguous, local, imported.to_owned());
+            }
+        }
+    }
+    (bound, ambiguous)
+}
+
+fn parse_relative_origin(origin: &str) -> (u32, Option<&str>) {
+    let dots = origin.chars().take_while(|c| *c == '.').count();
+    let tail = origin[dots..].trim();
+    (u32::try_from(dots).unwrap_or(0), if tail.is_empty() { None } else { Some(tail) })
+}
+
+fn parse_import_alias(part: &str) -> (&str, &str) {
+    let mut words = part.split_whitespace();
+    let imported = words.next().unwrap_or(part);
+    if words.next() == Some("as") { (imported, words.next().unwrap_or(imported)) } else { (imported, imported.split('.').next().unwrap_or(imported)) }
+}
+
+fn import_origin(module_name: &str, is_package: bool, level: u32, module: Option<&str>) -> String {
+    if level == 0 { return module.unwrap_or("").to_owned(); }
+    let mut parts: Vec<&str> = module_name.split('.').filter(|p| !p.is_empty()).collect();
+    if !is_package { parts.pop(); }
+    let extra = (level as usize).saturating_sub(1);
+    if extra >= parts.len() { parts.clear(); } else if extra > 0 { parts.truncate(parts.len() - extra); }
+    let mut origin = parts.join(".");
+    if let Some(module) = module.filter(|n| !n.is_empty()) {
+        origin = if origin.is_empty() { module.to_owned() } else { format!("{origin}.{module}") };
+    }
+    origin
+}
+
+fn record_import_target(bound: &mut HashMap<String, String>, ambiguous: &mut HashSet<String>, local: &str, target: String) {
+    if ambiguous.contains(local) { return; }
+    match bound.get(local) {
+        Some(existing) if existing == &target => {}
+        Some(_) => { bound.remove(local); ambiguous.insert(local.to_owned()); }
+        None => { bound.insert(local.to_owned(), target); }
+    }
+}
+
+fn import_name_bindings(
+    source: &str,
+    module_name: &str,
+    classes: &[(&[u8], u32)],
+) -> HashMap<String, BindingResolution> {
+    let (import_targets, ambiguous) = collect_import_bindings(source, module_name);
+    let mut bound = HashMap::new();
+    for (local, target) in import_targets {
+        let resolution = import_binding_resolution(&target, classes);
+        bound.insert(local, resolution);
+    }
+    for name in ambiguous {
+        bound.insert(name, BindingResolution::Ambiguous);
+    }
+    bound
+}
+
+fn resolve_alias_target(
+    bound: &HashMap<String, BindingResolution>,
+    classes: &[(&[u8], u32)],
+    target: &str,
+) -> Option<BindingResolution> {
+    match bound.get(target) {
+        Some(BindingResolution::Nominal(ordinal)) => Some(BindingResolution::Nominal(*ordinal)),
+        Some(BindingResolution::Ambiguous) => Some(BindingResolution::Ambiguous),
+        Some(BindingResolution::External) => Some(BindingResolution::External),
+        None => class_binding_for_name(classes, target),
+    }
+}
+
+fn class_binding_for_name(classes: &[(&[u8], u32)], name: &str) -> Option<BindingResolution> {
+    classes
+        .iter()
+        .find(|(known, _)| *known == name.as_bytes())
+        .map(|(_, ordinal)| BindingResolution::Nominal(*ordinal))
+}
+
+fn apply_type_alias_binding(
+    bound: &mut HashMap<String, BindingResolution>,
+    locals: &mut HashMap<String, u32>,
+    alias_name: &str,
+    resolution: Option<BindingResolution>,
+) {
+    match resolution {
+        Some(BindingResolution::Nominal(ordinal)) => {
+            record_local_binding(bound, locals, alias_name.as_bytes(), ordinal);
+        }
+        Some(BindingResolution::Ambiguous) => {
+            bound.insert(alias_name.to_owned(), BindingResolution::Ambiguous);
+        }
+        Some(BindingResolution::External) => {
+            bound.insert(alias_name.to_owned(), BindingResolution::External);
+        }
+        None => {}
+    }
+}
+
+fn record_local_binding(
+    bound: &mut HashMap<String, BindingResolution>,
+    locals: &mut HashMap<String, u32>,
+    name: &[u8],
+    ordinal: u32,
+) {
+    let name = std::str::from_utf8(name).unwrap_or("");
+    if name.is_empty() {
+        return;
+    }
+    if let Some(prev) = locals.get(name) {
+        if *prev != ordinal {
+            bound.insert(name.to_owned(), BindingResolution::Ambiguous);
+        }
+        return;
+    }
+    locals.insert(name.to_owned(), ordinal);
+    bound.insert(name.to_owned(), BindingResolution::Nominal(ordinal));
+}
+
+fn import_binding_resolution(target: &str, classes: &[(&[u8], u32)]) -> BindingResolution {
+    let simple = target.rsplit('.').next().unwrap_or(target);
+    let matches: Vec<u32> = classes
+        .iter()
+        .filter(|(known, _)| *known == simple.as_bytes())
+        .map(|(_, ordinal)| *ordinal)
+        .collect();
+    match matches.len() {
+        0 => BindingResolution::External,
+        1 => BindingResolution::Nominal(matches[0]),
+        _ => BindingResolution::Ambiguous,
+    }
+}
+
+fn annotation_root_name(annotation: &Annotation) -> Option<String> {
+    match annotation { Annotation::Name { name, .. } => Some(name.clone()), _ => None }
 }
 
 /// Python legally rebinds a name in the same scope at runtime, but the syntax

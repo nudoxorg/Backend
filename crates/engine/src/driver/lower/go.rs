@@ -948,6 +948,23 @@ fn absent_name(index: usize) -> &'static [u8] {
     }
 }
 
+
+/// Whether one Go identifier does not bind at its declaration site.
+fn is_unbound_name(name: &[u8]) -> bool {
+    name.is_empty() || name == b"_"
+}
+
+/// Authority-proven discriminator for one unbound declaration whose display
+/// spelling would otherwise collide with a sibling at the same scope.
+fn unbound_discriminator(index: usize) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"compiler.go.unbound-declaration.v1\0");
+    hash.update((index as u64).to_le_bytes());
+    let mut discriminator = [0_u8; 16];
+    discriminator.copy_from_slice(&hash.finalize()[..16]);
+    discriminator
+}
+
 /// `PrimitiveShape::Integer` wire cell.
 const SHAPE_INTEGER: u32 = 0;
 /// `PrimitiveShape::Float` wire cell.
@@ -1636,6 +1653,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         package: &'source [u8],
         type_name: &'source [u8],
     ) -> Result<(), GoCollectError> {
+        let mut field_index = 0usize;
         for member_index in member_run(row) {
             let member = self
                 .image
@@ -1645,11 +1663,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                 continue;
             }
             let root = self.root(member.type_root, TypeReason::OracleGap)?;
-            let fact = root.attach(SemanticFact::new(
+            let mut fact = root.attach(SemanticFact::new(
                 EntityKind::Field,
                 member.name,
                 LEAF_PRODUCT,
             ));
+            if is_unbound_name(member.name) {
+                fact = fact.with_identity_discriminator(unbound_discriminator(field_index));
+            }
+            field_index += 1;
             let ordinal = push(self.facts, fact)?;
             self.facts
                 .attach_parent(ordinal, owner)
@@ -1768,7 +1790,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 observed: self.facts.type_parameter_len as u64,
             })
         })?;
-        let fact = root
+        let mut fact = root
             .attach(SemanticFact::new(kind, declaration.name, constructor(kind)))
             .with_extension(EmissionExtension::Go(GoFacts {
                 signature: GoSignature {
@@ -1784,12 +1806,17 @@ impl<'x, 'source> Projector<'x, 'source> {
                 constant_group,
                 constant_flags,
             }));
+        if declaration.kind == DeclarationKind::Static && is_unbound_name(declaration.name) {
+            fact = fact.with_identity_discriminator(unbound_discriminator(index));
+        }
         let ordinal = push(self.facts, fact)?;
         self.facts
             .mark_parentage_root(ordinal)
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.package, declaration.name, ordinal);
+        if !is_unbound_name(declaration.name) {
+            self.record_name(declaration.package, declaration.name, ordinal);
+        }
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
@@ -5166,6 +5193,63 @@ mod tests {
             return Err(TestError::Missing("constraint atom coordinate"));
         }
         Ok(())
+    }
+
+    /// Same-typed blanks share a structural variant. Only the positional
+    /// discriminator keeps them from collapsing to one identity.
+    fn distinct_identities(
+        ir: &backend_semantic::ir::Ir,
+        kind: EntityKind,
+        name: &[u8],
+    ) -> Result<(), TestError> {
+        let mut identities = Vec::new();
+        for item in ir.items() {
+            if item.kind() == kind && item.name() == name {
+                identities.push(item.version().identity());
+            }
+        }
+        if identities.len() != 2 {
+            return Err(TestError::Missing("two same-typed blank declarations"));
+        }
+        if identities[0] == identities[1] {
+            return Err(TestError::Missing("blank declarations must not share one identity"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_blank_struct_fields_do_not_share_one_identity() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let pad = fix.declaration(KIND_TYPE, b"Pad", None);
+        let struct_row = fix.start_row(ROW_STRUCT);
+        fix.field(struct_row, b"_", Some(int));
+        fix.field(struct_row, b"Keep", Some(int));
+        fix.field(struct_row, b"_", Some(int));
+        fix.declarations[pad].type_root = Some(struct_row);
+        let ir = lower_ir(&fix, b"package pad\n")?;
+        distinct_identities(&ir, EntityKind::Field, b"_")?;
+        let mut keep = 0usize;
+        for item in ir.items() {
+            if item.kind() == EntityKind::Field && item.name() == b"Keep" {
+                keep += 1;
+            }
+        }
+        if keep != 1 {
+            return Err(TestError::Missing("named field stays one declaration"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_blank_package_vars_do_not_share_one_identity() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        fix.declaration(KIND_VAR, b"_", Some(int));
+        fix.declaration(KIND_VAR, b"Keep", Some(int));
+        fix.declaration(KIND_VAR, b"_", Some(int));
+        let ir = lower_ir(&fix, b"package blank\n")?;
+        distinct_identities(&ir, EntityKind::Static, b"_")
     }
 
     /// A source may spell several carriers with Go's blank identifier, exactly
