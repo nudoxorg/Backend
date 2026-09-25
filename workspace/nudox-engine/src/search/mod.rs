@@ -516,11 +516,11 @@ async fn collect_semantic_hits(
     // to survive within the first `limit` symbols of any kind.
     let nearest = semantic.nearest(vector, limit.saturating_mul(4).max(limit));
 
+    // Rank every survivor of the over-fetch. Stopping at `limit` here would
+    // keep the first cosine hits and drop a later one whose visibility and
+    // kind weights sort it ahead.
     let mut candidates: Vec<Candidate> = Vec::new();
     for (lineage, intro, cosine) in nearest {
-        if candidates.len() >= limit {
-            break;
-        }
         let Some(pkg) = in_scope.iter().find(|p| *p.lineage() == lineage) else {
             continue;
         };
