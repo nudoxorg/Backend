@@ -60,14 +60,24 @@ pub(super) const MAX_EMISSION_FACTS: usize = 32768;
 /// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 244 pooled children. Roll back to 32 if it stays below 16 per fact.
 pub(super) const MAX_FACT_CHILDREN: usize = 64;
 /// Dense bound of one fact's ordered type-record children.
-/// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 23,876 pooled computed children. Roll back to 32 if every target stays below 16 per row.
-pub(super) const MAX_TYPE_CHILDREN: usize = 64;
+///
+/// A compound row may name this many children. The count is a `u8`, so 255
+/// is the hard per-row maximum. The pooled lanes stay at
+/// [`TYPE_CHILD_POOL_STRIDE`] on average: raising this constant must not
+/// multiply `protocol_maximum` by 255.
+pub(super) const MAX_TYPE_CHILDREN: usize = 255;
+/// Average child slots reserved per type row in the pooled lanes.
+///
+/// One row may still use [`MAX_TYPE_CHILDREN`]. The pool product stays at
+/// this stride so a maximal fact set does not allocate a 255-wide slot for
+/// every declaration.
+const TYPE_CHILD_POOL_STRIDE: usize = 64;
 /// Total pooled product-child ceiling across one request. Per-row legality is
 /// still governed by [`MAX_FACT_CHILDREN`]; production allocation uses the
 /// request's measured aggregate demand rather than this Cartesian maximum.
 const MAX_EMISSION_CHILDREN: usize = MAX_EMISSION_FACTS * MAX_FACT_CHILDREN;
 /// Total pooled declared-type-child ceiling across one request.
-const MAX_EMISSION_TYPE_CHILDREN: usize = MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN;
+const MAX_EMISSION_TYPE_CHILDREN: usize = MAX_EMISSION_FACTS * TYPE_CHILD_POOL_STRIDE;
 /// The uncommitted portion of either fixed type-child lane can never exceed
 /// one record's bounded child capacity, so its cursor has a total compact
 /// representation independent of the platform's native word width.
@@ -127,8 +137,8 @@ pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 8192;
 pub(super) const MAX_COMPUTED_TYPE_ROWS: usize = 32768;
 /// Aggregate anonymous/computed child ceilings. These remain protocol limits,
 /// not eager allocation instructions.
-const MAX_ANONYMOUS_TYPE_CHILDREN: usize = MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN;
-const MAX_COMPUTED_TYPE_CHILDREN: usize = MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN;
+const MAX_ANONYMOUS_TYPE_CHILDREN: usize = MAX_ANONYMOUS_TYPE_ROWS * TYPE_CHILD_POOL_STRIDE;
+const MAX_COMPUTED_TYPE_CHILDREN: usize = MAX_COMPUTED_TYPE_ROWS * TYPE_CHILD_POOL_STRIDE;
 /// Total type-row budget: one record per fact plus the anonymous pool.
 pub(super) const MAX_TYPE_ROWS: usize =
     MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS + MAX_COMPUTED_TYPE_ROWS;
@@ -213,7 +223,7 @@ impl ResourcePlan {
         let units = source_bytes.saturating_add(1);
         let bounded = |value: usize, maximum: usize| value.clamp(8, maximum);
         let bounded_children =
-            |value: usize, maximum: usize| value.clamp(MAX_TYPE_CHILDREN, maximum);
+            |value: usize, maximum: usize| value.clamp(TYPE_CHILD_POOL_STRIDE, maximum);
         let facts = bounded(units / 2 + 8, MAX_EMISSION_FACTS);
         Self {
             facts,

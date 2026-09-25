@@ -1776,7 +1776,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         }
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::CQualified);
         record.payload0 = qualifiers;
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects one builtin row onto its exact width, signedness, and shape
@@ -1941,7 +1941,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     coordinate => children.push((coordinate, None)),
                 }
             }
-            return Ok(self.finish_row(SemanticTypeRecord::leaf(SemanticTypeTag::Apply), children));
+            return self.finish_row(SemanticTypeRecord::leaf(SemanticTypeTag::Apply), children);
         }
         if let Some(spelling) = self
             .template_parameters
@@ -2017,7 +2017,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
         };
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects an Objective-C block pointer without collapsing it into the
@@ -2037,7 +2037,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         };
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
         record.payload0 = SHAPE_C_BLOCK_POINTER;
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects a C++ reference category over its referent. This path never
@@ -2060,7 +2060,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
         };
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects a C++ member pointer with ordered owner then member type.
@@ -2142,7 +2142,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         };
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
         record.payload0 = SHAPE_CXX_MEMBER_POINTER;
-        Ok(self.finish_row(record, vec![(owner, None), (member, None)]))
+        self.finish_row(record, vec![(owner, None), (member, None)])
     }
 
     /// Projects one array row with a typed fixed extent or an explicit
@@ -2169,7 +2169,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
         };
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects one function type: the structural `FunctionPointer` row over
@@ -2210,7 +2210,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         if has_result {
             record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
-        Ok(self.finish_row(record, children))
+        self.finish_row(record, children)
     }
 
     /// The relation of one direct edge, for ordered signature projections.
@@ -2262,24 +2262,28 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             .map_err(|fault| lane_terminal(self.facts, 0, fault))
     }
 
-    /// Finishes one compound row over its ordered children, folding to the
-    /// typed gap when the children exceed the row's bounded child width —
-    /// never a partial, lying row.
+    /// Finishes one compound row over its ordered children. A row wider than
+    /// the type-child lane is a typed capacity fault, never an oracle gap
+    /// and never a partial row.
     fn finish_row(
         &self,
         record: SemanticTypeRecord<'source>,
         children: Vec<(u32, Option<&'source [u8]>)>,
-    ) -> Projected<'source> {
+    ) -> Result<Projected<'source>, ClangCollectError> {
         if children.len() > MAX_TYPE_CHILDREN {
-            return gap();
+            return Err(lane_terminal(self.facts, 0, FactFault::TypeChildCapacity));
         }
         let mut projected = Projected::leaf(record);
         for (target, name) in children {
             if projected.child(target, name).is_none() {
-                return gap();
+                return Err(lane_terminal(
+                    self.facts,
+                    name.map_or(0, <[u8]>::len),
+                    FactFault::TypeChildCapacity,
+                ));
             }
         }
-        projected
+        Ok(projected)
     }
 
     /// Projects one anonymous record: its named member fields are pushed as
@@ -2350,7 +2354,11 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 continue;
             };
             if projected.child(ordinal, Some(member_name)).is_none() {
-                return Ok(gap());
+                return Err(lane_terminal(
+                    self.facts,
+                    member_name.len(),
+                    FactFault::TypeChildCapacity,
+                ));
             }
         }
         Ok(projected)

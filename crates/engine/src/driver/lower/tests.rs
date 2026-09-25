@@ -22,7 +22,8 @@ use thiserror::Error;
 use super::{
     AdmissionFault, EmissionExtension, FactFault, FactSet, MAX_ANONYMOUS_TYPE_ROWS,
     MAX_EMISSION_DOC_FRAGMENTS, MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS,
-    MAX_FACT_CHILDREN, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
+    MAX_FACT_CHILDREN, MAX_REF_LISTS, MAX_TYPE_CHILDREN, MAX_TYPE_PARAMETERS, RejectedFact,
+    SemanticFact,
 };
 use crate::driver::types::{ParentageState, SourceSpanFact};
 
@@ -387,6 +388,38 @@ fn c_occurrences_pass_the_declaration_ceiling() -> Result<(), TestError> {
             }))?;
     }
     Ok(())
+}
+
+#[test]
+fn wide_anonymous_type_row_keeps_sixty_five_children() -> Result<(), TestError> {
+    let mut plan = super::ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), 0);
+    plan.facts = 2;
+    plan.anonymous_rows = 1;
+    plan.anonymous_type_children = MAX_TYPE_CHILDREN;
+    let mut facts = FactSet::with_plan(plan);
+    push_pending_seed(&mut facts)?;
+    let width = 65;
+    for _ in 0..width {
+        facts.anonymous_type_child(0, None, 0).map_err(lane_fault)?;
+    }
+    let row = facts
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    if facts.staged_type_child_count(row) != Some(width) {
+        return Err(TestError::Tail);
+    }
+    let mut overflow = FactSet::with_plan(plan);
+    push_pending_seed(&mut overflow)?;
+    for _ in 0..MAX_TYPE_CHILDREN {
+        overflow
+            .anonymous_type_child(0, None, 0)
+            .map_err(lane_fault)?;
+    }
+    match overflow.anonymous_type_child(0, None, 0) {
+        Err(FactFault::TypeChildCapacity) => Ok(()),
+        Err(cause) => Err(lane_fault(cause)),
+        Ok(()) => Err(TestError::UnexpectedPush),
+    }
 }
 
 fn push_pending_seed(facts: &mut FactSet<'static>) -> Result<(), TestError> {
