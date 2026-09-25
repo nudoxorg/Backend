@@ -557,6 +557,43 @@ mod tests {
         }
     }
 
+    /// The 21 packages that used to die in `Lowering::finish`. Extract each
+    /// latest npm tarball under `/tmp/npm21/src/<name>` before running.
+    /// Not part of the default gate: the tarballs are not in the repo.
+    #[test]
+    #[ignore = "extract the 21 latest npm tarballs under /tmp/npm21/src"]
+    fn measured_npm_packages_seal() {
+        let root = std::path::PathBuf::from("/tmp/npm21/src");
+        assert!(root.is_dir(), "extract the 21 tarballs under /tmp/npm21/src");
+        let mut failures = Vec::new();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.join("package.json").is_file() {
+                continue;
+            }
+            let manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path.join("package.json")).unwrap())
+                    .unwrap();
+            let name = manifest["name"].as_str().unwrap_or("unknown").to_string();
+            let version = manifest["version"].as_str().unwrap_or("0").to_string();
+            let source = PackageSource::new(&path, name.clone(), version);
+            let lineage =
+                PackageLineageId::new(EcosystemId::new("npm"), PackageName::new(name.clone()));
+            if let Err(error) = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked) {
+                let detail = std::error::Error::source(&error)
+                    .map(|source| source.to_string())
+                    .unwrap_or_else(|| error.to_string());
+                failures.push(format!("{name}: {detail}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "packages that must seal:\n{}",
+            failures.join("\n")
+        );
+    }
+
     #[test]
     fn an_empty_package_is_rejected_instead_of_sealing_the_root_stub() {
         let dir = tempfile::tempdir().expect("create tempdir");

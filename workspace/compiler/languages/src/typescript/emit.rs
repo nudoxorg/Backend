@@ -447,7 +447,7 @@ fn emit_interface(
     for (idx, method) in body.methods.iter().enumerate() {
         let method_id = TsId::new(
             id.module.clone(),
-            format!("{}::{}", id.name, method.name),
+            child_name(&id, &method.name),
             idx as u32,
         );
         let method_sym = Symbol {
@@ -477,8 +477,14 @@ fn emit_interface(
     }
 
     // Emit properties as child Field entries.
-    for prop in &body.properties {
-        let prop_id = TsId::new(id.module.clone(), format!("{}::{}", id.name, prop.name), 0);
+    for (idx, prop) in body.properties.iter().enumerate() {
+        let prop_id = TsId::new(
+            id.module.clone(),
+            child_name(&id, &prop.name),
+            id.discriminant
+                .saturating_mul(1_000_000)
+                .saturating_add(idx as u32),
+        );
         let prop_sym = Symbol {
             name: prop.name.clone(),
             visibility: accessibility_to_visibility(prop.modifiers.accessibility),
@@ -631,8 +637,10 @@ fn emit_class(
             MemberKind::Property { ty } | MemberKind::Accessor { ty } => {
                 let field_id = TsId::new(
                     id.module.clone(),
-                    format!("{}::{}", id.name, member.name),
-                    idx as u32,
+                    child_name(&id, &member.name),
+                    id.discriminant
+                        .saturating_mul(1_000_000)
+                        .saturating_add(idx as u32),
                 );
                 let fref: Ref<Field> = out.refer(field_id.clone());
                 field_refs.push(fref);
@@ -696,8 +704,10 @@ fn emit_class(
                 for (overload_idx, sig) in sigs_ref.iter().enumerate() {
                     let method_id = TsId::new(
                         id.module.clone(),
-                        format!("{}::{}", id.name, member.name),
-                        (idx * 1000 + overload_idx) as u32,
+                        child_name(&id, &member.name),
+                        id.discriminant
+                            .saturating_mul(1_000_000)
+                            .saturating_add((idx * 1000 + overload_idx) as u32),
                     );
                     let method_sym = Symbol {
                         name: member.name.clone(),
@@ -729,8 +739,10 @@ fn emit_class(
             MemberKind::Constructor(s) => {
                 let method_id = TsId::new(
                     id.module.clone(),
-                    format!("{}::{}", id.name, member.name),
-                    (idx * 1000) as u32,
+                    child_name(&id, &member.name),
+                    id.discriminant
+                        .saturating_mul(1_000_000)
+                        .saturating_add((idx * 1000) as u32),
                 );
                 let method_sym = Symbol {
                     name: member.name.clone(),
@@ -1835,8 +1847,8 @@ struct TwinPlan {
     canonical: HashMap<PathBuf, PathBuf>,
     module_extra: HashMap<PathBuf, Vec<String>>,
     extra_paths: HashMap<TsId, Vec<String>>,
-    skip: HashSet<(PathBuf, String, u32)>,
-    disc: HashMap<(PathBuf, String, u32), u32>,
+    skip: HashSet<(PathBuf, String, u32, u32)>,
+    disc: HashMap<(PathBuf, String, u32, u32), u32>,
 }
 
 impl TwinPlan {
@@ -1906,15 +1918,24 @@ impl TwinPlan {
 
     fn discriminant(&self, decl: &DeclFact, qualified: &str) -> u32 {
         self.disc
-            .get(&(decl.module.clone(), qualified.to_string(), decl.decl_index))
+            .get(&(
+                decl.module.clone(),
+                qualified.to_string(),
+                decl.decl_index,
+                decl.span_start,
+            ))
             .copied()
             .unwrap_or(decl.decl_index)
     }
 
     fn is_skipped(&self, decl: &DeclFact, parent: Option<&TsId>) -> bool {
         let name = qualified_decl_name(decl, parent);
-        self.skip
-            .contains(&(decl.module.clone(), name, decl.decl_index))
+        self.skip.contains(&(
+            decl.module.clone(),
+            name,
+            decl.decl_index,
+            decl.span_start,
+        ))
     }
 }
 
@@ -1923,8 +1944,8 @@ fn admit_decls(
     parent_qual: Option<&str>,
     canonical_of: &HashMap<PathBuf, PathBuf>,
     occupied: &mut HashMap<(PathBuf, String, u32), KeptBody>,
-    skip: &mut HashSet<(PathBuf, String, u32)>,
-    disc: &mut HashMap<(PathBuf, String, u32), u32>,
+    skip: &mut HashSet<(PathBuf, String, u32, u32)>,
+    disc: &mut HashMap<(PathBuf, String, u32, u32), u32>,
     extra_paths: &mut HashMap<TsId, Vec<String>>,
 ) {
     for decl in decls {
@@ -1941,16 +1962,31 @@ fn admit_decls(
         };
         let preferred = decl.decl_index;
         let skel = body_skeleton(&decl.body);
-        let origin = (decl.module.clone(), qual.clone(), preferred);
+        let origin = (decl.module.clone(), qual.clone(), preferred, decl.span_start);
         let slot = (canonical.clone(), qual.clone(), preferred);
         let existing = occupied
             .get(&slot)
             .map(|kept| (kept.skeleton.clone(), kept.path.clone()));
         match existing {
-            Some((_, kept_path)) if kept_path == decl.module => {
-                // Same file. Never merge, and never retarget the discriminant
-                // to dodge a collision. A shared id fails `finish` as
-                // `Error::Duplicate`.
+            Some((kept_skel, kept_path)) if kept_path == decl.module => {
+                if kept_skel == skel {
+                    // The same body written twice in one file (interface
+                    // merging, a twin copy pasted beside the original). One
+                    // entry is the declaration.
+                    skip.insert(origin);
+                } else {
+                    // Different bodies share a name. They are overloads, not
+                    // one id declared twice.
+                    let fresh = fresh_discriminant(occupied, &canonical, &qual);
+                    disc.insert(origin.clone(), fresh);
+                    occupied.insert(
+                        (canonical.clone(), qual.clone(), fresh),
+                        KeptBody {
+                            skeleton: skel,
+                            path: decl.module.clone(),
+                        },
+                    );
+                }
             }
             Some((kept_skel, _)) if kept_skel == skel => {
                 skip.insert(origin);
@@ -1985,6 +2021,17 @@ fn admit_decls(
                 extra_paths,
             );
         }
+    }
+}
+
+/// A member's id name. Discriminant 0 keeps `Parent::member`. A later
+/// overload of the same parent name includes its discriminant so its
+/// members are not the first overload's members.
+fn child_name(parent: &TsId, member: &str) -> String {
+    if parent.discriminant == 0 {
+        format!("{}::{}", parent.name, member)
+    } else {
+        format!("{}#{}::{}", parent.name, parent.discriminant, member)
     }
 }
 
