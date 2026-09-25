@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
+
 use crate::{
     change::IntroId,
     entry::{Entry, Symbol},
@@ -104,7 +106,10 @@ impl std::error::Error for IntroCollision {}
 ///   maintained by [`RelationSet::insert`]; callers need not enforce them.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PristineIntroTable {
-    map: HashMap<IntroId, StoredEntry>,
+    /// Insertion order is declaration order. Iteration must not follow a
+    /// per-process hash seed: search, chunking, and the package root all
+    /// observe this sequence.
+    map: IndexMap<IntroId, StoredEntry>,
     children: HashMap<IntroId, Vec<IntroId>>,
     relations: RelationSet,
 }
@@ -285,17 +290,12 @@ impl PristineIntroTable {
         self.map.contains_key(&intro)
     }
 
-    /// Iterate over all live intros and their entries in **unspecified** order.
+    /// Iterate over all live intros and their entries in insertion order.
     ///
-    /// The backing store is a `HashMap`, so the yield order is a function of
-    /// std's per-process `RandomState` seed: it differs between two runs of the
-    /// same binary over the same table. Anything derived from this iterator that
-    /// a user can *see* — a ranked list, a rendered page, a serialized artifact
-    /// — must go through [`iter_sorted`](Self::iter_sorted) instead, or the
-    /// seed reaches the UI.
-    ///
-    /// Use this only when the consumer is order-insensitive by construction
-    /// (a count, a `HashSet`, a `BTreeMap` being filled, an `any`/`all` predicate).
+    /// Producers insert in declaration order, and the map keeps that order, so
+    /// two processes that lower the same source agree.
+    /// [`iter_sorted`](Self::iter_sorted) is the separate order by
+    /// [`IntroId`], which ignores declaration order.
     pub fn iter(&self) -> impl Iterator<Item = (IntroId, &Entry)> {
         self.map.iter().map(|(id, s)| (*id, &s.entry))
     }
@@ -317,9 +317,8 @@ impl PristineIntroTable {
         ids.into_iter().map(move |id| (id, &self.map[&id].entry))
     }
 
-    /// Alias for [`iter`](Self::iter) — iterate over all live intros and their
-    /// entries in unspecified order. Named `live_entries` for compatibility with
-    /// callers that use the old `workspace/ir` API.
+    /// Alias for [`iter`](Self::iter) — insertion order. Named `live_entries`
+    /// for compatibility with callers that use the old `workspace/ir` API.
     pub fn live_entries(&self) -> impl Iterator<Item = (IntroId, &Entry)> {
         self.iter()
     }
@@ -388,19 +387,29 @@ mod tests {
         assert_eq!(t.children_of(child_id), &[]);
         assert_eq!(t.children_of(intro(99)), &[]);
 
-        // iter yields both entries
-        let count = t.iter().count();
-        assert_eq!(count, 2);
+        // iter yields both entries in insertion order
+        let ids: Vec<_> = t.iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec![parent_id, child_id]);
     }
 
-    /// `iter_sorted` yields ascending `IntroId`s regardless of insertion order,
-    /// and `iter` may not.
-    ///
-    /// The asymmetry is the point of having both. `iter` walks a `HashMap`, so
-    /// its order is a per-process seed; anything a user can see must be built
-    /// from `iter_sorted` instead. This test pins the guarantee, not the
-    /// absence of one — it asserts nothing about `iter`'s order beyond the set
-    /// of ids it covers, because `iter` promises nothing about it.
+    #[test]
+    fn iter_follows_insertion_order_across_two_builds() {
+        let first = [intro(7), intro(3), intro(9)];
+        let second = [intro(9), intro(7), intro(3)];
+        let build = |ids: &[IntroId]| {
+            let mut t = PristineIntroTable::new();
+            for id in ids {
+                t.insert_live(*id, entry(sym("same"), node::root([]), Module), None);
+            }
+            t.iter().map(|(id, _)| id).collect::<Vec<_>>()
+        };
+        assert_eq!(build(&first), first);
+        assert_eq!(build(&second), second);
+    }
+
+    /// `iter_sorted` yields ascending `IntroId`s regardless of insertion order.
+    /// `iter` yields the insertion order instead, which this test does not
+    /// assert — see `iter_follows_insertion_order_across_two_builds`.
     #[test]
     fn iter_sorted_yields_intro_id_order_whatever_the_insertion_order() {
         let ids = [intro(7), intro(3), intro(9), intro(1), intro(5)];

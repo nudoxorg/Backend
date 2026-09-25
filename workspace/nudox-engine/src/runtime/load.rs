@@ -255,10 +255,8 @@ pub(crate) async fn drive_load(
 /// The `SymbolKey` of a package's root entry — its crate / top-level module.
 ///
 /// The root is the one entry with no parent. A well-formed package has exactly
-/// one; this takes the first in declaration order so the answer is
-/// deterministic even if a producer ever emits a second unparented entry (the
-/// `IrView` iteration order is the insertion order of the sealed table, not a
-/// hash order).
+/// one; a second unparented entry resolves to the one inserted first.
+/// `entries()` walks the sealed table in that insertion order.
 ///
 /// Returns `None` for a package with no unparented entry, which would be
 /// malformed rather than merely empty.
