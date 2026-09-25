@@ -676,6 +676,9 @@ impl<M: EmbeddingModel> Driver<M> {
                         crate::ecosystem::Language::Java => {
                             Box::new(registry::upstream::MavenSearchFollower::production())
                         }
+                        crate::ecosystem::Language::Python => {
+                            Box::new(registry::upstream::PypiUpdatesFollower::production())
+                        }
                         other => {
                             tracing::warn!(%other, "no catalog follower implemented for language; skipping");
                             continue;
