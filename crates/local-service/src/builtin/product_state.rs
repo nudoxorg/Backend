@@ -5,11 +5,12 @@ use backend_engine::{
     ForgePackageRecord, ForgeRepositoryMetadataRecord, PackageDependencyRecord,
     PackageDependencySourceFacts, PackageReference, ProductText, ProductTreeNodeId as TreeNodeId,
     ProjectId, ProjectName, ProjectRecord, ProjectSelector, RegistryMetadata,
-    RegistryPackageRecord, ReleaseRecord, RowId, SubscriptionRecord, SurfaceCommand, SurfaceReply,
-    TreeNodeRecord, TreeOpener, TreeSubject, ViewRoot,
+    RegistryPackageRecord, ReleaseRecord, RowId, SemanticGenerationId, SemanticLanguageProfile,
+    SemanticVersionRecord, SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeRecord,
+    TreeOpener, TreeSubject, ViewRoot,
 };
 use backend_library::{
-    AdvisoryPackageDto, CommandMutation, RegistryDownloadCount, RegistryEcosystem,
+    AdvisoryPackageDto, CommandMutation, Fragment, RegistryDownloadCount, RegistryEcosystem,
     RegistryFactAvailability, RegistryNativeMetadata, RegistryReleaseStanding, Row, command_spec,
 };
 use backend_platform::durable;
@@ -88,12 +89,13 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         dependency_facts: &[PackageDependencySourceFacts],
+        workspace: Option<&Path>,
     ) -> Result<SurfaceReply, String> {
         command.admit().map_err(|error| error.to_string())?;
         match command_spec(command.id()).mutation {
             CommandMutation::Read => {
                 let (reply, changed) =
-                    self.execute_admitted(command, view, catalog, dependency_facts)?;
+                    self.execute_admitted(command, view, catalog, dependency_facts, workspace)?;
                 if changed {
                     return Err("read command attempted to mutate product state".to_owned());
                 }
@@ -106,7 +108,7 @@ impl ProductState {
                     state: self.state.clone(),
                 };
                 let (reply, changed) =
-                    pending.execute_admitted(command, view, catalog, dependency_facts)?;
+                    pending.execute_admitted(command, view, catalog, dependency_facts, workspace)?;
                 reply.admit(reply.id()).map_err(|error| error.to_string())?;
                 if changed {
                     pending.commit()?;
@@ -123,6 +125,7 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         dependency_facts: &[PackageDependencySourceFacts],
+        workspace: Option<&Path>,
     ) -> Result<(SurfaceReply, bool), String> {
         let (reply, changed) = match command {
             SurfaceCommand::Advisory {
@@ -159,7 +162,7 @@ impl ProductState {
                 false,
             ),
             SurfaceCommand::IndexSearch { query, limit } => (
-                SurfaceReply::IndexSearch(catalog_page(catalog, Some(&query), limit)),
+                SurfaceReply::IndexSearch(index_search_page(view, catalog, Some(&query), limit)?),
                 false,
             ),
             SurfaceCommand::Package { package } => {
@@ -177,13 +180,12 @@ impl ProductState {
                 SurfaceReply::Dependencies(dependencies(dependency_facts, &package)?),
                 false,
             ),
-            SurfaceCommand::PackageVersions { package } => {
-                let workspace = self.workspace_path()?;
-                (
-                    SurfaceReply::PackageVersions(versions(view, catalog, workspace, &package)?),
-                    false,
-                )
-            }
+            SurfaceCommand::PackageVersions { package } => (
+                SurfaceReply::PackageVersions(package_versions(
+                    view, catalog, &package, workspace,
+                )?),
+                false,
+            ),
             SurfaceCommand::SemanticVersions { .. }
             | SurfaceCommand::SelectSemanticVersion { .. } => {
                 return Err(
@@ -191,8 +193,7 @@ impl ProductState {
                 );
             }
             SurfaceCommand::PackageProfile { package } => {
-                let workspace = self.workspace_path()?;
-                (profile(view, catalog, workspace, &package)?, false)
+                (profile(view, catalog, &package, workspace)?, false)
             }
             SurfaceCommand::Dependents { package } => (
                 SurfaceReply::Dependents(dependents(catalog, dependency_facts, &package)?),
@@ -217,15 +218,21 @@ impl ProductState {
                 false,
             ),
             SurfaceCommand::Releases { mark_seen } => (
-                SurfaceReply::Releases(self.releases(catalog, mark_seen)),
+                SurfaceReply::Releases(self.releases(view, catalog, mark_seen, workspace)?),
                 mark_seen,
             ),
             SurfaceCommand::Projects => (
-                SurfaceReply::Projects(self.state.projects.clone().into_boxed_slice()),
+                SurfaceReply::Projects(enrich_projects(
+                    &self.state.projects,
+                    view,
+                    workspace,
+                )?),
                 false,
             ),
             SurfaceCommand::ProjectCreate { name, lockfile } => (
-                SurfaceReply::ProjectCreated(self.create_project(name, lockfile)?),
+                SurfaceReply::ProjectCreated(
+                    enrich_project(self.create_project(name, lockfile)?, view, workspace)?,
+                ),
                 true,
             ),
             SurfaceCommand::ProjectDelete { project } => (
@@ -233,15 +240,27 @@ impl ProductState {
                 true,
             ),
             SurfaceCommand::ProjectAdd { project, package } => (
-                SurfaceReply::ProjectAdded(self.change_member(&project, package, true)?),
+                SurfaceReply::ProjectAdded(enrich_project(
+                    self.change_member(&project, package, true)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::ProjectRemove { project, package } => (
-                SurfaceReply::ProjectRemoved(self.change_member(&project, package, false)?),
+                SurfaceReply::ProjectRemoved(enrich_project(
+                    self.change_member(&project, package, false)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::ProjectSync { project } => (
-                SurfaceReply::ProjectSynced(self.sync_project(&project)?),
+                SurfaceReply::ProjectSynced(enrich_project(
+                    self.sync_project(&project)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::Tree => (SurfaceReply::Tree(self.current_tree()), false),
@@ -325,15 +344,24 @@ impl ProductState {
 
     fn releases(
         &mut self,
+        view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         mark_seen: bool,
-    ) -> Box<[ReleaseRecord]> {
+        workspace: Option<&Path>,
+    ) -> Result<Box<[ReleaseRecord]>, String> {
         let mut result = Vec::new();
         for subscription in &mut self.state.subscriptions {
-            let mut matches = catalog
-                .iter()
-                .filter(|row| package_matches(&subscription.package, row))
-                .collect::<Vec<_>>();
+            let indexed =
+                indexed_package_records(view, &subscription.package, workspace)?;
+            let mut matches = if indexed.is_empty() {
+                catalog
+                    .iter()
+                    .filter(|row| package_matches(&subscription.package, row))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                indexed
+            };
             matches.sort_by(|a, b| b.version.cmp(&a.version));
             for row in &matches {
                 if subscription.seen.as_ref() != Some(&row.version) {
@@ -351,7 +379,7 @@ impl ProductState {
         if result.len() > backend_engine::MAX_PRODUCT_ROWS {
             result.truncate(backend_engine::MAX_PRODUCT_ROWS);
         }
-        result.into_boxed_slice()
+        Ok(result.into_boxed_slice())
     }
 
     fn create_project(
@@ -382,6 +410,7 @@ impl ProductState {
             name,
             lockfile,
             members: Box::new([]),
+            member_manifest_names: Box::new([]),
         };
         self.state.projects.push(project.clone());
         Ok(project)
@@ -800,6 +829,253 @@ fn resolve_tree_subject(
     }
 }
 
+fn index_search_page(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    query: Option<&ProductText>,
+    limit: u16,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let mut records = catalog_page(catalog, query, limit).into_vec();
+    let needle = query.map_or("", ProductText::as_str);
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Symbol(_)) || !row_matches_index_query(row, needle) {
+            continue;
+        }
+        records.push(declaration_explore_record(row)?);
+        if records.len() >= usize::from(limit) {
+            break;
+        }
+    }
+    Ok(records.into_boxed_slice())
+}
+
+fn row_matches_index_query(row: &Row, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let filter = query.to_ascii_lowercase();
+    if row.label.to_ascii_lowercase().contains(&filter) {
+        return true;
+    }
+    if row
+        .label
+        .rsplit("::")
+        .next()
+        .is_some_and(|name| name.to_ascii_lowercase().contains(&filter))
+    {
+        return true;
+    }
+    if row
+        .signature
+        .as_deref()
+        .is_some_and(|signature| signature.to_ascii_lowercase().contains(&filter))
+    {
+        return true;
+    }
+    if row
+        .excerpt
+        .text()
+        .is_some_and(|excerpt| excerpt.to_ascii_lowercase().contains(&filter))
+    {
+        return true;
+    }
+    row.document.iter().any(|fragment| {
+        let text = match fragment {
+            Fragment::Text(value) | Fragment::Code(value) => value.as_str(),
+            Fragment::Link { label, .. } => label.as_str(),
+            Fragment::Break => return false,
+        };
+        text.to_ascii_lowercase().contains(&filter)
+    })
+}
+
+pub(crate) fn indexed_semantic_versions(
+    view: &ViewRoot,
+    package: &PackageReference,
+    workspace: Option<&Path>,
+) -> Result<Box<[SemanticVersionRecord]>, String> {
+    let mut versions = Vec::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        let project_root = if Path::new(&row.label).is_dir() {
+            PathBuf::from(&row.label)
+        } else if row.label.starts_with("pkg:") {
+            let source = PackageReference::parse(&row.label).map_err(|error| error.to_string())?;
+            if !package_matches(package, &stub_registry_record(source)) {
+                continue;
+            }
+            registry_project_root(view, &row.label, workspace)?
+        } else {
+            continue;
+        };
+        let record = super::local_manifest::cargo_registry_record(&project_root)?;
+        if !package_matches(package, &record) {
+            continue;
+        }
+        let PackageReference::Purl(coordinate) = record.coordinate.clone() else {
+            continue;
+        };
+        let profile = SemanticLanguageProfile::new(
+            super::local_manifest::cargo_language_profile(&project_root)?,
+        );
+        let generation = SemanticGenerationId::new(record.facts_version);
+        versions.push(SemanticVersionRecord {
+            package: record.coordinate.clone(),
+            coordinate,
+            profile,
+            generation,
+            generation_root: record.facts_version,
+            dependency_set: record.facts_version,
+            manifest: record.facts_version,
+            artifacts: 1,
+            semantic_bytes: u32::try_from(record.bytes)
+                .map_err(|_| "indexed manifest byte count overflow".to_owned())?,
+            complete: false,
+            selected: true,
+        });
+    }
+    Ok(versions.into_boxed_slice())
+}
+
+fn indexed_package_records(
+    view: &ViewRoot,
+    package: &PackageReference,
+    workspace: Option<&Path>,
+) -> Result<Vec<RegistryPackageRecord>, String> {
+    let mut records = Vec::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        if Path::new(&row.label).is_dir() {
+            let project_root = Path::new(&row.label);
+            let (_, _, manifest) = super::local_manifest::cargo_package_identity(project_root)?;
+            if package_matches(package, &stub_registry_record(manifest)) {
+                records.push(super::local_manifest::cargo_registry_record(project_root)?);
+            }
+            continue;
+        }
+        if !row.label.starts_with("pkg:") {
+            continue;
+        }
+        let source = PackageReference::parse(&row.label).map_err(|error| error.to_string())?;
+        if !package_matches(package, &stub_registry_record(source)) {
+            continue;
+        }
+        let root = registry_project_root(view, &row.label, workspace)?;
+        records.push(super::local_manifest::cargo_registry_record(&root)?);
+    }
+    Ok(records)
+}
+
+fn registry_project_root(
+    view: &ViewRoot,
+    project_label: &str,
+    workspace: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let expected = PackageReference::parse(project_label).map_err(|error| error.to_string())?;
+    let prefix = format!("{project_label}::");
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Symbol(_)) || !row.label.starts_with(&prefix) {
+            continue;
+        }
+        if let Some(location) = row.source.captured() {
+            let mut dir = Path::new(location.path());
+            while let Some(parent) = dir.parent() {
+                if dir.join("Cargo.toml").is_file() {
+                    let (_, _, manifest) = super::local_manifest::cargo_package_identity(dir)?;
+                    if package_matches(&expected, &stub_registry_record(manifest)) {
+                        return Ok(dir.to_path_buf());
+                    }
+                }
+                dir = parent;
+            }
+        }
+    }
+    if let Some(workspace) = workspace {
+        return registry_staging_root(workspace, &expected);
+    }
+    Err(format!(
+        "indexed package {project_label} has no captured source path"
+    ))
+}
+
+fn registry_staging_root(
+    workspace: &Path,
+    package: &PackageReference,
+) -> Result<PathBuf, String> {
+    let staging = workspace.join("registry-staging");
+    if !staging.is_dir() {
+        return Err(format!(
+            "registry staging is absent for {}",
+            package.as_str()
+        ));
+    }
+    for entry in fs::read_dir(&staging).map_err(|error| error.to_string())? {
+        let path = entry
+            .map_err(|error| error.to_string())?
+            .path()
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !path.is_dir()
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
+        for root in [path.clone(), path.join("package")] {
+            if !root.join("Cargo.toml").is_file() {
+                continue;
+            }
+            let (_, _, manifest) = super::local_manifest::cargo_package_identity(&root)?;
+            if package_matches(package, &stub_registry_record(manifest)) {
+                return Ok(root);
+            }
+        }
+    }
+    Err(format!(
+        "indexed package {} has no staged registry manifest",
+        package.as_str()
+    ))
+}
+
+fn stub_registry_record(coordinate: PackageReference) -> RegistryPackageRecord {
+    let (ecosystem, name, version) = match &coordinate {
+        PackageReference::Purl(url) => (
+            url.package_type().registry().unwrap_or(RegistryEcosystem::Cargo),
+            ProductText::new(url.lineage_name()).map_err(|error| error.to_string()),
+            ProductText::new(url.version()).map_err(|error| error.to_string()),
+        ),
+        PackageReference::Local(label) => (
+            RegistryEcosystem::Cargo,
+            Ok(label.clone()),
+            ProductText::new("0.0.0").map_err(|error| error.to_string()),
+        ),
+    };
+    let name = name.expect("indexed package name is admissible");
+    let version = version.expect("indexed package version is admissible");
+    let ecosystem = ecosystem;
+    let native_metadata = RegistryNativeMetadata::unavailable(ecosystem, "indexed package");
+    RegistryPackageRecord {
+        coordinate,
+        ecosystem,
+        name,
+        version,
+        bytes: 0,
+        standing: RegistryReleaseStanding::Available,
+        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+        facts_version: [0; 32],
+        native_metadata_version: native_metadata.identity().unwrap_or([0; 32]),
+        native_metadata,
+        forge_sources: Box::new([]),
+        advisory: AdvisoryPackageDto::unknown(),
+    }
+}
+
 fn catalog_page(
     catalog: &[RegistryPackageRecord],
     query: Option<&ProductText>,
@@ -824,6 +1100,63 @@ fn catalog_page(
 fn package_matches(package: &PackageReference, row: &RegistryPackageRecord) -> bool {
     &row.coordinate == package || row.name.as_str() == package.as_str()
 }
+
+fn enrich_projects(
+    projects: &[ProjectRecord],
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<Box<[ProjectRecord]>, String> {
+    projects
+        .iter()
+        .cloned()
+        .map(|project| enrich_project(project, view, workspace))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn enrich_project(
+    project: ProjectRecord,
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<ProjectRecord, String> {
+    let member_manifest_names = project
+        .members
+        .iter()
+        .map(|member| member_manifest_name(member, view, workspace))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
+    Ok(ProjectRecord {
+        member_manifest_names,
+        ..project
+    })
+}
+
+fn member_manifest_name(
+    member: &PackageReference,
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<ProductText, String> {
+    match member {
+        PackageReference::Local(label) => {
+            let project_root = Path::new(label.as_str());
+            if !project_root.is_dir() {
+                return Err(format!(
+                    "project member {} is not a local manifest path",
+                    label.as_str()
+                ));
+            }
+            let (name, _, _) = super::local_manifest::cargo_package_identity(project_root)?;
+            Ok(name)
+        }
+        PackageReference::Purl(_) => {
+            let records = indexed_package_records(view, member, workspace)?;
+            let record = records
+                .first()
+                .ok_or_else(|| format!("project member {} is not indexed", member.as_str()))?;
+            Ok(record.name.clone())
+        }
+    }
+}
 fn packages(
     catalog: &[RegistryPackageRecord],
     package: &PackageReference,
@@ -845,6 +1178,14 @@ fn package_page(
     if !records.is_empty() {
         return Ok(records);
     }
+    if let PackageReference::Local(label) = package {
+        let project_root = Path::new(label.as_str());
+        if project_root.is_dir() && project_root.join("Cargo.toml").is_file() {
+            return Ok(Box::new([super::local_manifest::cargo_registry_record(
+                project_root,
+            )?]));
+        }
+    }
     let PackageReference::Purl(_) = package else {
         return Err(format!(
             "package {} is not recorded in the registry catalog",
@@ -856,6 +1197,9 @@ fn package_page(
             continue;
         }
         let project_root = Path::new(&row.label);
+        if !project_root.is_dir() || !project_root.join("Cargo.toml").is_file() {
+            continue;
+        }
         let (_, _, manifest) = super::local_manifest::cargo_package_identity(project_root)?;
         if &manifest == package {
             return Ok(Box::new([super::local_manifest::cargo_registry_record(
@@ -869,20 +1213,12 @@ fn package_page(
     ))
 }
 fn versions(
-    view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
-    workspace: &Path,
     package: &PackageReference,
-) -> Result<Box<[RegistryPackageRecord]>, String> {
-    let indexed = indexed_package_coordinates(view, workspace)?;
-    let mut rows = catalog
-        .iter()
-        .filter(|row| version_matches(package, row))
-        .filter(|row| indexed.contains(row.coordinate.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
+) -> Box<[RegistryPackageRecord]> {
+    let mut rows = packages(catalog, package).into_vec();
     rows.sort_by(|a, b| b.version.cmp(&a.version));
-    Ok(rows.into_boxed_slice())
+    rows.into_boxed_slice()
 }
 
 fn indexed_package_coordinates(
@@ -898,7 +1234,8 @@ fn indexed_package_coordinates(
             coordinates.insert(row.label.clone());
             continue;
         }
-        let source_root = super::local_manifest::indexed_package_source_root(&row.label, workspace)?;
+        let source_root =
+            super::local_manifest::indexed_package_source_root(&row.label, workspace)?;
         let (_, _, manifest) = super::local_manifest::cargo_package_identity(&source_root)?;
         coordinates.insert(manifest.as_str().to_owned());
     }
@@ -914,13 +1251,51 @@ fn version_matches(package: &PackageReference, row: &RegistryPackageRecord) -> b
         PackageReference::Local(_) => false,
     }
 }
-fn profile(
+
+fn indexed_catalog_versions(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
     workspace: &Path,
     package: &PackageReference,
+) -> Result<Vec<RegistryPackageRecord>, String> {
+    let indexed = indexed_package_coordinates(view, workspace)?;
+    Ok(catalog
+        .iter()
+        .filter(|row| version_matches(package, row))
+        .filter(|row| indexed.contains(row.coordinate.as_str()))
+        .cloned()
+        .collect())
+}
+
+fn package_versions(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    package: &PackageReference,
+    workspace: Option<&Path>,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let indexed = indexed_package_records(view, package, workspace)?;
+    let mut rows = if !indexed.is_empty() {
+        indexed
+    } else if let Some(workspace) = workspace {
+        let from_catalog = indexed_catalog_versions(view, catalog, workspace, package)?;
+        if from_catalog.is_empty() {
+            return Ok(versions(catalog, package));
+        }
+        from_catalog
+    } else {
+        return Ok(versions(catalog, package));
+    };
+    rows.sort_by(|a, b| b.version.cmp(&a.version));
+    Ok(rows.into_boxed_slice())
+}
+
+fn profile(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    package: &PackageReference,
+    workspace: Option<&Path>,
 ) -> Result<SurfaceReply, String> {
-    let rows = versions(view, catalog, workspace, package)?;
+    let rows = package_versions(view, catalog, package, workspace)?;
     Ok(SurfaceReply::PackageProfile {
         latest: rows.first().cloned(),
         versions: rows.len() as u64,

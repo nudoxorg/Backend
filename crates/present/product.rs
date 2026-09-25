@@ -612,6 +612,9 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
         format!("{} artifact(s)", record.artifacts),
         format!("{} semantic byte(s)", record.semantic_bytes),
     ];
+    if let PackageReference::Purl(coordinate) = &record.package {
+        tags.push(format!("version {}", coordinate.version()));
+    }
     tags.push(if record.complete {
         "complete".to_owned()
     } else {
@@ -654,6 +657,9 @@ fn project_row(record: &ProjectRecord) -> ProductRecord {
     ];
     if let Some(lockfile) = record.lockfile.as_ref() {
         tags.push(format!("lockfile {}", lockfile.as_str()));
+    }
+    for name in record.member_manifest_names.iter() {
+        tags.push(format!("member {}", name.as_str()));
     }
     ProductRecord::new(
         record.name.as_str().to_owned(),
@@ -723,7 +729,10 @@ fn subject_text(subject: &TreeSubject) -> String {
 }
 
 fn package_title(package: &PackageReference) -> String {
-    package.as_str().to_owned()
+    match package {
+        PackageReference::Purl(url) => url.lineage_name().to_owned(),
+        PackageReference::Local(label) => label.as_str().to_owned(),
+    }
 }
 
 fn operand(package: &PackageReference) -> String {

@@ -1,6 +1,7 @@
 //! Dependency edges declared by indexed local project manifests.
 
 use backend_engine::{PackageDependencyRecord, PackageReference, RegistryPackageRecord};
+use backend_semantic::vocabulary::{LanguageProfile, RustEdition};
 use backend_library::{
     admit_dependency_rows, AdvisoryPackageDto, DependencyAuthority, DependencyEvidence,
     DependencyFacts, DependencyScope, PackageDependencySourceFacts, PackageDependencyTarget,
@@ -128,6 +129,26 @@ pub(crate) fn cargo_package_identity(
     project_root: &Path,
 ) -> Result<(ProductText, ProductText, PackageReference), String> {
     cargo_package_fields(project_root)
+}
+
+/// Reads the Rust language profile declared by one indexed Cargo manifest.
+pub(crate) fn cargo_language_profile(project_root: &Path) -> Result<LanguageProfile, String> {
+    let (_, root) = read_cargo_package_table(project_root)?;
+    let manifest = project_root.join("Cargo.toml");
+    let edition = root
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("edition"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| format!("local manifest {} omits package.edition", manifest.display()))?;
+    match edition {
+        "2021" => Ok(LanguageProfile::Rust(RustEdition::Rust2021)),
+        "2024" => Ok(LanguageProfile::Rust(RustEdition::Rust2024)),
+        other => Err(format!(
+            "local manifest {} declares unsupported rust edition {other}",
+            manifest.display()
+        )),
+    }
 }
 
 /// Builds one registry package record from an indexed local Cargo manifest.

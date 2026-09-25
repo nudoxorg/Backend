@@ -2055,6 +2055,7 @@ fn semantic_version_record(
 fn semantic_versions(
     daemon: &ProductDaemon,
     package: &backend_engine::PackageReference,
+    workspace: Option<&Path>,
 ) -> Result<Box<[backend_engine::SemanticVersionRecord]>, BuiltinModelError> {
     let relation = daemon
         .engine()
@@ -2123,6 +2124,15 @@ fn semantic_versions(
             break;
         };
         after = Some(next);
+    }
+    if generations.is_empty() {
+        let view = daemon.engine().daemon().library().view();
+        let fallback =
+            super::product_state::indexed_semantic_versions(view, package, workspace)
+                .map_err(BuiltinModelError)?;
+        if !fallback.is_empty() {
+            return Ok(fallback);
+        }
     }
     if selected.is_empty()
         && let Some(reason) = unavailable
@@ -2521,9 +2531,13 @@ impl CommandAdapter {
                     |rows| CommandReply::Surface(backend_engine::SurfaceReply::Diff(rows)),
                 )
             }
-            backend_engine::SurfaceCommand::SemanticVersions { package } => semantic_versions(
-                daemon, &package,
-            )
+            backend_engine::SurfaceCommand::SemanticVersions { package } => {
+                let workspace = self
+                    .registry
+                    .as_ref()
+                    .map(|gateway| gateway.workspace_root());
+                semantic_versions(daemon, &package, workspace)
+            }
             .map_or_else(
                 |error| {
                     CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
@@ -2589,12 +2603,17 @@ impl CommandAdapter {
                 .map_err(|error| {
                     BuiltinModelError(format!("align package graph projection: {error}"))
                 })?;
+                let workspace = self
+                    .registry
+                    .as_ref()
+                    .map(|gateway| gateway.workspace_root());
                 self.product_state
                     .execute(
                         surface,
                         daemon.engine().daemon().library().view(),
                         &catalog,
                         &dependency_facts,
+                        workspace,
                     )
                     .map_or_else(
                         |error| {
@@ -2621,56 +2640,85 @@ impl CommandAdapter {
         let profile = profile
             .profile()
             .map_err(|error| BuiltinModelError(error.to_string()))?;
+        let coordinate_text = coordinate.as_str().to_owned();
         let package_key = backend_engine::package_key(package.as_str());
         let selected_key = ProductSemanticPublicationKey::new(package.clone(), coordinate, profile)
             .map_err(|error| BuiltinModelError(error.to_owned()))?;
-        let history_key = selected_key
-            .for_generation_bytes(generation.to_bytes())
-            .map_err(|error| BuiltinModelError(error.to_owned()))?;
-        let relation = daemon
-            .engine()
-            .daemon()
-            .owner()
-            .snapshot()
-            .relation::<BuiltinSemanticRelation>()
-            .map_err(|error| {
-                BuiltinModelError(format!("open semantic version history: {error}"))
-            })?;
-        let record = relation
-            .lookup(&history_key)
-            .map_err(|error| BuiltinModelError(format!("read semantic version history: {error}")))?
-            .ok_or_else(|| BuiltinModelError("semantic generation is not retained".to_owned()))?;
-        history_key.admit_record(&record).map_err(|error| {
-            BuiltinModelError(format!("admit selected semantic generation: {error}"))
-        })?;
-        let ProductSemanticPublicationRecord::Published { coverage, claim } = record.clone() else {
-            return Err(BuiltinModelError(
-                "semantic generation history contains an unavailable terminal".to_owned(),
-            ));
-        };
-        let before = relation.lookup(&selected_key).map_err(|error| {
-            BuiltinModelError(format!("read selected semantic generation: {error}"))
-        })?;
-        if before != Some(record.clone()) {
-            let intent = BuiltinIntent::select_semantic_generation(
-                package_key,
-                package.as_str(),
-                selected_key.clone(),
-                history_key,
-                before,
-                record,
-            )?;
-            commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
-                BuiltinModelError(format!("commit semantic generation selection: {error}"))
-            })?;
+        if let Ok(history_key) = selected_key.for_generation_bytes(generation.to_bytes()) {
+            let relation = daemon
+                .engine()
+                .daemon()
+                .owner()
+                .snapshot()
+                .relation::<BuiltinSemanticRelation>()
+                .map_err(|error| {
+                    BuiltinModelError(format!("open semantic version history: {error}"))
+                })?;
+            let history_record = relation
+                .lookup(&history_key)
+                .map_err(|error| {
+                    BuiltinModelError(format!("read semantic version history: {error}"))
+                })?;
+            if let Some(record) = history_record {
+                history_key.admit_record(&record).map_err(|error| {
+                    BuiltinModelError(format!("admit selected semantic generation: {error}"))
+                })?;
+                let ProductSemanticPublicationRecord::Published { coverage, claim } =
+                    record.clone()
+                else {
+                    return Err(BuiltinModelError(
+                        "semantic generation history contains an unavailable terminal"
+                            .to_owned(),
+                    ));
+                };
+                let before = relation.lookup(&selected_key).map_err(|error| {
+                    BuiltinModelError(format!("read selected semantic generation: {error}"))
+                })?;
+                if before != Some(record.clone()) {
+                    let intent = BuiltinIntent::select_semantic_generation(
+                        package_key,
+                        package.as_str(),
+                        selected_key.clone(),
+                        history_key,
+                        before,
+                        record,
+                    )?;
+                    commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
+                        BuiltinModelError(format!("commit semantic generation selection: {error}"))
+                    })?;
+                }
+                self.publish_view(daemon)?;
+                return Ok(semantic_version_record(
+                    &selected_key,
+                    coverage,
+                    claim,
+                    true,
+                ));
+            }
         }
-        self.publish_view(daemon)?;
-        Ok(semantic_version_record(
-            &selected_key,
-            coverage,
-            claim,
-            true,
-        ))
+        let workspace = self
+            .registry
+            .as_ref()
+            .map(|gateway| gateway.workspace_root());
+        let view = daemon.engine().daemon().library().view();
+        let indexed = super::product_state::indexed_semantic_versions(view, &package, workspace)
+            .map_err(BuiltinModelError)?;
+        let selected_language = profile.language();
+        indexed
+            .iter()
+            .find(|row| {
+                row.coordinate.as_str() == coordinate_text
+                    && row.generation == generation
+                    && row
+                        .profile
+                        .profile()
+                        .ok()
+                        .is_some_and(|row_profile| row_profile.language() == selected_language)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                BuiltinModelError("semantic generation is not retained".to_owned())
+            })
     }
 
     fn standard(
