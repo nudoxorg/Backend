@@ -135,6 +135,31 @@ pub fn runtime_edges_from_names(names: &[impl AsRef<str>]) -> Vec<DepEdge> {
 }
 
 impl PackageRecord {
+    /// A published version whose only known facts are its dependency names.
+    ///
+    /// Names go through [`runtime_edges_from_names`], so the stored edges and
+    /// any facet list derived from [`Self::runtime_names`] are the same set.
+    #[must_use]
+    pub fn published(
+        ecosystem: Language,
+        canonical_name: impl Into<SmolStr>,
+        version: impl Into<SmolStr>,
+        dependencies: &[impl AsRef<str>],
+    ) -> Self {
+        Self::from_parts(
+            ecosystem,
+            canonical_name,
+            version,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            runtime_edges_from_names(dependencies),
+        )
+    }
+
     /// Assemble a record from fields an ingest path already extracted.
     ///
     /// `canonical_name` and `version` accept anything that converts into

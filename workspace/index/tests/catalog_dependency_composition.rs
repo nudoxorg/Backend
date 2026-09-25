@@ -6,7 +6,8 @@
 
 use index::{
     ecosystem::{Language, pom_dependency_names, require_names, requires_dist_names},
-    record::{PackageRecord, edge_names_agree, runtime_edges_from_names},
+    engine::turso_vc::{FactWrite, VersionedCatalog},
+    record::{PackageRecord, edge_names_agree},
     search::ranking::dependents::{DependencyRow, count_dependents},
     upstream::{crates_catalog::normal_dependency_names, maven_search::pom_url},
 };
@@ -74,21 +75,52 @@ fn four_manifests_agree_on_one_dependents_sweep() {
         Some("https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.pom")
     );
 
-    let published = PackageRecord::from_parts(
-        Language::Java,
-        "com.example:app",
-        "1.0.0",
-        None,
-        None,
-        Vec::new(),
-        None,
-        None,
-        false,
-        runtime_edges_from_names(&["  org.slf4j:slf4j-api ", "org.slf4j:slf4j-api", " "]),
-    );
-    assert!(edge_names_agree(
-        &published,
-        &["org.slf4j:slf4j-api"]
-    ));
+    let published = PackageRecord::published(Language::Java, "com.example:app", "1.0.0", &[
+        "  org.slf4j:slf4j-api ",
+        "org.slf4j:slf4j-api",
+        " ",
+    ]);
+    assert!(edge_names_agree(&published, &["org.slf4j:slf4j-api"]));
     assert_eq!(published.edges.len(), 1);
+
+    let mut versions = VersionedCatalog::open().expect("catalog");
+    let records = [
+        published,
+        PackageRecord::published(Language::Go, "example.com/app", "v0.1.0", &go),
+        PackageRecord::published(Language::Python, "app", "1.0.0", &python),
+        PackageRecord::published(Language::Rust, "app", "1.0.0", &rust),
+    ];
+    let mut first_java = None;
+    for record in &records {
+        match versions.put_record(record).expect("put") {
+            FactWrite::Revised(id) if record.ecosystem == Language::Java => first_java = Some(id),
+            FactWrite::Revised(_) => {}
+            FactWrite::Unchanged => panic!("first write of each coordinate revises"),
+        }
+        assert_eq!(
+            versions.put_record(record).expect("replay"),
+            FactWrite::Unchanged
+        );
+    }
+    let prior = versions
+        .get_at(
+            "java",
+            "com.example:app",
+            "1.0.0",
+            first_java.expect("java revision"),
+        )
+        .expect("history")
+        .expect("row")
+        .to_record()
+        .expect("record");
+    assert!(edge_names_agree(&prior, &java));
+    assert_eq!(
+        versions
+            .get("rust", "app", "1.0.0")
+            .expect("rust tip")
+            .to_record()
+            .expect("record")
+            .runtime_names(),
+        vec!["serde"]
+    );
 }
