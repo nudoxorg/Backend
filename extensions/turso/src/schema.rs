@@ -63,6 +63,10 @@ CREATE INDEX IF NOT EXISTS backend_projection_package_edges_source
     ON backend_projection_package_edges(root, source, target_name);
 CREATE INDEX IF NOT EXISTS backend_projection_package_edges_target
     ON backend_projection_package_edges(root, target_ecosystem, target_name, resolved);
+CREATE INDEX IF NOT EXISTS backend_projection_package_edges_by_source
+    ON backend_projection_package_edges(source, edge_id);
+CREATE INDEX IF NOT EXISTS backend_projection_package_edges_by_target
+    ON backend_projection_package_edges(target_ecosystem, target_name, resolved, edge_id);
 CREATE TABLE IF NOT EXISTS backend_projection_package_states (
     root BLOB NOT NULL,
     source TEXT NOT NULL,
