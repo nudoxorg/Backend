@@ -60,9 +60,9 @@ pub enum CatalogEvent {
         name: String,
         /// Version string, exactly as the registry records it.
         version: String,
-        /// Direct dependency names the feed already carried. Empty when the
+        /// Direct dependencies the feed already carried. Empty when the
         /// feed has no manifest body.
-        dependencies: Vec<String>,
+        dependencies: Vec<crate::record::DepEdge>,
         /// Registry checksum hex, when the feed or version document carried
         /// one.
         checksum: Option<String>,
@@ -93,8 +93,8 @@ impl CatalogEvent {
         }
     }
 
-    /// Direct dependency names carried by a publish event.
-    pub fn dependencies(&self) -> &[String] {
+    /// Direct dependencies carried by a publish event.
+    pub fn dependencies(&self) -> &[crate::record::DepEdge] {
         match self {
             CatalogEvent::Published { dependencies, .. } => dependencies,
             CatalogEvent::Withdrawn { .. } => &[],
@@ -131,8 +131,8 @@ pub struct CatalogBatch {
 
 /// Names and an optional artifact checksum from one already-fetched document.
 pub struct DocumentFacts {
-    /// Direct dependency names.
-    pub dependencies: Vec<String>,
+    /// Direct dependencies.
+    pub dependencies: Vec<crate::record::DepEdge>,
     /// Registry checksum spelling, when the document carried one.
     pub checksum: Option<String>,
 }
@@ -141,7 +141,7 @@ impl DocumentFacts {
     /// A document that names dependencies and no checksum.
     pub fn names(dependencies: Vec<String>) -> Self {
         Self {
-            dependencies,
+            dependencies: crate::record::runtime_edges_from_names(&dependencies),
             checksum: None,
         }
     }

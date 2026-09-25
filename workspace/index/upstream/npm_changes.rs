@@ -125,7 +125,7 @@ fn event_from_row(row: &ChangeRow) -> Option<CatalogEvent> {
         (false, Some(version)) => {
             let checksum = version_integrity(row.doc.as_ref(), &version);
             Some(CatalogEvent::Published {
-                dependencies: dependency_names(row.doc.as_ref(), &version),
+                dependencies: dependency_edges(row.doc.as_ref(), &version),
                 name: row.id.clone(),
                 version,
                 checksum,
@@ -135,20 +135,33 @@ fn event_from_row(row: &ChangeRow) -> Option<CatalogEvent> {
     }
 }
 
-/// Dependency names declared on `version` inside the packument. Keys only:
-/// the requirement string is not a name. Sorted so two parses of the same
-/// document compare equal.
-fn dependency_names(doc: Option<&PackageDoc>, version: &str) -> Vec<String> {
+/// Dependencies declared on `version` inside the packument.
+///
+/// A string requirement is kept. Sorted by name so two parses compare equal.
+fn dependency_edges(doc: Option<&PackageDoc>, version: &str) -> Vec<crate::record::DepEdge> {
     let Some(doc) = doc else {
         return Vec::new();
     };
-    let mut names: Vec<String> = doc
+    let mut edges: Vec<_> = doc
         .versions
         .get(version)
-        .map(|body| body.dependencies.keys().cloned().collect())
+        .map(|body| {
+            body.dependencies
+                .iter()
+                .map(|(name, value)| {
+                    let mut edge = crate::record::DepEdge::runtime(name);
+                    if let Some(requirement) =
+                        value.as_str().map(str::trim).filter(|r| !r.is_empty())
+                    {
+                        edge.requirement = Some(requirement.into());
+                    }
+                    edge
+                })
+                .collect()
+        })
         .unwrap_or_default();
-    names.sort();
-    names
+    edges.sort_by(|left, right| left.name.cmp(&right.name));
+    edges
 }
 
 /// `dist.integrity` when it names an artifact digest. A tarball `shasum`
@@ -232,6 +245,12 @@ impl CatalogFollower for NpmChangesFollower {
 mod tests {
     use super::*;
 
+    fn ranged(name: &str, requirement: &str) -> crate::record::DepEdge {
+        let mut edge = crate::record::DepEdge::runtime(name);
+        edge.requirement = Some(requirement.into());
+        edge
+    }
+
     fn body(json: &str) -> Vec<u8> {
         json.as_bytes().to_vec()
     }
@@ -286,7 +305,7 @@ mod tests {
         assert_eq!(page.events, vec![CatalogEvent::Published {
             name: "left-pad".into(),
             version: "1.1.2".into(),
-            dependencies: vec!["debug".into(), "ms".into()],
+            dependencies: vec![ranged("debug", "4.0.0"), ranged("ms", "^2.0.0"),],
             checksum: None,
         }]);
     }
@@ -334,7 +353,7 @@ mod tests {
                     ..
                 },
             ] => {
-                assert_eq!(dependencies, &vec!["ms".to_owned()]);
+                assert_eq!(dependencies, &vec![ranged("ms", "^2")]);
                 assert_eq!(checksum.as_deref(), Some(integrity));
                 assert!(
                     crate::pid::artifact_digest(checksum.as_deref().unwrap())

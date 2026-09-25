@@ -168,7 +168,7 @@ fn month_number(name: &str) -> Option<u8> {
 pub fn document_facts(body: &[u8]) -> DocumentFacts {
     let (dependencies, checksum) = crate::ecosystem::pypi_release(body);
     DocumentFacts {
-        dependencies,
+        dependencies: crate::record::runtime_edges_from_names(&dependencies),
         checksum,
     }
 }

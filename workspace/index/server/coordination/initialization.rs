@@ -193,7 +193,7 @@ impl<M: EmbeddingModel> Server<M> {
         &self,
         _cap: &WriteCap,
         coordinates: &PackageCoordinates,
-        dependencies: &[String],
+        dependencies: &[crate::record::DepEdge],
         checksum: Option<&str>,
     ) -> ServerResult<Initialized> {
         let stores = self.base();
@@ -235,34 +235,46 @@ impl<M: EmbeddingModel> Server<M> {
         let enqueued = matches!(decision, InitializationDecision::Enqueue) && !already_pending;
         let wants_work = matches!(decision, InitializationDecision::Enqueue);
 
-        let mut observed = crate::edge_project::feed_observation(
+        let snapshot = if dependencies.is_empty() {
+            None
+        } else {
+            Some(crate::protocol::EdgeSnapshot::feed(
+                crate::edge_project::project_edges(
+                    coordinates.ecosystem(),
+                    dependencies,
+                    crate::enums::EdgeSource::Feed,
+                ),
+            ))
+        };
+        let mut identity = crate::record::PackageRecord::from_parts(
             coordinates.ecosystem(),
-            coordinates.name.canonical().as_ref(),
-            coordinates.version.canonical().as_ref(),
-            dependencies,
+            coordinates.name.canonical(),
+            coordinates.version.canonical(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            dependencies.to_vec(),
         );
-        if let (Some(observed), Some(digest)) = (
-            observed.as_mut(),
-            checksum.and_then(crate::pid::artifact_digest),
-        ) {
-            observed.record = observed.record.clone().with_content(digest);
+        if let Some(digest) = checksum.and_then(crate::pid::artifact_digest) {
+            identity = identity.with_content(digest);
         }
         let fact_write = {
             let mut facts = self
                 .package_facts
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(observed) = observed {
-                facts
-                    .observe(&observed.record, &observed.snapshot)
-                    .map_err(|error| {
-                        ServerError::Runtime(
-                            crate::server::registry::runtime::error::TextError::Io(
-                                std::io::Error::other(error.to_string()),
-                            )
-                            .into(),
+            if let Some(snapshot) = &snapshot {
+                facts.observe(&identity, snapshot).map_err(|error| {
+                    ServerError::Runtime(
+                        crate::server::registry::runtime::error::TextError::Io(
+                            std::io::Error::other(error.to_string()),
                         )
-                    })?
+                        .into(),
+                    )
+                })?
             } else if facts
                 .get(
                     coordinates.ecosystem().as_token(),
@@ -323,7 +335,11 @@ impl<M: EmbeddingModel> Server<M> {
             // row and replaces feed edges without rewriting lifecycle state,
             // including a package that is already stored.
             let mut record = provisional_global_package(coordinates);
-            record.facets = facets_from_dependency_names(dependencies);
+            let names: Vec<String> = dependencies
+                .iter()
+                .map(|edge| edge.name.to_string())
+                .collect();
+            record.facets = facets_from_dependency_names(&names);
             match touch {
                 CatalogTouch::Upsert => {
                     stores
@@ -341,6 +357,14 @@ impl<M: EmbeddingModel> Server<M> {
                 }
                 CatalogTouch::Leave => {}
             }
+        }
+        if let Some(snapshot) = &snapshot {
+            crate::store::apply::write_edge_snapshot(
+                stores.global_store.writer().engine(),
+                package,
+                snapshot,
+            )
+            .map_err(|error| RegistryError::from(crate::error::IndexError::Catalog(error)))?;
         }
 
         // Enqueue on EVERY call that wants work, not only the first.

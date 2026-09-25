@@ -135,7 +135,7 @@ impl CratesCatalogFollower {
                 (Vec::new(), None)
             } else {
                 (
-                    self.dependency_names(client, &entry.name, &entry.version)
+                    self.dependency_edges(client, &entry.name, &entry.version)
                         .await,
                     self.version_checksum(client, &entry.name, &entry.version)
                         .await,
@@ -193,13 +193,14 @@ impl CratesCatalogFollower {
     /// A failed fetch or a body that is not the dependencies document yields
     /// an empty list. The publish still proceeds. Dev and build dependencies
     /// are omitted, matching [`crate::ecosystem::rust::parse_cargo_toml`],
-    /// which reads only `[dependencies]`.
-    async fn dependency_names(
+    /// which reads only `[dependencies]`. The requirement and optional flag
+    /// on a normal dependency are kept.
+    async fn dependency_edges(
         &self,
         client: &UpstreamClient,
         name: &str,
         version: &str,
-    ) -> Vec<String> {
+    ) -> Vec<crate::record::DepEdge> {
         let url = format!(
             "{}/crates/{}/{}/dependencies",
             self.api_base,
@@ -207,7 +208,7 @@ impl CratesCatalogFollower {
             path_segment(version)
         );
         match client.get(Language::Rust, &url).await {
-            Ok(bytes) => normal_dependency_names(&bytes),
+            Ok(bytes) => normal_dependency_edges(&bytes),
             Err(_) => Vec::new(),
         }
     }
@@ -245,8 +246,14 @@ pub fn checksum_from_version_document(body: &[u8]) -> Option<String> {
     crate::pid::sha256(&checksum).map(|_| checksum)
 }
 
-/// Crate names from a dependencies document. `normal` or absent kind is kept.
-pub fn normal_dependency_names(body: &[u8]) -> Vec<String> {
+/// Normal dependencies from a crates.io dependencies document.
+///
+/// `normal` or an absent kind is kept. Dev and build rows are dropped. A
+/// repeated name keeps the required row when one of the rows is required.
+/// Names are sorted.
+pub fn normal_dependency_edges(body: &[u8]) -> Vec<crate::record::DepEdge> {
+    use crate::record::DepEdge;
+
     #[derive(Deserialize)]
     struct Body {
         #[serde(default)]
@@ -257,22 +264,40 @@ pub fn normal_dependency_names(body: &[u8]) -> Vec<String> {
         #[serde(default)]
         crate_id: String,
         #[serde(default)]
+        req: String,
+        #[serde(default)]
         kind: String,
+        #[serde(default)]
+        optional: bool,
     }
     let Ok(parsed) = serde_json::from_slice::<Body>(body) else {
         return Vec::new();
     };
-    let mut names: Vec<String> = parsed
-        .dependencies
-        .into_iter()
-        .filter(|dep| dep.kind.is_empty() || dep.kind == "normal")
-        .map(|dep| dep.crate_id)
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .collect();
-    names.sort();
-    names.dedup();
-    names
+    let mut edges: Vec<DepEdge> = Vec::new();
+    for dep in parsed.dependencies {
+        if !(dep.kind.is_empty() || dep.kind == "normal") {
+            continue;
+        }
+        let name = dep.crate_id.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let mut edge = DepEdge::runtime(name);
+        let requirement = dep.req.trim();
+        if !requirement.is_empty() {
+            edge.requirement = Some(requirement.into());
+        }
+        edge.optional = dep.optional;
+        if let Some(existing) = edges.iter_mut().find(|stored| stored.name == edge.name) {
+            if existing.optional && !edge.optional {
+                *existing = edge;
+            }
+            continue;
+        }
+        edges.push(edge);
+    }
+    edges.sort_by(|left, right| left.name.cmp(&right.name));
+    edges
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -281,7 +306,7 @@ pub fn normal_dependency_names(body: &[u8]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{checksum_from_version_document, normal_dependency_names};
+    use super::{checksum_from_version_document, normal_dependency_edges};
 
     #[test]
     fn a_version_document_yields_a_64_hex_checksum_only() {
@@ -305,11 +330,15 @@ mod tests {
                 {"crate_id": " ", "kind": "normal"}
             ]
         }"#;
-        assert_eq!(normal_dependency_names(body), vec![
-            "libc".to_owned(),
-            "serde".to_owned()
-        ]);
-        assert!(normal_dependency_names(b"not-json").is_empty());
-        assert!(normal_dependency_names(b"{}").is_empty());
+        let edges = normal_dependency_edges(body);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].name.as_str(), "libc");
+        assert_eq!(edges[0].requirement.as_deref(), Some("0.2"));
+        assert!(!edges[0].optional);
+        assert_eq!(edges[1].name.as_str(), "serde");
+        assert_eq!(edges[1].requirement.as_deref(), Some("^1"));
+        assert!(!edges[1].optional);
+        assert!(normal_dependency_edges(b"not-json").is_empty());
+        assert!(normal_dependency_edges(b"{}").is_empty());
     }
 }

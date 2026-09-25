@@ -136,6 +136,8 @@ struct DependencyGroup {
 struct DependencyRef {
     #[serde(default)]
     id: Option<String>,
+    #[serde(default)]
+    range: Option<String>,
 }
 
 fn default_listed() -> bool {
@@ -193,18 +195,34 @@ fn recognized_leaf_type(token: &str) -> Option<LeafType> {
 ///
 /// NuGet ids are case-insensitive, so each id is lowercased before the sort.
 /// An id that appears in two groups is kept once. A blank id is dropped.
-fn dependency_names(groups: &[DependencyGroup]) -> Vec<String> {
-    let mut names: Vec<String> = groups
-        .iter()
-        .flat_map(|group| group.dependencies.iter())
-        .filter_map(|dependency| dependency.id.as_deref())
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(|id| id.to_ascii_lowercase())
-        .collect();
-    names.sort();
-    names.dedup();
-    names
+fn dependency_edges(groups: &[DependencyGroup]) -> Vec<crate::record::DepEdge> {
+    let mut edges: Vec<crate::record::DepEdge> = Vec::new();
+    for dependency in groups.iter().flat_map(|group| group.dependencies.iter()) {
+        let Some(id) = dependency
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let name = id.to_ascii_lowercase();
+        if edges.iter().any(|edge| edge.name == name) {
+            continue;
+        }
+        let mut edge = crate::record::DepEdge::runtime(name);
+        if let Some(range) = dependency
+            .range
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        {
+            edge.requirement = Some(range.into());
+        }
+        edges.push(edge);
+    }
+    edges.sort_by(|left, right| left.name.cmp(&right.name));
+    edges
 }
 
 /// `SHA512` + base64 becomes an SRI token the artifact parser accepts.
@@ -226,7 +244,7 @@ pub fn parse_leaf(body: &[u8]) -> Result<Option<CatalogEvent>, crate::upstream::
 }
 
 fn event_from_leaf(leaf: CatalogLeaf) -> Option<CatalogEvent> {
-    let dependencies = dependency_names(&leaf.dependency_groups);
+    let dependencies = dependency_edges(&leaf.dependency_groups);
     let (Some(name), Some(version)) = (leaf.package_id, leaf.package_version) else {
         return None;
     };
@@ -397,6 +415,13 @@ mod tests {
         parse_leaf(json.as_bytes()).expect("catalog leaf JSON")
     }
 
+    fn edges_named(edges: &[crate::record::DepEdge]) -> Vec<(&str, Option<&str>)> {
+        edges
+            .iter()
+            .map(|edge| (edge.name.as_str(), edge.requirement.as_deref()))
+            .collect()
+    }
+
     fn assert_published(event: Option<CatalogEvent>, name: &str, version: &str) {
         match event {
             Some(CatalogEvent::Published {
@@ -488,9 +513,9 @@ mod tests {
         );
         match with_deps {
             Some(CatalogEvent::Published { dependencies, .. }) => {
-                assert_eq!(dependencies, vec![
-                    "microsoft.csharp".to_owned(),
-                    "system.runtime".to_owned()
+                assert_eq!(edges_named(&dependencies), vec![
+                    ("microsoft.csharp", Some("[4.3.0, )")),
+                    ("system.runtime", Some("[4.3.0, )")),
                 ]);
             }
             other => panic!("expected dependency names, got {other:?}"),

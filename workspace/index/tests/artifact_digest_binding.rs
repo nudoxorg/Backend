@@ -24,7 +24,19 @@ fn published_from(event: &CatalogEvent, ecosystem: Language) -> PackageRecord {
         panic!("publish");
     };
     let digest = artifact_digest(checksum.as_deref().expect("checksum")).expect("artifact");
-    PackageRecord::published(ecosystem, name, version, dependencies).with_content(digest)
+    PackageRecord::from_parts(
+        ecosystem,
+        name,
+        version,
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
+        dependencies.clone(),
+    )
+    .with_content(digest)
 }
 
 #[test]
@@ -122,14 +134,14 @@ fn a_pypi_sdist_sha256_binds_through_the_follower_merge() {
     let mut held = CatalogEvent::Published {
         name: "requests".into(),
         version: "2.31.0".into(),
-        dependencies: vec!["certifi".into()],
+        dependencies: vec![index::record::DepEdge::runtime("certifi")],
         checksum: Some("ab".repeat(32)),
     };
     merge_document_facts(&mut held, pypi_document_facts(body.as_bytes()));
     assert_eq!(held.checksum(), Some("ab".repeat(32).as_str()));
     assert_eq!(
         held.dependencies(),
-        &["charset-normalizer".to_owned(), "urllib3".to_owned()][..]
+        &index::record::runtime_edges_from_names(&["charset-normalizer", "urllib3"])[..]
     );
 
     let record = published_from(&event, heart::Language::Python);

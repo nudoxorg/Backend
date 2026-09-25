@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use heart::Language;
 
 use crate::{
-    enums::{EdgeKind, EdgeSource, TextEnum},
+    enums::{EdgeSource, TextEnum},
     protocol::EdgeWire,
     record::{DepClass, DepEdge},
 };
@@ -270,6 +270,7 @@ fn edge_from_wire(wire: &EdgeWire) -> DepEdge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enums::EdgeKind;
     use smol_str::SmolStr;
 
     fn edge(name: &str, class: DepClass, requirement: Option<&str>) -> DepEdge {
