@@ -2169,6 +2169,25 @@ fn body_skeleton(body: &DeclBody) -> String {
                 }
                 s.push(';');
             }
+            for call in &i.call_signatures {
+                s.push_str("call:");
+                s.push_str(&function_skeleton(call));
+                s.push(';');
+            }
+            for index in &i.index_signatures {
+                s.push_str("index:");
+                s.push_str(&index.key_name);
+                s.push(':');
+                s.push_str(&type_skeleton(&index.key_ty));
+                s.push_str("->");
+                s.push_str(&type_skeleton(&index.value_ty));
+                s.push(';');
+            }
+            for construct in &i.construct_signatures {
+                s.push_str("new:");
+                s.push_str(&function_skeleton(construct));
+                s.push(';');
+            }
             s
         }
         DeclBody::TypeAlias(a) => format!("alias:{}", type_skeleton(&a.target)),

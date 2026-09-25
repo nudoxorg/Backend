@@ -491,6 +491,35 @@ mod tests {
     }
 
     #[test]
+    fn namespace_interfaces_with_different_index_signatures_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"idx","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "namespace N { export interface I { [k: string]: string; } }\n\
+             namespace N { export interface I { [k: number]: number; } }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "idx", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("idx"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("different index signatures in one file must seal");
+        let indexes = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "__index")
+            .count();
+        assert!(
+            indexes >= 2,
+            "string and number index signatures are different bodies"
+        );
+    }
+
+    #[test]
     fn namespace_interfaces_with_different_signatures_both_survive() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
