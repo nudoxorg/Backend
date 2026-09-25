@@ -4641,6 +4641,7 @@ dependencies = [
  "futures-util",
  "generativity",
  "grit-lib",
+ "hashbrown 0.17.1",
  "heart",
  "heck 0.5.0",
  "http 1.4.2",
