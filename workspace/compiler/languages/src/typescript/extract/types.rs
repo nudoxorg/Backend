@@ -88,9 +88,13 @@ fn lower_ts_type_impl<'a>(
             // type arguments. If caller supplied a type-params set, use it;
             // otherwise apply the single-identifier heuristic.
             let is_simple_id = !name.contains('.');
+            // Only a name in the caller's type-parameter set is a type variable.
+            // `lower_ts_type` passes `None`, so a bare `ImportedWidget` is a
+            // nominal, not `TypeVar`. The old `is_none_or` treated every bare
+            // identifier as a type variable when the set was missing.
             let is_type_var = tr.type_arguments.is_none()
                 && is_simple_id
-                && type_params.is_none_or(|set| set.contains(&name));
+                && type_params.is_some_and(|set| set.contains(&name));
 
             if is_type_var {
                 TypeOwned::TypeVar(name)

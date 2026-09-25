@@ -284,6 +284,45 @@ mod tests {
     }
 
     #[test]
+    fn unknown_bare_name_is_not_a_type_variable() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"bare","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export function id<T>(x: T): T;\nexport function g(): ImportedWidget;\n",
+        )
+        .expect("write declarations");
+
+        let source = PackageSource::new(dir.path(), "bare", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("bare"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("bare names must seal");
+
+        let mut saw_t = false;
+        let mut saw_widget_as_type_var = false;
+        for (_, entry) in produced.table.iter() {
+            if let EntryInner::Owned(Kind::Param(p)) = entry.kind() {
+                match &p.ty {
+                    Some(Type::TypeVar(name)) if name == "T" => saw_t = true,
+                    Some(Type::TypeVar(name)) if name == "ImportedWidget" => {
+                        saw_widget_as_type_var = true
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_t, "T in id<T>(x: T): T must stay a type variable");
+        assert!(
+            !saw_widget_as_type_var,
+            "ImportedWidget is not a type parameter"
+        );
+    }
+
+    #[test]
     fn same_file_nominal_is_a_local_ref() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

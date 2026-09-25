@@ -40,7 +40,7 @@ use super::{
     InterfaceBody, LocalExport, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts,
     NamespaceBody, OccurrenceFact, OccurrenceKind, ParamFact, PropertyFact, ReceiverKind,
     StarExport, StaticBody, TypeAliasBody, VariantFact, jsdoc,
-    types::{lower_ts_type, lower_type_params},
+    types::{lower_ts_type, lower_ts_type_with_params, lower_type_params},
 };
 
 // ── Entry point ────────────────────────────────────────────────────────────────
@@ -1025,12 +1025,18 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
         ReceiverKind::None
     };
 
-    let params = lower_formal_parameters(&f.params, source, first_param_is_this);
+    let type_params = f.type_parameters.as_ref().map(|tp| {
+        tp.params
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect::<std::collections::HashSet<_>>()
+    });
+    let params = lower_formal_parameters(&f.params, source, first_param_is_this, type_params.as_ref());
 
-    let return_type = f
-        .return_type
-        .as_ref()
-        .map(|ann| lower_ts_type(&ann.type_annotation, source));
+    let return_type = f.return_type.as_ref().map(|ann| match &type_params {
+        Some(set) => lower_ts_type_with_params(&ann.type_annotation, source, set),
+        None => lower_ts_type(&ann.type_annotation, source),
+    });
 
     let generics = f
         .type_parameters
@@ -1059,6 +1065,7 @@ fn lower_formal_parameters<'a>(
     params: &oxc_ast::ast::FormalParameters<'a>,
     source: &'a str,
     skip_first: bool,
+    type_params: Option<&std::collections::HashSet<String>>,
 ) -> Vec<ParamFact> {
     let items = if skip_first && !params.items.is_empty() {
         &params.items[1..]
@@ -1069,10 +1076,10 @@ fn lower_formal_parameters<'a>(
     let mut out: Vec<ParamFact> = Vec::with_capacity(items.len() + 1);
     for param in items {
         let name = binding_pattern_name(&param.pattern).unwrap_or_else(|| "_".to_string());
-        let ty = param
-            .type_annotation
-            .as_ref()
-            .map(|ann| lower_ts_type(&ann.type_annotation, source));
+        let ty = param.type_annotation.as_ref().map(|ann| match type_params {
+            Some(set) => lower_ts_type_with_params(&ann.type_annotation, source, set),
+            None => lower_ts_type(&ann.type_annotation, source),
+        });
         let is_readonly = param.readonly;
         let span = param.span();
         out.push(ParamFact {
@@ -1518,7 +1525,7 @@ fn lower_interface<'a>(
                     is_optional: m.optional,
                     is_abstract: false,
                 };
-                let params = lower_formal_parameters(&m.params, source, false);
+                let params = lower_formal_parameters(&m.params, source, false, None);
                 let return_type = m
                     .return_type
                     .as_ref()
@@ -1572,7 +1579,7 @@ fn lower_interface<'a>(
                 });
             }
             TSSignature::TSCallSignatureDeclaration(c) => {
-                let params = lower_formal_parameters(&c.params, source, false);
+                let params = lower_formal_parameters(&c.params, source, false, None);
                 let return_type = c
                     .return_type
                     .as_ref()
@@ -1616,7 +1623,7 @@ fn lower_interface<'a>(
             }
             // ── Item 6: Construct signatures (`new (…): T`) ───────────────
             TSSignature::TSConstructSignatureDeclaration(cs) => {
-                let params = lower_formal_parameters(&cs.params, source, false);
+                let params = lower_formal_parameters(&cs.params, source, false, None);
                 let return_type = cs
                     .return_type
                     .as_ref()
