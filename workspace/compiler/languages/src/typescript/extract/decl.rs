@@ -24,7 +24,7 @@ use oxc_ast::{
         AccessorPropertyType, Argument, AssignmentOperator, AssignmentTarget, BindingPattern,
         CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
         Function, MethodDefinitionKind, MethodDefinitionType, PropertyDefinitionType, PropertyKey,
-        Statement, TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
+        Statement, TSAccessibility,         TSEnumDeclaration, TSEnumMemberName, TSGlobalDeclaration, TSInterfaceDeclaration,
         TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName, TSModuleReference,
         TSSignature,
         VariableDeclaration, VariableDeclarationKind,
@@ -967,6 +967,10 @@ fn extract_statement<'a>(
 
         Statement::TSExportAssignment(assign) => export_assignment(assign, source, semantic, path, name_counts),
 
+        Statement::TSGlobalDeclaration(global) => {
+            lower_global(global, source, semantic, path, name_counts)
+        }
+
         Statement::TSNamespaceExportDeclaration(ns) => {
             let name = ns.id.name.to_string();
             let span = ns.span();
@@ -1196,7 +1200,9 @@ fn extract_declaration<'a>(
             import_equals_fact(import, semantic, path, visibility, name_counts)
         }
 
-        _ => vec![],
+        Declaration::TSGlobalDeclaration(global) => {
+            lower_global(global, source, semantic, path, name_counts)
+        }
     }
 }
 
@@ -2289,6 +2295,57 @@ fn lower_variable<'a>(
         });
     }
     out
+}
+
+/// `declare global { ... }` augments the global scope. Every declaration in
+/// the block is public there, including ones written without `export`.
+fn lower_global<'a>(
+    global: &'a TSGlobalDeclaration<'a>,
+    source: &'a str,
+    semantic: &'a Semantic<'a>,
+    path: &Path,
+    name_counts: &mut std::collections::HashMap<String, u32>,
+) -> Vec<DeclFact> {
+    use nudox_ir::entry::Visibility;
+
+    let span = global.span();
+    let doc = jsdoc::jsdoc_for_span(semantic, span);
+    if doc.ignore {
+        return vec![];
+    }
+    let name = "global".to_string();
+    let discriminant = bump_count(&name, name_counts);
+    let mut child_counts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::default();
+    let mut children = Vec::new();
+    for stmt in &global.body.body {
+        children.extend(extract_statement(
+            stmt,
+            source,
+            semantic,
+            path,
+            &std::collections::HashSet::default(),
+            &None,
+            &mut child_counts,
+        ));
+    }
+    for child in &mut children {
+        child.visibility = Visibility::Public;
+    }
+    vec![DeclFact {
+        name,
+        visibility: Visibility::Public,
+        doc,
+        body: DeclBody::Namespace(NamespaceBody {
+            is_ambient: true,
+            children,
+        }),
+        module: path.to_path_buf(),
+        span_start: span.start,
+        span_end: span.end,
+        is_default: false,
+        decl_index: discriminant,
+    }]
 }
 
 fn lower_namespace<'a>(

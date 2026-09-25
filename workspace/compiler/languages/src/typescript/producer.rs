@@ -1638,6 +1638,52 @@ mod tests {
     }
 
     #[test]
+    fn a_global_augmentation_declares_its_members() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"global-aug","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export {};\n\
+             declare global {\n\
+               interface Window { customProp: string; }\n\
+               function greet(name: string): void;\n\
+             }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "global-aug", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("global-aug"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("declare global must seal");
+        let window = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "Window")
+            .count();
+        assert_eq!(window, 1, "declare global must declare interface Window");
+        let greet = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "greet"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(greet, 1, "declare global must declare function greet");
+        let param = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "name" && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(param, 1, "greet's parameter must be declared");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
