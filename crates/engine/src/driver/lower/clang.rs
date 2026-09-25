@@ -2514,7 +2514,12 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                         OccurrenceTarget::Local(EntityId::new(ordinal)),
                         OccurrenceConfidence::Oracle,
                     )),
-                    None => None,
+                    // Block-scope variables are not admitted as declaration
+                    // facts, but the authority still proves the reference
+                    // site. Keep the written spelling at index confidence
+                    // instead of dropping the occurrence.
+                    None => foreign_universe(written, reference.kind)
+                        .map(|target| (target, OccurrenceConfidence::Index)),
                 },
                 ReferenceTarget::Foreign { identity, file } => {
                     let target = match file {
@@ -2590,13 +2595,26 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(())
     }
 
-    /// Resolves only an authority-proved owner.  Containment is not ownership:
-    /// attaching an unowned libclang reference to the innermost declaration
-    /// would fabricate a relation and an invalid relative span.
+    /// Resolves the innermost pushed declaration that owns one reference.
+    /// libclang's semantic parent of a use site is often a block-scope
+    /// variable or parameter the lane never admits as a declaration fact, so
+    /// the walk climbs the authority's owner chain until it reaches a pushed
+    /// row (typically the enclosing function) instead of fabricating a span
+    /// on an absent parent.
     fn reference_owner(&self, reference: &ReferenceFact) -> Option<u32> {
-        reference
-            .owner
-            .and_then(|identity| self.ordinal_of(identity))
+        let mut current = reference.owner;
+        while let Some(identity) = current {
+            if let Some(ordinal) = self.ordinal_of(identity) {
+                return Some(ordinal);
+            }
+            current = self
+                .authority
+                .declarations
+                .iter()
+                .find(|declaration| declaration.identity == Some(identity))
+                .and_then(|declaration| declaration.owner);
+        }
+        None
     }
 
     /// Resolves a foreign override target to its stable cross-fragment key when
@@ -4009,6 +4027,53 @@ mod tests {
         .is_some()
         {
             return Err(TestError::Missing("escaping rejection"));
+        }
+        Ok(())
+    }
+
+    /// A block-scope local is not a pushed declaration fact, but its use
+    /// inside the owning function still carries the written spelling at index
+    /// confidence rather than disappearing from the occurrence lane.
+    #[test]
+    fn block_local_variable_use_keeps_its_written_spelling() -> Result<(), TestError> {
+        let source = b"int use_local(void) {\n    int local = 42;\n    return local;\n}\n";
+        let bytes = lower(source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let function = entity_of(&view, b"use_local", EntityKind::Function)?;
+        let use_site = source
+            .windows(5)
+            .rposition(|window| window == b"local")
+            .ok_or(TestError::Absent)?;
+        let owner_start = source
+            .windows(b"int use_local".len())
+            .position(|window| window == b"int use_local")
+            .ok_or(TestError::Absent)?;
+        let mut found = false;
+        for row in occurrences(&view)? {
+            if row.owner != function {
+                continue;
+            }
+            let OccurrenceTarget::Foreign(key) = row.occurrence.target else {
+                continue;
+            };
+            if key.path != "local" || key.display != "local" {
+                continue;
+            }
+            found = true;
+            if row.occurrence.kind != backend_semantic::ir::ReferenceKind::VariableUse {
+                return Err(TestError::Missing("variable-use kind"));
+            }
+            if row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Index {
+                return Err(TestError::Missing("index confidence"));
+            }
+            if row.occurrence.span.start
+                != u32::try_from(use_site - owner_start).map_err(|_| TestError::Tail)?
+            {
+                return Err(TestError::Missing("owner-relative name extent"));
+            }
+        }
+        if !found {
+            return Err(TestError::Absent);
         }
         Ok(())
     }
