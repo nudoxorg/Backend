@@ -2682,6 +2682,18 @@ mod tests {
                 .count();
             assert_eq!(count, 1, "{name} must be a parameter");
         }
+        let keeps_as = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "Bag"
+                && matches!(
+                    entry.kind(),
+                    EntryInner::Owned(Kind::Alias(alias))
+                        if matches!(
+                            alias.target.as_ref(),
+                            Some(Type::Mapped { name_type: Some(_), .. })
+                        )
+                )
+        });
+        assert!(keeps_as, "the sealed mapped type must keep its as clause");
     }
 
     #[test]

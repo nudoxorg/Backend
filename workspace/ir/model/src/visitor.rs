@@ -149,7 +149,10 @@ mod m {
 
           	$(#[$meta:meta])*
           	$variant:ident {
-          		$($inner:ident: $ty:ty),* $(,)?
+          		$(
+          			$(#[$fmeta:meta])*
+          			$inner:ident: $ty:ty
+          		),* $(,)?
           	},
 
           	$($rest:tt)*

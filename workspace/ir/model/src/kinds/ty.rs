@@ -238,6 +238,12 @@ pub enum Type {
         value: Box<Type>,
         readonly: MappedModifier,
         optional: MappedModifier,
+        /// The TypeScript `as` clause. Absent when the key is not remapped.
+        /// Omitted from serialization when absent so an older mapped type
+        /// still decodes, and omitted from the skeleton when absent so a
+        /// mapped type without `as` keeps its previous identity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name_type: Option<Box<Type>>,
     },
 
     /// A TypeScript **template literal type**: `` `prefix-${T}` ``.
@@ -1113,6 +1119,7 @@ mod tests {
             value: Box::new(Type::Any),
             readonly: MappedModifier::Add,
             optional: MappedModifier::Remove,
+            name_type: None,
         };
         let json = serde_json::to_string(&m).expect("serialize");
         let back: Type = serde_json::from_str(&json).expect("deserialize");
@@ -1129,6 +1136,7 @@ mod tests {
             value: Box::new(Type::Any),
             readonly: MappedModifier::Add,
             optional: MappedModifier::Absent,
+            name_type: None,
         };
         let without_readonly = Type::Mapped {
             key_var: "P".to_owned(),
@@ -1136,6 +1144,7 @@ mod tests {
             value: Box::new(Type::Any),
             readonly: MappedModifier::Absent,
             optional: MappedModifier::Absent,
+            name_type: None,
         };
         assert_ne!(ty_skeleton(&with_readonly), ty_skeleton(&without_readonly));
     }
@@ -1150,6 +1159,7 @@ mod tests {
             value: Box::new(Type::Any),
             readonly: MappedModifier::Absent,
             optional: MappedModifier::Absent,
+            name_type: None,
         };
         let with_k = Type::Mapped {
             key_var: "K".to_owned(),
@@ -1157,11 +1167,25 @@ mod tests {
             value: Box::new(Type::Any),
             readonly: MappedModifier::Absent,
             optional: MappedModifier::Absent,
+            name_type: None,
         };
         assert_eq!(
             ty_skeleton(&with_p),
             ty_skeleton(&with_k),
             "key_var name is alpha-equivalent — must not change the skeleton"
+        );
+        let with_as = Type::Mapped {
+            key_var: "P".to_owned(),
+            source: Box::new(Type::Any),
+            value: Box::new(Type::Any),
+            readonly: MappedModifier::Absent,
+            optional: MappedModifier::Absent,
+            name_type: Some(Box::new(Type::Primitive(Primitive::Str))),
+        };
+        assert_ne!(
+            ty_skeleton(&with_p),
+            ty_skeleton(&with_as),
+            "an as clause is a different mapped type"
         );
     }
 

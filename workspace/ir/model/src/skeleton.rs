@@ -306,12 +306,17 @@ impl<'a> Skeleton<'a> {
                 value,
                 readonly,
                 optional,
+                name_type,
             } => {
                 self.out.push(0x11);
                 self.ty(source);
                 self.ty(value);
                 self.mapped_modifier(readonly);
                 self.mapped_modifier(optional);
+                if let Some(name) = name_type {
+                    self.out.push(0x01);
+                    self.ty(name);
+                }
             }
             // Literal spans ARE identity-relevant.
             Type::TemplateLiteral(parts) => {

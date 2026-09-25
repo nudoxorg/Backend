@@ -613,9 +613,17 @@ mod typerefs {
                 collect_unresolved_spellings(then_ty, out);
                 collect_unresolved_spellings(else_ty, out);
             }
-            Type::Mapped { source, value, .. } => {
+            Type::Mapped {
+                source,
+                value,
+                name_type,
+                ..
+            } => {
                 collect_unresolved_spellings(source, out);
                 collect_unresolved_spellings(value, out);
+                if let Some(name) = name_type {
+                    collect_unresolved_spellings(name, out);
+                }
             }
             Type::TemplateLiteral(parts) => {
                 for part in parts.iter() {

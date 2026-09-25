@@ -299,6 +299,7 @@ impl Renderer<'_> {
                 value,
                 readonly,
                 optional,
+                name_type,
             } => {
                 f.write_str("{ ")?;
                 match readonly {
@@ -308,6 +309,10 @@ impl Renderer<'_> {
                 }
                 write!(f, "[{key_var} in ")?;
                 self.ty(f, source)?;
+                if let Some(name) = name_type {
+                    f.write_str(" as ")?;
+                    self.ty(f, name)?;
+                }
                 f.write_str("]")?;
                 match optional {
                     MappedModifier::Add => f.write_str("?")?,

@@ -756,6 +756,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
             value,
             readonly,
             optional,
+            name_type,
         } => {
             use nudox_ir::kinds::ty::MappedModifier;
             toks.push(SigToken::Punct("{"));
@@ -770,6 +771,12 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
             toks.push(SigToken::Kw("in"));
             toks.push(SigToken::Ws);
             push_type(toks, source, package);
+            if let Some(name) = name_type {
+                toks.push(SigToken::Ws);
+                toks.push(SigToken::Kw("as"));
+                toks.push(SigToken::Ws);
+                push_type(toks, name, package);
+            }
             toks.push(SigToken::Punct("]"));
             if *optional == MappedModifier::Add {
                 toks.push(SigToken::Punct("?"));

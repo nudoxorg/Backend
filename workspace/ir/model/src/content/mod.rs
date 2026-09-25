@@ -1195,6 +1195,7 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
             value,
             readonly,
             optional,
+            name_type,
         } => {
             out.push(0x11);
             encode_str(out, key_var);
@@ -1202,6 +1203,10 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
             encode_type(out, value);
             encode_mapped_modifier(out, readonly);
             encode_mapped_modifier(out, optional);
+            if let Some(name) = name_type {
+                out.push(0x01);
+                encode_type(out, name);
+            }
         }
         Type::TemplateLiteral(parts) => {
             out.push(0x12);

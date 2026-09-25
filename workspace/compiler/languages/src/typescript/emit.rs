@@ -3682,15 +3682,16 @@ pub(crate) fn lower_type(
             value,
             readonly,
             optional,
-            // `Type::Mapped` has no slot for the `as` clause. The clause is
-            // still walked above so a function inside it is declared.
-            name_type: _,
+            name_type,
         } => Type::Mapped {
             key_var: key_var.clone(),
             source: Box::new(lower_type(source, out, names, module)),
             value: Box::new(lower_type(value, out, names, module)),
             readonly: *readonly,
             optional: *optional,
+            name_type: name_type
+                .as_ref()
+                .map(|name| Box::new(lower_type(name, out, names, module))),
         },
         TypeOwned::TemplateLiteral(parts) => {
             use nudox_ir::kinds::ty::TemplatePart as IrPart;
