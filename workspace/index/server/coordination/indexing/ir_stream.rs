@@ -361,54 +361,69 @@ fn build_reference_set_from_bodies(
     owning_pkg: Option<&str>,
 ) -> crate::server::registry::blob::ReferenceSet {
     use crate::server::registry::blob::Reference;
-    use ir::body::BodyEmbed;
-    use ir::vocab::ReferenceKind;
     use smol_str::SmolStr;
 
     // Per-file accumulator: file_path → Vec<Reference>.
     let mut by_file: BTreeMap<SmolStr, Vec<Reference>> = BTreeMap::new();
-
-    for bw in bodies {
+    visit_oracle_edges(bodies, |intro, stable, kind, _confidence, span| {
         let src_path = intro_to_path
-            .get(&bw.intro)
-            .map(|s| SmolStr::from(s.as_str()))
+            .get(&intro)
+            .map(|path| SmolStr::from(path.as_str()))
             .unwrap_or_else(|| SmolStr::new("<unknown>"));
+        by_file.entry(src_path).or_default().push(Reference {
+            target: make_ref_target(stable, owning_pkg),
+            span_start: span.start as u64,
+            span_end: span.end as u64,
+            kind: kind as u8,
+        });
+    });
+    seal_references(by_file)
+}
 
-        let refs = by_file.entry(src_path).or_default();
+/// Graph-worthy oracle facts, once. Both the reference section and the
+/// usage-query occurrences are this walk.
+fn visit_oracle_edges(
+    bodies: &[ir_vcs::protocol::BodyWire],
+    mut visit: impl FnMut(
+        ir::change::IntroId,
+        &ir::change::StableRef,
+        ir::vocab::ReferenceKind,
+        ir::vocab::Confidence,
+        ir::vocab::RelSpan,
+    ),
+) {
+    use ir::body::BodyEmbed;
+    use ir::vocab::{Confidence, ReferenceKind};
 
-        if let BodyEmbed::Present(facts) = &bw.body {
-            // Oracle calls: only those with a resolved target.
-            for call in &facts.oracle.calls {
-                let Some(ref stable) = call.target else {
-                    continue;
-                };
-                // Policy: emit only graph-worthy references (Confidence >= Index).
-                if !call.confidence.is_graph_worthy() {
-                    continue;
-                }
-                let target = make_ref_target(stable, owning_pkg);
-                refs.push(Reference {
-                    target,
-                    span_start: call.rel_span.start as u64,
-                    span_end: call.rel_span.end as u64,
-                    kind: call.kind as u8,
-                });
+    for body in bodies {
+        let BodyEmbed::Present(facts) = &body.body else {
+            continue;
+        };
+        for call in &facts.oracle.calls {
+            let Some(target) = call.target.as_ref() else {
+                continue;
+            };
+            if !call.confidence.is_graph_worthy() {
+                continue;
             }
-
-            // Oracle type mentions: all resolved (no target-less form).
-            for mention in &facts.oracle.type_mentions {
-                let target = make_ref_target(&mention.ty, owning_pkg);
-                refs.push(Reference {
-                    target,
-                    span_start: mention.rel_span.start as u64,
-                    span_end: mention.rel_span.end as u64,
-                    kind: ReferenceKind::TypeReference as u8,
-                });
-            }
+            visit(
+                body.intro,
+                target,
+                call.kind,
+                call.confidence,
+                call.rel_span,
+            );
+        }
+        for mention in &facts.oracle.type_mentions {
+            visit(
+                body.intro,
+                &mention.ty,
+                ReferenceKind::TypeReference,
+                Confidence::Oracle,
+                mention.rel_span,
+            );
         }
     }
-
-    seal_references(by_file)
 }
 
 /// Derive usage-query [`ir::vocab::Occurrence`]s from the accumulated `Bodies`
@@ -435,42 +450,12 @@ fn build_reference_set_from_bodies(
 fn build_occurrences_from_bodies(
     bodies: &[ir_vcs::protocol::BodyWire],
 ) -> Vec<(ir::change::IntroId, ir::vocab::Occurrence)> {
-    use ir::body::BodyEmbed;
-    use ir::vocab::{Confidence, Occurrence, ReferenceKind};
+    use ir::vocab::Occurrence;
 
     let mut occurrences = Vec::new();
-
-    for bw in bodies {
-        let BodyEmbed::Present(facts) = &bw.body else {
-            continue;
-        };
-
-        for call in &facts.oracle.calls {
-            let Some(ref target) = call.target else {
-                continue;
-            };
-            if !call.confidence.is_graph_worthy() {
-                continue;
-            }
-            occurrences.push((
-                bw.intro,
-                Occurrence::new(target.clone(), call.kind, call.confidence, call.rel_span),
-            ));
-        }
-
-        for mention in &facts.oracle.type_mentions {
-            occurrences.push((
-                bw.intro,
-                Occurrence::new(
-                    mention.ty.clone(),
-                    ReferenceKind::TypeReference,
-                    Confidence::Oracle,
-                    mention.rel_span,
-                ),
-            ));
-        }
-    }
-
+    visit_oracle_edges(bodies, |intro, target, kind, confidence, span| {
+        occurrences.push((intro, Occurrence::new(target.clone(), kind, confidence, span)));
+    });
     occurrences
 }
 
@@ -1568,6 +1553,50 @@ mod tests {
             body: ir::body::BodyEmbed::Absent,
         }];
         assert!(build_occurrences_from_bodies(&bodies).is_empty());
+    }
+
+    #[test]
+    fn references_and_occurrences_count_the_same_oracle_edges() {
+        use ir::body::{OracleBody, OracleCall, OracleTypeMention};
+        use ir::change::StableRef;
+        use ir::vocab::{Confidence, ReferenceKind, RelSpan};
+        use std::collections::HashMap;
+
+        let owner = occ_intro(2);
+        let callee = StableRef::new(occ_pkg(), occ_intro(1));
+        let ty = StableRef::new(occ_pkg(), occ_intro(3));
+        let bodies = vec![BodyWire {
+            intro: owner,
+            body: oracle_body(OracleBody {
+                calls: vec![
+                    OracleCall {
+                        target: Some(callee),
+                        kind: ReferenceKind::FunctionCall,
+                        confidence: Confidence::Index,
+                        rel_span: RelSpan::new(4, 9),
+                    },
+                    OracleCall {
+                        target: Some(StableRef::new(occ_pkg(), occ_intro(9))),
+                        kind: ReferenceKind::FunctionCall,
+                        confidence: Confidence::Suffix,
+                        rel_span: RelSpan::new(0, 1),
+                    },
+                ],
+                type_mentions: vec![OracleTypeMention {
+                    ty,
+                    rel_span: RelSpan::new(2, 8),
+                }],
+                reads_writes: Vec::new(),
+            }),
+        }];
+        let mut paths = HashMap::new();
+        paths.insert(owner, "src/lib.rs".to_owned());
+        let references = build_reference_set_from_bodies(&bodies, &paths, None);
+        let occurrences = build_occurrences_from_bodies(&bodies);
+        let ref_count: usize = references.by_file.iter().map(|file| file.references.len()).sum();
+        assert_eq!(ref_count, 2);
+        assert_eq!(occurrences.len(), ref_count);
+        assert_eq!(references.by_file[0].path.as_str(), "src/lib.rs");
     }
 
     #[test]
