@@ -21,11 +21,13 @@
 //! - Star-export fan-out: for `export * from "m"` we emit re-exports for each
 //!   name the target module exports.
 //!
-//! # One-pass guarantee
-//! We make exactly ONE pass over all `ModuleFacts` entries. Parent IDs are
-//! always the module's own `TsId` (namespace or module root); children
-//! reference parents declared in the same pass. Order is irrelevant because
-//! `Lowering` is order-independent.
+//! # Two passes
+//! Pass one declares every module and every non-reexport declaration, so a
+//! later file's symbol exists before anyone points at it. Pass two emits
+//! re-exports. A target that was declared is a local `refer`. A target that
+//! was not (`export *`, a `default` the other file never declared, a name in
+//! a file this package does not contain) is a `refer_import`. `refer` on an
+//! undeclared id is what made `Lowering::finish` reject the package.
 
 use std::{
     collections::HashMap,
@@ -43,6 +45,8 @@ use nudox_ir::{
     vocab::{Confidence, ReferenceKind, RelSpan},
 };
 
+use nudox_ir::change::EcosystemId;
+use nudox_ir::foreign::ForeignKey;
 use nudox_ir::lower::Lowering;
 use oxc_resolver::Resolver;
 
@@ -119,8 +123,10 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
             Module,
         );
 
-        // Emit each top-level declaration.
         for decl in &module.declarations {
+            if matches!(decl.body, DeclBody::Reexport { .. }) {
+                continue;
+            }
             emit_decl(
                 decl,
                 Some(module_id.clone()),
@@ -130,11 +136,26 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 &resolver,
             );
         }
+    }
 
-        // Emit re-exports from the export table.
+    // Pass 2: re-exports, now that every in-package target is declared.
+    for module in modules.iter() {
+        let module_id = module_ts_id(module);
+        for decl in &module.declarations {
+            if matches!(decl.body, DeclBody::Reexport { .. }) {
+                emit_decl(
+                    decl,
+                    Some(module_id.clone()),
+                    out,
+                    &module_index,
+                    &export_index,
+                    &resolver,
+                );
+            }
+        }
         emit_reexports(
             module,
-            Some(module_id.clone()),
+            Some(module_id),
             out,
             &export_index,
             &resolver,
@@ -1099,7 +1120,7 @@ fn emit_reexports(
         // this producer, not a special case invented for re-exports.
         for (discriminant, tid) in target_ids.into_iter().enumerate() {
             let reexport_id = TsId::new(module.path.clone(), export_name, discriminant as u32);
-            let target_ref: Ref<Module> = out.refer(tid);
+            let target_ref: Ref<Module> = refer_resolved(out, tid);
             let _: Ref<Module> =
                 out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
         }
@@ -1153,13 +1174,33 @@ fn emit_reexports(
                 for (discriminant, target_id) in target_ids.into_iter().enumerate() {
                     let reexport_id =
                         TsId::new(module.path.clone(), export_name, discriminant as u32);
-                    let target_ref: Ref<Module> = out.refer(target_id);
+                    let target_ref: Ref<Module> = refer_resolved(out, target_id);
                     let _: Ref<Module> =
                         out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
                 }
             }
         }
     }
+}
+
+/// Local `refer` when this package declared the id. Otherwise a foreign key.
+///
+/// `refer` on a missing id inserts an empty slot, and `finish` then rejects
+/// the package. A star import, a `default` the other file never declared, or
+/// a name that lives in a dependency is a name, not a local declaration.
+fn refer_resolved(out: &mut Lowering<TsId>, id: TsId) -> Ref<Module> {
+    if out.is_declared(&id) {
+        return out.refer(id);
+    }
+    let display: Box<str> = id.name.as_str().into();
+    let path: Box<str> =
+        format!("{}::{}#{}", id.module.display(), id.name, id.discriminant).into();
+    out.refer_import(ForeignKey::in_namespace(
+        EcosystemId::new("npm"),
+        id.module.display().to_string(),
+        path,
+        display,
+    ))
 }
 
 fn emit_inline_reexport(
@@ -1175,7 +1216,7 @@ fn emit_inline_reexport(
     let target_path = resolve_module_path(resolver, &id.module, module_request);
     if let Some(tp) = target_path {
         let target_id = TsId::new(tp, import_name, 0);
-        let target_ref: Ref<Module> = out.refer(target_id);
+        let target_ref: Ref<Module> = refer_resolved(out, target_id);
         let _: Ref<Module> = out.declare_ref(id, parent, sym, target_ref);
     }
 }
