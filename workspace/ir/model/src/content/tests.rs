@@ -313,3 +313,18 @@ fn golden_content_hash() {
          a deliberate format-version bump"
     );
 }
+
+#[test]
+fn streamed_content_hash_matches_the_buffered_domain_preimage() {
+    use super::{ENTRY_CONTENT_DOMAIN, SymbolPosition, encode_entry_inner, encode_symbol};
+    use crate::change::ContentBlake3;
+
+    let entry = base_entry();
+    let mut buf = Vec::new();
+    encode_symbol(&mut buf, entry.sym(), SymbolPosition::Included);
+    encode_entry_inner(&mut buf, entry.kind());
+    assert_eq!(
+        entry_content_hash(&entry),
+        ContentBlake3::from_domain(ENTRY_CONTENT_DOMAIN, &buf)
+    );
+}

@@ -421,10 +421,14 @@ pub const ENTRY_STORAGE_DOMAIN: &str = "nudox.entry.storage.v1";
 /// the seal pass before content hashing. A `Local` here indicates a bug in the
 /// seal pass.
 pub fn entry_content_hash(entry: &Entry) -> ContentBlake3 {
-    let mut buf = Vec::new();
-    encode_symbol(&mut buf, entry.sym(), SymbolPosition::Included);
-    encode_entry_inner(&mut buf, entry.kind());
-    ContentBlake3::from_domain(ENTRY_CONTENT_DOMAIN, &buf)
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(ENTRY_CONTENT_DOMAIN.as_bytes());
+    {
+        let mut out = HasherSink::new(&mut hasher);
+        encode_symbol(&mut out, entry.sym(), SymbolPosition::Included);
+        encode_entry_inner(&mut out, entry.kind());
+    }
+    ContentBlake3::from_raw(*hasher.finalize().as_bytes())
 }
 
 /// Compute the storage hash of an [`Entry`] — a **position-independent**
