@@ -52,9 +52,22 @@ pub fn project_edges(ecosystem: Language, edges: &[DepEdge], source: EdgeSource)
 /// and every other catalog mechanism is build.
 #[must_use]
 pub fn records_from_ops(ops: &[crate::protocol::CatalogOp]) -> Vec<crate::record::PackageRecord> {
+    records_from_ops_named(ops, None)
+}
+
+/// Like [`records_from_ops`], and names a version whose stem is not in the batch.
+///
+/// Git polls emit [`VersionDelta`](crate::protocol::VersionDelta) after the
+/// package was registered on an earlier commit. `fallback` is that package.
+#[must_use]
+pub fn records_from_ops_named(
+    ops: &[crate::protocol::CatalogOp],
+    fallback: Option<(Language, &str)>,
+) -> Vec<crate::record::PackageRecord> {
     use std::collections::HashMap;
 
-    use crate::{protocol::CatalogOp, record::PackageRecord};
+    use crate::protocol::CatalogOp;
+    use crate::record::PackageRecord;
     use smol_str::SmolStr;
 
     let mut stems = HashMap::new();
@@ -65,33 +78,64 @@ pub fn records_from_ops(ops: &[crate::protocol::CatalogOp]) -> Vec<crate::record
     }
     let mut records = Vec::new();
     for op in ops {
-        let CatalogOp::UpsertVersion {
-            coordinates,
-            edges,
-            license,
-            ..
-        } = op
-        else {
+        let Some((stem_id, version, edges, license)) = version_view(op) else {
             continue;
         };
-        let Some((ecosystem, name)) = stems.get(&coordinates.stem_id) else {
-            continue;
+        let (ecosystem, name) = match stems.get(&stem_id) {
+            Some((ecosystem, name)) => (*ecosystem, name.clone()),
+            None => match fallback {
+                Some((ecosystem, name)) => (ecosystem, name.to_owned()),
+                None => continue,
+            },
         };
-        let dep_edges = edges.iter().map(edge_from_wire).collect();
         records.push(PackageRecord::from_parts(
-            *ecosystem,
-            name.clone(),
-            coordinates.version_canonical.clone(),
+            ecosystem,
+            name,
+            version,
             None,
-            license.as_ref().map(|value| SmolStr::new(value)),
+            license.map(SmolStr::new),
             Vec::new(),
             None,
             None,
             false,
-            dep_edges,
+            edges.iter().map(edge_from_wire).collect(),
         ));
     }
     records
+}
+
+fn version_view(
+    op: &crate::protocol::CatalogOp,
+) -> Option<(
+    crate::ids::PackageStemId,
+    &str,
+    &[EdgeWire],
+    Option<&str>,
+)> {
+    use crate::protocol::{CatalogOp, VersionDelta};
+
+    match op {
+        CatalogOp::UpsertVersion {
+            coordinates,
+            edges,
+            license,
+            ..
+        } => Some((
+            coordinates.stem_id,
+            coordinates.version_canonical.as_str(),
+            edges,
+            license.as_deref(),
+        )),
+        CatalogOp::VersionDelta {
+            delta: VersionDelta::Added { version } | VersionDelta::Changed { version },
+        } => Some((
+            version.coordinates.stem_id,
+            version.coordinates.version_canonical.as_str(),
+            &version.edges,
+            version.license.as_deref(),
+        )),
+        _ => None,
+    }
 }
 
 fn edge_from_wire(wire: &EdgeWire) -> DepEdge {

@@ -454,14 +454,28 @@ fn git_driver_propagates_only_the_changed_upstream_version() {
         .expect("commit package");
 
     let watermarks = MemoryWatermarkStore::new();
-    let driver = FollowerDriver::new(&writer, &watermarks);
+    let facts = std::sync::Mutex::new(
+        index::engine::turso_vc::VersionedCatalog::open().expect("versioned catalog"),
+    );
+    let driver = FollowerDriver::new(&writer, &watermarks).with_facts(&facts);
     let monitor = GitMonitor::new(GritAdapter::default());
 
     let first = driver
         .drive_git_once(&monitor, stem, SLUG, &url, 1_000, 20_250_101_000_000)
         .expect("first git poll");
     assert!(matches!(first, GitDriveOutcome::Committed { .. }));
-    assert_eq!(committed_versions(&writer, stem).len(), INITIAL_TAGS);
+    let versions = committed_versions(&writer, stem);
+    assert_eq!(versions.len(), INITIAL_TAGS);
+    {
+        let mut catalog = facts.lock().expect("facts");
+        for (canonical, _) in &versions {
+            let tip = catalog
+                .materialize("cpp", SLUG, canonical)
+                .expect("join")
+                .expect("versioned git tag");
+            assert!(tip.edges.is_empty());
+        }
+    }
 
     let cursor = writer
         .changed_since(CatalogCursor::default())

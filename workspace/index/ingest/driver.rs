@@ -269,7 +269,7 @@ where
                 feed: feed.clone(),
                 message: error.to_string(),
             })?;
-        self.remember_facts(&ops, &feed)?;
+        self.remember_facts(&ops, &feed, None)?;
 
         // Only now that the batch is durable do we advance the watermark.
         self.watermarks.put_feed_watermark(&batch.next_watermark)?;
@@ -336,7 +336,7 @@ where
                         feed: repo_url.to_owned(),
                         message: error.to_string(),
                     })?;
-                self.remember_facts(&ops, repo_url)?;
+                self.remember_facts(&ops, repo_url, Some((heart::Language::Cpp, repo_slug)))?;
                 self.watermarks.put_git_watermark(&GitWatermark {
                     stem_id: stem,
                     last_rev: Some(rev),
@@ -350,14 +350,19 @@ where
         }
     }
 
-    fn remember_facts(&self, ops: &[CatalogOp], feed: &str) -> Result<(), Error> {
+    fn remember_facts(
+        &self,
+        ops: &[CatalogOp],
+        feed: &str,
+        fallback: Option<(heart::Language, &str)>,
+    ) -> Result<(), Error> {
         let Some(facts) = self.facts else {
             return Ok(());
         };
         let mut catalog = facts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for record in crate::edge_project::records_from_ops(ops) {
+        for record in crate::edge_project::records_from_ops_named(ops, fallback) {
             catalog.put_record(&record).map_err(|error| Error::Commit {
                 feed: feed.to_owned(),
                 message: error.to_string(),
