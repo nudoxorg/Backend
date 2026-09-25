@@ -422,8 +422,24 @@ impl<M: EmbeddingModel> Indexer<M> {
         // uses) — genuine extra patience for a source that is transiently
         // rate-limiting or flaking, without retrying anything non-idempotent
         // (this wraps only the archive GET).
-        let archive = retry_upstream_get(|| self.acquisition.get(lang, url.as_str()))
-            .await
+        let candidates = archive_candidates(url.as_str());
+        let mut found = None;
+        let mut last_error = None;
+        for candidate in &candidates {
+            match retry_upstream_get(|| self.acquisition.get(lang, candidate)).await {
+                Ok(bytes) => {
+                    found = Some(bytes);
+                    break;
+                }
+                Err(UpstreamError::NotFound) if candidates.len() > 1 => continue,
+                Err(error) => {
+                    last_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let archive = found
+            .ok_or_else(|| last_error.unwrap_or(UpstreamError::NotFound))
             .map_err(|e| match e {
                 UpstreamError::NotFound => not_found(coordinates),
                 // A response body that failed to parse as expected will not
@@ -959,6 +975,16 @@ fn ensure_trailing_slash(url: &url::Url) -> String {
 /// case-insensitive, so `canonical` — or an explicit lowercase, for NuGet —
 /// is correct there). Unit-tested directly in `tests` below, real names only
 /// (`once_cell`, `parking_lot`, `org.antlr:ST4`).
+/// Sources jar first. A Maven coordinate also tries the binary jar when the
+/// sources artifact is absent.
+fn archive_candidates(primary: &str) -> Vec<String> {
+    let mut urls = vec![primary.to_owned()];
+    if let Some(prefix) = primary.strip_suffix("-sources.jar") {
+        urls.push(format!("{prefix}.jar"));
+    }
+    urls
+}
+
 fn static_archive_url_string(coordinates: &PackageCoordinates) -> Option<String> {
     use heart::RegistryOrigin;
 
@@ -1393,6 +1419,13 @@ mod tests {
         assert_eq!(
             url, "https://repo1.maven.org/maven2/org/antlr/ST4/4.3/ST4-4.3-sources.jar",
             "must fetch the real case-sensitive `ST4` path, not the lowercased canonical `st4`"
+        );
+        assert_eq!(
+            archive_candidates(&url),
+            vec![
+                "https://repo1.maven.org/maven2/org/antlr/ST4/4.3/ST4-4.3-sources.jar".to_owned(),
+                "https://repo1.maven.org/maven2/org/antlr/ST4/4.3/ST4-4.3.jar".to_owned(),
+            ]
         );
     }
 
