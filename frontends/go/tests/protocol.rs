@@ -381,10 +381,19 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations() -> Result<(), 
         demo.decls.iter().any(|decl| decl.name == "DarwinOnly"),
         active_darwin
     );
+    assert_eq!(
+        demo.decls.iter().any(|decl| decl.name == "LinuxOnly"),
+        !active_darwin
+    );
+    let excluded_file = if active_darwin {
+        "linux.go"
+    } else {
+        "darwin.go"
+    };
     assert!(
         demo.build_constraints
             .iter()
-            .any(|constraint| constraint.file.ends_with("linux.go"))
+            .any(|constraint| constraint.file.ends_with(excluded_file))
     );
     Ok(())
 }
