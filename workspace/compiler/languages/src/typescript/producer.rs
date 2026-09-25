@@ -717,6 +717,30 @@ mod tests {
                 "a",
             ),
             (
+                "accessor-override",
+                "namespace N { export class C { accessor x: string; } }\n\
+                 namespace N { export class C { override accessor x: string; } }\n",
+                "x",
+            ),
+            (
+                "accessor-definite",
+                "namespace N { export class C { accessor x: string; } }\n\
+                 namespace N { export class C { accessor x!: string; } }\n",
+                "x",
+            ),
+            (
+                "accessor-initializer",
+                "namespace N { export class C { accessor x: string = 1; } }\n\
+                 namespace N { export class C { accessor x: string = 2; } }\n",
+                "x",
+            ),
+            (
+                "static-block",
+                "namespace N { export class C { static { const x = 1; } } }\n\
+                 namespace N { export class C { static { const x = 2; } } }\n",
+                "__static",
+            ),
+            (
                 "docs",
                 "namespace N { /** one */ export interface I { x: string; } }\n\
                  namespace N { /** two */ export interface I { x: string; } }\n",

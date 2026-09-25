@@ -1682,8 +1682,15 @@ fn lower_class_element<'a>(
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
-                class_flags: ClassFlags::default(),
-                initializer: None,
+                class_flags: ClassFlags {
+                    declare: false,
+                    override_: ap.r#override,
+                    definite: ap.definite,
+                },
+                initializer: ap
+                    .value
+                    .as_ref()
+                    .map(|value| value.span().source_text(source).to_string()),
                 signature_kind: SignatureKind::Method,
                 span_start: span.start,
                 span_end: span.end,
@@ -1713,7 +1720,7 @@ fn lower_class_element<'a>(
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators: Vec::new(),
                 class_flags: ClassFlags::default(),
-                initializer: None,
+                initializer: Some(span.source_text(source).to_string()),
                 signature_kind: SignatureKind::Method,
                 span_start: span.start,
                 span_end: span.end,
