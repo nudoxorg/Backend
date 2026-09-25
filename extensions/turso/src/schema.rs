@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS backend_projection_package_states (
 );
 CREATE INDEX IF NOT EXISTS backend_projection_package_states_source
     ON backend_projection_package_states(root, source);
+CREATE INDEX IF NOT EXISTS backend_projection_package_states_by_source
+    ON backend_projection_package_states(source);
 ";
 
 pub(crate) const UPSERT_ROW: &str = r"
