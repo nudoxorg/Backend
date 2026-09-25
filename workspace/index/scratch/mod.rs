@@ -308,6 +308,20 @@ impl ScratchStore {
         Ok(())
     }
 
+    /// Return `running` and `claimed` jobs to `queued`.
+    ///
+    /// Used with [`Self::clear_all_job_claims`] after a process restart. A
+    /// `failed` or `done` row stays terminal.
+    pub fn requeue_in_flight(&self, updated_at: i64) -> Result<usize, Error> {
+        self.connection
+            .execute(
+                "UPDATE jobs SET state = 'queued', updated_at = ?1
+                 WHERE state IN ('running', 'claimed')",
+                [updated_at],
+            )
+            .map_err(Error::from)
+    }
+
     /// Drop every job claim — restart recovery: a fresh process holds no
     /// leases, so any surviving claim row is a stale artifact of the crash.
     pub fn clear_all_job_claims(&self) -> Result<usize, Error> {

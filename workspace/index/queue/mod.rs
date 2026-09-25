@@ -359,6 +359,19 @@ impl Queue {
         Ok(cleared as u64)
     }
 
+    /// Drop every claim and return in-flight jobs to the runnable set.
+    ///
+    /// A restarted process owns no lease. `running` and `claimed` rows become
+    /// `queued`. `failed` and `done` rows stay terminal, so a dead letter is
+    /// not retried by the restart.
+    pub async fn recover_after_restart(&self) -> Result<u64, QueueError> {
+        let now = now_unix();
+        let store = self.locked();
+        let cleared = store.clear_all_job_claims().map_err(QueueError::Scratch)?;
+        store.requeue_in_flight(now).map_err(QueueError::Scratch)?;
+        Ok(cleared as u64)
+    }
+
     /// Enqueue a package for indexing at the default priority (`0`). Idempotent
     /// on `package`: an existing job for the same package is a no-op
     /// (returns its id). Thin wrapper over
@@ -1120,5 +1133,37 @@ mod queue_scratch_tests {
             ResolutionState::DeadLettered(failure) => assert_eq!(failure.message, "poison toml"),
             other => panic!("expected DeadLettered, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn restart_requeues_a_live_lease_and_leaves_a_dead_letter() {
+        let q = queue("worker-a");
+        let live = package();
+        let dead = package();
+        q.enqueue(live).await.unwrap();
+        q.enqueue(dead).await.unwrap();
+        let leased = q
+            .dequeue_batch(10, Duration::from_secs(3600))
+            .await
+            .unwrap();
+        assert_eq!(leased.len(), 2);
+        let dead_job = leased
+            .into_iter()
+            .find(|job| job.package() == dead)
+            .unwrap();
+        q.fail(dead_job, FailureKind::Malformed, "poison".to_owned())
+            .await
+            .unwrap();
+        assert!(
+            q.dequeue_batch(10, Duration::from_secs(30))
+                .await
+                .unwrap()
+                .is_empty(),
+            "the live job is leased and the dead letter is terminal"
+        );
+        q.recover_after_restart().await.unwrap();
+        let again = q.dequeue_batch(10, Duration::from_secs(30)).await.unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].package(), live);
     }
 }

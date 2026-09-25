@@ -475,6 +475,12 @@ impl<M: EmbeddingModel> Driver<M> {
             format!("server:{}", cfg.source_id()),
             INDEXING_RETRY_POLICY,
         );
+        queue.recover_after_restart().await.map_err(|error| {
+            ConnectError::new(
+                BackendKind::Catalog,
+                ConnectFailure::Io(std::io::Error::other(error)),
+            )
+        })?;
         let outbox = Outbox::new(Arc::clone(&writer));
 
         let blobs_cold: Store<heart::Cold> =
