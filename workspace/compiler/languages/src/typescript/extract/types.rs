@@ -230,12 +230,17 @@ fn lower_ts_type_impl<'a>(
                 Some(TSMappedTypeModifierOperator::Minus) => MappedModifier::Remove,
                 None => MappedModifier::Absent,
             };
+            let name_type = m
+                .name_type
+                .as_ref()
+                .map(|n| Box::new(lower_ts_type_impl(n, source, type_params)));
             TypeOwned::Mapped {
                 key_var,
                 source: source_ty,
                 value: value_ty,
                 readonly,
                 optional,
+                name_type,
             }
         }
 

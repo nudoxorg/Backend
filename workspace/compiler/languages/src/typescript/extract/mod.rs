@@ -567,6 +567,8 @@ pub enum TypeOwned {
         value: Box<TypeOwned>,
         readonly: nudox_ir::kinds::ty::MappedModifier,
         optional: nudox_ir::kinds::ty::MappedModifier,
+        /// The `as` clause, when the mapped type remaps its key.
+        name_type: Option<Box<TypeOwned>>,
     },
 
     /// A TypeScript template literal type: `` `prefix-${T}` ``.

@@ -953,9 +953,17 @@ fn emit_type_alias(
             declare_nested_params(&id, &id, "then", then_ty, out, names);
             declare_nested_params(&id, &id, "else", else_ty, out, names);
         }
-        TypeOwned::Mapped { source, value, .. } => {
+        TypeOwned::Mapped {
+            source,
+            value,
+            name_type,
+            ..
+        } => {
             declare_nested_params(&id, &id, "source", source, out, names);
             declare_nested_params(&id, &id, "value", value, out, names);
+            if let Some(name) = name_type {
+                declare_nested_params(&id, &id, "as", name, out, names);
+            }
         }
         TypeOwned::TemplateLiteral(parts) => {
             for (index, part) in parts.iter().enumerate() {
@@ -1192,7 +1200,12 @@ fn declare_nested_params(
                 names,
             );
         }
-        TypeOwned::Mapped { source, value, .. } => {
+        TypeOwned::Mapped {
+            source,
+            value,
+            name_type,
+            ..
+        } => {
             declare_nested_params(
                 alias,
                 owner,
@@ -1209,6 +1222,16 @@ fn declare_nested_params(
                 out,
                 names,
             );
+            if let Some(name) = name_type {
+                declare_nested_params(
+                    alias,
+                    owner,
+                    &format!("{param_name}::as"),
+                    name,
+                    out,
+                    names,
+                );
+            }
         }
         TypeOwned::TemplateLiteral(parts) => {
             for (index, part) in parts.iter().enumerate() {
@@ -3476,6 +3499,7 @@ fn type_match(a: &TypeOwned, b: &TypeOwned) -> bool {
                 value: a_value,
                 readonly: a_readonly,
                 optional: a_optional,
+                name_type: a_name,
             },
             TypeOwned::Mapped {
                 key_var: b_key,
@@ -3483,6 +3507,7 @@ fn type_match(a: &TypeOwned, b: &TypeOwned) -> bool {
                 value: b_value,
                 readonly: b_readonly,
                 optional: b_optional,
+                name_type: b_name,
             },
         ) => {
             a_key == b_key
@@ -3490,6 +3515,11 @@ fn type_match(a: &TypeOwned, b: &TypeOwned) -> bool {
                 && type_match(a_value, b_value)
                 && a_readonly == b_readonly
                 && a_optional == b_optional
+                && match (a_name, b_name) {
+                    (Some(a), Some(b)) => type_match(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
         }
         (TypeOwned::TemplateLiteral(a), TypeOwned::TemplateLiteral(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| template_match(x, y))
@@ -3652,6 +3682,9 @@ pub(crate) fn lower_type(
             value,
             readonly,
             optional,
+            // `Type::Mapped` has no slot for the `as` clause. The clause is
+            // still walked above so a function inside it is declared.
+            name_type: _,
         } => Type::Mapped {
             key_var: key_var.clone(),
             source: Box::new(lower_type(source, out, names, module)),
