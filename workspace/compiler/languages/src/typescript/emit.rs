@@ -939,6 +939,17 @@ fn declare_alias_params(
             param_sym,
             Param::builder().maybe_ty(ty).build(),
         );
+        // `(cb: ({ left }) => void)` declares `cb` and the callback's bindings.
+        // The owner name includes `cb`, so `left` does not share an id with
+        // a sibling parameter of the outer function.
+        if let Some(TypeOwned::Function(inner)) = &param.ty {
+            let inner_owner = TsId::new(
+                alias.module.clone(),
+                format!("{}::{}", owner.name, param.name),
+                owner.discriminant,
+            );
+            declare_alias_params(alias, &inner_owner, inner, out, names);
+        }
     }
 }
 
