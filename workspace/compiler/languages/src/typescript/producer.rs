@@ -154,6 +154,7 @@ mod tests {
         change::{EcosystemId, PackageLineageId, PackageName},
         entry::EntryInner,
         foreign::Unlinked,
+        index::Ref,
     };
 
     #[test]
@@ -228,6 +229,45 @@ mod tests {
                 .iter()
                 .any(|(_, entry)| entry.sym().name == "keep"),
             "the real declaration must still seal"
+        );
+    }
+
+    #[test]
+    fn barrel_reexport_of_a_later_reexport_stays_local() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"barrel","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export { answer } from \"./answer\";\n",
+        )
+        .expect("write barrel");
+        std::fs::write(
+            dir.path().join("answer.d.ts"),
+            "export { answer } from \"./impl\";\n",
+        )
+        .expect("write middle reexport");
+        std::fs::write(
+            dir.path().join("impl.d.ts"),
+            "export function answer(): number;\n",
+        )
+        .expect("write implementation");
+
+        let source = PackageSource::new(dir.path(), "barrel", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("barrel"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a reexport chain inside the package must seal");
+
+        let local = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "answer"
+                && matches!(entry.kind(), EntryInner::Reference(Ref::Intro(_)))
+        });
+        assert!(
+            local,
+            "the barrel's answer reexport must point at the later file, not a foreign key"
         );
     }
 

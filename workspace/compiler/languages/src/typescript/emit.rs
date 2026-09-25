@@ -30,7 +30,7 @@
 //! undeclared id is what made `Lowering::finish` reject the package.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -134,9 +134,15 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 &module_index,
                 &export_index,
                 &resolver,
+                &HashSet::new(),
             );
         }
     }
+
+    // Ids pass 2 will `declare_ref`, including ones a barrel reaches before
+    // the file that owns them. `refer` on those fills a slot the later
+    // `declare_ref` completes. `refer_import` would seal and drop the edge.
+    let pending = pending_reexport_ids(modules, &export_index, &resolver);
 
     // Pass 2: re-exports, now that every in-package target is declared.
     for module in modules.iter() {
@@ -150,6 +156,7 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                     &module_index,
                     &export_index,
                     &resolver,
+                    &pending,
                 );
             }
         }
@@ -159,6 +166,7 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
             out,
             &export_index,
             &resolver,
+            &pending,
         );
     }
 
@@ -294,6 +302,7 @@ fn emit_decl(
     module_index: &HashMap<&Path, &str>,
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
+    pending: &HashSet<TsId>,
 ) {
     let id = decl_ts_id(decl, parent.as_ref());
     let sym = make_sym(decl);
@@ -313,6 +322,7 @@ fn emit_decl(
                 module_index,
                 export_index,
                 resolver,
+                pending,
             );
         }
         DeclBody::Function(body) => emit_function(id, parent, sym, body, out),
@@ -332,6 +342,7 @@ fn emit_decl(
                 out,
                 module_index,
                 resolver,
+                pending,
             );
         }
     }
@@ -765,6 +776,7 @@ fn emit_namespace(
     module_index: &HashMap<&Path, &str>,
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
+    pending: &HashSet<TsId>,
 ) {
     let _: Ref<Module> = out.declare(id.clone(), parent, sym, Module);
 
@@ -776,6 +788,7 @@ fn emit_namespace(
             module_index,
             export_index,
             resolver,
+            pending,
         );
     }
 }
@@ -1054,12 +1067,86 @@ fn resolve_export_target(
     }
 }
 
+/// Re-export ids this package will `declare_ref` in pass 2.
+///
+/// A barrel is emitted before the file it re-exports. The target id is often
+/// that later file's own `declare_ref`, which `is_declared` cannot see yet.
+/// `refer` on an id in this set leaves a slot that `declare_ref` fills.
+fn pending_reexport_ids(
+    modules: &[ModuleFacts],
+    export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
+    resolver: &Resolver,
+) -> HashSet<TsId> {
+    let mut ids = HashSet::new();
+    for module in modules {
+        let mut reexported: HashSet<String> = HashSet::new();
+        for indirect in &module.exports.indirect {
+            let export_name = &indirect.export_name;
+            if export_name == "*" || !reexported.insert(export_name.clone()) {
+                continue;
+            }
+            let target_path = resolve_module_path(resolver, &module.path, &indirect.module_request);
+            if indirect.import_name == "*" {
+                if target_path.is_some() {
+                    ids.insert(TsId::new(module.path.clone(), export_name.as_str(), 0));
+                }
+                continue;
+            }
+            let n = target_path
+                .as_ref()
+                .map(|p| {
+                    export_index.get(p.as_path()).map_or(1, |table| {
+                        resolve_export_target(resolver, p, table, &indirect.import_name).len()
+                    })
+                })
+                .unwrap_or(0);
+            for discriminant in 0..n {
+                ids.insert(TsId::new(
+                    module.path.clone(),
+                    export_name.as_str(),
+                    discriminant as u32,
+                ));
+            }
+        }
+        for star in &module.exports.star {
+            let Some(tp) = resolve_module_path(resolver, &module.path, &star.module_request) else {
+                continue;
+            };
+            let Some(target_table) = export_index.get(tp.as_path()) else {
+                continue;
+            };
+            for export_name in &target_table.exported_names {
+                if export_name == "*" || !reexported.insert(export_name.clone()) {
+                    continue;
+                }
+                let n = resolve_export_target(resolver, tp.as_path(), target_table, export_name).len();
+                for discriminant in 0..n {
+                    ids.insert(TsId::new(
+                        module.path.clone(),
+                        export_name.as_str(),
+                        discriminant as u32,
+                    ));
+                }
+            }
+        }
+        for decl in &module.declarations {
+            if let DeclBody::Reexport { module_request, .. } = &decl.body {
+                if resolve_module_path(resolver, &decl.module, module_request).is_some() {
+                    ids.insert(decl_ts_id(decl, Some(&module_ts_id(module))));
+                }
+            }
+        }
+    }
+    ids
+}
+
 fn emit_reexports(
     module: &ModuleFacts,
     parent: Option<TsId>,
     out: &mut Lowering<TsId>,
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
+    pending: &HashSet<TsId>,
 ) {
     // One module can only ever declare one `TsId::new(module.path, name, 0)`
     // for its own re-export surface — both loops below write into that same
@@ -1091,7 +1178,7 @@ fn emit_reexports(
         if target_name == "*" {
             if let Some(p) = target_path.as_ref() {
                 let root = TsId::new(p.clone(), MODULE_ROOT_NAME, 0);
-                let target_ref = refer_resolved(out, root);
+                let target_ref = refer_resolved(out, pending, root);
                 let sym = reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
                 let reexport_id = TsId::new(module.path.clone(), export_name.as_str(), 0);
                 let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
@@ -1143,7 +1230,7 @@ fn emit_reexports(
         // this producer, not a special case invented for re-exports.
         for (discriminant, tid) in target_ids.into_iter().enumerate() {
             let reexport_id = TsId::new(module.path.clone(), export_name, discriminant as u32);
-            let target_ref: Ref<Module> = refer_resolved(out, tid);
+            let target_ref: Ref<Module> = refer_resolved(out, pending, tid);
             let _: Ref<Module> =
                 out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
         }
@@ -1202,7 +1289,7 @@ fn emit_reexports(
                     expanded = true;
                     let reexport_id =
                         TsId::new(module.path.clone(), export_name, discriminant as u32);
-                    let target_ref: Ref<Module> = refer_resolved(out, target_id);
+                    let target_ref: Ref<Module> = refer_resolved(out, pending, target_id);
                     let _: Ref<Module> =
                         out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
                 }
@@ -1226,7 +1313,7 @@ fn emit_reexports(
             }
             let sym = reexport_symbol(module, &stem, star.span_start, star.span_end);
             let reexport_id = TsId::new(module.path.clone(), stem.as_str(), 0);
-            let target_ref = refer_resolved(out, root);
+            let target_ref = refer_resolved(out, pending, root);
             let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
         }
     }
@@ -1252,8 +1339,8 @@ fn reexport_symbol(module: &ModuleFacts, name: &str, start: u32, end: u32) -> Sy
 /// `refer` on a missing id inserts an empty slot, and `finish` then rejects
 /// the package. A star import, a `default` the other file never declared, or
 /// a name that lives in a dependency is a name, not a local declaration.
-fn refer_resolved(out: &mut Lowering<TsId>, id: TsId) -> Ref<Module> {
-    if out.is_declared(&id) {
+fn refer_resolved(out: &mut Lowering<TsId>, pending: &HashSet<TsId>, id: TsId) -> Ref<Module> {
+    if out.is_declared(&id) || pending.contains(&id) {
         return out.refer(id);
     }
     let display: Box<str> = id.name.as_str().into();
@@ -1276,6 +1363,7 @@ fn emit_inline_reexport(
     out: &mut Lowering<TsId>,
     _module_index: &HashMap<&Path, &str>,
     resolver: &Resolver,
+    pending: &HashSet<TsId>,
 ) {
     let target_path = resolve_module_path(resolver, &id.module, module_request);
     if let Some(tp) = target_path {
@@ -1285,7 +1373,7 @@ fn emit_inline_reexport(
             import_name
         };
         let target_id = TsId::new(tp, target_name, 0);
-        let target_ref: Ref<Module> = refer_resolved(out, target_id);
+        let target_ref: Ref<Module> = refer_resolved(out, pending, target_id);
         let _: Ref<Module> = out.declare_ref(id, parent, sym, target_ref);
     }
 }
