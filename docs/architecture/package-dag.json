@@ -1,11 +1,11 @@
 {
-  "target_packages": 29,
+  "target_packages": 30,
   "core_packages": 11,
   "layer_counts": {
     "core": 11,
     "frontend": 7,
     "extension": 4,
-    "application": 7
+    "application": 8
   },
   "packages": [
     {
@@ -286,10 +286,18 @@
       "order": 23
     },
     {
+      "name": "backend-facet",
+      "manifest_path": "apps/facet/Cargo.toml",
+      "dependencies": [],
+      "layer": "application",
+      "order": 24
+    },
+    {
       "name": "backend-desktop",
       "manifest_path": "apps/desktop/Cargo.toml",
       "dependencies": [
         "backend-client",
+        "backend-facet",
         "backend-library",
         "backend-local-service",
         "backend-present",
@@ -297,7 +305,7 @@
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 24
+      "order": 25
     },
     {
       "name": "backend-cli",
@@ -310,7 +318,7 @@
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 25
+      "order": 26
     },
     {
       "name": "backend-mcp",
@@ -324,7 +332,7 @@
         "backend-runtime"
       ],
       "layer": "application",
-      "order": 26
+      "order": 27
     },
     {
       "name": "backend-worker",
@@ -333,7 +341,7 @@
         "backend-engine"
       ],
       "layer": "application",
-      "order": 27
+      "order": 28
     },
     {
       "name": "backend-locald",
@@ -342,7 +350,7 @@
         "backend-local-service"
       ],
       "layer": "application",
-      "order": 28
+      "order": 29
     }
   ],
   "topological_order": [
@@ -370,6 +378,7 @@
     "backend-extension-turso",
     "backend-engine",
     "backend-local-service",
+    "backend-facet",
     "backend-desktop",
     "backend-cli",
     "backend-mcp",
