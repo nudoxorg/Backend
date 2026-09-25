@@ -161,6 +161,30 @@ impl VersionedCatalog {
         self.put_scoped(record, None)
     }
 
+    /// Apply `snapshot` without replacing a package body that is already
+    /// stored.
+    ///
+    /// A feed republish knows dependency names and may not know description,
+    /// license, or downloads. Those fields stay. A version the ledger has
+    /// never seen takes `identity` as its first body.
+    pub fn observe(
+        &mut self,
+        identity: &PackageRecord,
+        snapshot: &crate::protocol::EdgeSnapshot,
+    ) -> OrmResult<FactWrite> {
+        if matches!(snapshot, crate::protocol::EdgeSnapshot::Unobserved) {
+            return Ok(FactWrite::Unchanged);
+        }
+        let body = self
+            .materialize(
+                identity.ecosystem.as_token(),
+                identity.canonical_name.as_str(),
+                identity.version.as_str(),
+            )?
+            .unwrap_or_else(|| identity.clone());
+        self.put_observed(&body, snapshot)
+    }
+
     pub fn put_observed(
         &mut self,
         record: &PackageRecord,

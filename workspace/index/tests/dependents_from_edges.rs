@@ -376,6 +376,117 @@ async fn stored_generation_and_feed_republish_share_one_runtime_replace() {
     );
 }
 
+/// A stored generation projects one feed snapshot into SQL and the ledger.
+///
+/// The ledger keeps a description the feed does not know. An empty dependency
+/// list returns no observation, so both stores keep the runtime edge and the
+/// build edge.
+#[tokio::test]
+async fn stored_generation_projects_one_feed_into_sql_and_the_ledger() {
+    use index::{engine::turso_vc::VersionedCatalog, record::PackageRecord};
+
+    let writer = Arc::new(migrated_writer());
+    writer
+        .apply_ops(&[
+            package(1, "serde"),
+            package(2, "tokio"),
+            package(3, "criterion"),
+        ])
+        .expect("targets");
+    let store = GlobalStore::new(
+        Arc::clone(&writer),
+        InstanceToken::new("test/stored-both").expect("instance"),
+    );
+    let app = stored_package("app", &["serde"]);
+    store.upsert(&app).await.expect("publish");
+    writer
+        .apply_ops(&[CatalogOp::UpsertVersion {
+            coordinates: VersionCoordinates {
+                version_id: app.id,
+                stem_id: GlobalStore::<index::engine::Configured>::stem_id(
+                    &app.package.coordinates,
+                ),
+                version_canonical: "1.0.0".into(),
+                version_original: "1.0.0".into(),
+            },
+            published_at: None,
+            toolchain: None,
+            license: None,
+            edges: index::protocol::EdgeSnapshot::carrying(vec![build_edge("criterion")]),
+            facets: facets_of(&["serde"]),
+            source: None,
+        }])
+        .expect("plant build edge");
+
+    let mut ledger = VersionedCatalog::open().expect("ledger");
+    let mut described = PackageRecord::published(heart::Language::Rust, "app", "1.0.0", &["serde"]);
+    described.description = Some(SmolStr::new("keeps its summary"));
+    described.edges.push(index::record::DepEdge {
+        name: SmolStr::new("criterion"),
+        requirement: None,
+        class: index::record::DepClass::Build,
+        kind: EdgeKind::Build,
+        optional: false,
+        dep_ecosystem: None,
+    });
+    ledger.put_record(&described).expect("richer body");
+    let outbox = index::coordination::Outbox::new(Arc::clone(&writer));
+    let mut stored_facets = SearchFacets::default();
+    stored_facets.dependencies = vec![SmolStr::new("tokio")];
+    let observed = outbox
+        .record_stored(
+            &store,
+            app.id,
+            ContentHash::from_bytes([4u8; 32]),
+            Some(&stored_facets),
+        )
+        .await
+        .expect("record stored")
+        .expect("a dependency list is one observation");
+    ledger
+        .observe(&observed.record, &observed.snapshot)
+        .expect("ledger");
+
+    let sql = edge_kinds(writer.engine(), app.id);
+    let tip = ledger
+        .materialize("rust", "app", "1.0.0")
+        .expect("read")
+        .expect("row");
+    let mut pairs: Vec<_> = tip
+        .edges
+        .iter()
+        .map(|edge| (edge.kind.as_token().to_owned(), edge.name.to_string()))
+        .collect();
+    pairs.sort();
+    assert_eq!(sql, pairs);
+    assert_eq!(pairs, vec![
+        ("build".to_owned(), "criterion".to_owned()),
+        ("runtime".to_owned(), "tokio".to_owned()),
+    ]);
+    assert_eq!(tip.description.as_deref(), Some("keeps its summary"));
+    assert_eq!(ledger.dependents(), ledger.dependents_from_tips());
+
+    let mut empty = SearchFacets::default();
+    empty.dependencies.clear();
+    let quiet = outbox
+        .record_stored(
+            &store,
+            app.id,
+            ContentHash::from_bytes([5u8; 32]),
+            Some(&empty),
+        )
+        .await
+        .expect("empty list");
+    assert!(quiet.is_none());
+    assert_eq!(edge_kinds(writer.engine(), app.id), sql);
+    let still = ledger
+        .materialize("rust", "app", "1.0.0")
+        .expect("read")
+        .expect("row");
+    assert_eq!(still.edges.len(), 2);
+    assert_eq!(still.description.as_deref(), Some("keeps its summary"));
+}
+
 #[tokio::test]
 async fn ledger_degree_matches_the_sql_sweep_on_same_ecosystem_edges() {
     use index::{edge_project::records_from_ops, engine::turso_vc::VersionedCatalog};

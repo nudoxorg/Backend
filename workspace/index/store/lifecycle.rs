@@ -548,51 +548,18 @@ pub fn scan_version_facets<E: CatalogEngine>(
 /// Replace a version's runtime edges and leave every other kind in place.
 ///
 /// An empty list removes the runtime edges. Build, recipe, and find-package
-/// rows stay. The insert updates requirement and source when the runtime key
-/// is already present.
+/// rows stay. A wire whose requirement, stem, and source already match is
+/// left in place.
 pub fn replace_runtime_edges<E: CatalogEngine>(
     engine: &E,
     version: PackageId,
     edges: &[crate::protocol::EdgeWire],
 ) -> Result<(), MetaError> {
-    engine
-        .execute(
-            "DELETE FROM edges WHERE dependent_version = ? AND kind = 'runtime'",
-            &[crate::engine::Value::Blob(
-                version.as_uuid().as_bytes().to_vec(),
-            )],
-        )
-        .map_err(MetaError::from)?;
-    if edges.is_empty() {
-        return Ok(());
-    }
-    let dependent_version = *version.as_uuid();
-    let models = edges.iter().map(|edge| edges::ActiveModel {
-        dependent_version: Set(dependent_version),
-        dep_ecosystem: Set(edge.dep_ecosystem.as_token().to_owned()),
-        dep_name_canonical: Set(edge.dep_name_canonical.clone()),
-        kind: Set(edge.kind),
-        requirement: Set(edge.requirement.clone()),
-        resolved_stem: Set(edge.resolved_stem),
-        source: Set(edge.source),
-    });
-    let stmt = edges::Entity::insert_many(models)
-        .on_conflict(
-            OnConflict::columns([
-                edges::Column::DependentVersion,
-                edges::Column::DepEcosystem,
-                edges::Column::DepNameCanonical,
-                edges::Column::Kind,
-            ])
-            .update_columns([
-                edges::Column::Requirement,
-                edges::Column::ResolvedStem,
-                edges::Column::Source,
-            ])
-            .to_owned(),
-        )
-        .build(DbBackend::Sqlite);
-    engine::exec(engine, stmt)?;
+    super::apply::write_edge_snapshot(
+        engine,
+        version,
+        &crate::protocol::EdgeSnapshot::feed(edges.to_vec()),
+    )?;
     Ok(())
 }
 

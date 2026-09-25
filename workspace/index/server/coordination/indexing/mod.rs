@@ -365,11 +365,27 @@ impl<M: EmbeddingModel> Indexer<M> {
             .await
             .map_err(RegistryError::from)?;
 
-        stores
+        if let Some(observed) = stores
             .outbox
             .record_stored(&stores.global_store, package, snapshot, facets.as_ref())
             .await
-            .map_err(RegistryError::from)?;
+            .map_err(RegistryError::from)?
+        {
+            let facts_handle = self.server.package_facts();
+            let mut facts = facts_handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            facts
+                .observe(&observed.record, &observed.snapshot)
+                .map_err(|error| {
+                    ServerError::Runtime(
+                        crate::server::registry::runtime::error::TextError::Io(
+                            std::io::Error::other(error.to_string()),
+                        )
+                        .into(),
+                    )
+                })?;
+        }
 
         if let Ok(mut fractions) = self.fractions.lock() {
             fractions.remove(&package);

@@ -15,6 +15,40 @@ use crate::{
     record::{DepClass, DepEdge},
 };
 
+/// One feed observation: the runtime names a compile or publish learned.
+///
+/// Built once and applied to SQL and the versioned ledger, so the two stores
+/// cannot invent different wires.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedObservation {
+    /// Identity used when the ledger has no body for this version yet.
+    pub record: crate::record::PackageRecord,
+    /// Runtime replace. Other kinds stay.
+    pub snapshot: crate::protocol::EdgeSnapshot,
+}
+
+/// A non-empty dependency list, as one feed snapshot.
+///
+/// An empty list is not an observation: callers leave stored edges alone.
+#[must_use]
+pub fn feed_observation(
+    ecosystem: Language,
+    name: &str,
+    version: &str,
+    names: &[smol_str::SmolStr],
+) -> Option<FeedObservation> {
+    if names.is_empty() {
+        return None;
+    }
+    let record = crate::record::PackageRecord::published(ecosystem, name, version, names);
+    let snapshot = crate::protocol::EdgeSnapshot::feed(project_edges(
+        ecosystem,
+        &record.edges,
+        EdgeSource::Feed,
+    ));
+    Some(FeedObservation { record, snapshot })
+}
+
 /// Catalog wires for `edges`, in first-seen order.
 ///
 /// A later edge with the same name and the same [`EdgeKind`] is dropped. The

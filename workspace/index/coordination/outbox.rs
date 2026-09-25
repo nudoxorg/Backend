@@ -211,7 +211,7 @@ impl<Engine: VersioningEngine + Send + Sync> Outbox<Engine> {
         package: PackageId,
         snapshot: ContentHash,
         facets: Option<&crate::metadata::SearchFacets>,
-    ) -> Result<(), OutboxError> {
+    ) -> Result<Option<crate::edge_project::FeedObservation>, OutboxError> {
         index
             .set_state(package, &ResolutionState::Stored { hash: snapshot })
             .await
@@ -227,17 +227,32 @@ impl<Engine: VersioningEngine + Send + Sync> Outbox<Engine> {
                 extras.as_deref(),
             )
             .map_err(OutboxError::Catalog)?;
-            if !facets.dependencies.is_empty() {
-                if let Some(record) = lifecycle::version_record(self.engine(), package)
-                    .map_err(OutboxError::Catalog)?
-                {
-                    let ecosystem = crate::schema::codec::ecosystem_from_token(&record.3)?;
-                    let wires = crate::catalog::feed_edge_wires(ecosystem, &facets.dependencies);
-                    lifecycle::replace_runtime_edges(self.engine(), package, &wires)
-                        .map_err(OutboxError::Catalog)?;
+            if let Some(row) =
+                lifecycle::version_record(self.engine(), package).map_err(OutboxError::Catalog)?
+            {
+                let ecosystem = crate::schema::codec::ecosystem_from_token(&row.3)?;
+                if let Some(observed) = crate::edge_project::feed_observation(
+                    ecosystem,
+                    &row.4,
+                    &row.0,
+                    &facets.dependencies,
+                ) {
+                    crate::store::apply::write_edge_snapshot(
+                        self.engine(),
+                        package,
+                        &observed.snapshot,
+                    )
+                    .map_err(OutboxError::Catalog)?;
+                    self.emit_stored(package, snapshot)?;
+                    return Ok(Some(observed));
                 }
             }
         }
+        self.emit_stored(package, snapshot)?;
+        Ok(None)
+    }
+
+    fn emit_stored(&self, package: PackageId, snapshot: ContentHash) -> Result<(), OutboxError> {
         self.emit(
             package,
             Some(snapshot),

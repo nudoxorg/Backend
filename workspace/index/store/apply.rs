@@ -471,6 +471,59 @@ fn apply_run(tx: &dyn CatalogEngine, run: &[CatalogOp]) -> Result<usize, MetaErr
     }
 }
 
+/// Apply one [`EdgeSnapshot`](crate::protocol::EdgeSnapshot) to the SQL edge
+/// table.
+///
+/// [`EdgeSnapshot::Unobserved`](crate::protocol::EdgeSnapshot::Unobserved)
+/// writes nothing. A replace deletes kinds the snapshot owns and upserts its
+/// wires. Unchanged requirement, stem, and source rows stay put.
+pub(crate) fn write_edge_snapshot(
+    tx: &dyn CatalogEngine,
+    version: PackageId,
+    snapshot: &crate::protocol::EdgeSnapshot,
+) -> Result<bool, MetaError> {
+    let crate::protocol::EdgeSnapshot::Replace { kinds, wires } = snapshot else {
+        return Ok(false);
+    };
+    let removed = delete_replaced_edges(tx, version, kinds, wires)?;
+    let dependent_version = *version.as_uuid();
+    let models: Vec<_> = wires
+        .iter()
+        .filter(|edge| kinds.contains(&edge.kind))
+        .map(|edge| edges::ActiveModel {
+            dependent_version: Set(dependent_version),
+            dep_ecosystem: Set(edge.dep_ecosystem.as_token().to_owned()),
+            dep_name_canonical: Set(edge.dep_name_canonical.clone()),
+            kind: Set(edge.kind),
+            requirement: Set(edge.requirement.clone()),
+            resolved_stem: Set(edge.resolved_stem),
+            source: Set(edge.source),
+        })
+        .collect();
+    if models.is_empty() {
+        return Ok(removed != 0);
+    }
+    let stmt = edges::Entity::insert_many(models)
+        .on_conflict(
+            OnConflict::columns([
+                edges::Column::DependentVersion,
+                edges::Column::DepEcosystem,
+                edges::Column::DepNameCanonical,
+                edges::Column::Kind,
+            ])
+            .update_columns([
+                edges::Column::Requirement,
+                edges::Column::ResolvedStem,
+                edges::Column::Source,
+            ])
+            .action_and_where(edge_payload_differs())
+            .to_owned(),
+        )
+        .build(DbBackend::Sqlite);
+    let affected = engine::exec(tx, stmt)?;
+    Ok(affected != 0 || removed != 0)
+}
+
 /// Delete stored edges of `kinds` that `wires` no longer name.
 ///
 /// Kinds outside the snapshot stay. An empty wire list clears `kinds`.
@@ -636,49 +689,7 @@ fn upsert_versions_batch(
         }
     }
     for (version, snapshot) in edges_by_version {
-        let crate::protocol::EdgeSnapshot::Replace { kinds, wires } = &snapshot else {
-            continue;
-        };
-        let removed = delete_replaced_edges(tx, version, kinds, wires)?;
-        let dependent_version = *version.as_uuid();
-        let models: Vec<_> = wires
-            .iter()
-            .filter(|edge| kinds.contains(&edge.kind))
-            .map(|edge| edges::ActiveModel {
-                dependent_version: Set(dependent_version),
-                dep_ecosystem: Set(edge.dep_ecosystem.as_token().to_owned()),
-                dep_name_canonical: Set(edge.dep_name_canonical.clone()),
-                kind: Set(edge.kind),
-                requirement: Set(edge.requirement.clone()),
-                resolved_stem: Set(edge.resolved_stem),
-                source: Set(edge.source),
-            })
-            .collect();
-        if models.is_empty() {
-            if removed != 0 && !changed.contains(&version) {
-                changed.push(version);
-            }
-            continue;
-        }
-        let stmt = edges::Entity::insert_many(models)
-            .on_conflict(
-                OnConflict::columns([
-                    edges::Column::DependentVersion,
-                    edges::Column::DepEcosystem,
-                    edges::Column::DepNameCanonical,
-                    edges::Column::Kind,
-                ])
-                .update_columns([
-                    edges::Column::Requirement,
-                    edges::Column::ResolvedStem,
-                    edges::Column::Source,
-                ])
-                .action_and_where(edge_payload_differs())
-                .to_owned(),
-            )
-            .build(DbBackend::Sqlite);
-        let affected = engine::exec(tx, stmt)?;
-        if (affected != 0 || removed != 0) && !changed.contains(&version) {
+        if write_edge_snapshot(tx, version, &snapshot)? && !changed.contains(&version) {
             changed.push(version);
         }
     }
