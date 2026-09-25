@@ -5,12 +5,14 @@ mod feed;
 mod page;
 mod schema;
 
-use crate::ir::{DeclarationIdentity, PackageLineage};
-use crate::index_ingest::{Checkpoint, CheckpointFault};
+use crate::index_ingest::{
+    Checkpoint, CheckpointFault, IngestedVersionFault, verify_entity_locators,
+};
 use crate::index_vocabulary::{
     CanonicalEntityLocator, IndexLocatorFacts, PackageCoordinate, PackageVersion,
     SemanticImageLocator, VerifiedCanonicalEntityLocator, VerifiedSemanticPublication,
 };
+use crate::ir::{DeclarationIdentity, PackageLineage};
 use std::fmt;
 use thiserror::Error;
 use turso::{Builder, Connection, Value};
@@ -239,30 +241,18 @@ impl TursoCatalog {
         publication: CatalogPublication<'_>,
     ) -> Result<CatalogPublishOutcome, CatalogError> {
         let image = publication.publication.image();
-        if publication.entities.len() != publication.publication.entity_count() {
-            return Err(CatalogError::EntityCountMismatch {
-                expected: publication.publication.entity_count(),
-                observed: publication.entities.len(),
-            });
-        }
-        for (index, entity) in publication.entities.iter().enumerate() {
-            let locator = entity.as_locator();
-            if locator.image != image {
-                return Err(CatalogError::EntityImageMismatch);
-            }
-            if index != 0 {
-                let prior = publication.entities[index - 1].as_locator();
-                if prior.declaration == locator.declaration {
-                    return Err(CatalogError::DuplicateEntity);
+        verify_entity_locators(publication.publication, publication.entities).map_err(|fault| {
+            match fault {
+                IngestedVersionFault::EntityCountMismatch { expected, observed } => {
+                    CatalogError::EntityCountMismatch { expected, observed }
                 }
-                if prior.declaration > locator.declaration {
-                    return Err(CatalogError::EntityOutOfOrder {
-                        previous: prior.declaration,
-                        observed: locator.declaration,
-                    });
+                IngestedVersionFault::EntityImageMismatch => CatalogError::EntityImageMismatch,
+                IngestedVersionFault::DuplicateDeclaration(_) => CatalogError::DuplicateEntity,
+                IngestedVersionFault::EntityLocatorOutOfOrder { previous, observed } => {
+                    CatalogError::EntityOutOfOrder { previous, observed }
                 }
             }
-        }
+        })?;
         let p = publication.package;
         let a = publication.publication.authority();
         let params = (

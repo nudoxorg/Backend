@@ -9,6 +9,7 @@ use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
     RegistryNativeObservation, RegistryNativeVulnerability, admit_dependency_rows,
+    collapse_dependency_rows, dependency_optional,
 };
 use quick_xml::{events::Event, reader::Reader};
 use serde_json::Value;
@@ -1151,6 +1152,11 @@ impl EcosystemAdapter {
         let digest = *blake3::hash(provenance).as_bytes();
         let mut rows = Vec::with_capacity(module.requires.len());
         for requirement in &module.requires {
+            let scope = if requirement.indirect {
+                DependencyScope::Development
+            } else {
+                DependencyScope::Runtime
+            };
             let target = PackageDependencyTarget::new(
                 backend_semantic::vocabulary::RegistryEcosystem::Golang,
                 requirement.module.clone(),
@@ -1161,7 +1167,7 @@ impl EcosystemAdapter {
             rows.push(PackageDependencyRecord::new(
                 source.clone(),
                 target,
-                DependencyScope::Runtime,
+                scope,
                 false,
                 DependencyEvidence {
                     authority: DependencyAuthority::RegistryMetadata,
@@ -1171,7 +1177,8 @@ impl EcosystemAdapter {
             ));
         }
         Ok(DependencyFacts::Known(
-            admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+            admit_dependency_rows(collapse_dependency_rows(rows))
+                .map_err(|_| TransportFailure::Protocol)?,
         ))
     }
 
@@ -1572,7 +1579,7 @@ fn cargo_dependencies(
             Some("normal") | None => DependencyScope::Runtime,
             Some(_) => return Err(TransportFailure::Protocol),
         };
-        let optional = strict_bool(value, "optional")?.unwrap_or(false);
+        let optional = dependency_optional(scope, strict_bool(value, "optional")?.unwrap_or(false));
         rows.push(dependency_record(
             source,
             backend_semantic::vocabulary::RegistryEcosystem::Cargo,
@@ -1584,7 +1591,8 @@ fn cargo_dependencies(
         )?);
     }
     Ok(DependencyFacts::Known(
-        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        admit_dependency_rows(collapse_dependency_rows(rows))
+            .map_err(|_| TransportFailure::Protocol)?,
     ))
 }
 
@@ -1594,11 +1602,11 @@ fn npm_dependencies(
     provenance: &[u8],
 ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
     let mut rows = Vec::new();
-    for (field_name, scope, optional) in [
-        ("dependencies", DependencyScope::Runtime, false),
-        ("optionalDependencies", DependencyScope::Optional, true),
-        ("peerDependencies", DependencyScope::Peer, false),
-        ("devDependencies", DependencyScope::Development, true),
+    for (field_name, scope) in [
+        ("dependencies", DependencyScope::Runtime),
+        ("optionalDependencies", DependencyScope::Optional),
+        ("peerDependencies", DependencyScope::Peer),
+        ("devDependencies", DependencyScope::Development),
     ] {
         let Some(raw_values) = row.get(field_name) else {
             continue;
@@ -1611,6 +1619,7 @@ fn npm_dependencies(
                     .map_err(|_| TransportFailure::Bounds)?,
             });
         }
+        let declared_optional = matches!(scope, DependencyScope::Optional);
         for (name, requirement) in values {
             let requirement = requirement.as_str().ok_or(TransportFailure::Protocol)?;
             rows.push(dependency_record(
@@ -1619,7 +1628,7 @@ fn npm_dependencies(
                 name,
                 requirement,
                 scope,
-                optional,
+                dependency_optional(scope, declared_optional),
                 provenance,
             )?);
         }
@@ -1635,7 +1644,8 @@ fn npm_dependencies(
         ));
     }
     Ok(DependencyFacts::Known(
-        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        admit_dependency_rows(collapse_dependency_rows(rows))
+            .map_err(|_| TransportFailure::Protocol)?,
     ))
 }
 
@@ -2246,4 +2256,95 @@ fn optional_text(node: Option<&XmlNode>) -> Option<String> {
     node.map(XmlNode::text_value)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::PackageCoordinate;
+    use super::{TransportFailure, cargo_dependencies, npm_dependencies};
+    use backend_library::{DependencyFacts, DependencyScope};
+
+    fn cargo_coordinate() -> PackageCoordinate {
+        PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate")
+    }
+
+    fn npm_coordinate() -> PackageCoordinate {
+        PackageCoordinate::parse("pkg:npm/demo@1.0.0").expect("coordinate")
+    }
+
+    #[test]
+    fn cargo_dev_and_normal_same_name_stays_runtime() {
+        let row = serde_json::json!({
+            "deps": [
+                {"name": "serde", "req": "^1", "kind": "dev"},
+                {"name": "serde", "req": "^1", "kind": "normal"},
+            ]
+        });
+        let facts = cargo_dependencies(&cargo_coordinate(), &row, b"provenance").expect("decode");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "serde");
+        assert_eq!(rows[0].scope, DependencyScope::Runtime);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn cargo_dev_only_stays_development_and_optional_false() {
+        let row = serde_json::json!({
+            "deps": [
+                {"name": "serde", "req": "^1", "kind": "dev"},
+            ]
+        });
+        let facts = cargo_dependencies(&cargo_coordinate(), &row, b"provenance").expect("decode");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].scope, DependencyScope::Development);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn cargo_unknown_kind_returns_protocol_error() {
+        let row = serde_json::json!({
+            "deps": [{"name": "serde", "req": "^1", "kind": "mystery"}]
+        });
+        assert!(matches!(
+            cargo_dependencies(&cargo_coordinate(), &row, b"provenance"),
+            Err(TransportFailure::Protocol)
+        ));
+    }
+
+    #[test]
+    fn npm_dev_dependencies_vitest_is_development_optional_false() {
+        let row = serde_json::json!({
+            "devDependencies": {"vitest": "^1.0.0"}
+        });
+        let facts = npm_dependencies(&npm_coordinate(), &row, b"provenance").expect("decode");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "vitest");
+        assert_eq!(rows[0].scope, DependencyScope::Development);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn npm_name_in_dependencies_and_dev_dependencies_stays_runtime() {
+        let row = serde_json::json!({
+            "dependencies": {"lodash": "^4.0.0"},
+            "devDependencies": {"lodash": "^4.0.0"},
+        });
+        let facts = npm_dependencies(&npm_coordinate(), &row, b"provenance").expect("decode");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "lodash");
+        assert_eq!(rows[0].scope, DependencyScope::Runtime);
+        assert!(!rows[0].optional);
+    }
 }
