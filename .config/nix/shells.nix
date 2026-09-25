@@ -23,7 +23,9 @@ let
       corpus
       ;
   };
-  common = corpusEnv // {
+  # Linux software GPU drivers for the desktop window journeys; empty elsewhere.
+  baseEnv = corpusEnv // tools.linuxGraphicsEnvironment;
+  common = baseEnv // {
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
     # PR build/test commands opt into the leased wrapper; general tooling keeps
     # raw Cargo so immutable Nix checks do not require a mutable Git worktree.

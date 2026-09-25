@@ -524,7 +524,24 @@ let
   # Cargo/nextest binaries built inside a dev shell are not Nix-fixed-up
   # outputs. They need the same GUI libraries at runtime, not just at link
   # time, even to list tests before any display is opened.
-  linuxDesktopRuntimePath = pkgs.lib.makeLibraryPath linuxDesktopLibraries;
+  linuxDesktopRuntimePath = pkgs.lib.makeLibraryPath (
+    linuxDesktopLibraries ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.mesa ]
+  );
+  # libglvnd and vulkan-loader are only dispatchers: on NixOS the real
+  # drivers come from /run/opengl-driver, which CI containers do not have.
+  # Without them wgpu finds no adapter and the desktop never maps a window
+  # (build 2321). Point both loaders at Mesa's software drivers explicitly.
+  linuxGraphicsEnvironment = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
+    let
+      lavapipe = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json";
+    in
+    {
+      __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
+      LIBGL_DRIVERS_PATH = "${pkgs.mesa}/lib/dri";
+      VK_DRIVER_FILES = lavapipe;
+      VK_ICD_FILENAMES = lavapipe;
+    }
+  );
   nativeCompilers = builtins.attrValues compilers ++ nativeLibraries ++ linuxDesktopLibraries;
   # Go semantic oracle. The coordinate is the workspace's own vendored Go
   # module (`frontends/go/src/legacy/oracle`); its `vendorHash` is the exact
@@ -616,6 +633,7 @@ in
     dylintLink
     goOracle
     linuxDesktopRuntimePath
+    linuxGraphicsEnvironment
     nativeCompilers
     qualityTools
     serviceTools
