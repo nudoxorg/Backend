@@ -106,10 +106,7 @@ impl CppManifest {
     /// A manifest carrying only typed dependency records (no facets).
     pub fn from_dependencies(dependencies: Vec<DependencyRecord>) -> Self {
         let facts = ExtractedFacts {
-            dependencies: dependencies
-                .iter()
-                .map(|dep| crate::record::DepEdge::runtime(dep.token.clone()))
-                .collect(),
+            dependencies: dependencies.iter().map(edge_for).collect(),
             ..ExtractedFacts::default()
         };
         Self {
@@ -121,11 +118,26 @@ impl CppManifest {
     /// Push a typed dependency record, keeping the erased `facts.dependencies`
     /// token mirror in sync.
     pub fn push_dependency(&mut self, record: DependencyRecord) {
-        self.facts
-            .dependencies
-            .push(crate::record::DepEdge::runtime(record.token.clone()));
+        self.facts.dependencies.push(edge_for(&record));
         self.dependencies.push(record);
     }
+}
+
+fn edge_for(record: &DependencyRecord) -> crate::record::DepEdge {
+    use crate::enums::EdgeKind;
+    let kind = match record.mechanism {
+        DependencyMechanism::FindPackage => EdgeKind::FindPackage,
+        DependencyMechanism::PkgConfig => EdgeKind::PkgConfig,
+        DependencyMechanism::Submodule => EdgeKind::Submodule,
+        DependencyMechanism::FetchContent => EdgeKind::FetchContent,
+        DependencyMechanism::Wrap => EdgeKind::Wrap,
+        DependencyMechanism::Recipe => EdgeKind::Recipe,
+        DependencyMechanism::BazelDep => EdgeKind::BazelDep,
+    };
+    let mut edge = crate::record::DepEdge::runtime(record.token.clone());
+    edge.kind = kind;
+    edge.class = crate::engine::class_of_kind(kind);
+    edge
 }
 
 impl ManifestFacts for CppManifest {

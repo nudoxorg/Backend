@@ -78,7 +78,7 @@ pub fn feed_edges(
         edges.clone(),
     );
     let snapshot =
-        crate::protocol::EdgeSnapshot::feed(project_edges(ecosystem, &edges, EdgeSource::Feed));
+        crate::protocol::EdgeSnapshot::carrying(project_edges(ecosystem, &edges, EdgeSource::Feed));
     Some(FeedObservation { record, snapshot })
 }
 
@@ -490,6 +490,26 @@ mod tests {
         );
         assert!(catalog.scan_edges().is_empty());
         assert!(effects_from_ops(&ops, None).is_empty());
+    }
+
+    #[test]
+    fn a_manifest_edge_replaces_its_own_kind() {
+        let mut found = DepEdge::runtime("ZLIB");
+        found.kind = EdgeKind::FindPackage;
+        found.class = DepClass::Build;
+        let mut recipe = DepEdge::runtime("openssl");
+        recipe.kind = EdgeKind::Recipe;
+        recipe.class = DepClass::Runtime;
+        let observed = feed_edges(Language::Cpp, "demo", "1.0.0", &[found, recipe]).expect("edges");
+        let mut kinds: Vec<_> = observed
+            .snapshot
+            .kinds()
+            .iter()
+            .map(|kind| kind.as_token())
+            .collect();
+        kinds.sort_unstable();
+        assert_eq!(kinds, vec!["find_package", "recipe"]);
+        assert_eq!(observed.record.runtime_names(), vec!["openssl"]);
     }
 
     fn edges_for_batch() -> [DepEdge; 3] {
