@@ -334,7 +334,7 @@ impl<M: EmbeddingModel> Indexer<M> {
         // body — same non-fatal pattern as S4 downloads. Enables temporal quality.
         let listing = facets::fetch_listing_signals(coordinates, &self.acquisition).await;
 
-        let mut facets = facets::extract_facets(
+        let mut extracted = facets::extract_facets(
             coordinates,
             &manifest,
             &sections,
@@ -347,16 +347,17 @@ impl<M: EmbeddingModel> Indexer<M> {
         // Failure is non-fatal: log debug and continue. The `downloads` field stays
         // `None` for ecosystems with no endpoint; the fairness floor handles them.
         // Re-run squat after downloads so dead-stub detection sees download volume.
-        if let Some(ref mut f) = facets {
-            facets::fetch_and_set_downloads(coordinates, f, &self.acquisition).await;
-            f.squat_suspect = crate::server::registry::search::squat::is_squat_suspect(
+        if let Some(ref mut draft) = extracted {
+            facets::fetch_and_set_downloads(coordinates, &mut draft.facets, &self.acquisition)
+                .await;
+            draft.facets.squat_suspect = crate::server::registry::search::squat::is_squat_suspect(
                 crate::server::registry::search::squat::SquatInput {
                     name: &coordinates.name.canonical(),
-                    quality: f.quality(),
-                    downloads: f.downloads,
-                    release_count: f.release_count,
-                    description: f.description.as_deref(),
-                    has_repository: f.repo_slug.is_some(),
+                    quality: draft.facets.quality(),
+                    downloads: draft.facets.downloads,
+                    release_count: draft.facets.release_count,
+                    description: draft.facets.description.as_deref(),
+                    has_repository: draft.facets.repo_slug.is_some(),
                 },
             );
         }
@@ -367,7 +368,16 @@ impl<M: EmbeddingModel> Indexer<M> {
 
         if let Some(observed) = stores
             .outbox
-            .record_stored(&stores.global_store, package, snapshot, facets.as_ref())
+            .record_stored(
+                &stores.global_store,
+                package,
+                snapshot,
+                extracted.as_ref().map(|draft| &draft.facets),
+                extracted
+                    .as_ref()
+                    .map(|draft| draft.edges.as_slice())
+                    .unwrap_or(&[]),
+            )
             .await
             .map_err(RegistryError::from)?
         {

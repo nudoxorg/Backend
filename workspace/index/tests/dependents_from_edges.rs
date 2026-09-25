@@ -330,6 +330,7 @@ async fn stored_generation_and_feed_republish_share_one_runtime_replace() {
             app.id,
             ContentHash::from_bytes([4u8; 32]),
             Some(&stored_facets),
+            &[],
         )
         .await
         .expect("record stored");
@@ -346,6 +347,7 @@ async fn stored_generation_and_feed_republish_share_one_runtime_replace() {
             app.id,
             ContentHash::from_bytes([5u8; 32]),
             Some(&empty),
+            &[],
         )
         .await
         .expect("empty dependency list");
@@ -436,12 +438,15 @@ async fn stored_generation_projects_one_feed_into_sql_and_the_ledger() {
     let outbox = index::coordination::Outbox::new(Arc::clone(&writer));
     let mut stored_facets = SearchFacets::default();
     stored_facets.dependencies = vec![SmolStr::new("tokio")];
+    let mut tokio_req = index::record::DepEdge::runtime("tokio");
+    tokio_req.requirement = Some(SmolStr::new("^1"));
     let observed = outbox
         .record_stored(
             &store,
             app.id,
             ContentHash::from_bytes([4u8; 32]),
             Some(&stored_facets),
+            &[tokio_req],
         )
         .await
         .expect("record stored")
@@ -467,6 +472,15 @@ async fn stored_generation_projects_one_feed_into_sql_and_the_ledger() {
         ("runtime".to_owned(), "tokio".to_owned()),
     ]);
     assert_eq!(tip.description.as_deref(), Some("keeps its summary"));
+    assert_eq!(
+        tip.edges
+            .iter()
+            .find(|edge| edge.name == "tokio")
+            .expect("tokio")
+            .requirement
+            .as_deref(),
+        Some("^1")
+    );
     assert_eq!(ledger.dependents(), ledger.dependents_from_tips());
 
     let mut empty = SearchFacets::default();
@@ -477,6 +491,7 @@ async fn stored_generation_projects_one_feed_into_sql_and_the_ledger() {
             app.id,
             ContentHash::from_bytes([5u8; 32]),
             Some(&empty),
+            &[],
         )
         .await
         .expect("empty list");

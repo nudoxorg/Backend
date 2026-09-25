@@ -211,6 +211,7 @@ impl<Engine: VersioningEngine + Send + Sync> Outbox<Engine> {
         package: PackageId,
         snapshot: ContentHash,
         facets: Option<&crate::metadata::SearchFacets>,
+        edges: &[crate::record::DepEdge],
     ) -> Result<Option<crate::edge_project::FeedObservation>, OutboxError> {
         index
             .set_state(package, &ResolutionState::Stored { hash: snapshot })
@@ -231,12 +232,17 @@ impl<Engine: VersioningEngine + Send + Sync> Outbox<Engine> {
                 lifecycle::version_record(self.engine(), package).map_err(OutboxError::Catalog)?
             {
                 let ecosystem = crate::schema::codec::ecosystem_from_token(&row.3)?;
-                if let Some(observed) = crate::edge_project::feed_observation(
-                    ecosystem,
-                    &row.4,
-                    &row.0,
-                    &facets.dependencies,
-                ) {
+                let observed = if edges.is_empty() {
+                    crate::edge_project::feed_observation(
+                        ecosystem,
+                        &row.4,
+                        &row.0,
+                        &facets.dependencies,
+                    )
+                } else {
+                    crate::edge_project::feed_edges(ecosystem, &row.4, &row.0, edges)
+                };
+                if let Some(observed) = observed {
                     crate::store::apply::write_edge_snapshot(
                         self.engine(),
                         package,

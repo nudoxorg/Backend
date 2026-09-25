@@ -38,15 +38,47 @@ pub fn feed_observation(
     version: &str,
     names: &[impl AsRef<str>],
 ) -> Option<FeedObservation> {
-    if names.is_empty() {
+    feed_edges(
+        ecosystem,
+        name,
+        version,
+        &crate::record::runtime_edges_from_names(names),
+    )
+}
+
+/// A non-empty edge list, as one feed snapshot.
+///
+/// Requirements and the optional bit ride through. An empty list, or a list
+/// of only peer edges, is not an observation.
+#[must_use]
+pub fn feed_edges(
+    ecosystem: Language,
+    name: &str,
+    version: &str,
+    edges: &[DepEdge],
+) -> Option<FeedObservation> {
+    let edges: Vec<DepEdge> = edges
+        .iter()
+        .filter(|edge| edge.class != DepClass::Peer && !edge.name.is_empty())
+        .cloned()
+        .collect();
+    if edges.is_empty() {
         return None;
     }
-    let record = crate::record::PackageRecord::published(ecosystem, name, version, names);
-    let snapshot = crate::protocol::EdgeSnapshot::feed(project_edges(
+    let record = crate::record::PackageRecord::from_parts(
         ecosystem,
-        &record.edges,
-        EdgeSource::Feed,
-    ));
+        name,
+        version,
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
+        edges.clone(),
+    );
+    let snapshot =
+        crate::protocol::EdgeSnapshot::feed(project_edges(ecosystem, &edges, EdgeSource::Feed));
     Some(FeedObservation { record, snapshot })
 }
 

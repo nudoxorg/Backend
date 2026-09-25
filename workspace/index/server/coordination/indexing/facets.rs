@@ -167,6 +167,13 @@ pub(super) async fn fetch_and_set_downloads(
 /// `listing` is release/freshness signals observed from the registry listing
 /// body (or resolve): `(total, withdrawn, this_withdrawn,
 /// last_release_days_ago)`. Pass `None` when no listing fetch is available.
+pub(super) struct FacetExtract {
+    pub facets: SearchFacets,
+    /// Manifest edges, including requirement and optional. Facet slugs stay
+    /// on [`SearchFacets::dependencies`] for search.
+    pub edges: Vec<crate::record::DepEdge>,
+}
+
 pub(super) fn extract_facets(
     coordinates: &PackageCoordinates,
     manifest: &BlobManifest,
@@ -174,7 +181,7 @@ pub(super) fn extract_facets(
     identifiers: &[String],
     heuristics: Option<&crate::server::Heuristics>,
     listing: Option<(u32, u32, bool, Option<u32>)>,
-) -> Option<SearchFacets> {
+) -> Option<FacetExtract> {
     let (synonyms, specifics) = match heuristics {
         Some(h) => (Some(h.synonyms()), Some(h.specifics())),
         None => (None, None),
@@ -369,7 +376,8 @@ pub(super) fn extract_facets(
         },
     );
 
-    Some(facets)
+    let edges = facts.dependencies.clone();
+    Some(FacetExtract { facets, edges })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -461,7 +469,9 @@ restriction, including without limitation the rights to use, copy, modify...";
         );
         let coordinates = cpp_coordinates("github.com/example/demo");
         let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+            .expect("facets")
+            .facets;
 
         assert_eq!(
             facets.description.as_deref(),
@@ -488,7 +498,9 @@ restriction, including without limitation the rights to use, copy, modify...";
         );
         let coordinates = cpp_coordinates("github.com/example/demo");
         let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+            .expect("facets")
+            .facets;
 
         assert_eq!(facets.description.as_deref(), Some("A demo C++ library"));
         assert!(
@@ -513,7 +525,9 @@ restriction, including without limitation the rights to use, copy, modify...";
         );
         let coordinates = cpp_coordinates("github.com/example/demo");
         let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+            .expect("facets")
+            .facets;
 
         assert_eq!(
             facets.license.as_deref(),
@@ -542,7 +556,9 @@ license = "MIT"
         );
         let coordinates = rust_coordinates("demo");
         let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+            .expect("facets")
+            .facets;
 
         assert_eq!(facets.description.as_deref(), Some("A demo crate"));
         assert_eq!(facets.license.as_deref(), Some("mit"));
@@ -558,7 +574,9 @@ license = "MIT"
         );
         let coordinates = cpp_coordinates("github.com/example/demo");
         let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+            .expect("facets")
+            .facets;
 
         assert!(facets.description.is_none());
         assert!(facets.license.is_none());

@@ -173,6 +173,7 @@ async fn text_sink_recovers_after_symbols_land_post_registration() {
             version,
             ContentHash::of_bytes(b"fixture-snapshot"),
             None,
+            &[],
         )
         .await
         .expect("record stored");
