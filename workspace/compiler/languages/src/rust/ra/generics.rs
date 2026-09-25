@@ -12,9 +12,8 @@
 //! `Type::Nominal` or `Type::Any` for external bounds.
 //!
 //! `TraitRef`, `TypeExpr`, `Constraint::AssociatedItem`, etc. from the old IR
-//! are all gone.  The conversion is lossy for associated-type bindings in
-//! bounds (`T: Iterator<Item = u8>`) — the `Item = u8` constraint is dropped
-//! and only the trait reference is kept.
+//! are all gone. Associated-type bindings (`Iterator<Item = u8>`) stay on the
+//! trait application, so two different bindings do not share a skeleton.
 
 use nudox_ir::{
     entry::AttrTok,
@@ -131,8 +130,7 @@ pub(crate) fn lower_generics(
 /// Lower a type-bound list into a `Box<[Type]>`.
 ///
 /// Only `PathType` bounds are lowered; lifetime bounds are dropped.
-/// Associated-type bindings in trait args (`Iterator<Item = u8>`) are currently
-/// dropped — only the trait ref itself is kept.
+/// Associated-type bindings stay on the trait application.
 fn bound_list_to_types(
     ctx: &mut LowerCtx<'_>,
     list: ast::TypeBoundList,

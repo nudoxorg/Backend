@@ -716,8 +716,9 @@ fn lower_macro_type(
 
 /// Generic type args (`Foo<Bar, Baz>`) from the last segment of a path.
 ///
-/// Only `TypeArg` entries are kept; lifetime and const args are dropped because
-/// the new IR's `Apply.args` is `List<Type>` with no lifetime/const positions.
+/// Type arguments, associated bindings, const arguments, and lifetimes are
+/// all kept. A binding or a const is an annotation, because `TypeVar` drops
+/// the name that distinguishes `Item = u8` from `Item = String`.
 ///
 /// Public within the crate so that `item.rs` can recover written supertrait
 /// args (e.g. `Bar<u32>` in `trait Foo: Bar<u32>`) via the AST path.
@@ -753,12 +754,54 @@ fn last_segment_type_args(
         return Vec::new();
     };
     list.generic_args()
-        .filter_map(|arg| match arg {
-            ast::GenericArg::TypeArg(ta) => ta.ty().map(|t| lower_ast_type(ctx, &t, ref_for)),
-            // Lifetime, const, assoc → ignored for now.
-            _ => None,
-        })
+        .filter_map(|arg| lower_generic_arg(ctx, arg, ref_for))
         .collect()
+}
+
+/// `Item = u8` is not `Item = String`, and neither is a bare `Iterator`.
+/// A const argument keeps its text the same way a const array length does:
+/// `TypeVar` would erase `N` and `M`.
+fn lower_generic_arg(
+    ctx: &mut LowerCtx<'_>,
+    arg: ast::GenericArg,
+    ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
+) -> Option<Type> {
+    match arg {
+        ast::GenericArg::TypeArg(ta) => ta.ty().map(|t| lower_ast_type(ctx, &t, ref_for)),
+        ast::GenericArg::AssocTypeArg(binding) => {
+            let name = binding.name_ref()?.syntax().text().to_string();
+            let value = if let Some(ty) = binding.ty() {
+                lower_ast_type(ctx, &ty, ref_for)
+            } else if let Some(konst) = binding.const_arg().and_then(|arg| arg.expr()) {
+                const_length(&konst.syntax().text().to_string())
+            } else {
+                Type::ORACLE_GAP
+            };
+            Some(assoc_binding(&name, value))
+        }
+        ast::GenericArg::ConstArg(konst) => konst
+            .expr()
+            .map(|expr| const_length(&expr.syntax().text().to_string())),
+        ast::GenericArg::LifetimeArg(lifetime) => lifetime.lifetime().map(|lifetime| {
+            Type::Annotated {
+                inner: Box::new(Type::Inferred),
+                annotation: AttrTok {
+                    token: "lifetime".to_owned(),
+                    arg: Some(lifetime.syntax().text().to_string()),
+                },
+            }
+        }),
+    }
+}
+
+fn assoc_binding(name: &str, value: Type) -> Type {
+    Type::Annotated {
+        inner: Box::new(value),
+        annotation: AttrTok {
+            token: name.to_owned(),
+            arg: None,
+        },
+    }
 }
 
 // ── Semantics resolve (panic-safe) ────────────────────────────────────────────
@@ -1077,6 +1120,22 @@ mod tests {
             type_skeleton(&other),
             "[T; N] and [T; M] are different lengths"
         );
+    }
+
+    /// `Iterator<Item = u8>` and `Iterator<Item = String>` are different
+    /// bounds. So are `Foo<N>` and `Foo<M>`.
+    #[test]
+    fn associated_bindings_and_const_args_stay_distinct() {
+        use nudox_ir::skeleton::type_skeleton;
+        let item_u8 = super::assoc_binding("Item", Type::U32);
+        let item_str = super::assoc_binding("Item", Type::Primitive(Primitive::Str));
+        let output_u8 = super::assoc_binding("Output", Type::U32);
+        let n = super::const_length("N");
+        let m = super::const_length("M");
+        assert_ne!(type_skeleton(&item_u8), type_skeleton(&item_str));
+        assert_ne!(type_skeleton(&item_u8), type_skeleton(&output_u8));
+        assert_ne!(type_skeleton(&n), type_skeleton(&m));
+        assert_ne!(type_skeleton(&item_u8), type_skeleton(&Type::U32));
     }
 
     /// `impl Trait` and `dyn Trait` must stay structurally distinguishable.
