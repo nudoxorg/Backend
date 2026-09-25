@@ -878,11 +878,40 @@ fn emit_type_alias(
     let generics = lower_generics(&body.generics, out, names, &id.module);
     let target = lower_type(&body.target, out, names, &id.module);
     let _: Ref<Alias> = out.declare(
-        id,
+        id.clone(),
         parent,
         sym,
         Alias::builder().target(target).generics(generics).build(),
     );
+    // A function type's parameters are declarations. `FunctionPointer` keeps
+    // their types; the names live as `Param` children of this alias.
+    if let TypeOwned::Function(function) = &body.target {
+        for (idx, param) in function.params.iter().enumerate() {
+            let param_id = param_id_for(&id, &param.name, idx as u32);
+            let param_sym = Symbol {
+                name: param.name.clone(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: id.module.clone(),
+                span: (param.span_start as usize)..(param.span_end as usize),
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            };
+            let ty = param
+                .ty
+                .as_ref()
+                .map(|ty| lower_type(ty, out, names, &id.module));
+            let _: Ref<Param> = out.declare(
+                param_id,
+                Some(id.clone()),
+                param_sym,
+                Param::builder().maybe_ty(ty).build(),
+            );
+        }
+    }
 }
 
 // ── Enum → Enum + Variants

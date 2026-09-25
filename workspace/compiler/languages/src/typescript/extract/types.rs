@@ -764,36 +764,43 @@ fn lower_formal_params<'a>(
     let mut out: Vec<ParamFact> = Vec::with_capacity(params.items.len());
 
     for param in &params.items {
-        let name = binding_pattern_name(&param.pattern, source);
-        // Skip the `this` parameter pseudo-binding.
-        if name.as_deref() == Some("this") {
+        let mut names = binding_names(&param.pattern);
+        if names.len() == 1 && names[0] == "this" {
             continue;
+        }
+        names.retain(|name| name != "this");
+        if names.is_empty() {
+            names.push("_".to_string());
         }
         let ty = param
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
         let span = param.span();
-        out.push(ParamFact {
-            name: name.unwrap_or_else(|| "_".to_string()),
-            ty,
-            is_optional: param.optional,
-            is_rest: false,
-            is_readonly: param.readonly,
-            initializer: param
-                .initializer
-                .as_ref()
-                .map(|init| init.span().source_text(source).to_string()),
-            decorators: param
-                .decorators
-                .iter()
-                .map(|decorator| AttrTok {
-                    token: decorator.span.source_text(source).to_string(),
-                })
-                .collect(),
-            span_start: span.start,
-            span_end: span.end,
-        });
+        let initializer = param
+            .initializer
+            .as_ref()
+            .map(|init| init.span().source_text(source).to_string());
+        let decorators: Vec<AttrTok> = param
+            .decorators
+            .iter()
+            .map(|decorator| AttrTok {
+                token: decorator.span.source_text(source).to_string(),
+            })
+            .collect();
+        for name in names {
+            out.push(ParamFact {
+                name,
+                ty: ty.clone(),
+                is_optional: param.optional,
+                is_rest: false,
+                is_readonly: param.readonly,
+                initializer: initializer.clone(),
+                decorators: decorators.clone(),
+                span_start: span.start,
+                span_end: span.end,
+            });
+        }
     }
 
     if let Some(rest) = &params.rest {
@@ -801,39 +808,62 @@ fn lower_formal_params<'a>(
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
-        let name = binding_pattern_name(&rest.rest.argument, source);
+        let mut names = binding_names(&rest.rest.argument);
+        if names.is_empty() {
+            names.push("...rest".to_string());
+        }
         let span = rest.span();
-        out.push(ParamFact {
-            name: name.unwrap_or_else(|| "...rest".to_string()),
-            ty,
-            is_optional: false,
-            is_rest: true,
-            is_readonly: false,
-            initializer: None,
-            decorators: rest
-                .decorators
-                .iter()
-                .map(|decorator| AttrTok {
-                    token: decorator.span.source_text(source).to_string(),
-                })
-                .collect(),
-            span_start: span.start,
-            span_end: span.end,
-        });
+        let decorators: Vec<AttrTok> = rest
+            .decorators
+            .iter()
+            .map(|decorator| AttrTok {
+                token: decorator.span.source_text(source).to_string(),
+            })
+            .collect();
+        for name in names {
+            out.push(ParamFact {
+                name,
+                ty: ty.clone(),
+                is_optional: false,
+                is_rest: true,
+                is_readonly: false,
+                initializer: None,
+                decorators: decorators.clone(),
+                span_start: span.start,
+                span_end: span.end,
+            });
+        }
     }
 
     out
 }
 
-fn binding_pattern_name(
-    pat: &oxc_ast::ast::BindingPattern<'_>,
-    source: &str,
-) -> Option<String> {
+fn binding_names(pat: &oxc_ast::ast::BindingPattern<'_>) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_binding_names(pat, &mut names);
+    names
+}
+
+fn collect_binding_names(pat: &oxc_ast::ast::BindingPattern<'_>, names: &mut Vec<String>) {
     use oxc_ast::ast::BindingPattern;
     match pat {
-        BindingPattern::BindingIdentifier(id) => Some(id.name.to_string()),
-        BindingPattern::AssignmentPattern(ap) => binding_pattern_name(&ap.left, source),
-        BindingPattern::ObjectPattern(pat) => Some(pat.span().source_text(source).to_string()),
-        BindingPattern::ArrayPattern(pat) => Some(pat.span().source_text(source).to_string()),
+        BindingPattern::BindingIdentifier(id) => names.push(id.name.to_string()),
+        BindingPattern::AssignmentPattern(ap) => collect_binding_names(&ap.left, names),
+        BindingPattern::ObjectPattern(pat) => {
+            for prop in &pat.properties {
+                collect_binding_names(&prop.value, names);
+            }
+            if let Some(rest) = &pat.rest {
+                collect_binding_names(&rest.argument, names);
+            }
+        }
+        BindingPattern::ArrayPattern(pat) => {
+            for elem in pat.elements.iter().flatten() {
+                collect_binding_names(elem, names);
+            }
+            if let Some(rest) = &pat.rest {
+                collect_binding_names(&rest.argument, names);
+            }
+        }
     }
 }
