@@ -1556,11 +1556,14 @@ fn emit_static(
         .as_ref()
         .map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, &id.module));
     let _: Ref<Static> = out.declare(
-        id,
+        id.clone(),
         parent,
         sym,
         Static::builder().ty(ty).mutable(body.is_mutable).build(),
     );
+    if let Some(ty) = &body.ty {
+        declare_nested_params(&id, &id, "ty", ty, out, names);
+    }
 }
 
 // ── Re-exports
