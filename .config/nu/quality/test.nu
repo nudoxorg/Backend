@@ -168,7 +168,7 @@ def "main test workspace" []: nothing -> record {
 # @class closure
 def "main test pr" []: nothing -> record {
     require-command "test-workspace"
-    let cargo = ($env.BACKEND_PARALLEL_CARGO? | default $env.BACKEND_STABLE_CARGO)
+    let cargo = $env.BACKEND_PARALLEL_CARGO? | default $env.BACKEND_STABLE_CARGO
     # A test compile is not a product build. Require every shipped process
     # surface explicitly before running the platform's behavioral closure.
     process-require $cargo [
