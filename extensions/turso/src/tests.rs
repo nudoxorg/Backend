@@ -412,7 +412,10 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
 fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
     futures_executor::block_on(async {
         let path = path();
-        let view = root(Vec::new());
+        let root_a = view_state_root(&[("graph".to_owned(), "a".to_owned())]);
+        let root_b = view_state_root(&[("graph".to_owned(), "b".to_owned())]);
+        let root_c = view_state_root(&[("graph".to_owned(), "c".to_owned())]);
+        let root_d = view_state_root(&[("graph".to_owned(), "d".to_owned())]);
         let source = PackageReference::parse("pkg:cargo/app@1.0.0").expect("source");
         let target = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("target");
         let edge = PackageDependencyRecord::new(
@@ -434,36 +437,129 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
         let mut projection = TursoProjection::open(&path).await.expect("open");
         assert_eq!(
             projection
-                .synchronize_package_graph(view.root(), &facts)
+                .synchronize_package_graph(root_a, &facts)
                 .await
                 .expect("project graph"),
             ProjectionUpdate::Rebuilt { rows: 1 }
         );
         assert_eq!(
             projection
-                .synchronize_package_graph(view.root(), &facts)
+                .synchronize_package_graph(root_a, &facts)
                 .await
                 .expect("reuse graph"),
             ProjectionUpdate::Reused { rows: 1 }
         );
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_b, &facts)
+                .await
+                .expect("project new root"),
+            ProjectionUpdate::Rebuilt { rows: 1 }
+        );
+        let mut edge_rows = projection
+            .connection
+            .query("SELECT root FROM backend_projection_package_edges", ())
+            .await
+            .expect("edge roots");
+        let edge_root: Vec<u8> = edge_rows
+            .next()
+            .await
+            .expect("edge row")
+            .expect("edge exists")
+            .get(0)
+            .expect("root");
+        assert_eq!(edge_root.as_slice(), root_a.as_bytes());
+        let mut meta_rows = projection
+            .connection
+            .query(
+                "SELECT root FROM backend_projection_package_graph_meta WHERE singleton=1",
+                (),
+            )
+            .await
+            .expect("meta");
+        let meta_root: Vec<u8> = meta_rows
+            .next()
+            .await
+            .expect("meta row")
+            .expect("meta")
+            .get(0)
+            .expect("root");
+        assert_eq!(meta_root.as_slice(), root_b.as_bytes());
         let forward = projection
             .package_dependencies(&source)
             .await
             .expect("forward");
+        assert_eq!(forward.root.as_ref(), root_b.as_bytes());
         assert_eq!(forward.edges.as_ref(), &[edge]);
         let reverse = projection
             .package_dependents(&target)
             .await
             .expect("reverse");
+        assert_eq!(reverse.root.as_ref(), root_b.as_bytes());
         assert_eq!(reverse.edges.len(), 1);
         assert_eq!(reverse.edges[0].source, source);
-        let unknown = vec![(
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_c, &[])
+                .await
+                .expect("clear graph"),
+            ProjectionUpdate::Rebuilt { rows: 0 }
+        );
+        let forward_empty = projection
+            .package_dependencies(&source)
+            .await
+            .expect("forward empty");
+        assert!(forward_empty.edges.is_empty());
+        let mut count_rows = projection
+            .connection
+            .query("SELECT COUNT(*) FROM backend_projection_package_edges", ())
+            .await
+            .expect("count");
+        let count: i64 = count_rows
+            .next()
+            .await
+            .expect("count row")
+            .expect("count")
+            .get(0)
+            .expect("count");
+        assert_eq!(count, 0);
+        let edge_v2 = PackageDependencyRecord::new(
+            source.clone(),
+            PackageDependencyTarget::new(RegistryEcosystem::Cargo, "serde", "^2", None)
+                .expect("target facts"),
+            DependencyScope::Runtime,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [1; 32],
+                provenance: [2; 32],
+            },
+        );
+        let facts_v2 = vec![(
+            source.clone(),
+            DependencyFacts::Known(vec![edge_v2.clone()].into_boxed_slice()),
+        )];
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_d, &facts_v2)
+                .await
+                .expect("project changed requirement"),
+            ProjectionUpdate::Rebuilt { rows: 1 }
+        );
+        let forward_v2 = projection
+            .package_dependencies(&source)
+            .await
+            .expect("forward v2");
+        assert_eq!(forward_v2.edges.len(), 1);
+        assert_eq!(forward_v2.edges[0].target.requirement.as_str(), "^2");
+        assert_ne!(forward_v2.edges[0].target.requirement.as_str(), "^1");
+        let unavailable = vec![(
             target.clone(),
             DependencyFacts::Unavailable(ProductText::new("metadata timeout").expect("reason")),
         )];
-        let next = view_state_root(&[("graph".to_owned(), "next".to_owned())]);
+        let root_e = view_state_root(&[("graph".to_owned(), "e".to_owned())]);
         projection
-            .synchronize_package_graph(next, &unknown)
+            .synchronize_package_graph(root_e, &unavailable)
             .await
             .expect("project unavailable");
         let state = projection
@@ -473,6 +569,14 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             .state
             .expect("state row");
         assert_eq!(state.kind, 2);
+        assert!(
+            projection
+                .package_dependencies(&source)
+                .await
+                .expect("source cleared")
+                .edges
+                .is_empty()
+        );
         std::fs::remove_file(&path).expect("remove projection");
     });
 }
