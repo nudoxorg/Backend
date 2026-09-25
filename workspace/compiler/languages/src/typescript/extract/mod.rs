@@ -329,6 +329,8 @@ pub struct FunctionBody {
     pub abstract_construct: bool,
     /// Source of the function body, when one was written.
     pub body_text: Option<String>,
+    /// Comment attached to a call or construct signature.
+    pub leading_doc: Option<String>,
     /// Byte span of the declaring node: the `Function` AST node for a
     /// top-level function or a class method/constructor's value, or the
     /// whole signature node (`TSMethodSignature`, `TSCallSignatureDeclaration`,
@@ -369,6 +371,7 @@ pub struct IndexSignatureFact {
     pub value_ty: TypeOwned,
     pub readonly: bool,
     pub is_static: bool,
+    pub doc: Option<String>,
     /// Byte span of the `TSIndexSignature` node.
     pub span_start: u32,
     pub span_end: u32,

@@ -557,6 +557,7 @@ fn emit_interface(
             this_ty: None,
             abstract_construct: false,
             body_text: None,
+            leading_doc: None,
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
@@ -765,6 +766,7 @@ fn emit_class(
                     this_ty: None,
             abstract_construct: false,
             body_text: None,
+            leading_doc: None,
                     span_start: member.span_start,
                     span_end: member.span_end,
                 };
@@ -814,6 +816,7 @@ fn emit_class(
             this_ty: None,
             abstract_construct: false,
             body_text: None,
+            leading_doc: None,
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
@@ -2238,6 +2241,10 @@ fn function_skeleton(f: &FunctionBody) -> String {
     if f.abstract_construct {
         s.push_str("abstract-new;");
     }
+    if let Some(doc) = &f.leading_doc {
+        s.push_str(doc);
+        s.push(';');
+    }
     if let Some(body) = &f.body_text {
         s.push_str(body);
         s.push(';');
@@ -2368,6 +2375,10 @@ fn body_skeleton(body: &DeclBody) -> String {
             }
             for index in &c.index_signatures {
                 s.push_str("index:");
+                if let Some(doc) = &index.doc {
+                    s.push_str(doc);
+                    s.push(';');
+                }
                 if index.is_static {
                     s.push_str("static ");
                 }
@@ -2427,6 +2438,10 @@ fn body_skeleton(body: &DeclBody) -> String {
             }
             for index in &i.index_signatures {
                 s.push_str("index:");
+                if let Some(doc) = &index.doc {
+                    s.push_str(doc);
+                    s.push(';');
+                }
                 if index.is_static {
                     s.push_str("static ");
                 }

@@ -181,6 +181,7 @@ fn lower_ts_type_impl<'a>(
                 this_ty,
                 abstract_construct: false,
                 body_text: None,
+                leading_doc: None,
                 span_start: span.start,
                 span_end: span.end,
             }))
@@ -398,6 +399,7 @@ fn lower_ts_type_impl<'a>(
                 this_ty: None,
                 abstract_construct: false,
                 body_text: None,
+                leading_doc: None,
                                 span_start: span.start,
                                 span_end: span.end,
                             })),
@@ -478,6 +480,7 @@ fn lower_ts_type_impl<'a>(
                 this_ty: None,
                 abstract_construct: c.r#abstract,
                 body_text: None,
+                leading_doc: None,
                 span_start: span.start,
                 span_end: span.end,
             }))
@@ -726,6 +729,7 @@ fn signature_body<'a>(
         this_ty,
         abstract_construct,
         body_text: None,
+                leading_doc: None,
         span_start: span.start,
         span_end: span.end,
     }
@@ -785,7 +789,13 @@ fn lower_formal_params<'a>(
             is_rest: true,
             is_readonly: false,
             initializer: None,
-            decorators: Vec::new(),
+            decorators: rest
+                .decorators
+                .iter()
+                .map(|decorator| AttrTok {
+                    token: decorator.span.source_text(source).to_string(),
+                })
+                .collect(),
             span_start: span.start,
             span_end: span.end,
         });

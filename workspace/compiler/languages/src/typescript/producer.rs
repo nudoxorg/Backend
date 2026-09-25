@@ -783,6 +783,30 @@ mod tests {
                 "x",
             ),
             (
+                "rest-decorator",
+                "namespace N { export function f(@dec ...a: string[]) { return a; } }\n\
+                 namespace N { export function f(@other ...a: string[]) { return a; } }\n",
+                "f",
+            ),
+            (
+                "call-doc",
+                "namespace N { export interface I { /** a */ (x: string): void; } }\n\
+                 namespace N { export interface I { /** b */ (x: string): void; } }\n",
+                "I",
+            ),
+            (
+                "construct-doc",
+                "namespace N { export interface I { /** a */ new (x: string): I; } }\n\
+                 namespace N { export interface I { /** b */ new (x: string): I; } }\n",
+                "I",
+            ),
+            (
+                "index-doc",
+                "namespace N { export interface I { /** a */ [k: string]: string; } }\n\
+                 namespace N { export interface I { /** b */ [k: string]: string; } }\n",
+                "I",
+            ),
+            (
                 "docs",
                 "namespace N { /** one */ export interface I { x: string; } }\n\
                  namespace N { /** two */ export interface I { x: string; } }\n",

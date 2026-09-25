@@ -1250,6 +1250,7 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
             .body
             .as_ref()
             .map(|body| body.span().source_text(source).to_string()),
+        leading_doc: None,
         span_start: span.start,
         span_end: span.end,
     }
@@ -1312,7 +1313,13 @@ fn lower_formal_parameters<'a>(
             is_rest: true,
             is_readonly: false,
             initializer: None,
-            decorators: Vec::new(),
+            decorators: rest
+                .decorators
+                .iter()
+                .map(|decorator| AttrTok {
+                    token: decorator.span.source_text(source).to_string(),
+                })
+                .collect(),
             span_start: span.start,
             span_end: span.end,
         });
@@ -1531,6 +1538,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
                 value_ty: lower_ts_type(&idx.type_annotation.type_annotation, source),
                 readonly: idx.readonly,
                 is_static: idx.r#static,
+                doc: jsdoc::jsdoc_for_span(semantic, idx_span).doc,
                 span_start: idx_span.start,
                 span_end: idx_span.end,
             })
@@ -1838,6 +1846,7 @@ fn lower_interface<'a>(
                     this_ty,
                     abstract_construct: false,
                     body_text: None,
+                    leading_doc: None,
                     span_start: m_span.start,
                     span_end: m_span.end,
                 };
@@ -1916,6 +1925,7 @@ fn lower_interface<'a>(
                     this_ty,
                     abstract_construct: false,
                     body_text: None,
+                    leading_doc: jsdoc::jsdoc_for_span(semantic, c_span).doc,
                     span_start: c_span.start,
                     span_end: c_span.end,
                 });
@@ -1936,6 +1946,7 @@ fn lower_interface<'a>(
                         value_ty,
                         readonly: idx.readonly,
                         is_static: idx.r#static,
+                        doc: jsdoc::jsdoc_for_span(semantic, idx_span).doc,
                         span_start: idx_span.start,
                         span_end: idx_span.end,
                     });
@@ -1965,6 +1976,7 @@ fn lower_interface<'a>(
                     this_ty: None,
                     abstract_construct: false,
                     body_text: None,
+                    leading_doc: jsdoc::jsdoc_for_span(semantic, cs_span).doc,
                     span_start: cs_span.start,
                     span_end: cs_span.end,
                 });
