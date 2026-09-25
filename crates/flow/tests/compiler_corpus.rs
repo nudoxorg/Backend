@@ -566,6 +566,18 @@ fn fleet_source_inventory_binds_all_selected_rows() -> Result<(), CorpusAuditErr
     if provisioned == roots.len() {
         let bound: usize = inventory.source_bound.iter().sum();
         if bound != REAL_PACKAGE_COUNT {
+            // Preserve the exact missing coordinates and typed causes in the
+            // failed test's stderr; a total alone cannot identify which
+            // pinned corpus package needs a resolver or source-tree fix.
+            for input in inventory::real_package_inputs() {
+                if let inventory::RealPackageInput::Unavailable { case, cause } = input {
+                    eprintln!(
+                        "unbound fleet source: {} ({:?})",
+                        case.coordinate.raw(),
+                        cause.kind
+                    );
+                }
+            }
             return Err(CorpusAuditError::Inventory {
                 cause: InventoryInvariant::TotalCount {
                     observed: bound,

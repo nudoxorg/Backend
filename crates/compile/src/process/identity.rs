@@ -319,7 +319,7 @@ impl ExecutableLease {
         // platform signature. Copying isolates the lease from an in-place
         // write to the caller's original inode.
         if !is_macho(&bytes) {
-            return Self::from_bytes(&bytes, &before);
+            return Self::from_bytes(&bytes, &before, command.program());
         }
         let source_path = std::fs::canonicalize(command.program())
             .map_err(|_| ProcessError::ExecutableUnavailable)?;
@@ -330,7 +330,7 @@ impl ExecutableLease {
         // write from changing the admitted image.
         let file_is_writable = OpenOptions::new().write(true).open(&source_path).is_ok();
         if file_is_writable || directory_is_writable(source_path.as_path()) {
-            return Self::from_bytes(&bytes, &before);
+            return Self::from_bytes(&bytes, &before, command.program());
         }
         // SIP-protected system binaries can reject private execution copies.
         // Their file and parent directory are both outside caller control, so
@@ -374,12 +374,18 @@ impl ExecutableLease {
         if typed_of::<crate::ToolchainSchema>(&bytes) != expected.digest() {
             return Err(ProcessError::ExecutableDrift);
         }
-        Self::from_bytes(&bytes, &before)
+        Self::from_bytes(&bytes, &before, command.program())
     }
 
-    fn from_bytes(bytes: &[u8], source: &Metadata) -> Result<Self, ProcessError> {
+    fn from_bytes(bytes: &[u8], source: &Metadata, program: &Path) -> Result<Self, ProcessError> {
+        // Multicall binaries (including Nix coreutils) select their applet
+        // from argv[0]. Keep the admitted program's basename while isolating
+        // its verified bytes in a private directory.
+        let name = program
+            .file_name()
+            .ok_or(ProcessError::ExecutableUnavailable)?;
         let directory = private_temp_directory("exec")?;
-        let path = directory.join("exec.out");
+        let path = directory.join(name);
         let result = (|| {
             let mut file = OpenOptions::new()
                 .create_new(true)

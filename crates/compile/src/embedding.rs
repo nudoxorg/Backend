@@ -425,7 +425,19 @@ mod tests {
         ));
         fs::create_dir(&root)?;
         let executable = root.join("fixture.sh");
-        fs::write(&executable, b"#!/bin/sh\ncat >/dev/null\nprintf '\\102\\105\\103\\061\\000\\002\\000\\000\\200\\077\\000\\000\\000\\000'\n")?;
+        let shell = std::env::var_os("NUDOX_PROCESS_SHELL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+        let cat = std::env::var_os("NUDOX_TEST_COREUTILS_BIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/bin"))
+            .join("cat");
+        let script = format!(
+            "#!{}\n{} >/dev/null\nprintf '\\102\\105\\103\\061\\000\\002\\000\\000\\200\\077\\000\\000\\000\\000'\n",
+            shell.display(),
+            cat.display()
+        );
+        fs::write(&executable, script)?;
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
         Ok((root, executable))
     }

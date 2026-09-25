@@ -847,6 +847,9 @@ fn native_cold_runner_keeps_output_and_coverage_separate() -> Result<(), Box<dyn
         ProtocolDescriptor::cold(),
         limits(64, 64, Duration::from_secs(1), 128)?,
     )?;
+    let lease = process::ExecutableLease::prepare(&command)?;
+    assert_eq!(lease.path().file_name(), Some(std::ffi::OsStr::new("cat")));
+    drop(lease);
     let observation = NativeAuthorityRunner::new(command).run_cold()?;
     assert_eq!(
         observation.stdout(),
@@ -1383,6 +1386,10 @@ fn executable_lease_isolated_from_in_place_mutation() -> Result<(), Box<dyn Erro
         limits(32, 32, Duration::from_secs(1), 64)?,
     )?;
     let lease = process::ExecutableLease::prepare(&command)?;
+    assert_eq!(
+        lease.path().file_name(),
+        Some(std::ffi::OsStr::new("authority.sh"))
+    );
     assert!(
         fs::OpenOptions::new()
             .write(true)

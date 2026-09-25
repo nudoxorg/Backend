@@ -421,11 +421,17 @@ fn terminate_process_group(pid: u32) -> Result<(), ProcessError> {
     {
         let pid = i32::try_from(pid).map_err(|_| ProcessError::NotReaped)?;
         let argument = format!("-{pid}");
-        for executable in [Path::new("/bin/kill"), Path::new("/usr/bin/kill")] {
+        let configured = std::env::var_os("NUDOX_PROCESS_KILL").map(PathBuf::from);
+        let candidates = configured.into_iter().chain([
+            PathBuf::from("/run/current-system/sw/bin/kill"),
+            PathBuf::from("/bin/kill"),
+            PathBuf::from("/usr/bin/kill"),
+        ]);
+        for executable in candidates {
             if !executable.is_file() {
                 continue;
             }
-            let result = Command::new(executable)
+            let result = Command::new(&executable)
                 .arg("-KILL")
                 .arg("--")
                 .arg(&argument)

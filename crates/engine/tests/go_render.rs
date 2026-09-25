@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
     sync::atomic::AtomicBool,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -12,8 +12,8 @@ use backend_engine::driver::{
     CompileControl, CompileRequest, CompileScratch, NativeTool, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile_ir,
 };
-use backend_semantic::ir::{EntityId, Ir, ItemKind};
 use backend_frontend_go::legacy::GoOracle;
+use backend_semantic::ir::{EntityId, Ir, ItemKind};
 use backend_semantic::vocabulary::{GoVersion, LanguageProfile, Stage};
 use thiserror::Error;
 
@@ -91,6 +91,8 @@ enum TestError {
     },
     #[error("Go toolchain is unavailable at {path}")]
     MissingTool { path: PathBuf },
+    #[error("COMPILER_GO_COMPILER is not configured")]
+    UnconfiguredTool,
     #[error("Go toolchain resolution failed")]
     Resolve,
     #[error("Go authority image failed: {0}")]
@@ -110,7 +112,10 @@ enum TestError {
 }
 
 fn compile_source(source: &[u8]) -> Result<Ir, TestError> {
-    let compiler = Path::new("/Users/mileswirht/nudox-tools/go/bin/go");
+    let compiler_path = std::env::var_os("COMPILER_GO_COMPILER")
+        .map(PathBuf::from)
+        .ok_or(TestError::UnconfiguredTool)?;
+    let compiler = compiler_path.as_path();
     if !compiler.is_file() {
         return Err(TestError::MissingTool {
             path: compiler.to_owned(),
@@ -135,8 +140,7 @@ fn compile_source(source: &[u8]) -> Result<Ir, TestError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| TestError::Resolve)?
         .as_nanos();
-    let root =
-        std::env::temp_dir().join(format!(
+    let root = std::env::temp_dir().join(format!(
         "nudox-go-render-{nonce}-{}-{}",
         std::process::id(),
         fixture_sequence()
