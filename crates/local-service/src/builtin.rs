@@ -69,7 +69,7 @@ use replication::BuiltinReplication;
 #[path = "builtin/worker.rs"]
 mod worker;
 use worker::connect_worker;
-#[path = "builtin/view_build.rs"]
+#[path = "builtin/view_build/mod.rs"]
 mod view_build;
 #[path = "builtin/view_journal.rs"]
 mod view_journal;
