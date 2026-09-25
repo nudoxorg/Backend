@@ -2079,12 +2079,22 @@ impl<'x, 'source> Projector<'x, 'source> {
                     }
                 }
             } else {
-                foreign_target(
-                    reference_index,
-                    row.target_package,
-                    row.target,
-                    foreign_entity_kind(row.target_class),
-                )?
+                let local = self
+                    .lookup(row.target_package, row.target)
+                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                    .or_else(|| {
+                        self.lookup_member(row.target_package, row.recv_type, row.target)
+                            .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                    });
+                match local {
+                    Some(target) => target,
+                    None => foreign_target(
+                        reference_index,
+                        row.target_package,
+                        row.target,
+                        foreign_entity_kind(row.target_class),
+                    )?,
+                }
             };
             let span = RelSpan::new(row.relative.0, row.relative.1)
                 .map_err(|fault| match fault {
@@ -5563,6 +5573,55 @@ mod tests {
         if collect(b"package demo\n", &image, &mut facts).is_ok() {
             return Err(TestError::Missing("unresolved satisfaction rejection"));
         }
+        Ok(())
+    }
+
+    /// A reference row naming another package in this image must still
+    /// resolve to the declared fact when that package is loaded, not fold
+    /// to a foreign key that discards the proven local binding.
+    #[test]
+    fn cross_package_reference_to_declared_name_resolves_locally() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let pour = fix.declaration(KIND_FUNC, b"Pour", None);
+        let extra_package = fix.atom(b"example.com/demo/extra");
+        let _extra = fix.declaration(KIND_TYPE, b"Extra", None);
+        fix.declarations[1].package = extra_package;
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.declarations[use_fn].package = extra_package;
+        fix.reference_typed(
+            u32::try_from(use_fn).map_err(TestError::from)?,
+            b"",
+            b"Pour",
+            PACKAGE,
+            40,
+            44,
+            0,
+            0,
+            b"",
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let pour_entity = entity_of(&view, b"Pour")?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let call = occurrences
+            .next()
+            .ok_or(TestError::Missing("cross-package call"))??;
+        if call.owner != use_entity
+            || call.occurrence.target != OccurrenceTarget::Local(pour_entity)
+            || call.occurrence.kind != ReferenceKind::FunctionCall
+            || call.occurrence.confidence != OccurrenceConfidence::Oracle
+            || call.occurrence.span.start != 40
+            || call.occurrence.span.end != 44
+        {
+            return Err(TestError::Missing("local cross-package function call"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact cross-package occurrences"));
+        }
+        let _ = pour;
         Ok(())
     }
 
