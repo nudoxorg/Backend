@@ -379,16 +379,23 @@ impl<M: EmbeddingModel> Driver<M> {
             None
         };
 
-        let package_facts = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::engine::turso_vc::VersionedCatalog::open().map_err(|error| {
+        let mut opened = crate::engine::turso_vc::VersionedCatalog::open().map_err(|error| {
+            ServerError::Runtime(
+                registry::runtime::error::TextError::Io(std::io::Error::other(error.to_string()))
+                    .into(),
+            )
+        })?;
+        opened
+            .adopt_catalog(federation.base().global_store.writer().engine())
+            .map_err(|error| {
                 ServerError::Runtime(
                     registry::runtime::error::TextError::Io(std::io::Error::other(
                         error.to_string(),
                     ))
                     .into(),
                 )
-            })?,
-        ));
+            })?;
+        let package_facts = std::sync::Arc::new(std::sync::Mutex::new(opened));
 
         Ok(Self {
             config,

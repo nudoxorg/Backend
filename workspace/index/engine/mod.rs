@@ -37,6 +37,7 @@ mod edge_fact;
 /// Row-versioned ledger on the philocalyst Turso fork (`turso_versioning`).
 pub mod turso_vc;
 
+mod adopt;
 mod content;
 mod degree;
 mod withdraw;
