@@ -2,10 +2,11 @@
 
 # Homebrew formula for the loopback MCP service.
 #
-# Blank-state install (does not reuse a developer target directory):
+# Blank-state install (does not reuse a developer target directory).
+# Homebrew loads this file only from a tap, at Formula/backend-mcp.rb:
 #
-#   brew update
-#   brew install --HEAD ./packaging/homebrew/backend-mcp.rb
+#   brew tap nudoxorg/backend https://github.com/nudoxorg/Backend.git
+#   brew install --HEAD nudoxorg/backend/backend-mcp
 #   echo /absolute/path/to/project > "$(brew --prefix)/etc/backend-mcp.project"
 #   brew services start backend-mcp
 #
