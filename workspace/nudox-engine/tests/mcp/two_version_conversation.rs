@@ -116,11 +116,8 @@ async fn two_versions_select_and_diff_in_one_conversation() {
         "arrived is new in 2.0.0; the diff must say Added:\n{page}"
     );
     assert!(
-        diff.rows.iter().all(|row| {
-            &*row.name != "Kept"
-                || !matches!(row.verdict, DiffVerdict::Added | DiffVerdict::Removed)
-        }),
-        "Kept is unchanged and must not be reported added or removed:\n{page}"
+        diff.rows.iter().all(|row| &*row.name != "Kept"),
+        "Kept is the same class in both generations, so it must not be a diff row:\n{page}"
     );
     let tokens = estimated_text_tokens(&page);
     assert!(tokens < 2_000, "the diff page is {tokens} tokens:\n{page}");
@@ -138,12 +135,14 @@ async fn two_versions_select_and_diff_in_one_conversation() {
 
     switch(&tools, "1.0.0").await;
     assert!(search_has(&tools, "gone").await, "1.0.0 must still contain gone");
+    assert!(search_has(&tools, "Kept").await, "1.0.0 must still contain Kept");
     assert!(
         !search_has(&tools, "arrived").await,
         "1.0.0 must not contain arrived"
     );
 
     switch(&tools, "2.0.0").await;
+    assert!(search_has(&tools, "Kept").await, "2.0.0 must still contain Kept");
     let arrived = search_named(&tools, "arrived").await;
     let key = SymbolKeyDto::from_wire(&arrived.hit.key);
     let source = read_source(&tools, &key).await;
@@ -180,9 +179,9 @@ async fn search_has(tools: &NudoxTools, name: &str) -> bool {
     let result = tools
         .do_unified_search(SearchSymbolsArgs {
             query: name.to_owned(),
-            kinds: Some(vec!["Function".to_owned()]),
+            kinds: None,
             packages: Some(vec![LINEAGE.to_owned()]),
-            limit: Some(10),
+            limit: Some(20),
             cursor: None,
         })
         .await
