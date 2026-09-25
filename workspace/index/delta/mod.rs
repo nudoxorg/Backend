@@ -146,19 +146,121 @@ impl ContentKey {
     }
 }
 
-/// Diff two ordered maps of [`ContentKey`] keyed by `id` within one domain.
+/// Added and changed rows come from `next`. Removed rows come from `prior`.
 ///
-/// Used by IR `GenerationRoot` fault-in and by the vector delta projector:
-/// unchanged payload hashes become neither added nor changed.
-pub fn content_delta(
-    prior: &[ContentKey],
-    next: &[ContentKey],
-) -> Delta<ContentKey> {
+/// Both inputs of [`merge_sorted`] are already sorted by key and unique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Partition<P, N> {
+    /// Keys present only in `next`.
+    pub added: Vec<N>,
+    /// Keys present on both sides whose payload compare said they differ.
+    pub changed: Vec<N>,
+    /// Keys present only in `prior`.
+    pub removed: Vec<P>,
+}
+
+impl<T> Partition<T, T> {
+    /// Collapse a same-type partition into a [`Delta`].
+    pub fn into_delta(self) -> Delta<T> {
+        Delta {
+            added: self.added,
+            changed: self.changed,
+            removed: self.removed,
+        }
+    }
+}
+
+/// Two-pointer merge of two slices that are sorted by the same order and
+/// contain each key once.
+///
+/// `cmp` is that order (`Less` means the prior row's key is smaller).
+/// `unchanged` returns true when the sink can skip the row. Callers that still
+/// hold duplicate keys must collapse to the last input occurrence before
+/// calling this.
+pub fn merge_sorted<P, N>(
+    prior: &[P],
+    next: &[N],
+    mut cmp: impl FnMut(&P, &N) -> std::cmp::Ordering,
+    mut unchanged: impl FnMut(&P, &N) -> bool,
+) -> Partition<P, N>
+where
+    P: Clone,
+    N: Clone,
+{
+    let mut added = Vec::new();
+    let mut changed = Vec::new();
+    let mut removed = Vec::new();
+    let mut i = 0;
+    let mut j = 0;
+    while i < prior.len() && j < next.len() {
+        match cmp(&prior[i], &next[j]) {
+            std::cmp::Ordering::Less => {
+                removed.push(prior[i].clone());
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                added.push(next[j].clone());
+                j += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                if !unchanged(&prior[i], &next[j]) {
+                    changed.push(next[j].clone());
+                }
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    removed.extend(prior[i..].iter().cloned());
+    added.extend(next[j..].iter().cloned());
+    Partition {
+        added,
+        changed,
+        removed,
+    }
+}
+
+/// Last input occurrence of each id, ordered by id, so [`merge_sorted`] can
+/// walk the slice once.
+fn latest_by_id(keys: &[ContentKey]) -> Vec<ContentKey> {
+    let mut order: Vec<usize> = (0..keys.len()).collect();
+    order.sort_by(|&i, &j| keys[i].id.cmp(&keys[j].id).then(j.cmp(&i)));
+    let mut out = Vec::with_capacity(keys.len());
+    let mut previous: Option<&SmolStr> = None;
+    for index in order {
+        let id = &keys[index].id;
+        if previous == Some(id) {
+            continue;
+        }
+        previous = Some(id);
+        out.push(keys[index].clone());
+    }
+    out
+}
+
+/// Diff two sets of [`ContentKey`] by `id`.
+///
+/// Unchanged payload hashes become neither added nor changed. Duplicate ids
+/// keep the last input occurrence. This is [`latest_by_id`] plus
+/// [`merge_sorted`]. [`content_delta_via_map`] is the tree oracle.
+pub fn content_delta(prior: &[ContentKey], next: &[ContentKey]) -> Delta<ContentKey> {
+    let prior = latest_by_id(prior);
+    let next = latest_by_id(next);
+    merge_sorted(
+        &prior,
+        &next,
+        |left, right| left.id.cmp(&right.id),
+        |left, right| left.payload == right.payload,
+    )
+    .into_delta()
+}
+
+/// Tree twin of [`content_delta`]. Not the function callers should use.
+pub fn content_delta_via_map(prior: &[ContentKey], next: &[ContentKey]) -> Delta<ContentKey> {
     use std::collections::BTreeMap;
 
-    let prior_map: BTreeMap<&SmolStr, &ContentKey> =
-        prior.iter().map(|k| (&k.id, k)).collect();
-    let next_map: BTreeMap<&SmolStr, &ContentKey> = next.iter().map(|k| (&k.id, k)).collect();
+    let prior_map: BTreeMap<&SmolStr, &ContentKey> = prior.iter().map(|key| (&key.id, key)).collect();
+    let next_map: BTreeMap<&SmolStr, &ContentKey> = next.iter().map(|key| (&key.id, key)).collect();
 
     let mut delta = Delta::empty();
     for (id, key) in &next_map {
@@ -218,5 +320,81 @@ mod tests {
         let mapped = delta.map(|n| n * 10);
         assert_eq!(mapped.len(), before);
         assert_eq!(mapped.added, vec![10, 20]);
+    }
+
+    fn ids(delta: &Delta<ContentKey>) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let mut added: Vec<_> = delta.added.iter().map(|key| key.id.to_string()).collect();
+        let mut changed: Vec<_> = delta.changed.iter().map(|key| key.id.to_string()).collect();
+        let mut removed: Vec<_> = delta.removed.iter().map(|key| key.id.to_string()).collect();
+        added.sort();
+        changed.sort();
+        removed.sort();
+        (added, changed, removed)
+    }
+
+    fn keys(rows: &[(u16, u8)]) -> Vec<ContentKey> {
+        rows.iter()
+            .map(|(id, payload)| ContentKey::hash("sink", format!("{id:04x}"), &[*payload]))
+            .collect()
+    }
+
+    /// The merge and the tree must name the same ids, including a duplicate
+    /// whose last payload wins.
+    #[test]
+    fn merge_matches_map_including_a_duplicate_last_write() {
+        let prior = keys(&[(1, 1), (2, 2), (3, 3), (2, 9)]);
+        let next = keys(&[(2, 9), (4, 4), (1, 1), (3, 8), (3, 7)]);
+        assert_eq!(
+            ids(&content_delta(&prior, &next)),
+            ids(&content_delta_via_map(&prior, &next))
+        );
+    }
+
+    #[test]
+    fn merge_beats_the_map_on_a_few_thousand_keys() {
+        const N: u16 = 4096;
+        let prior = keys(&(0..N).map(|id| (id, 1)).collect::<Vec<_>>());
+        let next = keys(
+            &(0..N)
+                .filter(|id| id % 11 != 0)
+                .map(|id| (id, if id % 64 == 0 { 2 } else { 1 }))
+                .collect::<Vec<_>>(),
+        );
+        let loops = 8u32;
+        let merge_ns = time_ns(|| {
+            for _ in 0..loops {
+                std::hint::black_box(content_delta(&prior, &next));
+            }
+        });
+        let map_ns = time_ns(|| {
+            for _ in 0..loops {
+                std::hint::black_box(content_delta_via_map(&prior, &next));
+            }
+        });
+        eprintln!(
+            "cost case=delta/content_merge keys={N} loops={loops} merge_ns={merge_ns} map_ns={map_ns}"
+        );
+        assert!(
+            merge_ns.saturating_mul(2) < map_ns,
+            "merge {merge_ns} ns was not 2× under the map {map_ns} ns"
+        );
+    }
+
+    fn time_ns(body: impl FnOnce()) -> u128 {
+        let start = std::time::Instant::now();
+        body();
+        start.elapsed().as_nanos()
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn random_keys_match_the_map(
+            prior in proptest::collection::vec((0u16..64, 0u8..8), 0..48),
+            next in proptest::collection::vec((0u16..64, 0u8..8), 0..48),
+        ) {
+            let prior = keys(&prior);
+            let next = keys(&next);
+            proptest::prop_assert_eq!(ids(&content_delta(&prior, &next)), ids(&content_delta_via_map(&prior, &next)));
+        }
     }
 }

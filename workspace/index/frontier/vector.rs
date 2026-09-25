@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use smol_str::SmolStr;
 
-use crate::delta::{ContentKey, content_delta};
+use crate::delta::{ContentKey, content_delta_via_map, merge_sorted};
 
 const DOMAIN: &str = "vector-point";
 
@@ -74,32 +74,18 @@ fn required_ids<'a>(
 ) -> std::collections::HashSet<(&'a str, &'a str)> {
     let prior_idx = latest_idx(prior);
     let next_idx = latest_idx(next);
-    let mut required = std::collections::HashSet::new();
-    let mut i = 0;
-    let mut j = 0;
-    while i < prior_idx.len() && j < next_idx.len() {
-        let prior_point = &prior[prior_idx[i]];
-        let next_point = &next[next_idx[j]];
-        match key(prior_point).cmp(&key(next_point)) {
-            std::cmp::Ordering::Less => i += 1,
-            std::cmp::Ordering::Greater => {
-                required.insert(key(next_point));
-                j += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                if prior_point.content_hash != next_point.content_hash {
-                    required.insert(key(next_point));
-                }
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    while j < next_idx.len() {
-        required.insert(key(&next[next_idx[j]]));
-        j += 1;
-    }
-    required
+    let partition = merge_sorted(
+        &prior_idx,
+        &next_idx,
+        |&i, &j| key(&prior[i]).cmp(&key(&next[j])),
+        |&i, &j| prior[i].content_hash == next[j].content_hash,
+    );
+    partition
+        .added
+        .into_iter()
+        .chain(partition.changed)
+        .map(|index| key(&next[index]))
+        .collect()
 }
 
 fn key(point: &PointId) -> (&str, &str) {
@@ -131,7 +117,7 @@ fn required_ids_via_keys(
 ) -> std::collections::BTreeSet<SmolStr> {
     let prior_keys: Vec<ContentKey> = prior.iter().map(PointId::content_key).collect();
     let next_keys: Vec<ContentKey> = next.iter().map(PointId::content_key).collect();
-    let delta = content_delta(&prior_keys, &next_keys);
+    let delta = content_delta_via_map(&prior_keys, &next_keys);
     delta
         .added
         .into_iter()

@@ -31,31 +31,13 @@ pub fn project(prior: &[IrEntryKey], next: &[IrEntryKey]) -> Delta<IrEntryKey> {
 }
 
 fn merge_latest(prior: Vec<IrEntryKey>, next: Vec<IrEntryKey>) -> Delta<IrEntryKey> {
-    let mut delta = Delta::empty();
-    let mut i = 0;
-    let mut j = 0;
-    while i < prior.len() && j < next.len() {
-        match prior[i].intro_id.cmp(&next[j].intro_id) {
-            std::cmp::Ordering::Less => {
-                delta.removed.push(prior[i]);
-                i += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                delta.added.push(next[j]);
-                j += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                if prior[i].content_hash != next[j].content_hash {
-                    delta.changed.push(next[j]);
-                }
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    delta.removed.extend_from_slice(&prior[i..]);
-    delta.added.extend_from_slice(&next[j..]);
-    delta
+    crate::delta::merge_sorted(
+        &prior,
+        &next,
+        |left, right| left.intro_id.cmp(&right.intro_id),
+        |left, right| left.content_hash == right.content_hash,
+    )
+    .into_delta()
 }
 
 /// Reference classifier: hex id into a `BTreeMap`, then [`content_delta`].
@@ -67,7 +49,7 @@ pub fn project_via_map(prior: &[IrEntryKey], next: &[IrEntryKey]) -> Delta<IrEnt
 
     use smol_str::SmolStr;
 
-    use crate::delta::{ContentKey, content_delta};
+    use crate::delta::{ContentKey, content_delta_via_map};
 
     fn hex_id(intro_id: &[u8; 32]) -> SmolStr {
         SmolStr::new(data_encoding::HEXLOWER.encode(intro_id))
@@ -78,7 +60,7 @@ pub fn project_via_map(prior: &[IrEntryKey], next: &[IrEntryKey]) -> Delta<IrEnt
 
     let prior_keys: Vec<ContentKey> = prior.iter().copied().map(key).collect();
     let next_keys: Vec<ContentKey> = next.iter().copied().map(key).collect();
-    let classified = content_delta(&prior_keys, &next_keys);
+    let classified = content_delta_via_map(&prior_keys, &next_keys);
     let mut by_id = BTreeMap::<SmolStr, IrEntryKey>::new();
     for entry in prior {
         by_id.insert(hex_id(&entry.intro_id), *entry);
@@ -237,7 +219,11 @@ mod tests {
         let mut next = Vec::new();
         for n in 0..200u8 {
             prior.push(entry(n, n.wrapping_mul(3)));
-            let hash = if n % 17 == 0 { n.wrapping_add(1) } else { n.wrapping_mul(3) };
+            let hash = if n % 17 == 0 {
+                n.wrapping_add(1)
+            } else {
+                n.wrapping_mul(3)
+            };
             if n % 11 != 0 {
                 next.push(entry(n, hash));
             }
@@ -311,7 +297,7 @@ mod tests {
             let mut id = [0u8; 32];
             for chunk in id.chunks_mut(8) {
                 state = state
-                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
                     .wrapping_add(0x6a09_e667);
                 chunk.copy_from_slice(&state.to_le_bytes());
             }
