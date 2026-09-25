@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use smol_str::SmolStr;
 
 use super::edge_fact;
-use crate::record::{DepEdge, PackageRecord};
+use crate::record::PackageRecord;
 
 pub use edge_fact::{EdgeFact, EdgeSync};
 
@@ -118,12 +118,14 @@ pub(super) struct PackageKey {
 pub(super) struct EdgeTip {
     pub(super) name: SmolStr,
     pub(super) class: SmolStr,
+    /// Empty when the dependency is in the depending package's ecosystem.
+    pub(super) dep_ecosystem: SmolStr,
     pub(super) hash: SmolStr,
 }
 
 /// In-memory versioned catalog on branch `main`.
 pub struct VersionedCatalog {
-    db: VersionedDb,
+    pub(super) db: VersionedDb,
     /// Coordinate to version PID. Kept after a drop so an as-of read still
     /// names the row.
     pub(super) coords: BTreeMap<PackageKey, SmolStr>,
@@ -193,7 +195,12 @@ impl VersionedCatalog {
         let mut commit = None;
         for tip in &tips {
             commit = Some(self.db.table::<EdgeFact>().version_delete(
-                &edge_fact::edge_pk(&pid, tip.name.as_str(), tip.class.as_str()),
+                &edge_fact::edge_pk(
+                    &pid,
+                    tip.dep_ecosystem.as_str(),
+                    tip.name.as_str(),
+                    tip.class.as_str(),
+                ),
                 "drop edge",
             )?);
         }
@@ -229,12 +236,19 @@ impl VersionedCatalog {
         let mut seen = std::collections::BTreeSet::new();
         for edge in &record.edges {
             let class = edge_fact::class_token_of(edge.class);
-            if !seen.insert((edge.name.clone(), class)) {
+            let dep_ecosystem = edge
+                .dep_ecosystem
+                .map(|ecosystem| SmolStr::new(ecosystem.as_token()))
+                .unwrap_or_default();
+            if !seen.insert((edge.name.clone(), class, dep_ecosystem.clone())) {
                 continue;
             }
             let hash = edge_fact::hash_edge(edge);
             let same = current.iter().any(|tip| {
-                tip.name == edge.name && tip.class.as_str() == class && tip.hash.as_str() == hash
+                tip.name == edge.name
+                    && tip.class.as_str() == class
+                    && tip.dep_ecosystem == dep_ecosystem
+                    && tip.hash.as_str() == hash
             });
             if same {
                 unchanged += 1;
@@ -246,19 +260,26 @@ impl VersionedCatalog {
             next.push(EdgeTip {
                 name: edge.name.clone(),
                 class: SmolStr::new(class),
+                dep_ecosystem,
                 hash: SmolStr::new(hash),
             });
         }
         let mut removed = 0;
         for stored in &current {
-            if next
-                .iter()
-                .any(|edge| edge.name == stored.name && edge.class == stored.class)
-            {
+            if next.iter().any(|edge| {
+                edge.name == stored.name
+                    && edge.class == stored.class
+                    && edge.dep_ecosystem == stored.dep_ecosystem
+            }) {
                 continue;
             }
             commit = Some(self.db.table::<EdgeFact>().version_delete(
-                &edge_fact::edge_pk(pid.as_str(), stored.name.as_str(), stored.class.as_str()),
+                &edge_fact::edge_pk(
+                    pid.as_str(),
+                    stored.dep_ecosystem.as_str(),
+                    stored.name.as_str(),
+                    stored.class.as_str(),
+                ),
                 "remove edge",
             )?);
             removed += 1;
@@ -314,47 +335,11 @@ impl VersionedCatalog {
         Ok(Some(record))
     }
 
-    fn tip_edges(&mut self, ecosystem: &str, name: &str, version: &str) -> OrmResult<Vec<DepEdge>> {
-        let Some(pid) = self.pid_owned(ecosystem, name, version) else {
-            return Ok(Vec::new());
-        };
-        let Some(tips) = self.edge_tips.get(pid.as_str()).cloned() else {
-            return Ok(Vec::new());
-        };
-        let mut edges = Vec::with_capacity(tips.len());
-        for tip in tips {
-            let Some(row) = self.db.table::<EdgeFact>().get(&edge_fact::edge_pk(
-                &pid,
-                tip.name.as_str(),
-                tip.class.as_str(),
-            )) else {
-                continue;
-            };
-            edges.push(row.to_edge()?);
-        }
-        Ok(edges)
-    }
-
     pub fn scan_edges(&mut self) -> Vec<EdgeFact> {
         self.db.table::<EdgeFact>().iter().collect()
     }
 
-    pub fn get_edge(
-        &mut self,
-        ecosystem: &str,
-        package: &str,
-        version: &str,
-        name: &str,
-    ) -> Option<EdgeFact> {
-        let pid = self.pid_owned(ecosystem, package, version)?;
-        edge_fact::class_tokens().iter().find_map(|class| {
-            self.db
-                .table::<EdgeFact>()
-                .get(&edge_fact::edge_pk(&pid, name, class))
-        })
-    }
-
-    fn pid_owned(&self, ecosystem: &str, name: &str, version: &str) -> Option<SmolStr> {
+    pub(super) fn pid_owned(&self, ecosystem: &str, name: &str, version: &str) -> Option<SmolStr> {
         self.coords
             .get(&PackageKey {
                 ecosystem: SmolStr::new(ecosystem),

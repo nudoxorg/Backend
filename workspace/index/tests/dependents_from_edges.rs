@@ -372,3 +372,60 @@ async fn stored_generation_and_feed_republish_share_one_runtime_replace() {
         "a build edge is not a dependent"
     );
 }
+
+#[tokio::test]
+async fn ledger_degree_matches_the_sql_sweep_on_same_ecosystem_edges() {
+    use index::edge_project::records_from_ops;
+    use index::engine::turso_vc::VersionedCatalog;
+
+    let writer = Arc::new(migrated_writer());
+    let ops = vec![
+        package(1, "serde"),
+        package(2, "tokio"),
+        package(4, "criterion"),
+        package(5, "app"),
+        package(6, "facet-only"),
+        version(1, "1.0.0", vec![], facets_of(&[])),
+        version(2, "1.0.0", vec![], facets_of(&[])),
+        version(4, "1.0.0", vec![], facets_of(&[])),
+        version(6, "1.0.0", vec![], facets_of(&["tokio"])),
+        version(
+            5,
+            "1.0.0",
+            vec![
+                runtime(heart::Language::Rust, "serde"),
+                runtime(heart::Language::Python, "serde"),
+                EdgeWire {
+                    dep_ecosystem: heart::Language::Rust,
+                    dep_name_canonical: "criterion".to_owned(),
+                    requirement: String::new(),
+                    kind: EdgeKind::Build,
+                    source: EdgeSource::Manifest,
+                    resolved_stem: None,
+                },
+            ],
+            facets_of(&["tokio"]),
+        ),
+    ];
+    writer.apply_ops(&ops).expect("catalog writes");
+    let store = GlobalStore::new(
+        Arc::clone(&writer),
+        InstanceToken::new("test/ledger-degree").expect("instance"),
+    );
+    store.refresh_dependents().await.expect("sweep");
+
+    let mut ledger = VersionedCatalog::open().expect("ledger");
+    for record in records_from_ops(&ops) {
+        ledger.put_record(&record).expect("versioned row");
+    }
+    let degree = ledger.dependents();
+    let rust = |name: &str| (Language::Rust, SmolStr::new(name));
+    let python = |name: &str| (Language::Python, SmolStr::new(name));
+
+    assert_eq!(dependents_of(writer.engine(), 1), 1);
+    assert_eq!(degree.get(&rust("serde")).copied(), Some(1));
+    assert!(!degree.contains_key(&python("serde")));
+    assert!(!degree.contains_key(&rust("criterion")));
+    assert_eq!(dependents_of(writer.engine(), 2), 1, "facet fallback stays on SQL");
+    assert!(!degree.contains_key(&rust("tokio")));
+}

@@ -74,6 +74,11 @@ pub struct DepEdge {
     /// A [`DepClass::Runtime`] edge stays in that set when the flag is set, and
     /// a [`DepClass::Dev`] edge stays out.
     pub optional: bool,
+    /// Ecosystem of the dependency. `None` means the depending package's own
+    /// ecosystem. A foreign ecosystem is a real edge and is not an in-degree
+    /// in the depender's language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dep_ecosystem: Option<Language>,
 }
 
 /// The package record every ecosystem ingest path emits.
@@ -118,6 +123,7 @@ impl DepEdge {
             requirement: None,
             class: DepClass::Runtime,
             optional: false,
+            dep_ecosystem: None,
         }
     }
 }
@@ -258,6 +264,7 @@ mod tests {
             requirement: None,
             class,
             optional,
+            dep_ecosystem: None,
         }
     }
 
@@ -349,6 +356,7 @@ mod tests {
                 requirement: Some(smol(">=1")),
                 class: DepClass::Runtime,
                 optional: false,
+                dep_ecosystem: None,
             }],
         );
         let encoded = serde_json::to_string(&yanked).expect("serialize yanked record");

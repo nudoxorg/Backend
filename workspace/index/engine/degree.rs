@@ -10,11 +10,62 @@ use std::collections::HashMap;
 use heart::Language;
 use smol_str::SmolStr;
 
+use turso_versioning::orm::OrmResult;
+
+use crate::record::DepEdge;
 use crate::search::ranking::dependents::{DependencyRow, count_dependents};
 
+use super::edge_fact::EdgeFact;
 use super::turso_vc::VersionedCatalog;
 
 impl VersionedCatalog {
+    pub(super) fn tip_edges(
+        &mut self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+    ) -> OrmResult<Vec<DepEdge>> {
+        let Some(pid) = self.pid_owned(ecosystem, name, version) else {
+            return Ok(Vec::new());
+        };
+        let Some(tips) = self.edge_tips.get(pid.as_str()).cloned() else {
+            return Ok(Vec::new());
+        };
+        let mut edges = Vec::with_capacity(tips.len());
+        for tip in tips {
+            let Some(row) = self.db.table::<EdgeFact>().get(&super::edge_fact::edge_pk(
+                &pid,
+                tip.dep_ecosystem.as_str(),
+                tip.name.as_str(),
+                tip.class.as_str(),
+            )) else {
+                continue;
+            };
+            edges.push(row.to_edge()?);
+        }
+        Ok(edges)
+    }
+
+    pub fn get_edge(
+        &mut self,
+        ecosystem: &str,
+        package: &str,
+        version: &str,
+        name: &str,
+    ) -> Option<EdgeFact> {
+        let pid = self.pid_owned(ecosystem, package, version)?;
+        for dep in ["", ecosystem] {
+            for class in super::edge_fact::class_tokens() {
+                if let Some(row) = self.db.table::<EdgeFact>().get(&super::edge_fact::edge_pk(
+                    &pid, dep, name, class,
+                )) {
+                    return Some(row);
+                }
+            }
+        }
+        None
+    }
+
     /// Packages depended on, counted once per depending package name.
     ///
     /// Versions of one name are separate rows. [`count_dependents`] unions
@@ -34,7 +85,11 @@ impl VersionedCatalog {
             };
             let dependencies: Vec<SmolStr> = tips
                 .iter()
-                .filter(|tip| tip.class == "runtime" || tip.class == "optional")
+                .filter(|tip| {
+                    (tip.class == "runtime" || tip.class == "optional")
+                        && (tip.dep_ecosystem.is_empty()
+                            || tip.dep_ecosystem.as_str() == key.ecosystem.as_str())
+                })
                 .map(|tip| tip.name.clone())
                 .collect();
             if dependencies.is_empty() {

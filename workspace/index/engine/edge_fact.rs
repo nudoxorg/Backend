@@ -23,6 +23,9 @@ pub struct EdgeFact {
     pub version: String,
     /// Dependency name.
     pub name: String,
+    /// Dependency ecosystem token. Empty when the edge is in the depending
+    /// package's own ecosystem.
+    pub dep_ecosystem: String,
     /// Requirement expression. Empty when the manifest named none.
     pub requirement: String,
     /// [`DepClass`] token.
@@ -40,12 +43,13 @@ impl VersionedRow for EdgeFact {
         "package",
         "version",
         "name",
+        "dep_ecosystem",
         "requirement",
         "class",
         "optional",
         "payload_hash",
     ];
-    const PK: &'static [&'static str] = &["version_pid", "name", "class"];
+    const PK: &'static [&'static str] = &["version_pid", "dep_ecosystem", "name", "class"];
     const TABLE: &'static str = "package_edges";
 
     fn from_row(row: &VcRow) -> Result<Self, OrmError> {
@@ -62,10 +66,11 @@ impl VersionedRow for EdgeFact {
             package: text(2, "package")?,
             version: text(3, "version")?,
             name: text(4, "name")?,
-            requirement: text(5, "requirement")?,
-            class: text(6, "class")?,
-            optional: text(7, "optional")?,
-            payload_hash: text(8, "payload_hash")?,
+            dep_ecosystem: text(5, "dep_ecosystem")?,
+            requirement: text(6, "requirement")?,
+            class: text(7, "class")?,
+            optional: text(8, "optional")?,
+            payload_hash: text(9, "payload_hash")?,
         })
     }
 
@@ -76,6 +81,7 @@ impl VersionedRow for EdgeFact {
             VcValue::Text(self.package.clone()),
             VcValue::Text(self.version.clone()),
             VcValue::Text(self.name.clone()),
+            VcValue::Text(self.dep_ecosystem.clone()),
             VcValue::Text(self.requirement.clone()),
             VcValue::Text(self.class.clone()),
             VcValue::Text(self.optional.clone()),
@@ -96,6 +102,10 @@ impl EdgeFact {
             package: record.canonical_name.to_string(),
             version: record.version.to_string(),
             name: edge.name.to_string(),
+            dep_ecosystem: edge
+                .dep_ecosystem
+                .map(|ecosystem| ecosystem.as_token().to_owned())
+                .unwrap_or_default(),
             requirement: edge.requirement.as_deref().unwrap_or("").to_owned(),
             class: class_token(edge.class).to_owned(),
             optional: if edge.optional { "1" } else { "0" }.to_owned(),
@@ -124,9 +134,15 @@ pub(in crate::engine) fn version_pid_of(ecosystem: &str, name: &str, version: &s
     crate::pid::VersionPid::mint(ecosystem, name, version).local_name()
 }
 
-pub(in crate::engine) fn edge_pk(version_pid: &str, name: &str, class: &str) -> Vec<VcValue> {
+pub(in crate::engine) fn edge_pk(
+    version_pid: &str,
+    dep_ecosystem: &str,
+    name: &str,
+    class: &str,
+) -> Vec<VcValue> {
     vec![
         VcValue::Text(version_pid.to_owned()),
+        VcValue::Text(dep_ecosystem.to_owned()),
         VcValue::Text(name.to_owned()),
         VcValue::Text(class.to_owned()),
     ]
@@ -141,6 +157,14 @@ impl EdgeFact {
     pub(in crate::engine) fn to_edge(&self) -> Result<DepEdge, OrmError> {
         Ok(DepEdge {
             name: smol_str::SmolStr::new(&self.name),
+            dep_ecosystem: if self.dep_ecosystem.is_empty() {
+                None
+            } else {
+                Some(
+                    heart::Language::from_token(&self.dep_ecosystem)
+                        .ok_or_else(|| OrmError::Decode(format!("package_edges.dep_ecosystem {}", self.dep_ecosystem)))?,
+                )
+            },
             requirement: if self.requirement.is_empty() {
                 None
             } else {
@@ -177,22 +201,22 @@ fn class_from_token(token: &str) -> Result<DepClass, OrmError> {
     }
 }
 
-/// BLAKE3 of requirement, class, and optional. Borrows the manifest edge, so an
-/// unchanged tip can reject the edge before a row is allocated.
+/// BLAKE3 of requirement, class, optional, and the dependency ecosystem.
+/// Borrows the manifest edge, so an unchanged tip can reject the edge before
+/// a row is allocated. An empty ecosystem token means the depender's own.
 pub(in crate::engine) fn hash_edge(edge: &DepEdge) -> String {
-    edge_hash(
-        edge.requirement.as_deref().unwrap_or(""),
-        class_token(edge.class),
-        if edge.optional { "1" } else { "0" },
-    )
-}
-
-fn edge_hash(requirement: &str, class: &str, optional: &str) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(requirement.as_bytes());
+    hasher.update(edge.requirement.as_deref().unwrap_or("").as_bytes());
     hasher.update(&[0xff]);
-    hasher.update(class.as_bytes());
+    hasher.update(class_token(edge.class).as_bytes());
     hasher.update(&[0xff]);
-    hasher.update(optional.as_bytes());
+    hasher.update(if edge.optional { b"1".as_slice() } else { b"0".as_slice() });
+    hasher.update(&[0xff]);
+    hasher.update(
+        edge.dep_ecosystem
+            .map(|ecosystem| ecosystem.as_token())
+            .unwrap_or("")
+            .as_bytes(),
+    );
     hasher.finalize().to_hex().to_string()
 }

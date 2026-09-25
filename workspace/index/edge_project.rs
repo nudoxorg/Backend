@@ -225,6 +225,7 @@ fn edge_from_wire(wire: &EdgeWire) -> DepEdge {
         },
         class,
         optional: false,
+        dep_ecosystem: Some(wire.dep_ecosystem),
     }
 }
 
@@ -247,6 +248,7 @@ mod tests {
             requirement: requirement.map(SmolStr::new),
             class,
             optional: false,
+            dep_ecosystem: None,
         }
     }
 

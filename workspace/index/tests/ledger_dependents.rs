@@ -18,6 +18,7 @@ fn edge(name: &str, class: DepClass) -> DepEdge {
         requirement: None,
         class,
         optional: false,
+        dep_ecosystem: None,
     }
 }
 

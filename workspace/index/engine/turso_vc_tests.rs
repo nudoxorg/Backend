@@ -249,6 +249,7 @@ fn a_repeated_name_keeps_the_first_requirement() {
         requirement: Some(SmolStr::new("^9")),
         class: DepClass::Dev,
         optional: false,
+        dep_ecosystem: None,
     };
     let record = PackageRecord::from_parts(
         Language::Rust,
@@ -349,6 +350,7 @@ fn dropping_a_version_tombstones_the_tip_and_keeps_the_prior_commit() {
             requirement: None,
             class: crate::record::DepClass::Build,
             optional: false,
+            dep_ecosystem: None,
         }],
     );
     let mut catalog = VersionedCatalog::open().expect("open");
