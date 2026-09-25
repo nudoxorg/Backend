@@ -1567,6 +1567,41 @@ mod tests {
     }
 
     #[test]
+    fn an_export_assignment_and_namespace_export_are_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"export-assign","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "declare function pad(s: string): string;\nexport = pad;\nexport as namespace leftPad;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "export-assign", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("export-assign"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("export = and export as namespace must seal");
+        let exported = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "pad"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(exported, 1, "declare function pad must survive export =");
+        let ns = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "leftPad")
+            .count();
+        assert_eq!(ns, 1, "export as namespace leftPad must declare leftPad");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

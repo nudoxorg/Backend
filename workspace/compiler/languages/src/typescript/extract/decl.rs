@@ -965,8 +965,70 @@ fn extract_statement<'a>(
             )
         }
 
+        Statement::TSExportAssignment(assign) => export_assignment(assign, source, semantic, path, name_counts),
+
+        Statement::TSNamespaceExportDeclaration(ns) => {
+            let name = ns.id.name.to_string();
+            let span = ns.span();
+            let decl_index = bump_count(&name, name_counts);
+            vec![DeclFact {
+                name,
+                visibility: nudox_ir::entry::Visibility::Public,
+                doc: jsdoc::jsdoc_for_span(semantic, span),
+                body: DeclBody::Namespace(NamespaceBody {
+                    is_ambient: true,
+                    children: Vec::new(),
+                }),
+                module: path.to_path_buf(),
+                span_start: span.start,
+                span_end: span.end,
+                is_default: false,
+                decl_index,
+            }]
+        }
+
         _ => vec![],
     }
+}
+
+fn export_assignment<'a>(
+    assign: &'a oxc_ast::ast::TSExportAssignment<'a>,
+    source: &'a str,
+    semantic: &'a Semantic<'a>,
+    path: &Path,
+    name_counts: &mut std::collections::HashMap<String, u32>,
+) -> Vec<DeclFact> {
+    let span = assign.span();
+    let (name, body) = match &assign.expression {
+        Expression::FunctionExpression(f) => {
+            let name = f
+                .id
+                .as_ref()
+                .map(|id| id.name.to_string())
+                .unwrap_or_else(|| "default".to_string());
+            (name, DeclBody::Function(lower_function(f, source)))
+        }
+        Expression::Identifier(_) => return vec![],
+        other => (
+            "default".to_string(),
+            DeclBody::Const(ConstBody {
+                ty: None,
+                value: Some(other.span().source_text(source).to_string()),
+            }),
+        ),
+    };
+    let decl_index = bump_count(&name, name_counts);
+    vec![DeclFact {
+        name,
+        visibility: nudox_ir::entry::Visibility::Public,
+        doc: jsdoc::jsdoc_for_span(semantic, span),
+        body,
+        module: path.to_path_buf(),
+        span_start: span.start,
+        span_end: span.end,
+        is_default: false,
+        decl_index,
+    }]
 }
 
 // ── Declaration dispatch
