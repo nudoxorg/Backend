@@ -344,6 +344,19 @@ pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
 /// artifact, or a document that is not XML, yields an empty list.
 #[must_use]
 pub fn pom_dependency_names(bytes: &[u8]) -> Vec<String> {
+    pom_dependency_edges(bytes)
+        .into_iter()
+        .map(|edge| edge.name.to_string())
+        .collect()
+}
+
+/// Direct POM dependencies, with `<version>` as the requirement.
+///
+/// The same inclusion rules as [`pom_dependency_names`]. A property
+/// placeholder is kept as written. `<optional>true</optional>` sets the
+/// optional bit. A repeated coordinate keeps the first row.
+#[must_use]
+pub fn pom_dependency_edges(bytes: &[u8]) -> Vec<crate::record::DepEdge> {
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(true);
     let mut path: Vec<String> = Vec::new();
@@ -351,7 +364,9 @@ pub fn pom_dependency_names(bytes: &[u8]) -> Vec<String> {
     let mut group: Option<String> = None;
     let mut artifact: Option<String> = None;
     let mut scope: Option<String> = None;
-    let mut names = Vec::new();
+    let mut version: Option<String> = None;
+    let mut optional = false;
+    let mut edges: Vec<crate::record::DepEdge> = Vec::new();
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
@@ -363,6 +378,8 @@ pub fn pom_dependency_names(bytes: &[u8]) -> Vec<String> {
                     group = None;
                     artifact = None;
                     scope = None;
+                    version = None;
+                    optional = false;
                 }
             }
             Ok(Event::End(ref element)) => {
@@ -371,7 +388,19 @@ pub fn pom_dependency_names(bytes: &[u8]) -> Vec<String> {
                     && let Some(name) =
                         direct_pom_dep(&path, group.take(), artifact.take(), scope.take())
                 {
-                    names.push(name);
+                    if edges.iter().any(|edge| edge.name == name) {
+                        path.pop();
+                        tag = path.last().cloned().unwrap_or_default();
+                        buf.clear();
+                        continue;
+                    }
+                    let mut edge = crate::record::DepEdge::runtime(name);
+                    if let Some(version) = version.take().filter(|text| !text.is_empty()) {
+                        edge.requirement = Some(version.into());
+                    }
+                    edge.optional = optional;
+                    optional = false;
+                    edges.push(edge);
                 }
                 path.pop();
                 tag = path.last().cloned().unwrap_or_default();
@@ -388,6 +417,8 @@ pub fn pom_dependency_names(bytes: &[u8]) -> Vec<String> {
                             "groupid" => group = Some(text.to_owned()),
                             "artifactid" => artifact = Some(text.to_owned()),
                             "scope" => scope = Some(text.to_ascii_lowercase()),
+                            "version" => version = Some(text.to_owned()),
+                            "optional" => optional = text.eq_ignore_ascii_case("true"),
                             _ => {}
                         }
                     }
@@ -399,9 +430,8 @@ pub fn pom_dependency_names(bytes: &[u8]) -> Vec<String> {
         }
         buf.clear();
     }
-    names.sort();
-    names.dedup();
-    names
+    edges.sort_by(|left, right| left.name.cmp(&right.name));
+    edges
 }
 
 fn local_xml_name(bytes: &[u8]) -> String {
@@ -518,7 +548,7 @@ mod tests {
         let xml = br#"<?xml version="1.0"?>
 <project>
   <dependencies>
-    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>2.0.9</version><optional>true</optional></dependency>
     <dependency><groupId>junit</groupId><artifactId>junit</artifactId><scope>test</scope></dependency>
     <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>
     <dependency><groupId></groupId><artifactId>blank</artifactId></dependency>
@@ -537,6 +567,9 @@ mod tests {
         assert_eq!(pom_dependency_names(xml), vec![
             "org.slf4j:slf4j-api".to_owned()
         ]);
+        let edges = pom_dependency_edges(xml);
+        assert_eq!(edges[0].requirement.as_deref(), Some("2.0.9"));
+        assert!(edges[0].optional);
         assert!(pom_dependency_names(b"<broken").is_empty());
     }
 

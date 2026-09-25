@@ -41,7 +41,7 @@ pub use go::{
     require_edges, require_names, unescape_module_path,
 };
 pub use heart::Language;
-pub use java::pom_dependency_names;
+pub use java::{pom_dependency_edges, pom_dependency_names};
 pub use python::{pypi_release, requires_dist_names};
 
 use core::marker::PhantomData;
