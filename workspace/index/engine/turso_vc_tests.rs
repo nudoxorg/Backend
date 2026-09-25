@@ -231,3 +231,83 @@ fn resync_reads_one_package_tip() {
         "tip {tip_ns} scan {scan_ns}"
     );
 }
+
+#[test]
+fn a_repeated_name_keeps_the_first_requirement() {
+    use crate::record::{DepClass, DepEdge, PackageRecord};
+    use heart::Language;
+    use smol_str::SmolStr;
+
+    let mut first = DepEdge::runtime("libc");
+    first.requirement = Some(SmolStr::new("^1"));
+    first.optional = true;
+    let second = DepEdge {
+        name: SmolStr::new("libc"),
+        requirement: Some(SmolStr::new("^9")),
+        class: DepClass::Dev,
+        optional: false,
+    };
+    let record = PackageRecord::from_parts(
+        Language::Rust,
+        "memchr",
+        "2.8.3",
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
+        vec![first.clone(), second],
+    );
+    assert_eq!(
+        super::edge_fact::hash_edge(&first),
+        EdgeFact::from_edge(&record, &first).payload_hash
+    );
+    let mut catalog = VersionedCatalog::open().expect("open");
+    catalog.put_record(&record).expect("put");
+    let tip = catalog
+        .materialize("rust", "memchr", "2.8.3")
+        .expect("join")
+        .expect("row");
+    assert_eq!(tip.edges.len(), 1);
+    assert_eq!(tip.edges[0].requirement.as_deref(), Some("^1"));
+    assert!(tip.edges[0].optional);
+    assert_eq!(tip.edges[0].class, DepClass::Runtime);
+}
+
+#[test]
+fn an_optional_flag_revises_one_edge_and_the_hash_matches_the_row() {
+    use crate::record::{DepEdge, PackageRecord};
+    use heart::Language;
+
+    let mut edge = DepEdge::runtime("libc");
+    edge.optional = true;
+    let record = PackageRecord::from_parts(
+        Language::Rust,
+        "memchr",
+        "2.8.3",
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
+        vec![edge.clone()],
+    );
+    let mut catalog = VersionedCatalog::open().expect("open");
+    catalog.put_record(&record).expect("put");
+    let stored = catalog
+        .get_edge("rust", "memchr", "2.8.3", "libc")
+        .expect("libc");
+    assert_eq!(stored.payload_hash, super::edge_fact::hash_edge(&edge));
+    assert_eq!(stored.optional, "1");
+    let mut required = record.clone();
+    required.edges[0].optional = false;
+    let sync = catalog.sync_edges(&required).expect("flag");
+    assert_eq!(sync.revised, 1);
+    assert_eq!(sync.unchanged, 0);
+    let replay = catalog.sync_edges(&required).expect("replay");
+    assert_eq!(replay.revised, 0);
+    assert_eq!(replay.unchanged, 1);
+    assert_eq!(replay.commit, None);
+}

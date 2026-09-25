@@ -81,19 +81,15 @@ impl VersionedRow for EdgeFact {
 
 impl EdgeFact {
     pub(in crate::engine) fn from_edge(record: &PackageRecord, edge: &DepEdge) -> Self {
-        let requirement = edge.requirement.as_deref().unwrap_or("").to_owned();
-        let class = class_token(edge.class).to_owned();
-        let optional = if edge.optional { "1" } else { "0" }.to_owned();
-        let payload_hash = edge_hash(&requirement, &class, &optional);
         Self {
             ecosystem: record.ecosystem.as_token().to_owned(),
             package: record.canonical_name.to_string(),
             version: record.version.to_string(),
             name: edge.name.to_string(),
-            requirement,
-            class,
-            optional,
-            payload_hash,
+            requirement: edge.requirement.as_deref().unwrap_or("").to_owned(),
+            class: class_token(edge.class).to_owned(),
+            optional: if edge.optional { "1" } else { "0" }.to_owned(),
+            payload_hash: hash_edge(edge),
         }
     }
 }
@@ -161,6 +157,16 @@ fn class_from_token(token: &str) -> Result<DepClass, OrmError> {
         "peer" => Ok(DepClass::Peer),
         other => Err(OrmError::Decode(format!("package_edges.class {other}"))),
     }
+}
+
+/// BLAKE3 of requirement, class, and optional. Borrows the manifest edge, so an
+/// unchanged tip can reject the edge before a row is allocated.
+pub(in crate::engine) fn hash_edge(edge: &DepEdge) -> String {
+    edge_hash(
+        edge.requirement.as_deref().unwrap_or(""),
+        class_token(edge.class),
+        if edge.optional { "1" } else { "0" },
+    )
 }
 
 fn edge_hash(requirement: &str, class: &str, optional: &str) -> String {

@@ -184,35 +184,34 @@ impl VersionedCatalog {
             version: record.version.clone(),
         };
         let current = self.edge_tips.get(&key).cloned().unwrap_or_default();
-        let mut desired = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        for edge in &record.edges {
-            if seen.insert(edge.name.clone()) {
-                desired.push(EdgeFact::from_edge(record, edge));
-            }
-        }
         let mut revised = 0;
         let mut unchanged = 0;
         let mut commit = None;
-        let mut next = Vec::with_capacity(desired.len());
-        for edge in &desired {
-            let same = current.iter().any(|tip| {
-                tip.name.as_str() == edge.name && tip.hash.as_str() == edge.payload_hash
-            });
+        let mut next = Vec::with_capacity(record.edges.len());
+        let mut seen = std::collections::BTreeSet::new();
+        for edge in &record.edges {
+            if !seen.insert(edge.name.clone()) {
+                continue;
+            }
+            let hash = edge_fact::hash_edge(edge);
+            let same = current
+                .iter()
+                .any(|tip| tip.name == edge.name && tip.hash.as_str() == hash);
             if same {
                 unchanged += 1;
             } else {
-                commit = Some(self.db.table::<EdgeFact>().version(edge, "sync edge")?);
+                let row = EdgeFact::from_edge(record, edge);
+                commit = Some(self.db.table::<EdgeFact>().version(&row, "sync edge")?);
                 revised += 1;
             }
             next.push(EdgeTip {
-                name: SmolStr::new(&edge.name),
-                hash: SmolStr::new(&edge.payload_hash),
+                name: edge.name.clone(),
+                hash: SmolStr::new(hash),
             });
         }
         let mut removed = 0;
         for stored in &current {
-            if desired.iter().any(|edge| edge.name == stored.name.as_str()) {
+            if next.iter().any(|edge| edge.name == stored.name) {
                 continue;
             }
             commit = Some(self.db.table::<EdgeFact>().version_delete(
