@@ -11,7 +11,7 @@
 /// Shared filesystem source-selection policy used by local and package
 /// discovery adapters.
 pub use backend_discovery::{
-    DEFAULT_IGNORED_DIRECTORIES, DiscoveryError, DiscoveryPolicy, DiscoveredEntry, EntryKind,
+    DEFAULT_IGNORED_DIRECTORIES, DiscoveredEntry, DiscoveryError, DiscoveryPolicy, EntryKind,
     HARD_IGNORED_DIRECTORIES, is_hard_ignored_directory, is_hard_ignored_path,
 };
 
@@ -26,15 +26,15 @@ mod delta;
 mod error;
 mod forge_identity;
 mod graph_query;
-mod rich_graph;
-mod package_graph;
-mod registry_forge;
-mod registry_native;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
+mod package_graph;
 mod progress;
 /// Bounded transport decoding and presentation for thin CLI and MCP consumers.
 pub mod protocol;
+mod registry_forge;
+mod registry_native;
+mod rich_graph;
 mod surface;
 mod view;
 mod wire;
@@ -43,13 +43,13 @@ mod wire;
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
 
 pub use arrangement::QueryWork;
+pub use backend_advisory::{
+    AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
+    AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, FreshnessState,
+    NativeAdvisoryId, OverrideEvidence, PolicyReason, SeverityLevel,
+};
 pub use backend_compile::{
     DeclarationKind, SourceExcerpt, SourceExcerptExtent, SourceLanguage, SourceLocation,
-};
-pub use backend_advisory::{
-    AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto, AdvisoryPackageDto,
-    AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, AcquisitionDecision, FreshnessState,
-    NativeAdvisoryId, OverrideEvidence, PolicyReason, SeverityLevel,
 };
 pub use backend_semantic::{Read, ReadManifest, ReadSelector};
 pub use backend_version::{
@@ -103,19 +103,24 @@ pub use graph_query::{
     GraphQueryRow, GraphValue, MAX_GRAPH_QUERY_BYTES, MAX_GRAPH_QUERY_FIELDS,
     MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
 };
-pub use rich_graph::{
-    GraphAuthority, GraphAvailability, GraphControl, GraphEdgeId, GraphEdgeKind,
-    GraphLayoutEdge, GraphLayoutInput, GraphNodeId, GraphPageTerminal, GraphProvenance,
-    GraphRelationFamily, MAX_RICH_GRAPH_DELTA_RECORDS, MAX_RICH_GRAPH_PAGE_EDGES,
-    MAX_RICH_GRAPH_PAGE_ROWS, RICH_GRAPH_SCHEMA_VERSION,
-    RichGraphBuilder, RichGraphCursor, RichGraphDelta, RichGraphEdge, RichGraphError,
-    RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision, RichGraphSnapshot,
-};
 pub use package_graph::{
-    admit_dependency_rows, DependencyAuthority, DependencyEvidence, DependencyFacts,
-    discover_source_entries, discover_source_files, source_selection_policy, DependencyScope,
-    PackageDependencyRecord, PackageDependencySourceFacts, PackageDependencyTarget,
-    MAX_PACKAGE_GRAPH_ROWS,
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+    MAX_PACKAGE_GRAPH_ROWS, PackageDependencyRecord, PackageDependencySourceFacts,
+    PackageDependencyTarget, admit_dependency_rows, collapse_dependency_rows, dependency_optional,
+    discover_source_entries, discover_source_files, source_selection_policy,
+};
+pub use progress::{
+    FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
+    ProgressError, SourceUnavailableReason,
+};
+pub use registry_forge::{
+    MAX_REGISTRY_FORGE_ASSOCIATION_BYTES, MAX_REGISTRY_FORGE_ASSOCIATIONS,
+    MAX_REGISTRY_FORGE_BLOBS, MAX_REGISTRY_FORGE_CANDIDATES, MAX_REGISTRY_FORGE_PAGES,
+    REGISTRY_FORGE_ASSOCIATION_VERSION, REGISTRY_FORGE_BLOB_FRONTIER_VERSION,
+    RegistryForgeAssociation, RegistryForgeAssociationError, RegistryForgeAssociationState,
+    RegistryForgeBlobFrontier, RegistryForgeBlobKind, RegistryForgeBlobPage, RegistryForgeBlobRef,
+    RegistryForgeCandidate, RegistryForgeConfidence, RegistryForgeProvenance,
+    RegistryForgeSourceIdentity,
 };
 pub use registry_native::{
     MAX_REGISTRY_NATIVE_METADATA_BYTES, MAX_REGISTRY_NATIVE_ROWS, MAX_REGISTRY_NATIVE_TEXT_BYTES,
@@ -125,32 +130,24 @@ pub use registry_native::{
     RegistryNativeArtifactKind, RegistryNativeAvailability, RegistryNativeChecksum,
     RegistryNativeChecksumAlgorithm, RegistryNativeDetails, RegistryNativeDistTag,
     RegistryNativeEvidenceClaim, RegistryNativeFeature, RegistryNativeMetadata,
-    RegistryNativeMetadataCodecError,
-    RegistryNativeObservation, RegistryNativeProvenance, RegistryNativeVulnerability,
-    RegistryNpmMetadata, RegistryNugetMetadata, RegistryPypiMetadata,
+    RegistryNativeMetadataCodecError, RegistryNativeObservation, RegistryNativeProvenance,
+    RegistryNativeVulnerability, RegistryNpmMetadata, RegistryNugetMetadata, RegistryPypiMetadata,
 };
-pub use registry_forge::{
-    MAX_REGISTRY_FORGE_ASSOCIATIONS, MAX_REGISTRY_FORGE_BLOBS,
-    MAX_REGISTRY_FORGE_CANDIDATES, MAX_REGISTRY_FORGE_ASSOCIATION_BYTES,
-    REGISTRY_FORGE_ASSOCIATION_VERSION,
-    RegistryForgeAssociation, RegistryForgeAssociationError, RegistryForgeAssociationState,
-    RegistryForgeBlobFrontier, RegistryForgeBlobKind, RegistryForgeBlobPage,
-    RegistryForgeBlobRef, RegistryForgeCandidate,
-    RegistryForgeConfidence, RegistryForgeProvenance, RegistryForgeSourceIdentity,
-    MAX_REGISTRY_FORGE_PAGES, REGISTRY_FORGE_BLOB_FRONTIER_VERSION,
-};
-pub use progress::{
-    FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
-    ProgressError, SourceUnavailableReason,
+pub use rich_graph::{
+    GraphAuthority, GraphAvailability, GraphControl, GraphEdgeId, GraphEdgeKind, GraphLayoutEdge,
+    GraphLayoutInput, GraphNodeId, GraphPageTerminal, GraphProvenance, GraphRelationFamily,
+    MAX_RICH_GRAPH_DELTA_RECORDS, MAX_RICH_GRAPH_PAGE_EDGES, MAX_RICH_GRAPH_PAGE_ROWS,
+    RICH_GRAPH_SCHEMA_VERSION, RichGraphBuilder, RichGraphCursor, RichGraphDelta, RichGraphEdge,
+    RichGraphError, RichGraphNode, RichGraphPage, RichGraphRequest, RichGraphRevision,
+    RichGraphSnapshot,
 };
 pub use surface::{
-    DeclarationChange, DeclarationRecord, DiffRecord, MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES,
+    DeclarationChange, DeclarationRecord, DiffRecord, ForgeFact, ForgeManifestRecord,
+    ForgePackageRecord, ForgeRepositoryMetadataRecord, MAX_PRODUCT_ROWS, MAX_PRODUCT_TEXT_BYTES,
     PackageCoordinate, PackageReference, ProductAdmissionError, ProductText, ProjectId,
     ProjectName, ProjectRecord, ProjectSelector, ReferenceRecord, RegistryDownloadCount,
     RegistryEcosystem, RegistryFactAvailability, RegistryMetadata, RegistryPackageRecord,
-    ForgeFact, ForgeManifestRecord, ForgePackageRecord, ForgeRepositoryMetadataRecord,
-    RegistryReleaseStanding,
-    ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
+    RegistryReleaseStanding, ReleaseRecord, SemanticConfidence, SemanticDeclarationIdentity,
     SemanticGenerationId, SemanticLanguageProfile, SemanticLinkDelta, SemanticLinkEvidence,
     SemanticLinkKind, SemanticLinkTarget, SemanticSourceSpan, SemanticVersionRecord,
     SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeId, TreeNodeRecord, TreeOpener,
@@ -159,12 +156,11 @@ pub use surface::{
 pub use view::{
     Basis, CommittedViewDelta, CompleteViewProjection, Coverage, CoverageCapability, Document,
     Fragment, Freshness, GraphRelation, Lane, MAX_COVERAGE_EVIDENCE,
-    MAX_ROW_IDENTITY_PREIMAGE_BYTES, MAX_SNAPSHOT_PAGE_ROWS, MAX_VIEW_PATCH_ROWS,
-    NameRecord, Outline, OutlineExtent, OutlineNode, PreparedViewDelta, Reason, Row, RowChange,
-    RowId, RowIdentityPreimage, RowIdentityPreimageError, RowState, SourceAvailability, ViewDelta,
-    ViewError, ViewPageCursor, ViewPageError,
-    ViewProjection, ViewProjectionError, ViewRoot, ViewRootDescriptor, ViewRootDescriptorClaim,
-    ViewSnapshot, ViewSnapshotPage,
+    MAX_ROW_IDENTITY_PREIMAGE_BYTES, MAX_SNAPSHOT_PAGE_ROWS, MAX_VIEW_PATCH_ROWS, NameRecord,
+    Outline, OutlineExtent, OutlineNode, PreparedViewDelta, Reason, Row, RowChange, RowId,
+    RowIdentityPreimage, RowIdentityPreimageError, RowState, SourceAvailability, ViewDelta,
+    ViewError, ViewPageCursor, ViewPageError, ViewProjection, ViewProjectionError, ViewRoot,
+    ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot, ViewSnapshotPage,
 };
 pub use wire::{
     CommandDto, DTO_VERSION, EventDto, MAX_COMMAND_BODY, MAX_COMMAND_TEXT, ReplyAdmissionError,

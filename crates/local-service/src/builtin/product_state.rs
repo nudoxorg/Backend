@@ -1,12 +1,12 @@
 //! Durable typed owner for follows, projects, and the shared session tree.
 
 use backend_engine::{
-    DeclarationRecord, DependencyFacts, ForgeManifestRecord, ForgePackageFact, ForgePackageRecord,
-    ForgeRepositoryMetadataRecord, PackageDependencyRecord, PackageDependencySourceFacts,
-    PackageReference, ProductText, ProductTreeNodeId as TreeNodeId, ProjectId, ProjectName,
-    ProjectRecord, ProjectSelector, RegistryMetadata, RegistryPackageRecord, ReleaseRecord, RowId,
-    SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject,
-    ViewRoot,
+    DeclarationRecord, DependencyFacts, DependencyScope, ForgeManifestRecord, ForgePackageFact,
+    ForgePackageRecord, ForgeRepositoryMetadataRecord, PackageDependencyRecord,
+    PackageDependencySourceFacts, PackageReference, ProductText, ProductTreeNodeId as TreeNodeId,
+    ProjectId, ProjectName, ProjectRecord, ProjectSelector, RegistryMetadata,
+    RegistryPackageRecord, ReleaseRecord, RowId, SubscriptionRecord, SurfaceCommand, SurfaceReply,
+    TreeNodeRecord, TreeOpener, TreeSubject, ViewRoot,
 };
 use backend_library::{CommandMutation, command_spec};
 use backend_platform::durable;
@@ -651,7 +651,10 @@ fn dependents(
         match value {
             DependencyFacts::Known(rows) => {
                 if rows.iter().any(|row| {
-                    Some(row.target.ecosystem) == ecosystem
+                    matches!(
+                        row.scope,
+                        DependencyScope::Runtime | DependencyScope::Optional
+                    ) && Some(row.target.ecosystem) == ecosystem
                         && row.target.name.as_str() == target.lineage_name()
                         && row
                             .target
@@ -743,6 +746,14 @@ fn parse_lockfile(path: &Path) -> Result<Box<[PackageReference]>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backend_engine::{
+        AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts,
+        DependencyScope, PackageDependencyRecord, PackageDependencyTarget, PackageReference,
+        RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability, RegistryMetadata,
+        RegistryPackageRecord, RegistryReleaseStanding,
+    };
+    use backend_library::RegistryNativeMetadata;
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -776,6 +787,89 @@ mod tests {
             name: ProjectName::new(name).expect("project name"),
             lockfile: None,
         }
+    }
+
+    fn registry_row(coordinate: &str, name: &str) -> RegistryPackageRecord {
+        let native_metadata =
+            RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "dependents test");
+        RegistryPackageRecord {
+            coordinate: PackageReference::parse(coordinate).expect("coordinate"),
+            ecosystem: RegistryEcosystem::Cargo,
+            name: ProductText::new(name).expect("name"),
+            version: ProductText::new("1.0.0").expect("version"),
+            bytes: 0,
+            standing: RegistryReleaseStanding::Available,
+            downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+            facts_version: [0; 32],
+            native_metadata_version: native_metadata.identity().expect("identity"),
+            native_metadata,
+            forge_sources: Box::new([]),
+            advisory: AdvisoryPackageDto::unknown(),
+        }
+    }
+
+    fn dependency_edge(
+        source: &str,
+        scope: DependencyScope,
+        frontier: u8,
+    ) -> (
+        PackageReference,
+        DependencyFacts<Box<[PackageDependencyRecord]>>,
+    ) {
+        let source = PackageReference::parse(source).expect("source");
+        let target = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target");
+        let row = PackageDependencyRecord::new(
+            source.clone(),
+            PackageDependencyTarget::new(
+                RegistryEcosystem::Cargo,
+                "target-lib",
+                "^1",
+                Some(target),
+            )
+            .expect("target"),
+            scope,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [frontier; 32],
+                provenance: [frontier + 1; 32],
+            },
+        );
+        (source, DependencyFacts::Known(vec![row].into_boxed_slice()))
+    }
+
+    #[test]
+    fn dependents_counts_only_runtime_and_optional_scopes() {
+        let target = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target");
+        let catalog = [
+            registry_row("pkg:cargo/runtime-src@1.0.0", "runtime-src"),
+            registry_row("pkg:cargo/dev-src@1.0.0", "dev-src"),
+            registry_row("pkg:cargo/build-src@1.0.0", "build-src"),
+            registry_row("pkg:cargo/peer-src@1.0.0", "peer-src"),
+            registry_row("pkg:cargo/optional-src@1.0.0", "optional-src"),
+        ];
+        let facts = [
+            dependency_edge("pkg:cargo/runtime-src@1.0.0", DependencyScope::Runtime, 1),
+            dependency_edge("pkg:cargo/dev-src@1.0.0", DependencyScope::Development, 2),
+            dependency_edge("pkg:cargo/build-src@1.0.0", DependencyScope::Build, 3),
+            dependency_edge("pkg:cargo/peer-src@1.0.0", DependencyScope::Peer, 4),
+            dependency_edge("pkg:cargo/optional-src@1.0.0", DependencyScope::Optional, 5),
+        ];
+        let result = dependents(&catalog, &facts, &target).expect("dependents");
+        let RegistryMetadata::Recorded(rows) = result else {
+            panic!("expected recorded dependents");
+        };
+        let coordinates = rows
+            .iter()
+            .map(|row| row.coordinate.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            coordinates,
+            BTreeSet::from([
+                "pkg:cargo/runtime-src@1.0.0",
+                "pkg:cargo/optional-src@1.0.0",
+            ])
+        );
     }
 
     #[test]
