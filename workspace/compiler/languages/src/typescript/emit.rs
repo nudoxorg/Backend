@@ -439,6 +439,7 @@ fn emit_interface(
         sym,
         Trait::builder().generics(generics).supers(supers).build(),
     );
+    declare_generic_bindings(&id, &id, &body.generics, out, names);
 
     // Emit methods as child Function entries.
     //
@@ -725,6 +726,7 @@ fn emit_class(
             .generics(generics)
             .build(),
     );
+    declare_generic_bindings(&id, &id, &body.generics, out, names);
 
     // Emit method members.
     for (idx, member) in body.members.iter().enumerate() {
@@ -955,6 +957,7 @@ fn emit_type_alias(
         }
         _ => {}
     }
+    declare_generic_bindings(&id, &id, &body.generics, out, names);
 }
 
 fn declare_alias_params(
@@ -994,6 +997,42 @@ fn declare_alias_params(
     }
     if let Some(ret) = &function.return_type {
         declare_nested_params(alias, owner, "return", ret, out, names);
+    }
+    declare_generic_bindings(alias, owner, &function.generics, out, names);
+}
+
+/// A constraint `<T extends (left: number) => void>` and a default
+/// `<T = (left: number) => void>` are declarations. Each parameter and each
+/// bound owns a segment so two parameters that both bind `left` do not share
+/// an id.
+fn declare_generic_bindings(
+    parent: &TsId,
+    owner: &TsId,
+    generics: &[crate::typescript::extract::GenericParamOwned],
+    out: &mut Lowering<TsId>,
+    names: &DeclareSet,
+) {
+    for param in generics {
+        for (index, bound) in param.bounds.iter().enumerate() {
+            declare_nested_params(
+                parent,
+                owner,
+                &format!("{}::bound{index}", param.name),
+                bound,
+                out,
+                names,
+            );
+        }
+        if let Some(default) = &param.default {
+            declare_nested_params(
+                parent,
+                owner,
+                &format!("{}::default", param.name),
+                default,
+                out,
+                names,
+            );
+        }
     }
 }
 
@@ -1400,6 +1439,7 @@ fn emit_function(
         };
         let _: Ref<Param> = out.declare(param_id, Some(id.clone()), param_sym, param);
     }
+    declare_generic_bindings(&id, &id, &body.generics, out, names);
 }
 
 fn param_name_from_id(full: &str) -> String {
