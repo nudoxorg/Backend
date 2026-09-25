@@ -25,6 +25,22 @@ fn the_same_symbol_text_skips_a_second_write() {
 }
 
 #[test]
+fn a_kind_change_is_a_new_stored_point() {
+    let function = stored_point_hash("jina", "memchr", "Function");
+    let again = stored_point_hash("jina", "memchr", "Function");
+    let module = stored_point_hash("jina", "memchr", "Module");
+    assert_eq!(function, again);
+    assert_ne!(function, module);
+    assert_ne!(function, content_fingerprint("jina", "memchr"));
+    let package = uuid::Uuid::from_u128(1);
+    let intro = uuid::Uuid::from_u128(2);
+    let mut ledger = UpsertLedger::new();
+    ledger.restore(&package.to_string(), &intro.to_string(), function);
+    assert!(!ledger.needs_write_ids(&package, &intro, &function));
+    assert!(ledger.needs_write_ids(&package, &intro, &module));
+}
+
+#[test]
 fn skip_plus_required_equals_next_len_when_prior_is_subset() {
     let kept_a = point("serde", "aa", 1);
     let kept_b = point("serde", "bb", 2);

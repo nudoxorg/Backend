@@ -42,6 +42,20 @@ pub fn symbol_fingerprint(package: &str, intro_hex: &str, model: &str, text: &st
     }
 }
 
+/// Hash of one stored Qdrant point: the embed input and the kind filter.
+///
+/// A kind correction must upsert even when the name is unchanged, because the
+/// payload is part of what search filters on. The embedding bytes stay out of
+/// the hash; the cache still keys on [`content_fingerprint`].
+#[must_use]
+pub fn stored_point_hash(model: &str, text: &str, kind: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&content_fingerprint(model, text));
+    hasher.update(&[0xff]);
+    hasher.update(kind.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
 /// BLAKE3 of the model id and the text. The embedding bytes are not an input.
 #[must_use]
 pub fn content_fingerprint(model: &str, text: &str) -> [u8; 32] {
