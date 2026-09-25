@@ -51,6 +51,15 @@ pub struct PackageHit {
     /// Monthly downloads, when the ecosystem reports them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub downloads: Option<u64>,
+    /// Reverse-dependency count, when facets are known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependents: Option<u32>,
+    /// Normalized keyword slugs, when facets are known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<SmolStr>,
+    /// Normalized license expression, when facets are known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<SmolStr>,
 }
 
 impl PackageHit {

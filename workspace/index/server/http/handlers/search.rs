@@ -168,14 +168,18 @@ pub async fn search_packages<M: EmbeddingModel>(
 /// untouched; only the rich `SearchFacets` are projected down to the lean
 /// ranking-visible signals a client renders.
 fn project_package_hit(package: crate::server::registry::GlobalPackage) -> PackageHit {
-    let (quality_ppm, description, downloads) = match &package.facets {
-        Some(facets) => (
-            Some(facets.quality_ppm),
-            facets.description.clone(),
-            facets.downloads,
-        ),
-        None => (None, None, None),
-    };
+    let (quality_ppm, description, downloads, dependents, keywords, license) =
+        match &package.facets {
+            Some(facets) => (
+                Some(facets.quality_ppm),
+                facets.description.clone(),
+                facets.downloads,
+                facets.dependents,
+                facets.keywords.clone(),
+                facets.license.clone(),
+            ),
+            None => (None, None, None, None, Vec::new(), None),
+        };
     PackageHit {
         id: package.id,
         coordinates: package.package.coordinates,
@@ -183,6 +187,9 @@ fn project_package_hit(package: crate::server::registry::GlobalPackage) -> Packa
         quality_ppm,
         description,
         downloads,
+        dependents,
+        keywords,
+        license,
     }
 }
 
@@ -434,10 +441,65 @@ fn symbol_answer_response(answer: Answer<Symbols>, query_id: uuid::Uuid) -> Resp
 
 #[cfg(test)]
 mod tests {
-    use super::{rank_bucket, symbol_answer_response};
+    use super::{project_package_hit, rank_bucket, symbol_answer_response};
     use heart::surface::{Gen, Residence, SymbolHit, Summary, answer_channel};
     use heart::{Scored, Score, SymbolKind};
     use http_body_util::BodyExt;
+
+    #[test]
+    fn project_package_hit_projects_rendering_signals() {
+        use crate::ecosystem::PackageNameExt as _;
+        use crate::server::registry::{
+            GlobalPackage, Package,
+            metadata::SearchFacets,
+            package::{Coordinates, PackageName},
+        };
+        use heart::{Edition, Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain};
+        use smol_str::SmolStr;
+
+        let coordinates = Coordinates {
+            origin: RegistryOrigin::CratesIo,
+            name: PackageName::new(Language::Rust, "serde").expect("fixture name"),
+            version: PackageVersion::try_from((Language::Rust, "1.0.0"))
+                .expect("fixture version"),
+        };
+        let package = Package {
+            coordinates,
+            toolchain: Toolchain::Rust {
+                compiler: semver::Version::new(1, 85, 0),
+                edition: Edition::E2024,
+            },
+        };
+        let id = package.id();
+
+        let with_facets = GlobalPackage {
+            id,
+            package: package.clone(),
+            state: ResolutionState::Unindexed { needed: false },
+            facets: Some(SearchFacets {
+                keywords: vec![SmolStr::new("serde")],
+                quality_ppm: 500_000,
+                dependents: Some(1000),
+                license: Some(SmolStr::new("mit")),
+                ..Default::default()
+            }),
+        };
+        let hit = project_package_hit(with_facets);
+        assert_eq!(hit.dependents, Some(1000));
+        assert_eq!(hit.keywords, vec![SmolStr::new("serde")]);
+        assert_eq!(hit.license.as_deref(), Some("mit"));
+
+        let bare = GlobalPackage {
+            id,
+            package,
+            state: ResolutionState::Unindexed { needed: false },
+            facets: None,
+        };
+        let hit = project_package_hit(bare);
+        assert_eq!(hit.dependents, None);
+        assert!(hit.keywords.is_empty());
+        assert_eq!(hit.license, None);
+    }
 
     #[test]
     fn rank_buckets_are_bounded() {

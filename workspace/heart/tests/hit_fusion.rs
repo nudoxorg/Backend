@@ -336,5 +336,8 @@ fn sample_package_hit(name: &str) -> heart::PackageHit {
         quality_ppm: None,
         description: None,
         downloads: None,
+        dependents: None,
+        keywords: vec![],
+        license: None,
     }
 }
