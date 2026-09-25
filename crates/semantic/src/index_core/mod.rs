@@ -22,15 +22,15 @@ pub use self::exact::{
     ExactOperation, ExactRow, ExactSegment, ExactSegmentError, ExactSegmentVerifier,
     ExactSegmentView, MAX_EXACT_PAYLOAD_BYTES, MAX_EXACT_ROWS,
 };
-pub use backend_version::GenerationId;
 pub use self::lexical::{
     LexicalHit, LexicalMatch, LexicalOperation, LexicalOrderKey, LexicalOutputError, LexicalRow,
     LexicalRowValue, LexicalScore, LexicalSegment, LexicalSegmentError, LexicalSegmentVerifier,
     LexicalSegmentView, LexicalSnapshotHit, LexicalTopK, LexicalTopKError,
     MAX_LEXICAL_PAYLOAD_BYTES, MAX_LEXICAL_ROWS, MAX_LEXICAL_TOP_K,
 };
-pub use crate::index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
 pub use self::snapshot::{IndexSnapshot, IndexSnapshotError, IndexSnapshotLane, IndexSnapshotView};
+pub use crate::index_vocabulary::{ExactSegmentId, IndexSnapshotId, LexicalSegmentId};
+pub use backend_version::GenerationId;
 
 /// Maximum exact or lexical segments a single borrowed manifest can select.
 ///
@@ -42,6 +42,175 @@ pub use self::snapshot::{IndexSnapshot, IndexSnapshotError, IndexSnapshotLane, I
 /// directory, match-range scratch, and packed directory bounded by one
 /// `u8`-wide lane instead of growing without limit.
 pub const MAX_SELECTED_SEGMENTS: usize = 255;
+
+/// One rejected selection-admission fact before it is mapped onto a manifest error.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum SelectionAdmissionFault<Id: Copy + Eq> {
+    /// The selected present segment count exceeded the bounded query contract.
+    SelectedSegmentLimit {
+        /// Largest legal selected segment count.
+        limit: usize,
+        /// Full untrusted selected segment count.
+        observed: usize,
+    },
+    /// The selected missing segment count exceeded the bounded query contract.
+    MissingSegmentLimit {
+        /// Largest legal selected missing segment count.
+        limit: usize,
+        /// Full untrusted selected missing segment count.
+        observed: usize,
+    },
+    /// Reachable and missing segments did not account for the snapshot selection.
+    SnapshotSelectionWidth {
+        /// Number of identities bound into the snapshot.
+        selected: usize,
+        /// Number supplied as reachable or missing.
+        observed: usize,
+    },
+    /// One segment identity appeared in two present positions.
+    DuplicatePresentSegment {
+        /// Earlier duplicate position.
+        left_position: usize,
+        /// Later duplicate position.
+        right_position: usize,
+        /// Repeated segment identity.
+        id: Id,
+    },
+    /// One segment identity appeared as both present and unavailable.
+    PresentAndMissing {
+        /// Present segment position.
+        present_position: usize,
+        /// Missing segment position.
+        missing_position: usize,
+        /// Conflicting segment identity.
+        id: Id,
+    },
+    /// One missing segment identity appeared in two positions.
+    DuplicateMissingSegment {
+        /// Earlier duplicate position.
+        left_position: usize,
+        /// Later duplicate position.
+        right_position: usize,
+        /// Repeated segment identity.
+        id: Id,
+    },
+    /// A reachable segment was not selected by the snapshot authority.
+    PresentNotSelected {
+        /// Reachable segment position.
+        present_position: usize,
+        /// Unselected segment identity.
+        id: Id,
+    },
+    /// Reachable update order disagreed with the order bound into the snapshot.
+    PresentOrderMismatch {
+        /// Reachable segment position whose order was rejected.
+        present_position: usize,
+        /// Snapshot position of the preceding reachable segment.
+        preceding_selected_position: usize,
+        /// Snapshot position of the rejected reachable segment.
+        selected_position: usize,
+        /// Rejected segment identity.
+        id: Id,
+    },
+    /// A missing identity was not selected by the snapshot authority.
+    MissingNotSelected {
+        /// Missing segment position.
+        missing_position: usize,
+        /// Unselected missing identity.
+        id: Id,
+    },
+}
+
+fn validate_selection_admission<Id: Copy + Eq>(
+    selected: &[Id],
+    present_len: usize,
+    present_id: impl Fn(usize) -> Id,
+    missing: &[Id],
+) -> Result<(), SelectionAdmissionFault<Id>> {
+    if present_len > MAX_SELECTED_SEGMENTS {
+        return Err(SelectionAdmissionFault::SelectedSegmentLimit {
+            limit: MAX_SELECTED_SEGMENTS,
+            observed: present_len,
+        });
+    }
+    if missing.len() > MAX_SELECTED_SEGMENTS {
+        return Err(SelectionAdmissionFault::MissingSegmentLimit {
+            limit: MAX_SELECTED_SEGMENTS,
+            observed: missing.len(),
+        });
+    }
+    let observed_selection = present_len + missing.len();
+    if selected.len() != observed_selection {
+        return Err(SelectionAdmissionFault::SnapshotSelectionWidth {
+            selected: selected.len(),
+            observed: observed_selection,
+        });
+    }
+    for left_position in 0..present_len {
+        let left = present_id(left_position);
+        for right_position in (left_position + 1)..present_len {
+            if left == present_id(right_position) {
+                return Err(SelectionAdmissionFault::DuplicatePresentSegment {
+                    left_position,
+                    right_position,
+                    id: left,
+                });
+            }
+        }
+        for (missing_position, missing_id) in missing.iter().enumerate() {
+            if left == *missing_id {
+                return Err(SelectionAdmissionFault::PresentAndMissing {
+                    present_position: left_position,
+                    missing_position,
+                    id: left,
+                });
+            }
+        }
+    }
+    for left_position in 0..missing.len() {
+        let left = missing[left_position];
+        for right_position in (left_position + 1)..missing.len() {
+            if left == missing[right_position] {
+                return Err(SelectionAdmissionFault::DuplicateMissingSegment {
+                    left_position,
+                    right_position,
+                    id: left,
+                });
+            }
+        }
+    }
+    let mut preceding_selected_position = None;
+    for present_position in 0..present_len {
+        let id = present_id(present_position);
+        let Some(selected_position) = selected.iter().position(|segment_id| *segment_id == id)
+        else {
+            return Err(SelectionAdmissionFault::PresentNotSelected {
+                present_position,
+                id,
+            });
+        };
+        if let Some(preceding) = preceding_selected_position
+            && selected_position <= preceding
+        {
+            return Err(SelectionAdmissionFault::PresentOrderMismatch {
+                present_position,
+                preceding_selected_position: preceding,
+                selected_position,
+                id,
+            });
+        }
+        preceding_selected_position = Some(selected_position);
+    }
+    for (missing_position, id) in missing.iter().enumerate() {
+        if !selected.contains(id) {
+            return Err(SelectionAdmissionFault::MissingNotSelected {
+                missing_position,
+                id: *id,
+            });
+        }
+    }
+    Ok(())
+}
 
 /// A checked borrowed manifest for one immutable exact snapshot.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -104,85 +273,75 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
         missing: &'manifest [ExactSegmentId],
         availability: ExactAvailability,
     ) -> Result<Self, ExactManifestError> {
-        if segments.len() > MAX_SELECTED_SEGMENTS {
-            return Err(ExactManifestError::SelectedSegmentLimit {
-                limit: MAX_SELECTED_SEGMENTS,
-                observed: segments.len(),
-            });
-        }
-        if missing.len() > MAX_SELECTED_SEGMENTS {
-            return Err(ExactManifestError::MissingSegmentLimit {
-                limit: MAX_SELECTED_SEGMENTS,
-                observed: missing.len(),
-            });
-        }
-        let selected = snapshot.exact;
-        let observed_selection = segments.len() + missing.len();
-        if selected.len() != observed_selection {
-            return Err(ExactManifestError::SnapshotSelectionWidth {
-                selected: selected.len(),
-                observed: observed_selection,
-            });
-        }
-        for (left_position, left) in segments.iter().enumerate() {
-            for (right_position, right) in segments.iter().enumerate().skip(left_position + 1) {
-                if left.id == right.id {
-                    return Err(ExactManifestError::DuplicatePresentSegment {
-                        left_position,
-                        right_position,
-                        id: left.id,
-                    });
-                }
+        validate_selection_admission(
+            snapshot.exact,
+            segments.len(),
+            |index| segments[index].id,
+            missing,
+        )
+        .map_err(|fault| match fault {
+            SelectionAdmissionFault::SelectedSegmentLimit { limit, observed } => {
+                ExactManifestError::SelectedSegmentLimit { limit, observed }
             }
-            for (missing_position, missing_id) in missing.iter().enumerate() {
-                if left.id == *missing_id {
-                    return Err(ExactManifestError::PresentAndMissing {
-                        present_position: left_position,
-                        missing_position,
-                        id: left.id,
-                    });
-                }
+            SelectionAdmissionFault::MissingSegmentLimit { limit, observed } => {
+                ExactManifestError::MissingSegmentLimit { limit, observed }
             }
-        }
-        for (left_position, left) in missing.iter().enumerate() {
-            for (right_position, right) in missing.iter().enumerate().skip(left_position + 1) {
-                if *left == *right {
-                    return Err(ExactManifestError::DuplicateMissingSegment {
-                        left_position,
-                        right_position,
-                        id: *left,
-                    });
-                }
+            SelectionAdmissionFault::SnapshotSelectionWidth { selected, observed } => {
+                ExactManifestError::SnapshotSelectionWidth { selected, observed }
             }
-        }
-        let mut preceding_selected_position = None;
-        for (present_position, segment) in segments.iter().enumerate() {
-            let Some(selected_position) = selected.iter().position(|id| *id == segment.id) else {
-                return Err(ExactManifestError::PresentNotSelected {
-                    present_position,
-                    id: segment.id,
-                });
-            };
-            if let Some(preceding) = preceding_selected_position
-                && selected_position <= preceding
-            {
-                return Err(ExactManifestError::PresentOrderMismatch {
-                    present_position,
-                    preceding_selected_position: preceding,
-                    selected_position,
-                    id: segment.id,
-                });
-            }
-            preceding_selected_position = Some(selected_position);
-        }
-        for (missing_position, id) in missing.iter().enumerate() {
-            if !selected.contains(id) {
-                return Err(ExactManifestError::MissingNotSelected {
-                    missing_position,
-                    id: *id,
-                });
-            }
-        }
+            SelectionAdmissionFault::DuplicatePresentSegment {
+                left_position,
+                right_position,
+                id,
+            } => ExactManifestError::DuplicatePresentSegment {
+                left_position,
+                right_position,
+                id,
+            },
+            SelectionAdmissionFault::PresentAndMissing {
+                present_position,
+                missing_position,
+                id,
+            } => ExactManifestError::PresentAndMissing {
+                present_position,
+                missing_position,
+                id,
+            },
+            SelectionAdmissionFault::DuplicateMissingSegment {
+                left_position,
+                right_position,
+                id,
+            } => ExactManifestError::DuplicateMissingSegment {
+                left_position,
+                right_position,
+                id,
+            },
+            SelectionAdmissionFault::PresentNotSelected {
+                present_position,
+                id,
+            } => ExactManifestError::PresentNotSelected {
+                present_position,
+                id,
+            },
+            SelectionAdmissionFault::PresentOrderMismatch {
+                present_position,
+                preceding_selected_position,
+                selected_position,
+                id,
+            } => ExactManifestError::PresentOrderMismatch {
+                present_position,
+                preceding_selected_position,
+                selected_position,
+                id,
+            },
+            SelectionAdmissionFault::MissingNotSelected {
+                missing_position,
+                id,
+            } => ExactManifestError::MissingNotSelected {
+                missing_position,
+                id,
+            },
+        })?;
         Ok(Self {
             view: ExactManifestView {
                 snapshot: snapshot.id,
@@ -492,85 +651,75 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
         missing: &'manifest [LexicalSegmentId],
         availability: LexicalAvailability,
     ) -> Result<Self, LexicalManifestError> {
-        if segments.len() > MAX_SELECTED_SEGMENTS {
-            return Err(LexicalManifestError::SelectedSegmentLimit {
-                limit: MAX_SELECTED_SEGMENTS,
-                observed: segments.len(),
-            });
-        }
-        if missing.len() > MAX_SELECTED_SEGMENTS {
-            return Err(LexicalManifestError::MissingSegmentLimit {
-                limit: MAX_SELECTED_SEGMENTS,
-                observed: missing.len(),
-            });
-        }
-        let selected = snapshot.lexical;
-        let observed_selection = segments.len() + missing.len();
-        if selected.len() != observed_selection {
-            return Err(LexicalManifestError::SnapshotSelectionWidth {
-                selected: selected.len(),
-                observed: observed_selection,
-            });
-        }
-        for (left_position, left) in segments.iter().enumerate() {
-            for (right_position, right) in segments.iter().enumerate().skip(left_position + 1) {
-                if left.id == right.id {
-                    return Err(LexicalManifestError::DuplicatePresentSegment {
-                        left_position,
-                        right_position,
-                        id: left.id,
-                    });
-                }
+        validate_selection_admission(
+            snapshot.lexical,
+            segments.len(),
+            |index| segments[index].id,
+            missing,
+        )
+        .map_err(|fault| match fault {
+            SelectionAdmissionFault::SelectedSegmentLimit { limit, observed } => {
+                LexicalManifestError::SelectedSegmentLimit { limit, observed }
             }
-            for (missing_position, missing_id) in missing.iter().enumerate() {
-                if left.id == *missing_id {
-                    return Err(LexicalManifestError::PresentAndMissing {
-                        present_position: left_position,
-                        missing_position,
-                        id: left.id,
-                    });
-                }
+            SelectionAdmissionFault::MissingSegmentLimit { limit, observed } => {
+                LexicalManifestError::MissingSegmentLimit { limit, observed }
             }
-        }
-        for (left_position, left) in missing.iter().enumerate() {
-            for (right_position, right) in missing.iter().enumerate().skip(left_position + 1) {
-                if *left == *right {
-                    return Err(LexicalManifestError::DuplicateMissingSegment {
-                        left_position,
-                        right_position,
-                        id: *left,
-                    });
-                }
+            SelectionAdmissionFault::SnapshotSelectionWidth { selected, observed } => {
+                LexicalManifestError::SnapshotSelectionWidth { selected, observed }
             }
-        }
-        let mut preceding_selected_position = None;
-        for (present_position, segment) in segments.iter().enumerate() {
-            let Some(selected_position) = selected.iter().position(|id| *id == segment.id) else {
-                return Err(LexicalManifestError::PresentNotSelected {
-                    present_position,
-                    id: segment.id,
-                });
-            };
-            if let Some(preceding) = preceding_selected_position
-                && selected_position <= preceding
-            {
-                return Err(LexicalManifestError::PresentOrderMismatch {
-                    present_position,
-                    preceding_selected_position: preceding,
-                    selected_position,
-                    id: segment.id,
-                });
-            }
-            preceding_selected_position = Some(selected_position);
-        }
-        for (missing_position, id) in missing.iter().enumerate() {
-            if !selected.contains(id) {
-                return Err(LexicalManifestError::MissingNotSelected {
-                    missing_position,
-                    id: *id,
-                });
-            }
-        }
+            SelectionAdmissionFault::DuplicatePresentSegment {
+                left_position,
+                right_position,
+                id,
+            } => LexicalManifestError::DuplicatePresentSegment {
+                left_position,
+                right_position,
+                id,
+            },
+            SelectionAdmissionFault::PresentAndMissing {
+                present_position,
+                missing_position,
+                id,
+            } => LexicalManifestError::PresentAndMissing {
+                present_position,
+                missing_position,
+                id,
+            },
+            SelectionAdmissionFault::DuplicateMissingSegment {
+                left_position,
+                right_position,
+                id,
+            } => LexicalManifestError::DuplicateMissingSegment {
+                left_position,
+                right_position,
+                id,
+            },
+            SelectionAdmissionFault::PresentNotSelected {
+                present_position,
+                id,
+            } => LexicalManifestError::PresentNotSelected {
+                present_position,
+                id,
+            },
+            SelectionAdmissionFault::PresentOrderMismatch {
+                present_position,
+                preceding_selected_position,
+                selected_position,
+                id,
+            } => LexicalManifestError::PresentOrderMismatch {
+                present_position,
+                preceding_selected_position,
+                selected_position,
+                id,
+            },
+            SelectionAdmissionFault::MissingNotSelected {
+                missing_position,
+                id,
+            } => LexicalManifestError::MissingNotSelected {
+                missing_position,
+                id,
+            },
+        })?;
         Ok(Self {
             view: LexicalManifestView {
                 snapshot: snapshot.id,
