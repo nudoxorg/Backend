@@ -571,3 +571,102 @@ fn stress_fts_projection_reports_build_query_and_delta_costs() {
         }
     });
 }
+
+#[test]
+fn rebuild_keeps_an_unchanged_rowid_and_records_only_real_mutations() {
+    futures_executor::block_on(async {
+        let path = path();
+        let basis = root(Vec::new()).basis();
+        let keep = Row::new(RowId::Package(package_key("keep")), basis, "alpha");
+        let gone = Row::new(RowId::Package(package_key("gone")), basis, "beta");
+        let edit = Row::new(RowId::Package(package_key("edit")), basis, "gamma");
+        let first = root(vec![keep.clone(), gone, edit]);
+        let revised = root(vec![
+            keep,
+            Row::new(RowId::Package(package_key("edit")), basis, "gamma-two"),
+        ]);
+        let keep_key = RowId::Package(package_key("keep")).stable_key();
+
+        let mut projection = TursoProjection::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("open: {error}"));
+        assert_eq!(
+            projection
+                .synchronize(&first)
+                .await
+                .unwrap_or_else(|error| panic!("first synchronize: {error}")),
+            ProjectionUpdate::Rebuilt { rows: 3 }
+        );
+        let keep_rowid = stored_rowid(&projection, &keep_key).await;
+        assert_eq!(recorded_changes(&projection, &first).await, 3);
+
+        assert_eq!(
+            projection
+                .synchronize(&revised)
+                .await
+                .unwrap_or_else(|error| panic!("revised synchronize: {error}")),
+            ProjectionUpdate::Rebuilt { rows: 2 }
+        );
+        assert_eq!(stored_rowid(&projection, &keep_key).await, keep_rowid);
+        assert_eq!(recorded_changes(&projection, &revised).await, 2);
+
+        let alpha = projection
+            .search("alpha", 10)
+            .await
+            .unwrap_or_else(|error| panic!("search alpha: {error}"));
+        assert_eq!(alpha.root.as_ref(), revised.root().as_bytes());
+        assert_eq!(alpha.ids.as_ref(), &[keep_key]);
+        let edited = projection
+            .search("gamma-two", 10)
+            .await
+            .unwrap_or_else(|error| panic!("search edit: {error}"));
+        assert_eq!(
+            edited.ids.as_ref(),
+            &[RowId::Package(package_key("edit")).stable_key()]
+        );
+        let removed = projection
+            .search("beta", 10)
+            .await
+            .unwrap_or_else(|error| panic!("search removed: {error}"));
+        assert!(removed.ids.is_empty());
+
+        drop(projection);
+        std::fs::remove_file(&path).unwrap_or_else(|error| panic!("remove projection: {error}"));
+    });
+}
+
+async fn stored_rowid(projection: &TursoProjection, key: &str) -> i64 {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT rowid FROM backend_projection_rows WHERE row_id = ?1",
+            [key],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("rowid query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("rowid next: {error}"))
+        .unwrap_or_else(|| panic!("missing row {key}"));
+    row.get(0)
+        .unwrap_or_else(|error| panic!("rowid decode: {error}"))
+}
+
+async fn recorded_changes(projection: &TursoProjection, view: &ViewRoot) -> i64 {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT changed_rows FROM backend_projection_commits WHERE root = ?1",
+            turso::params![view.root().as_bytes().as_slice()],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("commit query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("commit next: {error}"))
+        .unwrap_or_else(|| panic!("missing commit"));
+    row.get(0)
+        .unwrap_or_else(|error| panic!("commit decode: {error}"))
+}
