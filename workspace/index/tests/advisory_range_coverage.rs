@@ -7,10 +7,14 @@
 mod common;
 
 use common::{migrated_writer, version_id};
-use index::ingest::advisory::resolve_osv;
-use index::store::MetaStore;
-use index::ingest::driver::expand_advisory_ranges;
-use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
+use index::{
+    ingest::{
+        advisory::{parse_rustsec, resolve_osv},
+        driver::expand_advisory_ranges,
+    },
+    protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates},
+    store::MetaStore,
+};
 
 #[test]
 fn a_fixed_range_lists_only_the_versions_inside_it() {
@@ -41,7 +45,9 @@ fn a_fixed_range_lists_only_the_versions_inside_it() {
     assert!(matches!(ops[0], CatalogOp::UpsertAdvisory { .. }));
     assert_eq!(ops.len(), 2);
     match &ops[1] {
-        CatalogOp::SetListing { version, reason, .. } => {
+        CatalogOp::SetListing {
+            version, reason, ..
+        } => {
             assert_eq!(*version, inside);
             assert_eq!(reason.as_deref(), Some("RUSTSEC-1"));
         }
@@ -49,11 +55,66 @@ fn a_fixed_range_lists_only_the_versions_inside_it() {
     }
 }
 
-fn version(
-    stem: index::ids::PackageStemId,
-    id: index::ids::PackageId,
-    name: &str,
-) -> CatalogOp {
+#[test]
+fn last_affected_is_inclusive_and_a_rustsec_floor_is_exclusive() {
+    let osv = br#"{"id":"RUSTSEC-2020-0001","affected":[{"package":{"ecosystem":"crates.io","name":"smallvec"},"ranges":[{"events":[{"introduced":"1.2.0"},{"last_affected":"1.2.5"}]}]}]}"#;
+    let source = &resolve_osv(osv, 1).expect("resolve")[0];
+    assert_eq!(
+        source.version_range.as_deref(),
+        Some("introduced:1.2.0,last_affected:1.2.5")
+    );
+    let rustsec = parse_rustsec(
+        r#"
+        [advisory]
+        id = "RUSTSEC-2020-0001"
+        package = "smallvec"
+        date = "2020-01-15"
+        [versions]
+        patched = [">= 1.2.6"]
+        "#,
+        1,
+    )
+    .expect("rustsec");
+    let stem = source.stem_id.expect("stem");
+    assert_eq!(rustsec.stem_id, Some(stem));
+    let writer = migrated_writer();
+    let below = version_id(1);
+    let edge = version_id(2);
+    let above = version_id(3);
+    writer
+        .apply_ops(&[
+            CatalogOp::UpsertPackage {
+                stem: PackageStemWire {
+                    stem_id: stem,
+                    ecosystem: heart::Language::Rust,
+                    name_struct: "pkg:cargo/smallvec".to_owned(),
+                    name_canonical: "smallvec".to_owned(),
+                    name_original: "smallvec".to_owned(),
+                },
+                repo_url: None,
+            },
+            version(stem, below, "1.1.0"),
+            version(stem, edge, "1.2.5"),
+            version(stem, above, "1.2.6"),
+        ])
+        .expect("versions");
+
+    let osv_ops = expand_advisory_ranges(writer.engine(), &[source.to_upsert_op()]).expect("osv");
+    let rustsec_ops =
+        expand_advisory_ranges(writer.engine(), &[rustsec.to_upsert_op()]).expect("rustsec");
+    let listed = |ops: &[CatalogOp]| {
+        ops.iter()
+            .filter_map(|op| match op {
+                CatalogOp::SetListing { version, .. } => Some(*version),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(listed(&osv_ops), vec![edge]);
+    assert_eq!(listed(&rustsec_ops), vec![below, edge]);
+}
+
+fn version(stem: index::ids::PackageStemId, id: index::ids::PackageId, name: &str) -> CatalogOp {
     CatalogOp::UpsertVersion {
         coordinates: VersionCoordinates {
             version_id: id,
