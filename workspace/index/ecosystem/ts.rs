@@ -198,20 +198,27 @@ struct PackageJson {
     optional_dependencies: Option<serde_json::Value>,
     #[serde(default, rename = "peerDependencies")]
     peer_dependencies: Option<serde_json::Value>,
+    #[serde(default, rename = "devDependencies")]
+    dev_dependencies: Option<serde_json::Value>,
 }
 
 /// npm dependency maps folded into one edge list.
 ///
-/// `dependencies` wins over `optionalDependencies`, which wins over
-/// `peerDependencies`. A repeated name keeps the higher class.
+/// Rank: runtime (`dependencies`) > optional > peer > dev. A repeated name
+/// keeps the higher class. Dev edges use [`crate::enums::EdgeKind::Build`], so
+/// the dependents sweep does not count them.
 pub(crate) fn npm_package_edges<'a>(
     dependencies: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
     optional: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
     peer: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
+    dev: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
 ) -> Vec<crate::record::DepEdge> {
     use crate::record::DepClass;
 
     let mut edges = Vec::new();
+    for (name, value) in dev {
+        push_npm(&mut edges, npm_edge(name, value, DepClass::Dev, false));
+    }
     for (name, value) in peer {
         push_npm(&mut edges, npm_edge(name, value, DepClass::Peer, false));
     }
@@ -240,9 +247,23 @@ fn push_npm(edges: &mut Vec<crate::record::DepEdge>, edge: crate::record::DepEdg
 
 fn npm_rank(class: crate::record::DepClass) -> u8 {
     match class {
-        crate::record::DepClass::Runtime => 2,
-        crate::record::DepClass::Optional => 1,
+        crate::record::DepClass::Runtime => 3,
+        crate::record::DepClass::Optional => 2,
+        crate::record::DepClass::Peer => 1,
+        crate::record::DepClass::Dev => 0,
         _ => 0,
+    }
+}
+
+fn npm_kind(class: crate::record::DepClass) -> crate::enums::EdgeKind {
+    match class {
+        crate::record::DepClass::Runtime | crate::record::DepClass::Optional => {
+            crate::enums::EdgeKind::Runtime
+        }
+        crate::record::DepClass::Dev | crate::record::DepClass::Peer => {
+            crate::enums::EdgeKind::Build
+        }
+        _ => crate::enums::EdgeKind::Runtime,
     }
 }
 
@@ -252,8 +273,10 @@ fn npm_edge(
     class: crate::record::DepClass,
     optional: bool,
 ) -> crate::record::DepEdge {
+    let name = name.trim();
     let mut edge = crate::record::DepEdge::runtime(name);
     edge.class = class;
+    edge.kind = npm_kind(class);
     edge.optional = optional;
     if let Some(requirement) = value
         .as_str()
@@ -306,6 +329,7 @@ pub fn parse_package_json(bytes: &[u8]) -> Option<ExtractedFacts> {
         object_pairs(pkg.dependencies.as_ref()),
         object_pairs(pkg.optional_dependencies.as_ref()),
         object_pairs(pkg.peer_dependencies.as_ref()),
+        object_pairs(pkg.dev_dependencies.as_ref()),
     );
 
     // Sanitize description: strip control chars.
@@ -360,6 +384,52 @@ mod tests {
                 .dependency_names()
                 .contains(&"follow-redirects".to_owned())
         );
+    }
+
+    #[test]
+    fn dev_dependency_is_dev_and_build_kind() {
+        let json = br#"{
+            "name": "demo",
+            "devDependencies": {"vitest": "^1", " ": "^0"}
+        }"#;
+        let facts = parse_package_json(json).expect("valid JSON");
+        let vitest = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "vitest")
+            .expect("vitest");
+        assert_eq!(vitest.class, crate::record::DepClass::Dev);
+        assert_eq!(vitest.kind, crate::enums::EdgeKind::Build);
+        assert_eq!(vitest.requirement.as_deref(), Some("^1"));
+        assert!(
+            facts.dependency_names().contains(&"vitest".to_owned()),
+            "dev names are listed"
+        );
+        assert_eq!(facts.dependencies.len(), 1, "blank dev names are dropped");
+    }
+
+    #[test]
+    fn runtime_wins_over_dev_for_the_same_name() {
+        let json = br#"{
+            "name": "demo",
+            "dependencies": {"ms": "^2"},
+            "devDependencies": {"ms": "^1", "vitest": "^1"}
+        }"#;
+        let facts = parse_package_json(json).expect("valid JSON");
+        let ms = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "ms")
+            .expect("ms");
+        assert_eq!(ms.class, crate::record::DepClass::Runtime);
+        assert_eq!(ms.kind, crate::enums::EdgeKind::Runtime);
+        assert_eq!(ms.requirement.as_deref(), Some("^2"));
+        let vitest = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "vitest")
+            .expect("vitest");
+        assert_eq!(vitest.class, crate::record::DepClass::Dev);
     }
 
     #[test]

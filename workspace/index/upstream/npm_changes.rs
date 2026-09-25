@@ -66,6 +66,8 @@ struct VersionDoc {
     optional_dependencies: BTreeMap<String, serde_json::Value>,
     #[serde(default, rename = "peerDependencies")]
     peer_dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "devDependencies")]
+    dev_dependencies: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     dist: Option<Dist>,
 }
@@ -157,6 +159,9 @@ fn dependency_edges(doc: Option<&PackageDoc>, version: &str) -> Vec<crate::recor
             .iter()
             .map(|(name, value)| (name.as_str(), value)),
         body.peer_dependencies
+            .iter()
+            .map(|(name, value)| (name.as_str(), value)),
+        body.dev_dependencies
             .iter()
             .map(|(name, value)| (name.as_str(), value)),
     )
@@ -374,6 +379,94 @@ mod tests {
             checksum: None,
             ..
         }]));
+    }
+
+    #[test]
+    fn dev_dependency_is_stored_but_not_counted_as_dependent() {
+        use crate::{
+            engine::turso_vc::VersionedCatalog,
+            enums::EdgeKind,
+            record::{DepClass, PackageRecord},
+            search::ranking::dependents::{DependencyRow, count_dependents},
+        };
+        use smol_str::SmolStr;
+
+        let page = parse_changes(
+            &body(
+                r#"{"results":[{"seq":1,"id":"app","doc":{
+                    "dist-tags":{"latest":"1.0.0"},
+                    "versions":{"1.0.0":{
+                        "dependencies":{"lodash":"^4"},
+                        "devDependencies":{"vitest":"^1"}
+                    }}
+                }}],"last_seq":1}"#,
+            ),
+            0,
+        )
+        .expect("page");
+        let CatalogEvent::Published { dependencies, .. } = &page.events[0] else {
+            panic!("expected published app");
+        };
+        let vitest = dependencies
+            .iter()
+            .find(|edge| edge.name == "vitest")
+            .expect("vitest");
+        assert_eq!(vitest.class, DepClass::Dev);
+        assert_eq!(vitest.kind, EdgeKind::Build);
+        let lodash = dependencies
+            .iter()
+            .find(|edge| edge.name == "lodash")
+            .expect("lodash");
+        assert_eq!(lodash.class, DepClass::Runtime);
+
+        let record = PackageRecord::from_parts(
+            Language::Typescript,
+            "app",
+            "1.0.0",
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            dependencies.clone(),
+        );
+        assert_eq!(record.runtime_names(), vec!["lodash"]);
+
+        let mut catalog = VersionedCatalog::open().expect("catalog");
+        catalog.put_record(&record).expect("put");
+
+        let stored = catalog
+            .materialize(Language::Typescript.as_token(), "app", "1.0.0")
+            .expect("read")
+            .expect("row");
+        let stored_vitest = stored
+            .edges
+            .iter()
+            .find(|edge| edge.name == "vitest")
+            .expect("stored vitest");
+        assert_eq!(stored_vitest.class, DepClass::Dev);
+        assert_eq!(stored_vitest.kind, EdgeKind::Build);
+
+        let counts = count_dependents([DependencyRow {
+            ecosystem: Language::Typescript,
+            name: SmolStr::new("app"),
+            dependencies: record
+                .runtime_names()
+                .into_iter()
+                .map(SmolStr::new)
+                .collect(),
+        }]);
+        assert_eq!(
+            counts
+                .get(&(Language::Typescript, SmolStr::new("lodash")))
+                .copied(),
+            Some(1)
+        );
+        assert!(
+            !counts.contains_key(&(Language::Typescript, SmolStr::new("vitest"))),
+            "a dev edge must not increment dependents"
+        );
     }
 
     #[test]
