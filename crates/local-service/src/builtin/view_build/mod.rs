@@ -36,6 +36,7 @@ use identity::declaration_symbol;
 use semantic::{
     SemanticRowSink, SemanticTargets, append_image_rows, compiled_source, freshness_decision,
 };
+#[cfg(test)]
 use structural::structural_excerpt_calls;
 use structural::structural_parent_rank;
 
