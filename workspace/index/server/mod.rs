@@ -670,6 +670,12 @@ impl<M: EmbeddingModel> Driver<M> {
                         crate::ecosystem::Language::Typescript => {
                             Box::new(registry::upstream::NpmChangesFollower::production())
                         }
+                        crate::ecosystem::Language::Go => {
+                            Box::new(registry::upstream::GoIndexFollower::production())
+                        }
+                        crate::ecosystem::Language::Java => {
+                            Box::new(registry::upstream::MavenSearchFollower::production())
+                        }
                         other => {
                             tracing::warn!(%other, "no catalog follower implemented for language; skipping");
                             continue;

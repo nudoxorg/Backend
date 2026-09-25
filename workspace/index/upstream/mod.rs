@@ -12,11 +12,15 @@
 //! (NuGet V3 reference impl), and [`crates_catalog`] (crates.io V1 impl).
 pub mod catalog;
 pub mod crates_catalog;
+pub mod go_index;
+pub mod maven_search;
 pub mod npm_changes;
 pub mod nuget_catalog;
 
 pub use catalog::{CatalogBatch, CatalogCursor, CatalogEvent, CatalogFollower, PollFuture};
 pub use crates_catalog::CratesCatalogFollower;
+pub use go_index::GoIndexFollower;
+pub use maven_search::MavenSearchFollower;
 pub use npm_changes::NpmChangesFollower;
 pub use nuget_catalog::NuGetCatalogFollower;
 
