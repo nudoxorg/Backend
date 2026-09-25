@@ -161,6 +161,16 @@ pub fn strip_npm_scope(name: &str) -> &str {
 }
 
 /// `@scope/name` → namespace=Some(scope), terms=name; else identity.
+fn object_pairs(
+    value: Option<&serde_json::Value>,
+) -> impl Iterator<Item = (&str, &serde_json::Value)> {
+    value
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flatten()
+        .map(|(name, spec)| (name.as_str(), spec))
+}
+
 fn normalize_npm_query(terms: &str) -> NormalizedQuery {
     if let Some(rest) = terms.strip_prefix('@')
         && let Some((scope, pkg)) = rest.split_once('/')
@@ -184,6 +194,47 @@ struct PackageJson {
     homepage: Option<String>,
     license: Option<serde_json::Value>,
     dependencies: Option<serde_json::Value>,
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: Option<serde_json::Value>,
+}
+
+/// Runtime edges from an npm dependency map, then optional edges.
+///
+/// A name that appears in both maps stays required. The optional row is
+/// [`crate::record::DepClass::Optional`].
+pub(crate) fn npm_package_edges<'a>(
+    dependencies: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
+    optional: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
+) -> Vec<crate::record::DepEdge> {
+    use crate::record::{DepClass, RuntimeEdgeFold};
+
+    let mut fold = RuntimeEdgeFold::prefer_required();
+    for (name, value) in dependencies {
+        fold.observe_edge(npm_edge(name, value, DepClass::Runtime, false));
+    }
+    for (name, value) in optional {
+        fold.observe_edge(npm_edge(name, value, DepClass::Optional, true));
+    }
+    fold.finish()
+}
+
+fn npm_edge(
+    name: &str,
+    value: &serde_json::Value,
+    class: crate::record::DepClass,
+    optional: bool,
+) -> crate::record::DepEdge {
+    let mut edge = crate::record::DepEdge::runtime(name);
+    edge.class = class;
+    edge.optional = optional;
+    if let Some(requirement) = value
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        edge.requirement = Some(requirement.into());
+    }
+    edge
 }
 
 pub fn parse_package_json(bytes: &[u8]) -> Option<ExtractedFacts> {
@@ -223,13 +274,10 @@ pub fn parse_package_json(bytes: &[u8]) -> Option<ExtractedFacts> {
         _ => None,
     };
 
-    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
-    if let Some(serde_json::Value::Object(obj)) = &pkg.dependencies {
-        for (name, value) in obj {
-            fold.observe(name, value.as_str(), false);
-        }
-    }
-    let dependencies = fold.finish();
+    let dependencies = npm_package_edges(
+        object_pairs(pkg.dependencies.as_ref()),
+        object_pairs(pkg.optional_dependencies.as_ref()),
+    );
 
     // Sanitize description: strip control chars.
     let description = pkg
@@ -283,6 +331,31 @@ mod tests {
                 .dependency_names()
                 .contains(&"follow-redirects".to_owned())
         );
+    }
+
+    #[test]
+    fn optional_dependency_stays_optional_unless_also_required() {
+        let json = br#"{
+            "name": "demo",
+            "dependencies": {"ms": "^2"},
+            "optionalDependencies": {"left-pad": "^1", "ms": "^2"}
+        }"#;
+        let facts = parse_package_json(json).expect("valid JSON");
+        let left = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "left-pad")
+            .expect("left-pad");
+        assert_eq!(left.class, crate::record::DepClass::Optional);
+        assert_eq!(left.requirement.as_deref(), Some("^1"));
+        let ms = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "ms")
+            .expect("ms");
+        assert_eq!(ms.class, crate::record::DepClass::Runtime);
+        assert!(!ms.optional);
+        assert_eq!(ms.requirement.as_deref(), Some("^2"));
     }
 
     #[test]

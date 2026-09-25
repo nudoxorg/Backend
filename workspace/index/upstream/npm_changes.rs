@@ -62,6 +62,8 @@ struct PackageDoc {
 struct VersionDoc {
     #[serde(default)]
     dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     dist: Option<Dist>,
 }
@@ -142,13 +144,17 @@ fn dependency_edges(doc: Option<&PackageDoc>, version: &str) -> Vec<crate::recor
     let Some(doc) = doc else {
         return Vec::new();
     };
-    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
-    if let Some(body) = doc.versions.get(version) {
-        for (name, value) in &body.dependencies {
-            fold.observe(name, value.as_str(), false);
-        }
-    }
-    fold.finish()
+    let Some(body) = doc.versions.get(version) else {
+        return Vec::new();
+    };
+    crate::ecosystem::npm_package_edges(
+        body.dependencies
+            .iter()
+            .map(|(name, value)| (name.as_str(), value)),
+        body.optional_dependencies
+            .iter()
+            .map(|(name, value)| (name.as_str(), value)),
+    )
 }
 
 /// `dist.integrity` when it names an artifact digest. A tarball `shasum`
