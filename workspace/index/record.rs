@@ -292,8 +292,8 @@ impl PackageRecord {
     /// Includes [`DepClass::Runtime`] and [`DepClass::Optional`] only, so a
     /// `Dev` edge never contributes in-degree. Names are trimmed
     /// (`str::trim`), compared case-sensitively, de-duplicated, and returned
-    /// in first-seen edge order. [`DepEdge::optional`] does not add or remove
-    /// a name.
+    /// in first-seen edge order. An empty name is not a dependency.
+    /// [`DepEdge::optional`] does not add or remove a name.
     #[must_use]
     pub fn runtime_names(&self) -> Vec<&str> {
         let mut seen = HashSet::<&str>::new();
@@ -303,9 +303,10 @@ impl PackageRecord {
                 continue;
             }
             let name = edge.name.as_str().trim();
-            if seen.insert(name) {
-                names.push(name);
+            if name.is_empty() || !seen.insert(name) {
+                continue;
             }
+            names.push(name);
         }
         names
     }
@@ -410,6 +411,7 @@ mod tests {
         assert!(edge_names_agree(&sample(edges), &names));
     }
 
+    #[test]
     fn edge_names_agree_is_true_for_the_same_trimmed_set() {
         let record = sample(mixed_edges());
         let facet = ["serde_json", "  serde  ", "tokio", "serde", "tokio"];
@@ -534,5 +536,32 @@ mod tests {
         }
         edges.sort_by(|left, right| left.name.cmp(&right.name));
         edges
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+        #[test]
+        fn runtime_facet_names_match_the_record_for_any_edge(
+            rows in proptest::collection::vec(
+                ("[A-Za-z]{0,6}", 0usize..5, proptest::bool::ANY),
+                0..12,
+            )
+        ) {
+            let classes = [
+                DepClass::Runtime,
+                DepClass::Dev,
+                DepClass::Build,
+                DepClass::Optional,
+                DepClass::Peer,
+            ];
+            let edges: Vec<DepEdge> = rows
+                .iter()
+                .map(|(name, class, optional)| edge(name, classes[*class], *optional))
+                .collect();
+            let names = runtime_facet_names(&edges);
+            let record = sample(edges);
+            proptest::prop_assert!(edge_names_agree(&record, &names));
+        }
     }
 }
