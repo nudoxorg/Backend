@@ -84,6 +84,49 @@ def nextest-invocation [profile: string]: nothing -> record {
     }
 }
 
+# Names the tests nextest counted but never finished. nextest reports only
+# "N tests were not run" once any test fails, which cannot be acted on.
+def report-unfinished-tests [cargo: string, filter: string, invocation: record]: nothing -> nothing {
+    let junit = $invocation.evidence | path join "junit.xml"
+    if not ($junit | path exists) {
+        print --stderr $"no JUnit report at ($junit); cannot name unfinished tests"
+        return
+    }
+    let listed = (
+        process-result $cargo [
+            "nextest"
+            "list"
+            "--locked"
+            "--workspace"
+            "--config-file" $invocation.config
+            "--profile" "pr"
+            "--message-format" "oneline"
+            "-E" $filter
+        ]
+    )
+    if $listed.status != 0 {
+        print --stderr $"nextest list exited ($listed.status); cannot name unfinished tests"
+        return
+    }
+    let expected = $listed.stdout | lines | where {|line| $line | is-not-empty }
+    let finished = (
+        open $junit
+        | get content
+        | where tag == "testsuite"
+        | each {|suite|
+            $suite.content
+            | where tag == "testcase"
+            | each {|case| $"($case.attributes.classname) ($case.attributes.name)" }
+        }
+        | flatten
+    )
+    let unfinished = $expected | where {|test| $test not-in $finished }
+    print --stderr $"== ($unfinished | length) of ($expected | length) listed tests never finished =="
+    for test in $unfinished {
+        print --stderr $"NOT FINISHED ($test)"
+    }
+}
+
 # Runs unit tests for packages selected by changed paths.
 # @class verification
 def "main test changed" [--base: string]: nothing -> record {
@@ -181,18 +224,27 @@ def "main test pr" []: nothing -> record {
         "--package" "backend-desktop"
     ] | ignore
     let invocation = (nextest-invocation "pr")
-    process-require $cargo [
-        "nextest"
-        "run"
-        "--locked"
-        "--no-tests=fail"
-        "--workspace"
-        "--no-fail-fast"
-        "--config-file" $invocation.config
-        "--profile" "pr"
-        "-E"
-        "not test(real_package_inventory_keeps_source_provenance_and_closed_terminals) and not test(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render) and not test(twenty_real_crates_compile_with_decoded_lanes)"
-    ] | ignore
+    let filter = "not test(real_package_inventory_keeps_source_provenance_and_closed_terminals) and not test(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render) and not test(twenty_real_crates_compile_with_decoded_lanes)"
+    let failure = (
+        try {
+            process-require $cargo [
+                "nextest"
+                "run"
+                "--locked"
+                "--no-tests=fail"
+                "--workspace"
+                "--no-fail-fast"
+                "--config-file" $invocation.config
+                "--profile" "pr"
+                "-E" $filter
+            ] | ignore
+            null
+        } catch {|error| $error }
+    )
+    if $failure != null {
+        report-unfinished-tests $cargo $filter $invocation
+        error make {msg: $failure.msg}
+    }
     {
         level: "pr"
         owner: (active-role)
