@@ -1195,6 +1195,39 @@ mod tests {
     }
 
     #[test]
+    fn stepped_interface_properties_do_not_share_a_discriminant() {
+        // Properties 0..=1000 share a name. Methods 2000 and 2001 hold
+        // 2000000 and 2001000. Each property that steps must see the disc
+        // the earlier property actually took.
+        let mut source_text = String::from("export interface Bag {\n");
+        for _ in 0..=1000 {
+            source_text.push_str("  slot: number;\n");
+        }
+        for n in 0..2000 {
+            source_text.push_str(&format!("  m{n}(): void;\n"));
+        }
+        source_text.push_str("  slot(): void;\n  slot(): void;\n}\n");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"wide-iface-step","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("index.d.ts"), &source_text).unwrap();
+        let source = PackageSource::new(dir.path(), "wide-iface-step", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("wide-iface-step"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("stepped properties must not share a disc");
+        let slots = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "slot")
+            .count();
+        assert_eq!(slots, 1003, "1001 properties and 2 methods");
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
