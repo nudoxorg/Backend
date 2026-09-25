@@ -1,4 +1,5 @@
-//! Parser for `*.pc` and `*.pc.in` pkg-config descriptor files (REGISTRYLESS §8).
+//! Parser for `*.pc` and `*.pc.in` pkg-config descriptor files (REGISTRYLESS
+//! §8).
 //!
 //! Extracts:
 //! - `Description:` → `facts.description`.
@@ -68,11 +69,10 @@ pub fn parse(text: &str) -> CppManifest {
             } else if key.eq_ignore_ascii_case("Requires")
                 || key.eq_ignore_ascii_case("Requires.private")
             {
-                for token in parse_requires_list(value) {
-                    manifest.push_dependency(DependencyRecord::new(
-                        token,
-                        DependencyMechanism::PkgConfig,
-                    ));
+                for (token, requirement) in parse_requires_list(value) {
+                    let mut record = DependencyRecord::new(token, DependencyMechanism::PkgConfig);
+                    record.requirement = requirement;
+                    manifest.push_dependency(record);
                 }
             }
         }
@@ -88,35 +88,47 @@ pub fn parse(text: &str) -> CppManifest {
 ///
 /// The value is a comma- or whitespace-separated list of package specs.
 /// Each spec has the form `<name>` or `<name> <op> <version>` where `op` is
-/// a comparison operator. Only `<name>` is returned per spec.
+/// a comparison operator. The operator and version are the requirement.
 ///
 /// Empty specs and specs containing only operators are silently dropped.
-fn parse_requires_list(value: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::new();
+fn parse_requires_list(value: &str) -> Vec<(String, Option<String>)> {
+    let mut tokens = Vec::new();
 
-    // Split on commas first, then handle each comma-segment as a
-    // whitespace-separated sequence of (name [op version]) specs.
     for comma_segment in value.split(',') {
-        let segment = comma_segment.trim();
-        if segment.is_empty() {
-            continue;
-        }
-
-        // Within each comma segment, consume tokens; when we see a version
-        // operator token, skip it and the following version string.
-        let mut word_iterator = segment.split_ascii_whitespace();
-        while let Some(word) = word_iterator.next() {
+        let words: Vec<&str> = comma_segment.split_ascii_whitespace().collect();
+        let mut index = 0;
+        while index < words.len() {
+            let word = words[index];
             if is_version_operator(word) {
-                // Skip the version string that follows the operator.
-                let _ = word_iterator.next();
+                index += 2;
                 continue;
             }
-            // Strip any embedded version operator suffix from the word itself
-            // (e.g. `glib-2.0>=2.40` written without spaces).
-            let name = strip_embedded_version_constraint(word);
-            if !name.is_empty() {
-                tokens.push(name.to_owned());
+            let (name, embedded) = split_constraint(word);
+            if name.is_empty() {
+                index += 1;
+                continue;
             }
+            let requirement = if let Some(embedded) = embedded {
+                index += 1;
+                Some(embedded.to_owned())
+            } else if words
+                .get(index + 1)
+                .is_some_and(|next| is_version_operator(next))
+            {
+                let operator = words[index + 1];
+                let version = words.get(index + 2).copied().unwrap_or("");
+                if !version.is_empty() && !is_version_operator(version) {
+                    index += 3;
+                    Some(format!("{operator} {version}"))
+                } else {
+                    index += 2;
+                    Some(operator.to_owned())
+                }
+            } else {
+                index += 1;
+                None
+            };
+            tokens.push((name.to_owned(), requirement.filter(|text| !text.is_empty())));
         }
     }
 
@@ -131,9 +143,13 @@ fn is_version_operator(word: &str) -> bool {
 /// Strip an embedded version constraint from a package spec token.
 ///
 /// Examples: `glib-2.0>=2.40` → `glib-2.0`, `foo` → `foo`.
-fn strip_embedded_version_constraint(spec: &str) -> &str {
-    spec.find(['>', '<', '=', '!'])
-        .map_or_else(|| spec.trim(), |position| spec[..position].trim_end())
+fn split_constraint(spec: &str) -> (&str, Option<&str>) {
+    match spec.find(['>', '<', '=', '!']) {
+        Some(position) if position > 0 => {
+            (spec[..position].trim_end(), Some(spec[position..].trim()))
+        }
+        _ => (spec.trim(), None),
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +170,10 @@ mod tests {
             manifest.dependencies[0].mechanism,
             DependencyMechanism::PkgConfig
         );
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some(">= 2.40")
+        );
     }
 
     #[test]
@@ -163,6 +183,10 @@ mod tests {
         assert_eq!(manifest.dependencies.len(), 2);
         assert_eq!(manifest.dependencies[0].token, "zlib");
         assert_eq!(manifest.dependencies[1].token, "libpng");
+        assert_eq!(
+            manifest.dependencies[1].requirement.as_deref(),
+            Some(">= 1.6")
+        );
     }
 
     #[test]

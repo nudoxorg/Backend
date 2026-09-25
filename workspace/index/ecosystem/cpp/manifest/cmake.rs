@@ -13,10 +13,10 @@
 //! - `set(CPACK_RESOURCE_FILE_LICENSE "<path>")` → `facts.has_license_file`
 //!   (the dedicated CPack variable naming the packaged license file).
 //! - `find_package(<Name> ...)` → [`DependencyMechanism::FindPackage`].
-//! - `pkg_check_modules(<PREFIX> [REQUIRED|QUIET|IMPORTED_TARGET|GLOBAL] <names>...)`
-//!   → [`DependencyMechanism::PkgConfig`].
-//! - `FetchContent_Declare(<n> GIT_REPOSITORY <url> GIT_TAG <ref> ...)`
-//!   → [`DependencyMechanism::FetchContent`] with the repository URL as token.
+//! - `pkg_check_modules(<PREFIX> [REQUIRED|QUIET|IMPORTED_TARGET|GLOBAL]
+//!   <names>...)` → [`DependencyMechanism::PkgConfig`].
+//! - `FetchContent_Declare(<n> GIT_REPOSITORY <url> GIT_TAG <ref> ...)` →
+//!   [`DependencyMechanism::FetchContent`] with the repository URL as token.
 //!
 //! All other commands are silently skipped. The parser never panics.
 
@@ -96,9 +96,10 @@ pub fn parse(text: &str) -> CppManifest {
         } else if command.eq_ignore_ascii_case("pkg_check_modules")
             || command.eq_ignore_ascii_case("pkg_search_module")
         {
-            for token in extract_pkg_check_modules_deps(&arguments) {
-                manifest
-                    .push_dependency(DependencyRecord::new(token, DependencyMechanism::PkgConfig));
+            for (token, requirement) in extract_pkg_check_modules_deps(&arguments) {
+                let mut record = DependencyRecord::new(token, DependencyMechanism::PkgConfig);
+                record.requirement = requirement;
+                manifest.push_dependency(record);
             }
         } else if command.eq_ignore_ascii_case("fetchcontent_declare")
             && let Some(url) = extract_fetchcontent_url(&arguments)
@@ -146,9 +147,10 @@ fn is_identifier_char(byte: u8) -> bool {
 ///
 /// Handles:
 /// - Quoted strings `"..."` (returned with quotes stripped).
-/// - Unquoted tokens (any sequence of non-whitespace, non-paren, non-`#` chars).
-/// - Nested `(...)` (depth tracking; inner parens are consumed but not
-///   returned as separate tokens — they are concatenated into the parent token).
+/// - Unquoted tokens (any sequence of non-whitespace, non-paren, non-`#`
+///   chars).
+/// - Nested `(...)` (depth tracking; inner parens are consumed but not returned
+///   as separate tokens — they are concatenated into the parent token).
 /// - `#`-line comments (skipped).
 fn collect_arguments(text: &str, position: &mut usize) -> Vec<String> {
     let mut arguments: Vec<String> = Vec::new();
@@ -222,7 +224,8 @@ fn collect_arguments(text: &str, position: &mut usize) -> Vec<String> {
     arguments
 }
 
-// ── Command handlers ──────────────────────────────────────────────────────────
+// ── Command handlers
+// ──────────────────────────────────────────────────────────
 
 /// Extract the `DESCRIPTION` value from a `project(...)` argument list.
 ///
@@ -269,7 +272,7 @@ const PKG_CHECK_SKIP_KEYWORDS: &[&str] = &[
 /// following arguments are module specs such as `glib-2.0>=2.40`. Version
 /// constraint suffixes (`>=`, `<=`, `=`, `>`, `<`) and everything after them
 /// are stripped; the package name token is returned.
-fn extract_pkg_check_modules_deps(arguments: &[String]) -> Vec<String> {
+fn extract_pkg_check_modules_deps(arguments: &[String]) -> Vec<(String, Option<String>)> {
     let mut tokens = Vec::new();
     let mut arguments_iterator = arguments.iter();
 
@@ -281,27 +284,32 @@ fn extract_pkg_check_modules_deps(arguments: &[String]) -> Vec<String> {
         if PKG_CHECK_SKIP_KEYWORDS.contains(&upper.as_str()) {
             continue;
         }
-        // Strip version constraint suffix: split on `>=`, `<=`, `!=`, `>`, `<`, `=`.
-        let name = strip_version_constraint(argument);
+        let (name, requirement) = split_version_constraint(argument);
         if !name.is_empty() {
-            tokens.push(name.to_owned());
+            tokens.push((
+                name.to_owned(),
+                requirement
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned),
+            ));
         }
     }
 
     tokens
 }
 
-/// Strip a version constraint from a pkg-config module spec.
-///
-/// Examples: `glib-2.0>=2.40` → `glib-2.0`, `foo!=1.0` → `foo`,
-/// `bar` → `bar`.
-fn strip_version_constraint(spec: &str) -> &str {
-    // Find the first `>`, `<`, `=`, or `!` character.
-    spec.find(['>', '<', '=', '!'])
-        .map_or_else(|| spec.trim(), |position| spec[..position].trim_end())
+/// Split `glib-2.0>=2.40` into the module name and the constraint.
+fn split_version_constraint(spec: &str) -> (&str, Option<&str>) {
+    match spec.find(['>', '<', '=', '!']) {
+        Some(position) if position > 0 => {
+            (spec[..position].trim_end(), Some(spec[position..].trim()))
+        }
+        _ => (spec.trim(), None),
+    }
 }
 
-/// Extract the `GIT_REPOSITORY` URL from a `FetchContent_Declare` argument list.
+/// Extract the `GIT_REPOSITORY` URL from a `FetchContent_Declare` argument
+/// list.
 ///
 /// Returns the value following the `GIT_REPOSITORY` keyword, or `None` when
 /// absent.
@@ -355,6 +363,10 @@ mod tests {
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 2);
         assert_eq!(manifest.dependencies[0].token, "glib-2.0");
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some(">=2.40")
+        );
         assert_eq!(
             manifest.dependencies[0].mechanism,
             DependencyMechanism::PkgConfig
