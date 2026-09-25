@@ -375,8 +375,7 @@ async fn stored_generation_and_feed_republish_share_one_runtime_replace() {
 
 #[tokio::test]
 async fn ledger_degree_matches_the_sql_sweep_on_same_ecosystem_edges() {
-    use index::edge_project::records_from_ops;
-    use index::engine::turso_vc::VersionedCatalog;
+    use index::{edge_project::records_from_ops, engine::turso_vc::VersionedCatalog};
 
     let writer = Arc::new(migrated_writer());
     let ops = vec![
@@ -426,7 +425,11 @@ async fn ledger_degree_matches_the_sql_sweep_on_same_ecosystem_edges() {
     assert_eq!(degree.get(&rust("serde")).copied(), Some(1));
     assert!(!degree.contains_key(&python("serde")));
     assert!(!degree.contains_key(&rust("criterion")));
-    assert_eq!(dependents_of(writer.engine(), 2), 1, "facet fallback stays on SQL");
+    assert_eq!(
+        dependents_of(writer.engine(), 2),
+        1,
+        "facet fallback stays on SQL"
+    );
     assert!(!degree.contains_key(&rust("tokio")));
 }
 
@@ -489,4 +492,176 @@ async fn a_homebrew_recipe_edge_counts_on_the_sweep_and_the_adopted_ledger() {
             .copied(),
         Some(1)
     );
+    assert_eq!(ledger.dependents(), ledger.dependents_from_tips());
+}
+
+#[tokio::test]
+async fn a_driven_batch_keeps_sql_and_the_ledger_on_one_union() {
+    use index::{
+        ingest::{
+            driver::FollowerDriver,
+            follower::{Follower, FollowerBatch, PollCadence},
+            watermark::{FeedWatermark, MemoryWatermarkStore},
+        },
+        protocol::VersionDelta,
+    };
+    use std::sync::Mutex;
+
+    struct Scripted {
+        batches: Mutex<Vec<Vec<CatalogOp>>>,
+    }
+
+    impl Follower for Scripted {
+        fn feed_id(&self) -> &str {
+            "degree-union"
+        }
+
+        fn cadence(&self) -> PollCadence {
+            PollCadence::EverySeconds(60)
+        }
+
+        fn poll(
+            &self,
+            _previous: Option<&FeedWatermark>,
+            now_unix_ms: i64,
+        ) -> Result<FollowerBatch, index::ingest::follower::Error> {
+            let ops = self
+                .batches
+                .lock()
+                .expect("batches")
+                .pop()
+                .unwrap_or_default();
+            Ok(FollowerBatch {
+                ops,
+                next_watermark: FeedWatermark {
+                    feed: "degree-union".into(),
+                    last_ref: Some(now_unix_ms.to_string()),
+                    last_checked_at: now_unix_ms,
+                    last_error: None,
+                },
+                caught_up: true,
+            })
+        }
+    }
+
+    let app_v2 = CatalogOp::UpsertVersion {
+        coordinates: VersionCoordinates {
+            version_id: version_id(4),
+            stem_id: stem_id(3),
+            version_canonical: "2.0.0".into(),
+            version_original: "2.0.0".into(),
+        },
+        published_at: None,
+        toolchain: None,
+        license: None,
+        edges: vec![
+            runtime(Language::Rust, "serde"),
+            runtime(Language::Rust, "tokio"),
+            runtime(Language::Rust, "app"),
+            EdgeWire {
+                dep_ecosystem: Language::Python,
+                dep_name_canonical: "serde".into(),
+                requirement: String::new(),
+                kind: EdgeKind::Runtime,
+                source: EdgeSource::Manifest,
+                resolved_stem: None,
+            },
+        ],
+        facets: facets_of(&[]),
+        source: None,
+    };
+    let first = vec![
+        package(1, "serde"),
+        package(2, "tokio"),
+        package(3, "app"),
+        version(1, "1.0.0", vec![], facets_of(&[])),
+        version(2, "1.0.0", vec![], facets_of(&[])),
+        version(
+            3,
+            "1.0.0",
+            vec![runtime(Language::Rust, "serde"), EdgeWire {
+                dep_ecosystem: Language::Rust,
+                dep_name_canonical: "cc".into(),
+                requirement: String::new(),
+                kind: EdgeKind::Build,
+                source: EdgeSource::Manifest,
+                resolved_stem: None,
+            }],
+            facets_of(&["leftover"]),
+        ),
+        app_v2,
+    ];
+    let second = vec![package(3, "app"), CatalogOp::VersionDelta {
+        delta: VersionDelta::Removed {
+            stem_id: stem_id(3),
+            version_id: version_id(4),
+            version_canonical: "2.0.0".into(),
+        },
+    }];
+
+    let writer = Arc::new(migrated_writer());
+    let watermarks = MemoryWatermarkStore::new();
+    let facts = Mutex::new(index::engine::turso_vc::VersionedCatalog::open().expect("ledger"));
+    let follower = Scripted {
+        batches: Mutex::new(vec![second, first]),
+    };
+    let store = GlobalStore::new(
+        Arc::clone(&writer),
+        InstanceToken::new("test/degree-union").expect("instance"),
+    );
+
+    FollowerDriver::new(&writer, &watermarks)
+        .with_facts(&facts)
+        .drive_once(&follower, 1)
+        .expect("first batch");
+    store.refresh_dependents().await.expect("sweep");
+    assert_eq!(
+        dependents_of(writer.engine(), 1),
+        1,
+        "serde once across versions"
+    );
+    assert_eq!(
+        dependents_of(writer.engine(), 2),
+        1,
+        "tokio from 2.0.0 only"
+    );
+    {
+        let ledger = facts.lock().expect("facts");
+        let degree = ledger.dependents();
+        assert_eq!(degree, ledger.dependents_from_tips());
+        assert_eq!(
+            degree
+                .get(&(Language::Rust, SmolStr::new("serde")))
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            degree
+                .get(&(Language::Rust, SmolStr::new("tokio")))
+                .copied(),
+            Some(1)
+        );
+        assert!(!degree.contains_key(&(Language::Rust, SmolStr::new("cc"))));
+        assert!(!degree.contains_key(&(Language::Rust, SmolStr::new("app"))));
+        assert!(!degree.contains_key(&(Language::Python, SmolStr::new("serde"))));
+        assert!(!degree.contains_key(&(Language::Rust, SmolStr::new("leftover"))));
+    }
+
+    FollowerDriver::new(&writer, &watermarks)
+        .with_facts(&facts)
+        .drive_once(&follower, 2)
+        .expect("drop 2.0.0");
+    store.refresh_dependents().await.expect("resweep");
+    assert_eq!(dependents_of(writer.engine(), 1), 1);
+    assert_eq!(dependents_of(writer.engine(), 2), 0);
+    let ledger = facts.lock().expect("facts");
+    let degree = ledger.dependents();
+    assert_eq!(degree, ledger.dependents_from_tips());
+    assert_eq!(
+        degree
+            .get(&(Language::Rust, SmolStr::new("serde")))
+            .copied(),
+        Some(1)
+    );
+    assert!(!degree.contains_key(&(Language::Rust, SmolStr::new("tokio"))));
 }

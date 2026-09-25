@@ -586,3 +586,48 @@ fn a_registry_sha256_beats_a_git_sha_and_keeps_the_version_pid() {
     assert_eq!(kernel.checksum, records[0].content);
     assert!(crate::pid::sha256("abc").is_none());
 }
+
+#[test]
+fn degree_histogram_matches_the_tip_walk_across_writes() {
+    use crate::record::{DepClass, DepEdge, PackageRecord};
+    use heart::Language;
+    use smol_str::SmolStr;
+
+    let classes = [
+        DepClass::Runtime,
+        DepClass::Dev,
+        DepClass::Optional,
+        DepClass::Build,
+        DepClass::Peer,
+    ];
+    let mut catalog = VersionedCatalog::open().expect("open");
+    for step in 0..48u32 {
+        let package = format!("pkg-{}", step % 5);
+        let version = format!("1.{}", step % 3);
+        let mut edge = DepEdge::runtime(format!("dep-{}", step % 7));
+        edge.class = classes[(step as usize) % classes.len()];
+        if step % 11 == 0 {
+            edge.dep_ecosystem = Some(Language::Python);
+        }
+        if step % 13 == 0 {
+            edge.name = SmolStr::new(&package);
+        }
+        let mut record =
+            PackageRecord::published(Language::Rust, &package, &version, &[] as &[&str]);
+        record.edges = vec![edge];
+        if step % 4 == 0 {
+            record.edges.push(DepEdge::runtime("serde"));
+        }
+        catalog.put_record(&record).expect("put");
+        if step % 9 == 0 {
+            catalog
+                .drop_version("rust", &package, &version)
+                .expect("drop");
+        }
+        assert_eq!(
+            catalog.dependents(),
+            catalog.dependents_from_tips(),
+            "step {step}"
+        );
+    }
+}

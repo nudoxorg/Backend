@@ -130,6 +130,10 @@ pub struct VersionedCatalog {
     /// names the row.
     pub(super) coords: BTreeMap<PackageKey, SmolStr>,
     pub(super) edge_tips: BTreeMap<SmolStr, Vec<EdgeTip>>,
+    /// In-degree maintained as edge tips change.
+    /// [`VersionedCatalog::dependents`] reads this. A full tip walk remains
+    /// the differential oracle.
+    pub(super) degree: super::degree::InDegree,
 }
 
 impl VersionedCatalog {
@@ -141,6 +145,7 @@ impl VersionedCatalog {
             db,
             coords: BTreeMap::new(),
             edge_tips: BTreeMap::new(),
+            degree: super::degree::InDegree::new(),
         })
     }
 
@@ -191,6 +196,7 @@ impl VersionedCatalog {
         let Some(pid) = self.pid_owned(ecosystem, name, version) else {
             return Ok(FactWrite::Unchanged);
         };
+        self.note_degree(ecosystem, name, version, &[]);
         let tips = self.edge_tips.remove(pid.as_str()).unwrap_or_default();
         let mut commit = None;
         for tip in &tips {
@@ -284,6 +290,12 @@ impl VersionedCatalog {
             )?);
             removed += 1;
         }
+        self.note_degree(
+            record.ecosystem.as_token(),
+            record.canonical_name.as_str(),
+            record.version.as_str(),
+            &next,
+        );
         if next.is_empty() {
             self.edge_tips.remove(&pid);
         } else {
