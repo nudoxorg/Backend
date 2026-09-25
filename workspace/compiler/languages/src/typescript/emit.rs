@@ -2083,8 +2083,32 @@ fn package_foreign_key(specifier: &str, display: &str) -> ForeignKey {
     )
 }
 
+fn generics_skeleton(params: &[crate::typescript::extract::GenericParamOwned]) -> String {
+    let mut s = String::from("<");
+    for param in params {
+        s.push_str(&param.name);
+        for bound in &param.bounds {
+            s.push(':');
+            s.push_str(&type_skeleton(bound));
+        }
+        if let Some(default) = &param.default {
+            s.push('=');
+            s.push_str(&type_skeleton(default));
+        }
+        s.push(',');
+    }
+    s.push('>');
+    s
+}
+
 fn function_skeleton(f: &FunctionBody) -> String {
-    let mut s = format!("fn:{}:{}:{}:", f.is_async, f.is_generator, f.has_body);
+    let mut s = format!(
+        "fn:{}:{}:{}:{}:",
+        f.is_async,
+        f.is_generator,
+        f.has_body,
+        generics_skeleton(&f.generics)
+    );
     for param in &f.params {
         s.push_str(&param.name);
         if param.is_optional {
@@ -2120,7 +2144,7 @@ fn body_skeleton(body: &DeclBody) -> String {
         }
         DeclBody::Function(f) => function_skeleton(f),
         DeclBody::Class(c) => {
-            let mut s = format!("class:{}", c.is_abstract);
+            let mut s = format!("class:{}{}", c.is_abstract, generics_skeleton(&c.generics));
             for ty in c.extends.iter().chain(c.implements.iter()) {
                 s.push('|');
                 s.push_str(&type_skeleton(ty));
@@ -2149,7 +2173,7 @@ fn body_skeleton(body: &DeclBody) -> String {
             s
         }
         DeclBody::Interface(i) => {
-            let mut s = String::from("iface");
+            let mut s = format!("iface{}", generics_skeleton(&i.generics));
             for ty in &i.extends {
                 s.push('|');
                 s.push_str(&type_skeleton(ty));

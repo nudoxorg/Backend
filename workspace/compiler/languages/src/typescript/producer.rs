@@ -491,6 +491,32 @@ mod tests {
     }
 
     #[test]
+    fn namespace_interfaces_with_different_type_param_bounds_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"bound","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "namespace N { export interface I { f<T>(a: T): T; } }\n\
+             namespace N { export interface I { f<T extends string>(a: T): T; } }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "bound", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("bound"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("different type-parameter bounds must seal");
+        let fs = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "f")
+            .count();
+        assert!(fs >= 2, "an unbounded T and T extends string are different overloads");
+    }
+
+    #[test]
     fn namespace_interfaces_with_different_index_signatures_both_survive() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
