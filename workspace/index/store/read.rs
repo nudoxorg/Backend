@@ -13,7 +13,7 @@ use heart::query::{AsOf, CatalogCommitHash};
 use crate::{
     codec::CodecError,
     engine::{self, CatalogEngine, Row, VersioningEngine},
-    entity::{git_watermarks, outbox, packages, sink_watermarks, versions},
+    entity::{feed_watermarks, git_watermarks, outbox, packages, sink_watermarks, versions},
     enums::{OutboxOperation, SinkKind, TextEnum},
     ids::{GenerationStamp, PackageId, PackageStemId, version_id},
     tables::{outbox::OutboxRow, packages::PackageRow},
@@ -26,6 +26,25 @@ use super::{CatalogCursor, ChangedPage, MetaError, VersionSnapshot};
 pub struct CatalogAsOf {
     /// The concrete commit this view is pinned to.
     pub commit: CatalogCommitHash,
+}
+
+/// The catalog crawl cursor for `feed`, when one has been committed.
+pub fn feed_cursor<E: CatalogEngine>(
+    engine: &E,
+    feed: &str,
+) -> Result<Option<crate::ingest::watermark::FeedWatermark>, MetaError> {
+    let stmt = feed_watermarks::Entity::find()
+        .filter(feed_watermarks::Column::Feed.eq(feed))
+        .build(DbBackend::Sqlite);
+    let mut rows = engine::query(engine, stmt, &mut |row| {
+        Ok(crate::ingest::watermark::FeedWatermark {
+            feed: row.get_text(0)?,
+            last_ref: row.get_optional_text(1)?,
+            last_checked_at: row.get_integer(2)?,
+            last_error: row.get_optional_text(3)?,
+        })
+    })?;
+    Ok(rows.pop())
 }
 
 /// The catalog's last seen ref digest for `stem`, when a poll has recorded one.

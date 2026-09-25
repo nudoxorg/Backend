@@ -89,8 +89,8 @@ pub enum DriveOutcome {
         /// Whether the feed reported itself caught up.
         caught_up: bool,
     },
-    /// The feed answered `304`/no-change: no catalog write, watermark clock
-    /// advanced (crawl time only).
+    /// The feed answered `304`/no-change. The crawl cursor advanced and no
+    /// package ops were applied.
     NoChange,
 }
 
@@ -237,14 +237,20 @@ where
         now_unix_ms: i64,
     ) -> Result<DriveOutcome, Error> {
         let feed = follower.feed_id().to_owned();
-        let previous = self.watermarks.feed_watermark(&feed)?;
+        let previous = match self.watermarks.feed_watermark(&feed)? {
+            Some(watermark) => Some(watermark),
+            None => crate::store::read::feed_cursor(self.writer.engine(), &feed).map_err(
+                |error| Error::Commit {
+                    feed: feed.clone(),
+                    message: error.to_string(),
+                },
+            )?,
+        };
 
         let batch = follower.poll(previous.as_ref(), now_unix_ms)?;
 
         if batch.ops.is_empty() {
-            // No-change / caught-up-with-nothing-new: advance only the crawl
-            // clock. No catalog transaction, so nothing to commit.
-            self.watermarks.put_feed_watermark(&batch.next_watermark)?;
+            self.persist_feed_cursor(&batch.next_watermark)?;
             return Ok(DriveOutcome::NoChange);
         }
 
@@ -261,7 +267,7 @@ where
         let report = self.commit_observed(&ops, &feed, format!("ingestor: {feed} batch"), None)?;
 
         // Only now that the batch is durable do we advance the watermark.
-        self.watermarks.put_feed_watermark(&batch.next_watermark)?;
+        self.persist_feed_cursor(&batch.next_watermark)?;
 
         Ok(DriveOutcome::Committed {
             applied: report.applied,
@@ -269,13 +275,35 @@ where
         })
     }
 
+    /// Write the feed cursor into the catalog, commit it, then update the
+    /// driver store. A crash before the driver write re-reads the catalog.
+    fn persist_feed_cursor(
+        &self,
+        watermark: &crate::ingest::watermark::FeedWatermark,
+    ) -> Result<(), Error> {
+        crate::store::apply::record_feed_cursor(self.writer.engine(), watermark).map_err(
+            |error| Error::Commit {
+                feed: watermark.feed.clone(),
+                message: error.to_string(),
+            },
+        )?;
+        self.writer
+            .commit_batch(&format!("ingestor: {} cursor", watermark.feed))
+            .map_err(|error| Error::Commit {
+                feed: watermark.feed.clone(),
+                message: error.to_string(),
+            })?;
+        self.watermarks.put_feed_watermark(watermark)?;
+        Ok(())
+    }
+
     /// Drive one git monitor tick through the catalog writer.
     ///
     /// This is the git equivalent of [`Self::drive_once`]: it reads the durable
     /// git watermark, lets [`GitMonitor`] compute a delta, commits the complete
     /// `SourceMoved` + version changeset atomically, and only then persists the
-    /// driver watermark. An unchanged poll performs no catalog write and emits
-    /// no outbox work.
+    /// driver watermark. An unchanged poll advances the catalog crawl clock and
+    /// emits no version ops or outbox work.
     pub fn drive_git_once<Repository: GitRepository>(
         &self,
         monitor: &GitMonitor<Repository>,

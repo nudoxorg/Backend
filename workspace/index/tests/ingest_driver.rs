@@ -202,6 +202,30 @@ fn driver_commits_homebrew_batch_and_advances_watermark() {
 }
 
 #[test]
+fn a_fresh_feed_watermark_resumes_the_catalog_etag() {
+    let writer = migrated_writer();
+    let facts = std::sync::Mutex::new(
+        index::engine::turso_vc::VersionedCatalog::open().expect("versioned catalog"),
+    );
+    let first_store = MemoryWatermarkStore::new();
+    let follower = HomebrewFollower::new(brew_transport());
+    FollowerDriver::new(&writer, &first_store)
+        .with_facts(&facts)
+        .drive_once(&follower, 1000)
+        .expect("first");
+
+    let resumed = MemoryWatermarkStore::new();
+    let outcome = FollowerDriver::new(&writer, &resumed)
+        .with_facts(&facts)
+        .drive_once(&follower, 2000)
+        .expect("resume");
+    assert!(matches!(outcome, DriveOutcome::NoChange));
+    let cursor = resumed.feed_watermark(FEED_ID).expect("read").expect("cursor");
+    assert_eq!(cursor.last_ref.as_deref(), Some("etag-v1"));
+    assert_eq!(cursor.last_checked_at, 2000);
+}
+
+#[test]
 fn driver_short_circuits_on_etag_304() {
     let writer = migrated_writer();
     let watermarks = MemoryWatermarkStore::new();

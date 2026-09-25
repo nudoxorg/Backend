@@ -13,7 +13,8 @@ use sea_orm::{
 use crate::{
     engine::{self, CatalogEngine, Value},
     entity::{
-        advisories, edges, generations, git_watermarks, listing_events, outbox, package_aliases,
+        advisories, edges, feed_watermarks, generations, git_watermarks, listing_events, outbox,
+        package_aliases,
         packages, repo_facts, repo_lineage, sink_watermarks,
     },
     enums::{OutboxOperation, SinkKind, SourceKind, TextEnum},
@@ -815,6 +816,32 @@ pub fn record_git_checked<E: CatalogEngine>(
                 .update_columns([
                     git_watermarks::Column::LastRev,
                     git_watermarks::Column::LastCheckedAt,
+                ])
+                .to_owned(),
+        )
+        .build(DbBackend::Sqlite);
+    engine::exec(engine, stmt)?;
+    Ok(())
+}
+
+/// Persist a feed crawl cursor. No outbox row. The caller commits the batch.
+pub fn record_feed_cursor<E: CatalogEngine>(
+    engine: &E,
+    watermark: &crate::ingest::watermark::FeedWatermark,
+) -> Result<(), MetaError> {
+    let model = feed_watermarks::ActiveModel {
+        feed: Set(watermark.feed.clone()),
+        last_ref: Set(watermark.last_ref.clone()),
+        last_checked_at: Set(watermark.last_checked_at),
+        last_error: Set(watermark.last_error.clone()),
+    };
+    let stmt = feed_watermarks::Entity::insert(model)
+        .on_conflict(
+            OnConflict::column(feed_watermarks::Column::Feed)
+                .update_columns([
+                    feed_watermarks::Column::LastRef,
+                    feed_watermarks::Column::LastCheckedAt,
+                    feed_watermarks::Column::LastError,
                 ])
                 .to_owned(),
         )
