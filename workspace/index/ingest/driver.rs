@@ -183,6 +183,7 @@ where
 {
     writer: &'writer CatalogWriter<Engine>,
     watermarks: &'writer Watermarks,
+    facts: Option<&'writer std::sync::Mutex<crate::engine::turso_vc::VersionedCatalog>>,
 }
 
 impl<'writer, Engine, Watermarks> FollowerDriver<'writer, Engine, Watermarks>
@@ -192,7 +193,24 @@ where
 {
     /// Wrap a writer handle and a watermark store.
     pub fn new(writer: &'writer CatalogWriter<Engine>, watermarks: &'writer Watermarks) -> Self {
-        Self { writer, watermarks }
+        Self {
+            writer,
+            watermarks,
+            facts: None,
+        }
+    }
+
+    /// Also version each committed package on `facts`.
+    ///
+    /// The SQL commit still happens first. A versioned write that fails leaves
+    /// the watermark where it was, so the next poll retries the upserts.
+    #[must_use]
+    pub fn with_facts(
+        mut self,
+        facts: &'writer std::sync::Mutex<crate::engine::turso_vc::VersionedCatalog>,
+    ) -> Self {
+        self.facts = Some(facts);
+        self
     }
 
     /// Drive one poll of `follower`: read its watermark, poll, apply the batch
@@ -235,6 +253,7 @@ where
                 feed: feed.clone(),
                 message: error.to_string(),
             })?;
+        self.remember_facts(&ops, &feed)?;
 
         // Only now that the batch is durable do we advance the watermark.
         self.watermarks.put_feed_watermark(&batch.next_watermark)?;
@@ -301,6 +320,7 @@ where
                         feed: repo_url.to_owned(),
                         message: error.to_string(),
                     })?;
+                self.remember_facts(&ops, repo_url)?;
                 self.watermarks.put_git_watermark(&GitWatermark {
                     stem_id: stem,
                     last_rev: Some(rev),
@@ -312,6 +332,22 @@ where
                 })
             }
         }
+    }
+
+    fn remember_facts(&self, ops: &[CatalogOp], feed: &str) -> Result<(), Error> {
+        let Some(facts) = self.facts else {
+            return Ok(());
+        };
+        let mut catalog = facts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for record in crate::edge_project::records_from_ops(ops) {
+            catalog.put_record(&record).map_err(|error| Error::Commit {
+                feed: feed.to_owned(),
+                message: error.to_string(),
+            })?;
+        }
+        Ok(())
     }
 
     /// Compare the monitor's current version snapshot with the durable catalog

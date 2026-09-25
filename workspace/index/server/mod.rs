@@ -256,7 +256,7 @@ pub struct Driver<M: EmbeddingModel> {
 
     /// Versioned package records. A publish writes here when the payload hash
     /// changes. The store is the in-memory Turso branch opened at assembly.
-    package_facts: std::sync::Mutex<crate::engine::turso_vc::VersionedCatalog>,
+    package_facts: std::sync::Arc<std::sync::Mutex<crate::engine::turso_vc::VersionedCatalog>>,
 }
 
 /// The metadata keyword-normalization tables, loaded once at assembly and
@@ -379,7 +379,7 @@ impl<M: EmbeddingModel> Driver<M> {
             None
         };
 
-        let package_facts = std::sync::Mutex::new(
+        let package_facts = std::sync::Arc::new(std::sync::Mutex::new(
             crate::engine::turso_vc::VersionedCatalog::open().map_err(|error| {
                 ServerError::Runtime(
                     registry::runtime::error::TextError::Io(std::io::Error::other(
@@ -388,7 +388,7 @@ impl<M: EmbeddingModel> Driver<M> {
                     .into(),
                 )
             })?,
-        );
+        ));
 
         Ok(Self {
             config,
@@ -409,6 +409,12 @@ impl<M: EmbeddingModel> Driver<M> {
     /// The keyword-normalization heuristics, if a `metadata_data_dir` was
     /// configured. `None` means facet extraction runs without synonym/specifics
     /// normalization.
+    pub(crate) fn package_facts(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<crate::engine::turso_vc::VersionedCatalog>> {
+        std::sync::Arc::clone(&self.package_facts)
+    }
+
     pub(crate) fn heuristics(&self) -> Option<&Heuristics> {
         self.heuristics.as_ref()
     }

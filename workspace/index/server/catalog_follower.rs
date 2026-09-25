@@ -267,10 +267,12 @@ pub(crate) async fn osv_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>
             }
         };
     let writer = std::sync::Arc::clone(server.base().global_store.writer());
+    let facts = server.package_facts();
     tracing::info!(?buckets, "osv follower started");
     loop {
         for bucket in &buckets {
             let writer = std::sync::Arc::clone(&writer);
+            let facts = std::sync::Arc::clone(&facts);
             let watermarks = std::sync::Arc::clone(&watermarks);
             let bucket_name = bucket.to_owned();
             let joined = tokio::task::spawn_blocking(move || {
@@ -283,6 +285,7 @@ pub(crate) async fn osv_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>
                     .map(|duration| duration.as_millis() as i64)
                     .unwrap_or(0);
                 crate::ingest::FollowerDriver::new(writer.as_ref(), watermarks.as_ref())
+                    .with_facts(facts.as_ref())
                     .drive_once(&follower, now)
             })
             .await;
