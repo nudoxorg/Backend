@@ -219,7 +219,7 @@ pub enum InternalError {
 
     /// Materializing the extracted package onto a temporary tree for the
     /// compiler failed.
-    #[error("could not materialize package sources for compilation")]
+    #[error("could not materialize package sources for compilation: {source}")]
     MaterializeForCompile {
         #[source]
         source: std::io::Error,

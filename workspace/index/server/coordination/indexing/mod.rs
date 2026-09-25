@@ -40,6 +40,26 @@ pub(super) use ir_stream::{
 /// configured job_lease cannot spin the renew loop.
 const MIN_HEARTBEAT: Duration = Duration::from_secs(5);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompileStrategy {
+    /// `NUDOX_GUEST_ROOTFS` is set on Linux: produce IR in the ephemeral cage.
+    Cage,
+    /// No guest rootfs is provisioned (or this host cannot run the cage):
+    /// run the in-process language producer on the materialized tree.
+    InProcess,
+}
+
+/// Cage only when this process is Linux AND a non-empty guest rootfs path is configured.
+/// Unset or empty means this serving node has no VM toolchain; use the in-process producer.
+pub(super) fn select_compile_strategy(guest_rootfs: Option<&std::ffi::OsStr>) -> CompileStrategy {
+    let provisioned = guest_rootfs.is_some_and(|value| !value.is_empty());
+    if provisioned && cfg!(target_os = "linux") {
+        CompileStrategy::Cage
+    } else {
+        CompileStrategy::InProcess
+    }
+}
+
 /// The indexing service: owns a handle to the assembled [`Server`] and drives
 /// packages through the pipeline.
 pub struct Indexer<M: EmbeddingModel> {
@@ -213,105 +233,107 @@ impl<M: EmbeddingModel> Indexer<M> {
         })?;
 
         // ── 2/3. Produce IR for this package and stage it ─────────────────────
-        // reconcile: in-process (macOS) vs cage (linux)
-        //
-        // Only a Linux forge node can actually prepare/fork the ephemeral
-        // SmolvmCage golden (libkrun); every other host has no golden rootfs to
-        // fork and no toolchain image reachable from here, so
-        // `run_producer_in_cage` would only ever hit its cold-boot fallback and
-        // then fail outright. On such hosts `compile_inprocess` runs the
-        // matching `nudox-languages` producer directly against the materialized
-        // source tree instead — see that module for what it does and does not
-        // reconstruct.
-        #[cfg(target_os = "linux")]
-        let identifiers = {
-            // Resolve toolchain golden + drive the cage (blocking). The cage is
-            // a synchronous, CPU/VM-bound boundary; run it off the async
-            // reactor via `spawn_blocking` so heartbeats/other jobs keep flowing.
-            let profile = cage::producer_profile(language);
-            let image = self
-                .toolchain_images
-                .as_deref()
-                .and_then(|store| store.lookup(profile))
-                .map(|img| img.config_digest)
-                .unwrap_or_else(|| cage::toolchain_image_digest_placeholder(language));
-            let cage_name = name.clone();
-            let ir_bytes = tokio::task::spawn_blocking(move || {
-                cage::run_producer_in_cage(
-                    &cage_name,
-                    language,
-                    profile,
-                    image,
+        let identifiers = match select_compile_strategy(
+            std::env::var_os("NUDOX_GUEST_ROOTFS").as_deref(),
+        ) {
+            CompileStrategy::InProcess => {
+                if cfg!(target_os = "linux") {
+                    tracing::info!(%package, "guest rootfs not provisioned; compiling in-process");
+                }
+                super::compile_inprocess::compile_in_process(
+                    stores,
+                    package,
+                    coordinates,
+                    builder,
                     &source_root,
-                    &scratch_root,
                 )
-            })
-            .await
-            .map_err(|join| {
-                ServerError::Internal(InternalError::CageCompile {
-                    package: name.clone(),
-                    reason: format!("cage task panicked or was cancelled: {join}"),
-                })
-            })??;
-
-            // `ingest_ir_bytes` decodes the producer's NdIrF1 stream via
-            // `ir_vcs::protocol::StreamReceiver`: Symbols frames become the IR
-            // blob section + the returned symbol identifier list, and Bodies
-            // frames are lowered into the blob `ReferenceSet` (oracle calls /
-            // type mentions). The producer binary is provisioned in the golden
-            // toolchain image; the on-wire framing contract is honored here.
-            //
-            // W1: a broken producer stream (missing Hello, an `Abort` frame,
-            // a truncated stream that never reaches `Finish`, or a host-side
-            // (de)serialization failure while staging what was recovered)
-            // must not complete as an empty-but-"Stored" snapshot — that is
-            // indistinguishable from a genuinely empty package and silently
-            // corrupts the catalog. `degraded_reason` carries that signal;
-            // when set, fail the job loudly (idempotent retry) instead.
-            let prior = ir_stream::prior_entry_keys(&stores.blobs, coordinates).await;
-            let outcome = ir_stream::ingest_ir_bytes(builder, &ir_bytes, &prior);
-            if let Some(reason) = outcome.degraded_reason {
-                return Err(ServerError::Internal(InternalError::IrStreamDegraded {
-                    package: name.clone(),
-                    reason,
-                }));
+                .await?
             }
-            let identifiers = outcome.identifiers;
+            CompileStrategy::Cage => {
+                #[cfg(not(target_os = "linux"))]
+                unreachable!("cage strategy is selected only on linux");
 
-            tracing::info!(
-                %package,
-                language = language.as_token(),
-                ir_bytes = ir_bytes.len(),
-                identifiers = identifiers.len(),
-                "cage compile produced IR"
-            );
+                #[cfg(target_os = "linux")]
+                {
+                    // Resolve toolchain golden + drive the cage (blocking). The cage is
+                    // a synchronous, CPU/VM-bound boundary; run it off the async
+                    // reactor via `spawn_blocking` so heartbeats/other jobs keep flowing.
+                    let profile = cage::producer_profile(language);
+                    let image = self
+                        .toolchain_images
+                        .as_deref()
+                        .and_then(|store| store.lookup(profile))
+                        .map(|img| img.config_digest)
+                        .unwrap_or_else(|| cage::toolchain_image_digest_placeholder(language));
+                    let cage_name = name.clone();
+                    let ir_bytes = tokio::task::spawn_blocking(move || {
+                        cage::run_producer_in_cage(
+                            &cage_name,
+                            language,
+                            profile,
+                            image,
+                            &source_root,
+                            &scratch_root,
+                        )
+                    })
+                    .await
+                    .map_err(|join| {
+                        ServerError::Internal(InternalError::CageCompile {
+                            package: name.clone(),
+                            reason: format!("cage task panicked or was cancelled: {join}"),
+                        })
+                    })??;
 
-            // Usage-query scope: load the reverse-position index (see
-            // `load_usage_scope`'s doc comment — this call site is
-            // `#[cfg(target_os = "linux")]`-only, so it is only exercised by a
-            // Linux `cargo test -p index --features server` run; the helper
-            // itself is not cfg-gated, so its body is still type-checked on
-            // every host).
-            load_usage_scope(
-                stores,
-                outcome.owning_package,
-                outcome.occurrences,
-                *builder.provisional_generation().as_bytes(),
-            )
-            .await;
+                    // `ingest_ir_bytes` decodes the producer's NdIrF1 stream via
+                    // `ir_vcs::protocol::StreamReceiver`: Symbols frames become the IR
+                    // blob section + the returned symbol identifier list, and Bodies
+                    // frames are lowered into the blob `ReferenceSet` (oracle calls /
+                    // type mentions). The producer binary is provisioned in the golden
+                    // toolchain image; the on-wire framing contract is honored here.
+                    //
+                    // W1: a broken producer stream (missing Hello, an `Abort` frame,
+                    // a truncated stream that never reaches `Finish`, or a host-side
+                    // (de)serialization failure while staging what was recovered)
+                    // must not complete as an empty-but-"Stored" snapshot — that is
+                    // indistinguishable from a genuinely empty package and silently
+                    // corrupts the catalog. `degraded_reason` carries that signal;
+                    // when set, fail the job loudly (idempotent retry) instead.
+                    let prior = ir_stream::prior_entry_keys(&stores.blobs, coordinates).await;
+                    let outcome = ir_stream::ingest_ir_bytes(builder, &ir_bytes, &prior);
+                    if let Some(reason) = outcome.degraded_reason {
+                        return Err(ServerError::Internal(InternalError::IrStreamDegraded {
+                            package: name.clone(),
+                            reason,
+                        }));
+                    }
+                    let identifiers = outcome.identifiers;
 
-            identifiers
+                    tracing::info!(
+                        %package,
+                        language = language.as_token(),
+                        ir_bytes = ir_bytes.len(),
+                        identifiers = identifiers.len(),
+                        "cage compile produced IR"
+                    );
+
+                    // Usage-query scope: load the reverse-position index (see
+                    // `load_usage_scope`'s doc comment — this call site is
+                    // `#[cfg(target_os = "linux")]`-only, so it is only exercised by a
+                    // Linux `cargo test -p index --features server` run; the helper
+                    // itself is not cfg-gated, so its body is still type-checked on
+                    // every host).
+                    load_usage_scope(
+                        stores,
+                        outcome.owning_package,
+                        outcome.occurrences,
+                        *builder.provisional_generation().as_bytes(),
+                    )
+                    .await;
+
+                    identifiers
+                }
+            }
         };
-
-        #[cfg(not(target_os = "linux"))]
-        let identifiers = super::compile_inprocess::compile_in_process(
-            stores,
-            package,
-            coordinates,
-            builder,
-            &source_root,
-        )
-        .await?;
 
         Ok(identifiers)
     }
@@ -1093,6 +1115,32 @@ mod tests {
     use crate::server::registry::blob::BlobManifest;
     use crate::server::registry::upstream::UpstreamError;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // ── compile strategy selection ─────────────────────────────────────────
+
+    #[test]
+    fn select_compile_strategy_none_returns_in_process() {
+        assert_eq!(select_compile_strategy(None), CompileStrategy::InProcess);
+    }
+
+    #[test]
+    fn select_compile_strategy_empty_returns_in_process() {
+        assert_eq!(
+            select_compile_strategy(Some(std::ffi::OsStr::new(""))),
+            CompileStrategy::InProcess
+        );
+    }
+
+    #[test]
+    fn select_compile_strategy_provisioned_guest_rootfs() {
+        let strategy =
+            select_compile_strategy(Some(std::ffi::OsStr::new("/var/lib/nudox/guest")));
+        if cfg!(target_os = "linux") {
+            assert_eq!(strategy, CompileStrategy::Cage);
+        } else {
+            assert_eq!(strategy, CompileStrategy::InProcess);
+        }
+    }
 
     // ── W4: bounded, polite outer retry around the archive GET ────────────
 

@@ -17,6 +17,13 @@ let
   backendRunner = pkgs.writeShellScriptBin "nudox-backend-run" ''
     set -eu
 
+    mkdir -p /tmp \
+      "${dataRoot}/catalog" \
+      "${dataRoot}/data" \
+      "${dataRoot}/blobs" \
+      "${dataRoot}/qdrant"
+    chmod 1777 /tmp
+
     export NUDOX_DEFINITIVE__ENDPOINTS__CATALOG_DIRECTORY="${dataRoot}/catalog"
     export NUDOX_DEFINITIVE__DATA_DIRECTORY="${dataRoot}/data"
     export NUDOX_DEFINITIVE__ENDPOINTS__OBJECT_STORE="file://${dataRoot}/blobs"
