@@ -1,6 +1,6 @@
 //! Decode the cage producer's NdIrF1 IR stream and derive the reference set.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::server::registry::blob::creation::BlobBuilder;
 
@@ -360,13 +360,13 @@ fn build_reference_set_from_bodies(
     intro_to_path: &HashMap<ir::change::IntroId, String>,
     owning_pkg: Option<&str>,
 ) -> crate::server::registry::blob::ReferenceSet {
-    use crate::server::registry::blob::{FileReferences, Reference, ReferenceSet};
+    use crate::server::registry::blob::Reference;
     use ir::body::BodyEmbed;
     use ir::vocab::ReferenceKind;
     use smol_str::SmolStr;
 
     // Per-file accumulator: file_path → Vec<Reference>.
-    let mut by_file: HashMap<SmolStr, Vec<Reference>> = HashMap::new();
+    let mut by_file: BTreeMap<SmolStr, Vec<Reference>> = BTreeMap::new();
 
     for bw in bodies {
         let src_path = intro_to_path
@@ -408,14 +408,7 @@ fn build_reference_set_from_bodies(
         }
     }
 
-    // Discard empty file buckets (entries with Absent bodies contribute nothing).
-    let file_refs: Vec<FileReferences> = by_file
-        .into_iter()
-        .filter(|(_, refs)| !refs.is_empty())
-        .map(|(path, references)| FileReferences { path, references })
-        .collect();
-
-    ReferenceSet { by_file: file_refs }
+    seal_references(by_file)
 }
 
 /// Derive usage-query [`ir::vocab::Occurrence`]s from the accumulated `Bodies`
@@ -581,13 +574,13 @@ pub(in crate::server::coordination) fn build_reference_set_from_table(
     source_root: &std::path::Path,
     owning_pkg: Option<&str>,
 ) -> crate::server::registry::blob::ReferenceSet {
-    use crate::server::registry::blob::{FileReferences, RefTarget, Reference, ReferenceSet};
+    use crate::server::registry::blob::{RefTarget, Reference};
     use ir::index::Ref;
     use ir::vocab::ReferenceKind;
     use smol_str::SmolStr;
     use std::collections::HashSet;
 
-    let mut by_file: HashMap<SmolStr, Vec<Reference>> = HashMap::new();
+    let mut by_file: BTreeMap<SmolStr, Vec<Reference>> = BTreeMap::new();
 
     for (intro, entry) in table.iter() {
         // Node tree edges (parent + children) are structural containment, not
@@ -633,13 +626,22 @@ pub(in crate::server::coordination) fn build_reference_set_from_table(
         });
     }
 
-    let by_file: Vec<FileReferences> = by_file
-        .into_iter()
-        .filter(|(_, refs)| !refs.is_empty())
-        .map(|(path, references)| FileReferences { path, references })
-        .collect();
+    seal_references(by_file)
+}
 
-    ReferenceSet { by_file }
+/// Path order is the section order. A `HashMap` would make the postcard bytes
+/// depend on iteration, so an unchanged reference graph would hash as new.
+fn seal_references(
+    by_file: BTreeMap<smol_str::SmolStr, Vec<crate::server::registry::blob::Reference>>,
+) -> crate::server::registry::blob::ReferenceSet {
+    use crate::server::registry::blob::{FileReferences, ReferenceSet};
+    ReferenceSet {
+        by_file: by_file
+            .into_iter()
+            .filter(|(_, refs)| !refs.is_empty())
+            .map(|(path, references)| FileReferences { path, references })
+            .collect(),
+    }
 }
 
 /// Build an `External` [`RefTarget`](crate::server::registry::blob::RefTarget)
@@ -1566,5 +1568,40 @@ mod tests {
             body: ir::body::BodyEmbed::Absent,
         }];
         assert!(build_occurrences_from_bodies(&bodies).is_empty());
+    }
+
+    #[test]
+    fn reference_section_bytes_follow_path_order() {
+        use crate::server::registry::blob::{RefTarget, Reference};
+        use smol_str::SmolStr;
+
+        let edge = |path: &str| {
+            (
+                SmolStr::new(path),
+                vec![Reference {
+                    target: RefTarget::Local("intro".to_owned()),
+                    span_start: 0,
+                    span_end: 1,
+                    kind: 2,
+                }],
+            )
+        };
+        let mut forward = BTreeMap::new();
+        forward.insert(edge("b.rs").0, edge("b.rs").1);
+        let (path, refs) = edge("a.rs");
+        forward.insert(path, refs);
+        let mut backward = BTreeMap::new();
+        let (path, refs) = edge("a.rs");
+        backward.insert(path, refs);
+        let (path, refs) = edge("b.rs");
+        backward.insert(path, refs);
+        let left = super::seal_references(forward);
+        let right = super::seal_references(backward);
+        assert_eq!(left.by_file[0].path.as_str(), "a.rs");
+        assert_eq!(left.by_file[1].path.as_str(), "b.rs");
+        assert_eq!(
+            left.encode().expect("encode"),
+            right.encode().expect("encode")
+        );
     }
 }
