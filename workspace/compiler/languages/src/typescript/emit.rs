@@ -848,11 +848,7 @@ fn emit_enum(
     let mut variant_refs: Vec<Ref<Variant>> = Vec::with_capacity(body.variants.len());
 
     for (idx, v) in body.variants.iter().enumerate() {
-        let variant_id = TsId::new(
-            id.module.clone(),
-            format!("{}::{}", id.name, v.name),
-            idx as u32,
-        );
+        let variant_id = child_id(&id, &v.name, idx as u32);
         let vref: Ref<Variant> = out.refer(variant_id.clone());
         variant_refs.push(vref);
 
@@ -2296,6 +2292,25 @@ fn body_skeleton(body: &DeclBody) -> String {
             for member in &c.members {
                 s.push_str(&modifiers_skeleton(&member.modifiers));
                 s.push(':');
+                s.push_str(match member.signature_kind {
+                    crate::typescript::extract::SignatureKind::Method => "method",
+                    crate::typescript::extract::SignatureKind::Get => "get",
+                    crate::typescript::extract::SignatureKind::Set => "set",
+                });
+                if member.class_flags.declare {
+                    s.push_str("+declare");
+                }
+                if member.class_flags.override_ {
+                    s.push_str("+override");
+                }
+                if member.class_flags.definite {
+                    s.push_str("+definite");
+                }
+                if let Some(initializer) = &member.initializer {
+                    s.push('=');
+                    s.push_str(initializer);
+                }
+                s.push(':');
                 s.push_str(&decorators_skeleton(&member.decorators));
                 s.push_str(&doc_skeleton(&member.doc));
                 s.push(':');
@@ -2334,6 +2349,9 @@ fn body_skeleton(body: &DeclBody) -> String {
             }
             for index in &c.index_signatures {
                 s.push_str("index:");
+                if index.is_static {
+                    s.push_str("static ");
+                }
                 if index.readonly {
                     s.push_str("ro ");
                 }
@@ -2390,6 +2408,9 @@ fn body_skeleton(body: &DeclBody) -> String {
             }
             for index in &i.index_signatures {
                 s.push_str("index:");
+                if index.is_static {
+                    s.push_str("static ");
+                }
                 if index.readonly {
                     s.push_str("ro ");
                 }

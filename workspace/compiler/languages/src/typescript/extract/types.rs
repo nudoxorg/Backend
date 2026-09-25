@@ -325,7 +325,10 @@ fn lower_ts_type_impl<'a>(
                         let name = p
                             .key
                             .static_name()
-                            .map_or_else(|| "__computed".to_string(), |s| s.to_string());
+                            .map_or_else(
+                                || p.key.span().source_text(source).to_string(),
+                                |s| s.to_string(),
+                            );
                         let ty = p.type_annotation.as_ref().map_or(TypeOwned::Any, |a| {
                             lower_ts_type_impl(&a.type_annotation, source, type_params)
                         });
@@ -610,14 +613,14 @@ fn lower_ts_tuple_element<'a>(
 ) -> TypeOwned {
     use oxc_ast::ast::TSTupleElement;
     match elem {
-        TSTupleElement::TSOptionalType(o) => {
-            lower_ts_type_impl(&o.type_annotation, source, type_params)
-        }
-        TSTupleElement::TSRestType(r) => TypeOwned::Array(Box::new(lower_ts_type_impl(
-            &r.type_annotation,
-            source,
-            type_params,
-        ))),
+        TSTupleElement::TSOptionalType(o) => TypeOwned::Apply {
+            base: Box::new(TypeOwned::Nominal("?".to_string())),
+            args: vec![lower_ts_type_impl(&o.type_annotation, source, type_params)],
+        },
+        TSTupleElement::TSRestType(r) => TypeOwned::Apply {
+            base: Box::new(TypeOwned::Nominal("...".to_string())),
+            args: vec![lower_ts_type_impl(&r.type_annotation, source, type_params)],
+        },
         // ── Named tuple member — preserve the label ───────────────────────
         // Previously the label was stripped, which is a silent data loss.
         // We emit TypeOwned::NamedTupleElem; emit.rs maps it to
@@ -745,7 +748,7 @@ fn lower_formal_params<'a>(
             ty,
             is_optional: param.optional,
             is_rest: false,
-            is_readonly: false,
+            is_readonly: param.readonly,
             span_start: span.start,
             span_end: span.end,
         });

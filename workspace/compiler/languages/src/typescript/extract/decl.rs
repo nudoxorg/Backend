@@ -37,11 +37,11 @@ use oxc_syntax::module_record::{
 };
 
 use super::{
-    Accessibility, AttrTok, ClassBody, ConstBody, DeclBody, DeclFact, EnumBody,
+    Accessibility, AttrTok, ClassBody, ClassFlags, ConstBody, DeclBody, DeclFact, EnumBody,
     ExportTable, FunctionBody, ImportFact, ImportName, IndexSignatureFact, IndirectExport,
     InterfaceBody, LocalExport, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts,
     NamespaceBody, OccurrenceFact, OccurrenceKind, ParamFact, PropertyFact, ReceiverKind,
-    StarExport, StaticBody, TypeAliasBody, VariantFact, jsdoc,
+    SignatureKind, StarExport, StaticBody, TypeAliasBody, VariantFact, jsdoc,
     types::{lower_ts_type, lower_ts_type_with_params, lower_type_params},
 };
 
@@ -1079,7 +1079,7 @@ fn extract_declaration<'a>(
                 return vec![];
             }
             let discriminant = bump_count(&name, name_counts);
-            let body = lower_enum(e);
+            let body = lower_enum(e, source);
             vec![DeclFact {
                 name,
                 visibility,
@@ -1429,6 +1429,9 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators: Vec::new(),
+                class_flags: ClassFlags::default(),
+                initializer: None,
+                signature_kind: SignatureKind::Method,
                 span_start: span.start,
                 span_end: span.end,
             });
@@ -1458,6 +1461,9 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
                             modifiers: MemberModifiers::default(),
                             doc: jsdoc::jsdoc_for_span(semantic, span),
                             decorators: Vec::new(),
+                            class_flags: ClassFlags::default(),
+                            initializer: None,
+                            signature_kind: SignatureKind::Method,
                             span_start: span.start,
                             span_end: span.end,
                         });
@@ -1500,6 +1506,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
                 key_ty: lower_ts_type(&param.type_annotation.type_annotation, source),
                 value_ty: lower_ts_type(&idx.type_annotation.type_annotation, source),
                 readonly: idx.readonly,
+                is_static: idx.r#static,
                 span_start: idx_span.start,
                 span_end: idx_span.end,
             })
@@ -1559,6 +1566,19 @@ fn lower_class_element<'a>(
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
+                class_flags: ClassFlags {
+                    declare: false,
+                    override_: m.r#override,
+                    definite: false,
+                },
+                initializer: None,
+                signature_kind: match m.kind {
+                    MethodDefinitionKind::Get => SignatureKind::Get,
+                    MethodDefinitionKind::Set => SignatureKind::Set,
+                    MethodDefinitionKind::Method | MethodDefinitionKind::Constructor => {
+                        SignatureKind::Method
+                    }
+                },
                 span_start: span.start,
                 span_end: span.end,
             })
@@ -1602,6 +1622,16 @@ fn lower_class_element<'a>(
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
+                class_flags: ClassFlags {
+                    declare: p.declare,
+                    override_: p.r#override,
+                    definite: p.definite,
+                },
+                initializer: p
+                    .value
+                    .as_ref()
+                    .map(|value| value.span().source_text(source).to_string()),
+                signature_kind: SignatureKind::Method,
                 span_start: span.start,
                 span_end: span.end,
             })
@@ -1652,6 +1682,9 @@ fn lower_class_element<'a>(
                 modifiers,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
+                class_flags: ClassFlags::default(),
+                initializer: None,
+                signature_kind: SignatureKind::Method,
                 span_start: span.start,
                 span_end: span.end,
             })
@@ -1679,6 +1712,9 @@ fn lower_class_element<'a>(
                 },
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators: Vec::new(),
+                class_flags: ClassFlags::default(),
+                initializer: None,
+                signature_kind: SignatureKind::Method,
                 span_start: span.start,
                 span_end: span.end,
             })
@@ -1866,6 +1902,7 @@ fn lower_interface<'a>(
                         key_ty,
                         value_ty,
                         readonly: idx.readonly,
+                        is_static: idx.r#static,
                         span_start: idx_span.start,
                         span_end: idx_span.end,
                     });
@@ -1912,7 +1949,7 @@ fn lower_interface<'a>(
     }
 }
 
-fn lower_enum(e: &TSEnumDeclaration<'_>) -> EnumBody {
+fn lower_enum<'a>(e: &TSEnumDeclaration<'a>, source: &'a str) -> EnumBody {
     let is_const = e.r#const;
     let variants: Vec<VariantFact> = e
         .body
@@ -1928,8 +1965,7 @@ fn lower_enum(e: &TSEnumDeclaration<'_>) -> EnumBody {
                 Expression::StringLiteral(s) => format!("\"{}\"", s.value),
                 Expression::NumericLiteral(n) => n.value.to_string(),
                 Expression::UnaryExpression(u) => {
-                    // Handle `-1` style numeric enum values.
-                    format!("{:?}", u.operator)
+                    format!("{:?}{}", u.operator, u.argument.span().source_text(source))
                 }
                 other => format!("{other:?}"),
             });

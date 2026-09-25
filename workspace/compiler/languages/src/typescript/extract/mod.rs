@@ -366,6 +366,7 @@ pub struct IndexSignatureFact {
     /// The value type.
     pub value_ty: TypeOwned,
     pub readonly: bool,
+    pub is_static: bool,
     /// Byte span of the `TSIndexSignature` node.
     pub span_start: u32,
     pub span_end: u32,
@@ -411,10 +412,19 @@ pub struct MethodFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SignatureKind {
+    #[default]
     Method,
     Get,
     Set,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClassFlags {
+    pub declare: bool,
+    pub override_: bool,
+    pub definite: bool,
 }
 
 #[derive(Debug)]
@@ -425,6 +435,9 @@ pub struct MemberFact {
     pub doc: DocFacts,
     /// Decorators on the member (e.g. `@readonly`, `@Column()`).
     pub decorators: Vec<AttrTok>,
+    pub class_flags: ClassFlags,
+    pub initializer: Option<String>,
+    pub signature_kind: SignatureKind,
     /// Byte span of the declaring class-element node (`MethodDefinition`,
     /// `PropertyDefinition`, `AccessorProperty`, `StaticBlock`), or of the
     /// synthesizing constructor-parameter / `this.x = ...` assignment for a

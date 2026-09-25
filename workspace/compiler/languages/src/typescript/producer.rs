@@ -645,6 +645,78 @@ mod tests {
                 "a",
             ),
             (
+                "class-getter",
+                "namespace N { export class C { get f(): string { return \"\"; } } }\n\
+                 namespace N { export class C { f(): string { return \"\"; } } }\n",
+                "f",
+            ),
+            (
+                "class-setter",
+                "namespace N { export class C { set f(v: number) {} } }\n\
+                 namespace N { export class C { f(v: number) {} } }\n",
+                "f",
+            ),
+            (
+                "declare-field",
+                "namespace N { export class C { x: string; } }\n\
+                 namespace N { export class C { declare x: string; } }\n",
+                "x",
+            ),
+            (
+                "definite-field",
+                "namespace N { export class C { x: string; } }\n\
+                 namespace N { export class C { x!: string; } }\n",
+                "x",
+            ),
+            (
+                "override-method",
+                "namespace N { export class C { m(): void {} } }\n\
+                 namespace N { export class C { override m(): void {} } }\n",
+                "m",
+            ),
+            (
+                "field-initializer",
+                "namespace N { export class C { x = 1; } }\n\
+                 namespace N { export class C { x = 2; } }\n",
+                "x",
+            ),
+            (
+                "static-index",
+                "namespace N { export class C { static [k: string]: string; } }\n\
+                 namespace N { export class C { [k: string]: string; } }\n",
+                "C",
+            ),
+            (
+                "tuple-optional",
+                "namespace N { export type T = [string]; }\n\
+                 namespace N { export type T = [string?]; }\n",
+                "T",
+            ),
+            (
+                "tuple-rest",
+                "namespace N { export type T = [string, ...number[]]; }\n\
+                 namespace N { export type T = [string, number[]]; }\n",
+                "T",
+            ),
+            (
+                "readonly-fn-param",
+                "namespace N { export type T = (readonly x: string[]) => void; }\n\
+                 namespace N { export type T = (x: string[]) => void; }\n",
+                "T",
+            ),
+            (
+                "enum-unary",
+                "namespace N { export enum E { A = -1 } }\n\
+                 namespace N { export enum E { A = -2 } }\n",
+                "A",
+            ),
+            (
+                "computed-key",
+                "namespace N { export interface I { a: { [k1]: string } } }\n\
+                 namespace N { export interface I { a: { [k2]: string } } }\n",
+                "a",
+            ),
+            (
                 "docs",
                 "namespace N { /** one */ export interface I { x: string; } }\n\
                  namespace N { /** two */ export interface I { x: string; } }\n",
