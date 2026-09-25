@@ -9,8 +9,8 @@ use backend_engine::{
     ViewRoot,
 };
 use backend_library::{
-    AdvisoryPackageDto, CommandMutation, RegistryDownloadCount, RegistryFactAvailability,
-    RegistryNativeMetadata, RegistryReleaseStanding, command_spec,
+    AdvisoryPackageDto, CommandMutation, RegistryDownloadCount, RegistryEcosystem,
+    RegistryFactAvailability, RegistryNativeMetadata, RegistryReleaseStanding, Row, command_spec,
 };
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
@@ -144,7 +144,12 @@ impl ProductState {
                 return Err("references require compiler publication authority".to_owned());
             }
             SurfaceCommand::Explore { query, limit } => (
-                SurfaceReply::Explored(catalog_page(catalog, query.as_ref(), limit)),
+                SurfaceReply::Explored(explore_page(
+                    view,
+                    catalog,
+                    query.as_ref(),
+                    limit,
+                )?),
                 false,
             ),
             SurfaceCommand::IndexSearch { query, limit } => (
@@ -152,7 +157,7 @@ impl ProductState {
                 false,
             ),
             SurfaceCommand::Package { package } => {
-                (SurfaceReply::Package(packages(catalog, &package)), false)
+                (SurfaceReply::Package(package_page(view, catalog, &package)?), false)
             }
             SurfaceCommand::ForgeAdd { coordinate } => (
                 SurfaceReply::ForgePackageAdded(forge_unavailable(&coordinate)),
@@ -237,7 +242,7 @@ impl ProductState {
                 title,
                 opener,
             } => (
-                SurfaceReply::TreeOpened(self.open_tree(subject, parent, title, opener)?),
+                SurfaceReply::TreeOpened(self.open_tree(view, subject, parent, title, opener)?),
                 true,
             ),
             SurfaceCommand::TreeClose { node, branch } => (
@@ -431,11 +436,13 @@ impl ProductState {
 
     fn open_tree(
         &mut self,
+        view: &ViewRoot,
         subject: TreeSubject,
         parent: Option<TreeNodeId>,
         title: Option<ProductText>,
         opener: TreeOpener,
     ) -> Result<TreeNodeRecord, String> {
+        let (subject, title) = resolve_tree_subject(view, subject, title)?;
         if parent.is_some_and(|parent| !self.state.tree.iter().any(|row| row.id == parent)) {
             return Err("tree parent does not exist".to_owned());
         }
@@ -459,7 +466,6 @@ impl ProductState {
         for row in &mut self.state.tree {
             row.active = false;
         }
-        let title = title.unwrap_or_else(|| subject_title(&subject));
         let row = TreeNodeRecord {
             id,
             parent,
@@ -566,6 +572,155 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
         .map(Vec::into_boxed_slice)
 }
 
+fn explore_page(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    query: Option<&ProductText>,
+    limit: u16,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    if let Some(query_text) = query
+        && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
+    {
+        return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
+    }
+    let registry = catalog_page(catalog, query, limit);
+    if !registry.is_empty() {
+        return Ok(registry);
+    }
+    if let Some(query_text) = query
+        && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
+    {
+        return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
+    }
+    Ok(registry)
+}
+
+fn indexed_project_for_query(view: &ViewRoot, query: &str) -> Option<String> {
+    for row in view.rows() {
+        if matches!(row.id, RowId::Package(_)) && row.label == query {
+            return Some(row.label.clone());
+        }
+    }
+    view.rows().iter().find_map(|row| {
+        row.label
+            .split_once("::")
+            .and_then(|(project, _)| (project == query).then(|| project.to_owned()))
+    })
+}
+
+fn indexed_explore_page(
+    view: &ViewRoot,
+    project_root: &str,
+    query: &str,
+    limit: u16,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let prefix = format!("{project_root}::");
+    let filter = query.to_ascii_lowercase();
+    let mut records = Vec::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Symbol(_)) || !row.label.starts_with(&prefix) {
+            continue;
+        }
+        if query != project_root
+            && !row.label.to_ascii_lowercase().contains(&filter)
+            && !row
+                .label
+                .rsplit("::")
+                .next()
+                .is_some_and(|name| name.to_ascii_lowercase().contains(&filter))
+        {
+            continue;
+        }
+        records.push(declaration_explore_record(row)?);
+        if records.len() >= usize::from(limit) {
+            break;
+        }
+    }
+    Ok(records.into_boxed_slice())
+}
+
+fn declaration_identity(row: &Row) -> Result<(String, String), String> {
+    let name = row
+        .label
+        .rsplit("::")
+        .next()
+        .ok_or_else(|| format!("declaration row {} has no symbol name", row.label))?;
+    let path = row
+        .source
+        .captured()
+        .map(|location| location.path().to_owned())
+        .or_else(|| {
+            row.label
+                .split_once("::")
+                .and_then(|(_, rest)| rest.rsplit_once("::"))
+                .map(|(path, _)| path)
+                .map(|path| {
+                    path.rsplit_once(':')
+                        .map_or(path, |(path_without_line, _)| path_without_line)
+                        .to_owned()
+                })
+        })
+        .ok_or_else(|| format!("declaration row {} has no source path", row.label))?;
+    Ok((name.to_owned(), path))
+}
+
+fn declaration_explore_record(row: &Row) -> Result<RegistryPackageRecord, String> {
+    let (name, path) = declaration_identity(row)?;
+    Ok(RegistryPackageRecord {
+        coordinate: PackageReference::Local(
+            ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
+        ),
+        ecosystem: RegistryEcosystem::Cargo,
+        name: ProductText::new(name).map_err(|error| error.to_string())?,
+        version: ProductText::new(path).map_err(|error| error.to_string())?,
+        bytes: 0,
+        standing: RegistryReleaseStanding::Available,
+        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+        facts_version: [0; 32],
+        native_metadata_version: RegistryNativeMetadata::unavailable(
+            RegistryEcosystem::Cargo,
+            "indexed declaration",
+        )
+        .identity()
+        .map_err(|error| error.to_string())?,
+        native_metadata: RegistryNativeMetadata::unavailable(
+            RegistryEcosystem::Cargo,
+            "indexed declaration",
+        ),
+        forge_sources: Box::new([]),
+        advisory: AdvisoryPackageDto::unknown(),
+    })
+}
+
+fn resolve_tree_subject(
+    view: &ViewRoot,
+    subject: TreeSubject,
+    title: Option<ProductText>,
+) -> Result<(TreeSubject, ProductText), String> {
+    match subject {
+        TreeSubject::Declaration(text) => {
+            let coordinate = text.as_str();
+            let row = view
+                .rows()
+                .iter()
+                .find(|row| matches!(row.id, RowId::Symbol(_)) && row.label == coordinate)
+                .ok_or_else(|| format!("declaration {coordinate} is not indexed"))?;
+            let (name, path) = declaration_identity(row)?;
+            Ok((
+                TreeSubject::Declaration(
+                    ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
+                ),
+                ProductText::new(format!("{name} · {path}"))
+                    .map_err(|error| error.to_string())?,
+            ))
+        }
+        other => Ok((
+            other.clone(),
+            title.unwrap_or_else(|| subject_title(&other)),
+        )),
+    }
+}
+
 fn catalog_page(
     catalog: &[RegistryPackageRecord],
     query: Option<&ProductText>,
@@ -600,6 +755,39 @@ fn packages(
         .cloned()
         .collect::<Vec<_>>()
         .into_boxed_slice()
+}
+
+fn package_page(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    package: &PackageReference,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let records = packages(catalog, package);
+    if !records.is_empty() {
+        return Ok(records);
+    }
+    let PackageReference::Purl(_) = package else {
+        return Err(format!(
+            "package {} is not recorded in the registry catalog",
+            package.as_str()
+        ));
+    };
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        let project_root = Path::new(&row.label);
+        let (_, _, manifest) = super::local_manifest::cargo_package_identity(project_root)?;
+        if &manifest == package {
+            return Ok(Box::new([super::local_manifest::cargo_registry_record(
+                project_root,
+            )?]));
+        }
+    }
+    Err(format!(
+        "package {} does not match any indexed local manifest",
+        package.as_str()
+    ))
 }
 fn versions(
     catalog: &[RegistryPackageRecord],

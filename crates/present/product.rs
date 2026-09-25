@@ -649,6 +649,12 @@ fn tree_row(record: &TreeNodeRecord) -> ProductRecord {
     if record.active {
         tags.push("active".to_owned());
     }
+    if let TreeSubject::Declaration(_) = &record.subject {
+        if let Some((name, path)) = record.title.as_str().split_once(" · ") {
+            tags.push(format!("name {name}"));
+            tags.push(format!("path {path}"));
+        }
+    }
     ProductRecord::new(
         format!("{} · {}", record.title.as_str(), subject_text(&record.subject)),
         Some(record.id.get().to_string()),
@@ -667,7 +673,22 @@ const fn opener_name(opener: &TreeOpener) -> &'static str {
 fn subject_text(subject: &TreeSubject) -> String {
     match subject {
         TreeSubject::Package(package) => format!("package {}", package.as_str()),
-        TreeSubject::Declaration(text) => format!("declaration {}", text.as_str()),
+        TreeSubject::Declaration(text) => {
+            if let Some((name, path)) = text.as_str().split_once("::").and_then(|(_, rest)| {
+                rest.rsplit_once("::").map(|(path, name)| {
+                    (
+                        name.to_owned(),
+                        path.rsplit_once(':')
+                            .map_or(path, |(path_without_line, _)| path_without_line)
+                            .to_owned(),
+                    )
+                })
+            }) {
+                format!("declaration {name} at {path}")
+            } else {
+                format!("declaration {}", text.as_str())
+            }
+        }
         TreeSubject::Explore(query) => query.as_ref().map_or_else(
             || "explore".to_owned(),
             |query| format!("explore {}", query.as_str()),
