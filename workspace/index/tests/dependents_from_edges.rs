@@ -17,7 +17,7 @@ use index::{
     Package,
     catalog::{GlobalStore, InstanceToken},
     engine::CatalogEngine,
-    enums::{EdgeKind, EdgeSource},
+    enums::{EdgeKind, EdgeSource, TextEnum},
     metadata::SearchFacets,
     package::{Coordinates, PackageName},
     protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
@@ -728,5 +728,61 @@ fn an_unobserved_rewrite_keeps_both_stores_and_a_manifest_clear_drops_them() {
         .expect("read")
         .expect("row");
     assert!(gone.edges.is_empty());
+    assert_eq!(ledger.dependents(), ledger.dependents_from_tips());
+}
+
+#[test]
+fn a_feed_republish_agrees_on_sql_and_the_ledger() {
+    use index::{enums::EdgeSource, record::PackageRecord};
+
+    let writer = migrated_writer();
+    let mut ledger = index::engine::turso_vc::VersionedCatalog::open().expect("ledger");
+    let seeded = vec![
+        package(5, "app"),
+        version(
+            5,
+            "1.0.0",
+            vec![runtime(Language::Rust, "serde"), build_edge("criterion")],
+            facets_of(&[]),
+        ),
+    ];
+    writer.apply_ops(&seeded).expect("sql");
+    for effect in index::edge_project::effects_from_ops(&seeded, None) {
+        ledger.apply_effect(&effect).expect("ledger");
+    }
+
+    let revised = PackageRecord::published(Language::Rust, "app", "1.0.0", &["tokio"]);
+    let snapshot = index::protocol::EdgeSnapshot::feed(index::edge_project::project_edges(
+        Language::Rust,
+        &revised.edges,
+        EdgeSource::Feed,
+    ));
+    let mut republish = version(5, "1.0.0", vec![], facets_of(&[]));
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut republish {
+        *edges = snapshot.clone();
+    }
+    writer.apply_ops(&[republish]).expect("sql feed");
+    ledger
+        .put_observed(&revised, &snapshot)
+        .expect("ledger feed");
+
+    assert_eq!(edge_kinds(writer.engine(), version_id(5)), vec![
+        ("build".to_owned(), "criterion".to_owned()),
+        ("runtime".to_owned(), "tokio".to_owned()),
+    ]);
+    let tip = ledger
+        .materialize("rust", "app", "1.0.0")
+        .expect("read")
+        .expect("row");
+    let mut pairs: Vec<_> = tip
+        .edges
+        .iter()
+        .map(|edge| (edge.kind.as_token().to_owned(), edge.name.to_string()))
+        .collect();
+    pairs.sort();
+    assert_eq!(pairs, vec![
+        ("build".to_owned(), "criterion".to_owned()),
+        ("runtime".to_owned(), "tokio".to_owned()),
+    ]);
     assert_eq!(ledger.dependents(), ledger.dependents_from_tips());
 }

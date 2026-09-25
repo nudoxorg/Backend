@@ -183,7 +183,8 @@ impl<M: EmbeddingModel> Server<M> {
         cap: &WriteCap,
         coordinates: &PackageCoordinates,
     ) -> ServerResult<Initialized> {
-        self.ensure_initialized_with(cap, coordinates, &[], None).await
+        self.ensure_initialized_with(cap, coordinates, &[], None)
+            .await
     }
 
     /// Like [`Self::ensure_initialized`], and when `dependencies` is non-empty
@@ -276,7 +277,13 @@ impl<M: EmbeddingModel> Server<M> {
                     None => crate::engine::turso_vc::FactWrite::Unchanged,
                 }
             } else {
-                facts.put_record(&published).map_err(|error| {
+                let snapshot =
+                    crate::protocol::EdgeSnapshot::feed(crate::edge_project::project_edges(
+                        coordinates.ecosystem(),
+                        &published.edges,
+                        crate::enums::EdgeSource::Feed,
+                    ));
+                facts.put_observed(&published, &snapshot).map_err(|error| {
                     ServerError::Runtime(
                         crate::server::registry::runtime::error::TextError::Io(
                             std::io::Error::other(error.to_string()),
