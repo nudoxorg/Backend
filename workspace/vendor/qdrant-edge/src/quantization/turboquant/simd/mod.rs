@@ -42,9 +42,9 @@ pub use query2bit::{
     score_2bit_internal_scalar, score_2bit_internal_weighted, score_2bit_internal_weighted_scalar,
 };
 #[cfg(target_arch = "x86_64")]
-pub use query2bit::{
-    score_2bit_internal_avx2, score_2bit_internal_avx512_vnni, score_2bit_internal_sse,
-};
+pub use query2bit::{score_2bit_internal_avx2, score_2bit_internal_sse};
+#[cfg(all(target_arch = "x86_64", not(qdrant_edge_no_avx512_vnni)))]
+pub use query2bit::score_2bit_internal_avx512_vnni;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 pub use query2bit::{score_2bit_internal_neon, score_2bit_internal_neon_sdot};
 pub use query4bit::{
@@ -52,9 +52,9 @@ pub use query4bit::{
     score_4bit_internal_scalar, score_4bit_internal_weighted, score_4bit_internal_weighted_scalar,
 };
 #[cfg(target_arch = "x86_64")]
-pub use query4bit::{
-    score_4bit_internal_avx2, score_4bit_internal_avx512_vnni, score_4bit_internal_sse,
-};
+pub use query4bit::{score_4bit_internal_avx2, score_4bit_internal_sse};
+#[cfg(all(target_arch = "x86_64", not(qdrant_edge_no_avx512_vnni)))]
+pub use query4bit::score_4bit_internal_avx512_vnni;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 pub use query4bit::{score_4bit_internal_neon, score_4bit_internal_neon_sdot};
 

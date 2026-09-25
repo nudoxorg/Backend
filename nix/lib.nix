@@ -64,8 +64,10 @@ let
       };
       inherit buildFeatures;
       RUSTC_BOOTSTRAP = "1";
-      # Thin LTO re-lowers qdrant-edge's avx512vnni functions and this LLVM
-      # cannot select vpdpbusd. Leave the functions in their own objects.
+      # This LLVM cannot lower qdrant-edge's AVX-512 VNNI kernels (vpdpbusd).
+      # Disable them at compile time; runtime dispatch falls back to AVX2.
+      RUSTFLAGS = "--cfg qdrant_edge_no_avx512_vnni";
+      # Thin LTO re-lowers target_feature functions without their features.
       CARGO_PROFILE_RELEASE_LTO = "false";
       cargoBuildFlags = [
         "-p"

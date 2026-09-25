@@ -269,11 +269,14 @@ impl Query4bitSimd {
     fn dotprod_raw_best(&self, vector: &[u8]) -> i64 {
         #[cfg(target_arch = "x86_64")]
         {
-            if std::is_x86_feature_detected!("avx512f")
-                && std::is_x86_feature_detected!("avx512bw")
-                && std::is_x86_feature_detected!("avx512vnni")
+            #[cfg(not(qdrant_edge_no_avx512_vnni))]
             {
-                return unsafe { self.dotprod_raw_avx512_vnni(vector) };
+                if std::is_x86_feature_detected!("avx512f")
+                    && std::is_x86_feature_detected!("avx512bw")
+                    && std::is_x86_feature_detected!("avx512vnni")
+                {
+                    return unsafe { self.dotprod_raw_avx512_vnni(vector) };
+                }
             }
             if std::is_x86_feature_detected!("avx2") {
                 return unsafe { self.dotprod_raw_avx2(vector) };
@@ -389,11 +392,14 @@ pub fn score_4bit_internal(a: &[u8], b: &[u8]) -> f32 {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::is_x86_feature_detected!("avx512f")
-            && std::is_x86_feature_detected!("avx512bw")
-            && std::is_x86_feature_detected!("avx512vnni")
+        #[cfg(not(qdrant_edge_no_avx512_vnni))]
         {
-            return unsafe { x64::score_4bit_internal_avx512_vnni(a, b) };
+            if std::is_x86_feature_detected!("avx512f")
+                && std::is_x86_feature_detected!("avx512bw")
+                && std::is_x86_feature_detected!("avx512vnni")
+            {
+                return unsafe { x64::score_4bit_internal_avx512_vnni(a, b) };
+            }
         }
         if std::is_x86_feature_detected!("avx2") {
             return unsafe { x64::score_4bit_internal_avx2(a, b) };
@@ -522,9 +528,11 @@ pub use arm::{
 };
 #[cfg(target_arch = "x86_64")]
 pub use x64::{
-    score_4bit_internal_avx2, score_4bit_internal_avx512_vnni, score_4bit_internal_sse,
-    score_4bit_internal_weighted_avx2, score_4bit_internal_weighted_sse,
+    score_4bit_internal_avx2, score_4bit_internal_sse, score_4bit_internal_weighted_avx2,
+    score_4bit_internal_weighted_sse,
 };
+#[cfg(all(target_arch = "x86_64", not(qdrant_edge_no_avx512_vnni)))]
+pub use x64::score_4bit_internal_avx512_vnni;
 
 /// 4-bit-specific test helpers.  Bit-width-agnostic helpers (`pack_codes`,
 /// `sample_normal_vec`, `encode_to_nearest_centroid`) live in

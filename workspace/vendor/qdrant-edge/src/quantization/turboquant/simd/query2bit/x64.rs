@@ -201,6 +201,7 @@ impl Query2bitSimd {
     ///
     /// # Safety
     /// CPU must support `avx512f`, `avx512bw`, `avx512vnni`, `ssse3`, `sse4.1`.
+    #[cfg(not(qdrant_edge_no_avx512_vnni))]
     #[target_feature(enable = "avx512f,avx512bw,avx512vnni,sse4.1,ssse3")]
     pub unsafe fn dotprod_raw_avx512_vnni(&self, vector: &[u8]) -> i64 {
         use core::arch::x86_64::*;
@@ -582,6 +583,7 @@ pub unsafe fn score_2bit_internal_weighted_avx2(a: &[u8], b: &[u8], weights: &[i
 ///
 /// # Safety
 /// CPU must support `avx512f`, `avx512bw`, `avx512vnni`, `ssse3`, `sse4.1`.
+#[cfg(not(qdrant_edge_no_avx512_vnni))]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni,sse4.1,ssse3")]
 pub unsafe fn score_2bit_internal_avx512_vnni(a: &[u8], b: &[u8]) -> f32 {
     use core::arch::x86_64::*;

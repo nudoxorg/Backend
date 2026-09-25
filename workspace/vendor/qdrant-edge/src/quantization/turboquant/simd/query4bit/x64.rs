@@ -144,6 +144,7 @@ impl Query4bitSimd {
     ///
     /// # Safety
     /// CPU must support `avx512f`, `avx512bw`, and `avx512vnni`.
+    #[cfg(not(qdrant_edge_no_avx512_vnni))]
     #[target_feature(enable = "avx512f,avx512bw,avx512vnni,sse4.1,ssse3")]
     pub unsafe fn dotprod_raw_avx512_vnni(&self, vector: &[u8]) -> i64 {
         use core::arch::x86_64::*;
@@ -389,6 +390,7 @@ pub unsafe fn score_4bit_internal_avx2(a: &[u8], b: &[u8]) -> f32 {
 ///
 /// # Safety
 /// CPU must support `avx512f`, `avx512bw`, and `avx512vnni`.
+#[cfg(not(qdrant_edge_no_avx512_vnni))]
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 pub unsafe fn score_4bit_internal_avx512_vnni(a: &[u8], b: &[u8]) -> f32 {
     use core::arch::x86_64::*;
