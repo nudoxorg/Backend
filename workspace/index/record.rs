@@ -311,6 +311,28 @@ impl PackageRecord {
     }
 }
 
+/// Runtime and optional dependency names, trimmed, sorted, and de-duplicated.
+///
+/// This is the facet list. Build, dev, and peer edges are absent, so the list
+/// agrees with [`PackageRecord::runtime_names`].
+#[must_use]
+pub fn runtime_facet_names(edges: &[DepEdge]) -> Vec<SmolStr> {
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+    for edge in edges {
+        if !edge.class.is_runtime_or_optional() {
+            continue;
+        }
+        let name = edge.name.as_str().trim();
+        if name.is_empty() || !seen.insert(name) {
+            continue;
+        }
+        names.push(SmolStr::new(name));
+    }
+    names.sort();
+    names
+}
+
 /// Whether `record`'s runtime and optional dependency names equal `facet_deps`.
 ///
 /// Both sides are trimmed (`str::trim`) and compared as sets: order and
@@ -377,6 +399,17 @@ mod tests {
     }
 
     #[test]
+    fn runtime_facet_names_drop_build_dev_and_peer() {
+        let edges = mixed_edges();
+        let names = runtime_facet_names(&edges);
+        assert_eq!(names, vec![
+            smol("serde"),
+            smol("serde_json"),
+            smol("tokio")
+        ]);
+        assert!(edge_names_agree(&sample(edges), &names));
+    }
+
     fn edge_names_agree_is_true_for_the_same_trimmed_set() {
         let record = sample(mixed_edges());
         let facet = ["serde_json", "  serde  ", "tokio", "serde", "tokio"];

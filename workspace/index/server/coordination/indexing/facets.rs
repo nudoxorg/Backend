@@ -333,6 +333,9 @@ pub(super) fn extract_facets(
 
     let rich = rich::extract(&input, norms, synonyms, specifics);
     let mut facets = SearchFacets::from_rich(&rich);
+    // Search keywords may mention every manifest name. The stored facet list
+    // is only the runtime edges, so it agrees with the catalog.
+    facets.dependencies = crate::record::runtime_facet_names(&facts.dependencies);
 
     // Propagate the manifest description into the facet row (S2).
     facets.description = facts.description.map(smol_str::SmolStr::from);
@@ -351,7 +354,8 @@ pub(super) fn extract_facets(
         .filter(|l| !l.is_empty())
         .map(|l| smol_str::SmolStr::from(l.to_ascii_lowercase()));
 
-    // `dependencies` already flows via `SearchFacets::from_rich` — no duplication.
+    // Keyword extraction saw every manifest name. `facets.dependencies` was
+    // replaced with the runtime edge names above.
 
     if let Some((total, withdrawn, this_withdrawn, _)) = listing {
         facets.release_count = Some(total);
@@ -468,8 +472,7 @@ restriction, including without limitation the rights to use, copy, modify...";
             ],
         );
         let coordinates = cpp_coordinates("github.com/example/demo");
-        let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+        let facets = extract_facets(&coordinates, &manifest, &sections, &[], None, None)
             .expect("facets")
             .facets;
 
@@ -497,8 +500,7 @@ restriction, including without limitation the rights to use, copy, modify...";
             &[("CMakeLists.txt", CMAKE_WITH_NO_LICENSE)],
         );
         let coordinates = cpp_coordinates("github.com/example/demo");
-        let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+        let facets = extract_facets(&coordinates, &manifest, &sections, &[], None, None)
             .expect("facets")
             .facets;
 
@@ -524,8 +526,7 @@ restriction, including without limitation the rights to use, copy, modify...";
             &[("vcpkg.json", vcpkg_json), ("meson.build", meson_build)],
         );
         let coordinates = cpp_coordinates("github.com/example/demo");
-        let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+        let facets = extract_facets(&coordinates, &manifest, &sections, &[], None, None)
             .expect("facets")
             .facets;
 
@@ -555,8 +556,7 @@ license = "MIT"
             &[("Cargo.toml", cargo_toml)],
         );
         let coordinates = rust_coordinates("demo");
-        let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+        let facets = extract_facets(&coordinates, &manifest, &sections, &[], None, None)
             .expect("facets")
             .facets;
 
@@ -573,8 +573,7 @@ license = "MIT"
             &[("README.md", b"# demo\n")],
         );
         let coordinates = cpp_coordinates("github.com/example/demo");
-        let facets =
-            extract_facets(&coordinates, &manifest, &sections, &[], None, None)
+        let facets = extract_facets(&coordinates, &manifest, &sections, &[], None, None)
             .expect("facets")
             .facets;
 
