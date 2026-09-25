@@ -301,8 +301,16 @@ async fn run_search(
     }
 
     // ── Section 0: Name search ─────────────────────────────────────────────
+    // The corpus name index already knows which packages declare a prefix.
+    // Opening the rest would repeat work the index exists to avoid.
     let name_start = Instant::now();
-    let name_rows = collect_name_hits(&packages, &query);
+    let prefix = query.text.trim().to_lowercase();
+    let name_packages = if prefix.is_empty() {
+        Vec::new()
+    } else {
+        corpus.packages_with_name_prefix(&prefix).await
+    };
+    let name_rows = collect_name_hits(&name_packages, &query);
     let name_elapsed = name_start.elapsed();
 
     if cancel.is_cancelled() {
@@ -332,8 +340,18 @@ async fn run_search(
     }
 
     // ── Section 1: Type / kind search ──────────────────────────────────────
+    // Signature facets resolve type *names* through the same index. Kind
+    // facets still read every resident package, because "all functions" is
+    // the whole corpus.
     let type_start = Instant::now();
-    let type_rows = collect_type_hits(&packages, &query);
+    let declared = match crate::typequery::TypeQuery::parse(&query.text) {
+        Some(parsed) => {
+            let names: Vec<String> = parsed.facets.iter().map(|facet| facet.type_name.clone()).collect();
+            corpus.packages_declaring(&names).await
+        }
+        None => std::collections::BTreeMap::new(),
+    };
+    let type_rows = collect_type_hits(&packages, &query, &declared);
     let type_elapsed = type_start.elapsed();
 
     if cancel.is_cancelled() {
@@ -650,6 +668,44 @@ mod tests {
             name_pos < semantic_pos,
             "SECTION_NAME (pos {name_pos}) must precede SECTION_SEMANTIC (pos {semantic_pos})"
         );
+    }
+
+    /// The live name section agrees with a full-corpus walk of the same query.
+    ///
+    /// The driver only opens packages the name index names. This oracle opens
+    /// every package. The two rankings have to be the same rows in the same
+    /// order; a prefix filter that dropped a real hit would diverge here.
+    #[tokio::test]
+    async fn name_section_matches_a_full_corpus_walk() {
+        let engine = make_engine();
+        wait_for_corpus(&engine).await;
+
+        let query = SearchQuery {
+            text: "Po".to_owned(),
+            kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
+            packages: Vec::new(),
+            limit: 50,
+        };
+        let oracle = collect_name_hits(&engine.corpus().packages().await, &query);
+        assert!(
+            !oracle.is_empty(),
+            "the fixture declares Point; an empty oracle makes this comparison vacuous"
+        );
+        let (_handle, rx) = engine.search(query, Gen(4));
+        let events = drain(rx).await;
+        let live = events.into_iter().find_map(|event| match event {
+            SearchEvent::Section { section, rows, .. } if section == SECTION_NAME => {
+                Some(rows.to_vec())
+            }
+            _ => None,
+        });
+        let live = live.expect("name section");
+        assert_eq!(live.len(), oracle.len());
+        for (left, right) in live.iter().zip(oracle.iter()) {
+            assert_eq!(left.key, right.key);
+            assert_eq!(left.score, right.score);
+        }
     }
 
     #[tokio::test]

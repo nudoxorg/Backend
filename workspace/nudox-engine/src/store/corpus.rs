@@ -19,8 +19,8 @@
 //!   Tokio runtime. A lock-free structure would be cheaper per-operation but
 //!   would complicate the ownership model of the returned `Arc<PackageView>`.
 //! * `package()` and `entry()` clone the `Arc<PackageView>` before releasing
-//!   the guard, so callers always hold a value (never a reference into a
-//!   locked structure) — this is safe across `.await` points.
+//!   the guard, so callers always hold a value (never a reference into a locked
+//!   structure) — this is safe across `.await` points.
 //!
 //! # Why `BTreeMap` and not `HashMap`
 //!
@@ -34,8 +34,10 @@
 //! house rule from `nudox_ir::continuity`: iteration is over `BTreeMap`/
 //! `BTreeSet`.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use nudox_ir::{
     change::{IntroId, PackageLineageId, StableRef},
@@ -51,15 +53,17 @@ use crate::store::package::PackageView;
 // ---------------------------------------------------------------------------
 
 /// The inner, `Arc`-wrapped state shared across all `Corpus` handles.
+struct CorpusState {
+    /// Loaded packages, ordered by lineage.
+    packages: BTreeMap<PackageLineageId, Arc<PackageView>>,
+    /// Lowercased symbol name → the packages that declare it.
+    ///
+    /// Name search ranges this map instead of opening every package.
+    names: BTreeMap<String, BTreeSet<PackageLineageId>>,
+}
+
 struct CorpusInner {
-    /// The complete map of loaded packages, keyed by their lineage.
-    ///
-    /// Each `PackageView` is itself `Arc`-wrapped so that returning a
-    /// reference to one package does not require holding the outer lock.
-    ///
-    /// Ordered by `PackageLineageId` (ecosystem, then name) so that every
-    /// iteration of the corpus is reproducible — see the module docs.
-    packages: RwLock<BTreeMap<PackageLineageId, Arc<PackageView>>>,
+    state: RwLock<CorpusState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +86,10 @@ impl Corpus {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(CorpusInner {
-                packages: RwLock::new(BTreeMap::new()),
+                state: RwLock::new(CorpusState {
+                    packages: BTreeMap::new(),
+                    names: BTreeMap::new(),
+                }),
             }),
         }
     }
@@ -91,8 +98,58 @@ impl Corpus {
     ///
     /// Called by the engine loader when a `LoadEvent::Ready` arrives.
     pub async fn insert(&self, package: Arc<PackageView>) {
-        let mut map = self.inner.packages.write().await;
-        map.insert(package.lineage().clone(), package);
+        let mut state = self.inner.state.write().await;
+        let id = package.lineage().clone();
+        if let Some(previous) = state.packages.get(&id).cloned() {
+            detach_names(&mut state.names, &previous);
+        }
+        attach_names(&mut state.names, &package);
+        state.packages.insert(id, package);
+    }
+
+    /// Packages that declare a symbol whose lowercased name starts with
+    /// `prefix_lower`. The prefix must already be lowercased. Lineage order.
+    pub async fn packages_with_name_prefix(&self, prefix_lower: &str) -> Vec<Arc<PackageView>> {
+        let state = self.inner.state.read().await;
+        let mut ids = BTreeSet::new();
+        for (key, owners) in state.names.range::<str, _>((
+            std::ops::Bound::Included(prefix_lower),
+            std::ops::Bound::Unbounded,
+        )) {
+            if !key.starts_with(prefix_lower) {
+                break;
+            }
+            ids.extend(owners.iter().cloned());
+        }
+        ids.into_iter()
+            .filter_map(|id| state.packages.get(&id).cloned())
+            .collect()
+    }
+
+    /// Packages that declare each exact lowercased symbol name.
+    ///
+    /// Signature search resolves `return:Result` against these owners, then
+    /// still walks every package for *uses* of that declaration. A name with
+    /// no owner is present and maps to an empty vec.
+    pub async fn packages_declaring(
+        &self,
+        names: &[String],
+    ) -> BTreeMap<String, Vec<Arc<PackageView>>> {
+        let state = self.inner.state.read().await;
+        let mut out = BTreeMap::new();
+        for name in names {
+            let owners = state
+                .names
+                .get(name)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| state.packages.get(id).cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.insert(name.clone(), owners);
+        }
+        out
     }
 
     /// Look up a package by its lineage identity.
@@ -101,8 +158,8 @@ impl Corpus {
     /// failed during loading). The returned `Arc` can be held across
     /// `.await` points safely.
     pub async fn package(&self, id: &PackageLineageId) -> Option<Arc<PackageView>> {
-        let map = self.inner.packages.read().await;
-        map.get(id).cloned()
+        let state = self.inner.state.read().await;
+        state.packages.get(id).cloned()
     }
 
     /// Look up a single entry by its [`StableRef`] (package lineage + intro).
@@ -110,8 +167,8 @@ impl Corpus {
     /// Returns `None` if the package is not loaded or the intro is not present
     /// in that package's declaration table.
     pub async fn entry(&self, key: &StableRef) -> Option<EntryRef> {
-        let map = self.inner.packages.read().await;
-        let pkg = map.get(&key.package)?.clone();
+        let state = self.inner.state.read().await;
+        let pkg = state.packages.get(&key.package)?.clone();
         // Verify the intro exists before producing the EntryRef.
         let _ = pkg.view().entry(key.intro)?;
         Some(EntryRef {
@@ -131,18 +188,38 @@ impl Corpus {
     /// this Vec and its ranking inherits the order for rows that tie, so a
     /// caller must be able to rely on two processes producing the same list.
     pub async fn packages(&self) -> Vec<Arc<PackageView>> {
-        let map = self.inner.packages.read().await;
-        map.values().cloned().collect()
+        let state = self.inner.state.read().await;
+        state.packages.values().cloned().collect()
     }
 
     /// The number of packages currently in the corpus.
     pub async fn len(&self) -> usize {
-        self.inner.packages.read().await.len()
+        self.inner.state.read().await.packages.len()
     }
 
     /// True if no packages have been loaded.
     pub async fn is_empty(&self) -> bool {
-        self.inner.packages.read().await.is_empty()
+        self.inner.state.read().await.packages.is_empty()
+    }
+}
+
+fn attach_names(names: &mut BTreeMap<String, BTreeSet<PackageLineageId>>, package: &PackageView) {
+    let id = package.lineage().clone();
+    for key in package.indexes().by_name.keys() {
+        names.entry(key.to_owned()).or_default().insert(id.clone());
+    }
+}
+
+fn detach_names(names: &mut BTreeMap<String, BTreeSet<PackageLineageId>>, package: &PackageView) {
+    let id = package.lineage();
+    for key in package.indexes().by_name.keys() {
+        let Some(owners) = names.get_mut(key) else {
+            continue;
+        };
+        owners.remove(id);
+        if owners.is_empty() {
+            names.remove(key);
+        }
     }
 }
 
@@ -226,12 +303,16 @@ mod tests {
     }
 
     fn make_package(name: &str) -> Arc<PackageView> {
+        make_package_with_symbol(name, "root")
+    }
+
+    fn make_package_with_symbol(name: &str, symbol: &str) -> Arc<PackageView> {
         let lid = lineage(name);
         let mut table = PristineIntroTable::new();
         table.insert_live(
             intro(1),
             nudox_ir::entry::Entry::new(
-                sym("root"),
+                sym(symbol),
                 Node::build(None::<nudox_ir::index::RawRef>, []),
                 Kind::Module(Module),
             ),
@@ -292,6 +373,28 @@ mod tests {
 
         let pkgs = corpus.packages().await;
         assert_eq!(pkgs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn name_prefix_skips_packages_that_do_not_declare_the_symbol() {
+        let corpus = Corpus::new();
+        corpus.insert(make_package("alpha")).await;
+        corpus
+            .insert(make_package_with_symbol("beta", "widget"))
+            .await;
+
+        let matched = corpus.packages_with_name_prefix("wid").await;
+        let names: Vec<_> = matched
+            .iter()
+            .map(|pkg| pkg.lineage().name.as_str().to_owned())
+            .collect();
+        assert_eq!(names, vec!["beta".to_owned()]);
+
+        corpus
+            .insert(make_package_with_symbol("beta", "other"))
+            .await;
+        assert!(corpus.packages_with_name_prefix("wid").await.is_empty());
+        assert_eq!(corpus.packages_with_name_prefix("oth").await.len(), 1);
     }
 
     /// `packages()` is ordered by lineage, and that order does not depend on

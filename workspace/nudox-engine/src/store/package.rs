@@ -687,12 +687,10 @@ impl PackageIndexes {
     ///
     /// Every index here is *derived* state that ends up on a user's screen, so
     /// the walk that feeds them all is the single place determinism has to be
-    /// established. `IrView::entries` yields in `HashMap` order — a function of
-    /// std's per-process `RandomState` seed — so a walk through it makes each
-    /// index individually responsible for re-imposing an order, and the one
-    /// index that forgot (`by_name`) leaked the seed all the way to the search
-    /// ranking. Fixing it here means a *future* index added to this loop is
-    /// deterministic without its author having to know that.
+    /// established. `IrView::entries` yields declaration order, which is not
+    /// `IntroId` order. This walk uses `entries_sorted`, so every derived index
+    /// is a function of the sealed table. A future index added to this loop
+    /// stays deterministic without its author having to re-impose that order.
     pub fn build(view: &IrView) -> Self {
         let mut by_name = NameIndex::new();
         let mut by_kind: HashMap<KindDiscriminant, Vec<IntroId>> = HashMap::new();

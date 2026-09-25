@@ -354,9 +354,13 @@ pub(crate) fn collect_name_hits(
 pub(crate) fn collect_type_hits(
     packages: &[std::sync::Arc<crate::store::package::PackageView>],
     query: &SearchQuery,
+    declared: &std::collections::BTreeMap<
+        String,
+        Vec<std::sync::Arc<crate::store::package::PackageView>>,
+    >,
 ) -> Vec<HitRow> {
     if let Some(type_query) = crate::typequery::TypeQuery::parse(&query.text) {
-        return collect_signature_hits(packages, query, &type_query);
+        return collect_signature_hits(packages, query, &type_query, declared);
     }
     collect_kind_facet_hits(packages, query)
 }
@@ -381,6 +385,10 @@ fn collect_signature_hits(
     packages: &[std::sync::Arc<crate::store::package::PackageView>],
     query: &SearchQuery,
     type_query: &crate::typequery::TypeQuery,
+    declared: &std::collections::BTreeMap<
+        String,
+        Vec<std::sync::Arc<crate::store::package::PackageView>>,
+    >,
 ) -> Vec<HitRow> {
     use nudox_ir::change::StableRef;
 
@@ -400,7 +408,10 @@ fn collect_signature_hits(
     let mut resolved: Vec<Vec<StableRef>> = Vec::with_capacity(type_query.facets.len());
     for facet in &type_query.facets {
         let mut targets: Vec<StableRef> = Vec::new();
-        for pkg in packages {
+        let Some(owners) = declared.get(&facet.type_name) else {
+            return Vec::new();
+        };
+        for pkg in owners {
             for entry in pkg.indexes().by_name.get_exact(&facet.type_name) {
                 targets.push(StableRef::new(pkg.lineage().clone(), entry.intro));
             }

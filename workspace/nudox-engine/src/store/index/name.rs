@@ -130,6 +130,11 @@ impl NameIndex {
             .flat_map(|(_, entries)| entries.iter())
     }
 
+    /// Lowercased keys, in lexicographic order.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.inner.keys().map(String::as_str)
+    }
+
     /// Total number of unique (key, intro) pairs stored.
     pub fn len(&self) -> usize {
         self.inner.values().map(Vec::len).sum()
