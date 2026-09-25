@@ -627,14 +627,30 @@ in
             # real rowan/ra_ap_parser lexing and green-tree construction
             # inside the sysroot load, not a spin or a redundant rescan —
             # no product inefficiency found to fix, so this test gets the
-            # same scoped budget as its siblings instead.
+            # same scoped budget as its siblings instead. Build 2321 killed
+            # it at the earlier 90s x 3 = 270s on the Linux worker, so it now
+            # shares the 90s x 6 budget of `rust_remaining_terminals`.
             filter = "test(rust_references_snapshot)";
             test-group = "native-compiler";
             threads-required = 2;
             priority = 90;
             slow-timeout = {
               period = "90s";
-              terminate-after = 3;
+              terminate-after = 6;
+            };
+          }
+          {
+            # `render_snapshot_rust` renders real Rust corpus crates through
+            # the same uncached rust-analyzer sysroot bootstrap, but its name
+            # misses every native-compiler filter. Build 2321 killed it at
+            # the closure default of 60s x 3 = 180s.
+            filter = "binary_id(backend-semantic::render_snapshot_corpus) & test(render_snapshot_rust)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+            slow-timeout = {
+              period = "90s";
+              terminate-after = 6;
             };
           }
           {
