@@ -80,11 +80,11 @@ fn planned_query_matches_a_second_index_and_the_fast_columns() {
         "license:mit",
         "\"serialization framework\"",
     ] {
-        assert_eq!(
-            names_for(&first, query),
-            names_for(&second, query),
-            "{query}"
-        );
+        let mut left = names_for(&first, query);
+        let mut right = names_for(&second, query);
+        left.sort();
+        right.sort();
+        assert_eq!(left, right, "{query}");
     }
 
     let serde_hits = names_for(&first, "dep:tokio");

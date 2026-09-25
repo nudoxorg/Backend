@@ -30,10 +30,6 @@ pub struct Merged {
 /// best-scored record as representative.
 /// Stable: input order breaks ties so pagination stays deterministic.
 pub fn merge(results: Vec<Scored<GlobalPackage>>) -> Vec<Merged> {
-    use std::collections::{HashMap, hash_map::Entry};
-
-    // The logical-package key: origin-independent, so federated copies of the
-    // same (name, version) fold together.
     let key = |package: &GlobalPackage| {
         let coordinates = &package.package.coordinates;
         (
@@ -42,24 +38,33 @@ pub fn merge(results: Vec<Scored<GlobalPackage>>) -> Vec<Merged> {
             coordinates.version.canonical(),
         )
     };
+    merge_by(results, key)
+        .into_iter()
+        .map(|representative| Merged { representative })
+        .collect()
+}
 
-    let mut merged: Vec<Merged> = Vec::new();
-    let mut groups: HashMap<_, usize> = HashMap::new();
+/// Collapse duplicates by `key_of`. A strictly better score replaces the
+/// representative; ties keep the earlier arrival.
+pub fn merge_by<T, K, F>(results: Vec<Scored<T>>, mut key_of: F) -> Vec<Scored<T>>
+where
+    K: Eq + std::hash::Hash,
+    F: FnMut(&T) -> K,
+{
+    use std::collections::{HashMap, hash_map::Entry};
 
+    let mut merged: Vec<Scored<T>> = Vec::new();
+    let mut groups: HashMap<K, usize> = HashMap::new();
     for scored in results {
-        match groups.entry(key(&scored.value)) {
+        match groups.entry(key_of(&scored.value)) {
             Entry::Vacant(slot) => {
                 slot.insert(merged.len());
-                merged.push(Merged {
-                    representative: scored,
-                });
+                merged.push(scored);
             }
             Entry::Occupied(slot) => {
                 let group = &mut merged[*slot.get()];
-                // A strictly better score dethrones the representative; ties
-                // keep the earlier arrival so pagination stays deterministic.
-                if scored.score > group.representative.score {
-                    group.representative = scored;
+                if scored.score > group.score {
+                    *group = scored;
                 }
             }
         }

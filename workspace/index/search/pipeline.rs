@@ -8,7 +8,8 @@
 //! 1. Parse raw text into [`StructuredQuery`] (ecosystem / namespace / deps /
 //!    license / phrases / free terms).
 //! 2. Optionally expand free terms via [`PackageSearchDeps::synonyms`].
-//! 3. Over-fetch from the tantivy replica (`query_structured`).
+//! 3. Over-fetch rank cards from the tantivy replica (`query_signals`). The
+//!    stored record is decoded only for the ranked page.
 //! 4. Optionally RRF-fuse with semantic package ids.
 //! 5. Hydrate → multi-parent merge → entity dedup (unscoped) → intent-aware
 //!    rank on free terms (`sq.terms`):
@@ -35,11 +36,6 @@ use super::{
     structured::StructuredQuery,
     tantivy::PackageIndex,
 };
-
-/// The quality assigned to a package with no extracted facets yet — a neutral
-/// midpoint so the fusion multiplier neither erases (`0.0`) nor inflates such a
-/// package relative to its BM25 relevance.
-const NEUTRAL_QUALITY: f32 = 0.5;
 
 /// Canonical high-level package search request.
 ///
@@ -109,17 +105,18 @@ pub async fn retrieve_and_rank(
     if let Some(synonyms) = deps.synonyms {
         sq.expand_synonyms(synonyms);
     }
-    let raw = index.query_structured(&sq, over_fetch)?;
+    let raw = index.query_signals(&sq, over_fetch)?;
 
-    // The text search already decoded each stored record. Keep those packages
-    // so a later semantic-only id is the only one that needs a second lookup.
-    let mut decoded: HashMap<PackageId, GlobalPackage> = HashMap::with_capacity(raw.len());
-    let bm25_ids: Vec<PackageId> = raw.iter().map(|(package, _)| package.id).collect();
+    // Text hits carry a rank card. Only a semantic-only id needs the stored record.
+    let mut decoded: HashMap<PackageId, super::tantivy::rank_card::RankHit> =
+        HashMap::with_capacity(raw.len());
+    let bm25_ids: Vec<PackageId> = raw.iter().map(|hit| hit.card.id).collect();
     let bm25_scores: HashMap<PackageId, f32> = raw
         .into_iter()
-        .map(|(package, score)| {
-            let id = package.id;
-            decoded.insert(id, package);
+        .map(|hit| {
+            let id = hit.card.id;
+            let score = hit.bm25;
+            decoded.insert(id, hit);
             (id, score)
         })
         .collect();
@@ -161,32 +158,49 @@ pub async fn retrieve_and_rank(
         .collect();
     if !missing.is_empty() {
         for package in index.hydrate(&missing).await? {
-            decoded.insert(package.id, package);
+            let score = scores.get(&package.id).copied().unwrap_or_default();
+            decoded.insert(
+                package.id,
+                super::tantivy::rank_card::hit_from_package(&package, score),
+            );
         }
     }
-    let scored: Vec<Scored<GlobalPackage>> = hydrate_ids
+    let mut scored: Vec<Scored<super::tantivy::rank_card::RankHit>> = hydrate_ids
         .iter()
         .filter_map(|id| decoded.remove(id))
-        // Ecosystem filtering happens in the index (Must TermQuery, Q4); this
-        // assert is a belt-and-braces rollout guard only, never a filter.
-        .inspect(|package| {
+        .inspect(|hit| {
             debug_assert!(
                 req.ecosystem
-                    .is_none_or(|eco| package.package.coordinates.ecosystem() == eco),
+                    .is_none_or(|eco| hit.card.ecosystem == eco.as_token()),
                 "tantivy ecosystem Must-filter missed a doc — index may need rebuild"
             );
         })
-        .map(|package| {
-            let raw_score = scores.get(&package.id).copied().unwrap_or_default();
-            Scored::new(package, finite_score(raw_score))
+        .map(|mut hit| {
+            let raw_score = scores.get(&hit.card.id).copied().unwrap_or(hit.bm25);
+            hit.bm25 = raw_score;
+            Scored::new(hit, finite_score(raw_score))
         })
         .collect();
+    // Retrieval order follows tantivy doc ids. Rank stages that look at
+    // neighbors must see the same sequence for the same scores.
+    scored.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.value.card.name.cmp(&right.value.card.name))
+    });
 
     // Collapse multi-parent duplicates to their best representative.
-    let mut representatives: Vec<GlobalPackage> = multi_parent::merge(scored)
-        .into_iter()
-        .map(|merged| merged.representative.value)
-        .collect();
+    let mut representatives: Vec<_> = multi_parent::merge_by(scored, |hit| {
+        (
+            hit.card.ecosystem.clone(),
+            hit.card.name.clone(),
+            hit.card.version.clone(),
+        )
+    })
+    .into_iter()
+    .map(|scored| scored.value)
+    .collect();
 
     // Cross-ecosystem entity dedup for unscoped queries: when the user hasn't
     // narrowed to a single ecosystem, deduplicate "the same project" (e.g. a
@@ -196,84 +210,41 @@ pub async fn retrieve_and_rank(
     // `lang:rust serde` does not re-merge across ecosystems that the index already
     // pruned.
     if sq.ecosystem.is_none() {
-        representatives = entity::dedup_by_repo(representatives, |pkg| {
-            pkg.facets.as_ref().and_then(|f| f.repo_slug.as_deref())
-        });
+        representatives = entity::dedup_by_repo(representatives, |hit| hit.card.repo.as_deref());
     }
 
-    // Build ranking candidates. Downloads calibration + percentile go through
-    // `PopularitySignals::from_facets_full` so scale/pct cannot be forgotten.
-    // Gate flags come from facets; verified_repo is computed if unset.
-    let candidates: Vec<ranking::Candidate<GlobalPackage>> = representatives
+    // Build ranking candidates from the rank card. The stored record stays
+    // unread until the page is chosen.
+    let candidates: Vec<ranking::Candidate<PackageId>> = representatives
         .into_iter()
-        .map(|package| {
+        .filter_map(|hit| {
             use crate::ecosystem::LanguageExt;
-            let bm25 = scores.get(&package.id).copied().unwrap_or_default();
-            let (
-                quality,
-                keywords,
-                raw_downloads,
-                dependents,
-                withdrawn,
-                popularity_pct,
-                squat_suspect,
-                malware,
-                facets_verified_repo,
-                repo_slug,
-            ) = package.facets.as_ref().map_or(
-                (
-                    NEUTRAL_QUALITY,
-                    Vec::new(),
-                    None,
-                    None,
-                    false,
-                    None,
-                    false,
-                    false,
-                    false,
-                    None,
-                ),
-                |facets| {
-                    (
-                        facets.quality(),
-                        facets.keywords.clone(),
-                        facets.downloads,
-                        facets.dependents,
-                        facets.withdrawn,
-                        facets.popularity_pct_f32(),
-                        facets.squat_suspect,
-                        facets.malware,
-                        facets.verified_repo,
-                        facets.repo_slug.as_deref(),
-                    )
-                },
-            );
-            let ecosystem = package.package.coordinates.ecosystem();
+            let ecosystem = heart::Language::from_token(&hit.card.ecosystem)?;
             let scale = ecosystem.spec().search_norms().downloads_scale;
             let popularity = popularity::PopularitySignals::from_facets_full(
-                raw_downloads,
-                dependents,
+                hit.downloads,
+                hit.dependents,
                 scale,
-                popularity_pct,
+                hit.popularity_pct,
             );
-            let name = package.package.coordinates.name.canonical().to_string();
-            let verified_repo =
-                facets_verified_repo || super::ranking::gates::verified_repo(&name, repo_slug);
-            ranking::Candidate {
-                item: package,
+            let name = hit.card.name;
+            let verified_repo = hit.facet_verified_repo
+                || super::ranking::gates::verified_repo(&name, hit.card.repo.as_deref());
+            Some(ranking::Candidate {
+                item: hit.card.id,
                 name,
-                bm25,
-                quality,
+                bm25: hit.bm25,
+                quality: hit.quality,
                 downloads: popularity.downloads,
                 dependents: popularity.dependents,
                 popularity_pct: popularity.popularity_pct,
-                withdrawn,
-                squat_suspect,
-                malware,
+                withdrawn: hit.withdrawn,
+                squat_suspect: hit.squat_suspect,
+                malware: hit.malware,
                 verified_repo,
                 ecosystem,
-                keywords,
-            }
+                keywords: hit.card.keywords,
+            })
         })
         .collect();
 
@@ -298,10 +269,21 @@ pub async fn retrieve_and_rank(
     // ordinal, so `(score, id)` is a strict total order matching the pipeline
     // order. `finite_score` clamps onto the provably-finite `heart::Score`.
     let total = ranked.len();
+    let ids: Vec<PackageId> = ranked.iter().map(|candidate| candidate.item).collect();
+    let mut packages: HashMap<PackageId, GlobalPackage> = index
+        .hydrate(&ids)
+        .await?
+        .into_iter()
+        .map(|package| (package.id, package))
+        .collect();
     let hits: Vec<Scored<GlobalPackage>> = ranked
         .into_iter()
         .enumerate()
-        .map(|(ordinal, candidate)| Scored::new(candidate.item, rank_score(ordinal, total)))
+        .filter_map(|(ordinal, candidate)| {
+            packages
+                .remove(&candidate.item)
+                .map(|package| Scored::new(package, rank_score(ordinal, total)))
+        })
         .collect();
 
     Ok(hits)

@@ -55,6 +55,10 @@ pub(super) fn build_document(
     document.add_u64(fields.quality_ppm, signals.quality_ppm);
     document.add_u64(fields.downloads, signals.downloads);
     document.add_u64(fields.popularity_pct_ppm, signals.popularity_pct_ppm);
+    let (card, numeric) = super::rank_card::columns_for(record);
+    document.add_u64(fields.dependents, numeric.dependents);
+    document.add_u64(fields.presence, numeric.presence);
+    document.add_bytes(fields.rank_card, card);
 
     if let Some(facets) = &record.facets {
         if let Some(description) = &facets.description {

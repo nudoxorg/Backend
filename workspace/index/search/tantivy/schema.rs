@@ -1,4 +1,4 @@
-//! Schema v4 field handles and the FAST ranking columns.
+//! Schema v5 field handles. Numeric FAST columns plus a FAST bytes rank card.
 
 use tantivy::{Index, schema::Field};
 
@@ -6,7 +6,7 @@ use crate::error::SearchError;
 
 use super::FastRankingSignals;
 
-pub(super) const SCHEMA_VERSION: u32 = 4;
+pub(super) const SCHEMA_VERSION: u32 = 5;
 pub(super) const WATERMARK_FILE: &str = "sync_watermark.json";
 pub(super) const SCHEMA_VERSION_FILE: &str = "schema_version";
 pub(super) const WRITER_HEAP_BYTES: usize = 50 << 20;
@@ -43,6 +43,9 @@ pub(super) struct Fields {
     pub(super) quality_ppm: Field,
     pub(super) downloads: Field,
     pub(super) popularity_pct_ppm: Field,
+    pub(super) dependents: Field,
+    pub(super) presence: Field,
+    pub(super) rank_card: Field,
 }
 
 /// Schema v4: v3 text/facet filters plus FAST ranking columns.
@@ -72,6 +75,9 @@ pub(super) fn schema() -> tantivy::schema::Schema {
     builder.add_u64_field("quality_ppm", FAST);
     builder.add_u64_field("downloads", FAST);
     builder.add_u64_field("popularity_pct_ppm", FAST);
+    builder.add_u64_field("dependents", FAST);
+    builder.add_u64_field("presence", FAST);
+    builder.add_bytes_field("rank_card", FAST);
     builder.build()
 }
 
@@ -93,6 +99,9 @@ pub(super) fn resolve_fields(index: &Index) -> Result<Fields, SearchError> {
         quality_ppm: field("quality_ppm")?,
         downloads: field("downloads")?,
         popularity_pct_ppm: field("popularity_pct_ppm")?,
+        dependents: field("dependents")?,
+        presence: field("presence")?,
+        rank_card: field("rank_card")?,
     })
 }
 

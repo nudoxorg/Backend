@@ -1,20 +1,22 @@
 //! Replica-local tantivy index over the searchable package projection.
 //!
-//! Schema v4 (`SCHEMA_VERSION = 4`):
+//! Schema v5 (`SCHEMA_VERSION = 5`):
 //! - `package_id` STRING|STORED — upsert/delete key
 //! - `name_exact` STRING — search_surface, canonical, and original, lowercased
 //! - `name_tokens` / `name_ns` TEXT(ident)
 //! - `description`, `keywords`, `ecosystem`, `record`
 //! - `deps`, `license`, `repo`
-//! - `quality_ppm`, `downloads`, `popularity_pct_ppm` FAST u64
+//! - `quality_ppm`, `downloads`, `popularity_pct_ppm`, `dependents`, `presence` FAST u64
+//! - `rank_card` FAST bytes — name, version, repo, keywords, id
 //!
 //! A query is a [`plan::PackageQueryPlan`]. [`compile`] lowers that plan into
-//! the boolean tree. FAST columns are for collectors and the round-trip
-//! check; live ranking still hydrates the stored `record`.
+//! the boolean tree. Live ranking reads the rank card and hydrates the stored
+//! `record` only for the rows that survive.
 
 mod compile;
 mod document;
 mod plan;
+pub(crate) mod rank_card;
 mod schema;
 
 use heart::PackageId;
@@ -187,6 +189,16 @@ impl PackageIndex {
     ) -> Result<Vec<(GlobalPackage, f32)>, SearchError> {
         let planned = plan::plan(structured);
         compile::search(&self.reader, &self.fields, &planned, limit)
+    }
+
+    /// Rank inputs for a structured query. Does not decode the stored record.
+    pub(crate) fn query_signals(
+        &self,
+        structured: &super::structured::StructuredQuery,
+        limit: usize,
+    ) -> Result<Vec<rank_card::RankHit>, SearchError> {
+        let planned = plan::plan(structured);
+        compile::search_signals(&self.reader, &self.fields, &planned, limit)
     }
 
     /// Hydrate matched package ids from the stored projection.

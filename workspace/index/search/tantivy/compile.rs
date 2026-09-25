@@ -49,6 +49,89 @@ pub(super) fn search(
         .collect()
 }
 
+/// Rank inputs for each hit. Reads the FAST rank card, not the stored record.
+pub(super) fn search_signals(
+    reader: &IndexReader,
+    fields: &Fields,
+    planned: &PackageQueryPlan,
+    limit: usize,
+) -> Result<Vec<super::rank_card::RankHit>, SearchError> {
+    let searcher = reader.searcher();
+    let top_query = compile(fields, planned);
+    let top_docs = searcher
+        .search(&top_query, &TopDocs::with_limit(limit.max(1)))
+        .map_err(SearchError::Tantivy)?;
+
+    struct SegmentColumns {
+        card: tantivy::columnar::BytesColumn,
+        quality: tantivy::columnar::Column<u64>,
+        downloads: tantivy::columnar::Column<u64>,
+        popularity: tantivy::columnar::Column<u64>,
+        dependents: tantivy::columnar::Column<u64>,
+        presence: tantivy::columnar::Column<u64>,
+    }
+
+    let mut opened: std::collections::HashMap<u32, SegmentColumns> =
+        std::collections::HashMap::new();
+    let mut hits = Vec::with_capacity(top_docs.len());
+    for (score, address) in top_docs {
+        if !opened.contains_key(&address.segment_ord) {
+            let fast = searcher.segment_reader(address.segment_ord).fast_fields();
+            let card = fast
+                .bytes("rank_card")
+                .map_err(SearchError::Tantivy)?
+                .ok_or_else(|| SearchError::RowDecode {
+                    column: "rank_card",
+                    detail: "rank card column is absent".into(),
+                })?;
+            opened.insert(address.segment_ord, SegmentColumns {
+                card,
+                quality: fast.u64("quality_ppm").map_err(SearchError::Tantivy)?,
+                downloads: fast.u64("downloads").map_err(SearchError::Tantivy)?,
+                popularity: fast
+                    .u64("popularity_pct_ppm")
+                    .map_err(SearchError::Tantivy)?,
+                dependents: fast.u64("dependents").map_err(SearchError::Tantivy)?,
+                presence: fast.u64("presence").map_err(SearchError::Tantivy)?,
+            });
+        }
+        let columns = &opened[&address.segment_ord];
+        let mut bytes = Vec::new();
+        let ord = columns
+            .card
+            .term_ords(address.doc_id)
+            .next()
+            .ok_or_else(|| SearchError::RowDecode {
+                column: "rank_card",
+                detail: "document has no rank card".into(),
+            })?;
+        let found = columns
+            .card
+            .ord_to_bytes(ord, &mut bytes)
+            .map_err(|error| SearchError::RowDecode {
+                column: "rank_card",
+                detail: error.to_string(),
+            })?;
+        if !found {
+            return Err(SearchError::RowDecode {
+                column: "rank_card",
+                detail: "rank card ordinal is missing".into(),
+            });
+        }
+        let card = super::rank_card::decode(&bytes)?;
+        hits.push(super::rank_card::decode_hit(
+            card,
+            score,
+            columns.quality.first(address.doc_id).unwrap_or(0),
+            columns.downloads.first(address.doc_id).unwrap_or(0),
+            columns.popularity.first(address.doc_id).unwrap_or(0),
+            columns.dependents.first(address.doc_id).unwrap_or(0),
+            columns.presence.first(address.doc_id).unwrap_or(0),
+        ));
+    }
+    Ok(hits)
+}
+
 pub(super) fn hydrate(
     reader: &IndexReader,
     fields: &Fields,
