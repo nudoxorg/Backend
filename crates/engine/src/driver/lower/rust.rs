@@ -2014,7 +2014,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// exact written spelling as an explicit `NoIrRepresentation` unknown.
     fn generic_type_bound_target(&mut self, bound: &ast::Type) -> Result<u32, RustAuthorityError> {
         match self.trait_bound_constraint(bound)? {
-            TraitBoundTarget::Committed(ordinal) => return Ok(ordinal),
+            TraitBoundTarget::Committed(ordinal) => {
+                return self.lower_trait_bound_application(bound, ordinal, MAX_TYPE_DEPTH - 1);
+            },
             TraitBoundTarget::Foreign => {
                 let spelling = self.bytes_of_node(bound.syntax())?;
                 let record = self.unresolved_record_with(Some(spelling));
@@ -2357,10 +2359,23 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         if let Some(trait_) = semantic.as_dyn_trait() {
             let written = self.written_type_name(anchor);
             return match self.ordinal_of_trait(trait_) {
-                Some(ordinal) => Ok(Lowered {
-                    record: SemanticTypeRecord::leaf(SemanticTypeTag::DynTrait),
-                    children: vec![ordinal],
-                }),
+                Some(ordinal) => {
+                    let bound_ty = written_trait_bounds(anchor)
+                        .first()
+                        .and_then(|bound| bound.ty());
+                    let target = match bound_ty {
+                        Some(bound_ty) => self.lower_trait_bound_application(
+                            &bound_ty,
+                            ordinal,
+                            depth - 1,
+                        )?,
+                        None => ordinal,
+                    };
+                    Ok(Lowered {
+                        record: SemanticTypeRecord::leaf(SemanticTypeTag::DynTrait),
+                        children: vec![target],
+                    })
+                }
                 None => Ok(Lowered::leaf(self.unresolved_record_with(written))),
             };
         }
@@ -2540,23 +2555,13 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     ) -> Result<Lowered<'source>, RustAuthorityError> {
         let written = self.written_type_name(anchor);
         let Some(ordinal) = self.ordinal_of_adt(adt) else {
-            // A foreign named type rust-analyzer resolved (`Option`, `Box`,
-            // any dependency ADT) is an external nominal over its defining
-            // crate module, displayed by its exact written spelling; only a
-            // position with no written spelling keeps the gap row. An
-            // applied foreign type still commits its application structure:
-            // the base row followed by one hosted row per written argument.
-            let typed_arguments: Vec<ra_ap_hir::Type<'_>> = arguments
-                .iter()
-                .filter_map(|argument| argument.as_ref())
-                .cloned()
-                .take(written_type_argument_count(anchor))
-                .collect();
             let base_record = self.foreign_adt_record(adt, written);
-            if typed_arguments.is_empty() {
+            let argument_children =
+                self.lower_written_application_arguments(arguments, anchor, depth)?;
+            if argument_children.is_empty() {
                 return Ok(Lowered::leaf(base_record));
             }
-            if typed_arguments.len() + 1 > MAX_COMPOUND_CHILDREN {
+            if argument_children.len() + 1 > MAX_COMPOUND_CHILDREN {
                 return Ok(Lowered::leaf(match written {
                     Some(text) => unknown_record(TypeReason::NoIrRepresentation, Some(text)),
                     None => unknown_record(TypeReason::OracleGap, None),
@@ -2566,45 +2571,204 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 return Ok(self.folded_rowless(anchor));
             };
             let mut children = vec![base];
-            for (position, argument) in typed_arguments.iter().enumerate() {
-                match self.lower_target(argument, child_anchor(anchor, position), depth - 1)? {
-                    Some(target) => children.push(target),
-                    None => return Ok(self.folded_rowless(anchor)),
-                }
-            }
+            children.extend(argument_children);
             return Ok(Lowered {
                 record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
                 children,
             });
         };
-        let typed_arguments: Vec<ra_ap_hir::Type<'_>> = arguments
-            .iter()
-            .filter_map(|argument| argument.as_ref())
-            .cloned()
-            .take(written_type_argument_count(anchor))
-            .collect();
-        if typed_arguments.is_empty() {
+        let argument_children = self.lower_written_application_arguments(arguments, anchor, depth)?;
+        if argument_children.is_empty() {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
             record.nominal = Some(NominalRef::Local(EntityId::new(ordinal)));
             return Ok(Lowered::leaf(record));
         }
-        if typed_arguments.len() + 1 > MAX_COMPOUND_CHILDREN {
+        if argument_children.len() + 1 > MAX_COMPOUND_CHILDREN {
             return Ok(Lowered::leaf(match written {
                 Some(text) => unknown_record(TypeReason::NoIrRepresentation, Some(text)),
                 None => unknown_record(TypeReason::OracleGap, None),
             }));
         }
         let mut children = vec![ordinal];
-        for (position, argument) in typed_arguments.iter().enumerate() {
-            match self.lower_target(argument, child_anchor(anchor, position), depth - 1)? {
-                Some(target) => children.push(target),
-                None => return Ok(self.folded_rowless(anchor)),
-            }
-        }
+        children.extend(argument_children);
         Ok(Lowered {
             record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
             children,
         })
+    }
+
+    /// Lowers every written generic argument on one application anchor,
+    /// including associated bindings, const arguments, and lifetimes.
+    fn lower_written_application_arguments(
+        &mut self,
+        arguments: &[Option<ra_ap_hir::Type<'_>>],
+        anchor: Option<&ast::Type>,
+        depth: usize,
+    ) -> Result<Vec<u32>, RustAuthorityError> {
+        let written_count = written_generic_argument_count(anchor);
+        if written_count == 0 {
+            return Ok(Vec::new());
+        }
+        let hir_type_arguments: Vec<ra_ap_hir::Type<'_>> = arguments
+            .iter()
+            .filter_map(|argument| argument.as_ref())
+            .cloned()
+            .collect();
+        let mut hir_cursor = 0usize;
+        let mut children = Vec::with_capacity(written_count);
+        for position in 0..written_count {
+            let Some(generic_argument) = generic_argument_at(anchor, position) else {
+                return Ok(Vec::new());
+            };
+            let target = match generic_argument {
+                ast::GenericArg::TypeArg(_) => {
+                    let Some(hir_argument) = hir_type_arguments.get(hir_cursor) else {
+                        return Ok(Vec::new());
+                    };
+                    hir_cursor += 1;
+                    self.lower_target(
+                        hir_argument,
+                        type_argument_anchor(anchor, position),
+                        depth - 1,
+                    )?
+                }
+                other => {
+                    let lowered = self.lower_written_generic_argument(other, depth - 1)?;
+                    self.host(lowered, anchor)?
+                }
+            };
+            match target {
+                Some(target) => children.push(target),
+                None => return Ok(Vec::new()),
+            }
+        }
+        Ok(children)
+    }
+
+    /// Lowers one non-`TypeArg` generic argument from its written syntax.
+    fn lower_written_generic_argument(
+        &mut self,
+        argument: ast::GenericArg,
+        depth: usize,
+    ) -> Result<Lowered<'source>, RustAuthorityError> {
+        match argument {
+            ast::GenericArg::AssocTypeArg(binding) => {
+                let name = binding
+                    .name_ref()
+                    .and_then(|name| self.bytes_of_node(name.syntax()).ok());
+                let value = if let Some(ty) = binding.ty() {
+                    match self.authority.semantics.resolve_type(&ty) {
+                        Some(semantic) => self.lower_type(&semantic, Some(&ty), depth)?,
+                        None => Lowered::leaf(unknown_record(TypeReason::OracleGap, None)),
+                    }
+                } else if let Some(konst) = binding
+                    .const_arg()
+                    .and_then(|argument| argument.expr())
+                {
+                    self.const_argument_lowered(self.bytes_of_node(konst.syntax()).ok())
+                } else {
+                    Lowered::leaf(unknown_record(TypeReason::OracleGap, None))
+                };
+                let Some(target) = self.host(value, binding.ty().as_ref())? else {
+                    return Ok(Lowered::leaf(unknown_record(TypeReason::OracleGap, None)));
+                };
+                Ok(self.assoc_binding_lowered(name, target))
+            }
+            ast::GenericArg::ConstArg(konst) => {
+                let text = konst
+                    .expr()
+                    .and_then(|expr| self.bytes_of_node(expr.syntax()).ok());
+                Ok(self.const_argument_lowered(text))
+            }
+            ast::GenericArg::LifetimeArg(lifetime) => {
+                let text = lifetime
+                    .lifetime()
+                    .and_then(|lifetime| self.bytes_of_node(lifetime.syntax()).ok());
+                Ok(self.lifetime_argument_lowered(text))
+            }
+            ast::GenericArg::TypeArg(type_argument) => {
+                if let Some(ty) = type_argument.ty() {
+                    match self.authority.semantics.resolve_type(&ty) {
+                        Some(semantic) => self.lower_type(&semantic, Some(&ty), depth),
+                        None => Ok(Lowered::leaf(unknown_record(TypeReason::OracleGap, None))),
+                    }
+                } else {
+                    Ok(Lowered::leaf(unknown_record(TypeReason::OracleGap, None)))
+                }
+            }
+        }
+    }
+
+    /// `Item = u8` is not `Item = String`, and neither is a bare `Iterator`.
+    fn assoc_binding_lowered(
+        &self,
+        name: Option<&'source [u8]>,
+        value: u32,
+    ) -> Lowered<'source> {
+        let Some(name) = name else {
+            return Lowered::leaf(unknown_record(TypeReason::OracleGap, None));
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::QualifiedPath);
+        record.text = Some(name);
+        Lowered {
+            record,
+            children: vec![value],
+        }
+    }
+
+    /// `Foo<N>` and `Foo<M>` stay distinct even when the const is not a type.
+    fn const_argument_lowered(&self, text: Option<&'source [u8]>) -> Lowered<'source> {
+        let Some(text) = text else {
+            return Lowered::leaf(unknown_record(TypeReason::OracleGap, None));
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
+        record.text = Some(text);
+        Lowered::leaf(record)
+    }
+
+    /// A lifetime generic argument keeps its exact written spelling.
+    fn lifetime_argument_lowered(&self, text: Option<&'source [u8]>) -> Lowered<'source> {
+        let Some(text) = text else {
+            return Lowered::leaf(unknown_record(TypeReason::OracleGap, None));
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Inferred);
+        record.text = Some(text);
+        Lowered::leaf(record)
+    }
+
+    /// Lowers one committed trait bound with its written generic arguments.
+    fn lower_trait_bound_application(
+        &mut self,
+        bound: &ast::Type,
+        trait_ordinal: u32,
+        depth: usize,
+    ) -> Result<u32, RustAuthorityError> {
+        let argument_children =
+            self.lower_written_application_arguments(&[], Some(bound), depth)?;
+        if argument_children.is_empty() {
+            return Ok(trait_ordinal);
+        }
+        if argument_children.len() + 1 > MAX_COMPOUND_CHILDREN {
+            return self
+                .host(
+                    Lowered::leaf(unknown_record(
+                        TypeReason::NoIrRepresentation,
+                        self.bytes_of_node(bound.syntax()).ok(),
+                    )),
+                    Some(bound),
+                )?
+                .ok_or_else(unsupported_generic);
+        }
+        let mut children = vec![trait_ordinal];
+        children.extend(argument_children);
+        self.host(
+            Lowered {
+                record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
+                children,
+            },
+            Some(bound),
+        )?
+        .ok_or_else(unsupported_generic)
     }
 
     /// Lowers one `impl Trait` position over its local bound rows; any bound
@@ -2624,10 +2788,22 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 None => unknown_record(TypeReason::OracleGap, None),
             }));
         }
+        let written_bounds = written_trait_bounds(anchor);
         let mut children = Vec::new();
-        for trait_ in bounds {
+        for (index, trait_) in bounds.into_iter().enumerate() {
             match self.ordinal_of_trait(trait_) {
-                Some(ordinal) => children.push(ordinal),
+                Some(ordinal) => {
+                    let bound_ty = written_bounds.get(index).and_then(|bound| bound.ty());
+                    let target = match bound_ty {
+                        Some(bound_ty) => self.lower_trait_bound_application(
+                            &bound_ty,
+                            ordinal,
+                            MAX_TYPE_DEPTH - 1,
+                        )?,
+                        None => ordinal,
+                    };
+                    children.push(target);
+                }
                 None => {
                     return Ok(Lowered::leaf(self.unresolved_record_with(written)));
                 }
@@ -2637,6 +2813,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             record: SemanticTypeRecord::leaf(SemanticTypeTag::ImplTrait),
             children,
         })
+
     }
 
     /// Lowers one generic-parameter use: the implicit trait `Self` stays a
@@ -3256,48 +3433,70 @@ fn written_binding_type(syntax: &SyntaxNode) -> Option<ast::Type> {
 /// Extracts the written child anchor at one position of a parent anchor,
 /// or `None` when the parent shape does not match the HIR position.
 fn child_anchor(anchor: Option<&ast::Type>, position: usize) -> Option<ast::Type> {
-    let anchor = anchor?;
-    match anchor {
-        ast::Type::PathType(path_type) => {
-            let arguments = path_type
-                .path()?
-                .segment()?
-                .generic_arg_list()?
-                .generic_args();
-            arguments
-                .filter_map(|argument| match argument {
-                    ast::GenericArg::TypeArg(type_argument) => type_argument.ty(),
-                    _ => None,
-                })
-                .nth(position)
-        }
+    type_argument_anchor(anchor, position).or_else(|| match anchor? {
         ast::Type::RefType(reference) => (position == 0).then(|| reference.ty()).flatten(),
         ast::Type::PtrType(pointer) => (position == 0).then(|| pointer.ty()).flatten(),
         ast::Type::ArrayType(array) => (position == 0).then(|| array.ty()).flatten(),
         ast::Type::SliceType(slice) => (position == 0).then(|| slice.ty()).flatten(),
         ast::Type::TupleType(tuple) => tuple.fields().nth(position),
         _ => None,
+    })
+}
+
+/// Borrows the written `TypeArg` anchor at one generic-argument position.
+fn type_argument_anchor(anchor: Option<&ast::Type>, position: usize) -> Option<ast::Type> {
+    match generic_argument_at(anchor, position)? {
+        ast::GenericArg::TypeArg(type_argument) => type_argument.ty(),
+        ast::GenericArg::AssocTypeArg(binding) => binding.ty(),
+        _ => None,
     }
 }
 
-/// Counts only written type arguments. HIR also supplies defaulted type
-/// arguments (for example `Box`'s allocator), which are not children of the
-/// written application row.
-fn written_type_argument_count(anchor: Option<&ast::Type>) -> usize {
-    let Some(ast::Type::PathType(path_type)) = anchor else {
+/// Returns the written generic argument at one position of a path application.
+fn generic_argument_at(anchor: Option<&ast::Type>, position: usize) -> Option<ast::GenericArg> {
+    let anchor = anchor?;
+    let ast::Type::PathType(path_type) = anchor else {
+        return None;
+    };
+    path_type
+        .path()?
+        .segment()?
+        .generic_arg_list()?
+        .generic_args()
+        .nth(position)
+}
+
+/// Counts every written generic argument, including associated bindings,
+/// const arguments, and lifetimes.
+fn written_generic_argument_count(anchor: Option<&ast::Type>) -> usize {
+    let Some(anchor) = anchor else {
+        return 0;
+    };
+    let ast::Type::PathType(path_type) = anchor else {
         return 0;
     };
     path_type
         .path()
         .and_then(|path| path.segment())
         .and_then(|segment| segment.generic_arg_list())
-        .map(|arguments| {
-            arguments
-                .generic_args()
-                .filter(|argument| matches!(argument, ast::GenericArg::TypeArg(_)))
-                .count()
-        })
+        .map(|arguments| arguments.generic_args().count())
         .unwrap_or(0)
+}
+
+/// Borrows the written trait bounds behind one `impl Trait` or `dyn Trait`
+/// anchor in source order.
+fn written_trait_bounds(anchor: Option<&ast::Type>) -> Vec<ast::TypeBound> {
+    match anchor {
+        Some(ast::Type::ImplTraitType(impl_trait)) => impl_trait
+            .type_bound_list()
+            .map(|bounds| bounds.bounds().collect())
+            .unwrap_or_default(),
+        Some(ast::Type::DynTraitType(dyn_trait)) => dyn_trait
+            .type_bound_list()
+            .map(|bounds| bounds.bounds().collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// Keeps repeated wildcard parameters distinct while their display name stays `_`.
@@ -4454,11 +4653,85 @@ mod tests {
         Ok(())
     }
 
+    /// `Iterator<Item = u8>` and `Iterator<Item = String>` are different
+    /// bounds, and `Foo<false>` is not `Foo<true>`.
+    #[test]
+    fn associated_bindings_and_const_args_stay_distinct() -> Result<(), TestError> {
+        let view = lower(
+            "pub trait Iter { type Item; }\npub fn a<T: Iter<Item = u8>>() {}\npub fn b<T: Iter<Item = String>>() {}\npub struct Foo<const B: bool>;\npub fn c(_: Foo<false>) {}\npub fn d(_: Foo<true>) {}\n",
+        )?;
+        let rows = rows(&view)?;
+        let mut item_bindings = Vec::new();
+        for row in &rows {
+            if row.record.tag != SemanticTypeTag::QualifiedPath
+                || row.record.text != Some(b"Item".as_slice())
+                || row.record.children.length != 1
+            {
+                continue;
+            }
+            item_bindings.push(local_type_children(&view, row.record)?);
+        }
+        if item_bindings.len() < 2 {
+            return Err(TestError::Missing("two associated Item bindings"));
+        }
+        if item_bindings[0] == item_bindings[1] {
+            return Err(TestError::Missing(
+                "Iterator<Item = u8> and Iterator<Item = String> must differ",
+            ));
+        }
+        let parameter_application = |name: &[u8]| -> Result<Vec<backend_semantic::ir::TypeId>, TestError> {
+            let function = row_for_entity(&view, fact_of(&view, name, EntityKind::Function)?)?;
+            let parameter = local_type_children(&view, function.record)?
+                .first()
+                .and_then(|target| rows.get(target.index()))
+                .ok_or(TestError::Missing("parameter row"))?;
+            if parameter.record.tag != SemanticTypeTag::Apply
+                || parameter.record.children.length != 2
+            {
+                return Err(TestError::Missing("const generic application structure"));
+            }
+            local_type_children(&view, parameter.record)
+        };
+        if parameter_application(b"c")? == parameter_application(b"d")? {
+            return Err(TestError::Missing("Foo<false> and Foo<true> must differ"));
+        }
+        Ok(())
+    }
+
+    /// `impl Iter<Item = u8>` must keep the binding a type-argument-only walk drops.
+    #[test]
+    fn impl_trait_associated_bindings_stay_distinct() -> Result<(), TestError> {
+        let view = lower(
+            "pub trait Iter { type Item; }\npub fn a(_: impl Iter<Item = u8>) {}\npub fn b(_: impl Iter<Item = String>) {}\n",
+        )?;
+        let rows = rows(&view)?;
+        let mut bindings = Vec::new();
+        for row in &rows {
+            if row.record.tag != SemanticTypeTag::QualifiedPath
+                || row.record.text != Some(b"Item".as_slice())
+                || row.record.children.length != 1
+            {
+                continue;
+            }
+            bindings.push(local_type_children(&view, row.record)?);
+        }
+        if bindings.len() < 2 {
+            return Err(TestError::Missing("two impl Trait Item bindings"));
+        }
+        if bindings[0] == bindings[1] {
+            return Err(TestError::Missing(
+                "impl Iter<Item = u8> and impl Iter<Item = String> must differ",
+            ));
+        }
+        Ok(())
+    }
+
     /// A path the oracle could not resolve is retained, never dropped: a
     /// cargo-universe foreign key carrying the exact written spelling at
     /// syntactic confidence, owned by the containing function.
     #[test]
     fn unresolved_paths_stay_foreign_with_their_written_spelling() -> Result<(), TestError> {
+
         let view = lower("pub fn probe() {\n    vanish_without_trace();\n}\n")?;
         let occurrences = occurrences(&view)?;
         let path = occurrences
