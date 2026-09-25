@@ -35,10 +35,12 @@
 //! two blank same-typed carriers in one signature never frame identical
 //! coordinate-free identities. Receiver spelling and pointer-receiver bits
 //! have no
-//! `GoFacts` cell and stay image-only. Foreign method-set entries, module
-//! metadata, exact constant values, and receiver spellings remain
-//! image-only; local method-set entries and package rows are projected
-//! below.
+//! `GoFacts` cell and stay image-only. Module metadata, exact constant
+//! values, and receiver spellings remain image-only. An interface method-set
+//! row is projected onto that interface when its owner is the interface
+//! type row, including a method declared in another package or the
+//! universe; a name already contributed by an explicit method is not
+//! emitted twice. Package rows are projected below.
 //!
 //! Interface-satisfaction edges — Go's structural implements relation,
 //! proved by the oracle across the whole loaded module — project as
@@ -1602,8 +1604,11 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .image
                 .method_set(method_set_index)
                 .map_err(GoCollectError::Image)?;
-            if usize::try_from(method_set.owner).is_ok_and(|owner| owner != index)
-                || method_set.package != declaration.package
+            // Owner is the interface type-row index, not the declaration
+            // index. The declaring package may be this package, a foreign
+            // import path, or empty (universe); the name still belongs to
+            // this interface's method set.
+            if declaration.type_root != Some(method_set.owner)
                 || method_names.contains(&method_set.name)
             {
                 continue;
@@ -3739,8 +3744,18 @@ mod tests {
         }
 
         fn method_set(&mut self, owner: u32, name: &[u8], type_root: Option<u32>) {
+            self.method_set_from(owner, name, type_root, PACKAGE);
+        }
+
+        fn method_set_from(
+            &mut self,
+            owner: u32,
+            name: &[u8],
+            type_root: Option<u32>,
+            package: &[u8],
+        ) {
             let name = self.atom(name);
-            let package = self.atom(PACKAGE);
+            let package = self.atom(package);
             self.method_sets.push(MethodSetF {
                 owner,
                 name,
@@ -4834,7 +4849,7 @@ mod tests {
             fix.declarations[owner].type_root = Some(authority);
             for index in 0..count {
                 let name = format!("M{index:03}");
-                fix.method_set(owner as u32, name.as_bytes(), None);
+                fix.method_set(authority, name.as_bytes(), None);
             }
             fix
         };
@@ -4853,6 +4868,62 @@ mod tests {
                 != count
             {
                 return Err(TestError::Missing("method-set declarations through width"));
+            }
+        }
+
+        let mut foreign = Fixture::new();
+        let box_decl = foreign.declaration(KIND_TYPE, b"Box", None);
+        let box_row = foreign.start_row(ROW_INTERFACE);
+        foreign.declarations[box_decl].type_root = Some(box_row);
+        let read_sig = foreign.func(&[], &[], false);
+        let error_sig = foreign.func(&[], &[], false);
+        foreign.method_set_from(box_row, b"Error", Some(error_sig), b"");
+        foreign.method_set_from(box_row, b"Read", Some(read_sig), b"io");
+        let foreign_bytes = lower(&foreign, b"package demo\n")?;
+        let foreign_view = FragmentView::validate(&foreign_bytes)?;
+        let box_entity = entity_of(&foreign_view, b"Box")?;
+        let box_facts = go_extension(&foreign_view, box_entity.index())?;
+        let promoted = pooled_list(
+            &foreign_view,
+            backend_semantic::ir::ExtensionPoolListLane::Entities,
+            box_facts.method_set.raw,
+        )?;
+        if promoted.len() != 2 {
+            return Err(TestError::Missing("promoted method set width"));
+        }
+        let mut promoted_names = Vec::new();
+        for ordinal in promoted {
+            let mut found = None;
+            for entity in foreign_view.entities() {
+                if entity.entity.index() == usize::try_from(ordinal).map_err(TestError::from)? {
+                    let atom = foreign_view
+                        .atoms()
+                        .nth(usize::try_from(entity.name.raw).map_err(TestError::from)?)
+                        .ok_or(TestError::Missing("promoted atom"))?;
+                    if entity.kind != EntityKind::Function {
+                        return Err(TestError::Missing("promoted method kind"));
+                    }
+                    found = Some(atom.bytes.to_vec());
+                }
+            }
+            promoted_names.push(found.ok_or(TestError::Missing("promoted entity"))?);
+        }
+        if promoted_names != [b"Error".to_vec(), b"Read".to_vec()] {
+            return Err(TestError::Missing("foreign and universe method names"));
+        }
+        let ir = lower_ir(&foreign, b"package demo\n")?;
+        let box_id = ir
+            .items()
+            .find(|item| item.name() == b"Box")
+            .ok_or(TestError::Missing("box item"))?
+            .id();
+        for name in [b"Error".as_slice(), b"Read".as_slice()] {
+            let method = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(TestError::Missing("promoted item"))?;
+            if method.parent() != Some(box_id) {
+                return Err(TestError::Missing("promoted method parent"));
             }
         }
 
