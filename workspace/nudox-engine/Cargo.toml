@@ -400,6 +400,13 @@ path = "tests/mcp/multi_turn_surfaces.rs"
 name = "mcp_medium_npm_conversation"
 path = "tests/mcp/medium_npm_conversation.rs"
 
+# serde 1.0.229 and serde_core 1.0.229 in one engine. The crates are not in
+# the repo; extract them under /tmp/medium/crates and run with --ignored.
+# One rust-analyzer boot for the binary: both packages load in this test.
+[[test]]
+name = "mcp_medium_crates_conversation"
+path = "tests/mcp/medium_crates_conversation.rs"
+
 # Real corpus/package occurrence regressions for every non-Rust producer.
 [[test]]
 name = "mcp_real_package_references"

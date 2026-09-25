@@ -88,13 +88,21 @@ pub fn tokens(entry: &Entry, package: &PackageView) -> Vec<SigToken> {
     let name = entry.sym().name.as_str();
 
     let Some(inner) = entry.kind().as_owned_kind() else {
-        // EntryInner::Reference — re-export; render as `pub use <name>`
+        // A re-export's target is the fact the entry holds. A foreign path
+        // (`serde_core::ser::Serialize`) is that target; a local alias keeps
+        // the name, which is the only path this entry has.
+        let target = match entry.kind() {
+            nudox_ir::entry::EntryInner::Reference(Ref::Foreign { key, .. }) => {
+                SharedStr::from(source_path(key.path.as_ref()))
+            }
+            _ => SharedStr::from(name),
+        };
         return vec![
             SigToken::Kw("pub"),
             SigToken::Ws,
             SigToken::Kw("use"),
             SigToken::Ws,
-            SigToken::Ident(SharedStr::from(name)),
+            SigToken::Ident(target),
         ];
     };
 
@@ -1012,6 +1020,13 @@ fn display_path(
     }
 }
 
+/// `!m` and `!v` are lowering namespace tags, not Rust syntax.
+fn source_path(path: &str) -> &str {
+    path.strip_suffix("!m")
+        .or_else(|| path.strip_suffix("!v"))
+        .unwrap_or(path)
+}
+
 /// True if `intro` denotes a re-export (`pub use …`) rather than a
 /// declaration with its own identity.
 ///
@@ -1661,6 +1676,45 @@ mod tests {
         let t = text_of(&toks);
         assert!(t.contains("pub"), "re-export should have pub");
         assert!(t.contains("use"), "re-export should have use");
+        assert!(
+            t.contains("ReExported"),
+            "a local re-export keeps its name: {t}"
+        );
+    }
+
+    #[test]
+    fn foreign_reexport_renders_the_target_path() {
+        use triomphe::Arc;
+
+        use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
+        use nudox_ir::foreign::ForeignKey;
+
+        let key = Arc::new(ForeignKey::in_package(
+            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("serde_core")),
+            "serde_core::ser::Serialize!m",
+            "Serialize",
+        ));
+        let pkg = make_package(vec![
+            (id(1), raw_entry(sym("root"), Kind::Module(Module)), None),
+            (
+                id(2),
+                Entry::reference(
+                    sym("Serialize"),
+                    Node::build(None::<nudox_ir::index::RawRef>, []),
+                    Ref::Foreign { key, target: None },
+                ),
+                Some(id(1)),
+            ),
+        ]);
+        let rendered = text_of(&tokens(pkg.view().entry(id(2)).unwrap(), &pkg));
+        assert!(
+            rendered.contains("serde_core::ser::Serialize"),
+            "the foreign path is the re-export target: {rendered}"
+        );
+        assert!(
+            !rendered.contains("!m"),
+            "a namespace tag is not source syntax: {rendered}"
+        );
     }
 
     #[test]
