@@ -832,6 +832,7 @@ fn push_commonjs_object_properties<'a>(
                 ty: None,
                 value: Some(value),
                 satisfies: None,
+                cast: None,
             }),
             module: path.to_path_buf(),
             span_start: span.start,
@@ -1439,6 +1440,7 @@ fn export_assignment<'a>(
                 ty: None,
                 value: Some(other.span().source_text(source).to_string()),
                 satisfies: None,
+                cast: None,
             }),
         ),
     };
@@ -1766,6 +1768,7 @@ fn extract_default_export<'a>(
                     ty: None,
                     value: Some(span.source_text(source).to_string()),
                     satisfies: None,
+                    cast: None,
                 }),
                 module: path.to_path_buf(),
                 span_start: span.start,
@@ -2667,8 +2670,27 @@ fn lower_enum<'a>(e: &TSEnumDeclaration<'a>, source: &'a str) -> EnumBody {
     EnumBody { is_const, variants }
 }
 
+/// The type in `expr as T` or `<T>expr`, through parentheses and `satisfies`.
+/// The outermost assertion is the expression's type.
+fn asserted_type<'a>(expr: &Expression<'a>, source: &'a str) -> Option<TypeOwned> {
+    let mut current = expr;
+    loop {
+        match current {
+            Expression::ParenthesizedExpression(inner) => current = &inner.expression,
+            Expression::TSSatisfiesExpression(satisfied) => current = &satisfied.expression,
+            Expression::TSAsExpression(cast) => {
+                return Some(lower_ts_type(&cast.type_annotation, source));
+            }
+            Expression::TSTypeAssertion(cast) => {
+                return Some(lower_ts_type(&cast.type_annotation, source));
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// The type in `expr satisfies T`, through parentheses. Not an `as` cast:
-/// a cast replaces the expression's type, and that type is not stored here.
+/// a cast replaces the expression's type, and that type is stored separately.
 fn satisfies_type<'a>(expr: &Expression<'a>, source: &'a str) -> Option<TypeOwned> {
     let mut current = expr;
     loop {
@@ -2733,10 +2755,15 @@ fn lower_variable<'a>(
         if doc.ignore {
             continue;
         }
-        let ty = d
+        let annotation = d
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
+        let asserted = d.init.as_ref().and_then(|e| asserted_type(e, source));
+        // No annotation: `as T` is the const's type. An annotation stays the
+        // declared type, and the assertion is kept beside it.
+        let ty = annotation.clone().or_else(|| asserted.clone());
+        let cast = if annotation.is_some() { asserted } else { None };
         let satisfied = d.init.as_ref().and_then(|e| satisfies_type(e, source));
         let value = d
             .init
@@ -2760,6 +2787,7 @@ fn lower_variable<'a>(
                     ty: ty.clone(),
                     value: value.clone(),
                     satisfies: satisfied.clone(),
+                    cast: cast.clone(),
                 })
             } else {
                 DeclBody::Static(StaticBody {

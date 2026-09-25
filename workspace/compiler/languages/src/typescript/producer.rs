@@ -2728,6 +2728,38 @@ mod tests {
     }
 
     #[test]
+    fn an_as_cast_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"as-fn","version":"1.0.0","types":"index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.ts"),
+            "export const call = null as (left: number) => void;\n\
+             export const held: (right: number) => void = null as (mid: number) => void;\n\
+             export const angled = <(far: number) => void>null;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "as-fn", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("as-fn"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function in an as cast must seal");
+        for name in ["left", "right", "mid", "far"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn a_satisfies_clause_declares_each_function_binding() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
