@@ -56,10 +56,11 @@ use oxc_resolver::Resolver;
 use crate::typescript::{
     entry::{is_ts_module_path, make_resolver},
     extract::{
-        Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, DeprecationOwned, EnumBody,
-        FunctionBody, GenericParamOwned, InterfaceBody, LiteralOwned, MemberKind, MemberModifiers,
-        ModuleFacts, NamespaceBody, OccurrenceKind, ReceiverKind, StaticBody, TypeAliasBody,
-        TypeOwned,
+        Accessibility, AnonFieldOwned, AttrTok, ClassBody, ClassFlags, ConstBody, DeclBody,
+        DeclFact, DeprecationOwned, DocFacts, EnumBody, FunctionBody, GenericParamOwned,
+        IndexSignatureFact, InterfaceBody, LiteralOwned, MemberFact, MemberKind, MemberModifiers,
+        MethodFact, ModuleFacts, NamespaceBody, OccurrenceKind, ParamFact, PropertyFact,
+        ReceiverKind, StaticBody, TemplatePart, TypeAliasBody, TypeOwned, VariantFact,
     },
     id::TsId,
 };
@@ -1858,20 +1859,29 @@ fn consider_owned(
 
 /// Two files are twins when they share a parent directory and the same stem
 /// after a whole-suffix strip (not `Path::extension`).
-struct KeptBody {
-    /// Body only. Twin files with this skeleton collapse.
-    skeleton: String,
-    /// Body plus visibility and docs. Same-file copies collapse only when this matches.
-    same_file: String,
-    path: PathBuf,
+///
+/// The kept declaration is borrowed from `ModuleFacts` for the duration of
+/// [`TwinPlan::build`]. Identity is decided by comparing those facts in place.
+/// The sealed entry never stores this skeleton, so materializing one string
+/// per type node only allocated.
+struct KeptBody<'a> {
+    decl: &'a DeclFact,
 }
+
+/// `module -> qualified name -> (decl_index, span_start)`.
+type SkipSet = HashMap<PathBuf, HashMap<String, HashSet<(u32, u32)>>>;
+/// `module -> qualified name -> (decl_index, span_start) -> emitted
+/// discriminant`.
+type DiscMap = HashMap<PathBuf, HashMap<String, HashMap<(u32, u32), u32>>>;
+/// `canonical module -> qualified name -> discriminant -> kept declaration`.
+type Occupied<'a> = HashMap<PathBuf, HashMap<String, HashMap<u32, KeptBody<'a>>>>;
 
 struct TwinPlan {
     canonical: HashMap<PathBuf, PathBuf>,
     module_extra: HashMap<PathBuf, Vec<String>>,
     extra_paths: HashMap<TsId, Vec<String>>,
-    skip: HashSet<(PathBuf, String, u32, u32)>,
-    disc: HashMap<(PathBuf, String, u32, u32), u32>,
+    skip: SkipSet,
+    disc: DiscMap,
 }
 
 impl TwinPlan {
@@ -1893,9 +1903,9 @@ impl TwinPlan {
             }
         }
 
-        let mut occupied: HashMap<(PathBuf, String, u32), KeptBody> = HashMap::new();
-        let mut skip = HashSet::new();
-        let mut disc = HashMap::new();
+        let mut occupied: Occupied<'_> = HashMap::new();
+        let mut skip: SkipSet = HashMap::new();
+        let mut disc: DiscMap = HashMap::new();
         let mut extra_paths = HashMap::new();
         for module in modules {
             admit_decls(
@@ -1941,34 +1951,39 @@ impl TwinPlan {
 
     fn discriminant(&self, decl: &DeclFact, qualified: &str) -> u32 {
         self.disc
-            .get(&(
-                decl.module.clone(),
-                qualified.to_string(),
-                decl.decl_index,
-                decl.span_start,
-            ))
+            .get(decl.module.as_path())
+            .and_then(|by_name| by_name.get(qualified))
+            .and_then(|by_pos| by_pos.get(&(decl.decl_index, decl.span_start)))
             .copied()
             .unwrap_or(decl.decl_index)
     }
 
     fn is_skipped(&self, decl: &DeclFact, parent: Option<&TsId>) -> bool {
-        let name = qualified_decl_name(decl, parent);
-        self.skip.contains(&(
-            decl.module.clone(),
-            name,
-            decl.decl_index,
-            decl.span_start,
-        ))
+        let Some(by_name) = self.skip.get(decl.module.as_path()) else {
+            return false;
+        };
+        let key = (decl.decl_index, decl.span_start);
+        match parent {
+            Some(p) if p.name != MODULE_ROOT_NAME => {
+                let name = qualified_decl_name(decl, parent);
+                by_name
+                    .get(name.as_str())
+                    .is_some_and(|set| set.contains(&key))
+            }
+            _ => by_name
+                .get(decl.name.as_str())
+                .is_some_and(|set| set.contains(&key)),
+        }
     }
 }
 
-fn admit_decls(
-    decls: &[DeclFact],
+fn admit_decls<'a>(
+    decls: &'a [DeclFact],
     parent_qual: Option<&str>,
     canonical_of: &HashMap<PathBuf, PathBuf>,
-    occupied: &mut HashMap<(PathBuf, String, u32), KeptBody>,
-    skip: &mut HashSet<(PathBuf, String, u32, u32)>,
-    disc: &mut HashMap<(PathBuf, String, u32, u32), u32>,
+    occupied: &mut Occupied<'a>,
+    skip: &mut SkipSet,
+    disc: &mut DiscMap,
     extra_paths: &mut HashMap<TsId, Vec<String>>,
 ) {
     for decl in decls {
@@ -1977,68 +1992,55 @@ fn admit_decls(
         }
         let canonical = canonical_of
             .get(&decl.module)
-            .cloned()
-            .unwrap_or_else(|| decl.module.clone());
+            .map(PathBuf::as_path)
+            .unwrap_or(decl.module.as_path());
         let qual = match parent_qual {
             Some(p) => format!("{p}::{}", decl.name),
             None => decl.name.clone(),
         };
         let preferred = decl.decl_index;
-        let skel = body_skeleton(&decl.body);
-        let same_file = format!("{:?}{}{}", decl.visibility, doc_skeleton(&decl.doc), skel);
-        let origin = (decl.module.clone(), qual.clone(), preferred, decl.span_start);
-        let slot = (canonical.clone(), qual.clone(), preferred);
-        let existing = occupied.get(&slot).map(|kept| {
-            (
-                kept.skeleton.clone(),
-                kept.same_file.clone(),
-                kept.path.clone(),
-            )
-        });
-        match existing {
-            Some((_, kept_same, kept_path)) if kept_path == decl.module => {
-                if kept_same == same_file {
-                    // The same body written twice in one file (interface
-                    // merging, a twin copy pasted beside the original). One
-                    // entry is the declaration.
-                    skip.insert(origin);
-                } else {
-                    // Different bodies share a name. They are overloads, not
-                    // one id declared twice.
-                    let fresh = fresh_discriminant(occupied, &canonical, &qual);
-                    disc.insert(origin.clone(), fresh);
-                    occupied.insert(
-                        (canonical.clone(), qual.clone(), fresh),
-                        KeptBody {
-                            skeleton: skel,
-                            same_file: same_file.clone(),
-                            path: decl.module.clone(),
-                        },
-                    );
+        let hit = {
+            let kept = occupied
+                .get(canonical)
+                .and_then(|by_name| by_name.get(qual.as_str()))
+                .and_then(|by_disc| by_disc.get(&preferred));
+            match kept {
+                Some(kept) if kept.decl.module == decl.module && same_surface(kept.decl, decl) => {
+                    AdmitHit::SameFileSameBody
                 }
+                Some(kept) if kept.decl.module == decl.module => AdmitHit::SameFileDifferent,
+                Some(kept) if body_match(&kept.decl.body, &decl.body) => AdmitHit::TwinSameBody,
+                Some(_) => AdmitHit::TwinDifferent,
+                None => AdmitHit::Absent,
             }
-            Some((kept_skel, _, _)) if kept_skel == skel => {
-                skip.insert(origin);
+        };
+        match hit {
+            AdmitHit::SameFileSameBody => {
+                // The same body written twice in one file (interface merging,
+                // a twin copy pasted beside the original). One entry is the
+                // declaration.
+                remember_skip(skip, &decl.module, &qual, preferred, decl.span_start);
+            }
+            AdmitHit::TwinSameBody => {
+                remember_skip(skip, &decl.module, &qual, preferred, decl.span_start);
                 extra_paths
-                    .entry(TsId::new(canonical.clone(), qual.clone(), preferred))
+                    .entry(TsId::new(canonical.to_path_buf(), qual.clone(), preferred))
                     .or_default()
                     .push(decl.module.display().to_string());
             }
-            Some(_) => {
-                let fresh = fresh_discriminant(occupied, &canonical, &qual);
-                disc.insert(origin, fresh);
-                occupied.insert((canonical.clone(), qual.clone(), fresh), KeptBody {
-                    skeleton: skel,
-                    same_file,
-                    path: decl.module.clone(),
-                });
+            AdmitHit::SameFileDifferent | AdmitHit::TwinDifferent => {
+                // Different bodies share a name. They are overloads, not one
+                // id declared twice.
+                let fresh = fresh_discriminant(
+                    occupied
+                        .get(canonical)
+                        .and_then(|by_name| by_name.get(qual.as_str())),
+                );
+                remember_disc(disc, &decl.module, &qual, preferred, decl.span_start, fresh);
+                insert_kept(occupied, canonical, &qual, fresh, decl);
             }
-            None => {
-                occupied.insert(slot, KeptBody {
-                    skeleton: skel,
-                    same_file,
-                    path: decl.module.clone(),
-                });
+            AdmitHit::Absent => {
+                insert_kept(occupied, canonical, &qual, preferred, decl);
             }
         }
         if let DeclBody::Namespace(body) = &decl.body {
@@ -2053,6 +2055,52 @@ fn admit_decls(
             );
         }
     }
+}
+
+enum AdmitHit {
+    SameFileSameBody,
+    SameFileDifferent,
+    TwinSameBody,
+    TwinDifferent,
+    Absent,
+}
+
+fn insert_kept<'a>(
+    occupied: &mut Occupied<'a>,
+    canonical: &Path,
+    qual: &str,
+    disc: u32,
+    decl: &'a DeclFact,
+) {
+    occupied
+        .entry(canonical.to_path_buf())
+        .or_default()
+        .entry(qual.to_string())
+        .or_default()
+        .insert(disc, KeptBody { decl });
+}
+
+fn remember_skip(skip: &mut SkipSet, module: &Path, qual: &str, decl_index: u32, span_start: u32) {
+    skip.entry(module.to_path_buf())
+        .or_default()
+        .entry(qual.to_string())
+        .or_default()
+        .insert((decl_index, span_start));
+}
+
+fn remember_disc(
+    disc: &mut DiscMap,
+    module: &Path,
+    qual: &str,
+    decl_index: u32,
+    span_start: u32,
+    fresh: u32,
+) {
+    disc.entry(module.to_path_buf())
+        .or_default()
+        .entry(qual.to_string())
+        .or_default()
+        .insert((decl_index, span_start), fresh);
 }
 
 /// A member's id name. Discriminant 0 keeps `Parent::member`. A later
@@ -2074,13 +2122,12 @@ fn child_id(parent: &TsId, member: &str, local: u32) -> TsId {
     TsId::new(parent.module.clone(), child_name(parent, member), local)
 }
 
-fn fresh_discriminant(
-    occupied: &HashMap<(PathBuf, String, u32), KeptBody>,
-    canonical: &Path,
-    qual: &str,
-) -> u32 {
+fn fresh_discriminant(by_disc: Option<&HashMap<u32, KeptBody<'_>>>) -> u32 {
+    let Some(by_disc) = by_disc else {
+        return 0;
+    };
     let mut disc = 0u32;
-    while occupied.contains_key(&(canonical.to_path_buf(), qual.to_string(), disc)) {
+    while by_disc.contains_key(&disc) {
         disc = disc.saturating_add(1);
     }
     disc
@@ -2146,375 +2193,355 @@ fn package_foreign_key(specifier: &str, display: &str) -> ForeignKey {
     )
 }
 
-fn variance_mark(variance: Option<nudox_ir::kinds::ty::Variance>) -> &'static str {
-    match variance {
-        Some(nudox_ir::kinds::ty::Variance::Covariant) => "out ",
-        Some(nudox_ir::kinds::ty::Variance::Contravariant) => "in ",
-        Some(nudox_ir::kinds::ty::Variance::Invariant) => "inv ",
-        None => "",
+/// Visibility, docs, and body. Same-file copies collapse only when this
+/// matches.
+fn same_surface(a: &DeclFact, b: &DeclFact) -> bool {
+    a.visibility == b.visibility && doc_match(&a.doc, &b.doc) && body_match(&a.body, &b.body)
+}
+
+fn doc_match(a: &DocFacts, b: &DocFacts) -> bool {
+    opt_text(&a.doc, &b.doc)
+        && a.ignore == b.ignore
+        && match (a.deprecation.as_ref(), b.deprecation.as_ref()) {
+            (None, None) => true,
+            (Some(a), Some(b)) => opt_text(&a.note, &b.note) && a.since == b.since,
+            _ => false,
+        }
+}
+
+/// `None` and `Some("")` write no characters into the old skeleton.
+fn opt_text(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a == b,
+        (None, Some(text)) | (Some(text), None) => text.is_empty(),
     }
 }
 
-fn receiver_mark(receiver: ReceiverKind) -> &'static str {
-    match receiver {
-        ReceiverKind::None => "recv0",
-        ReceiverKind::SharedRef => "recv&",
-        ReceiverKind::MutRef => "recv&mut",
+/// `None` and `Some("")` are the same discriminant / const value text.
+fn opt_empty(a: &Option<String>, b: &Option<String>) -> bool {
+    a.as_deref().unwrap_or("") == b.as_deref().unwrap_or("")
+}
+
+fn body_match(a: &DeclBody, b: &DeclBody) -> bool {
+    match (a, b) {
+        (DeclBody::Enum(a), DeclBody::Enum(b)) => {
+            a.is_const == b.is_const
+                && a.variants.len() == b.variants.len()
+                && a.variants
+                    .iter()
+                    .zip(&b.variants)
+                    .all(|(x, y)| variant_match(x, y))
+        }
+        (DeclBody::Function(a), DeclBody::Function(b)) => function_match(a, b),
+        (DeclBody::Class(a), DeclBody::Class(b)) => {
+            a.is_abstract == b.is_abstract
+                && decorators_match(&a.decorators, &b.decorators)
+                && generics_match(&a.generics, &b.generics)
+                && types_match(&a.extends, &b.extends)
+                && types_match(&a.implements, &b.implements)
+                && a.members.len() == b.members.len()
+                && a.members
+                    .iter()
+                    .zip(&b.members)
+                    .all(|(x, y)| member_match(x, y))
+                && indexes_match(&a.index_signatures, &b.index_signatures)
+        }
+        (DeclBody::Interface(a), DeclBody::Interface(b)) => {
+            generics_match(&a.generics, &b.generics)
+                && types_match(&a.extends, &b.extends)
+                && a.methods.len() == b.methods.len()
+                && a.methods
+                    .iter()
+                    .zip(&b.methods)
+                    .all(|(x, y)| method_match(x, y))
+                && a.properties.len() == b.properties.len()
+                && a.properties
+                    .iter()
+                    .zip(&b.properties)
+                    .all(|(x, y)| property_match(x, y))
+                && a.call_signatures.len() == b.call_signatures.len()
+                && a.call_signatures
+                    .iter()
+                    .zip(&b.call_signatures)
+                    .all(|(x, y)| function_match(x, y))
+                && indexes_match(&a.index_signatures, &b.index_signatures)
+                && a.construct_signatures.len() == b.construct_signatures.len()
+                && a.construct_signatures
+                    .iter()
+                    .zip(&b.construct_signatures)
+                    .all(|(x, y)| function_match(x, y))
+        }
+        (DeclBody::TypeAlias(a), DeclBody::TypeAlias(b)) => {
+            generics_match(&a.generics, &b.generics) && type_match(&a.target, &b.target)
+        }
+        (DeclBody::Const(a), DeclBody::Const(b)) => {
+            opt_type_match(a.ty.as_ref(), b.ty.as_ref()) && opt_empty(&a.value, &b.value)
+        }
+        (DeclBody::Static(a), DeclBody::Static(b)) => {
+            a.is_mutable == b.is_mutable
+                && opt_type_match(a.ty.as_ref(), b.ty.as_ref())
+                && opt_empty(&a.value, &b.value)
+        }
+        (DeclBody::Namespace(a), DeclBody::Namespace(b)) => a.is_ambient == b.is_ambient,
+        (
+            DeclBody::Reexport {
+                module_request: a_mod,
+                import_name: a_name,
+            },
+            DeclBody::Reexport {
+                module_request: b_mod,
+                import_name: b_name,
+            },
+        ) => a_mod == b_mod && a_name == b_name,
+        _ => false,
     }
 }
 
-fn doc_skeleton(doc: &crate::typescript::extract::DocFacts) -> String {
-    let mut s = String::new();
-    if let Some(text) = &doc.doc {
-        s.push_str(text);
-    }
-    if let Some(dep) = &doc.deprecation {
-        s.push_str("~dep:");
-        if let Some(note) = &dep.note {
-            s.push_str(note);
-        }
-        if let Some(since) = &dep.since {
-            s.push('@');
-            s.push_str(since);
-        }
-    }
-    if doc.ignore {
-        s.push_str("~ignore");
-    }
-    s
+fn variant_match(a: &VariantFact, b: &VariantFact) -> bool {
+    a.name == b.name && opt_empty(&a.discriminant, &b.discriminant)
 }
 
-fn modifiers_skeleton(modifiers: &MemberModifiers) -> String {
-    let access = match modifiers.accessibility {
-        Accessibility::Public => "pub",
-        Accessibility::Protected => "prot",
-        Accessibility::Private => "priv",
-        Accessibility::PrivateField => "hash",
-    };
-    format!(
-        "{access}{}{}{}{}",
-        if modifiers.is_static { "+s" } else { "" },
-        if modifiers.is_readonly { "+r" } else { "" },
-        if modifiers.is_optional { "+o" } else { "" },
-        if modifiers.is_abstract { "+a" } else { "" },
-    )
+fn decorators_match(a: &[AttrTok], b: &[AttrTok]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.token == y.token)
 }
 
-fn decorators_skeleton(decorators: &[crate::typescript::extract::AttrTok]) -> String {
-    let mut s = String::new();
-    for decorator in decorators {
-        s.push('@');
-        s.push_str(&decorator.token);
-        s.push(';');
-    }
-    s
+fn modifiers_match(a: &MemberModifiers, b: &MemberModifiers) -> bool {
+    a.accessibility == b.accessibility
+        && a.is_static == b.is_static
+        && a.is_readonly == b.is_readonly
+        && a.is_optional == b.is_optional
+        && a.is_abstract == b.is_abstract
 }
 
-fn generics_skeleton(params: &[crate::typescript::extract::GenericParamOwned]) -> String {
-    let mut s = String::from("<");
-    for param in params {
-        s.push_str(variance_mark(param.variance));
-        s.push_str(&param.name);
-        for bound in &param.bounds {
-            s.push(':');
-            s.push_str(&type_skeleton(bound));
-        }
-        if let Some(default) = &param.default {
-            s.push('=');
-            s.push_str(&type_skeleton(default));
-        }
-        s.push(',');
-    }
-    s.push('>');
-    s
+fn flags_match(a: &ClassFlags, b: &ClassFlags) -> bool {
+    a.declare == b.declare && a.override_ == b.override_ && a.definite == b.definite
 }
 
-fn function_skeleton(f: &FunctionBody) -> String {
-    let mut s = format!(
-        "fn:{}:{}:{}:{}:{}:",
-        f.is_async,
-        f.is_generator,
-        f.has_body,
-        receiver_mark(f.receiver),
-        generics_skeleton(&f.generics)
-    );
-    if f.abstract_construct {
-        s.push_str("abstract-new;");
-    }
-    if let Some(doc) = &f.leading_doc {
-        s.push_str(doc);
-        s.push(';');
-    }
-    if let Some(body) = &f.body_text {
-        s.push_str(body);
-        s.push(';');
-    }
-    if let Some(this_ty) = &f.this_ty {
-        s.push_str("this:");
-        s.push_str(&type_skeleton(this_ty));
-        s.push(';');
-    }
-    for param in &f.params {
-        if param.is_readonly {
-            s.push_str("ro ");
-        }
-        for decorator in &param.decorators {
-            s.push('@');
-            s.push_str(&decorator.token);
-        }
-        s.push_str(&param.name);
-        if let Some(initializer) = &param.initializer {
-            s.push('=');
-            s.push_str(initializer);
-        }
-        if param.is_optional {
-            s.push('?');
-        }
-        if param.is_rest {
-            s.push('*');
-        }
-        s.push(':');
-        if let Some(ty) = &param.ty {
-            s.push_str(&type_skeleton(ty));
-        }
-        s.push(',');
-    }
-    s.push_str("->");
-    if let Some(ret) = &f.return_type {
-        s.push_str(&type_skeleton(ret));
-    }
-    s
+fn generics_match(a: &[GenericParamOwned], b: &[GenericParamOwned]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.variance == y.variance
+                && x.name == y.name
+                && types_match(&x.bounds, &y.bounds)
+                && opt_type_match(x.default.as_ref(), y.default.as_ref())
+        })
 }
 
-fn body_skeleton(body: &DeclBody) -> String {
-    match body {
-        DeclBody::Enum(e) => {
-            let mut s = format!("enum:{}", e.is_const);
-            for variant in &e.variants {
-                s.push('|');
-                s.push_str(&variant.name);
-                s.push('=');
-                s.push_str(variant.discriminant.as_deref().unwrap_or(""));
-            }
-            s
+fn function_match(a: &FunctionBody, b: &FunctionBody) -> bool {
+    a.is_async == b.is_async
+        && a.is_generator == b.is_generator
+        && a.has_body == b.has_body
+        && a.receiver == b.receiver
+        && generics_match(&a.generics, &b.generics)
+        && a.abstract_construct == b.abstract_construct
+        && a.leading_doc == b.leading_doc
+        && a.body_text == b.body_text
+        && opt_type_match(a.this_ty.as_ref(), b.this_ty.as_ref())
+        && params_match(&a.params, &b.params)
+        && opt_type_match(a.return_type.as_ref(), b.return_type.as_ref())
+}
+
+fn params_match(a: &[ParamFact], b: &[ParamFact]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.is_readonly == y.is_readonly
+                && decorators_match(&x.decorators, &y.decorators)
+                && x.name == y.name
+                && x.initializer == y.initializer
+                && x.is_optional == y.is_optional
+                && x.is_rest == y.is_rest
+                && opt_type_match(x.ty.as_ref(), y.ty.as_ref())
+        })
+}
+
+fn member_match(a: &MemberFact, b: &MemberFact) -> bool {
+    modifiers_match(&a.modifiers, &b.modifiers)
+        && a.signature_kind == b.signature_kind
+        && flags_match(&a.class_flags, &b.class_flags)
+        && a.initializer == b.initializer
+        && decorators_match(&a.decorators, &b.decorators)
+        && doc_match(&a.doc, &b.doc)
+        && a.name == b.name
+        && member_kind_match(&a.kind, &b.kind)
+}
+
+fn member_kind_match(a: &MemberKind, b: &MemberKind) -> bool {
+    match (a, b) {
+        (MemberKind::Method(a), MemberKind::Method(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| function_match(x, y))
         }
-        DeclBody::Function(f) => function_skeleton(f),
-        DeclBody::Class(c) => {
-            let mut s = format!(
-                "class:{}{}{}",
-                c.is_abstract,
-                decorators_skeleton(&c.decorators),
-                generics_skeleton(&c.generics)
-            );
-            for ty in &c.extends {
-                s.push_str("|ext:");
-                s.push_str(&type_skeleton(ty));
-            }
-            for ty in &c.implements {
-                s.push_str("|impl:");
-                s.push_str(&type_skeleton(ty));
-            }
-            s.push('#');
-            for member in &c.members {
-                s.push_str(&modifiers_skeleton(&member.modifiers));
-                s.push(':');
-                s.push_str(match member.signature_kind {
-                    crate::typescript::extract::SignatureKind::Method => "method",
-                    crate::typescript::extract::SignatureKind::Get => "get",
-                    crate::typescript::extract::SignatureKind::Set => "set",
-                });
-                if member.class_flags.declare {
-                    s.push_str("+declare");
-                }
-                if member.class_flags.override_ {
-                    s.push_str("+override");
-                }
-                if member.class_flags.definite {
-                    s.push_str("+definite");
-                }
-                if let Some(initializer) = &member.initializer {
-                    s.push('=');
-                    s.push_str(initializer);
-                }
-                s.push(':');
-                s.push_str(&decorators_skeleton(&member.decorators));
-                s.push_str(&doc_skeleton(&member.doc));
-                s.push(':');
-                s.push_str(&member.name);
-                s.push(':');
-                match &member.kind {
-                    MemberKind::Method(sigs) => {
-                        s.push_str("method:");
-                        for sig in sigs {
-                            s.push_str(&function_skeleton(sig));
-                            s.push('|');
-                        }
-                    }
-                    MemberKind::Constructor(sig) => {
-                        s.push_str("ctor:");
-                        s.push_str(&function_skeleton(sig));
-                    }
-                    MemberKind::Property { ty } => {
-                        s.push_str("prop:");
-                        if let Some(ty) = ty {
-                            s.push_str(&type_skeleton(ty));
-                        }
-                    }
-                    MemberKind::Accessor { ty } => {
-                        s.push_str("acc:");
-                        if let Some(ty) = ty {
-                            s.push_str(&type_skeleton(ty));
-                        }
-                    }
-                    MemberKind::StaticBlock { name } => {
-                        s.push_str("static:");
-                        s.push_str(name);
-                    }
-                }
-                s.push(';');
-            }
-            for index in &c.index_signatures {
-                s.push_str("index:");
-                if let Some(doc) = &index.doc {
-                    s.push_str(doc);
-                    s.push(';');
-                }
-                if index.is_static {
-                    s.push_str("static ");
-                }
-                if index.readonly {
-                    s.push_str("ro ");
-                }
-                s.push_str(&index.key_name);
-                s.push(':');
-                s.push_str(&type_skeleton(&index.key_ty));
-                s.push_str("->");
-                s.push_str(&type_skeleton(&index.value_ty));
-                s.push(';');
-            }
-            s
+        (MemberKind::Constructor(a), MemberKind::Constructor(b)) => function_match(a, b),
+        (MemberKind::Property { ty: a }, MemberKind::Property { ty: b })
+        | (MemberKind::Accessor { ty: a }, MemberKind::Accessor { ty: b }) => {
+            opt_type_match(a.as_ref(), b.as_ref())
         }
-        DeclBody::Interface(i) => {
-            let mut s = format!("iface{}", generics_skeleton(&i.generics));
-            for ty in &i.extends {
-                s.push('|');
-                s.push_str(&type_skeleton(ty));
-            }
-            s.push('#');
-            for method in &i.methods {
-                s.push_str(&modifiers_skeleton(&method.modifiers));
-                s.push(':');
-                s.push_str(&doc_skeleton(&method.doc));
-                if method.is_overload {
-                    s.push_str(":ov");
-                }
-                s.push(':');
-                s.push_str(match method.signature_kind {
-                    crate::typescript::extract::SignatureKind::Method => "method:",
-                    crate::typescript::extract::SignatureKind::Get => "get:",
-                    crate::typescript::extract::SignatureKind::Set => "set:",
-                });
-                s.push_str(&method.name);
-                s.push(':');
-                s.push_str(&function_skeleton(&method.sig));
-                s.push(';');
-            }
-            for prop in &i.properties {
-                s.push_str(&modifiers_skeleton(&prop.modifiers));
-                s.push(':');
-                s.push_str(&doc_skeleton(&prop.doc));
-                s.push(':');
-                s.push_str(&prop.name);
-                s.push(':');
-                if let Some(ty) = &prop.ty {
-                    s.push_str(&type_skeleton(ty));
-                }
-                s.push(';');
-            }
-            for call in &i.call_signatures {
-                s.push_str("call:");
-                s.push_str(&function_skeleton(call));
-                s.push(';');
-            }
-            for index in &i.index_signatures {
-                s.push_str("index:");
-                if let Some(doc) = &index.doc {
-                    s.push_str(doc);
-                    s.push(';');
-                }
-                if index.is_static {
-                    s.push_str("static ");
-                }
-                if index.readonly {
-                    s.push_str("ro ");
-                }
-                s.push_str(&index.key_name);
-                s.push(':');
-                s.push_str(&type_skeleton(&index.key_ty));
-                s.push_str("->");
-                s.push_str(&type_skeleton(&index.value_ty));
-                s.push(';');
-            }
-            for construct in &i.construct_signatures {
-                s.push_str("new:");
-                s.push_str(&function_skeleton(construct));
-                s.push(';');
-            }
-            s
-        }
-        DeclBody::TypeAlias(a) => format!(
-            "alias:{}{}",
-            generics_skeleton(&a.generics),
-            type_skeleton(&a.target)
-        ),
-        DeclBody::Const(c) => format!(
-            "const:{}:{}",
-            c.ty.as_ref().map(type_skeleton).unwrap_or_default(),
-            c.value.as_deref().unwrap_or("")
-        ),
-        DeclBody::Static(st) => format!(
-            "static:{}:{}:{}",
-            st.is_mutable,
-            st.ty.as_ref().map(type_skeleton).unwrap_or_default(),
-            st.value.as_deref().unwrap_or("")
-        ),
-        DeclBody::Namespace(n) => format!("ns:{}", n.is_ambient),
-        DeclBody::Reexport {
-            module_request,
-            import_name,
-        } => format!("reexport:{module_request}:{import_name}"),
+        (MemberKind::StaticBlock { name: a }, MemberKind::StaticBlock { name: b }) => a == b,
+        _ => false,
     }
 }
 
-fn type_seq(tag: &str, arms: &[TypeOwned]) -> String {
-    let mut s = format!("{tag}(");
-    for arm in arms {
-        s.push_str(&type_skeleton(arm));
-        s.push('|');
-    }
-    s.push(')');
-    s
+fn method_match(a: &MethodFact, b: &MethodFact) -> bool {
+    modifiers_match(&a.modifiers, &b.modifiers)
+        && doc_match(&a.doc, &b.doc)
+        && a.is_overload == b.is_overload
+        && a.signature_kind == b.signature_kind
+        && a.name == b.name
+        && function_match(&a.sig, &b.sig)
 }
 
-fn type_skeleton(ty: &TypeOwned) -> String {
-    match ty {
-        TypeOwned::Nominal(n) => format!("N({n})"),
-        TypeOwned::TypeVar(n) => format!("V({n})"),
-        TypeOwned::Apply { base, args } => {
-            let mut s = format!("A({}", type_skeleton(base));
-            for arg in args {
-                s.push(',');
-                s.push_str(&type_skeleton(arg));
-            }
-            s.push(')');
-            s
+fn property_match(a: &PropertyFact, b: &PropertyFact) -> bool {
+    modifiers_match(&a.modifiers, &b.modifiers)
+        && doc_match(&a.doc, &b.doc)
+        && a.name == b.name
+        && opt_type_match(a.ty.as_ref(), b.ty.as_ref())
+}
+
+fn indexes_match(a: &[IndexSignatureFact], b: &[IndexSignatureFact]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.doc == y.doc
+                && x.is_static == y.is_static
+                && x.readonly == y.readonly
+                && x.key_name == y.key_name
+                && type_match(&x.key_ty, &y.key_ty)
+                && type_match(&x.value_ty, &y.value_ty)
+        })
+}
+
+fn types_match(a: &[TypeOwned], b: &[TypeOwned]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| type_match(x, y))
+}
+
+fn opt_type_match(a: Option<&TypeOwned>, b: Option<&TypeOwned>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => type_match(a, b),
+        _ => false,
+    }
+}
+
+fn literal_match(a: &LiteralOwned, b: &LiteralOwned) -> bool {
+    match (a, b) {
+        (LiteralOwned::Bool(a), LiteralOwned::Bool(b)) => a == b,
+        (LiteralOwned::Number(a), LiteralOwned::Number(b))
+        | (LiteralOwned::String(a), LiteralOwned::String(b))
+        | (LiteralOwned::BigInt(a), LiteralOwned::BigInt(b)) => a == b,
+        (LiteralOwned::Null, LiteralOwned::Null)
+        | (LiteralOwned::Undefined, LiteralOwned::Undefined) => true,
+        _ => false,
+    }
+}
+
+fn template_match(a: &TemplatePart, b: &TemplatePart) -> bool {
+    match (a, b) {
+        (TemplatePart::Literal(a), TemplatePart::Literal(b)) => a == b,
+        (TemplatePart::Interpolated(a), TemplatePart::Interpolated(b)) => type_match(a, b),
+        _ => false,
+    }
+}
+
+fn fields_match(a: &[AnonFieldOwned], b: &[AnonFieldOwned]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.name == y.name
+                && type_match(&x.ty, &y.ty)
+                && x.optional == y.optional
+                && x.readonly == y.readonly
+        })
+}
+
+fn type_match(a: &TypeOwned, b: &TypeOwned) -> bool {
+    match (a, b) {
+        (TypeOwned::Any, TypeOwned::Any)
+        | (TypeOwned::Never, TypeOwned::Never)
+        | (TypeOwned::Unknown, TypeOwned::Unknown)
+        | (TypeOwned::Void, TypeOwned::Void)
+        | (TypeOwned::Undefined, TypeOwned::Undefined)
+        | (TypeOwned::Null, TypeOwned::Null)
+        | (TypeOwned::Bool, TypeOwned::Bool)
+        | (TypeOwned::Number, TypeOwned::Number)
+        | (TypeOwned::BigInt, TypeOwned::BigInt)
+        | (TypeOwned::String, TypeOwned::String)
+        | (TypeOwned::Symbol, TypeOwned::Symbol)
+        | (TypeOwned::Object, TypeOwned::Object)
+        | (TypeOwned::This, TypeOwned::This) => true,
+        (TypeOwned::Primitive(a), TypeOwned::Primitive(b))
+        | (TypeOwned::Unsupported(a), TypeOwned::Unsupported(b))
+        | (TypeOwned::Nominal(a), TypeOwned::Nominal(b))
+        | (TypeOwned::TypeVar(a), TypeOwned::TypeVar(b)) => a == b,
+        (
+            TypeOwned::Apply {
+                base: a_base,
+                args: a_args,
+            },
+            TypeOwned::Apply {
+                base: b_base,
+                args: b_args,
+            },
+        ) => type_match(a_base, b_base) && types_match(a_args, b_args),
+        (TypeOwned::Union(a), TypeOwned::Union(b))
+        | (TypeOwned::Intersection(a), TypeOwned::Intersection(b))
+        | (TypeOwned::Tuple(a), TypeOwned::Tuple(b)) => types_match(a, b),
+        (TypeOwned::Array(a), TypeOwned::Array(b)) => type_match(a, b),
+        (TypeOwned::Function(a), TypeOwned::Function(b)) => function_match(a, b),
+        (
+            TypeOwned::NamedTupleElem {
+                label: a_label,
+                ty: a_ty,
+            },
+            TypeOwned::NamedTupleElem {
+                label: b_label,
+                ty: b_ty,
+            },
+        ) => a_label == b_label && type_match(a_ty, b_ty),
+        (TypeOwned::Literal(a), TypeOwned::Literal(b)) => literal_match(a, b),
+        (
+            TypeOwned::Conditional {
+                check: a_check,
+                extends_ty: a_extends,
+                then_ty: a_then,
+                else_ty: a_else,
+            },
+            TypeOwned::Conditional {
+                check: b_check,
+                extends_ty: b_extends,
+                then_ty: b_then,
+                else_ty: b_else,
+            },
+        ) => {
+            type_match(a_check, b_check)
+                && type_match(a_extends, b_extends)
+                && type_match(a_then, b_then)
+                && type_match(a_else, b_else)
         }
-        TypeOwned::Union(arms) => type_seq("union", arms),
-        TypeOwned::Intersection(arms) => type_seq("inter", arms),
-        TypeOwned::Tuple(arms) => type_seq("tuple", arms),
-        TypeOwned::Array(inner) => format!("[{}]", type_skeleton(inner)),
-        TypeOwned::Function(f) => function_skeleton(f),
-        other => format!("{other:?}"),
+        (
+            TypeOwned::Mapped {
+                key_var: a_key,
+                source: a_source,
+                value: a_value,
+                readonly: a_readonly,
+                optional: a_optional,
+            },
+            TypeOwned::Mapped {
+                key_var: b_key,
+                source: b_source,
+                value: b_value,
+                readonly: b_readonly,
+                optional: b_optional,
+            },
+        ) => {
+            a_key == b_key
+                && type_match(a_source, b_source)
+                && type_match(a_value, b_value)
+                && a_readonly == b_readonly
+                && a_optional == b_optional
+        }
+        (TypeOwned::TemplateLiteral(a), TypeOwned::TemplateLiteral(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| template_match(x, y))
+        }
+        (TypeOwned::ObjectLiteral(a), TypeOwned::ObjectLiteral(b)) => fields_match(a, b),
+        _ => false,
     }
 }
 
