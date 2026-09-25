@@ -1,0 +1,29 @@
+.lens{gap:0}.lens>a{border-radius:0;padding:0 14px}
+.lens>.on::after{left:14px;right:14px;height:2px;border-radius:0;box-shadow:none;background:var(--mint);clip-path:polygon(2px 0,100% 0,calc(100% - 2px) 100%,0 100%)}
+.rose{position:relative;height:318px}
+.rose .axis{position:absolute;font:italic 400 13px/1 var(--serif);color:var(--ink3);display:flex;align-items:center;gap:5px;transform:translate(-50%,-50%);white-space:nowrap}
+.rose .hub{position:absolute;left:50%;top:160px;transform:translate(-50%,-50%)}
+.rose .hubring{position:absolute;left:50%;top:160px;width:64px;height:64px;margin:-32px;border:1px solid var(--f-type);opacity:0;animation:ripple 3.6s var(--glide) infinite;pointer-events:none}
+.xray .hl{background:var(--peri-soft);box-shadow:0 0 0 1px var(--peri-line);padding:1px 2px}
+.xnote{display:flex;gap:12px;align-items:flex-start;margin:0 0 0 26px;padding:10px 14px 11px;background:var(--plate2);box-shadow:inset 2px 0 0 var(--peri);font-size:12.5px;line-height:18px;color:var(--ink1);position:relative;clip-path:polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%)}
+.led{display:grid;grid-template-columns:18px 18px minmax(0,1fr) auto 22px;gap:0 10px;align-items:center;padding:7px 10px 7px 8px;position:relative;transition:background var(--t-quick)}
+.led:hover,.led.is-hover{background:var(--tint)}
+.led .nm{font:600 13px/20px var(--mono);color:var(--ink0)}
+.led .sg{font:400 12.5px/20px var(--mono);color:var(--ink2);margin-left:7px}
+.led>.mod:first-child{color:var(--ink2)}
+.led .sum{grid-column:3/4;color:var(--ink2);font-size:12.5px;line-height:18px}
+.led .peelb{opacity:0;color:var(--ink3);transition:opacity var(--t-quick),transform var(--t-quick) var(--bounce)}
+.led:hover .peelb,.led.is-hover .peelb,.led.open .peelb{opacity:1}
+.led .peelb:hover{transform:translate(-1px,-2px);color:var(--ink0)}
+.led.open{background:var(--tint)}
+.led.arrives .nm{color:var(--ink2)}
+.ledhead{display:flex;align-items:baseline;gap:10px;padding:0 8px 4px;margin-top:6px;border-bottom:1px solid var(--line1)}
+.ledhead h3{margin:0;font:620 16px/24px var(--display);letter-spacing:-.015em;color:var(--ink0)}
+.ledhead span{font:italic 400 13px/20px var(--serif);color:var(--ink3)}
+.peeled{grid-column:3/6;margin:8px 0 4px;padding:10px 14px 12px;position:relative;animation:peel-open .5s var(--glide) both;transform-origin:top}
+@keyframes peel-open{0%{opacity:0;transform:scaleY(.7)}100%{opacity:1;transform:none}}
+.site{padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-width:0;flex-basis:0}
+.site .code{white-space:nowrap;overflow:hidden;font-size:12px}
+.fact{display:flex;align-items:center;gap:8px;font-style:normal;font-family:var(--ui);font-size:12px;color:var(--ink1);height:22px}
+.fact .ico{color:var(--ink3)}
+

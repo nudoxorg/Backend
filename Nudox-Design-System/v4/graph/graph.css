@@ -1,0 +1,187 @@
+html,body{margin:0;height:100%;background:#030814;overflow:hidden}
+.gnx{width:100vw;height:100vh;background:var(--g0);position:relative}
+.gwin{width:100vw;height:100vh}
+.gwin .cbody{min-height:0}
+.gview{flex:1;min-width:0;position:relative;overflow:hidden;container:gview / inline-size;background:#040a16}
+.gview canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:default}
+.gview canvas.grab{cursor:grabbing}
+.gview canvas.point{cursor:pointer}
+
+/* the view switch (the altimeter's slot): only the active view is named */
+.titlebar .views{margin-left:4px}
+.titlebar .views>button{height:24px;display:inline-flex;align-items:center;gap:7px;color:var(--ink3);background:none;border:0;padding:0 7px;cursor:pointer}
+.titlebar .views>button span{display:none}
+.titlebar .views>button.on span{display:inline;font:620 13px var(--display);letter-spacing:-.01em;color:var(--ink0)}
+.titlebar .views>button .d{width:7px;height:7px;transform:rotate(45deg);box-shadow:inset 0 0 0 1.4px currentColor}
+.titlebar .views>button.on .d{background:var(--mint);box-shadow:none;width:9px;height:9px}
+.titlebar .views>button:hover{color:var(--ink1)}
+
+/* find */
+.gfind{position:absolute;left:16px;top:14px;z-index:5;display:flex;align-items:center;gap:9px;height:34px;padding:0 10px 0 12px;
+  width:min(300px,calc(100% - 32px));color:var(--ink3);background:rgba(8,15,29,.72);backdrop-filter:blur(10px);
+  box-shadow:inset 0 0 0 1px var(--line2);clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+.gfind input{flex:1;min-width:0;background:none;border:0;outline:0;font:500 13px var(--mono);color:var(--ink0)}
+.gfind input::placeholder{font:400 13px var(--ui);color:var(--ink4)}
+.gfind kbd{font:500 11px var(--mono);color:var(--ink4);box-shadow:inset 0 0 0 1px var(--line2);padding:1px 6px}
+.gfind.on{box-shadow:inset 0 0 0 1px var(--peri-line)}
+.gres{position:absolute;left:16px;top:52px;z-index:5;width:min(420px,calc(100% - 32px));display:none;flex-direction:column;padding:6px;
+  background:rgba(8,15,29,.9);backdrop-filter:blur(12px);box-shadow:inset 0 0 0 1px var(--line2)}
+.gres.on{display:flex}
+.gres .r{display:grid;grid-template-columns:18px auto minmax(0,1fr);gap:10px;align-items:baseline;padding:7px 8px;cursor:pointer}
+.gres .r .k{align-self:center}
+.gres .r .n{font:500 13px var(--mono);color:var(--ink0);white-space:nowrap}
+.gres .r .n u{text-decoration:none;box-shadow:inset 0 -1.5px 0 var(--mint)}
+.gres .r .w{font:400 11.5px var(--mono);color:var(--ink4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
+.gres .r.sel{background:var(--plate2,rgba(143,160,255,.08));box-shadow:inset 2px 0 0 var(--peri)}
+
+/* where the camera is */
+.gwhere{position:absolute;left:18px;bottom:14px;z-index:4;font:500 12px var(--mono);color:var(--ink3);pointer-events:none;white-space:nowrap;
+  display:flex;align-items:center;gap:10px}
+.gwhere b{font-weight:600;color:var(--ink1)}
+.gwhere .sep{color:var(--ink4)}
+.gwhere .alt{font:400 11px var(--ui);color:var(--ink4);margin-left:8px}
+
+/* the peek follows its node */
+.gpeek{position:absolute;z-index:6;left:0;top:0;width:340px;max-width:calc(100% - 32px);pointer-events:none;opacity:0;transition:opacity .12s;
+  background:var(--glass);clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);
+  box-shadow:inset 1px 1px 0 var(--bevel-hi,rgba(255,255,255,.08)),inset -1px -1px 0 var(--bevel-lo,rgba(0,0,0,.4));padding:13px 15px 12px}
+.gpeek.on{opacity:1}
+.gpeek .h{display:flex;align-items:center;gap:9px;min-width:0}
+.gpeek .h .nm{font:600 14px var(--mono);color:var(--ink0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpeek .wh{font:400 11.5px var(--mono);color:var(--ink4);margin:3px 0 0 27px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpeek .sg{margin-top:9px;font:400 11.5px/17px var(--mono);color:var(--ink2);white-space:pre-wrap;word-break:break-word;max-height:52px;overflow:hidden}
+.gpeek .sy{margin-top:8px;font:italic 400 14px/20px var(--serif);color:var(--ink1)}
+.gpeek .fc{margin-top:9px;font:400 12px var(--ui);color:var(--ink3);display:flex;gap:10px;flex-wrap:wrap}
+.gpeek .fc b{color:var(--ink1);font-weight:600}.gpeek .fc b.y{color:var(--mint)}
+
+/* the focused symbol: a quiet card at the right edge */
+.gfocus{position:absolute;right:16px;top:14px;z-index:5;width:min(340px,calc(100% - 32px));display:none;flex-direction:column;gap:10px;padding:16px 18px;
+  background:rgba(8,15,29,.84);backdrop-filter:blur(12px);box-shadow:inset 0 0 0 1px var(--line2);
+  clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px)}
+.gfocus.on{display:flex}
+.gfocus .h{display:flex;align-items:center;gap:12px;min-width:0}
+.gfocus .h .nm{font:650 19px var(--display);letter-spacing:-.02em;color:var(--ink0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gfocus .h .wh{font:400 11.5px var(--mono);color:var(--ink3)}
+.gfocus .sy{font:italic 400 14.5px/21px var(--serif);color:var(--ink1)}
+.gfocus .ax{display:flex;flex-direction:column;gap:5px}
+.gfocus .ax .row{display:grid;grid-template-columns:64px minmax(0,1fr);gap:10px;align-items:baseline}
+.gfocus .ax .w{font:italic 400 13px var(--serif);color:var(--ink3)}
+.gfocus .ax .ns{font:500 12px/18px var(--mono);color:var(--ink1)}
+.gfocus .ax .ns i{font-style:normal;color:var(--ink4)}
+.gfocus .ax .ns .y{color:var(--mint)}
+.gfocus .fx{font:400 12.5px var(--ui);color:var(--ink3);display:flex;flex-wrap:wrap;gap:4px 8px}
+.gfocus .fx i{font-style:normal;color:var(--ink4)}.gfocus .fx b{color:var(--mint);font-weight:600}
+.gfocus .ft{display:flex;gap:14px;font:400 11.5px var(--ui);color:var(--ink4);padding-top:2px}
+.gfocus .ft kbd{font:500 10.5px var(--mono);color:var(--ink3);box-shadow:inset 0 0 0 1px var(--line2);padding:0 5px;margin-right:5px}
+
+.ghud{position:absolute;right:16px;bottom:12px;z-index:4;font:400 11px var(--mono);color:var(--ink4);pointer-events:none;white-space:pre;text-align:right}
+
+/* page overlay (for the page ⇄ graph morph) */
+.gpage{position:absolute;inset:0;z-index:8;display:none;background:var(--g0)}
+.gpage.on{display:flex}
+.gpage .creader{flex:1;min-width:0;overflow:auto;container:reader / inline-size}
+.gpage .cshelf{overflow:hidden}
+.gpage .crow[data-i]{cursor:pointer}
+.gpage .crow .k svg,.gpage .cshelf .k svg{width:14px;height:14px}
+.gfly{position:fixed;z-index:30;width:64px;height:64px;pointer-events:none;transform-origin:32px 32px}
+.hgem{flex:none;display:inline-flex}
+.pfol{max-width:900px}
+.pfol .chero .nm{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:normal;word-break:normal}
+
+/* anatomy: fork (one of), bundle (holds), pipe (takes → gives), contract (you write / you get) */
+.anat{display:flex;flex-direction:column}
+.anat .ah,.pcaps .ah{font:500 11.5px var(--ui);color:var(--ink4);letter-spacing:.02em;margin:0 0 6px}
+.anat .arows{position:relative;padding-left:22px;margin-bottom:10px}
+.anat .ar{position:relative;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,max-content) minmax(0,1fr);gap:18px;align-items:baseline;
+  padding:calc(7px*var(--drow)) 0;min-height:calc(32px*var(--drow))}
+.anat .ar .vn{font:600 calc(13.5px*var(--dtxt)) var(--mono);color:var(--ink0);white-space:nowrap}
+.anat .ar .vt{font:400 calc(13px*var(--dtxt)) var(--mono);color:var(--ink1);min-width:0}
+.anat .ar .say{font:italic 400 calc(14px*var(--dtxt)) var(--serif);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.anat .ar.priv .vn{color:var(--ink2);font-weight:500}
+.fork .arows::before{content:"";position:absolute;left:5px;top:18px;bottom:18px;width:1px;background:var(--line3)}
+.fork .ar::before{content:"";position:absolute;left:-17px;top:calc(50% - .5px);width:11px;height:1px;background:var(--line3)}
+.fork .ar::after{content:"";position:absolute;left:-7px;top:calc(50% - 3px);width:5px;height:5px;transform:rotate(45deg);box-shadow:inset 0 0 0 1px var(--ink3)}
+.bundle .arows::before{content:"";position:absolute;left:4px;top:8px;bottom:8px;width:7px;border:1px solid var(--line3);border-right:0}
+.contract .arows.req .vn{color:var(--ink0)}
+.contract .arows.req::before{content:"";position:absolute;left:4px;top:8px;bottom:8px;width:7px;border:1px dashed var(--line3);border-right:0}
+.contract .arows:not(.req)::before{content:"";position:absolute;left:4px;top:8px;bottom:8px;width:7px;border:1px solid var(--line2);border-right:0}
+.anat .afoot{font:400 12.5px var(--ui);color:var(--ink3)}
+.pipe{display:grid;grid-template-columns:minmax(0,max-content) 64px minmax(0,1fr);align-items:center;column-gap:10px;row-gap:12px}
+.pipe .pins{display:flex;flex-direction:column;gap:8px;padding:6px 18px 6px 0;border-right:1px solid var(--line3);min-width:0}
+.pipe .pi{display:flex;gap:14px;align-items:baseline;font:400 calc(13px*var(--dtxt)) var(--mono);color:var(--ink1);white-space:nowrap}
+.pipe .pn{font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink3)}
+.pipe .parrow{position:relative;height:12px}
+.pipe .parrow i{position:absolute;left:0;right:6px;top:50%;height:1px;background:var(--line3)}
+.pipe .parrow::after{content:"";position:absolute;right:1px;top:calc(50% - 4px);width:7px;height:7px;border-top:1px solid var(--ink3);border-right:1px solid var(--ink3);transform:rotate(45deg)}
+.pipe .po{font:500 calc(14.5px*var(--dtxt)) var(--mono);color:var(--ink0)}
+.pipe .pf{margin-top:8px;font:400 calc(13px*var(--dtxt)) var(--mono);color:var(--ink2)}
+.pipe .pflags{grid-column:1/-1;display:flex;gap:14px;font:400 12px var(--ui);color:var(--ink3)}
+.gty{white-space:normal}
+.gty .gtw{font:400 calc(12px*var(--dtxt)) var(--ui);font-style:normal;color:var(--ink3)}
+.gty .gtp{font-style:normal;color:var(--ink4)}
+.gty .gtk{color:var(--ink2)}
+.gpage a.gtl{color:var(--ink1);text-decoration:none;box-shadow:inset 0 -1px 0 rgba(158,176,255,.18);cursor:pointer}
+.gpage a.gtl:hover{color:var(--ink0);box-shadow:inset 0 -1.5px 0 var(--peri)}
+.gpage a.gtl.y{color:var(--mint)}
+body.xray .gpage .gty[title]::after{content:"  " attr(title);font:400 11px var(--mono);color:var(--ink4);white-space:pre}
+.crow2 .nm .gsl{margin-left:2px;font-weight:400;color:var(--ink2)}
+.crow2 .nm .gsl .gty{white-space:nowrap}
+.crow2.via .nm{font-weight:400}
+.pcaps{display:flex;flex-direction:column}
+
+/* the prism, page form */
+.prism{position:relative;width:100%;margin:6px 0}
+.prism .pcurves{position:absolute;left:0;top:0;overflow:visible}
+.prism .pcurves path{fill:none;stroke:rgba(158,176,255,.2);stroke-width:1}
+.prism .pc{position:absolute;display:flex;flex-direction:column;gap:8px}
+.prism .ph{height:24px;display:flex;align-items:flex-end;padding-bottom:5px;box-sizing:border-box;font:italic 400 13px var(--serif);color:var(--ink3)}
+.prism .left .ph{justify-content:flex-end}
+.prism .pe{height:24px;display:flex;align-items:center;gap:9px;font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink1);white-space:nowrap}
+.prism .pe.l{justify-content:flex-end}
+.prism .pe.more{font:italic 400 13px var(--serif);color:var(--ink4)}
+.prism .pw{font:400 10.5px var(--mono);color:var(--ink4)}
+.prism .pm{width:6px;height:6px;flex:none;transform:rotate(45deg);background:var(--ink2)}
+.prism .pm.ca,.prism .pm.va{transform:none;width:6px;height:6px}
+.prism .pm.co{background:none;box-shadow:inset 0 0 0 1.2px var(--ink2)}
+.prism .pgem{position:absolute;transform:translate(-50%,-50%);width:28px;height:28px;padding:0;background:none;border:0;cursor:pointer;display:grid;place-items:center}
+.prism .pgem i{width:14px;height:14px;transform:rotate(45deg);background:var(--peri);box-shadow:0 0 0 5px rgba(4,10,22,1),0 0 0 6px rgba(147,162,250,.45)}
+.prism .pgem:hover i{background:var(--peri-hi)}
+.prism.narrow{display:flex;flex-direction:column;gap:6px;padding-left:16px;border-left:1px solid var(--line3)}
+.prism.narrow .pc{position:static}
+.prism.narrow .pgem{position:static;transform:none;display:flex;gap:10px;width:auto;height:auto;align-items:center;font:600 13px var(--mono);color:var(--ink0);margin-left:-20px}
+.prism.narrow .pgem i{width:8px;height:8px;box-shadow:0 0 0 3px var(--g0)}
+
+/* code view */
+.pfol.code{max-width:1100px}
+.pfol .scr{font:500 12.5px var(--mono);color:var(--ink3)}.pfol .scr b{color:var(--ink0);font-weight:600}
+.pfol .src{font:400 calc(13px*var(--dtxt))/calc(22px*var(--drow)) var(--mono);color:var(--ink2)}
+.pfol .src .sl{display:grid;grid-template-columns:44px 2px minmax(0,1fr);column-gap:12px;white-space:pre-wrap;word-break:break-word}
+.pfol .src .ln{text-align:right;color:var(--ink4);font-size:11.5px}
+.pfol .src .sl.cur .tx{color:var(--ink1)}.pfol .src .sl.cur .tk{background:var(--peri-line)}
+.pfol .src .kw{color:#c5a3ff}.pfol .src .ty{color:var(--f-type);white-space:pre-wrap}.pfol .src .dc{font-style:italic;color:var(--ink3)}.pfol .src .at{color:var(--ink3)}
+
+@container gview (max-width:640px){ .gfocus{top:auto;bottom:40px;right:12px;left:12px;width:auto} .gfind{left:12px;top:10px} }
+
+/* capabilities: one line, plain words; derived = hollow, written = solid, via = dashed */
+.gcaps{display:flex;flex-wrap:wrap;gap:4px 14px;font:500 12.5px var(--ui);color:var(--ink2)}
+.gcaps .gcap{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.gcaps .gcap i{width:6px;height:6px;transform:rotate(45deg);flex:none}
+.gcaps .gcap.derived i{box-shadow:inset 0 0 0 1.2px var(--ink3)}
+.gcaps .gcap.written i{background:var(--ink1)}
+.gcaps .gcap.via i{box-shadow:inset 0 0 0 1px var(--ink4);outline:1px dashed var(--ink4);outline-offset:1px;width:4px;height:4px}
+
+.gty .gv,.pipe .gv{font-style:italic;color:var(--ink1)}
+.pipe .pwhere{grid-column:1/-1;display:flex;flex-direction:column;gap:4px;padding-top:2px}
+.pipe .pwr{display:flex;gap:10px;align-items:baseline;font:400 13px var(--mono);color:var(--ink1)}
+.pipe .pwr .gv{min-width:18px;font:italic 500 13px var(--mono)}
+.anat .ar.fold .say,.crow2.fold .say{font:400 12px var(--ui);font-style:normal;color:var(--ink3)}
+.crow2.fold .nm{display:flex;gap:14px;align-items:baseline}
+.crow2.fold .nm .vn{font:500 13px var(--mono);color:var(--ink0)}
+.crow2.fold .nm .say{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* narrow: the gem goes above the name; the shelf leaves below 640 */
+@container reader (max-width:560px){ .pfol .chero{flex-direction:column;align-items:flex-start;gap:12px} .pfol .hgem svg{width:40px;height:40px}
+  .anat .ar{grid-template-columns:minmax(0,1fr);gap:2px} .anat .ar .say{white-space:normal}
+  .pipe{grid-template-columns:minmax(0,1fr)} .pipe .parrow{display:none} .pipe .pins{border-right:0;border-bottom:1px solid var(--line3);padding:0 0 10px} }
+@container win (max-width:640px){ .gpage .cshelf{display:none} }
+@container win (max-width:900px){ .gpage .cshelf{width:200px} }
+.gtw,.gtp{font-style:normal}
