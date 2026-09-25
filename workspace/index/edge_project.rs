@@ -1,9 +1,10 @@
 //! One projection from a manifest [`DepEdge`] onto a catalog [`EdgeWire`].
 //! Feed publishes that only know names go through the same function after
 //! [`runtime_edges_from_names`](crate::record::runtime_edges_from_names). A
-//! peer edge is not an installed dependency, so it is absent here. Runtime and
-//! optional classes share [`EdgeKind::Runtime`] because the catalog kind has
-//! no optional bit; those two classes stay distinct versioned rows.
+//! peer edge is not an installed dependency, so it is absent here. The wire
+//! kind is [`DepEdge::kind`], so a recipe edge stays beside a runtime edge of
+//! the same name. Runtime and optional classes still share
+//! [`EdgeKind::Runtime`] when the edge was built that way.
 
 use std::collections::BTreeSet;
 
@@ -59,17 +60,17 @@ pub fn project_edges(ecosystem: Language, edges: &[DepEdge], source: EdgeSource)
     let mut seen = BTreeSet::new();
     let mut wires = Vec::new();
     for edge in edges {
-        let Some(kind) = kind_of(edge.class) else {
+        if edge.class == DepClass::Peer {
             continue;
-        };
-        if !seen.insert((edge.name.clone(), kind.as_token())) {
+        }
+        if !seen.insert((edge.name.clone(), edge.kind.as_token())) {
             continue;
         }
         wires.push(EdgeWire {
             dep_ecosystem: ecosystem,
             dep_name_canonical: edge.name.to_string(),
             requirement: edge.requirement.as_deref().unwrap_or("").to_owned(),
-            kind,
+            kind: edge.kind,
             source,
             resolved_stem: None,
         });
@@ -266,14 +267,6 @@ fn edge_from_wire(wire: &EdgeWire) -> DepEdge {
     }
 }
 
-fn kind_of(class: DepClass) -> Option<EdgeKind> {
-    match class {
-        DepClass::Runtime | DepClass::Optional => Some(EdgeKind::Runtime),
-        DepClass::Dev | DepClass::Build => Some(EdgeKind::Build),
-        DepClass::Peer => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +284,36 @@ mod tests {
             optional: false,
             dep_ecosystem: None,
         }
+    }
+
+    #[test]
+    fn every_kind_round_trips_and_a_recipe_stays_beside_runtime() {
+        let mut edges = Vec::new();
+        for kind in EdgeKind::all_variants() {
+            edges.push(DepEdge {
+                name: SmolStr::new("zlib"),
+                requirement: None,
+                class: crate::engine::class_of_kind(*kind),
+                kind: *kind,
+                optional: false,
+                dep_ecosystem: None,
+            });
+        }
+        edges.push(DepEdge {
+            name: SmolStr::new("peer-only"),
+            requirement: None,
+            class: DepClass::Peer,
+            kind: EdgeKind::Runtime,
+            optional: false,
+            dep_ecosystem: None,
+        });
+        let wires = project_edges(Language::Cpp, &edges, EdgeSource::Manifest);
+        let kinds: Vec<_> = wires.iter().map(|wire| wire.kind).collect();
+        assert_eq!(kinds, EdgeKind::all_variants());
+        assert!(wires.iter().all(|wire| wire.dep_name_canonical == "zlib"));
+        let back = edges_from_wires(&wires);
+        let again = project_edges(Language::Cpp, &back, EdgeSource::Manifest);
+        assert_eq!(again, wires);
     }
 
     #[test]
