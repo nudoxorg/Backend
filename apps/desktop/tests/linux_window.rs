@@ -85,6 +85,40 @@ fn visible_window(desktop: &mut Child, log: &Path) -> String {
     }
 }
 
+/// A window is mapped before its first frame is drawn, so an immediate
+/// capture is a blank surface that compresses to a few hundred bytes. Retry
+/// until the capture carries rendered content or the deadline passes.
+fn rendered_capture(window: &str, screenshot: &Path, log: &Path) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let capture = Command::new("import")
+            .args(["-display", DISPLAY, "-window", window])
+            .arg(screenshot)
+            .output()
+            .expect("capture desktop window");
+        assert!(
+            capture.status.success(),
+            "desktop screenshot failed: {}",
+            String::from_utf8_lossy(&capture.stderr)
+        );
+        let mut png = Vec::new();
+        fs::File::open(screenshot)
+            .expect("open desktop screenshot")
+            .read_to_end(&mut png)
+            .expect("read desktop screenshot");
+        if png.len() > 1024 {
+            return png;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "desktop screenshot stayed implausibly empty ({} bytes):\n{}",
+            png.len(),
+            desktop_log(log)
+        );
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn wait_for_exit(child: &mut Child, deadline: Duration) -> bool {
     let end = Instant::now() + deadline;
     loop {
@@ -170,23 +204,8 @@ fn linux_desktop_opens_captures_and_closes_a_real_window() {
 
     let window = visible_window(&mut desktop.0, &log);
     let screenshot = root.join("desktop.png");
-    let capture = Command::new("import")
-        .args(["-display", DISPLAY, "-window", &window])
-        .arg(&screenshot)
-        .output()
-        .expect("capture desktop window");
-    assert!(
-        capture.status.success(),
-        "desktop screenshot failed: {}",
-        String::from_utf8_lossy(&capture.stderr)
-    );
-    let mut png = Vec::new();
-    fs::File::open(&screenshot)
-        .expect("open desktop screenshot")
-        .read_to_end(&mut png)
-        .expect("read desktop screenshot");
+    let png = rendered_capture(&window, &screenshot, &log);
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "capture is not PNG");
-    assert!(png.len() > 1024, "desktop screenshot is implausibly empty");
 
     let closed = Command::new("xdotool")
         .args(["windowclose", &window])
