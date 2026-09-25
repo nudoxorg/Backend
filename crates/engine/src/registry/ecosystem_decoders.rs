@@ -1152,6 +1152,11 @@ impl EcosystemAdapter {
         let digest = *blake3::hash(provenance).as_bytes();
         let mut rows = Vec::with_capacity(module.requires.len());
         for requirement in &module.requires {
+            let scope = if requirement.indirect {
+                DependencyScope::Development
+            } else {
+                DependencyScope::Runtime
+            };
             let target = PackageDependencyTarget::new(
                 backend_semantic::vocabulary::RegistryEcosystem::Golang,
                 requirement.module.clone(),
@@ -1162,7 +1167,7 @@ impl EcosystemAdapter {
             rows.push(PackageDependencyRecord::new(
                 source.clone(),
                 target,
-                DependencyScope::Runtime,
+                scope,
                 false,
                 DependencyEvidence {
                     authority: DependencyAuthority::RegistryMetadata,
@@ -1172,7 +1177,8 @@ impl EcosystemAdapter {
             ));
         }
         Ok(DependencyFacts::Known(
-            admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+            admit_dependency_rows(collapse_dependency_rows(rows))
+                .map_err(|_| TransportFailure::Protocol)?,
         ))
     }
 
