@@ -1895,59 +1895,71 @@ fn lower_formal_parameters<'a>(
 
     let mut out: Vec<ParamFact> = Vec::with_capacity(items.len() + 1);
     for param in items {
-        let name = binding_pattern_name(&param.pattern, source).unwrap_or_else(|| "_".to_string());
+        let mut names = binding_names(&param.pattern);
+        if names.is_empty() {
+            names.push("_".to_string());
+        }
         let ty = param.type_annotation.as_ref().map(|ann| match type_params {
             Some(set) => lower_ts_type_with_params(&ann.type_annotation, source, set),
             None => lower_ts_type(&ann.type_annotation, source),
         });
         let is_readonly = param.readonly;
         let span = param.span();
-        out.push(ParamFact {
-            name,
-            ty,
-            is_optional: param.optional,
-            is_rest: false,
-            is_readonly,
-            initializer: param
-                .initializer
-                .as_ref()
-                .map(|init| init.span().source_text(source).to_string()),
-            decorators: param
-                .decorators
-                .iter()
-                .map(|decorator| AttrTok {
-                    token: decorator.span.source_text(source).to_string(),
-                })
-                .collect(),
-            span_start: span.start,
-            span_end: span.end,
-        });
+        let initializer = param
+            .initializer
+            .as_ref()
+            .map(|init| init.span().source_text(source).to_string());
+        let decorators: Vec<AttrTok> = param
+            .decorators
+            .iter()
+            .map(|decorator| AttrTok {
+                token: decorator.span.source_text(source).to_string(),
+            })
+            .collect();
+        for name in names {
+            out.push(ParamFact {
+                name,
+                ty: ty.clone(),
+                is_optional: param.optional,
+                is_rest: false,
+                is_readonly,
+                initializer: initializer.clone(),
+                decorators: decorators.clone(),
+                span_start: span.start,
+                span_end: span.end,
+            });
+        }
     }
     if let Some(rest) = &params.rest {
         let ty = rest
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
-        let name =
-            binding_pattern_name(&rest.rest.argument, source).unwrap_or_else(|| "...rest".to_string());
+        let mut names = binding_names(&rest.rest.argument);
+        if names.is_empty() {
+            names.push("...rest".to_string());
+        }
         let span = rest.span();
-        out.push(ParamFact {
-            name,
-            ty,
-            is_optional: false,
-            is_rest: true,
-            is_readonly: false,
-            initializer: None,
-            decorators: rest
-                .decorators
-                .iter()
-                .map(|decorator| AttrTok {
-                    token: decorator.span.source_text(source).to_string(),
-                })
-                .collect(),
-            span_start: span.start,
-            span_end: span.end,
-        });
+        let decorators: Vec<AttrTok> = rest
+            .decorators
+            .iter()
+            .map(|decorator| AttrTok {
+                token: decorator.span.source_text(source).to_string(),
+            })
+            .collect();
+        for name in names {
+            out.push(ParamFact {
+                name,
+                ty: ty.clone(),
+                is_optional: false,
+                is_rest: true,
+                is_readonly: false,
+                initializer: None,
+                decorators: decorators.clone(),
+                span_start: span.start,
+                span_end: span.end,
+            });
+        }
     }
     out
 }
