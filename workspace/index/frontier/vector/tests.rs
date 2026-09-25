@@ -270,6 +270,62 @@ fn raw_ids_match_the_formatted_uuid_and_skip_the_format() {
     );
 }
 
+#[test]
+fn mark_matches_the_string_set_and_beats_it() {
+    const N: u32 = 4_096;
+    let prior: Vec<PointId> = (0..N)
+        .map(|n| PointId {
+            package: SmolStr::new(format!("package-{n:05}")),
+            intro_hex: SmolStr::new(format!("{n:08x}")),
+            content_hash: [1; 32],
+        })
+        .collect();
+    let next: Vec<PointId> = (0..N)
+        .map(|n| PointId {
+            package: SmolStr::new(format!("package-{n:05}")),
+            intro_hex: SmolStr::new(format!("{n:08x}")),
+            content_hash: if n % 64 == 0 { [2; 32] } else { [1; 32] },
+        })
+        .collect();
+    let marked: Vec<_> = upserts_required(&prior, &next)
+        .into_iter()
+        .map(|point| point.identity())
+        .collect();
+    let via_set = super::required_ids_via_set(&prior, &next);
+    let hashed: Vec<_> = next
+        .iter()
+        .filter(|point| via_set.contains(&(point.package.as_str(), point.intro_hex.as_str())))
+        .map(|point| point.identity())
+        .collect();
+    assert_eq!(marked, hashed);
+
+    let loops = 8u32;
+    let mark_ns = time(|| {
+        for _ in 0..loops {
+            std::hint::black_box(upserts_required(&prior, &next));
+        }
+    });
+    let set_ns = time(|| {
+        for _ in 0..loops {
+            let via_set = super::required_ids_via_set(&prior, &next);
+            std::hint::black_box(
+                next.iter()
+                    .filter(|point| {
+                        via_set.contains(&(point.package.as_str(), point.intro_hex.as_str()))
+                    })
+                    .count(),
+            );
+        }
+    });
+    eprintln!(
+        "cost case=frontier/vector_mark points={N} loops={loops} mark_ns={mark_ns} set_ns={set_ns}"
+    );
+    assert!(
+        mark_ns.saturating_mul(2) < set_ns,
+        "mark {mark_ns} ns was not 2× under the string set {set_ns} ns"
+    );
+}
+
 fn time(body: impl FnOnce()) -> u128 {
     let start = std::time::Instant::now();
     body();

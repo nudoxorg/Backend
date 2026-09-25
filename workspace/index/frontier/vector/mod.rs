@@ -68,18 +68,39 @@ impl PointId {
 
 /// Points in `next` that are already in `prior` with an equal content hash.
 pub fn upserts_to_skip<'a>(prior: &'a [PointId], next: &'a [PointId]) -> Vec<&'a PointId> {
-    let required = required_ids(prior, next);
+    let due = due_marks(prior, next);
     next.iter()
-        .filter(|point| !required.contains(&(point.package.as_str(), point.intro_hex.as_str())))
+        .enumerate()
+        .filter(|(index, _)| due[*index] == 0)
+        .map(|(_, point)| point)
         .collect()
 }
 
 /// Points in `next` that are new, or whose content hash differs from `prior`.
 pub fn upserts_required<'a>(prior: &'a [PointId], next: &'a [PointId]) -> Vec<&'a PointId> {
-    let required = required_ids(prior, next);
+    let due = due_marks(prior, next);
     next.iter()
-        .filter(|point| required.contains(&(point.package.as_str(), point.intro_hex.as_str())))
+        .enumerate()
+        .filter(|(index, _)| due[*index] == 1)
+        .map(|(_, point)| point)
         .collect()
+}
+
+/// One byte per `next` row. `1` means the merge said the point must be written.
+fn due_marks(prior: &[PointId], next: &[PointId]) -> Vec<u8> {
+    let prior_idx = latest_idx(prior);
+    let next_idx = latest_idx(next);
+    let partition = merge_sorted(
+        &prior_idx,
+        &next_idx,
+        |&i, &j| key(&prior[i]).cmp(&key(&next[j])),
+        |&i, &j| prior[i].content_hash == next[j].content_hash,
+    );
+    let mut due = vec![0u8; next.len()];
+    for index in partition.added.into_iter().chain(partition.changed) {
+        due[index] = 1;
+    }
+    due
 }
 
 /// Tree-and-string twin of [`upserts_required`]. Not the function callers use.
@@ -93,7 +114,8 @@ pub fn upserts_required_via_keys<'a>(
         .collect()
 }
 
-fn required_ids<'a>(
+/// String-set twin of [`due_marks`]. Not the function callers use.
+fn required_ids_via_set<'a>(
     prior: &'a [PointId],
     next: &'a [PointId],
 ) -> std::collections::HashSet<(&'a str, &'a str)> {
