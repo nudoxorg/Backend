@@ -873,6 +873,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backend-client",
+ "backend-facet",
  "backend-gui-harness",
  "backend-library",
  "backend-local-service",
@@ -1020,6 +1021,19 @@ dependencies = [
  "blake3",
  "futures-executor",
  "turso",
+]
+
+[[package]]
+name = "backend-facet"
+version = "0.1.0"
+dependencies = [
+ "backend-gui-harness",
+ "gpui-ce",
+ "gpui_ce_components",
+ "gpui_ce_platform",
+ "image",
+ "sha2 0.10.9",
+ "smallvec",
 ]
 
 [[package]]
@@ -3839,8 +3853,6 @@ dependencies = [
 [[package]]
 name = "gpui-ce"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0af79c6659e0fea67773cfbd751fc5c8e51be00139827f365d7d1237a468a4d"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -3973,6 +3985,14 @@ dependencies = [
  "smallvec",
  "smol",
  "tracing",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cpp",
+ "tree-sitter-go",
+ "tree-sitter-java",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
  "uuid",
  "windows 0.58.0",
  "zed-sum-tree",
@@ -3996,8 +4016,6 @@ dependencies = [
 [[package]]
 name = "gpui_ce_components_base"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c0b7ae08e17fe2cf68546bd4431d592491d5177700d797b74614d2ead23a4e0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4104,8 +4122,6 @@ dependencies = [
 [[package]]
 name = "gpui_ce_macos"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af0fe6b615e579ce0180198417815547c1c9ae654dc1e2382299f0c3f3564f79"
 dependencies = [
  "accesskit",
  "accesskit_macos",
