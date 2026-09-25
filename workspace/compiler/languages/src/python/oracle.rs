@@ -28,6 +28,8 @@
 //! `@overload`-decorated signature, which the IR requires (each overload is
 //! its own declaration, never folded).
 
+use std::collections::HashMap;
+
 /// The stable producer-side identifier for every Python symbol.
 ///
 /// A fully-qualified dotted path, with a `#N` suffix for overload branches.
@@ -94,6 +96,13 @@ pub struct ModuleData {
     /// Lexically resolved direct calls whose target is a declaration in this
     /// package. Unresolved/dynamic calls are intentionally omitted.
     pub references: Vec<ReferenceData>,
+    /// Unambiguous module-level imports: local spelling → fully-qualified id.
+    ///
+    /// A name imported from two different targets is omitted. `lower_nominal`
+    /// binds a bare or dotted annotation to a same-package declaration only
+    /// through this map (or a declaration in the same file). It does not guess
+    /// when several declarations share the suffix.
+    pub imports: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -323,7 +332,8 @@ pub enum TypeData {
     /// Because metadata is arbitrary Python objects, the oracle surfaces them
     /// as unstructured strings. We store only the first annotation token (the
     /// most common case is a single metadata item). If a future oracle version
-    /// surfaces typed metadata we can extend the payload without a schema break.
+    /// surfaces typed metadata we can extend the payload without a schema
+    /// break.
     Annotated {
         /// The annotated type (first arg to `Annotated[…]`).
         inner: Box<TypeData>,

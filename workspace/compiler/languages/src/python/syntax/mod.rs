@@ -28,47 +28,50 @@
 //! # What this cannot do (see `lib.rs`'s "Constructs not yet representable"
 //! and the CC-2 report filed against this task)
 //!
-//! - Cross-module name resolution. A `Foo` referenced in one file and
-//!   defined in another lowers to `TypeData::Nominal("Foo")`, which
-//!   `types::lower_nominal` can only resolve if `"Foo"` (after stripping any
-//!   dotted prefix) is a *string match* against a fully-qualified id this
-//!   same package declared. Import aliasing (`import numpy as np`) is not
-//!   unwound, so `np.ndarray` never matches a same-package id and always
-//!   degrades through the cross-package `Type::Any` fallback.
+//! - Cross-module name resolution at extraction time. A `Foo` referenced in one
+//!   file and defined in another is recorded as `TypeData::Nominal("Foo")`.
+//!   `types::lower_nominal` binds that spelling when this file's import, or a
+//!   declaration in the same file, names exactly one id this package declares.
+//!   Import aliasing (`import numpy as np`) is recorded as a binding of `np`;
+//!   it does not invent a target the package never declared.
 //! - Forward-reference strings (`x: "Foo"`) are recorded as
 //!   `TypeData::Nominal("Foo")` verbatim, without re-parsing the string as a
-//!   nested type expression. A forward reference to something more complex
-//!   than a bare name (`x: "List[Foo]"`) is not unwound and lowers as a
-//!   single opaque nominal.
+//!   nested type expression. A forward reference to something more complex than
+//!   a bare name (`x: "List[Foo]"`) is not unwound and lowers as a single
+//!   opaque nominal.
 //! - Statements inside control flow (`if TYPE_CHECKING:`, `try:`/`except
-//!   ImportError:`, `if sys.version_info >= ...:`) are not walked. Only
-//!   direct children of a module, class, or function body are declarations.
-//!   This mirrors real Python scoping closely enough for top-level public
-//!   API (which is essentially never conditionally defined) but will miss
-//!   declarations some packages hide behind a version or typing guard.
+//!   ImportError:`, `if sys.version_info >= ...:`) are not walked. Only direct
+//!   children of a module, class, or function body are declarations. This
+//!   mirrors real Python scoping closely enough for top-level public API (which
+//!   is essentially never conditionally defined) but will miss declarations
+//!   some packages hide behind a version or typing guard.
 //! - `TypeVar`/`ParamSpec`/`TypeVarTuple` bounds and constraints from the
-//!   legacy call-based form (`T = TypeVar("T", bound=Foo)`) are recognized
-//!   for name purposes (so `T` still lowers to `Type::TypeVar`, never
-//!   `Type::Any`) but their `bound=`/constraint arguments are not parsed;
-//!   only the PEP 695 `[T: Foo]` form carries a bound through.
+//!   legacy call-based form (`T = TypeVar("T", bound=Foo)`) are recognized for
+//!   name purposes (so `T` still lowers to `Type::TypeVar`, never `Type::Any`)
+//!   but their `bound=`/constraint arguments are not parsed; only the PEP 695
+//!   `[T: Foo]` form carries a bound through.
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
 
 use crate::{PackageSource, ProducerError};
-use ruff_python_ast::visitor::{self, Visitor};
 use ruff_python_ast::{
     Decorator, Expr, ExprSubscript, ModModule, Operator, Parameter, ParameterWithDefault, Stmt,
     StmtClassDef, StmtFunctionDef, TypeParam, TypeParams,
     helpers::{body_without_leading_docstring, is_docstring_stmt, is_stub_body},
+    visitor::{self, Visitor},
 };
 use ruff_text_size::Ranged;
 
-use crate::python::docstring::{self, ParsedDocstring};
-use crate::python::oracle::{
-    AliasData, ClassData, ClassForm, ConstData, DeprecationData, FieldData, FunctionData,
-    GenericParamData, ItemBody, ItemData, ModuleData, ParamData, ParamKind, PythonId, PythonOracle,
-    ReceiverKind, TypeData,
+use crate::python::{
+    docstring::{self, ParsedDocstring},
+    oracle::{
+        AliasData, ClassData, ClassForm, ConstData, DeprecationData, FieldData, FunctionData,
+        GenericParamData, ItemBody, ItemData, ModuleData, ParamData, ParamKind, PythonId,
+        PythonOracle, ReceiverKind, TypeData,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -297,7 +300,9 @@ fn extract_module(
 
     let typevars = collect_typevar_names(&module.body, source);
     let items = walk_scope(&module.body, &module_name, source, &typevars, false, true);
-    let references = collect_references(&module.body, &items, &module_name, source);
+    let is_package = source_path.file_name().and_then(|n| n.to_str()) == Some("__init__.py");
+    let imports = collect_imports(&module.body, &module_name, is_package);
+    let references = collect_references(&module.body, &items, &module_name, &imports);
 
     ModuleData {
         name: module_name,
@@ -307,6 +312,7 @@ fn extract_module(
         span: 0..source.len(),
         source: source_path,
         references,
+        imports,
     }
 }
 
@@ -344,7 +350,7 @@ fn collect_references(
     body: &[Stmt],
     items: &[ItemData],
     module: &str,
-    source: &str,
+    imports: &HashMap<String, String>,
 ) -> Vec<crate::python::oracle::ReferenceData> {
     let known: HashSet<String> = items
         .iter()
@@ -353,7 +359,10 @@ fn collect_references(
             _ => None,
         })
         .collect();
-    let imported = imported_call_targets(source, module);
+    let imported: HashMap<String, PythonId> = imports
+        .iter()
+        .map(|(name, id)| (name.clone(), PythonId::new(id.clone())))
+        .collect();
     let mut references = Vec::new();
     for stmt in body {
         let Stmt::FunctionDef(function) = stmt else {
@@ -373,55 +382,110 @@ fn collect_references(
     references
 }
 
-fn imported_call_targets(source: &str, module: &str) -> HashMap<String, PythonId> {
-    let mut targets = HashMap::new();
-    let package = module.rsplit_once('.').map_or("", |(p, _)| p);
-    for line in source.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("from ") else {
-            continue;
-        };
-        let Some((origin, names)) = rest.split_once(" import ") else {
-            continue;
-        };
-        let dots = origin.chars().take_while(|c| *c == '.').count();
-        let tail = &origin[dots..];
-        let mut base = package.to_owned();
-        for _ in 1..dots {
-            base = base
-                .rsplit_once('.')
-                .map_or_else(String::new, |(parent, _)| parent.to_owned());
-        }
-        let origin = if dots > 0 {
-            if tail.is_empty() {
-                base
-            } else if base.is_empty() {
-                tail.to_owned()
-            } else {
-                format!("{base}.{tail}")
+/// Unambiguous module-level imports: local spelling → fully-qualified id.
+///
+/// A spelling imported from two different targets is omitted. Star imports
+/// bind no names. `level` is the number of leading dots on a relative import;
+/// an `__init__.py` module is its own package, a file module's package is its
+/// parent.
+fn collect_imports(body: &[Stmt], module_name: &str, is_package: bool) -> HashMap<String, String> {
+    let mut bound = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    for stmt in body {
+        match stmt {
+            Stmt::Import(import) => {
+                for alias in &import.names {
+                    let imported = alias.name.as_str();
+                    let (local, target) = if let Some(asname) = &alias.asname {
+                        (asname.as_str(), imported.to_owned())
+                    } else {
+                        let local = imported.split('.').next().unwrap_or(imported);
+                        (local, local.to_owned())
+                    };
+                    record_import(&mut bound, &mut ambiguous, local, target);
+                }
             }
-        } else {
-            tail.to_owned()
-        };
-        for part in names.split(',') {
-            let mut words = part.split_whitespace();
-            let Some(name) = words.next() else { continue };
-            let alias = if words.next() == Some("as") {
-                words.next().unwrap_or(name)
-            } else {
-                name
-            };
-            targets.insert(
-                alias.to_owned(),
-                PythonId::new(if origin.is_empty() {
-                    name.to_owned()
-                } else {
-                    format!("{origin}.{name}")
-                }),
-            );
+            Stmt::ImportFrom(from) => {
+                let origin = import_origin(
+                    module_name,
+                    is_package,
+                    from.level,
+                    from.module.as_ref().map(|module| module.as_str()),
+                );
+                for alias in &from.names {
+                    let imported = alias.name.as_str();
+                    if imported == "*" {
+                        continue;
+                    }
+                    let local = alias
+                        .asname
+                        .as_ref()
+                        .map(|name| name.as_str())
+                        .unwrap_or(imported);
+                    let target = if origin.is_empty() {
+                        imported.to_owned()
+                    } else {
+                        format!("{origin}.{imported}")
+                    };
+                    record_import(&mut bound, &mut ambiguous, local, target);
+                }
+            }
+            _ => {}
         }
     }
-    targets
+    for name in ambiguous {
+        bound.remove(&name);
+    }
+    bound
+}
+
+fn record_import(
+    bound: &mut HashMap<String, String>,
+    ambiguous: &mut HashSet<String>,
+    local: &str,
+    target: String,
+) {
+    if ambiguous.contains(local) {
+        return;
+    }
+    match bound.get(local) {
+        Some(existing) if existing == &target => {}
+        Some(_) => {
+            bound.remove(local);
+            ambiguous.insert(local.to_owned());
+        }
+        None => {
+            bound.insert(local.to_owned(), target);
+        }
+    }
+}
+
+fn import_origin(module_name: &str, is_package: bool, level: u32, module: Option<&str>) -> String {
+    if level == 0 {
+        return module.unwrap_or("").to_owned();
+    }
+    let mut parts: Vec<&str> = module_name
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect();
+    if !is_package {
+        parts.pop();
+    }
+    let extra = (level as usize).saturating_sub(1);
+    if extra >= parts.len() {
+        parts.clear();
+    } else if extra > 0 {
+        parts.truncate(parts.len() - extra);
+    }
+    let mut origin = parts.join(".");
+    if let Some(module) = module.filter(|name| !name.is_empty()) {
+        if origin.is_empty() {
+            origin = module.to_owned();
+        } else {
+            origin = format!("{origin}.{module}");
+        }
+    }
+    origin
 }
 
 /// Extract the module/class/function's own leading docstring, if its first
@@ -571,8 +635,8 @@ fn walk_scope(
 /// - A `@property` getter followed by its `@x.setter`/`@x.deleter` — these
 ///   share a name but are not overloads of one callable; folding them into
 ///   `Overloaded` would misrepresent the property as a multi-signature
-///   function. Detected by decorator suffix and collapsed to the first
-///   (getter) definition only.
+///   function. Detected by decorator suffix and collapsed to the first (getter)
+///   definition only.
 ///
 /// Any other repeated same-name run (a conditional redefinition our
 /// non-descent into control flow never actually sees twice, or a genuine

@@ -18,7 +18,8 @@
 //! | `Foo[T, U]` (same-pkg)     | `Type::Apply { base: Nominal(..), args }`    |
 //! | `Foo` (same-pkg nominal)   | `Type::Nominal(Ref::Intro(..))`              |
 //! | `int`, `float`, `bool`…    | `Type::Primitive(…)`                         |
-//! | `Foo` (bare, declared here)| `Type::Unknown(UnresolvedLocalName{name})`   |
+//! | `Foo` (imported or declared in this file) | `Type::Nominal` of that id |
+//! | `Foo` (local, unbound or ambiguous) | `Type::Unknown(UnresolvedLocalName{name})` |
 //! | `Foo` (nominal, external)  | `Type::Unknown(UnresolvedExternal{name})`    |
 //! | `Annotated[T, meta…]`      | `Type::Annotated { inner: lower(T), …}`      |
 //! | unhandled `Expr` / `Literal[...]` | `Type::Unknown(NoIrRepresentation{construct})` |
@@ -37,9 +38,9 @@
 //!
 //! # Note on `Tuple[A, B]`
 //!
-//! `Type::Tuple` now holds `List<TupleElement>`. Python tuples have no per-element
-//! labels (no C# / TypeScript named-tuple equivalents), so every element is
-//! wrapped as `TupleElement::Positional(lower(element))`.
+//! `Type::Tuple` now holds `List<TupleElement>`. Python tuples have no
+//! per-element labels (no C# / TypeScript named-tuple equivalents), so every
+//! element is wrapped as `TupleElement::Positional(lower(element))`.
 //!
 //! # Note on `Annotated[T, meta]` (PEP 593)
 //!
@@ -61,11 +62,12 @@
 //!
 //! # Note on declaration-site variance (`TypeVar(covariant=True)`)
 //!
-//! Pyrefly does NOT surface declaration-site variance (`covariant`/`contravariant`
-//! flags on `TypeVar`) in the oracle data as of this implementation. When it
-//! does, `GenericParamData` should gain a `variance: Option<Variance>` field
-//! and `lower_generics` should map `True` → `Some(Variance::Covariant)` /
-//! `False` → `Some(Variance::Contravariant)`. Until then `variance: None`.
+//! Pyrefly does NOT surface declaration-site variance
+//! (`covariant`/`contravariant` flags on `TypeVar`) in the oracle data as of
+//! this implementation. When it does, `GenericParamData` should gain a
+//! `variance: Option<Variance>` field and `lower_generics` should map `True` →
+//! `Some(Variance::Covariant)` / `False` → `Some(Variance::Contravariant)`.
+//! Until then `variance: None`.
 //!
 //! # Note on `Optional[T]` / `None`
 //!
@@ -104,12 +106,19 @@
 //! degradation: `Skeleton` encoded `Type::Any` as a single byte, so every
 //! external type in an overload set hashed identically.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+};
 
-use nudox_ir::entry::AttrTok;
-use nudox_ir::kinds::ty::{Primitive, TupleElement, Type, Width};
-use nudox_ir::kinds::{GenericParam, Record};
-use nudox_ir::lower::Lowering;
+use nudox_ir::{
+    entry::AttrTok,
+    kinds::{
+        GenericParam, Record,
+        ty::{Primitive, TupleElement, Type, Width},
+    },
+    lower::Lowering,
+};
 use std::num::NonZeroU16;
 
 use crate::python::oracle::{GenericParamData, PythonId, TypeData};
@@ -150,23 +159,22 @@ use crate::python::oracle::{GenericParamData, PythonId, TypeData};
 /// **Three guards bound what that error can cost:**
 ///
 /// 1. **Segment alignment.** Suffixes are cut at `.` boundaries only, so `ext`
-///    never matches `Context` and `Path` never matches `PosixPath`. A
-///    substring index here would report thousands of false locals; see
+///    never matches `Context` and `Path` never matches `PosixPath`. A substring
+///    index here would report thousands of false locals; see
 ///    `suffix_index_matches_dotted_boundaries_only`.
 /// 2. **Builtins win first.** `lower_nominal` resolves `int`/`str`/`None` (and
 ///    every other builtin) before consulting this index, so a package that
 ///    happens to declare a class named `Path` cannot capture a primitive.
-/// 3. **No `Ref` is ever emitted — this is the load-bearing one.** A hit
-///    produces [`UnknownType::UnresolvedLocalName`], which is a *named gap*,
-///    not a resolution. So the entire cost of a false positive is that one
-///    reason string says "look in this package" when the answer was
-///    "look in `pathlib`". It cannot mint a wrong `IntroId`, cannot create a
-///    wrong edge in the graph, and cannot produce a hyperlink to the wrong
-///    declaration — all of which a speculative `Nominal` would.
-///
-/// Both variants are gaps that a later pass must close; the split routes each
-/// to the *right* pass and is measured to be correct for 67.8% of them. It is
-/// deliberately not a resolver, because at this phase it cannot be one.
+/// 3. **A suffix is not a resolution.** `lower_nominal` emits
+///    [`Lowering::nominal`](nudox_ir::lower::Lowering::nominal) only when the
+///    file being lowered binds that spelling to exactly one id in `ids`: an
+///    unambiguous import (`from .core import Context`), a class or alias
+///    declared in the same file, or a dotted name whose imported prefix extends
+///    to one declared id (`core.Context` after `import click.core as core`).
+///    Several declarations that share the suffix stay
+///    [`UnknownType::UnresolvedLocalName`]. An import of a name this package
+///    does not declare (`from pathlib import Path`) stays external, even when a
+///    local class shares the suffix. Guessing would mint the wrong `IntroId`.
 ///
 /// [`UnresolvedLocalName`]: nudox_ir::kinds::UnknownType::UnresolvedLocalName
 #[derive(Debug, Default, Clone)]
@@ -181,6 +189,11 @@ pub struct KnownIds {
     /// bound to one of them. Depth is bounded by module nesting, so this is a
     /// small constant factor over `ids`.
     suffixes: HashMap<String, usize>,
+    /// Bindings for the file currently being lowered: spelling →
+    /// fully-qualified id. An empty string means the spelling was bound
+    /// twice and must not be guessed. Empty when no file scope is
+    /// installed.
+    bound: RefCell<HashMap<String, String>>,
 }
 
 impl KnownIds {
@@ -197,7 +210,62 @@ impl KnownIds {
                 *suffixes.entry(rest.to_owned()).or_default() += 1;
             }
         }
-        Self { ids, suffixes }
+        Self {
+            ids,
+            suffixes,
+            bound: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Install this file's unambiguous bindings for the duration of `scope`.
+    ///
+    /// `emit` sets this once per module. A spelling mapped to an empty string
+    /// is ambiguous. Dropping the guard clears the map so the next module
+    /// cannot see this file's imports.
+    pub(crate) fn install_bindings(&self, bound: HashMap<String, String>) -> BindingScope<'_> {
+        *self.bound.borrow_mut() = bound;
+        BindingScope { known: self }
+    }
+
+    /// The declared id `spelling` is bound to in the current file, if that
+    /// binding names exactly one id in this package.
+    fn bound_declaration(&self, spelling: &str) -> Option<String> {
+        let bound = self.bound.borrow();
+        if let Some(id) = bound.get(spelling) {
+            if !id.is_empty() && self.ids.contains(id) {
+                return Some(id.clone());
+            }
+            return None;
+        }
+        let mut start = 0;
+        while let Some(rel) = spelling[start..].find('.') {
+            let dot = start + rel;
+            let prefix = &spelling[..dot];
+            let rest = &spelling[dot + 1..];
+            if let Some(base) = bound.get(prefix) {
+                if !base.is_empty() {
+                    let id = format!("{base}.{rest}");
+                    if self.ids.contains(&id) {
+                        return Some(id);
+                    }
+                }
+            }
+            start = dot + 1;
+        }
+        None
+    }
+
+    /// An import target this package does not declare.
+    ///
+    /// Present so `from pathlib import Path` cannot fall through to a local
+    /// class that happens to be named `Path`.
+    fn bound_external(&self, spelling: &str) -> Option<String> {
+        let bound = self.bound.borrow();
+        let id = bound.get(spelling)?;
+        if id.is_empty() || self.ids.contains(id) {
+            return None;
+        }
+        Some(id.clone())
     }
 
     /// Does this package declare exactly this fully-qualified id?
@@ -240,6 +308,17 @@ impl KnownIds {
     }
 }
 
+/// Clears [`KnownIds`] file bindings when the module walk finishes.
+pub(crate) struct BindingScope<'a> {
+    known: &'a KnownIds,
+}
+
+impl Drop for BindingScope<'_> {
+    fn drop(&mut self) {
+        self.known.bound.borrow_mut().clear();
+    }
+}
+
 impl FromIterator<String> for KnownIds {
     fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
         Self::new(iter.into_iter().collect())
@@ -250,10 +329,11 @@ impl FromIterator<String> for KnownIds {
 ///
 /// - `out` — the flat lowering sink; `nominal`/`apply` borrow it mutably to
 ///   intern a forward reference. They are disjoint from the `oracle` borrow.
-/// - `known_ids` — the set of fully-qualified IDs declared in this package.
-///   An exact hit resolves to a same-package nominal; a *suffix* hit becomes
-///   `UnknownType::UnresolvedLocalName`; everything else becomes
-///   `UnknownType::UnresolvedExternal`.
+/// - `known_ids` — the set of fully-qualified IDs declared in this package,
+///   plus the current file's unambiguous bindings. An exact id, or a spelling
+///   that file binds to one declared id, becomes a same-package nominal. A
+///   local suffix this file does not bind stays `UnresolvedLocalName`.
+///   Everything else becomes `UnresolvedExternal`.
 pub fn lower_type(ty: &TypeData, out: &mut Lowering<PythonId>, known_ids: &KnownIds) -> Type {
     match ty {
         // `typing.Any` is the gradual-typing escape hatch, not a top type: it
@@ -297,17 +377,17 @@ pub fn lower_type(ty: &TypeData, out: &mut Lowering<PythonId>, known_ids: &Known
                         args: lowered_args.into_boxed_slice(),
                     };
                 }
-                // Check same-package nominal for generic application.
-                let base_ty = lower_nominal(base_name, out, known_ids);
-                if matches!(base_ty, Type::Nominal(_)) {
-                    // Same-package base: build Apply via out.apply.
-                    let id = PythonId::new(clean.to_owned());
+                // Same-package base, including a bare name this file binds to
+                // one declared id. The applied id is that declaration, not the
+                // source spelling (`Context[int]` → `click.core.Context`).
+                if let Some(id) = declared_id(clean, known_ids) {
                     let mut lowered_args = Vec::with_capacity(args.len());
                     for arg in args {
                         lowered_args.push(lower_type(arg, out, known_ids));
                     }
-                    return out.apply::<Record>(id, lowered_args);
+                    return out.apply::<Record>(PythonId::new(id), lowered_args);
                 }
+                let base_ty = lower_nominal(base_name, out, known_ids);
                 // Unresolved base — `lower_nominal` already recorded *why*
                 // (local short name vs. genuinely external) and kept the
                 // spelling. Keep the `Apply` wrapper when there are args, so
@@ -413,23 +493,17 @@ pub fn lower_type(ty: &TypeData, out: &mut Lowering<PythonId>, known_ids: &Known
 ///
 /// Resolution priority:
 /// 1. Builtin primitives (int, str, bool, …) → `Type::Primitive`
-/// 2. Exact same-package id → `out.nominal::<Record>(id)`
-/// 3. A dotted **suffix** of some same-package id → [`UnknownType::UnresolvedLocalName`]
-/// 4. Everything else → [`UnknownType::UnresolvedExternal`]
+/// 2. Exact same-package id, or a spelling this file binds to exactly one
+///    declared id → `out.nominal::<Record>(id)`
+/// 3. An import of a name this package does not declare →
+///    [`UnknownType::UnresolvedExternal`]
+/// 4. A dotted **suffix** of some same-package id that this file does not bind
+///    → [`UnknownType::UnresolvedLocalName`]
+/// 5. Everything else → [`UnknownType::UnresolvedExternal`]
 ///
-/// # Why 3 and 4 are different variants
-///
-/// They used to be one `Type::Any`, and the census says that was the single
-/// biggest lie in the lattice: of 20,227 nominals that reached the fallback,
-/// **13,724 (67.8%) were case 3** — a bare `Context` where this very package
-/// declares `click.core.Context`. Nothing cross-package is required to close
-/// those; walking the import graph is. Reporting them as "needs registry
-/// linking" sent two thirds of the work to the wrong pass.
-///
-/// Neither case emits a `Ref`. Case 3 knows the name is *recoverable* here,
-/// not *which* declaration it names — `Context` can be declared in several
-/// modules and only the import graph picks one. Guessing would mint a wrong
-/// `IntroId`, which is strictly worse than a named gap.
+/// Step 2 is the import (or same-file declaration). Several declarations that
+/// share the suffix are not a license to pick one: with no unambiguous
+/// binding, step 4 keeps the gap. Guessing would mint a wrong `IntroId`.
 fn lower_nominal(name: &str, out: &mut Lowering<PythonId>, known_ids: &KnownIds) -> Type {
     // Strip location suffix that pyrefly appends (`builtins.int@418:7-10`).
     let clean = strip_loc(name);
@@ -439,24 +513,34 @@ fn lower_nominal(name: &str, out: &mut Lowering<PythonId>, known_ids: &KnownIds)
         return prim;
     }
 
-    // 2. Same-package nominal: the oracle has declared this ID in this package.
-    if known_ids.contains(clean) {
-        let id = PythonId::new(clean.to_owned());
-        return out.nominal::<Record>(id);
+    // 2. Exact id, or a bare/dotted spelling this file binds to one declaration.
+    if let Some(id) = declared_id(clean, known_ids) {
+        return out.nominal::<Record>(PythonId::new(id));
     }
 
-    // 3. A bare or partially-qualified name that this package declares under a
-    // longer id. Resolvable by a within-package import-graph walk; no registry
-    // involvement at all.
+    // 3. The file imported this spelling from outside the package. Do not
+    // steal a same-suffix local declaration.
+    if let Some(external) = known_ids.bound_external(clean) {
+        return Type::unresolved_external(external);
+    }
+
+    // 4. A name this package declares, but this file did not bind it. Several
+    // modules may share the suffix; only an unambiguous import picks one.
     if known_ids.is_local_short_name(clean) {
         return Type::unresolved_local(clean);
     }
 
-    // 4. Genuinely outside this package (builtins, stdlib, third-party). The
-    // oracle supplies no canonical cross-package path, so the spelling is what
-    // we have — and the spelling is kept, because two distinct external types
-    // must not share an encoding.
+    // 5. Genuinely outside this package (builtins, stdlib, third-party).
     Type::unresolved_external(clean)
+}
+
+/// Fully-qualified id `clean` names inside this package, if the spelling is
+/// exact or the current file binds it unambiguously.
+fn declared_id(clean: &str, known_ids: &KnownIds) -> Option<String> {
+    if known_ids.contains(clean) {
+        return Some(clean.to_owned());
+    }
+    known_ids.bound_declaration(clean)
 }
 
 /// Map a cleaned (loc-stripped) name to a builtin `Type::Primitive`, if
@@ -528,6 +612,8 @@ pub fn lower_generics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use nudox_ir::{
         entry::{Symbol, Visibility},
         kinds::UnknownType,
@@ -682,32 +768,52 @@ mod tests {
         );
     }
 
-    /// **The 67.8% case.** `-> "Context"` inside a package that declares
-    /// `click.core.Context` is a *local* name-resolution gap, not a
-    /// cross-package one — 13,724 of 20,227 measured unresolved nominals.
+    /// A bare or dotted name this package declares becomes a ref when the
+    /// file binds it to exactly one declaration. Leaving that as
+    /// `UnresolvedLocalName` was the bug: the resolve pass can see the id.
+    ///
+    /// Two declarations that share the suffix stay unresolved unless the
+    /// binding names one of them. A name the package does not declare stays
+    /// external.
     #[test]
     fn bare_name_declared_locally_is_unresolved_local_not_external() {
         let mut sink = make_sink();
-        let known = ids(&["click.core.Context", "click.core.Command"]);
+        let known = ids(&[
+            "click.core.Context",
+            "click.formatting.Context",
+            "click.core.Command",
+        ]);
+        let _scope = known.install_bindings(HashMap::from([
+            ("Context".to_owned(), "click.core.Context".to_owned()),
+            ("core".to_owned(), "click.core".to_owned()),
+        ]));
+
         let lowered = lower_type(&TypeData::Nominal("Context".to_string()), &mut sink, &known);
+        let expected = sink.nominal::<Record>(PythonId::new("click.core.Context"));
         assert_eq!(
-            lowered,
+            lowered, expected,
+            "an unambiguous import of Context must refer to click.core.Context"
+        );
+
+        let dotted = lower_type(
+            &TypeData::Nominal("core.Context".to_string()),
+            &mut sink,
+            &known,
+        );
+        assert_eq!(
+            dotted, expected,
+            "a dotted name whose imported prefix names one declaration must refer to it"
+        );
+
+        // Several Context declarations, and this file did not pick one.
+        drop(_scope);
+        let unbound = lower_type(&TypeData::Nominal("Context".to_string()), &mut sink, &known);
+        assert_eq!(
+            unbound,
             Type::Unknown(UnknownType::UnresolvedLocalName {
                 name: "Context".to_owned()
             }),
-            "a bare name the package declares must not be reported as external"
-        );
-
-        // A partially-qualified spelling resolves the same way.
-        assert_eq!(
-            lower_type(
-                &TypeData::Nominal("core.Context".to_string()),
-                &mut sink,
-                &known
-            ),
-            Type::Unknown(UnknownType::UnresolvedLocalName {
-                name: "core.Context".to_owned()
-            }),
+            "a shared suffix with no unambiguous import must not guess a declaration"
         );
 
         // A name the package does not declare at any suffix stays external.
@@ -767,7 +873,8 @@ mod tests {
         );
     }
 
-    /// A degenerate empty union/intersection is an extractor fault, and says so.
+    /// A degenerate empty union/intersection is an extractor fault, and says
+    /// so.
     #[test]
     fn empty_union_is_an_oracle_gap() {
         let mut sink = make_sink();
@@ -918,7 +1025,8 @@ mod tests {
 
     /// A method whose return type names another class **declared later in the
     /// same package** must lower to `Type::Nominal`, not `Type::Any`.
-    /// After `seal`, the nominal resolves to `Ref::Intro` pointing at that class.
+    /// After `seal`, the nominal resolves to `Ref::Intro` pointing at that
+    /// class.
     #[test]
     fn same_package_nominal_resolves_not_any() {
         use nudox_ir::kinds::Record;
@@ -1133,7 +1241,8 @@ mod tests {
     // ── New: Annotated[T, meta] (PEP 593) ─────────────────────────────────────
 
     /// `Annotated[int, "validator"]` lowers to
-    /// `Type::Annotated { inner: Primitive(Integer), annotation: AttrTok { token: "Annotated", arg: Some("validator") } }`.
+    /// `Type::Annotated { inner: Primitive(Integer), annotation: AttrTok {
+    /// token: "Annotated", arg: Some("validator") } }`.
     #[test]
     fn annotated_single_metadata_round_trip() {
         use crate::python::oracle::TypeData;

@@ -21,11 +21,11 @@
 //!
 //! ## @classmethod → receiver = None, decorator "classmethod"
 //!
-//! A class method has no instance receiver; the `cls` parameter is a
-//! conventional Python name that the IR models as a regular parameter
-//! (dropping it after the receiver analysis). The `Symbol.attrs` list records
-//! `AttrTok { token: "classmethod", arg: None }` so downstream consumers can
-//! distinguish class methods from static methods.
+//! A class method has no instance receiver. The `cls` parameter is omitted
+//! from `input_params` only when it is that receiver. A keyword-only `cls`
+//! on a free function stays, with `ParamAttribute::KeywordOnly`. The
+//! `Symbol.attrs` list records `AttrTok { token: "classmethod", arg: None }`
+//! so downstream consumers can distinguish class methods from static methods.
 //!
 //! ## @staticmethod → receiver = None (no cls/self)
 //!
@@ -36,8 +36,8 @@
 //!
 //! Per the mission brief: "each overload is its own declaration, never folded".
 //! `ItemBody::Overloaded(branches)` emits one `Function` per branch, each with
-//! its own `PythonId` (e.g. `module.fn_name#0`, `module.fn_name#1`). The
-//! parent is the containing module/class.
+//! its own `PythonId` (e.g. `module.fn_name#0`, `module.fn_name#1`) and that
+//! branch's own parameter list. The parent is the containing module/class.
 //!
 //! ## Enum subclasses → Enum + Variant
 //!
@@ -45,7 +45,8 @@
 //!
 //! ## Protocol → Trait
 //!
-//! `ClassForm::Protocol` → `Trait` kind (flags default; `supers` from base classes).
+//! `ClassForm::Protocol` → `Trait` kind (flags default; `supers` from base
+//! classes).
 //!
 //! ## TypedDict / NamedTuple / Dataclass → Record with appropriate form
 //!
@@ -57,7 +58,7 @@
 //! and are filtered before reaching this layer (handled in the oracle invoke
 //! step). TypeVar *uses* in type annotations lower to `Type::TypeVar(name)`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use nudox_ir::{
     entry::{AttrTok, Deprecation, DocLink, Symbol, Visibility},
@@ -164,6 +165,7 @@ fn collect_item_ids(item: &ItemData, ids: &mut HashSet<String>) {
 // ---------------------------------------------------------------------------
 
 fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>, known_ids: &KnownIds) {
+    let _bindings = known_ids.install_bindings(file_bindings(module));
     let module_id = PythonId::new(module.name.clone());
     let sym = make_sym(
         &module.name,
@@ -222,8 +224,16 @@ fn emit_item(
                     branch.span.clone(),
                     source,
                 );
-                let fn_kind = build_function_kind(branch, out, known_ids);
-                out.declare(overload_id, parent.clone(), sym, fn_kind);
+                declare_function(
+                    overload_id,
+                    branch.span.clone(),
+                    branch,
+                    parent.clone(),
+                    sym,
+                    out,
+                    known_ids,
+                    source,
+                );
             }
         }
         ItemBody::Const(c) => emit_const(item, c, parent, out, known_ids, source),
@@ -264,7 +274,8 @@ fn emit_class(
         super_types.push(types::lower_type(t, out, known_ids));
     }
 
-    // Emit fields first (they need to be declared before the Record refers to them).
+    // Emit fields first (they need to be declared before the Record refers to
+    // them).
     let mut field_refs = Vec::with_capacity(cls.fields.len());
     for field in &cls.fields {
         let field_id = PythonId::new(format!("{}.{}", class_id.as_str(), field.name));
@@ -379,13 +390,37 @@ fn emit_function(
     known_ids: &KnownIds,
     source: &std::path::Path,
 ) {
-    let fn_id = item.id.clone();
+    declare_function(
+        item.id.clone(),
+        item.span.clone(),
+        func,
+        parent,
+        make_sym_item(item, source),
+        out,
+        known_ids,
+        source,
+    );
+}
 
+/// Declare one function, including each non-receiver parameter.
+///
+/// Overload branches use this so each signature keeps its own parameter list.
+/// `self` / `cls` are omitted only when they are this function's receiver; a
+/// keyword-only `cls` on a free function is a real parameter.
+fn declare_function(
+    fn_id: PythonId,
+    fn_span: std::ops::Range<usize>,
+    func: &FunctionData,
+    parent: Option<PythonId>,
+    sym: Symbol,
+    out: &mut Lowering<PythonId>,
+    known_ids: &KnownIds,
+    source: &std::path::Path,
+) {
     // Emit parameters as child entries.
     let mut param_refs = Vec::with_capacity(func.params.len());
     for param in &func.params {
-        // Skip `self` / `cls` — they're reflected in the receiver field.
-        if param.name == "self" || param.name == "cls" {
+        if is_receiver_param(func.receiver, &param.name) {
             continue;
         }
         let param_id = PythonId::new(format!("{}.{}", fn_id.as_str(), param.name));
@@ -460,10 +495,7 @@ fn emit_function(
             // no annotation text to point at, so fall back to the whole
             // function's own span rather than fabricate a more precise
             // location than the source actually has.
-            span: func
-                .return_span
-                .clone()
-                .unwrap_or_else(|| item.span.clone()),
+            span: func.return_span.clone().unwrap_or_else(|| fn_span.clone()),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -477,22 +509,82 @@ fn emit_function(
         output_refs.push(ret_ref);
     }
 
-    let fn_kind = build_function_kind(func, out, known_ids);
-    // Override input/output with our declared param refs.
+    let shape = build_function_kind(func, out, known_ids);
     let fn_kind = Function::builder()
-        .maybe_receiver(fn_kind.receiver)
+        .maybe_receiver(shape.receiver)
         .input_params(param_refs)
         .output_params(output_refs)
-        .modifiers(fn_kind.modifiers.iter().copied())
-        .generics(fn_kind.generics.iter().cloned())
+        .modifiers(shape.modifiers.iter().copied())
+        .generics(shape.generics.iter().cloned())
+        .is_defaulted(shape.is_defaulted)
         .build();
 
-    let sym = make_sym_item(item, source);
     out.declare(fn_id, parent, sym, fn_kind);
 }
 
-/// Build a `Function` kind body from oracle data, WITHOUT emitting param children.
-/// Used for overload branches where we want the function shape without children.
+/// `self` on an instance method and `cls` on a classmethod are the receiver,
+/// not parameters. Any other parameter with those names stays.
+fn is_receiver_param(receiver: ReceiverKind, name: &str) -> bool {
+    match receiver {
+        ReceiverKind::SharedRef => name == "self",
+        ReceiverKind::ClassMethod => name == "cls",
+        ReceiverKind::Static | ReceiverKind::None => false,
+    }
+}
+
+/// Imports plus classes and aliases declared in this file.
+///
+/// A same-file declaration shadows an import of the same spelling. Two
+/// different declarations of one spelling are ambiguous (empty string) and
+/// `lower_nominal` will not guess.
+fn file_bindings(module: &ModuleData) -> HashMap<String, String> {
+    let mut bound = module.imports.clone();
+    let mut locals = HashMap::new();
+    bind_locals(&module.items, &mut bound, &mut locals);
+    bound
+}
+
+fn bind_locals(
+    items: &[ItemData],
+    bound: &mut HashMap<String, String>,
+    locals: &mut HashMap<String, String>,
+) {
+    for item in items {
+        match &item.body {
+            ItemBody::Class(cls) => {
+                record_local(bound, locals, &item.name, item.id.as_str());
+                bind_locals(&cls.nested, bound, locals);
+            }
+            ItemBody::Alias(_) => {
+                record_local(bound, locals, &item.name, item.id.as_str());
+            }
+            ItemBody::Module
+            | ItemBody::Function(_)
+            | ItemBody::Overloaded(_)
+            | ItemBody::Const(_) => {}
+        }
+    }
+}
+
+fn record_local(
+    bound: &mut HashMap<String, String>,
+    locals: &mut HashMap<String, String>,
+    name: &str,
+    id: &str,
+) {
+    if let Some(prev) = locals.get(name) {
+        if prev != id {
+            bound.insert(name.to_owned(), String::new());
+        }
+        return;
+    }
+    locals.insert(name.to_owned(), id.to_owned());
+    bound.insert(name.to_owned(), id.to_owned());
+}
+
+/// Function modifiers and receiver, without parameter children.
+///
+/// [`declare_function`] attaches each branch's parameter list afterwards.
 fn build_function_kind(
     func: &FunctionData,
     out: &mut Lowering<PythonId>,
@@ -500,7 +592,7 @@ fn build_function_kind(
 ) -> Function {
     let receiver = match func.receiver {
         ReceiverKind::SharedRef => Some(nudox_ir::kinds::Receiver::SharedRef),
-        ReceiverKind::ClassMethod | ReceiverKind::Static | ReceiverKind::None => None, // modeled via attrs
+        ReceiverKind::ClassMethod | ReceiverKind::Static | ReceiverKind::None => None, /* modeled via attrs */
     };
 
     let mut modifiers: Vec<FnModifier> = Vec::new();
@@ -535,7 +627,9 @@ fn emit_const(
     // written something it had not.
     let ty =
         c.ty.as_ref()
-            .map_or(nudox_ir::kinds::Type::UNANNOTATED, |t| types::lower_type(t, out, known_ids));
+            .map_or(nudox_ir::kinds::Type::UNANNOTATED, |t| {
+                types::lower_type(t, out, known_ids)
+            });
 
     let const_kind = Const::builder()
         .ty(ty.clone())
