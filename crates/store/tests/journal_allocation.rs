@@ -12,10 +12,16 @@ use backend_store::workflow::{EventKind, StageKey, WorkflowEvent, WorkflowVersio
 use thiserror::Error;
 
 const REPLAY_RECORDS: usize = 64;
-// Measured on the supported 64-bit Linux target with the workspace toolchain. The bound is kept
-// explicit so a changed std channel layout fails this ledger rather than being mistaken for a
-// zero-allocation admission path.
+// The standard-library channel layout differs between the pinned Linux CI
+// toolchain and macOS. Keep each platform's observed cost explicit so a
+// channel-layout change cannot be mistaken for a zero-allocation admission.
+#[cfg(target_os = "linux")]
+const SYNC_CHANNEL_COUNT: u64 = 2;
+#[cfg(not(target_os = "linux"))]
 const SYNC_CHANNEL_COUNT: u64 = 3;
+#[cfg(target_os = "linux")]
+const SYNC_CHANNEL_BYTES: u64 = 656;
+#[cfg(not(target_os = "linux"))]
 const SYNC_CHANNEL_BYTES: u64 = 720;
 
 #[derive(Debug, Error)]

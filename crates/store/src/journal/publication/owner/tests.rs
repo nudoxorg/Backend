@@ -16,6 +16,8 @@ use std::{
         atomic::AtomicBool,
         mpsc::{Receiver, RecvError, sync_channel},
     },
+    thread,
+    time::{Duration, Instant},
 };
 
 static NEXT_FIXTURE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -61,6 +63,45 @@ fn command(pool: &Arc<CreditPool>, input: PublicationInput) -> io::Result<Comman
         receiver,
         lease,
     ))
+}
+
+#[test]
+fn owner_drops_its_credit_reference_before_delivering_terminal() -> Result<(), Box<dyn Error>> {
+    let pool = CreditPool::new(1);
+    let lease = CreditPool::reserve(&pool).ok_or("initial credit unavailable")?;
+    let (response, receiver) = sync_channel(0);
+    let command = Command {
+        input: PublicationInput::from_parts([1; 32], [2; 32]),
+        lease: Arc::clone(&lease),
+        response,
+    };
+    let state = state(&pool);
+    let (ready_sender, ready_receiver) = sync_channel(1);
+    let owner = thread::spawn(move || {
+        let _ = ready_sender.send(());
+        finish(command, OwnerOutcome::Cancelled, &state);
+    });
+    ready_receiver.recv_timeout(Duration::from_secs(5))?;
+
+    // The rendezvous send cannot complete until we receive below. The owner
+    // must have discarded its reference before it enters that send.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Arc::strong_count(&lease) != 1 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    let released_before_terminal = Arc::strong_count(&lease) == 1;
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(5))?,
+        OwnerOutcome::Cancelled
+    ));
+    assert!(owner.join().is_ok());
+    assert!(
+        released_before_terminal,
+        "owner retained publication credit while delivering a terminal"
+    );
+    drop(lease);
+    assert_eq!(pool.active_count(), 0);
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -297,17 +338,22 @@ fn warmed_duplicate_group_reuses_owner_storage_without_heap_allocation()
             &mut storage,
         );
     });
+    // The owner/group path itself allocates nothing. On macOS, std::sync::mpsc
+    // retains one 64-byte terminal node until the receiver consumes the result;
+    // the pinned Linux toolchain does not allocate that node.
+    let channel_terminal = u64::from(!cfg!(target_os = "linux"));
+    let channel_current = i64::from(!cfg!(target_os = "linux"));
+    let channel_bytes = channel_terminal * 64;
+    let channel_bytes_current = channel_current * 64;
     assert_eq!(
         allocations,
         AllocationInfo {
-            // The owner/group path itself allocates nothing. std::sync::mpsc retains one
-            // 64-byte terminal node while the pending receiver has not consumed its result.
-            count_total: 1,
-            count_current: 1,
-            count_max: 1,
-            bytes_total: 64,
-            bytes_current: 64,
-            bytes_max: 64,
+            count_total: channel_terminal,
+            count_current: channel_current,
+            count_max: channel_terminal,
+            bytes_total: channel_bytes,
+            bytes_current: channel_bytes_current,
+            bytes_max: channel_bytes,
         }
     );
     let _second = published(second_response, "warmed duplicate")?;

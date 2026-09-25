@@ -580,8 +580,15 @@ fn finish_group_success(
 }
 
 fn finish(command: Command, outcome: OwnerOutcome, _state: &PublisherState) {
-    command.lease.complete();
-    drop(command.response.send(outcome));
+    let Command {
+        lease, response, ..
+    } = command;
+    lease.complete();
+    // A waiting caller may submit its next publication as soon as it receives
+    // this terminal. Do not keep the owner's credit reference alive until
+    // after the send, or capacity-one publishers can report a spurious Full.
+    drop(lease);
+    drop(response.send(outcome));
 }
 
 fn map_group_error(error: GroupCommitError) -> PublicationFailure {
