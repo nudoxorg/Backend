@@ -206,6 +206,18 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
                             {
                                 tracing::warn!(%lang, name = event.name(), error = %e, "catalog withdraw: outbox tombstones failed");
                             }
+                            let facts = server.package_facts();
+                            let mut facts = facts
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            if let Err(error) = facts.withdraw(
+                                lang.as_token(),
+                                coords.name.canonical().as_ref(),
+                                coords.version.canonical().as_ref(),
+                            ) {
+                                tracing::warn!(%lang, name = event.name(), %error, "catalog withdraw: versioned row");
+                            }
+                            drop(facts);
                             registered += 1;
                         }
                         Err(e) => {

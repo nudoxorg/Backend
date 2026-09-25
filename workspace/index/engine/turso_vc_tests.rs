@@ -378,3 +378,55 @@ fn dropping_a_version_tombstones_the_tip_and_keeps_the_prior_commit() {
         FactWrite::Unchanged
     );
 }
+
+#[test]
+fn withdrawing_keeps_the_edges_and_a_second_withdraw_is_unchanged() {
+    use crate::record::{DepEdge, PackageRecord};
+    use heart::Language;
+
+    let record = PackageRecord::from_parts(
+        Language::Rust,
+        "memchr",
+        "2.8.3",
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
+        vec![DepEdge::runtime("libc")],
+    );
+    let mut catalog = VersionedCatalog::open().expect("open");
+    let FactWrite::Revised(written) = catalog.put_record(&record).expect("put") else {
+        panic!("first write revises");
+    };
+    let FactWrite::Revised(_) = catalog
+        .withdraw("rust", "memchr", "2.8.3")
+        .expect("withdraw")
+    else {
+        panic!("yank revises");
+    };
+    let tip = catalog
+        .materialize("rust", "memchr", "2.8.3")
+        .expect("tip")
+        .expect("row");
+    assert!(tip.yanked);
+    assert_eq!(tip.edges.len(), 1);
+    assert_eq!(tip.edges[0].name.as_str(), "libc");
+    let prior = catalog
+        .materialize_at("rust", "memchr", "2.8.3", written)
+        .expect("history")
+        .expect("row");
+    assert!(!prior.yanked);
+    assert_eq!(prior.edges.len(), 1);
+    assert_eq!(
+        catalog.withdraw("rust", "memchr", "2.8.3").expect("again"),
+        FactWrite::Unchanged
+    );
+    assert_eq!(
+        catalog
+            .withdraw("rust", "missing", "0.1.0")
+            .expect("absent"),
+        FactWrite::Unchanged
+    );
+}
