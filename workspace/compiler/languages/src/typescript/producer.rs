@@ -491,6 +491,35 @@ mod tests {
     }
 
     #[test]
+    fn namespace_interfaces_with_different_signatures_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"merge","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "namespace N { export interface I { f(a: string): string; } }\n\
+             namespace N { export interface I { f(a: number): number; } }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "merge", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("merge"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("different interface signatures in one file must seal");
+        let fs = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "f")
+            .count();
+        assert!(
+            fs >= 2,
+            "f(string) and f(number) are different overloads; dropping one is not a merge"
+        );
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
@@ -577,9 +606,21 @@ mod tests {
                 PackageLineageId::new(EcosystemId::new("npm"), PackageName::new(name.clone()));
             match produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked) {
                 Ok(produced) => {
+                    let names: Vec<&str> = produced
+                        .table
+                        .iter()
+                        .map(|(_, entry)| entry.sym().name.as_str())
+                        .collect();
+                    let required = match name.as_str() {
+                        "axios" => "AxiosHeaders",
+                        "follow-redirects" => "wrap",
+                        "form-data" => "FormData",
+                        "proxy-from-env" => "getProxyForUrl",
+                        other => panic!("unexpected package {other}"),
+                    };
                     assert!(
-                        produced.table.iter().any(|(_, entry)| !entry.sym().name.is_empty()),
-                        "{name} sealed with no named declaration"
+                        names.contains(&required),
+                        "{name} must declare {required}, got {names:?}"
                     );
                     sealed.push(name);
                 }

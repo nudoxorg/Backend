@@ -445,11 +445,7 @@ fn emit_interface(
     // this (it multiplies member index by overload index); interfaces need
     // the same treatment.
     for (idx, method) in body.methods.iter().enumerate() {
-        let method_id = TsId::new(
-            id.module.clone(),
-            child_name(&id, &method.name),
-            idx as u32,
-        );
+        let method_id = child_id(&id, &method.name, (idx * 1000) as u32);
         let method_sym = Symbol {
             name: method.name.clone(),
             visibility: accessibility_to_visibility(method.modifiers.accessibility),
@@ -478,13 +474,7 @@ fn emit_interface(
 
     // Emit properties as child Field entries.
     for (idx, prop) in body.properties.iter().enumerate() {
-        let prop_id = TsId::new(
-            id.module.clone(),
-            child_name(&id, &prop.name),
-            id.discriminant
-                .saturating_mul(1_000_000)
-                .saturating_add(idx as u32),
-        );
+        let prop_id = child_id(&id, &prop.name, 2_000_000 + idx as u32);
         let prop_sym = Symbol {
             name: prop.name.clone(),
             visibility: accessibility_to_visibility(prop.modifiers.accessibility),
@@ -516,12 +506,12 @@ fn emit_interface(
 
     // Emit index signatures as synthetic `__index[_N]` Function entries (item 5).
     for (idx_num, idx_sig) in body.index_signatures.iter().enumerate() {
-        let synthetic_name = if idx_num == 0 {
-            format!("{}::__index", id.name)
+        let index_member = if idx_num == 0 {
+            "__index".to_string()
         } else {
-            format!("{}::__index_{}", id.name, idx_num)
+            format!("__index_{idx_num}")
         };
-        let idx_id = TsId::new(id.module.clone(), &synthetic_name, 0);
+        let idx_id = child_id(&id, &index_member, idx_num as u32);
         let idx_sym = Symbol {
             name: if idx_num == 0 {
                 "__index".to_string()
@@ -577,12 +567,12 @@ fn emit_interface(
 
     // Emit construct signatures as synthetic `new[_N]` Function entries (item 6).
     for (cs_num, cs) in body.construct_signatures.iter().enumerate() {
-        let synthetic_name = if cs_num == 0 {
-            format!("{}::new", id.name)
+        let construct_member = if cs_num == 0 {
+            "new".to_string()
         } else {
-            format!("{}::new_{}", id.name, cs_num)
+            format!("new_{cs_num}")
         };
-        let cs_id = TsId::new(id.module.clone(), &synthetic_name, 0);
+        let cs_id = child_id(&id, &construct_member, cs_num as u32);
         let cs_sym = Symbol {
             name: if cs_num == 0 {
                 "new".to_string()
@@ -635,13 +625,7 @@ fn emit_class(
     for (idx, member) in body.members.iter().enumerate() {
         match &member.kind {
             MemberKind::Property { ty } | MemberKind::Accessor { ty } => {
-                let field_id = TsId::new(
-                    id.module.clone(),
-                    child_name(&id, &member.name),
-                    id.discriminant
-                        .saturating_mul(1_000_000)
-                        .saturating_add(idx as u32),
-                );
+                let field_id = child_id(&id, &member.name, idx as u32);
                 let fref: Ref<Field> = out.refer(field_id.clone());
                 field_refs.push(fref);
                 // Declare the field below after the Record.
@@ -702,13 +686,7 @@ fn emit_class(
             MemberKind::Method(v) => {
                 let sigs_ref: Vec<&FunctionBody> = v.iter().collect();
                 for (overload_idx, sig) in sigs_ref.iter().enumerate() {
-                    let method_id = TsId::new(
-                        id.module.clone(),
-                        child_name(&id, &member.name),
-                        id.discriminant
-                            .saturating_mul(1_000_000)
-                            .saturating_add((idx * 1000 + overload_idx) as u32),
-                    );
+                    let method_id = child_id(&id, &member.name, (idx * 1000 + overload_idx) as u32);
                     let method_sym = Symbol {
                         name: member.name.clone(),
                         visibility: accessibility_to_visibility(member.modifiers.accessibility),
@@ -737,13 +715,7 @@ fn emit_class(
                 }
             }
             MemberKind::Constructor(s) => {
-                let method_id = TsId::new(
-                    id.module.clone(),
-                    child_name(&id, &member.name),
-                    id.discriminant
-                        .saturating_mul(1_000_000)
-                        .saturating_add((idx * 1000) as u32),
-                );
+                let method_id = child_id(&id, &member.name, (idx * 1000) as u32);
                 let method_sym = Symbol {
                     name: member.name.clone(),
                     visibility: accessibility_to_visibility(member.modifiers.accessibility),
@@ -764,11 +736,7 @@ fn emit_class(
             }
             // ── Item 4: Static block → synthetic Function (item 4) ────────
             MemberKind::StaticBlock { name: block_name } => {
-                let sb_id = TsId::new(
-                    id.module.clone(),
-                    format!("{}::{}", id.name, block_name),
-                    idx as u32,
-                );
+                let sb_id = child_id(&id, block_name, idx as u32);
                 let sb_sym = Symbol {
                     name: block_name.clone(),
                     visibility: Visibility::Private,
@@ -2035,6 +2003,14 @@ fn child_name(parent: &TsId, member: &str) -> String {
     }
 }
 
+fn child_id(parent: &TsId, member: &str, local: u32) -> TsId {
+    // The parent overload lives in the name (`Parent#N::member`). Folding it
+    // into the discriminant as well overflows `u32` once a parameter
+    // multiplies that discriminant by 1000, and every parameter collapses
+    // onto `u32::MAX`.
+    TsId::new(parent.module.clone(), child_name(parent, member), local)
+}
+
 fn fresh_discriminant(
     occupied: &HashMap<(PathBuf, String, u32), KeptBody>,
     canonical: &Path,
@@ -2107,6 +2083,29 @@ fn package_foreign_key(specifier: &str, display: &str) -> ForeignKey {
     )
 }
 
+fn function_skeleton(f: &FunctionBody) -> String {
+    let mut s = format!("fn:{}:{}:{}:", f.is_async, f.is_generator, f.has_body);
+    for param in &f.params {
+        s.push_str(&param.name);
+        if param.is_optional {
+            s.push('?');
+        }
+        if param.is_rest {
+            s.push('*');
+        }
+        s.push(':');
+        if let Some(ty) = &param.ty {
+            s.push_str(&type_skeleton(ty));
+        }
+        s.push(',');
+    }
+    s.push_str("->");
+    if let Some(ret) = &f.return_type {
+        s.push_str(&type_skeleton(ret));
+    }
+    s
+}
+
 fn body_skeleton(body: &DeclBody) -> String {
     match body {
         DeclBody::Enum(e) => {
@@ -2119,22 +2118,7 @@ fn body_skeleton(body: &DeclBody) -> String {
             }
             s
         }
-        DeclBody::Function(f) => {
-            let mut s = format!("fn:{}:{}:{}:", f.is_async, f.is_generator, f.has_body);
-            for param in &f.params {
-                s.push_str(&param.name);
-                s.push(':');
-                if let Some(ty) = &param.ty {
-                    s.push_str(&type_skeleton(ty));
-                }
-                s.push(',');
-            }
-            s.push_str("->");
-            if let Some(ty) = &f.return_type {
-                s.push_str(&type_skeleton(ty));
-            }
-            s
-        }
+        DeclBody::Function(f) => function_skeleton(f),
         DeclBody::Class(c) => {
             let mut s = format!("class:{}", c.is_abstract);
             for ty in c.extends.iter().chain(c.implements.iter()) {
@@ -2144,6 +2128,22 @@ fn body_skeleton(body: &DeclBody) -> String {
             s.push('#');
             for member in &c.members {
                 s.push_str(&member.name);
+                s.push(':');
+                match &member.kind {
+                    MemberKind::Method(sigs) => {
+                        for sig in sigs {
+                            s.push_str(&function_skeleton(sig));
+                            s.push('|');
+                        }
+                    }
+                    MemberKind::Constructor(sig) => s.push_str(&function_skeleton(sig)),
+                    MemberKind::Property { ty } | MemberKind::Accessor { ty } => {
+                        if let Some(ty) = ty {
+                            s.push_str(&type_skeleton(ty));
+                        }
+                    }
+                    MemberKind::StaticBlock { name } => s.push_str(name),
+                }
                 s.push(';');
             }
             s
@@ -2157,10 +2157,16 @@ fn body_skeleton(body: &DeclBody) -> String {
             s.push('#');
             for method in &i.methods {
                 s.push_str(&method.name);
+                s.push(':');
+                s.push_str(&function_skeleton(&method.sig));
                 s.push(';');
             }
             for prop in &i.properties {
                 s.push_str(&prop.name);
+                s.push(':');
+                if let Some(ty) = &prop.ty {
+                    s.push_str(&type_skeleton(ty));
+                }
                 s.push(';');
             }
             s
