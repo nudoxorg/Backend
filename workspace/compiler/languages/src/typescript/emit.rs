@@ -939,17 +939,47 @@ fn declare_alias_params(
             param_sym,
             Param::builder().maybe_ty(ty).build(),
         );
-        // `(cb: ({ left }) => void)` declares `cb` and the callback's bindings.
-        // The owner name includes `cb`, so `left` does not share an id with
-        // a sibling parameter of the outer function.
-        if let Some(TypeOwned::Function(inner)) = &param.ty {
+        if let Some(ty) = &param.ty {
+            declare_nested_params(alias, owner, &param.name, ty, out, names);
+        }
+    }
+}
+
+/// Bindings inside a parameter's type. A callback `(cb: ({ left }) => void)`
+/// and an object method `(bag: { read(left: number): void })` both declare
+/// `left`. The owner name includes the parameter and the method, so that
+/// `left` does not share an id with an outer parameter of the same name.
+fn declare_nested_params(
+    alias: &TsId,
+    owner: &TsId,
+    param_name: &str,
+    ty: &TypeOwned,
+    out: &mut Lowering<TsId>,
+    names: &DeclareSet,
+) {
+    match ty {
+        TypeOwned::Function(inner) => {
             let inner_owner = TsId::new(
                 alias.module.clone(),
-                format!("{}::{}", owner.name, param.name),
+                format!("{}::{param_name}", owner.name),
                 owner.discriminant,
             );
             declare_alias_params(alias, &inner_owner, inner, out, names);
         }
+        TypeOwned::ObjectLiteral(fields) => {
+            for field in fields {
+                let TypeOwned::Function(function) = &field.ty else {
+                    continue;
+                };
+                let inner_owner = TsId::new(
+                    alias.module.clone(),
+                    format!("{}::{param_name}::{}", owner.name, field.name),
+                    owner.discriminant,
+                );
+                declare_alias_params(alias, &inner_owner, function, out, names);
+            }
+        }
+        _ => {}
     }
 }
 

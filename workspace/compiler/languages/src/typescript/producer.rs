@@ -2122,6 +2122,42 @@ mod tests {
     }
 
     #[test]
+    fn an_object_parameter_declares_its_method_bindings() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"obj-param","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export type Take = (bag: { read(left: number): void }) => void;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "obj-param", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("obj-param"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("an object parameter must seal");
+        let left = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "left"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(left, 1, "read's parameter left must be declared");
+        let bag = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "bag" && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(bag, 1, "the object parameter itself must be declared");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
