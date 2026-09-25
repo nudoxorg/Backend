@@ -99,10 +99,6 @@ impl ProcessGuard {
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
         scrub(&mut command);
-        command.env(
-            "NUDOX_RUSTC",
-            explicit_rustc().expect("restart semantic persistence requires an explicit rustc"),
-        );
         Self {
             child: Some(command.spawn().expect("spawn locald")),
         }
@@ -175,19 +171,6 @@ fn scrub(command: &mut ProcessCommand) {
             command.env_remove(variable);
         }
     }
-}
-
-fn explicit_rustc() -> Option<PathBuf> {
-    std::env::var_os("NUDOX_RUSTC")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && path.is_file())
-        .or_else(|| {
-            std::env::var_os("PATH").and_then(|path| {
-                std::env::split_paths(&path)
-                    .map(|directory| directory.join("rustc"))
-                    .find(|candidate| candidate.is_file())
-            })
-        })
 }
 
 fn unique_root(label: &str) -> PathBuf {
@@ -630,6 +613,43 @@ fn regression_snapshot(
     Some(RegressionSnapshot(rows))
 }
 
+/// Describes what search and names actually returned for each regression
+/// name, so a timeout says which row was missing or misclassified.
+fn regression_observation(endpoint: &Path, workspace: &Path, project: &Path) -> String {
+    let mut lines = Vec::new();
+    for name in [
+        "trait_method_marker",
+        "impl_method_marker",
+        "RestartIdentityNamespace",
+    ] {
+        for (surface, value) in [
+            ("search", search_json(endpoint, workspace, project, name)),
+            ("names", names_json(endpoint, workspace, project, name)),
+        ] {
+            let rows = value["records"]
+                .as_array()
+                .map(|records| {
+                    records
+                        .iter()
+                        .map(|record| {
+                            format!(
+                                "{}:{} kind={} shape={}",
+                                record["identity"]["path"],
+                                record["identity"]["name"],
+                                record["kind"],
+                                record["identity"]["shape"]
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_else(|| format!("no records: {value}"));
+            lines.push(format!("{surface} {name}: {rows}"));
+        }
+    }
+    lines.join("\n")
+}
+
 fn wait_regression_snapshot(
     endpoint: &Path,
     workspace: &Path,
@@ -642,7 +662,8 @@ fn wait_regression_snapshot(
         }
         assert!(
             Instant::now() < end,
-            "identity regression rows were missing, duplicated, or misclassified"
+            "identity regression rows were missing, duplicated, or misclassified:\n{}",
+            regression_observation(endpoint, workspace, project)
         );
         thread::sleep(Duration::from_millis(50));
     }
