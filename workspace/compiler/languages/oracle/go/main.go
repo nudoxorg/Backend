@@ -62,7 +62,11 @@ import (
 // present either way, but its *scope* changed, which is exactly what this
 // handshake exists to catch (an older binary's narrower answer looks
 // identical to "no cross-package implementers exist").
-const SchemaVersion = 2
+//
+// v3: `Package.UnresolvedCgo` names incomplete cgo types (`C.*`, `_Ctype_*`)
+// the oracle could not expand. A pre-v3 binary either panics on those
+// packages or omits the list, and both look like "no unresolved cgo".
+const SchemaVersion = 3
 
 // Output is the root of the emitted JSON document.
 type Output struct {
@@ -117,6 +121,10 @@ type Package struct {
 	BuildConstraints []*BuildConstraint `json:"buildConstraints,omitempty"`
 	// References is the resolved same-package function call graph.
 	References []*Reference `json:"references,omitempty"`
+	// UnresolvedCgo names incomplete cgo (or otherwise unexpandable) types
+	// this package touched. Qualified as `import/path.Name`. The package
+	// still extracts; these names are gaps, not a panic.
+	UnresolvedCgo []string `json:"unresolvedCgo,omitempty"`
 }
 
 // BuildConstraint describes one excluded Go source file.
@@ -245,7 +253,7 @@ func collectInterfaceCandidates(selected map[string]*packages.Package) []interfa
 			if !ok {
 				continue
 			}
-			iface, ok := obj.Type().Underlying().(*types.Interface)
+			iface, ok := underlyingInterface(obj)
 			if !ok {
 				continue
 			}
@@ -272,6 +280,15 @@ func collectInterfaceCandidates(selected map[string]*packages.Package) []interfa
 		return out[i].obj.Name() < out[j].obj.Name()
 	})
 	return out
+}
+
+// underlyingInterface reports whether obj's underlying type is an interface.
+// Underlying panics on an incomplete cgo named type; that type is not an
+// interface candidate, and the panic must not abort the whole module.
+func underlyingInterface(obj *types.TypeName) (iface *types.Interface, ok bool) {
+	defer func() { _ = recover() }()
+	iface, ok = obj.Type().Underlying().(*types.Interface)
+	return iface, ok
 }
 
 // richerPackageVariant imposes a total, deterministic order on the ordinary
@@ -325,16 +342,34 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Pac
 
 	scope := pkg.Types.Scope()
 	names := scope.Names() // already sorted
+	var unresolved []string
 	for _, name := range names {
 		obj := scope.Lookup(name)
 		if obj == nil {
 			continue
 		}
-		if decl := extractObject(pkg, obj, docs, candidates); decl != nil {
+		decl, extra := extractObject(pkg, obj, docs, candidates)
+		if decl != nil {
 			p.Decls = append(p.Decls, decl)
 		}
+		unresolved = append(unresolved, extra...)
 	}
+	p.UnresolvedCgo = dedupeSorted(unresolved)
 	return p
+}
+
+func dedupeSorted(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	out := []string{names[0]}
+	for _, name := range names[1:] {
+		if name != out[len(out)-1] {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // extractReferences walks function bodies with go/types' Uses table. This is
@@ -499,7 +534,7 @@ func exportedDecls(path string) []*BuildDecl {
 // extractObject serializes one package-scope object into a Decl. candidates
 // is the module-wide interface list (see collectInterfaceCandidates), used
 // only for kind == "type" declarations that are not themselves interfaces.
-func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog, candidates []interfaceCandidate) *Decl {
+func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog, candidates []interfaceCandidate) (*Decl, []string) {
 	s := newSerializer(pkg)
 
 	base := &Decl{
@@ -520,37 +555,59 @@ func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog, ca
 			if a, ok := obj.Type().(*types.Alias); ok {
 				base.TypeParams = s.typeParams(a.TypeParams())
 			}
-			return base
+			return base, s.unresolvedList()
 		}
 		named, ok := obj.Type().(*types.Named)
 		if !ok {
 			// Defensive: a non-alias TypeName should always carry a Named.
 			base.Kind = "type"
-			base.Underlying = s.typ(obj.Type().Underlying())
-			return base
+			s.catchUnresolved(nil, func() {
+				base.Underlying = s.typ(obj.Type().Underlying())
+			})
+			if base.Underlying == nil {
+				base.Underlying = &Type{Kind: "invalid", Name: obj.Name()}
+				s.noteUnresolved(obj.Name())
+			}
+			return base, s.unresolvedList()
 		}
 		base.Kind = "type"
-		base.TypeParams = s.typeParams(named.TypeParams())
-		base.Underlying = s.typ(named.Underlying())
+		s.catchUnresolved(named, func() {
+			base.TypeParams = s.typeParams(named.TypeParams())
+		})
+		var underlying types.Type
+		s.catchUnresolved(named, func() {
+			underlying = named.Underlying()
+		})
+		if underlying == nil {
+			base.Underlying = &Type{Kind: "invalid", Name: qualifiedNamed(named)}
+			s.noteUnresolved(qualifiedNamed(named))
+		} else {
+			s.collectCgo(underlying, 0)
+			base.Underlying = s.typ(underlying)
+		}
 		base.Methods = s.declaredMethods(named, docs)
 		base.PromotedMethods = s.promotedMethods(named, docs)
 		base.FieldDocs = docs.fieldDocs[obj.Name()]
 		base.MethodDocs = docs.ifaceMethodDocs[obj.Name()]
 		// Interfaces this concrete type satisfies, anywhere in the module.
-		if !types.IsInterface(named) {
-			base.Implements = s.implementsInterfaces(named, candidates)
-		}
-		return base
+		// IsInterface and Implements both walk under(), which panics on an
+		// incomplete cgo named type; catchUnresolved records the name.
+		s.catchUnresolved(named, func() {
+			if !types.IsInterface(named) {
+				base.Implements = s.implementsInterfaces(named, candidates)
+			}
+		})
+		return base, s.unresolvedList()
 
 	case *types.Func:
 		sig, ok := obj.Type().(*types.Signature)
 		if !ok {
-			return nil
+			return nil, s.unresolvedList()
 		}
 		base.Kind = "func"
 		base.TypeParams = s.typeParams(sig.TypeParams())
 		base.Signature = s.signature(sig)
-		return base
+		return base, s.unresolvedList()
 
 	case *types.Const:
 		base.Kind = "const"
@@ -562,17 +619,17 @@ func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog, ca
 			base.ConstGroup = g.id
 			base.GroupHasIota = g.hasIota
 		}
-		return base
+		return base, s.unresolvedList()
 
 	case *types.Var:
 		base.Kind = "var"
 		base.Type = s.typ(obj.Type())
-		return base
+		return base, s.unresolvedList()
 
 	default:
 		// Builtins / labels / imported package names never sit in a
 		// package scope; skip anything unexpected.
-		return nil
+		return nil, nil
 	}
 }
 

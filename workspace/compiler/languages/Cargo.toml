@@ -198,6 +198,14 @@ name = "go_test_packages"
 path = "tests/go/test_packages.rs"
 
 [[test]]
+name = "go_cgo_unresolved"
+path = "tests/go/cgo_unresolved.rs"
+
+[[test]]
+name = "go_oracle_staleness"
+path = "tests/go/oracle_staleness.rs"
+
+[[test]]
 name = "java_corpus_sweep"
 path = "tests/java/corpus_sweep.rs"
 

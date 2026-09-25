@@ -286,6 +286,68 @@ pub(super) fn lower_newtype(
     lower_methods(pkg, decl, &item_id, low, local);
 }
 
+/// Surface cgo names the oracle could not expand.
+///
+/// A name this package already declares is skipped: that declaration's
+/// underlying type is the gap (`invalid` → `OracleGap`). A foreign name,
+/// `C.sqlite3` and the `_Ctype_*` forms, is a `refer_import` stored on a
+/// synthesized item so the package lists it without `refer`-ing an id
+/// `finish` would then reject as undeclared.
+pub(super) fn lower_unresolved_cgo(pkg: &oracle::Package, parent: GoId, low: &mut Lowering<GoId>) {
+    for raw in &pkg.unresolved_cgo {
+        let (import_path, name) = split_qualified(raw);
+        let local_name = import_path.is_empty() || import_path == pkg.import_path;
+        if local_name && pkg.decls.iter().any(|decl| decl.name == name) {
+            continue;
+        }
+        let item_id = GoId::Item {
+            import_path: pkg.import_path.clone(),
+            name: format!("cgo:{raw}"),
+        };
+        let sym = sym_for(raw, "unresolved cgo type", false, None, None);
+        let inner_id = GoId::Member {
+            import_path: pkg.import_path.clone(),
+            type_name: format!("cgo:{raw}"),
+            member_name: "(inner)".to_string(),
+            promoted_from: None,
+        };
+        let inner_ref: Ref<Field> = low.refer(inner_id.clone());
+        let record = Record::builder()
+            .form(RecordForm::Tuple)
+            .fields([inner_ref])
+            .build();
+        low.declare(item_id.clone(), Some(parent.clone()), sym, record);
+
+        let ty = if local_name {
+            Type::ORACLE_GAP
+        } else {
+            Type::Nominal(
+                low.refer_import::<Record>(types::go_foreign_key(&import_path, &name))
+                    .into_raw(),
+            )
+        };
+        let inner_sym = sym_for("(inner)", "unresolved cgo type", false, None, None);
+        let inner_field = Field::builder()
+            .key(FieldKey::Positional(0))
+            .maybe_ty(Some(ty))
+            .build();
+        low.declare_at(
+            inner_id,
+            Some(item_id),
+            inner_sym,
+            inner_field,
+            SourceLocation::Unlocated(Unlocated::Synthesized),
+        );
+    }
+}
+
+fn split_qualified(raw: &str) -> (&str, &str) {
+    match raw.rfind('.') {
+        Some(i) => (&raw[..i], &raw[i + 1..]),
+        None => ("", raw),
+    }
+}
+
 // ── Iota enum ─────────────────────────────────────────────────────────────────
 
 pub(super) fn lower_iota_enum(

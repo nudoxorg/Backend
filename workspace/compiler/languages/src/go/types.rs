@@ -73,7 +73,7 @@ const MAX_DEPTH: usize = 64;
 /// that, and upgrades to `Package` the day the oracle reports module paths —
 /// whereas the code this replaces synthesised `PackageId::path(import_path)`,
 /// which reads like a resolved package identity and is not one.
-fn go_foreign_key(import_path: &str, name: &str) -> ForeignKey {
+pub(crate) fn go_foreign_key(import_path: &str, name: &str) -> ForeignKey {
     let ecosystem = EcosystemId::new("go");
     if import_path.is_empty() {
         // Universe scope: `error`, `comparable`, `any`. These are declared by

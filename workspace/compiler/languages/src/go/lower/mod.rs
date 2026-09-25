@@ -432,13 +432,14 @@ fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSe
 
     let pkg_sym = sym_for(&pkg.import_path, &pkg.doc, true, None, None);
     // Declare the package as a Module, child of root (None).
-    low.declare(pkg_id, None, pkg_sym, Module);
+    low.declare(pkg_id.clone(), None, pkg_sym, Module);
 
     let enums = detect_iota_enums(pkg);
 
     for decl in &pkg.decls {
         lower_decl(pkg, decl, &enums, low, local);
     }
+    types::lower_unresolved_cgo(pkg, pkg_id, low);
     record_references(pkg, low);
 }
 

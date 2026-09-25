@@ -58,7 +58,8 @@ pub enum Staleness {
         "the `nudox-go-oracle` binary is out of date: it speaks payload schema \
          {found}, but this build reads schema {required}. Data added or widened \
          since (references; implements, and its scope: schema 2 checks every \
-         package in the module, not just each type's own) is absent or \
+         package in the module, not just each type's own; unresolved cgo \
+         names: schema 3) is absent or \
          incomplete in its output, so `refs` and `subtypes` will look empty or \
          under-report for every Go package. Rebuild the oracle \
          (`go build ./workspace/compiler/languages/oracle/go`) and point \
@@ -85,7 +86,9 @@ impl Output {
     /// own. The field was already there on a v1 binary; what it under-reports
     /// changed. `#[serde(default)]` cannot express that distinction, so the
     /// handshake is the only thing that can.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 2;
+    /// v3 reads `Package.unresolved_cgo`. An older binary omits that list, so
+    /// a cgo package looks fully resolved.
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 3;
 
     /// Whether the binary that produced this payload is older than this build
     /// expects.
@@ -180,6 +183,13 @@ pub struct Package {
     /// Go/types-resolved same-package function calls.
     #[serde(default)]
     pub references: Box<[Reference]>,
+
+    /// Incomplete cgo types this package touched, qualified as
+    /// `import/path.Name`. Empty when the package has none — and also empty
+    /// when the oracle binary predates schema 3, which [`Output::staleness`]
+    /// is what distinguishes.
+    #[serde(default)]
+    pub unresolved_cgo: Box<[String]>,
 }
 
 /// One resolved function-use edge in a package.
