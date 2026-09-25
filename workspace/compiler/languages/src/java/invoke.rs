@@ -217,7 +217,77 @@ pub(crate) fn invoke(src: &PackageSource) -> Result<Extraction, ProducerError> {
         std::env::var("NUDOX_JAVADOC").unwrap_or_else(|_| "javadoc".to_owned())
     };
 
-    oracle::run_json(PRODUCER_ID, javadoc_bin, args)
+    match oracle::run_json(PRODUCER_ID, javadoc_bin, args) {
+        Err(ProducerError::OracleExit {
+            command,
+            code,
+            stderr,
+        }) if let Some(missing) = unresolved_dependency_packages(&stderr) => {
+            Err(ProducerError::DependenciesUnresolved {
+                package: src.name.as_str().to_owned(),
+                source: Box::new(UnresolvedDependencies {
+                    packages: missing,
+                    exit_code: code,
+                    command,
+                    stderr,
+                }),
+            })
+        }
+        other => other,
+    }
+}
+
+/// `javadoc` exited because named packages are not on the source or class
+/// path. The compiler was not relaxed: the same invocation still fails.
+///
+/// A language error (`records are not supported`, a syntax error) stays
+/// [`ProducerError::OracleExit`] even if a missing package is also present,
+/// so a real compile failure is not relabeled as an environment problem.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "javadoc could not resolve dependency package(s) {packages}; the compiler was \
+     not weakened (exit {exit_code}, {command}). Put the missing jars on \
+     NUDOX_JAVA_CLASS_PATH. {stderr}"
+)]
+pub struct UnresolvedDependencies {
+    /// Packages named by `error: package … does not exist`, sorted and joined.
+    packages: String,
+    /// `javadoc`'s exit status.
+    exit_code: String,
+    /// The command label `run_json` reported.
+    command: String,
+    /// The full diagnostic, so the missing types stay readable.
+    stderr: String,
+}
+
+/// `Some` when every `error:` line is a missing package or a symbol that
+/// follows from one. `None` when there is no missing package, or when any
+/// other `error:` is present.
+fn unresolved_dependency_packages(stderr: &str) -> Option<String> {
+    let mut packages = Vec::new();
+    for line in stderr.lines() {
+        let Some((_, rest)) = line.split_once("error:") else {
+            continue;
+        };
+        let rest = rest.trim();
+        if let Some(name) = rest
+            .strip_prefix("package ")
+            .and_then(|s| s.strip_suffix(" does not exist"))
+        {
+            packages.push(name.trim().to_owned());
+            continue;
+        }
+        if rest.starts_with("cannot find symbol") {
+            continue;
+        }
+        return None;
+    }
+    if packages.is_empty() {
+        return None;
+    }
+    packages.sort();
+    packages.dedup();
+    Some(packages.join(", "))
 }
 
 /// Overrides the compiled doclet-classes directory (`-docletpath`).
@@ -664,6 +734,42 @@ fn is_legacy_excluded_dir(path: &Path) -> bool {
         || path.ends_with("lombok/javac/java7")
         || path.ends_with("lombok/javac/java8")
         || path.ends_with("lombok/javac/java9")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unresolved_dependency_packages;
+
+    #[test]
+    fn a_missing_package_is_an_unresolved_dependency() {
+        let stderr = "\
+App.java:1: error: package com.google.common.base does not exist
+import com.google.common.base.Preconditions;
+App.java:4: error: cannot find symbol
+        Preconditions.checkNotNull(name);
+  symbol:   variable Preconditions
+1 error
+";
+        assert_eq!(
+            unresolved_dependency_packages(stderr).as_deref(),
+            Some("com.google.common.base")
+        );
+    }
+
+    #[test]
+    fn a_language_error_stays_a_compiler_failure_even_beside_a_missing_package() {
+        let stderr = "\
+App.java:3: error: records are not supported in -source 8
+App.java:1: error: package com.google.common.base does not exist
+";
+        assert!(unresolved_dependency_packages(stderr).is_none());
+    }
+
+    #[test]
+    fn a_bare_cannot_find_symbol_is_not_relabeled_as_a_missing_dependency() {
+        let stderr = "App.java:2: error: cannot find symbol\n  symbol: class Typo\n";
+        assert!(unresolved_dependency_packages(stderr).is_none());
+    }
 }
 
 fn is_legacy_excluded_file(path: &Path) -> bool {

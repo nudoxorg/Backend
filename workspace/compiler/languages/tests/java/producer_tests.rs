@@ -551,6 +551,46 @@ fn release_8_genuinely_rejects_java_16_plus_record_syntax() {
     }
 }
 
+/// A source file that imports a package not on the source or class path must
+/// fail as an unresolved dependency graph. `javadoc` still runs at full
+/// strictness — the package is not sealed with the import erased.
+#[test]
+fn a_missing_import_is_dependencies_unresolved_not_a_sealed_package() {
+    let root = std::env::temp_dir().join("nudox-java-missing-dep-9c2e");
+    let src_dir = root.join("com/example/app");
+    std::fs::create_dir_all(&src_dir).expect("tmpdir");
+    std::fs::write(
+        src_dir.join("App.java"),
+        r#"package com.example.app;
+import com.google.common.base.Preconditions;
+public final class App {
+    public String greet(String name) { return Preconditions.checkNotNull(name); }
+}
+"#,
+    )
+    .expect("source");
+
+    let src = PackageSource::new(&root, "needs-guava", "0");
+    let err = JavaProducer::new()
+        .invoke(&src)
+        .expect_err("a missing guava import must not seal");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let ProducerError::DependenciesUnresolved { package, source } = err else {
+        panic!("missing dependency packages must be DependenciesUnresolved, not a weakened compile");
+    };
+    assert_eq!(package, "needs-guava");
+    let rendered = source.to_string();
+    assert!(
+        rendered.contains("com.google.common.base"),
+        "the missing package must be named: {rendered}"
+    );
+    assert!(
+        rendered.contains("not weakened"),
+        "the error must say the compiler was not relaxed: {rendered}"
+    );
+}
+
 /// JEP 467 (`///` Markdown javadoc) honesty check, adaptive to whatever JDK
 /// is actually running this test: on JDK < 23 `///` is not a doc comment at
 /// all (verified: `Elements.getDocComment` returns `null`), so this asserts
