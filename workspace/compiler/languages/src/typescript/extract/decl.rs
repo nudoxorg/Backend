@@ -682,6 +682,21 @@ fn push_commonjs_value_decls<'a>(
         if !is_package_specifier(specifier) {
             continue;
         }
+        // The same package assigned twice is one export. A different
+        // package under the same name is a second declaration.
+        let same_package = declarations.iter().any(|decl| {
+            decl.name == export_name
+                && matches!(
+                    &decl.body,
+                    DeclBody::Reexport {
+                        module_request,
+                        import_name,
+                    } if module_request == specifier && import_name == "*"
+                )
+        });
+        if same_package {
+            continue;
+        }
         let span = assign.span();
         let decl_index = bump_count(&export_name, name_counts);
         declarations.push(DeclFact {

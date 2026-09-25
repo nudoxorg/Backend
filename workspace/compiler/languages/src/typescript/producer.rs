@@ -1406,6 +1406,33 @@ mod tests {
     }
 
     #[test]
+    fn one_commonjs_package_assigned_twice_is_one_export() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"cjs-same","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.js"),
+            "var left = require(\"left-pad\");\n\
+             exports.foo = left;\n\
+             exports.foo = left;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "cjs-same", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("cjs-same"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("assigning one package twice must seal");
+        let foos = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "foo")
+            .count();
+        assert_eq!(foos, 1, "the same package is one export");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.
