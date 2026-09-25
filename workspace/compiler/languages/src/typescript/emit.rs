@@ -552,6 +552,7 @@ fn emit_interface(
             is_generator: false,
             has_body: false,
             receiver: crate::typescript::extract::ReceiverKind::SharedRef,
+            this_ty: None,
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
@@ -757,6 +758,7 @@ fn emit_class(
                     is_generator: false,
                     has_body: true,
                     receiver: ReceiverKind::None,
+                    this_ty: None,
                     span_start: member.span_start,
                     span_end: member.span_end,
                 };
@@ -1929,7 +1931,7 @@ fn admit_decls(
             None => decl.name.clone(),
         };
         let preferred = decl.decl_index;
-        let skel = body_skeleton(&decl.body);
+        let skel = format!("{}{}", doc_skeleton(&decl.doc), body_skeleton(&decl.body));
         let origin = (decl.module.clone(), qual.clone(), preferred, decl.span_start);
         let slot = (canonical.clone(), qual.clone(), preferred);
         let existing = occupied
@@ -2083,9 +2085,74 @@ fn package_foreign_key(specifier: &str, display: &str) -> ForeignKey {
     )
 }
 
+fn variance_mark(variance: Option<nudox_ir::kinds::ty::Variance>) -> &'static str {
+    match variance {
+        Some(nudox_ir::kinds::ty::Variance::Covariant) => "out ",
+        Some(nudox_ir::kinds::ty::Variance::Contravariant) => "in ",
+        Some(nudox_ir::kinds::ty::Variance::Invariant) => "inv ",
+        None => "",
+    }
+}
+
+fn receiver_mark(receiver: ReceiverKind) -> &'static str {
+    match receiver {
+        ReceiverKind::None => "recv0",
+        ReceiverKind::SharedRef => "recv&",
+        ReceiverKind::MutRef => "recv&mut",
+    }
+}
+
+fn doc_skeleton(doc: &crate::typescript::extract::DocFacts) -> String {
+    let mut s = String::new();
+    if let Some(text) = &doc.doc {
+        s.push_str(text);
+    }
+    if let Some(dep) = &doc.deprecation {
+        s.push_str("~dep:");
+        if let Some(note) = &dep.note {
+            s.push_str(note);
+        }
+        if let Some(since) = &dep.since {
+            s.push('@');
+            s.push_str(since);
+        }
+    }
+    if doc.ignore {
+        s.push_str("~ignore");
+    }
+    s
+}
+
+fn modifiers_skeleton(modifiers: &MemberModifiers) -> String {
+    let access = match modifiers.accessibility {
+        Accessibility::Public => "pub",
+        Accessibility::Protected => "prot",
+        Accessibility::Private => "priv",
+        Accessibility::PrivateField => "hash",
+    };
+    format!(
+        "{access}{}{}{}{}",
+        if modifiers.is_static { "+s" } else { "" },
+        if modifiers.is_readonly { "+r" } else { "" },
+        if modifiers.is_optional { "+o" } else { "" },
+        if modifiers.is_abstract { "+a" } else { "" },
+    )
+}
+
+fn decorators_skeleton(decorators: &[crate::typescript::extract::AttrTok]) -> String {
+    let mut s = String::new();
+    for decorator in decorators {
+        s.push('@');
+        s.push_str(&decorator.token);
+        s.push(';');
+    }
+    s
+}
+
 fn generics_skeleton(params: &[crate::typescript::extract::GenericParamOwned]) -> String {
     let mut s = String::from("<");
     for param in params {
+        s.push_str(variance_mark(param.variance));
         s.push_str(&param.name);
         for bound in &param.bounds {
             s.push(':');
@@ -2103,13 +2170,22 @@ fn generics_skeleton(params: &[crate::typescript::extract::GenericParamOwned]) -
 
 fn function_skeleton(f: &FunctionBody) -> String {
     let mut s = format!(
-        "fn:{}:{}:{}:{}:",
+        "fn:{}:{}:{}:{}:{}:",
         f.is_async,
         f.is_generator,
         f.has_body,
+        receiver_mark(f.receiver),
         generics_skeleton(&f.generics)
     );
+    if let Some(this_ty) = &f.this_ty {
+        s.push_str("this:");
+        s.push_str(&type_skeleton(this_ty));
+        s.push(';');
+    }
     for param in &f.params {
+        if param.is_readonly {
+            s.push_str("ro ");
+        }
         s.push_str(&param.name);
         if param.is_optional {
             s.push('?');
@@ -2144,29 +2220,57 @@ fn body_skeleton(body: &DeclBody) -> String {
         }
         DeclBody::Function(f) => function_skeleton(f),
         DeclBody::Class(c) => {
-            let mut s = format!("class:{}{}", c.is_abstract, generics_skeleton(&c.generics));
-            for ty in c.extends.iter().chain(c.implements.iter()) {
-                s.push('|');
+            let mut s = format!(
+                "class:{}{}{}",
+                c.is_abstract,
+                decorators_skeleton(&c.decorators),
+                generics_skeleton(&c.generics)
+            );
+            for ty in &c.extends {
+                s.push_str("|ext:");
+                s.push_str(&type_skeleton(ty));
+            }
+            for ty in &c.implements {
+                s.push_str("|impl:");
                 s.push_str(&type_skeleton(ty));
             }
             s.push('#');
             for member in &c.members {
+                s.push_str(&modifiers_skeleton(&member.modifiers));
+                s.push(':');
+                s.push_str(&decorators_skeleton(&member.decorators));
+                s.push_str(&doc_skeleton(&member.doc));
+                s.push(':');
                 s.push_str(&member.name);
                 s.push(':');
                 match &member.kind {
                     MemberKind::Method(sigs) => {
+                        s.push_str("method:");
                         for sig in sigs {
                             s.push_str(&function_skeleton(sig));
                             s.push('|');
                         }
                     }
-                    MemberKind::Constructor(sig) => s.push_str(&function_skeleton(sig)),
-                    MemberKind::Property { ty } | MemberKind::Accessor { ty } => {
+                    MemberKind::Constructor(sig) => {
+                        s.push_str("ctor:");
+                        s.push_str(&function_skeleton(sig));
+                    }
+                    MemberKind::Property { ty } => {
+                        s.push_str("prop:");
                         if let Some(ty) = ty {
                             s.push_str(&type_skeleton(ty));
                         }
                     }
-                    MemberKind::StaticBlock { name } => s.push_str(name),
+                    MemberKind::Accessor { ty } => {
+                        s.push_str("acc:");
+                        if let Some(ty) = ty {
+                            s.push_str(&type_skeleton(ty));
+                        }
+                    }
+                    MemberKind::StaticBlock { name } => {
+                        s.push_str("static:");
+                        s.push_str(name);
+                    }
                 }
                 s.push(';');
             }
@@ -2180,12 +2284,23 @@ fn body_skeleton(body: &DeclBody) -> String {
             }
             s.push('#');
             for method in &i.methods {
+                s.push_str(&modifiers_skeleton(&method.modifiers));
+                s.push(':');
+                s.push_str(&doc_skeleton(&method.doc));
+                if method.is_overload {
+                    s.push_str(":ov");
+                }
+                s.push(':');
                 s.push_str(&method.name);
                 s.push(':');
                 s.push_str(&function_skeleton(&method.sig));
                 s.push(';');
             }
             for prop in &i.properties {
+                s.push_str(&modifiers_skeleton(&prop.modifiers));
+                s.push(':');
+                s.push_str(&doc_skeleton(&prop.doc));
+                s.push(':');
                 s.push_str(&prop.name);
                 s.push(':');
                 if let Some(ty) = &prop.ty {
@@ -2214,7 +2329,11 @@ fn body_skeleton(body: &DeclBody) -> String {
             }
             s
         }
-        DeclBody::TypeAlias(a) => format!("alias:{}", type_skeleton(&a.target)),
+        DeclBody::TypeAlias(a) => format!(
+            "alias:{}{}",
+            generics_skeleton(&a.generics),
+            type_skeleton(&a.target)
+        ),
         DeclBody::Const(c) => format!(
             "const:{}:{}",
             c.ty.as_ref().map(type_skeleton).unwrap_or_default(),
@@ -2261,23 +2380,7 @@ fn type_skeleton(ty: &TypeOwned) -> String {
         TypeOwned::Intersection(arms) => type_seq("inter", arms),
         TypeOwned::Tuple(arms) => type_seq("tuple", arms),
         TypeOwned::Array(inner) => format!("[{}]", type_skeleton(inner)),
-        TypeOwned::Function(f) => {
-            let mut s = String::from("F(");
-            for param in &f.params {
-                s.push_str(&param.name);
-                if let Some(ty) = &param.ty {
-                    s.push(':');
-                    s.push_str(&type_skeleton(ty));
-                }
-                s.push(',');
-            }
-            s.push_str(")->");
-            if let Some(ty) = &f.return_type {
-                s.push_str(&type_skeleton(ty));
-            }
-            s.push(')');
-            s
-        }
+        TypeOwned::Function(f) => function_skeleton(f),
         other => format!("{other:?}"),
     }
 }

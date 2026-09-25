@@ -37,7 +37,7 @@ use oxc_syntax::module_record::{
 };
 
 use super::{
-    Accessibility, AttrTok, ClassBody, ConstBody, DeclBody, DeclFact, DocFacts, EnumBody,
+    Accessibility, AttrTok, ClassBody, ConstBody, DeclBody, DeclFact, EnumBody,
     ExportTable, FunctionBody, ImportFact, ImportName, IndexSignatureFact, IndirectExport,
     InterfaceBody, LocalExport, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts,
     NamespaceBody, OccurrenceFact, OccurrenceKind, ParamFact, PropertyFact, ReceiverKind,
@@ -998,7 +998,7 @@ fn extract_declaration<'a>(
                 return vec![];
             }
             let discriminant = bump_count(&name, name_counts);
-            let body = lower_class(c, source);
+            let body = lower_class(c, source, semantic);
             vec![DeclFact {
                 name,
                 visibility,
@@ -1146,7 +1146,7 @@ fn extract_default_export<'a>(
             let span = c.span();
             let doc = jsdoc::jsdoc_for_span(semantic, span);
             let discriminant = bump_count(&name, name_counts);
-            let body = lower_class(c, source);
+            let body = lower_class(c, source, semantic);
             vec![DeclFact {
                 name,
                 visibility: Visibility::Public,
@@ -1198,18 +1198,23 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
         })
         .unwrap_or(false);
 
-    let receiver = if first_param_is_this {
-        ReceiverKind::SharedRef
-    } else {
-        ReceiverKind::None
-    };
-
     let type_params = f.type_parameters.as_ref().map(|tp| {
         tp.params
             .iter()
             .map(|p| p.name.to_string())
             .collect::<std::collections::HashSet<_>>()
     });
+    let this_ty = f.this_param.as_ref().and_then(|param| {
+        param.type_annotation.as_ref().map(|ann| match &type_params {
+            Some(set) => lower_ts_type_with_params(&ann.type_annotation, source, set),
+            None => lower_ts_type(&ann.type_annotation, source),
+        })
+    });
+    let receiver = if first_param_is_this || this_ty.is_some() {
+        ReceiverKind::SharedRef
+    } else {
+        ReceiverKind::None
+    };
     let params =
         lower_formal_parameters(&f.params, source, first_param_is_this, type_params.as_ref());
 
@@ -1236,6 +1241,7 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
         is_generator,
         has_body,
         receiver,
+        this_ty,
         span_start: span.start,
         span_end: span.end,
     }
@@ -1293,7 +1299,7 @@ fn lower_formal_parameters<'a>(
     out
 }
 
-fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
+fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>) -> ClassBody {
     let generics = cls
         .type_parameters
         .as_ref()
@@ -1372,7 +1378,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
         .body
         .body
         .iter()
-        .filter_map(|elem| lower_class_element(elem, source))
+        .filter_map(|elem| lower_class_element(elem, source, semantic))
         .collect();
 
     // Build a set of already-declared field names (from PropertyDefinition).
@@ -1420,7 +1426,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
                 name,
                 kind: MemberKind::Property { ty },
                 modifiers,
-                doc: DocFacts::default(),
+                doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators: Vec::new(),
                 span_start: span.start,
                 span_end: span.end,
@@ -1449,7 +1455,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
                             name: prop_name,
                             kind: MemberKind::Property { ty: None },
                             modifiers: MemberModifiers::default(),
-                            doc: DocFacts::default(),
+                            doc: jsdoc::jsdoc_for_span(semantic, span),
                             decorators: Vec::new(),
                             span_start: span.start,
                             span_end: span.end,
@@ -1488,7 +1494,11 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
     }
 }
 
-fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<MemberFact> {
+fn lower_class_element<'a>(
+    elem: &ClassElement<'a>,
+    source: &'a str,
+    semantic: &'a Semantic<'a>,
+) -> Option<MemberFact> {
     match elem {
         ClassElement::MethodDefinition(m) => {
             let name = property_key_name(&m.key, source);
@@ -1524,7 +1534,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                     _ => MemberKind::Method(vec![sig]),
                 },
                 modifiers,
-                doc: DocFacts::default(),
+                doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
                 span_start: span.start,
                 span_end: span.end,
@@ -1567,7 +1577,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                 name,
                 kind: MemberKind::Property { ty },
                 modifiers,
-                doc: DocFacts::default(),
+                doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
                 span_start: span.start,
                 span_end: span.end,
@@ -1617,7 +1627,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                 name,
                 kind: MemberKind::Accessor { ty },
                 modifiers,
-                doc: DocFacts::default(),
+                doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators,
                 span_start: span.start,
                 span_end: span.end,
@@ -1644,7 +1654,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                     is_optional: false,
                     is_abstract: false,
                 },
-                doc: DocFacts::default(),
+                doc: jsdoc::jsdoc_for_span(semantic, span),
                 decorators: Vec::new(),
                 span_start: span.start,
                 span_end: span.end,
@@ -1660,7 +1670,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
 fn lower_interface<'a>(
     iface: &TSInterfaceDeclaration<'a>,
     source: &'a str,
-    _semantic: &Semantic<'a>,
+    semantic: &'a Semantic<'a>,
 ) -> InterfaceBody {
     let generics = iface
         .type_parameters
@@ -1716,6 +1726,12 @@ fn lower_interface<'a>(
                     .as_ref()
                     .map(|tp| lower_type_params(tp, source))
                     .unwrap_or_default();
+                let this_ty = m.this_param.as_ref().and_then(|param| {
+                    param
+                        .type_annotation
+                        .as_ref()
+                        .map(|ann| lower_ts_type(&ann.type_annotation, source))
+                });
                 let m_span = m.span();
                 let sig = FunctionBody {
                     generics,
@@ -1724,7 +1740,12 @@ fn lower_interface<'a>(
                     is_async: false,
                     is_generator: false,
                     has_body: false,
-                    receiver: ReceiverKind::SharedRef,
+                    receiver: if this_ty.is_some() {
+                        ReceiverKind::SharedRef
+                    } else {
+                        ReceiverKind::None
+                    },
+                    this_ty,
                     span_start: m_span.start,
                     span_end: m_span.end,
                 };
@@ -1732,7 +1753,7 @@ fn lower_interface<'a>(
                     name,
                     sig,
                     modifiers,
-                    doc: DocFacts::default(),
+                    doc: jsdoc::jsdoc_for_span(semantic, m_span),
                     is_overload: false,
                 });
             }
@@ -1754,7 +1775,7 @@ fn lower_interface<'a>(
                     name,
                     ty,
                     modifiers,
-                    doc: DocFacts::default(),
+                    doc: jsdoc::jsdoc_for_span(semantic, p_span),
                     span_start: p_span.start,
                     span_end: p_span.end,
                 });
@@ -1779,6 +1800,7 @@ fn lower_interface<'a>(
                     is_generator: false,
                     has_body: false,
                     receiver: ReceiverKind::None,
+                    this_ty: None,
                     span_start: c_span.start,
                     span_end: c_span.end,
                 });
@@ -1823,6 +1845,7 @@ fn lower_interface<'a>(
                     is_generator: false,
                     has_body: false,
                     receiver: ReceiverKind::None,
+                    this_ty: None,
                     span_start: cs_span.start,
                     span_end: cs_span.end,
                 });

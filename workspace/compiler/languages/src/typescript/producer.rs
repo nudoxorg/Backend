@@ -490,6 +490,134 @@ mod tests {
         );
     }
 
+    fn count_symbol(pkg: &str, source: &str, symbol: &str) -> usize {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            format!(r#"{{"name":"{pkg}","version":"1.0.0","types":"index.d.ts"}}"#),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("index.d.ts"), source).unwrap();
+        let package = PackageSource::new(dir.path(), pkg, "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new(pkg));
+        let produced = produce(&TypescriptProducer::new(), &package, &lineage, &Unlinked)
+            .unwrap_or_else(|err| panic!("{pkg} must seal, not drop the second body: {err}"));
+        produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == symbol)
+            .count()
+    }
+
+    #[test]
+    fn same_file_shape_differences_both_survive() {
+        let cases = [
+            (
+                "variance",
+                "namespace N { export interface I<T> { x: T; } }\n\
+                 namespace N { export interface I<out T> { x: T; } }\n",
+                "I",
+            ),
+            (
+                "receiver",
+                "namespace N { export class C { m(this: C): void; } }\n\
+                 namespace N { export class C { m(): void; } }\n",
+                "m",
+            ),
+            (
+                "readonly-param",
+                "namespace N { export function f(a: string[]): void; }\n\
+                 namespace N { export function f(readonly a: string[]): void; }\n",
+                "f",
+            ),
+            (
+                "optional-fn-type",
+                "namespace N { export interface I { f: (x?: string) => void; } }\n\
+                 namespace N { export interface I { f: (x: string) => void; } }\n",
+                "f",
+            ),
+            (
+                "rest-fn-type",
+                "namespace N { export interface I { f: (x: string[]) => void; } }\n\
+                 namespace N { export interface I { f: (...x: string[]) => void; } }\n",
+                "f",
+            ),
+            (
+                "fn-type-bound",
+                "namespace N { export interface I { f: <T>(x: T) => T; } }\n\
+                 namespace N { export interface I { f: <T extends string>(x: T) => T; } }\n",
+                "f",
+            ),
+            (
+                "alias-generics",
+                "namespace N { export type T<A> = A; }\n\
+                 namespace N { export type T<A extends string> = A; }\n",
+                "T",
+            ),
+            (
+                "extends-implements",
+                "namespace N { export class C extends A {} }\n\
+                 namespace N { export class C implements A {} }\n",
+                "C",
+            ),
+            (
+                "method-decorator",
+                "namespace N { export class C { m(): void; } }\n\
+                 namespace N { export class C { @dec m(): void; } }\n",
+                "m",
+            ),
+            (
+                "accessor",
+                "namespace N { export class C { x: string; } }\n\
+                 namespace N { export class C { accessor x: string; } }\n",
+                "x",
+            ),
+            (
+                "static-method",
+                "namespace N { export class C { m(): void; } }\n\
+                 namespace N { export class C { static m(): void; } }\n",
+                "m",
+            ),
+            (
+                "accessibility",
+                "namespace N { export class C { public m(): void; } }\n\
+                 namespace N { export class C { private m(): void; } }\n",
+                "m",
+            ),
+            (
+                "readonly-optional",
+                "namespace N { export class C { a: string; } }\n\
+                 namespace N { export class C { readonly a?: string; } }\n",
+                "a",
+            ),
+            (
+                "optional-method",
+                "namespace N { export interface I { f(a: string): void; } }\n\
+                 namespace N { export interface I { f?(a: string): void; } }\n",
+                "f",
+            ),
+            (
+                "abstract-method",
+                "namespace N { export abstract class C { m(): void; } }\n\
+                 namespace N { export abstract class C { abstract m(): void; } }\n",
+                "m",
+            ),
+            (
+                "docs",
+                "namespace N { /** one */ export interface I { x: string; } }\n\
+                 namespace N { /** two */ export interface I { x: string; } }\n",
+                "I",
+            ),
+        ];
+        for (pkg, source, symbol) in cases {
+            let count = count_symbol(pkg, source, symbol);
+            assert!(
+                count >= 2,
+                "{pkg}: both {symbol} bodies must survive, got {count}"
+            );
+        }
+    }
+
     #[test]
     fn namespace_interfaces_with_different_type_param_bounds_both_survive() {
         let dir = tempfile::tempdir().expect("create tempdir");

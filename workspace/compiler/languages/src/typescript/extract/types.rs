@@ -159,6 +159,12 @@ fn lower_ts_type_impl<'a>(
                 .as_ref()
                 .map(|tp| lower_type_params(tp, source))
                 .unwrap_or_default();
+            let this_ty = f.this_param.as_ref().and_then(|param| {
+                param
+                    .type_annotation
+                    .as_ref()
+                    .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params))
+            });
             let span = f.span();
             TypeOwned::Function(Box::new(FunctionBody {
                 generics,
@@ -167,7 +173,12 @@ fn lower_ts_type_impl<'a>(
                 is_async: false,
                 is_generator: false,
                 has_body: false,
-                receiver: ReceiverKind::None,
+                receiver: if this_ty.is_some() {
+                    ReceiverKind::SharedRef
+                } else {
+                    ReceiverKind::None
+                },
+                this_ty,
                 span_start: span.start,
                 span_end: span.end,
             }))
@@ -377,6 +388,7 @@ fn lower_ts_type_impl<'a>(
                                 is_generator: false,
                                 has_body: false,
                                 receiver: ReceiverKind::None,
+                this_ty: None,
                                 span_start: span.start,
                                 span_end: span.end,
                             })),
@@ -426,6 +438,7 @@ fn lower_ts_type_impl<'a>(
                 is_generator: false,
                 has_body: false,
                 receiver: ReceiverKind::None,
+                this_ty: None,
                 span_start: span.start,
                 span_end: span.end,
             }))

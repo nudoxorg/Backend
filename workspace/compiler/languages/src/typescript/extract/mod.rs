@@ -322,6 +322,8 @@ pub struct FunctionBody {
     /// True for the implementation signature; false for overload signatures.
     pub has_body: bool,
     pub receiver: ReceiverKind,
+    /// Type of an explicit `this` parameter, when the source wrote one.
+    pub this_ty: Option<TypeOwned>,
     /// Byte span of the declaring node: the `Function` AST node for a
     /// top-level function or a class method/constructor's value, or the
     /// whole signature node (`TSMethodSignature`, `TSCallSignatureDeclaration`,
