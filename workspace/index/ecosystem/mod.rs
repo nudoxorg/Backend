@@ -41,6 +41,7 @@ pub use go::{
     unescape_module_path,
 };
 pub use heart::Language;
+pub use python::requires_dist_names;
 
 use core::marker::PhantomData;
 

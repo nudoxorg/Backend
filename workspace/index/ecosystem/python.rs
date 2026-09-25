@@ -190,7 +190,8 @@ static NORMS: SearchNorms = SearchNorms {
     downloads_scale: Some(0.1),
 };
 
-/// Strip `py`/`python` prefix and `-python`/`-py`/`py` suffix, then trim separators.
+/// Strip `py`/`python` prefix and `-python`/`-py`/`py` suffix, then trim
+/// separators.
 pub fn strip_python_conventions(name: &str) -> &str {
     let mut s = name;
     // Prefix strip.
@@ -282,8 +283,8 @@ pub fn parse_pyproject_toml(text: &str) -> ExtractedFacts {
         }
     }
 
-    // `[project] license` table (PEP 621): `{text = "MIT"}` or `{file = "LICENSE"}`.
-    // `license-expression` (PEP 639) is a plain string.
+    // `[project] license` table (PEP 621): `{text = "MIT"}` or `{file =
+    // "LICENSE"}`. `license-expression` (PEP 639) is a plain string.
     let license_expr = project.get("license").and_then(|v| {
         // PEP 639: string form is the expression directly.
         if let Some(s) = v.as_str() {
@@ -322,7 +323,8 @@ pub fn parse_pyproject_toml(text: &str) -> ExtractedFacts {
         license_expr
     };
 
-    // PEP 508 dependency names: take the leading name token (stop at `[`, `>`, `<`, `=`, `!`, `;`, ` `).
+    // PEP 508 dependency names: take the leading name token (stop at `[`, `>`, `<`,
+    // `=`, `!`, `;`, ` `).
     let dependencies: Vec<String> = project
         .get("dependencies")
         .and_then(toml::Value::as_array)
@@ -348,6 +350,39 @@ pub fn parse_pyproject_toml(text: &str) -> ExtractedFacts {
         has_license_file: has_license_file || license_from_classifier,
         dependencies,
     }
+}
+
+/// Direct dependency names from a PyPI version JSON document.
+///
+/// Reads `info.requires_dist`. Each requirement is reduced to its PEP 508
+/// name, then to the canonical project name (`requests`, `foo-bar`). A null
+/// entry, a requirement with no name, or a name the grammar rejects is
+/// dropped. The result is sorted and de-duplicated.
+pub fn requires_dist_names(body: &[u8]) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Body {
+        info: Option<Info>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Info {
+        requires_dist: Option<Vec<Option<String>>>,
+    }
+    let Ok(parsed) = serde_json::from_slice::<Body>(body) else {
+        return Vec::new();
+    };
+    let Some(requirements) = parsed.info.and_then(|info| info.requires_dist) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = requirements
+        .into_iter()
+        .flatten()
+        .filter_map(|requirement| pep508_name(&requirement))
+        .filter_map(|token| Python::parse_name(&token))
+        .map(|parsed| Python::render_canonical(&parsed))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Extract the package name from a PEP 508 requirement string.
@@ -427,7 +462,8 @@ pub fn parse_pkg_info(text: &str) -> ExtractedFacts {
                         {
                             repository = Some(url_val.to_owned());
                         } else if repository.is_none() && key == "Home-page" && !documentation {
-                            // Home-page as repository fallback only if nothing better found yet.
+                            // Home-page as repository fallback only if nothing
+                            // better found yet.
                         }
                         if label_lower.contains("doc")
                             || label_lower.contains("home")
@@ -984,5 +1020,26 @@ file = "LICENSE.txt"
         let ep = Python::download_source().expect("Python has a download source");
         assert!(ep.url.contains("pypistats.org"));
         assert!(ep.url.contains("{name}"));
+    }
+
+    #[test]
+    fn requires_dist_names_follow_the_canonical_project_name() {
+        let body = br#"{
+            "info": {
+                "requires_dist": [
+                    "Requests>=2",
+                    "Foo_Bar[extra]>=1; extra == 'x'",
+                    "requests",
+                    null,
+                    ">=1"
+                ]
+            }
+        }"#;
+        assert_eq!(requires_dist_names(body), vec![
+            "foo-bar".to_owned(),
+            "requests".to_owned()
+        ]);
+        assert!(requires_dist_names(b"{}").is_empty());
+        assert!(requires_dist_names(b"not-json").is_empty());
     }
 }
