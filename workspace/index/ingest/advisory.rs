@@ -1,8 +1,8 @@
-//! Advisory ingestion **shape** (REGISTRYLESS-PLAN §12 Phase S-A prep): a typed
-//! wire advisory → [`CatalogOp::UpsertAdvisory`] mapping plus a
-//! `listing_events` emission helper. **No live OSV fetch this wave** — the OSV
-//! GCS export follower and the git-range → affected-version translation are S-A
-//! proper. This module is the vocabulary and the pure mapping those will use.
+//! Advisory ingestion (REGISTRYLESS-PLAN §12): an OSV JSON document becomes one
+//! [`AdvisorySource`] per affected package, then a [`CatalogOp::UpsertAdvisory`].
+//! [`parse_osv`] is the mapping. It does not fetch the feed and it does not
+//! resolve a package name to a stem; `stem_id` stays empty until that resolver
+//! runs. Git-range ancestry translation stays out of this module.
 //!
 //! The mapping is deliberately mechanical: an [`AdvisoryWire`] as OSV would give
 //! it (id, affected slug, range, severity) becomes one `UpsertAdvisory` op, and
