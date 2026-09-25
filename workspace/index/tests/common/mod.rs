@@ -4,32 +4,28 @@
 //! Every integration test opens [`index::engine::Configured`] — the engine this
 //! build selects, which under the default feature set is the **real** DoltLite
 //! prolly-tree engine — migrates it to schema v4, and wraps it in a
-//! [`CatalogWriter`]. Nothing here names a concrete engine, so no test can
-//! drift onto a different one than the rest of the suite.
+//! [`CatalogWriter`]. Nothing here names a concrete engine, so no test can drift
+//! onto a different one than the rest of the suite.
 //!
 //! Not every test binary uses every helper, so allow dead code here.
 #![allow(dead_code)]
 
-use std::{
-    collections::BTreeMap,
-    io::Write,
-    path::Path,
-    process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::Path;
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // `<Configured as OpenCatalog>::…` rather than `Configured::…` throughout: the
-// call must go through the trait, not through whichever inherent constructor
-// the selected engine happens to also expose. Otherwise the harness silently
-// depends on an engine's private API surface and stops compiling the day a
-// build selects one whose constructors are named differently — which is how it
-// came to name a concrete engine in the first place.
-use index::{
-    engine::{Configured, OpenCatalog},
-    ingest::git::{GitRepository, GitRepositoryError, LsRemoteRef},
-    migrations::runner::migrate_to_v4,
-    store::writer::CatalogWriter,
-};
+// call must go through the trait, not through whichever inherent constructor the
+// selected engine happens to also expose. Otherwise the harness silently depends
+// on an engine's private API surface and stops compiling the day a build selects
+// one whose constructors are named differently — which is how it came to name a
+// concrete engine in the first place.
+use index::engine::{Configured, OpenCatalog};
+use index::ingest::git::{GitRepository, GitRepositoryError, LsRemoteRef};
+use index::migrations::runner::migrate_to_v4;
+use index::store::writer::CatalogWriter;
 
 /// Open a fresh, migrated catalog writer with no file behind it.
 pub fn migrated_writer() -> CatalogWriter<Configured> {
@@ -64,7 +60,7 @@ pub fn gen_stamp(seed: u8) -> index::ids::GenerationStamp {
 /// so other blob-builder integration tests (e.g.
 /// `generation_root_dual_write.rs`) don't each hand-roll their own.
 pub fn sample_package_id() -> heart::identity::PackageId {
-    heart::identity::PackageId::from_uuid(uuid::Uuid::from_bytes([0x5a; 16]))
+    heart::identity::PackageId::from_uuid(uuid::Uuid::from_bytes([0x5A; 16]))
 }
 
 /// Matches `provisional_toolchain(Language::Rust)` — the fleet-wide identity
@@ -248,8 +244,7 @@ pub fn migrated_disk_writer(path: &std::path::Path) -> CatalogWriter<Configured>
     CatalogWriter::new(engine)
 }
 
-/// A fake git remote whose responses are scripted per URL. Used by ingest
-/// tests.
+/// A fake git remote whose responses are scripted per URL. Used by ingest tests.
 pub struct FakeGitRepository {
     ls_remote: BTreeMap<String, Result<Vec<u8>, String>>,
     head: BTreeMap<String, Result<Option<String>, String>>,
