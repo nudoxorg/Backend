@@ -2373,10 +2373,17 @@ fn interface_property_discs(body: &InterfaceBody) -> Vec<u32> {
             let method_taken = body.methods.iter().enumerate().any(|(method_idx, method)| {
                 method.name == prop.name && (method_idx * 1000) as u32 == disc
             });
-            let property_taken = chosen.iter().enumerate().any(|(other, chosen_disc)| {
+            // A later property has not chosen yet. Its base disc is still
+            // its id when that disc is free, so this property must not take it.
+            let base_taken = body.properties.iter().enumerate().any(|(other, other_prop)| {
+                other != prop_idx
+                    && other_prop.name == prop.name
+                    && 2_000_000 + other as u32 == disc
+            });
+            let chosen_taken = chosen.iter().enumerate().any(|(other, chosen_disc)| {
                 body.properties[other].name == prop.name && *chosen_disc == disc
             });
-            if !method_taken && !property_taken || disc == u32::MAX {
+            if (!method_taken && !base_taken && !chosen_taken) || disc == u32::MAX {
                 chosen.push(disc);
                 break;
             }
@@ -3185,8 +3192,45 @@ fn field_attrs(m: &MemberModifiers) -> Vec<FieldAttribute> {
 #[cfg(test)]
 mod cc2_tests {
     use super::*;
+    use crate::typescript::extract::SignatureKind;
     use nudox_ir::kinds::UnknownType;
     use std::path::Path;
+
+    fn prop_named(name: &str) -> PropertyFact {
+        PropertyFact {
+            name: name.to_string(),
+            ty: None,
+            modifiers: MemberModifiers::default(),
+            doc: DocFacts::default(),
+            span_start: 0,
+            span_end: 0,
+        }
+    }
+
+    fn method_named(name: &str) -> MethodFact {
+        MethodFact {
+            name: name.to_string(),
+            sig: FunctionBody {
+                generics: Vec::new(),
+                params: Vec::new(),
+                return_type: None,
+                is_async: false,
+                is_generator: false,
+                has_body: false,
+                receiver: ReceiverKind::None,
+                this_ty: None,
+                abstract_construct: false,
+                body_text: None,
+                leading_doc: None,
+                span_start: 0,
+                span_end: 0,
+            },
+            modifiers: MemberModifiers::default(),
+            doc: DocFacts::default(),
+            is_overload: false,
+            signature_kind: SignatureKind::Method,
+        }
+    }
 
     fn bare(ty: &TypeOwned) -> Type {
         let mut out = Lowering::new(nudox_ir::id::PackageId::path("t"), Symbol {
@@ -3240,6 +3284,29 @@ mod cc2_tests {
         );
         assert_ne!(unannotated, bare(&TypeOwned::Unknown));
         assert_eq!(unannotated.to_string(), "?unannotated");
+    }
+
+    #[test]
+    fn a_stepped_property_does_not_take_the_next_property_base() {
+        let mut methods = Vec::new();
+        for n in 0..2000 {
+            methods.push(method_named(&format!("m{n}")));
+        }
+        methods.push(method_named("slot"));
+        let body = InterfaceBody {
+            generics: Vec::new(),
+            extends: Vec::new(),
+            methods,
+            properties: vec![prop_named("slot"), prop_named("slot")],
+            call_signatures: Vec::new(),
+            index_signatures: Vec::new(),
+            construct_signatures: Vec::new(),
+        };
+        assert_eq!(
+            interface_property_discs(&body),
+            vec![2_000_002, 2_000_001],
+            "property 1 keeps 2000001; property 0 steps past it"
+        );
     }
 
     #[test]
