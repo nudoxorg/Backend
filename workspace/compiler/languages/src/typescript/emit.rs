@@ -1326,12 +1326,8 @@ fn reexport_ids(
         }
         let module_id = module_ts_id(module, twins);
         for decl in &module.declarations {
-            if let DeclBody::Reexport { module_request, .. } = &decl.body {
-                let resolves =
-                    resolve_module_path(resolver, &decl.module, module_request).is_some();
-                if resolves || is_package_specifier(module_request) {
-                    ids.insert(decl_ts_id(decl, Some(&module_id), twins));
-                }
+            if let DeclBody::Reexport { .. } = &decl.body {
+                ids.insert(decl_ts_id(decl, Some(&module_id), twins));
             }
         }
     }
@@ -1704,6 +1700,14 @@ fn emit_inline_reexport(
     } else if is_package_specifier(module_request) {
         let target_ref: Ref<Module> =
             out.refer_import(package_foreign_key(module_request, &sym.name));
+        let _: Ref<Module> = out.declare_ref(id, parent, sym, target_ref);
+    } else {
+        let display = if import_name == "*" {
+            MODULE_ROOT_NAME
+        } else {
+            import_name
+        };
+        let target_ref = out.refer_import(unresolved_module_key(module_request, display));
         let _: Ref<Module> = out.declare_ref(id, parent, sym, target_ref);
     }
 }

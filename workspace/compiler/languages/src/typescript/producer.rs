@@ -1460,6 +1460,43 @@ mod tests {
     }
 
     #[test]
+    fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"import-missing","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("there.d.ts"), "export function kept(): void;\n").unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "import Gone = require(\"./missing\");\nimport Local = require(\"./there\");\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "import-missing", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("import-missing"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("import equals of a missing file must seal");
+        let gone = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "Gone" && matches!(entry.kind(), EntryInner::Reference(_))
+            })
+            .count();
+        assert_eq!(gone, 1, "require of a missing file must still declare Gone");
+        let local = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "Local"
+                && matches!(entry.kind(), EntryInner::Reference(Ref::Intro(_)))
+        });
+        assert!(
+            local,
+            "require of a file in the package must stay a local reference"
+        );
+    }
+
+    #[test]
     fn a_local_import_equals_is_an_alias_of_its_target() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
