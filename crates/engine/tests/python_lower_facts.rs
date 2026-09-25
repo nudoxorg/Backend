@@ -49,7 +49,8 @@ const SIXTY_FOUR_PARAMETERS: &[u8] = b"def k64(
     a51, a52, a53, a54, a55, a56, a57, a58, a59, a60,
     a61, a62, a63, a64,
 ): ...\n";
-/// One parameter past the raised bound: the exact typed ChildCapacity terminal.
+/// Sixty-five parameters fit the fact-child lane. The lane rejects only
+/// past 255 children.
 const SIXTY_FIVE_PARAMETERS: &[u8] = b"def k65(
     a01, a02, a03, a04, a05, a06, a07, a08, a09, a10,
     a11, a12, a13, a14, a15, a16, a17, a18, a19, a20,
@@ -603,10 +604,8 @@ fn ten_parameter_function_keeps_every_parameter_child() -> Result<(), TestError>
     })
 }
 
-/// The raised bound stays honest on both sides of the boundary: a function
-/// at exactly 64 parameters admits completely, and one parameter past it
-/// rejects with the exact typed ChildCapacity terminal, never a panic or a
-/// silent truncation.
+/// Sixty-four parameters still admit. Sixty-five also fit the fact-child
+/// lane; the typed ChildCapacity terminal is one parameter past 255.
 #[test]
 fn sixty_four_parameter_function_admits_at_the_bound() -> Result<(), TestError> {
     let outcome = attempt_fragment(SIXTY_FOUR_PARAMETERS, "sixty-four")?;
@@ -622,13 +621,37 @@ fn sixty_four_parameter_function_admits_at_the_bound() -> Result<(), TestError> 
     Ok(())
 }
 
+/// Sixty-five parameters stay in the fact-child lane. Both ends of the
+/// parameter list are real entities.
 #[test]
-fn sixty_five_parameter_function_rejects_with_child_capacity() -> Result<(), TestError> {
-    match attempt_fragment(SIXTY_FIVE_PARAMETERS, "sixty-five")? {
+fn sixty_five_parameter_function_keeps_every_parameter() -> Result<(), TestError> {
+    let bytes =
+        attempt_fragment(SIXTY_FIVE_PARAMETERS, "sixty-five")?.map_err(TestError::Rejected)?;
+    let lane = lane_of(&bytes)?;
+    entity_ordinal(&lane, b"a01", EntityKind::Parameter)?;
+    entity_ordinal(&lane, b"a65", EntityKind::Parameter)?;
+    Ok(())
+}
+
+/// One parameter past the fact-child lane is still the typed ChildCapacity
+/// terminal, not a truncated signature.
+#[test]
+fn two_hundred_fifty_six_parameter_function_rejects_with_child_capacity() -> Result<(), TestError>
+{
+    let mut source = b"def wide(\n".to_vec();
+    for index in 0..256 {
+        if index != 0 {
+            source.extend_from_slice(b", ");
+        }
+        source.extend_from_slice(format!("p{index}").as_bytes());
+    }
+    source.extend_from_slice(b"\n): ...\n");
+    let source: &'static [u8] = Box::leak(source.into_boxed_slice());
+    match attempt_fragment(source, "two-fifty-six")? {
         Err(ProjectionAdmissionFault::ChildCapacity) => Ok(()),
         Err(rejection) => Err(TestError::Rejected(rejection)),
         Ok(_) => Err(TestError::Falsified(
-            "a 65-parameter function was admitted past the bound",
+            "a 256-parameter function was admitted past the fact-child lane",
         )),
     }
 }
