@@ -10,6 +10,7 @@
 //! signals and passes it composes.
 
 pub mod cascade;
+mod fuse;
 mod passes;
 // The cascade is the public face of the ranking plane; re-export its surface so
 // `ranking::Candidate` (etc.) resolves for callers that don't reach into the
