@@ -169,6 +169,7 @@ use ra_ap_syntax::{
 use tracing::debug;
 
 use nudox_ir::{
+    entry::AttrTok,
     index::RawRef,
     kinds::{
         Type,
@@ -540,16 +541,45 @@ fn lower_array_type(
     let inner = a
         .ty()
         .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for));
-    let length = a
+    let const_text = a
         .const_arg()
         .and_then(|c| c.expr())
-        .map_or(0, |e| {
-            let text = e.syntax().text().to_string().replace('_', "");
-            text.parse::<usize>().unwrap_or(0)
-        });
-    Type::Array {
-        ty: Box::new(inner),
-        length,
+        .map(|e| e.syntax().text().to_string());
+    array_type(inner, const_text.as_deref())
+}
+
+/// A usize literal stays `Type::Array`. Anything else — a const parameter
+/// `N`, a const expression — must not become `length: 0`, which is a real
+/// empty array and a different type.
+fn array_type(inner: Type, const_text: Option<&str>) -> Type {
+    let Some(text) = const_text.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Type::Apply {
+            base: Box::new(Type::TypeVar("array".to_owned())),
+            args: Box::new([inner, Type::ORACLE_GAP]),
+        };
+    };
+    let compact = text.replace('_', "");
+    if let Ok(length) = compact.parse::<usize>() {
+        return Type::Array {
+            ty: Box::new(inner),
+            length,
+        };
+    }
+    // The const name has to sit in an annotation. `TypeVar` drops its name
+    // from the identity skeleton, so `[T; N]` and `[T; M]` would collide.
+    Type::Apply {
+        base: Box::new(Type::TypeVar("array".to_owned())),
+        args: Box::new([inner, const_length(text)]),
+    }
+}
+
+fn const_length(text: &str) -> Type {
+    Type::Annotated {
+        inner: Box::new(Type::Inferred),
+        annotation: AttrTok {
+            token: "const".to_owned(),
+            arg: Some(text.to_owned()),
+        },
     }
 }
 
@@ -627,12 +657,7 @@ fn lower_dyn_trait(
     };
     let trait_types: Box<[Type]> = bounds
         .bounds()
-        .filter_map(|b| match b.kind() {
-            Some(ast::TypeBoundKind::PathType(_, path_ty)) => {
-                Some(path_type_to_type(ctx, &path_ty, ref_for))
-            }
-            _ => None, // Lifetime bounds: no Type slot — filtered out.
-        })
+        .filter_map(|b| super::generics::lower_type_bound(ctx, &b, ref_for))
         .collect();
     Type::DynTrait(trait_types)
 }
@@ -652,12 +677,7 @@ fn lower_impl_trait(
         .type_bound_list()
         .map(|list| {
             list.bounds()
-                .filter_map(|b| match b.kind() {
-                    Some(ast::TypeBoundKind::PathType(_, path_ty)) => {
-                        Some(path_type_to_type(ctx, &path_ty, ref_for))
-                    }
-                    _ => None,
-                })
+                .filter_map(|b| super::generics::lower_type_bound(ctx, &b, ref_for))
                 .collect()
         })
         .unwrap_or_default();
@@ -739,37 +759,6 @@ fn last_segment_type_args(
             _ => None,
         })
         .collect()
-}
-
-/// A `PathType` → `Type` conversion used by `dyn Trait + …` lowering.
-fn path_type_to_type(
-    ctx: &mut LowerCtx<'_>,
-    path_ty: &ast::PathType,
-    ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
-) -> Type {
-    let Some(path) = path_ty.path() else {
-        return Type::ORACLE_GAP;
-    };
-    if let Some(res) = resolve_path_opt(ctx, &path)
-        && let PathResolution::Def(def) = res
-        && let Some(key) = id_of(ctx, def)
-        && let Some(raw_ref) = ref_for(&key)
-    {
-        let type_args = last_segment_type_args(ctx, &path, ref_for);
-        let base = Type::Nominal(raw_ref);
-        if type_args.is_empty() {
-            return base;
-        }
-        return Type::Apply {
-            base: Box::new(base),
-            args: type_args.into_boxed_slice(),
-        };
-    }
-    // A `dyn Trait + …` bound naming a trait from another crate. Keeping the
-    // spelling is what makes `dyn Debug` and `dyn Display` distinguishable —
-    // under `Type::Any` every foreign bound in a `DynTrait` list was the same
-    // byte, so `dyn Debug + Send` and `dyn Display + Send` had one skeleton.
-    Type::unresolved_external(path_identifier_text(&path))
 }
 
 // ── Semantics resolve (panic-safe) ────────────────────────────────────────────
@@ -1060,6 +1049,34 @@ mod tests {
         } else {
             panic!("expected Type::Tuple");
         }
+    }
+
+    /// `[T; 0]` is an empty array. `[T; N]` is a const length and must not
+    /// become that empty array.
+    #[test]
+    fn a_const_generic_array_length_is_not_zero() {
+        use nudox_ir::skeleton::type_skeleton;
+        let elem = Type::TypeVar("T".to_owned());
+        let empty = super::array_type(elem.clone(), Some("0"));
+        let literal = super::array_type(elem.clone(), Some("4"));
+        let named = super::array_type(elem.clone(), Some("N"));
+        let other = super::array_type(elem, Some("M"));
+        assert!(
+            matches!(empty, Type::Array { length: 0, .. }),
+            "a literal zero is a real empty array"
+        );
+        assert!(matches!(literal, Type::Array { length: 4, .. }));
+        assert!(
+            matches!(named, Type::Apply { .. }),
+            "a const parameter must not be stored as length 0: {named:?}"
+        );
+        assert_ne!(type_skeleton(&empty), type_skeleton(&named));
+        assert_ne!(type_skeleton(&literal), type_skeleton(&named));
+        assert_ne!(
+            type_skeleton(&named),
+            type_skeleton(&other),
+            "[T; N] and [T; M] are different lengths"
+        );
     }
 
     /// `impl Trait` and `dyn Trait` must stay structurally distinguishable.

@@ -17,6 +17,7 @@
 //! and only the trait reference is kept.
 
 use nudox_ir::{
+    entry::AttrTok,
     index::RawRef,
     kinds::{GenericParam, WherePred},
 };
@@ -138,14 +139,57 @@ fn bound_list_to_types(
     ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
 ) -> Box<[nudox_ir::kinds::Type]> {
     list.bounds()
-        .filter_map(|bound| match bound.kind() {
-            Some(ast::TypeBoundKind::PathType(_, path_ty)) => {
-                Some(path_type_to_type(ctx, &path_ty, ref_for))
-            }
-            // Lifetime bounds and `use<…>` precision capturing → dropped.
-            _ => None,
-        })
+        .filter_map(|bound| lower_type_bound(ctx, &bound, ref_for))
         .collect()
+}
+
+/// One trait bound, keeping the marks that change which types satisfy it.
+///
+/// `?Sized` is not `Sized`. `for<'a> Trait<'a>` is not `Trait`. A lifetime
+/// bound and a `use<…>` capture still have no type slot and stay dropped.
+pub(crate) fn lower_type_bound(
+    ctx: &mut LowerCtx<'_>,
+    bound: &ast::TypeBound,
+    ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
+) -> Option<nudox_ir::kinds::Type> {
+    let ast::TypeBoundKind::PathType(binder, path_ty) = bound.kind()? else {
+        return None;
+    };
+    let mut ty = path_type_to_type(ctx, &path_ty, ref_for);
+    if bound.question_mark_token().is_some() {
+        ty = apply_mark("?", ty);
+    }
+    if let Some(binder) = binder {
+        ty = apply_mark(&binder_mark(&binder), ty);
+    }
+    Some(ty)
+}
+
+/// `for<'a>` and `for<'b>` are the same binder. The count is what differs
+/// from a bare trait and from `for<'a, 'b>`.
+fn binder_mark(binder: &ast::ForBinder) -> String {
+    let n = binder
+        .generic_param_list()
+        .map(|list| {
+            list.generic_params()
+                .filter(|param| matches!(param, ast::GenericParam::LifetimeParam(_)))
+                .count()
+        })
+        .unwrap_or(0);
+    format!("for<{n}>")
+}
+
+/// A mark that is not itself a trait: `?` for a relaxed bound, or `for<N>`
+/// for a higher-ranked binder. The token is identity-relevant; a type-variable
+/// name is not, so the mark cannot live in `TypeVar`.
+pub(crate) fn apply_mark(mark: &str, inner: nudox_ir::kinds::Type) -> nudox_ir::kinds::Type {
+    nudox_ir::kinds::Type::Annotated {
+        inner: Box::new(inner),
+        annotation: AttrTok {
+            token: mark.to_owned(),
+            arg: None,
+        },
+    }
 }
 
 /// A `PathType` bound → `Type`.
@@ -211,6 +255,20 @@ mod tests {
             name: "'a".to_owned(),
         };
         assert!(matches!(gp, GenericParam::Lifetime { name } if name == "'a"));
+    }
+
+    /// `?Trait` and `for<'a> Trait` must not share a skeleton with `Trait`.
+    #[test]
+    fn relaxed_and_higher_ranked_bounds_stay_distinct() {
+        use nudox_ir::kinds::Type;
+        use nudox_ir::skeleton::type_skeleton;
+
+        let sized = Type::TypeVar("Sized".to_owned());
+        let relaxed = super::apply_mark("?", sized.clone());
+        let ranked = super::apply_mark("for<1>", sized.clone());
+        assert_ne!(type_skeleton(&sized), type_skeleton(&relaxed));
+        assert_ne!(type_skeleton(&sized), type_skeleton(&ranked));
+        assert_ne!(type_skeleton(&relaxed), type_skeleton(&ranked));
     }
 
     /// A `Type` generic param stores name, bounds, and default.
