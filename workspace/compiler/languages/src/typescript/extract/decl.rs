@@ -1260,7 +1260,30 @@ fn extract_default_export<'a>(
                 decl_index: discriminant,
             }]
         }
-        _ => vec![],
+        // `export default foo` already aliases the local declaration.
+        // A literal or other expression has no name, so it is a const
+        // called `default` rather than a missing export.
+        other => {
+            if matches!(other, ExportDefaultDeclarationKind::Identifier(_)) {
+                return vec![];
+            }
+            let span = other.span();
+            let discriminant = bump_count("default", name_counts);
+            vec![DeclFact {
+                name: "default".to_string(),
+                visibility: Visibility::Public,
+                doc: jsdoc::jsdoc_for_span(semantic, span),
+                body: DeclBody::Const(ConstBody {
+                    ty: None,
+                    value: Some(span.source_text(source).to_string()),
+                }),
+                module: path.to_path_buf(),
+                span_start: span.start,
+                span_end: span.end,
+                is_default: true,
+                decl_index: discriminant,
+            }]
+        }
     }
 }
 

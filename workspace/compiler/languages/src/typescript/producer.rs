@@ -1460,6 +1460,57 @@ mod tests {
     }
 
     #[test]
+    fn an_export_default_literal_is_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"default-lit","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("value.d.ts"), "export default 42;\n").unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export { default as answer } from \"./value\";\n\
+             export function foo(): number;\n\
+             export default foo;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "default-lit", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("default-lit"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a literal default must seal");
+        let literal = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "default"
+                    && entry.sym().source.ends_with("value.d.ts")
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Const(_)))
+            })
+            .count();
+        assert_eq!(literal, 1, "export default 42 must be a const named default");
+        let answer = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "answer"
+                && matches!(entry.kind(), EntryInner::Reference(Ref::Intro(_)))
+        });
+        assert!(
+            answer,
+            "export {{ default as answer }} must point at the literal default"
+        );
+        let alias = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "default"
+                    && entry.sym().source.ends_with("index.d.ts")
+                    && matches!(entry.kind(), EntryInner::Reference(Ref::Intro(_)))
+            })
+            .count();
+        assert_eq!(alias, 1, "export default foo must stay one local alias");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
