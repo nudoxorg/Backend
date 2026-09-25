@@ -790,7 +790,7 @@ fn emit_class(
             }
             // ── Item 4: Static block → synthetic Function (item 4) ────────
             MemberKind::StaticBlock { name: block_name } => {
-                let sb_id = child_id(&id, block_name, idx as u32);
+                let sb_id = child_id(&id, block_name, class_static_block_disc(body, idx));
                 let sb_sym = Symbol {
                     name: block_name.clone(),
                     visibility: Visibility::Private,
@@ -2118,7 +2118,13 @@ fn reserve_enum_variants(
                                 );
                             }
                             MemberKind::StaticBlock { name } => {
-                                reserve_member(canonical, reserved, &qual, name, idx as u32);
+                                reserve_member(
+                                    canonical,
+                                    reserved,
+                                    &qual,
+                                    name,
+                                    class_static_block_disc(body, idx),
+                                );
                             }
                         }
                     }
@@ -2391,6 +2397,28 @@ fn interface_property_discs(body: &InterfaceBody) -> Vec<u32> {
         }
     }
     chosen
+}
+
+/// A static block's discriminant.
+///
+/// The usual value is the member index, so a block that never meets the
+/// method lattice keeps the id it already sealed with. The first block is
+/// named `__static` at that index. A method of the same name at index 1 is
+/// disc 1000, which is also member 1000. Step off those discs.
+fn class_static_block_disc(body: &ClassBody, block_idx: usize) -> u32 {
+    let MemberKind::StaticBlock { name } = &body.members[block_idx].kind else {
+        return block_idx as u32;
+    };
+    let mut disc = block_idx as u32;
+    loop {
+        if !class_disc_taken(body, name, disc, block_idx) {
+            return disc;
+        }
+        if disc == u32::MAX {
+            return disc;
+        }
+        disc += 1;
+    }
 }
 
 /// A class field's discriminant.

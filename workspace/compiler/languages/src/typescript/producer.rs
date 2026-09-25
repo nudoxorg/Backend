@@ -1166,6 +1166,38 @@ mod tests {
     }
 
     #[test]
+    fn a_static_block_does_not_take_a_method_discriminant() {
+        // The first static block is named `__static` and its disc is the
+        // member index. A method at index 1 is also disc 1000.
+        let mut source_text =
+            String::from("export class C {\n  pad() {}\n  __static() {}\n");
+        for n in 2..1000 {
+            source_text.push_str(&format!("  f{n}: number;\n"));
+        }
+        source_text.push_str("  static { const x = 1; }\n}\n");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"static-block-disc","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("index.d.ts"), &source_text).unwrap();
+        let source = PackageSource::new(dir.path(), "static-block-disc", "1.0.0");
+        let lineage = PackageLineageId::new(
+            EcosystemId::new("npm"),
+            PackageName::new("static-block-disc"),
+        );
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a static block on the method lattice must seal");
+        let blocks = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "__static")
+            .count();
+        assert_eq!(blocks, 2, "the method and the static block both survive");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.
