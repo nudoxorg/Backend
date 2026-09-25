@@ -395,6 +395,17 @@ pub fn parse_go_mod(text: &str) -> ExtractedFacts {
     }
 }
 
+/// Module paths required by `go.mod`, sorted and de-duplicated.
+///
+/// Indirect requirements are included: they are still module edges. A comment
+/// and the version token are not part of the name.
+pub fn require_names(text: &str) -> Vec<String> {
+    let mut names = parse_go_mod(text).dependencies;
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Retracted version expressions from a `go.mod` file, in source order.
 ///
 /// Each string is one `retract` operand, kept as raw text: a single version
@@ -649,6 +660,25 @@ fn decompose_go_segments<'a>(segments: &'a [&'a str]) -> (Option<&'a str>, &'a [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn require_names_keep_direct_and_indirect_modules() {
+        let text = "\
+module example.com/foo
+
+require golang.org/x/text v0.3.0
+
+require (
+    rsc.io/quote v1.5.2
+    golang.org/x/text v0.3.0 // indirect
+)
+";
+        assert_eq!(require_names(text), vec![
+            "golang.org/x/text".to_owned(),
+            "rsc.io/quote".to_owned(),
+        ]);
+        assert!(require_names("module example.com/foo\n").is_empty());
+    }
 
     #[test]
     fn parse_go_mod_block_require() {

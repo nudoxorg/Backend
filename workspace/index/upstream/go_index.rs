@@ -72,6 +72,19 @@ pub fn parse_index(body: &[u8], since: &str) -> Result<IndexPage, UpstreamError>
     })
 }
 
+fn path_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn cursor_since(cursor: &CatalogCursor) -> String {
     match &cursor.0 {
         serde_json::Value::String(text) => text.clone(),
@@ -109,7 +122,27 @@ impl GoIndexFollower {
             format!("{}/index?since={since}", self.base)
         };
         let bytes = client.get(Language::Go, &url).await?;
-        let page = parse_index(&bytes, &since)?;
+        let mut page = parse_index(&bytes, &since)?;
+        for event in &mut page.events {
+            let CatalogEvent::Published {
+                name,
+                version,
+                dependencies,
+            } = event
+            else {
+                continue;
+            };
+            let escaped = crate::ecosystem::escape_module_path(name);
+            let url = format!(
+                "https://proxy.golang.org/{escaped}/@v/{}.mod",
+                path_segment(version)
+            );
+            if let Ok(body) = client.get(Language::Go, &url).await
+                && let Ok(text) = std::str::from_utf8(&body)
+            {
+                *dependencies = crate::ecosystem::require_names(text);
+            }
+        }
         let next = if page.latest.is_empty() {
             cursor.clone()
         } else {
