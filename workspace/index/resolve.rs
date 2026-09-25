@@ -1,8 +1,8 @@
 //! Version resolution: turning a package *name* + a version *request* into a
 //! concrete, fetchable [`PackageCoordinates`].
 //!
-//! A caller asks for `requests` at `>=2.0,<3` from PyPI; resolution consults the
-//! source's published version set, picks the highest version satisfying the
+//! A caller asks for `requests` at `>=2.0,<3` from PyPI; resolution consults
+//! the source's published version set, picks the highest version satisfying the
 //! request under the ecosystem's grammar (SemVer for crates/npm, PEP 440 for
 //! Python), and yields the exact [`PackageVersion`] + [`RegistryOrigin`] the
 //! sync engine will materialize. Identity (the [`PackageId`]) then falls out of
@@ -92,9 +92,10 @@ pub async fn resolve(
         "published version set fetched"
     );
 
-    // Exact pins may resolve withdrawn versions (allows dependency on yanked/unlisted
-    // versions when the caller explicitly requests one). Latest/Constraint silently
-    // skip withdrawn versions so they never enter automatic resolution.
+    // Exact pins may resolve withdrawn versions (allows dependency on
+    // yanked/unlisted versions when the caller explicitly requests one).
+    // Latest/Constraint silently skip withdrawn versions so they never enter
+    // automatic resolution.
     let published: Vec<PackageVersion> = match request {
         VersionRequest::Exact(_) => published_with_status
             .iter()
@@ -254,9 +255,9 @@ fn semver_matches(range: &semver::VersionReq, candidate: &PackageVersion) -> boo
     }
 }
 
-/// Order two candidates under their own grammar via `DynSpec::compare_versions`.
-/// Delegates to the ecosystem grammar; falls back to raw-string comparison for
-/// unparseable strays so selection stays total.
+/// Order two candidates under their own grammar via
+/// `DynSpec::compare_versions`. Delegates to the ecosystem grammar; falls back
+/// to raw-string comparison for unparseable strays so selection stays total.
 fn grammar_order(a: &PackageVersion, b: &PackageVersion) -> std::cmp::Ordering {
     let lang_a = Language::from(a);
     let lang_b = Language::from(b);
@@ -272,6 +273,21 @@ fn grammar_order(a: &PackageVersion, b: &PackageVersion) -> std::cmp::Ordering {
         .compare_versions(&raw_a, &raw_b)
         // Fallback: both failed to parse — sort by raw string to stay total.
         .unwrap_or_else(|| raw_a.cmp(&raw_b))
+}
+
+/// Fetch the `go.mod` of the module's `@latest` version. A missing latest
+/// document or mod file leaves the version list unchanged.
+async fn go_mod_for_list(
+    client: &crate::upstream::UpstreamClient,
+    list_url: &str,
+) -> Option<String> {
+    use crate::ecosystem::{latest_version, proxy_latest_url, proxy_mod_url};
+    let latest_url = proxy_latest_url(list_url)?;
+    let latest_body = client.get(Language::Go, &latest_url).await.ok()?;
+    let version = latest_version(&latest_body)?;
+    let mod_url = proxy_mod_url(list_url, &version)?;
+    let mod_body = client.get(Language::Go, &mod_url).await.ok()?;
+    std::str::from_utf8(&mod_body).ok().map(str::to_owned)
 }
 
 /// Fetch the published version set for `name` from `origin`, parsed under the
@@ -309,6 +325,12 @@ async fn published_versions(
         );
         if let Ok(sb) = client.get(ecosystem_lang, &status_url).await {
             listed = spec.merge_listing_status(listed, &sb);
+        }
+    }
+
+    if ecosystem_lang == Language::Go {
+        if let Some(go_mod) = go_mod_for_list(client, &url).await {
+            crate::ecosystem::mark_retracted(&mut listed, &go_mod);
         }
     }
 
@@ -461,7 +483,8 @@ mod tests {
         let req = VersionRequest::Constraint(RangeConstraint::Semver(
             semver::VersionReq::parse(">=1.0").unwrap(),
         ));
-        // 1.1.0-alpha.1 is higher but pre-release; pick_best should prefer 1.0.0 stable.
+        // 1.1.0-alpha.1 is higher but pre-release; pick_best should prefer 1.0.0
+        // stable.
         assert_eq!(select(&req, &candidates).unwrap(), cargo("1.0.0"));
     }
 

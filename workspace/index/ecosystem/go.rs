@@ -9,8 +9,9 @@
 //!
 //! ## `license` / `has_license_file`: now sourced from a standalone LICENSE file
 //!
-//! `go.mod` itself carries neither field, but `server::coordination::indexing::facets::extract_facets`
-//! now merges facts across *every* matching manifest candidate in priority
+//! `go.mod` itself carries neither field, but
+//! `server::coordination::indexing::facets::extract_facets` now merges facts
+//! across *every* matching manifest candidate in priority
 //! order (`ExtractedFacts::merge`) instead of stopping at the first one that
 //! parses, so a `LICENSE`/`LICENCE`/`COPYING` candidate appended after
 //! `go.mod` (see [`Go::manifest_candidates`]) is finally reachable: `go.mod`
@@ -82,8 +83,9 @@ impl EcosystemSpec for Go {
         })
     }
 
-    /// Canonical = the original raw string (Go module paths are identity-preserving;
-    /// `canonicalize_go_module` returned the raw string verbatim, `/vN` included).
+    /// Canonical = the original raw string (Go module paths are
+    /// identity-preserving; `canonicalize_go_module` returned the raw
+    /// string verbatim, `/vN` included).
     ///
     /// INVARIANT: `n.original` must be populated (every parse_name-produced
     /// value is). A hand-assembled Go `StructuredName` with an empty `original`
@@ -133,8 +135,8 @@ impl EcosystemSpec for Go {
     /// the standalone license filenames — last, since a license file is a
     /// heuristic content sniff with nothing to ever outrank (`go.mod` sets
     /// neither `license` nor `has_license_file`). Kept in sync with
-    /// [`license::LICENSE_FILENAMES`]; see the `license_candidates_match_shared_list`
-    /// test.
+    /// [`license::LICENSE_FILENAMES`]; see the
+    /// `license_candidates_match_shared_list` test.
     fn manifest_candidates() -> &'static [ManifestCandidate] {
         static CANDIDATES: &[ManifestCandidate] = &[
             ManifestCandidate::new("go.mod"),
@@ -175,7 +177,8 @@ impl EcosystemSpec for Go {
 
     /// Go modules have **no public download-count API** (proxy.golang.org
     /// exposes no statistics endpoint; pkg.go.dev has no free per-module JSON
-    /// download feed). Returns `None`; ranking uses dependents / fairness floor.
+    /// download feed). Returns `None`; ranking uses dependents / fairness
+    /// floor.
     ///
     /// A pure [`parse_download_count`] is still provided for offline/fixture
     /// JSON shaped as `{"downloads": N}` so corpus jobs can inject counts later
@@ -198,7 +201,8 @@ impl EcosystemSpec for Go {
 /// ```json
 /// { "downloads": 12345 }
 /// ```
-/// Also accepts `download_count` as an alternate key. Explicit `0` is `Some(0)`.
+/// Also accepts `download_count` as an alternate key. Explicit `0` is
+/// `Some(0)`.
 pub fn parse_go_download_count(body: &[u8]) -> Option<u64> {
     let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     v["downloads"]
@@ -450,6 +454,51 @@ pub fn version_retracted(raw_version: &str, specs: &[String]) -> bool {
         .any(|spec| retract_spec_covers(spec, raw_version, parsed.as_ref()))
 }
 
+/// Mark versions named by `go.mod` `retract` directives as withdrawn.
+///
+/// Versions outside every spec stay [`ListingStatus::Listed`]. An empty
+/// retract set leaves the slice unchanged.
+pub fn mark_retracted<V>(versions: &mut [ListedVersion<V>], go_mod: &str) {
+    let specs = retract_specs(go_mod);
+    if specs.is_empty() {
+        return;
+    }
+    for version in versions {
+        if version_retracted(version.raw.as_str(), &specs) {
+            version.status = ListingStatus::Withdrawn {
+                reason: Some(SmolStr::new("retract")),
+            };
+        }
+    }
+}
+
+/// `@latest` URL for a module whose version list is `{prefix}/@v/list`.
+pub fn proxy_latest_url(list_url: &str) -> Option<String> {
+    let prefix = list_url.strip_suffix("/@v/list")?;
+    Some(format!("{prefix}/@latest"))
+}
+
+/// `.mod` URL for `version` on the same module as `list_url`.
+pub fn proxy_mod_url(list_url: &str, version: &str) -> Option<String> {
+    let prefix = list_url.strip_suffix("/@v/list")?;
+    Some(format!("{prefix}/@v/{version}.mod"))
+}
+
+/// `Version` field of a proxy `@latest` document.
+pub fn latest_version(body: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Latest {
+        #[serde(rename = "Version")]
+        version: String,
+    }
+    let parsed: Latest = serde_json::from_slice(body).ok()?;
+    if parsed.version.is_empty() {
+        None
+    } else {
+        Some(parsed.version)
+    }
+}
+
 fn strip_go_line_comment(line: &str) -> &str {
     match line.split_once("//") {
         Some((code, _)) => code,
@@ -662,7 +711,7 @@ require (
 
     #[test]
     fn parse_go_mod_bom_stripped() {
-        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        let mut bytes = vec![0xef, 0xbb, 0xbf];
         bytes.extend_from_slice(b"module github.com/gorilla/mux\n");
         let facts = Go::parse_manifest(&ManifestCandidate::new("go.mod"), &bytes)
             .expect("valid utf8 with BOM parses");
@@ -719,7 +768,7 @@ require (
 
     #[test]
     fn parse_go_mod_invalid_utf8_bytes_returns_none() {
-        let bytes = [0xFF, 0xFE, b'm', b'o', b'd'];
+        let bytes = [0xff, 0xfe, b'm', b'o', b'd'];
         assert!(Go::parse_manifest(&ManifestCandidate::new("go.mod"), &bytes).is_none());
     }
 
@@ -849,6 +898,52 @@ retract [v1.0.0, v1.2.0]
             "not-a-version".to_owned()
         ]));
         assert!(!version_retracted("not-a-version", &specs));
+    }
+
+    #[test]
+    fn mark_retracted_withdraws_only_the_named_versions() {
+        let go_mod = "module example.com/foo\n\nretract v1.0.0\nretract [v1.2.0, v1.2.1]\n";
+        let mut versions = vec![listed("v1.0.0"), listed("v1.2.0"), listed("v1.2.2")];
+        mark_retracted(&mut versions, go_mod);
+        assert!(matches!(
+            versions[0].status,
+            ListingStatus::Withdrawn { .. }
+        ));
+        assert!(matches!(
+            versions[1].status,
+            ListingStatus::Withdrawn { .. }
+        ));
+        assert_eq!(versions[2].status, ListingStatus::Listed);
+        let mut untouched = vec![listed("v1.0.0")];
+        mark_retracted(&mut untouched, "module example.com/foo\n");
+        assert_eq!(untouched[0].status, ListingStatus::Listed);
+    }
+
+    #[test]
+    fn proxy_urls_share_the_list_prefix() {
+        let list = "https://proxy.golang.org/example.com/foo/@v/list";
+        assert_eq!(
+            proxy_latest_url(list).as_deref(),
+            Some("https://proxy.golang.org/example.com/foo/@latest")
+        );
+        assert_eq!(
+            proxy_mod_url(list, "v1.2.3").as_deref(),
+            Some("https://proxy.golang.org/example.com/foo/@v/v1.2.3.mod")
+        );
+        assert!(proxy_latest_url("https://example.com/not-a-list").is_none());
+        assert_eq!(
+            latest_version(br#"{"Version":"v1.2.3","Time":"2020-01-01T00:00:00Z"}"#).as_deref(),
+            Some("v1.2.3")
+        );
+        assert!(latest_version(b"{}").is_none());
+    }
+
+    fn listed(raw: &str) -> ListedVersion<version::GoVersion> {
+        ListedVersion {
+            version: version::GoVersion::parse(raw).expect("version"),
+            status: ListingStatus::Listed,
+            raw: SmolStr::new(raw),
+        }
     }
 
     #[test]

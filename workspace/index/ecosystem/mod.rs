@@ -36,7 +36,10 @@ mod python;
 mod rust;
 mod ts;
 
-pub use go::{escape_module_path, unescape_module_path};
+pub use go::{
+    escape_module_path, latest_version, mark_retracted, proxy_latest_url, proxy_mod_url,
+    unescape_module_path,
+};
 pub use heart::Language;
 
 use core::marker::PhantomData;
