@@ -758,6 +758,16 @@ impl<M: EmbeddingModel> Driver<M> {
                 tracing::info!("starting osv follower");
                 pollers.spawn(catalog_follower::osv_follower_worker(Arc::clone(self)));
             }
+            if self
+                .config
+                .mirror
+                .follow
+                .iter()
+                .any(|lang| lang.eq_ignore_ascii_case("rust"))
+            {
+                tracing::info!("starting rustsec follower");
+                pollers.spawn(catalog_follower::rustsec_follower_worker(Arc::clone(self)));
+            }
         }
         tracing::info!(?role, "background pollers started");
 

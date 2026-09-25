@@ -44,6 +44,7 @@ pub mod grit;
 pub mod homebrew;
 pub mod monitor;
 pub mod osv;
+pub mod rustsec;
 pub mod transport;
 pub mod watermark;
 

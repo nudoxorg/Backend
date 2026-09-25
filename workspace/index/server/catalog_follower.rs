@@ -317,3 +317,52 @@ pub(crate) async fn osv_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>
         tokio::time::sleep(interval).await;
     }
 }
+
+/// Drive [`crate::ingest::rustsec::RustsecFollower`] against `data_directory/rustsec`.
+///
+/// The worker starts when Rust is in `mirror.follow`. An empty or missing
+/// directory is a caught-up poll. Files that appear later are the next delta.
+pub(crate) async fn rustsec_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>>) {
+    let interval = server.config().limits.poll_interval;
+    let root = server
+        .config()
+        .definitive
+        .data_directory()
+        .join("rustsec");
+    let data_dir = server.config().definitive.data_directory();
+    let watermarks =
+        match crate::ingest::watermark::FileWatermarkStore::open(data_dir.join("rustsec-watermarks"))
+        {
+            Ok(store) => std::sync::Arc::new(store),
+            Err(error) => {
+                tracing::warn!(error = %error, "rustsec follower watermark store failed to open");
+                return;
+            }
+        };
+    let writer = std::sync::Arc::clone(server.base().global_store.writer());
+    let facts = server.package_facts();
+    tracing::info!(path = %root.display(), "rustsec follower started");
+    loop {
+        let writer = std::sync::Arc::clone(&writer);
+        let facts = std::sync::Arc::clone(&facts);
+        let watermarks = std::sync::Arc::clone(&watermarks);
+        let root = root.clone();
+        let joined = tokio::task::spawn_blocking(move || {
+            let follower = crate::ingest::rustsec::RustsecFollower::new(root);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as i64)
+                .unwrap_or(0);
+            crate::ingest::FollowerDriver::new(writer.as_ref(), watermarks.as_ref())
+                .with_facts(facts.as_ref())
+                .drive_once(&follower, now)
+        })
+        .await;
+        match joined {
+            Ok(Ok(outcome)) => tracing::debug!(?outcome, "rustsec follower poll"),
+            Ok(Err(error)) => tracing::warn!(error = %error, "rustsec follower poll failed"),
+            Err(error) => tracing::warn!(error = %error, "rustsec follower task failed"),
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
