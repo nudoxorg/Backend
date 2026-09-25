@@ -1912,10 +1912,12 @@ fn lower_formal_parameters<'a>(
         if names.is_empty() {
             names.push("_".to_string());
         }
-        let ty = param.type_annotation.as_ref().map(|ann| match type_params {
+        let annotation = param.type_annotation.as_ref().map(|ann| match type_params {
             Some(set) => lower_ts_type_with_params(&ann.type_annotation, source, set),
             None => lower_ts_type(&ann.type_annotation, source),
         });
+        let (ty, satisfied, cast) =
+            initializer_types(annotation, param.initializer.as_deref(), source);
         let is_readonly = param.readonly;
         let span = param.span();
         let initializer = param
@@ -1937,6 +1939,8 @@ fn lower_formal_parameters<'a>(
                 is_rest: false,
                 is_readonly,
                 initializer: initializer.clone(),
+                satisfies: satisfied.clone(),
+                cast: cast.clone(),
                 decorators: decorators.clone(),
                 span_start: span.start,
                 span_end: span.end,
@@ -1968,6 +1972,8 @@ fn lower_formal_parameters<'a>(
                 is_rest: true,
                 is_readonly: false,
                 initializer: None,
+                satisfies: None,
+                cast: None,
                 decorators: decorators.clone(),
                 span_start: span.start,
                 span_end: span.end,
@@ -2699,7 +2705,7 @@ fn lower_enum<'a>(e: &TSEnumDeclaration<'a>, source: &'a str) -> EnumBody {
 
 /// Annotation, or the initializer's `as` type when the annotation is absent.
 /// A `satisfies` clause and an extra assertion are returned beside that type.
-fn initializer_types<'a>(
+pub(super) fn initializer_types<'a>(
     annotation: Option<TypeOwned>,
     init: Option<&Expression<'a>>,
     source: &'a str,

@@ -2697,6 +2697,39 @@ mod tests {
     }
 
     #[test]
+    fn a_parameter_default_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"param-default","version":"1.0.0","types":"index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.ts"),
+            "export function take(cb = null as (left: number) => void): void {}\n\
+             export function held(cb: (right: number) => void = null as (mid: number) => void): void {}\n\
+             export function checked(cb = ((s: string) => s) satisfies (far: number) => void): void {}\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "param-default", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("param-default"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function in a parameter default must seal");
+        for name in ["left", "right", "mid", "far"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn a_non_null_assertion_declares_each_function_binding() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

@@ -765,10 +765,15 @@ fn lower_formal_params<'a>(
         if names.is_empty() {
             names.push("_".to_string());
         }
-        let ty = param
+        let annotation = param
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
+        let (ty, satisfied, cast) = super::decl::initializer_types(
+            annotation,
+            param.initializer.as_deref(),
+            source,
+        );
         let span = param.span();
         let initializer = param
             .initializer
@@ -789,6 +794,8 @@ fn lower_formal_params<'a>(
                 is_rest: false,
                 is_readonly: param.readonly,
                 initializer: initializer.clone(),
+                satisfies: satisfied.clone(),
+                cast: cast.clone(),
                 decorators: decorators.clone(),
                 span_start: span.start,
                 span_end: span.end,
@@ -821,6 +828,8 @@ fn lower_formal_params<'a>(
                 is_rest: true,
                 is_readonly: false,
                 initializer: None,
+                satisfies: None,
+                cast: None,
                 decorators: decorators.clone(),
                 span_start: span.start,
                 span_end: span.end,

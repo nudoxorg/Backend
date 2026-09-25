@@ -490,6 +490,10 @@ pub struct ParamFact {
     pub is_rest: bool,
     pub is_readonly: bool,
     pub initializer: Option<String>,
+    /// The type in a default's `satisfies` clause. Not the parameter's declared type.
+    pub satisfies: Option<TypeOwned>,
+    /// An `as` assertion on the default that is not already `ty`.
+    pub cast: Option<TypeOwned>,
     pub decorators: Vec<AttrTok>,
     /// Byte span of the `FormalParameter` (or `BindingRestElement` for a
     /// rest parameter) node.

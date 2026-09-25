@@ -589,6 +589,8 @@ fn emit_interface(
             is_rest: false,
             is_readonly: false,
             initializer: None,
+            satisfies: None,
+            cast: None,
             decorators: Vec::new(),
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
@@ -890,6 +892,8 @@ fn emit_class(
                 is_rest: false,
                 is_readonly: false,
                 initializer: None,
+                satisfies: None,
+                cast: None,
                 decorators: Vec::new(),
                 span_start: idx_sig.span_start,
                 span_end: idx_sig.span_end,
@@ -1040,6 +1044,12 @@ fn declare_alias_params(
         );
         if let Some(ty) = &param.ty {
             declare_nested_params(alias, owner, &param.name, ty, out, names);
+        }
+        if let Some(ty) = &param.satisfies {
+            declare_nested_params(alias, owner, &format!("{}::satisfies", param.name), ty, out, names);
+        }
+        if let Some(ty) = &param.cast {
+            declare_nested_params(alias, owner, &format!("{}::cast", param.name), ty, out, names);
         }
     }
     if let Some(ret) = &function.return_type {
@@ -1516,6 +1526,12 @@ fn emit_function(
     for param in &body.params {
         if let Some(ty) = &param.ty {
             declare_nested_params(&id, &id, &param.name, ty, out, names);
+        }
+        if let Some(ty) = &param.satisfies {
+            declare_nested_params(&id, &id, &format!("{}::satisfies", param.name), ty, out, names);
+        }
+        if let Some(ty) = &param.cast {
+            declare_nested_params(&id, &id, &format!("{}::cast", param.name), ty, out, names);
         }
     }
     if let Some(this_ty) = &body.this_ty {
@@ -3378,6 +3394,8 @@ fn params_match(a: &[ParamFact], b: &[ParamFact]) -> bool {
                 && x.is_optional == y.is_optional
                 && x.is_rest == y.is_rest
                 && opt_type_match(x.ty.as_ref(), y.ty.as_ref())
+                && opt_type_match(x.satisfies.as_ref(), y.satisfies.as_ref())
+                && opt_type_match(x.cast.as_ref(), y.cast.as_ref())
         })
 }
 
