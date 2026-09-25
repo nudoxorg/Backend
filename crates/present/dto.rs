@@ -462,6 +462,9 @@ pub struct RecordListDto {
     pub records: Vec<RecordDto>,
     /// Whether another page follows.
     pub more: bool,
+    /// Why an empty page is empty, when the caller proved a reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_reason: Option<String>,
 }
 
 impl RecordListDto {
@@ -474,6 +477,7 @@ impl RecordListDto {
             readiness: list.coverage().readiness().to_owned(),
             records: list.records().iter().map(RecordDto::new).collect(),
             more: list.has_more(),
+            empty_reason: list.empty_reason().map(str::to_owned),
         }
     }
 }

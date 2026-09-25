@@ -381,7 +381,15 @@ fn neighbourhood(engine: &mut dyn Engine, at: &str, incoming: bool) -> Result<An
     let CommandReply::Graph(snapshot) = reply.reply else {
         return Err(shape("graph"));
     };
-    Ok(Answer::Records(Box::new(record_list(at, &snapshot))))
+    let list = record_list(at, &snapshot);
+    let list = if list.is_empty() {
+        list.with_empty_reason(
+            "no graph edges at this coordinate; the authority recorded none",
+        )
+    } else {
+        list
+    };
+    Ok(Answer::Records(Box::new(list)))
 }
 
 fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {

@@ -170,6 +170,9 @@ pub struct RecordList {
     records: Box<[Record]>,
     more: bool,
     continuation: Option<PageContinuation>,
+    /// Why this page has no records, when the caller proved a reason other
+    /// than a missed declaration. Search leaves this empty.
+    empty_reason: Option<String>,
 }
 
 impl RecordList {
@@ -186,7 +189,32 @@ impl RecordList {
             records: records.into(),
             more: false,
             continuation: None,
+            empty_reason: None,
         }
+    }
+
+    /// Names why an empty page is empty. A graph or related probe with no
+    /// edges must not reuse the search sentence.
+    #[must_use]
+    pub fn with_empty_reason(mut self, reason: impl Into<String>) -> Self {
+        self.empty_reason = Some(reason.into());
+        self
+    }
+
+    /// The sentence a renderer prints when [`Self::is_empty`] is true.
+    #[must_use]
+    pub fn empty_explanation(&self) -> String {
+        if let Some(reason) = &self.empty_reason {
+            return reason.clone();
+        }
+        if self.coverage.has_unavailable() {
+            return "no rows, and at least one lane answered nothing — read the marks above"
+                .to_owned();
+        }
+        if self.coverage.readiness() == "indexing" {
+            return "no rows yet; indexing has not finished for this revision".to_owned();
+        }
+        format!("no declaration matches {:?} at this revision", self.query)
     }
 
     /// Marks that the owner holds another page after this one.
@@ -238,5 +266,11 @@ impl RecordList {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+
+    /// The proven empty-page reason, when the caller set one.
+    #[must_use]
+    pub fn empty_reason(&self) -> Option<&str> {
+        self.empty_reason.as_deref()
     }
 }
