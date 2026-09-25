@@ -573,6 +573,31 @@ impl Relation for ProductSemanticPublicationRelation {
 }
 
 impl CanonicalRelation for ProductSemanticPublicationRelation {
+    /// The canonical key length-prefixes its text fields, so two packages
+    /// whose names differ in length sort by length in `encode_key` bytes but
+    /// by text in the relation. A Merkle page of such rows is then refused as
+    /// unsorted and remote execution silently falls back to local. This
+    /// encoding follows the key's `Ord` field by field instead: the reference
+    /// variant, each text terminated (with its zero bytes escaped), the
+    /// profile's variant and revision, then the selection.
+    fn encode_order_key(key: &Self::Key, output: &mut Vec<u8>) {
+        let (reference, text) = match &key.package {
+            PackageReference::Purl(url) => (0, url.as_str()),
+            PackageReference::Local(label) => (1, label.as_str()),
+        };
+        output.push(reference);
+        push_order_text(text, output);
+        push_order_text(key.coordinate.as_str(), output);
+        output.extend_from_slice(&profile_order(key.profile));
+        match key.selection {
+            SemanticPublicationSelection::Selected => output.push(0),
+            SemanticPublicationSelection::Generation(identity) => {
+                output.push(1);
+                output.extend_from_slice(identity.as_ref());
+            }
+        }
+    }
+
     fn decode_key(bytes: &[u8]) -> Result<Self::Key, RelationDecodeError> {
         let (package, rest) = take_text(bytes)?;
         let package = PackageReference::parse(package.to_owned())
@@ -902,6 +927,34 @@ fn take_generation(bytes: &[u8]) -> Result<(VerifiedGenerationFacts, &[u8]), Rel
     ))
 }
 
+/// Writes text so that byte order equals text order: a zero byte is escaped
+/// as `00 FF` and the text ends with `00 00`, so a prefix sorts first.
+fn push_order_text(value: &str, output: &mut Vec<u8>) {
+    for &byte in value.as_bytes() {
+        output.push(byte);
+        if byte == 0 {
+            output.push(0xFF);
+        }
+    }
+    output.extend_from_slice(&[0, 0]);
+}
+
+/// A profile's position in `LanguageProfile`'s derived order: its variant in
+/// declaration order, then its revision, whose discriminants ascend with
+/// their declaration order.
+fn profile_order(profile: LanguageProfile) -> [u8; 2] {
+    match profile {
+        LanguageProfile::Rust(value) => [0, value as u8],
+        LanguageProfile::TypeScript(value) => [1, value as u8],
+        LanguageProfile::Python(value) => [2, value as u8],
+        LanguageProfile::Go(value) => [3, value as u8],
+        LanguageProfile::Java(value) => [4, value as u8],
+        LanguageProfile::CSharp(value) => [5, value as u8],
+        LanguageProfile::C(value) => [6, value as u8],
+        LanguageProfile::Cxx(value) => [7, value as u8],
+    }
+}
+
 fn push_text(value: &str, output: &mut Vec<u8>) {
     output.extend_from_slice(&u32::try_from(value.len()).unwrap_or(u32::MAX).to_be_bytes());
     output.extend_from_slice(value.as_bytes());
@@ -963,6 +1016,88 @@ mod tests {
                 .map_err(|_| "compiler coordinate")?,
             LanguageProfile::Rust(RustEdition::Rust2024),
         )
+    }
+
+    /// The wire order of semantic keys is exactly the relation's order, for
+    /// keys whose text lengths differ (the case `encode_key` gets wrong),
+    /// both reference kinds, every profile, and both selections.
+    #[test]
+    fn order_keys_sort_exactly_like_the_relation() -> Result<(), &'static str> {
+        let mut profiles = Vec::new();
+        for first in 0..=u8::MAX {
+            for second in 0..=u8::MAX {
+                if let Ok(profile) = LanguageProfile::try_from([first, second]) {
+                    profiles.push(profile);
+                }
+            }
+        }
+        let generation = claim()?.binding().identity;
+        let mut keys = Vec::new();
+        for name in [
+            "a",
+            "ab",
+            "b",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "a-1",
+            "a0",
+        ] {
+            for profile in &profiles {
+                let purl_type = match profile.language() {
+                    backend_semantic::vocabulary::Language::Rust => "cargo",
+                    backend_semantic::vocabulary::Language::TypeScript => "npm",
+                    backend_semantic::vocabulary::Language::Python => "pypi",
+                    backend_semantic::vocabulary::Language::Go => "golang",
+                    backend_semantic::vocabulary::Language::Java => "maven",
+                    backend_semantic::vocabulary::Language::CSharp => "nuget",
+                    backend_semantic::vocabulary::Language::Clang => "generic",
+                };
+                let path = match purl_type {
+                    "maven" | "generic" => format!("group/{name}"),
+                    _ => name.to_owned(),
+                };
+                let purl = format!("pkg:{purl_type}/{path}@1.0.0");
+                let coordinate = PackageUrl::parse(purl.clone()).map_err(|_| "coordinate")?;
+                for reference in [purl.clone(), format!("/work/{name}")] {
+                    let package =
+                        PackageReference::parse(reference).map_err(|_| "package reference")?;
+                    let key =
+                        ProductSemanticPublicationKey::new(package, coordinate.clone(), *profile)?;
+                    keys.push(key.clone());
+                    keys.push(key.for_generation(generation));
+                }
+            }
+        }
+        let order_key = |key: &ProductSemanticPublicationKey| {
+            let mut bytes = Vec::new();
+            ProductSemanticPublicationRelation::encode_order_key(key, &mut bytes);
+            bytes
+        };
+        let encoded = keys
+            .iter()
+            .map(|key| (key, order_key(key)))
+            .collect::<Vec<_>>();
+        for (left, left_bytes) in &encoded {
+            for (right, right_bytes) in &encoded {
+                if left.cmp(right) != left_bytes.cmp(right_bytes) {
+                    return Err("wire order disagrees with the relation's key order");
+                }
+            }
+        }
+        // The canonical encoding is the one that disagrees, which is why the
+        // override exists: keep that fact visible.
+        let canonical = |key: &ProductSemanticPublicationKey| {
+            let mut bytes = Vec::new();
+            ProductSemanticPublicationRelation::encode_key(key, &mut bytes);
+            bytes
+        };
+        if encoded.iter().all(|(left, _)| {
+            encoded
+                .iter()
+                .all(|(right, _)| left.cmp(right) == canonical(left).cmp(&canonical(right)))
+        }) {
+            return Err("canonical key bytes already preserve order; the override is dead");
+        }
+        Ok(())
     }
 
     fn claim() -> Result<SemanticPublicationClaim, &'static str> {

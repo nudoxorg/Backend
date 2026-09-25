@@ -30,6 +30,14 @@ fn encode_key<R: CanonicalRelation>(key: &R::Key) -> Vec<u8> {
     bytes
 }
 
+/// A key as the replication plane compares it: bytes ordered exactly like the
+/// relation's keys. The canonical row bytes keep [`encode_key`].
+fn wire_key<R: CanonicalRelation>(key: &R::Key) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    R::encode_order_key(key, &mut bytes);
+    bytes
+}
+
 fn encode_row<R: CanonicalRelation>(key: &R::Key, value: &R::Value) -> Vec<u8> {
     let key_bytes = encode_key::<R>(key);
     let mut value_bytes = Vec::new();

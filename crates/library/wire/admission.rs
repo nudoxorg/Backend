@@ -581,8 +581,14 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
                     "graph reply source revision does not match the request".to_owned(),
                 ));
             }
+            // A declaration is present when its row carries the requested
+            // key, or, for a compiler-backed row whose key is its compiler
+            // identity, when the row's certified coordinate is the address
+            // the caller requested (`symbol_key(coordinate)`).
             if !snapshot.root.rows().iter().any(|row| {
-                matches!(row.id, crate::RowId::Symbol(symbol) if query.symbol().matches(symbol))
+                matches!(row.id, crate::RowId::Symbol(symbol)
+                    if query.symbol().matches(symbol)
+                        || query.symbol().matches(crate::symbol_key(&row.label)))
             }) {
                 return Err(ReplyAdmissionError::Protocol(
                     "graph reply omitted the selected source declaration".to_owned(),

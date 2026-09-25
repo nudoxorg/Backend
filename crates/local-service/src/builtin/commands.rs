@@ -1579,7 +1579,8 @@ fn compile_semantic_publications(
 ) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     for source in sources {
-        by_profile.entry(source.profile).or_default().push(
+        let profile = compile_profile(context.source_root, &source);
+        by_profile.entry(profile).or_default().push(
             OwnedPackageSource::new(&source.relative_path, &source.source)
                 .map_err(|error| BuiltinModelError(error.to_string()))?,
         );
@@ -1667,6 +1668,36 @@ fn compile_semantic_publications(
         }
     }
     Ok(changes)
+}
+
+/// Selects the exact profile one source is compiled under.
+///
+/// A file's extension names its language, but a Rust file's edition is a
+/// fact of the crate that owns it: the authority checks it against Cargo's
+/// own metadata and refuses a mismatch. Compiling every `.rs` file as edition
+/// 2024 therefore sent every 2015, 2018, and 2021 crate (most of crates.io)
+/// to a terminal `ProjectAuthority` failure and a structural-only answer. The
+/// edition is read from the nearest `Cargo.toml` with a `[package]` table
+/// between the file and the source root, exactly as Cargo resolves it.
+fn compile_profile(source_root: &Path, source: &ingest::CompilerSource) -> LanguageProfile {
+    let LanguageProfile::Rust(_) = source.profile else {
+        return source.profile;
+    };
+    let mut directory = source_root.join(&source.relative_path);
+    while directory.pop() && directory.starts_with(source_root) {
+        let manifest = directory.join("Cargo.toml");
+        let declares_package = std::fs::read_to_string(&manifest)
+            .is_ok_and(|contents| contents.lines().any(|line| line.trim() == "[package]"));
+        if declares_package {
+            // An unreadable or unknown edition keeps the default profile; the
+            // authority then reports the exact mismatch as a typed terminal
+            // rather than this scan failing the whole package.
+            return backend_frontend_rust::legacy::manifest_edition(&directory)
+                .map_or(source.profile, LanguageProfile::Rust);
+        }
+    }
+    // No owning manifest: the authority reports the missing project itself.
+    source.profile
 }
 
 fn semantic_coordinate(
@@ -1818,6 +1849,7 @@ fn semantic_versions(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic version history: {error}")))?;
     let mut selected = BTreeMap::<(PackageUrl, LanguageProfile), [u8; 32]>::new();
+    let mut unavailable = None;
     let mut generations = Vec::new();
     let mut after = None;
     loop {
@@ -1837,10 +1869,13 @@ fn semantic_versions(
                 ProductSemanticPublicationRecord::Published { coverage, claim } => {
                     (*coverage, *claim)
                 }
+                // One language whose authority is unavailable must not hide
+                // the history every other language of the package published.
+                // The typed refusal is kept for a package with no published
+                // target at all, below.
                 ProductSemanticPublicationRecord::Unavailable(reason) if key.is_selected() => {
-                    return Err(BuiltinModelError(format!(
-                        "semantic publication unavailable: {reason}"
-                    )));
+                    unavailable.get_or_insert(*reason);
+                    continue;
                 }
                 ProductSemanticPublicationRecord::Unavailable(_) => continue,
             };
@@ -1873,6 +1908,13 @@ fn semantic_versions(
             break;
         };
         after = Some(next);
+    }
+    if selected.is_empty()
+        && let Some(reason) = unavailable
+    {
+        return Err(BuiltinModelError(format!(
+            "semantic publication unavailable: {reason}"
+        )));
     }
     for (target, record) in &mut generations {
         record.selected = selected.get(target).copied() == Some(record.generation.to_bytes());
@@ -2167,6 +2209,7 @@ impl CommandAdapter {
         } else {
             Command::Graph(query)
         };
+        let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
         let reply = execute_semantic_graph(daemon, &self.compiler, query, include_incoming)?
             .map_or_else(
                 || {
@@ -2180,6 +2223,56 @@ impl CommandAdapter {
                 CommandReply::Graph,
             );
         Self::certify(daemon, &command, reply, certificate)
+    }
+
+    /// Resolves a graph source named by the canonical coordinate a caller
+    /// copied from a result page.
+    ///
+    /// A client addresses a declaration by `symbol_key(coordinate)`, which is
+    /// the row key of a structural declaration but not of a semantic one: a
+    /// compiler-backed row is keyed by its compiler-owned identity. Like
+    /// `canonical_claim_document`, this reads the coordinate from the
+    /// caller's admitted key claim and, when no view row carries the
+    /// requested key, selects the one row whose label is exactly that
+    /// coordinate. Without it every `graph` and `related` request for a
+    /// semantic declaration failed with "semantic graph source is absent".
+    fn claimed_graph_source(
+        daemon: &ProductDaemon,
+        query: backend_engine::GraphNeighborhoodQuery,
+        certificate: Option<&WireCertificate>,
+    ) -> backend_engine::GraphNeighborhoodQuery {
+        let library = daemon.engine().daemon().library();
+        let view = library.view();
+        let requested = query.resolve_symbol(view);
+        if requested.is_some_and(|symbol| view.row(backend_engine::RowId::Symbol(symbol)).is_some())
+            || !query.basis().matches(library.revision_root())
+        {
+            return query;
+        }
+        let Some(label) = certificate.and_then(|certificate| {
+            certificate.claims.iter().find_map(|claim| match claim {
+                WireClaim::Key {
+                    schema: backend_engine::WireSchema::Symbol,
+                    id,
+                    value,
+                } if id
+                    == &backend_engine::encode_id(backend_engine::symbol_key(value).as_bytes())
+                    && requested == Some(backend_engine::symbol_key(value)) =>
+                {
+                    Some(value.as_str())
+                }
+                _ => None,
+            })
+        }) else {
+            return query;
+        };
+        view.rows()
+            .iter()
+            .find_map(|row| match row.id {
+                backend_engine::RowId::Symbol(symbol) if row.label == label => Some(symbol),
+                _ => None,
+            })
+            .map_or(query, |symbol| query.with_resolved_symbol(symbol))
     }
 
     fn surface(

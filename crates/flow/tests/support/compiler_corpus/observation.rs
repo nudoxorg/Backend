@@ -27,6 +27,9 @@ pub(super) enum CountObservation {
 pub(super) enum ObservedTypeShape {
     Absent,
     Primitive(BuiltinType),
+    /// A builtin under a non-nullable reference annotation (C#'s nullable
+    /// context reports `string` as a non-nullable reference).
+    NonNullable(BuiltinType),
     Literal,
     Callable,
     Nominal,
@@ -323,6 +326,23 @@ pub(super) struct EntityObservation {
     pub(super) members: u32,
     pub(super) member_order: Digest,
     pub(super) first_member: Option<Digest>,
+    /// Declarations whose parent is this entity, read from parentage rather
+    /// than the member list. The member list is published only when the
+    /// authority proved the complete local set (`authority.members`), so
+    /// source nesting is observed here independently of that plane.
+    pub(super) children: u32,
+    /// `children` minus callable/generic parameters and synthetic type
+    /// embodiments: the nested member declarations a source row states.
+    /// TypeScript lowers an anonymous result type such as `string` to a
+    /// sourceless `Alias` fact parented by span containment; that is type
+    /// structure, not a declaration the source wrote. Sourceless members in
+    /// general still count (Go's image carries no field spans).
+    pub(super) nested: u32,
+    /// Name of the first non-parameter child in source order.
+    pub(super) first_nested: Option<Digest>,
+    /// Authority use sites whose relation targets this entity: the evidence
+    /// that a caller resolved to this exact declaration (an overload).
+    pub(super) inbound: u32,
     pub(super) type_shape: ObservedTypeShape,
     pub(super) source: Option<SourceSpan>,
     pub(super) version: VersionObservation,
@@ -581,6 +601,14 @@ fn type_shape(ir: &Ir, ty: Option<TypeId>) -> ObservedTypeShape {
     let Some(expression) = ty.and_then(|id| ir.ty(id)) else {
         return ObservedTypeShape::Absent;
     };
+    if let TypeExpr::Concrete(ConcreteType::Annotated {
+        kind: backend_semantic::ir::AnnotationKind::NonNullableReference,
+        target,
+    }) = expression
+        && let ObservedTypeShape::Primitive(builtin) = type_shape(ir, Some(target))
+    {
+        return ObservedTypeShape::NonNullable(builtin);
+    }
     match expression {
         TypeExpr::Unknown(_) => ObservedTypeShape::Unknown,
         TypeExpr::Computed(_) => ObservedTypeShape::Computed,
@@ -2388,6 +2416,19 @@ pub(super) fn observe_entity_at_source<R: SemanticReader + ?Sized>(
         .and_then(|id| reader.entity(id))
         .and_then(|member| reader.atom(member.name))
         .map(digest_bytes);
+    let mut child_rows: Vec<_> = reader
+        .canonical_entities()
+        .filter(|child| child.parent == Some(entity.id))
+        .map(|child| {
+            (
+                child.source.map(|span| span.start()),
+                child.kind,
+                digest_bytes(reader.atom(child.name).unwrap_or_default()),
+            )
+        })
+        .collect();
+    child_rows.sort_by_key(|row| row.0.unwrap_or(u32::MAX));
+    let (children, nested, first_nested) = child_summary(&child_rows);
     let occurrences = reader
         .link_occurrences()
         .filter(|(_, occurrence)| {
@@ -2397,6 +2438,14 @@ pub(super) fn observe_entity_at_source<R: SemanticReader + ?Sized>(
         })
         .count();
     let links = reader.links_from(entity.id).len();
+    let inbound = reader
+        .link_occurrences()
+        .filter(|(_, occurrence)| {
+            reader.link(occurrence.link).is_some_and(|link| {
+                link.target == backend_semantic::ir::LinkTarget::Local(entity.id)
+            })
+        })
+        .count();
     let observed = EntityObservation {
         id: entity.id,
         kind: entity.kind,
@@ -2407,6 +2456,10 @@ pub(super) fn observe_entity_at_source<R: SemanticReader + ?Sized>(
         members,
         member_order,
         first_member,
+        children,
+        nested,
+        first_nested,
+        inbound: u32::try_from(inbound).unwrap_or(u32::MAX),
         type_shape: type_shape_reader(reader, entity.semantic_type),
         source: entity.source,
         version: version_observation(entity.version),
@@ -2444,6 +2497,10 @@ where
         && canonical_member_identities(owned_reader, owned.id)
             == canonical_member_identities(reopened_reader, reopened.id)
         && owned.first_member == reopened.first_member
+        && owned.children == reopened.children
+        && owned.nested == reopened.nested
+        && owned.first_nested == reopened.first_nested
+        && owned.inbound == reopened.inbound
         && owned.type_shape == reopened.type_shape
         && canonical_source(owned_reader, owned.source)
             == canonical_source(reopened_reader, reopened.source)
@@ -2488,6 +2545,23 @@ fn canonical_member_identities<R: backend_semantic::ir::SemanticReader + ?Sized>
         .collect()
 }
 
+/// Summarises source-ordered `(start, kind, name)` child rows into the
+/// parentage counts and the first nested member's name.
+fn child_summary(rows: &[(Option<u32>, ItemKind, Digest)]) -> (u32, u32, Option<Digest>) {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let nested: Vec<_> = rows
+        .iter()
+        .filter(|(start, kind, _)| {
+            *kind != ItemKind::Parameter && !(*kind == ItemKind::Alias && start.is_none())
+        })
+        .collect();
+    (
+        count(rows.len()),
+        count(nested.len()),
+        nested.first().map(|row| row.2),
+    )
+}
+
 fn member_order_digest_reader<R: SemanticReader + ?Sized>(
     reader: &R,
     members: R::Entities<'_>,
@@ -2513,6 +2587,14 @@ pub(super) fn type_shape_reader<R: SemanticReader + ?Sized>(
     let Some(expression) = ty.and_then(|id| reader.ty(id)) else {
         return ObservedTypeShape::Absent;
     };
+    if let TypeExpr::Concrete(ConcreteType::Annotated {
+        kind: backend_semantic::ir::AnnotationKind::NonNullableReference,
+        target,
+    }) = expression
+        && let ObservedTypeShape::Primitive(builtin) = type_shape_reader(reader, Some(target))
+    {
+        return ObservedTypeShape::NonNullable(builtin);
+    }
     match expression {
         TypeExpr::Unknown(_) => ObservedTypeShape::Unknown,
         TypeExpr::Computed(_) => ObservedTypeShape::Computed,
@@ -2592,6 +2674,26 @@ pub(super) fn observe_owned(
     let primary_matches = u16::try_from(candidates.len()).unwrap_or(u16::MAX);
     let primary = (candidates.len() == 1).then(|| {
         let item = candidates[0];
+        let mut child_rows: Vec<_> = ir
+            .items()
+            .filter(|child| child.parent() == Some(item.id()))
+            .map(|child| {
+                (
+                    child.source().map(|span| span.start()),
+                    child.kind(),
+                    digest_bytes(child.name()),
+                )
+            })
+            .collect();
+        child_rows.sort_by_key(|row| row.0.unwrap_or(u32::MAX));
+        let (children, nested, first_nested) = child_summary(&child_rows);
+        let inbound = SemanticReader::link_occurrences(ir)
+            .filter(|(_, occurrence)| {
+                SemanticReader::link(ir, occurrence.link).is_some_and(|link| {
+                    link.target == backend_semantic::ir::LinkTarget::Local(item.id())
+                })
+            })
+            .count();
         EntityObservation {
             id: item.id(),
             kind: item.kind(),
@@ -2606,6 +2708,10 @@ pub(super) fn observe_owned(
                 .first()
                 .and_then(|member| ir.item(*member))
                 .map(|member| digest_bytes(member.name())),
+            children,
+            nested,
+            first_nested,
+            inbound: u32::try_from(inbound).unwrap_or(u32::MAX),
             type_shape: type_shape(ir, item.semantic_type()),
             source: item.source(),
             version: version_observation(item.version()),
@@ -2775,6 +2881,10 @@ fn hash_type_shape(value: ObservedTypeShape, hasher: &mut StableHasher) {
         ObservedTypeShape::Computed => 8_u8.hash(hasher),
         ObservedTypeShape::Unknown => 9_u8.hash(hasher),
         ObservedTypeShape::Other => 10_u8.hash(hasher),
+        ObservedTypeShape::NonNullable(builtin) => {
+            11_u8.hash(hasher);
+            builtin.hash(hasher);
+        }
     }
 }
 
@@ -2980,6 +3090,10 @@ fn hash_entity_observation(value: Option<EntityObservation>, hasher: &mut Stable
     value.members.hash(hasher);
     value.member_order.hash(hasher);
     value.first_member.hash(hasher);
+    value.children.hash(hasher);
+    value.nested.hash(hasher);
+    value.first_nested.hash(hasher);
+    value.inbound.hash(hasher);
     hash_type_shape(value.type_shape, hasher);
     value.source.hash(hasher);
     value.version.family.hash(hasher);

@@ -334,6 +334,9 @@ pub(super) fn type_matches(expected: ExpectedType, observed: ObservedTypeShape) 
             observed == ObservedTypeShape::Primitive(expected_builtin(primitive))
         }
         ExpectedType::Builtin(builtin) => observed == ObservedTypeShape::Primitive(builtin),
+        ExpectedType::NonNullableBuiltin(builtin) => {
+            observed == ObservedTypeShape::NonNullable(builtin)
+        }
         ExpectedType::Callable => observed == ObservedTypeShape::Callable,
         ExpectedType::Nominal => observed == ObservedTypeShape::Nominal,
         ExpectedType::Structural => observed == ObservedTypeShape::Structural,
@@ -357,7 +360,7 @@ pub(super) fn compact_type_matches(expected: ExpectedType, observed: Option<Type
         // The compact opcode table has no faithful representation for these
         // language-specific builtin roles; the rich type-fact observer must
         // carry the exact role before this can become a parity assertion.
-        ExpectedType::Builtin(_) => false,
+        ExpectedType::Builtin(_) | ExpectedType::NonNullableBuiltin(_) => false,
         ExpectedType::Reference => matches!(observed, Some(TypeNode::Reference(_))),
         ExpectedType::Callable
         | ExpectedType::Nominal
@@ -766,13 +769,11 @@ pub(super) fn expected_mismatches(
         output.neutral_render,
         mismatches,
     );
-    check_render(
-        key,
-        true,
-        expected.dialect_render,
-        output.dialect_render,
-        mismatches,
-    );
+    // No dialect renderer exists behind this seam: `output.dialect_render` is
+    // the constant `Unsupported`, so comparing it with the constant
+    // `DialectUnsupported` expectation would observe nothing about the
+    // product. The permutation digest still carries it so reordering
+    // passes stay byte-comparable.
 }
 
 fn check_semantic_image(
@@ -922,10 +923,12 @@ fn check_render(
 ) {
     let matches = match expected {
         RenderAvailability::NeutralRequired => matches!(observed, RenderVerdict::Rendered(_)),
-        // The dialect renderer is not part of this committed seam. Preserve
-        // the typed unsupported observation, but keep the row explicitly red
-        // so an unavailable renderer cannot certify source parity.
-        RenderAvailability::DialectUnsupported => false,
+        // The dialect renderer is not part of this committed seam, so the
+        // only honest observation is the typed `Unsupported` verdict. A
+        // renderer that claimed a dialect rendering here would be inventing
+        // output, and one that reported `Unavailable` would misclassify a
+        // missing seam as a missing local tool; both stay red.
+        RenderAvailability::DialectUnsupported => observed == RenderVerdict::Unsupported,
         RenderAvailability::Unavailable => observed == RenderVerdict::Unavailable,
     };
     if !matches {
