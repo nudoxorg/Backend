@@ -103,24 +103,52 @@ fn four_manifests_agree_on_one_dependents_sweep() {
         );
     }
     let prior = versions
-        .get_at(
+        .materialize_at(
             "java",
             "com.example:app",
             "1.0.0",
             first_java.expect("java revision"),
         )
         .expect("history")
-        .expect("row")
-        .to_record()
-        .expect("record");
+        .expect("row");
     assert!(edge_names_agree(&prior, &java));
     assert_eq!(
         versions
-            .get("rust", "app", "1.0.0")
+            .materialize("rust", "app", "1.0.0")
+            .expect("join")
             .expect("rust tip")
-            .to_record()
-            .expect("record")
             .runtime_names(),
         vec!["serde"]
+    );
+
+    let mut bumped = records[3].clone();
+    bumped.edges[0].requirement = Some(SmolStr::new("^1"));
+    let identity = versions
+        .get("rust", "app", "1.0.0")
+        .expect("rust fact")
+        .payload_hash;
+    assert!(matches!(
+        versions.put_record(&bumped).expect("requirement"),
+        FactWrite::Revised(_)
+    ));
+    assert_eq!(
+        versions
+            .get("rust", "app", "1.0.0")
+            .expect("rust fact")
+            .payload_hash,
+        identity
+    );
+    let joined = versions
+        .materialize("rust", "app", "1.0.0")
+        .expect("join")
+        .expect("rust tip");
+    assert_eq!(joined.edges[0].requirement.as_deref(), Some("^1"));
+    assert_eq!(
+        versions
+            .materialize("java", "com.example:app", "1.0.0")
+            .expect("join")
+            .expect("java")
+            .runtime_names(),
+        vec!["org.slf4j:slf4j-api"]
     );
 }
