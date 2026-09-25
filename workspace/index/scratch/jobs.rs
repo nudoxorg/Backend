@@ -184,7 +184,8 @@ pub fn requeue_terminal(connection: &Connection, job_key: &str, now: i64) -> Res
     Ok(())
 }
 
-/// Increment the attempt counter for a job (call before each execution attempt).
+/// Increment the attempt counter for a job (call before each execution
+/// attempt).
 pub fn increment_attempts(connection: &Connection, job_key: &str, updated_at: i64) -> Result<()> {
     connection.execute(
         "UPDATE jobs SET attempts = attempts + 1, updated_at = ?1 WHERE job_key = ?2",
@@ -265,18 +266,15 @@ mod tests {
     fn next_queued_ordering() {
         let conn = open_memory();
         for i in 0..3i64 {
-            enqueue(
-                &conn,
-                &JobRow {
-                    job_key: format!("k{i}"),
-                    kind: "t".to_owned(),
-                    state: JobState::Queued,
-                    attempts: 0,
-                    enqueued_at: 10 - i, // reverse order
-                    updated_at: 1,
-                    payload: None,
-                },
-            )
+            enqueue(&conn, &JobRow {
+                job_key: format!("k{i}"),
+                kind: "t".to_owned(),
+                state: JobState::Queued,
+                attempts: 0,
+                enqueued_at: 10 - i, // reverse order
+                updated_at: 1,
+                payload: None,
+            })
             .unwrap();
         }
         let queued = next_queued(&conn, 10).unwrap();

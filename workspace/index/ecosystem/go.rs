@@ -109,7 +109,8 @@ impl EcosystemSpec for Go {
     /// Parse the Go module proxy `/@v/list` endpoint.
     /// Returns plain text: a newline-separated list of version strings.
     /// All versions are Listed (the Go proxy has no unlist / retract signal at
-    /// this endpoint; retractions are declared inside go.mod).
+    /// this endpoint; retractions are declared inside go.mod — see
+    /// [`retract_specs`] and [`version_retracted`]).
     fn parse_version_listing(body: &[u8]) -> Vec<ListedVersion<Self::Version>> {
         let Ok(text) = std::str::from_utf8(body) else {
             return vec![];
@@ -390,6 +391,160 @@ pub fn parse_go_mod(text: &str) -> ExtractedFacts {
     }
 }
 
+/// Retracted version expressions from a `go.mod` file, in source order.
+///
+/// Each string is one `retract` operand, kept as raw text: a single version
+/// (`v1.0.0`) or an inclusive range (`[v1.3.0, v1.4.0]`). `//` line comments
+/// are discarded, including comment-only lines. The module is not loaded or
+/// executed.
+///
+/// [`version_retracted`] tests a listed version against the result. The proxy
+/// `@v/list` body carries no retract data, so [`Go::parse_version_listing`]
+/// still reports every version as [`ListingStatus::Listed`].
+pub fn retract_specs(go_mod: &str) -> Vec<String> {
+    let go_mod = go_mod.strip_prefix('\u{feff}').unwrap_or(go_mod);
+    let mut specs = Vec::new();
+    let mut in_block = false;
+
+    for line in go_mod.lines() {
+        let code = strip_go_line_comment(line).trim();
+        if code.is_empty() {
+            continue;
+        }
+        if in_block {
+            if consume_retract_block_line(code, &mut specs) {
+                in_block = false;
+            }
+            continue;
+        }
+        let Some(rest) = retract_directive_body(code) else {
+            continue;
+        };
+        let rest = rest.trim();
+        if let Some(after) = rest.strip_prefix('(') {
+            in_block = true;
+            let after = after.trim();
+            if !after.is_empty() && consume_retract_block_line(after, &mut specs) {
+                in_block = false;
+            }
+            continue;
+        }
+        if let Some(spec) = retract_spec_token(rest) {
+            specs.push(spec);
+        }
+    }
+    specs
+}
+
+/// Whether `raw_version` is covered by any spec from [`retract_specs`].
+///
+/// An exact spec matches when both sides parse as [`version::GoVersion`] and
+/// compare equal (`+incompatible` is ignored, matching Go's version order).
+/// A `[low, high]` spec is inclusive under that same order. A version that
+/// does not parse matches only an identical exact-spec string.
+pub fn version_retracted(raw_version: &str, specs: &[String]) -> bool {
+    let raw_version = raw_version.trim();
+    let parsed = version::GoVersion::parse(raw_version);
+    specs
+        .iter()
+        .any(|spec| retract_spec_covers(spec, raw_version, parsed.as_ref()))
+}
+
+fn strip_go_line_comment(line: &str) -> &str {
+    match line.split_once("//") {
+        Some((code, _)) => code,
+        None => line,
+    }
+}
+
+/// Text after a leading `retract` keyword, when `line` is that directive.
+fn retract_directive_body(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("retract")?;
+    match rest.chars().next() {
+        None => Some(rest),
+        Some(c) if c.is_whitespace() || c == '(' => Some(rest),
+        Some(_) => None,
+    }
+}
+
+/// Parse one line of a `retract (` block. Returns whether the block closed.
+fn consume_retract_block_line(line: &str, specs: &mut Vec<String>) -> bool {
+    let line = line.trim();
+    if line == ")" {
+        return true;
+    }
+    if let Some(spec) = retract_spec_token(line) {
+        specs.push(spec);
+    }
+    retract_block_closed(line)
+}
+
+fn retract_block_closed(line: &str) -> bool {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        return rest[end + 1..].trim() == ")";
+    }
+    line.split_ascii_whitespace().any(|tok| tok == ")")
+}
+
+/// One retract operand: a `v…` token, or the raw `[low, high]` text.
+fn retract_spec_token(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || line == "(" || line == ")" {
+        return None;
+    }
+    if line.starts_with('[') {
+        let end = line.find(']')?;
+        let spec = &line[..=end];
+        if spec.contains(',') {
+            return Some(spec.to_owned());
+        }
+        return None;
+    }
+    let token = line.split_ascii_whitespace().next()?;
+    if token == ")" {
+        return None;
+    }
+    token.starts_with('v').then(|| token.to_owned())
+}
+
+fn retract_spec_covers(spec: &str, raw_version: &str, parsed: Option<&version::GoVersion>) -> bool {
+    let spec = spec.trim();
+    if let Some(inner) = spec.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        let Some(version) = parsed else {
+            return false;
+        };
+        return retract_range_covers(inner, version);
+    }
+    if let Some(version) = parsed
+        && let Some(spec_v) = version::GoVersion::parse(spec)
+    {
+        return version.cmp(&spec_v).is_eq();
+    }
+    spec == raw_version
+}
+
+fn retract_range_covers(inner: &str, version: &version::GoVersion) -> bool {
+    let Some((low_s, high_s)) = inner.split_once(',') else {
+        return false;
+    };
+    let low_s = low_s.trim();
+    let high_s = high_s.trim();
+    if low_s.is_empty() || high_s.is_empty() || high_s.contains(',') {
+        return false;
+    }
+    let Some(low) = version::GoVersion::parse(low_s) else {
+        return false;
+    };
+    let Some(high) = version::GoVersion::parse(high_s) else {
+        return false;
+    };
+    version.cmp(&low).is_ge() && version.cmp(&high).is_le()
+}
+
 /// Extract the module path from a `require` line entry.
 fn extract_require_path(line: &str) -> Option<String> {
     // Strip `// indirect` comment.
@@ -608,6 +763,92 @@ exclude github.com/bad/pkg v0.0.1
         assert!(facts.description.is_none());
         assert!(facts.license.is_none());
         assert!(!facts.has_license_file);
+    }
+
+    #[test]
+    fn retract_specs_single_version() {
+        let text = "module example.com/foo\n\nretract v1.0.0\n";
+        assert_eq!(retract_specs(text), vec!["v1.0.0".to_owned()]);
+    }
+
+    #[test]
+    fn retract_specs_block_versions_and_range() {
+        let text = "\
+module example.com/foo
+
+retract (
+    v1.0.0
+    v1.2.0
+    [v1.3.0, v1.4.0]
+)
+";
+        let specs = retract_specs(text);
+        assert_eq!(specs, vec![
+            "v1.0.0".to_owned(),
+            "v1.2.0".to_owned(),
+            "[v1.3.0, v1.4.0]".to_owned(),
+        ]);
+        assert!(version_retracted("v1.0.0", &specs));
+        assert!(version_retracted("v1.2.0", &specs));
+        assert!(version_retracted("v1.3.0", &specs));
+        assert!(version_retracted("v1.3.5", &specs));
+        assert!(version_retracted("v1.4.0", &specs));
+        assert!(!version_retracted("v1.2.1", &specs));
+        assert!(!version_retracted("v1.4.1", &specs));
+    }
+
+    #[test]
+    fn retract_specs_ignores_comment_only_lines() {
+        let text = "\
+module example.com/foo
+
+// retract v9.9.9
+retract (
+    // retracted for a security issue
+    v1.0.0 // accidental publish
+    // comment-only line between specs
+    [v1.1.0, v1.2.0]
+)
+";
+        assert_eq!(retract_specs(text), vec![
+            "v1.0.0".to_owned(),
+            "[v1.1.0, v1.2.0]".to_owned()
+        ]);
+    }
+
+    #[test]
+    fn retract_specs_single_line_range_and_other_directives() {
+        let text = "\
+module example.com/foo
+
+require (
+    github.com/a/b v1.2.3
+)
+
+exclude github.com/a/b v1.2.3
+
+retract [v1.0.0, v1.2.0]
+";
+        assert_eq!(retract_specs(text), vec!["[v1.0.0, v1.2.0]".to_owned()]);
+    }
+
+    #[test]
+    fn version_retracted_exact_token_and_inclusive_range() {
+        let specs = vec!["v1.0.0".to_owned(), "[v1.9.0, v1.10.0]".to_owned()];
+        assert!(version_retracted("v1.0.0", &specs));
+        assert!(!version_retracted("v1.0.1", &specs));
+        // Go version order ignores +incompatible.
+        assert!(version_retracted("v1.0.0+incompatible", &specs));
+        assert!(version_retracted("v1.9.0", &specs));
+        assert!(version_retracted("v1.10.0", &specs));
+        // v1.10.0-alpha sits inside [v1.9.0, v1.10.0] under Go version order.
+        assert!(version_retracted("v1.10.0-alpha", &specs));
+        assert!(!version_retracted("v1.8.9", &specs));
+        assert!(!version_retracted("v1.10.1", &specs));
+        assert!(version_retracted("not-a-version", &[
+            "not-a-version".to_owned()
+        ]));
+        assert!(!version_retracted("not-a-version", &specs));
     }
 
     #[test]

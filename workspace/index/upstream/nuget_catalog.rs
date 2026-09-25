@@ -15,9 +15,15 @@
 //!    change.
 //!
 //! 3. **Catalog leaf** (individual URL) — one JSON document that describes the
-//!    event: the `@type` field is the discriminant.
-//!    - `nuget:PackageDetails` → Published (or a re-list if `listed == true`).
-//!    - `nuget:PackageDelete` → Withdrawn (hard delete).
+//!    event. `@type` is the discriminant and is either a string or an array of
+//!    strings. Page items use `nuget:PackageDetails` / `nuget:PackageDelete`
+//!    with `nuget:id` / `nuget:version`. Leaf bodies use `PackageDetails` /
+//!    `PackageDelete` (often beside `catalog:Permalink`) with `id` / `version`.
+//!    Both shapes parse; unrecognized type tokens are ignored, and a leaf whose
+//!    types are all unrecognized is skipped.
+//!    - `PackageDetails` / `nuget:PackageDetails` with `listed != false` →
+//!      Published (including a re-list).
+//!    - `PackageDelete` / `nuget:PackageDelete` → Withdrawn (hard delete).
 //!    - `PackageDetails` with `listed == false` → Withdrawn (soft unlist).
 //!
 //! # Cursor encoding
@@ -87,16 +93,22 @@ struct CatalogPage {
 }
 
 /// Catalog leaf JSON.
+///
+/// Accepts the page-item names (`nuget:id`, `nuget:version`, `@type` =
+/// `nuget:PackageDetails` / `nuget:PackageDelete`) and the leaf-body names
+/// (`id`, `version`, `@type` = `PackageDetails` / `PackageDelete`). `@type`
+/// may be a string or an array of strings. The first recognized token wins;
+/// unknown tokens such as `catalog:Permalink` are ignored.
 #[derive(Deserialize)]
 struct CatalogLeaf {
-    /// Discriminant: `"nuget:PackageDetails"` or `"nuget:PackageDelete"`.
-    #[serde(rename = "@type")]
+    /// Discriminant: page-item or leaf-body `@type`, as a string or an array.
+    #[serde(rename = "@type", deserialize_with = "deserialize_leaf_type")]
     leaf_type: LeafType,
-    /// The package id (name).
-    #[serde(rename = "nuget:id")]
+    /// The package id (name): `nuget:id` on page items, `id` on leaf bodies.
+    #[serde(rename = "nuget:id", alias = "id")]
     package_id: Option<String>,
-    /// The package version.
-    #[serde(rename = "nuget:version")]
+    /// The package version: `nuget:version` on page items, `version` on leaf bodies.
+    #[serde(rename = "nuget:version", alias = "version")]
     package_version: Option<String>,
     /// `false` means the version is unlisted (soft Withdrawn).
     #[serde(default = "default_listed")]
@@ -107,14 +119,63 @@ fn default_listed() -> bool {
     true
 }
 
-#[derive(Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum LeafType {
-    #[serde(rename = "nuget:PackageDetails")]
     PackageDetails,
-    #[serde(rename = "nuget:PackageDelete")]
     PackageDelete,
-    #[serde(other)]
     Unknown,
+}
+
+/// `@type` as it appears on the wire: one string, or an array of strings.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawLeafType {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_leaf_type<'de, D>(deserializer: D) -> Result<LeafType, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(leaf_type_from_raw(RawLeafType::deserialize(deserializer)?))
+}
+
+fn leaf_type_from_raw(raw: RawLeafType) -> LeafType {
+    match raw {
+        RawLeafType::One(token) => recognized_leaf_type(&token).unwrap_or(LeafType::Unknown),
+        RawLeafType::Many(tokens) => tokens
+            .iter()
+            .find_map(|token| recognized_leaf_type(token))
+            .unwrap_or(LeafType::Unknown),
+    }
+}
+
+/// Page-item types are prefixed `nuget:`; leaf bodies use the short name.
+fn recognized_leaf_type(token: &str) -> Option<LeafType> {
+    match token {
+        "PackageDetails" | "nuget:PackageDetails" => Some(LeafType::PackageDetails),
+        "PackageDelete" | "nuget:PackageDelete" => Some(LeafType::PackageDelete),
+        _ => None,
+    }
+}
+
+/// Classify a parsed catalog leaf.
+///
+/// `PackageDelete` is a hard delete (always [`CatalogEvent::Withdrawn`]).
+/// `PackageDetails` is [`CatalogEvent::Published`] unless `listed` is false
+/// (soft unlist). Missing id/version or an unrecognized `@type` yields `None`;
+/// the follower skips those leaves.
+fn event_from_leaf(leaf: CatalogLeaf) -> Option<CatalogEvent> {
+    let (Some(name), Some(version)) = (leaf.package_id, leaf.package_version) else {
+        return None;
+    };
+    match leaf.leaf_type {
+        LeafType::PackageDelete => Some(CatalogEvent::Withdrawn { name, version }),
+        LeafType::PackageDetails if !leaf.listed => Some(CatalogEvent::Withdrawn { name, version }),
+        LeafType::PackageDetails => Some(CatalogEvent::Published { name, version }),
+        LeafType::Unknown => None,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,31 +283,16 @@ impl NuGetCatalogFollower {
                 }
             };
 
-            // Need both id and version to produce an event.
-            let (Some(name), Some(version)) = (leaf.package_id, leaf.package_version) else {
+            // Need both id and version to produce an event. Unknown `@type`
+            // values are skipped. Classification itself lives in `event_from_leaf`.
+            let missing_identity = leaf.package_id.is_none() || leaf.package_version.is_none();
+            if let Some(event) = event_from_leaf(leaf) {
+                events.push(event);
+            } else if missing_identity {
                 tracing::debug!(url = %leaf_entry.url, "NuGet catalog leaf missing id/version; skipping");
-                continue;
-            };
-
-            let event = match leaf.leaf_type {
-                LeafType::PackageDelete => {
-                    // Hard delete: always Withdrawn.
-                    CatalogEvent::Withdrawn { name, version }
-                }
-                LeafType::PackageDetails if !leaf.listed => {
-                    // Soft unlist: catalogEntry.listed == false → Withdrawn.
-                    CatalogEvent::Withdrawn { name, version }
-                }
-                LeafType::PackageDetails => {
-                    // Normal publish (listed == true).
-                    CatalogEvent::Published { name, version }
-                }
-                LeafType::Unknown => {
-                    tracing::debug!(url = %leaf_entry.url, "unknown NuGet leaf @type; skipping");
-                    continue;
-                }
-            };
-            events.push(event);
+            } else {
+                tracing::debug!(url = %leaf_entry.url, "unknown NuGet leaf @type; skipping");
+            }
         }
 
         // ── Step 5: advance the cursor to this page's commitTimeStamp ─────────
@@ -272,5 +318,151 @@ impl CatalogFollower for NuGetCatalogFollower {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tests (offline — wiremock-style via axum on 127.0.0.1:0)
+// Tests (offline — leaf JSON only, no HTTP)
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_event(json: &str) -> Option<CatalogEvent> {
+        let leaf: CatalogLeaf = serde_json::from_str(json).expect("catalog leaf JSON");
+        event_from_leaf(leaf)
+    }
+
+    fn assert_published(event: Option<CatalogEvent>, name: &str, version: &str) {
+        match event {
+            Some(CatalogEvent::Published {
+                name: got_name,
+                version: got_version,
+            }) => {
+                assert_eq!(got_name, name);
+                assert_eq!(got_version, version);
+            }
+            other => panic!("expected Published {name} {version}, got {other:?}"),
+        }
+    }
+
+    fn assert_withdrawn(event: Option<CatalogEvent>, name: &str, version: &str) {
+        match event {
+            Some(CatalogEvent::Withdrawn {
+                name: got_name,
+                version: got_version,
+            }) => {
+                assert_eq!(got_name, name);
+                assert_eq!(got_version, version);
+            }
+            other => panic!("expected Withdrawn {name} {version}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leaf_body_package_details_publishes_and_package_delete_withdraws() {
+        // Realistic NuGet leaf body: short names, `@type` as an array that also
+        // carries the permalink type. `listed: true` is a publish.
+        let published = parse_event(
+            r#"{
+                "@id": "https://api.nuget.org/v3/catalog0/data/2015.02.01.06.22.45/newtonsoft.json.13.0.3.json",
+                "@type": ["PackageDetails", "catalog:Permalink"],
+                "catalog:commitId": "1d6c0d3e-3f3f-4c3e-8f3e-1d6c0d3e3f3f",
+                "catalog:commitTimeStamp": "2015-02-01T06:22:45.8488496Z",
+                "id": "Newtonsoft.Json",
+                "listed": true,
+                "published": "2015-02-01T06:22:45.8488496Z",
+                "version": "13.0.3"
+            }"#,
+        );
+        assert_published(published, "Newtonsoft.Json", "13.0.3");
+
+        // Hard delete leaf. No `listed` field; the type alone withdraws.
+        let withdrawn = parse_event(
+            r#"{
+                "@id": "https://api.nuget.org/v3/catalog0/data/2015.02.01.06.22.45/newtonsoft.json.6.0.8.json",
+                "@type": ["PackageDelete", "catalog:Permalink"],
+                "catalog:commitId": "1d6c0d3e-3f3f-4c3e-8f3e-1d6c0d3e3f3f",
+                "catalog:commitTimeStamp": "2015-02-01T06:30:11.1234567Z",
+                "id": "Newtonsoft.Json",
+                "originalId": "Newtonsoft.Json",
+                "published": "2015-02-01T06:30:11.1234567Z",
+                "version": "6.0.8"
+            }"#,
+        );
+        assert_withdrawn(withdrawn, "Newtonsoft.Json", "6.0.8");
+
+        // Page-item names and a string `@type` still classify.
+        let page_item = parse_event(
+            r#"{
+                "@id": "https://api.nuget.org/v3/catalog0/data/2015.02.01.06.22.45/adam.jsgenerator.1.1.0.json",
+                "@type": "nuget:PackageDetails",
+                "commitTimeStamp": "2015-02-01T06:22:45.8488496Z",
+                "nuget:id": "Adam.JSGenerator",
+                "nuget:version": "1.1.0"
+            }"#,
+        );
+        assert_published(page_item, "Adam.JSGenerator", "1.1.0");
+
+        let page_delete = parse_event(
+            r#"{
+                "@type": "nuget:PackageDelete",
+                "nuget:id": "Adam.JSGenerator",
+                "nuget:version": "1.0.0"
+            }"#,
+        );
+        assert_withdrawn(page_delete, "Adam.JSGenerator", "1.0.0");
+
+        // Short names as a single string (not only as an array).
+        let string_details = parse_event(
+            r#"{
+                "@type": "PackageDetails",
+                "id": "Serilog",
+                "version": "3.1.1",
+                "listed": true
+            }"#,
+        );
+        assert_published(string_details, "Serilog", "3.1.1");
+
+        // Soft unlist on a leaf body.
+        let unlisted = parse_event(
+            r#"{
+                "@type": ["PackageDetails", "catalog:Permalink"],
+                "id": "Newtonsoft.Json",
+                "version": "13.0.1",
+                "listed": false
+            }"#,
+        );
+        assert_withdrawn(unlisted, "Newtonsoft.Json", "13.0.1");
+
+        // Unknown types still skip, including an array of only unknown tokens
+        // and a permalink that precedes a recognized type (the recognized one wins).
+        assert!(
+            parse_event(
+                r#"{
+                    "@type": "catalog:Permalink",
+                    "id": "Newtonsoft.Json",
+                    "version": "13.0.3"
+                }"#,
+            )
+            .is_none()
+        );
+        assert!(
+            parse_event(
+                r#"{
+                    "@type": ["catalog:Permalink"],
+                    "id": "Newtonsoft.Json",
+                    "version": "13.0.3",
+                    "listed": true
+                }"#,
+            )
+            .is_none()
+        );
+        let permalink_first = parse_event(
+            r#"{
+                "@type": ["catalog:Permalink", "PackageDetails"],
+                "id": "Newtonsoft.Json",
+                "version": "13.0.3",
+                "listed": true
+            }"#,
+        );
+        assert_published(permalink_first, "Newtonsoft.Json", "13.0.3");
+    }
+}

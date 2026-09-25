@@ -166,6 +166,19 @@ impl ScratchStore {
         Ok(())
     }
 
+    /// Replace a job's JSON payload.
+    ///
+    /// The queue stores a retry gate (`not_before`, unix milliseconds) inside
+    /// this blob — the jobs table has no dedicated column, and the dequeue
+    /// read already returns `payload`.
+    pub fn set_job_payload(&self, job_key: &str, payload: Option<&str>) -> Result<(), Error> {
+        self.connection.execute(
+            "UPDATE jobs SET payload = ?1 WHERE job_key = ?2",
+            rusqlite::params![payload, job_key],
+        )?;
+        Ok(())
+    }
+
     // ── wanted ────────────────────────────────────────────────────────────────
 
     /// Record that a client wants `coordinate` compiled, returning the new row id.

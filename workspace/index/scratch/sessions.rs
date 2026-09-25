@@ -3,9 +3,9 @@
 //! When a client opens a read session it is pinned to whichever catalog writer
 //! host served the open request. Every subsequent request in that session must
 //! be routed to the same writer so that reads see their own writes. The
-//! [`writer_for`] function enforces this contract: given a session id it returns
-//! the sticky `writer_host`, or `None` if the session has expired or never
-//! existed.
+//! [`writer_for`] function enforces this contract: given a session id it
+//! returns the sticky `writer_host`, or `None` if the session has expired or
+//! never existed.
 //!
 //! Sessions are ephemeral. On restart all sessions are implicitly gone and
 //! clients must re-open. The `sessions` table is delete-anytime.
@@ -19,7 +19,8 @@ use rusqlite::{Connection, OptionalExtension, Result, params};
 /// A single row from the `sessions` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRow {
-    /// UUID string identifying this session (client-supplied or server-generated).
+    /// UUID string identifying this session (client-supplied or
+    /// server-generated).
     pub session_id: String,
     /// The writer host this session is permanently pinned to.
     ///
@@ -30,7 +31,8 @@ pub struct SessionRow {
     pub created_at: i64,
     /// Unix timestamp (seconds) of the most recent activity on this session.
     pub last_seen_at: i64,
-    /// Optional JSON-encoded exploration graph for interactive navigation sessions.
+    /// Optional JSON-encoded exploration graph for interactive navigation
+    /// sessions.
     pub graph_state: Option<String>,
 }
 
@@ -133,10 +135,9 @@ pub fn set_graph_state(
 ///
 /// No-ops silently if the session does not exist.
 pub fn delete(connection: &Connection, session_id: &str) -> Result<()> {
-    connection.execute(
-        "DELETE FROM sessions WHERE session_id = ?1",
-        params![session_id],
-    )?;
+    connection.execute("DELETE FROM sessions WHERE session_id = ?1", params![
+        session_id
+    ])?;
     Ok(())
 }
 

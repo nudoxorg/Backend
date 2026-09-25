@@ -20,6 +20,7 @@ pub mod alias;
 /// Typed ID-8 ranking factors. The cascade in `ranking` is the lexical
 /// pipeline; this module is the scored fusion with named weights.
 pub mod factors;
+pub mod id8;
 pub mod health;
 pub mod pipeline;
 pub mod spell;
