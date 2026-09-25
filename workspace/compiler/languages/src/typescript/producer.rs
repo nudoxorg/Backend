@@ -603,6 +603,48 @@ mod tests {
                 "m",
             ),
             (
+                "visibility",
+                "namespace N { export function f(): void; }\n\
+                 namespace N { function f(): void; }\n",
+                "f",
+            ),
+            (
+                "getter",
+                "namespace N { export interface I { get f(): string; } }\n\
+                 namespace N { export interface I { f(): string; } }\n",
+                "f",
+            ),
+            (
+                "readonly-index",
+                "namespace N { export interface I { [k: string]: string; } }\n\
+                 namespace N { export interface I { readonly [k: string]: string; } }\n",
+                "__index",
+            ),
+            (
+                "call-this",
+                "namespace N { export interface I { (this: string, x: number): void; } }\n\
+                 namespace N { export interface I { (this: boolean, x: number): void; } }\n",
+                "I",
+            ),
+            (
+                "abstract-new",
+                "namespace N { export type T = new () => object; }\n\
+                 namespace N { export type T = abstract new () => object; }\n",
+                "T",
+            ),
+            (
+                "class-index",
+                "namespace N { export class C { [k: string]: string; } }\n\
+                 namespace N { export class C { [k: string]: number; } }\n",
+                "C",
+            ),
+            (
+                "object-index",
+                "namespace N { export interface I { a: { [k: string]: string }; } }\n\
+                 namespace N { export interface I { a: { [k: string]: number }; } }\n",
+                "a",
+            ),
+            (
                 "docs",
                 "namespace N { /** one */ export interface I { x: string; } }\n\
                  namespace N { /** two */ export interface I { x: string; } }\n",

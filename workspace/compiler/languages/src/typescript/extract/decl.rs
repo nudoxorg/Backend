@@ -1242,6 +1242,7 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
         has_body,
         receiver,
         this_ty,
+        abstract_construct: false,
         span_start: span.start,
         span_end: span.end,
     }
@@ -1484,11 +1485,33 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str, semantic: &'a Semantic<'a>)
         }
     }
 
+    let index_signatures = cls
+        .body
+        .body
+        .iter()
+        .filter_map(|elem| {
+            let ClassElement::TSIndexSignature(idx) = elem else {
+                return None;
+            };
+            let param = idx.parameters.first()?;
+            let idx_span = idx.span();
+            Some(IndexSignatureFact {
+                key_name: param.name.as_str().to_string(),
+                key_ty: lower_ts_type(&param.type_annotation.type_annotation, source),
+                value_ty: lower_ts_type(&idx.type_annotation.type_annotation, source),
+                readonly: idx.readonly,
+                span_start: idx_span.start,
+                span_end: idx_span.end,
+            })
+        })
+        .collect();
+
     ClassBody {
         generics,
         extends,
         implements,
         members,
+        index_signatures,
         is_abstract,
         decorators,
     }
@@ -1746,6 +1769,7 @@ fn lower_interface<'a>(
                         ReceiverKind::None
                     },
                     this_ty,
+                    abstract_construct: false,
                     span_start: m_span.start,
                     span_end: m_span.end,
                 };
@@ -1755,6 +1779,17 @@ fn lower_interface<'a>(
                     modifiers,
                     doc: jsdoc::jsdoc_for_span(semantic, m_span),
                     is_overload: false,
+                    signature_kind: match m.kind {
+                        oxc_ast::ast::TSMethodSignatureKind::Get => {
+                            crate::typescript::extract::SignatureKind::Get
+                        }
+                        oxc_ast::ast::TSMethodSignatureKind::Set => {
+                            crate::typescript::extract::SignatureKind::Set
+                        }
+                        oxc_ast::ast::TSMethodSignatureKind::Method => {
+                            crate::typescript::extract::SignatureKind::Method
+                        }
+                    },
                 });
             }
             TSSignature::TSPropertySignature(p) => {
@@ -1791,6 +1826,12 @@ fn lower_interface<'a>(
                     .as_ref()
                     .map(|tp| lower_type_params(tp, source))
                     .unwrap_or_default();
+                let this_ty = c.this_param.as_ref().and_then(|param| {
+                    param
+                        .type_annotation
+                        .as_ref()
+                        .map(|ann| lower_ts_type(&ann.type_annotation, source))
+                });
                 let c_span = c.span();
                 call_signatures.push(FunctionBody {
                     generics,
@@ -1799,8 +1840,13 @@ fn lower_interface<'a>(
                     is_async: false,
                     is_generator: false,
                     has_body: false,
-                    receiver: ReceiverKind::None,
-                    this_ty: None,
+                    receiver: if this_ty.is_some() {
+                        ReceiverKind::SharedRef
+                    } else {
+                        ReceiverKind::None
+                    },
+                    this_ty,
+                    abstract_construct: false,
                     span_start: c_span.start,
                     span_end: c_span.end,
                 });
@@ -1819,6 +1865,7 @@ fn lower_interface<'a>(
                         key_name,
                         key_ty,
                         value_ty,
+                        readonly: idx.readonly,
                         span_start: idx_span.start,
                         span_end: idx_span.end,
                     });
@@ -1846,6 +1893,7 @@ fn lower_interface<'a>(
                     has_body: false,
                     receiver: ReceiverKind::None,
                     this_ty: None,
+                    abstract_construct: false,
                     span_start: cs_span.start,
                     span_end: cs_span.end,
                 });

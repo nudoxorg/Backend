@@ -289,6 +289,7 @@ pub struct ClassBody {
     pub extends: Vec<TypeOwned>,
     pub implements: Vec<TypeOwned>,
     pub members: Vec<MemberFact>,
+    pub index_signatures: Vec<IndexSignatureFact>,
     pub is_abstract: bool,
     /// Decorators on the class itself.
     pub decorators: Vec<AttrTok>,
@@ -324,6 +325,8 @@ pub struct FunctionBody {
     pub receiver: ReceiverKind,
     /// Type of an explicit `this` parameter, when the source wrote one.
     pub this_ty: Option<TypeOwned>,
+    /// `abstract new` constructor types. Ordinary functions leave this false.
+    pub abstract_construct: bool,
     /// Byte span of the declaring node: the `Function` AST node for a
     /// top-level function or a class method/constructor's value, or the
     /// whole signature node (`TSMethodSignature`, `TSCallSignatureDeclaration`,
@@ -362,6 +365,7 @@ pub struct IndexSignatureFact {
     pub key_ty: TypeOwned,
     /// The value type.
     pub value_ty: TypeOwned,
+    pub readonly: bool,
     /// Byte span of the `TSIndexSignature` node.
     pub span_start: u32,
     pub span_end: u32,
@@ -402,6 +406,15 @@ pub struct MethodFact {
     pub doc: DocFacts,
     /// True for overload signatures.
     pub is_overload: bool,
+    /// `get` / `set` / method on an interface signature.
+    pub signature_kind: SignatureKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureKind {
+    Method,
+    Get,
+    Set,
 }
 
 #[derive(Debug)]

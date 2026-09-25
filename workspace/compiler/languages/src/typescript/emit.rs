@@ -553,6 +553,7 @@ fn emit_interface(
             has_body: false,
             receiver: crate::typescript::extract::ReceiverKind::SharedRef,
             this_ty: None,
+            abstract_construct: false,
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
@@ -759,6 +760,7 @@ fn emit_class(
                     has_body: true,
                     receiver: ReceiverKind::None,
                     this_ty: None,
+            abstract_construct: false,
                     span_start: member.span_start,
                     span_end: member.span_end,
                 };
@@ -767,6 +769,48 @@ fn emit_class(
             // Fields / Accessors were already emitted above.
             MemberKind::Property { .. } | MemberKind::Accessor { .. } => {}
         }
+    }
+    for (idx_num, idx_sig) in body.index_signatures.iter().enumerate() {
+        let index_member = if idx_num == 0 {
+            "__index".to_string()
+        } else {
+            format!("__index_{idx_num}")
+        };
+        let idx_id = child_id(&id, &index_member, 3_000_000 + idx_num as u32);
+        let idx_sym = Symbol {
+            name: index_member,
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: id.module.clone(),
+            span: (idx_sig.span_start as usize)..(idx_sig.span_end as usize),
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        let index_fn_body = FunctionBody {
+            generics: Vec::new(),
+            params: vec![crate::typescript::extract::ParamFact {
+                name: idx_sig.key_name.clone(),
+                ty: Some(idx_sig.key_ty.clone()),
+                is_optional: false,
+                is_rest: false,
+                is_readonly: false,
+                span_start: idx_sig.span_start,
+                span_end: idx_sig.span_end,
+            }],
+            return_type: Some(idx_sig.value_ty.clone()),
+            is_async: false,
+            is_generator: false,
+            has_body: false,
+            receiver: ReceiverKind::None,
+            this_ty: None,
+            abstract_construct: false,
+            span_start: idx_sig.span_start,
+            span_end: idx_sig.span_end,
+        };
+        emit_function(idx_id, Some(id.clone()), idx_sym, &index_fn_body, out, names);
     }
 }
 
@@ -1809,7 +1853,10 @@ fn consider_owned(
 /// Two files are twins when they share a parent directory and the same stem
 /// after a whole-suffix strip (not `Path::extension`).
 struct KeptBody {
+    /// Body only. Twin files with this skeleton collapse.
     skeleton: String,
+    /// Body plus visibility and docs. Same-file copies collapse only when this matches.
+    same_file: String,
     path: PathBuf,
 }
 
@@ -1931,15 +1978,20 @@ fn admit_decls(
             None => decl.name.clone(),
         };
         let preferred = decl.decl_index;
-        let skel = format!("{}{}", doc_skeleton(&decl.doc), body_skeleton(&decl.body));
+        let skel = body_skeleton(&decl.body);
+        let same_file = format!("{:?}{}{}", decl.visibility, doc_skeleton(&decl.doc), skel);
         let origin = (decl.module.clone(), qual.clone(), preferred, decl.span_start);
         let slot = (canonical.clone(), qual.clone(), preferred);
-        let existing = occupied
-            .get(&slot)
-            .map(|kept| (kept.skeleton.clone(), kept.path.clone()));
+        let existing = occupied.get(&slot).map(|kept| {
+            (
+                kept.skeleton.clone(),
+                kept.same_file.clone(),
+                kept.path.clone(),
+            )
+        });
         match existing {
-            Some((kept_skel, kept_path)) if kept_path == decl.module => {
-                if kept_skel == skel {
+            Some((_, kept_same, kept_path)) if kept_path == decl.module => {
+                if kept_same == same_file {
                     // The same body written twice in one file (interface
                     // merging, a twin copy pasted beside the original). One
                     // entry is the declaration.
@@ -1953,12 +2005,13 @@ fn admit_decls(
                         (canonical.clone(), qual.clone(), fresh),
                         KeptBody {
                             skeleton: skel,
+                            same_file: same_file.clone(),
                             path: decl.module.clone(),
                         },
                     );
                 }
             }
-            Some((kept_skel, _)) if kept_skel == skel => {
+            Some((kept_skel, _, _)) if kept_skel == skel => {
                 skip.insert(origin);
                 extra_paths
                     .entry(TsId::new(canonical.clone(), qual.clone(), preferred))
@@ -1970,12 +2023,14 @@ fn admit_decls(
                 disc.insert(origin, fresh);
                 occupied.insert((canonical.clone(), qual.clone(), fresh), KeptBody {
                     skeleton: skel,
+                    same_file,
                     path: decl.module.clone(),
                 });
             }
             None => {
                 occupied.insert(slot, KeptBody {
                     skeleton: skel,
+                    same_file,
                     path: decl.module.clone(),
                 });
             }
@@ -2177,6 +2232,9 @@ fn function_skeleton(f: &FunctionBody) -> String {
         receiver_mark(f.receiver),
         generics_skeleton(&f.generics)
     );
+    if f.abstract_construct {
+        s.push_str("abstract-new;");
+    }
     if let Some(this_ty) = &f.this_ty {
         s.push_str("this:");
         s.push_str(&type_skeleton(this_ty));
@@ -2274,6 +2332,18 @@ fn body_skeleton(body: &DeclBody) -> String {
                 }
                 s.push(';');
             }
+            for index in &c.index_signatures {
+                s.push_str("index:");
+                if index.readonly {
+                    s.push_str("ro ");
+                }
+                s.push_str(&index.key_name);
+                s.push(':');
+                s.push_str(&type_skeleton(&index.key_ty));
+                s.push_str("->");
+                s.push_str(&type_skeleton(&index.value_ty));
+                s.push(';');
+            }
             s
         }
         DeclBody::Interface(i) => {
@@ -2291,6 +2361,11 @@ fn body_skeleton(body: &DeclBody) -> String {
                     s.push_str(":ov");
                 }
                 s.push(':');
+                s.push_str(match method.signature_kind {
+                    crate::typescript::extract::SignatureKind::Method => "method:",
+                    crate::typescript::extract::SignatureKind::Get => "get:",
+                    crate::typescript::extract::SignatureKind::Set => "set:",
+                });
                 s.push_str(&method.name);
                 s.push(':');
                 s.push_str(&function_skeleton(&method.sig));
@@ -2315,6 +2390,9 @@ fn body_skeleton(body: &DeclBody) -> String {
             }
             for index in &i.index_signatures {
                 s.push_str("index:");
+                if index.readonly {
+                    s.push_str("ro ");
+                }
                 s.push_str(&index.key_name);
                 s.push(':');
                 s.push_str(&type_skeleton(&index.key_ty));

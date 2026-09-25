@@ -179,6 +179,7 @@ fn lower_ts_type_impl<'a>(
                     ReceiverKind::None
                 },
                 this_ty,
+                abstract_construct: false,
                 span_start: span.start,
                 span_end: span.end,
             }))
@@ -389,6 +390,7 @@ fn lower_ts_type_impl<'a>(
                                 has_body: false,
                                 receiver: ReceiverKind::None,
                 this_ty: None,
+                abstract_construct: false,
                                 span_start: span.start,
                                 span_end: span.end,
                             })),
@@ -396,8 +398,36 @@ fn lower_ts_type_impl<'a>(
                             readonly: false,
                         });
                     }
-                    // Index signatures, call signatures, construct signatures — skip.
-                    _ => {}
+                    TSSignature::TSIndexSignature(idx) => {
+                        if let Some(param) = idx.parameters.first() {
+                            let key_ty = lower_ts_type_impl(
+                                &param.type_annotation.type_annotation,
+                                source,
+                                type_params,
+                            );
+                            let value_ty = lower_ts_type_impl(
+                                &idx.type_annotation.type_annotation,
+                                source,
+                                type_params,
+                            );
+                            let prefix = if idx.readonly { "readonly " } else { "" };
+                            members.push(AnonFieldOwned {
+                                name: format!("{prefix}[{}:{:?}]", param.name, key_ty),
+                                ty: value_ty,
+                                optional: false,
+                                readonly: idx.readonly,
+                            });
+                        }
+                    }
+                    TSSignature::TSCallSignatureDeclaration(call) => {
+                        members.push(object_signature_field("()", call_like(call, source, type_params)));
+                    }
+                    TSSignature::TSConstructSignatureDeclaration(ctor) => {
+                        members.push(object_signature_field(
+                            "new",
+                            construct_like(ctor, source, type_params),
+                        ));
+                    }
                 }
             }
             TypeOwned::ObjectLiteral(members)
@@ -439,6 +469,7 @@ fn lower_ts_type_impl<'a>(
                 has_body: false,
                 receiver: ReceiverKind::None,
                 this_ty: None,
+                abstract_construct: c.r#abstract,
                 span_start: span.start,
                 span_end: span.end,
             }))
@@ -607,6 +638,87 @@ fn lower_ts_tuple_element<'a>(
                 |ty| lower_ts_type_impl(ty, source, type_params),
             )
         }
+    }
+}
+
+fn object_signature_field(name: &str, body: FunctionBody) -> AnonFieldOwned {
+    AnonFieldOwned {
+        name: name.to_string(),
+        ty: TypeOwned::Function(Box::new(body)),
+        optional: false,
+        readonly: false,
+    }
+}
+
+fn call_like<'a>(
+    call: &oxc_ast::ast::TSCallSignatureDeclaration<'a>,
+    source: &'a str,
+    type_params: Option<&std::collections::HashSet<String>>,
+) -> FunctionBody {
+    signature_body(
+        &call.params,
+        call.return_type.as_deref(),
+        call.type_parameters.as_deref(),
+        call.this_param.as_deref(),
+        call.span(),
+        source,
+        type_params,
+        false,
+    )
+}
+
+fn construct_like<'a>(
+    ctor: &oxc_ast::ast::TSConstructSignatureDeclaration<'a>,
+    source: &'a str,
+    type_params: Option<&std::collections::HashSet<String>>,
+) -> FunctionBody {
+    signature_body(
+        &ctor.params,
+        ctor.return_type.as_deref(),
+        ctor.type_parameters.as_deref(),
+        None,
+        ctor.span(),
+        source,
+        type_params,
+        false,
+    )
+}
+
+fn signature_body<'a>(
+    params: &oxc_ast::ast::FormalParameters<'a>,
+    return_type: Option<&oxc_ast::ast::TSTypeAnnotation<'a>>,
+    type_parameters: Option<&oxc_ast::ast::TSTypeParameterDeclaration<'a>>,
+    this_param: Option<&oxc_ast::ast::TSThisParameter<'a>>,
+    span: oxc_span::Span,
+    source: &'a str,
+    type_params: Option<&std::collections::HashSet<String>>,
+    abstract_construct: bool,
+) -> FunctionBody {
+    let this_ty = this_param.and_then(|param| {
+        param
+            .type_annotation
+            .as_ref()
+            .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params))
+    });
+    FunctionBody {
+        generics: type_parameters
+            .map(|tp| lower_type_params(tp, source))
+            .unwrap_or_default(),
+        params: lower_formal_params(params, source, type_params),
+        return_type: return_type
+            .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params)),
+        is_async: false,
+        is_generator: false,
+        has_body: false,
+        receiver: if this_ty.is_some() {
+            ReceiverKind::SharedRef
+        } else {
+            ReceiverKind::None
+        },
+        this_ty,
+        abstract_construct,
+        span_start: span.start,
+        span_end: span.end,
     }
 }
 
