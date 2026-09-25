@@ -910,15 +910,7 @@ fn emit_type_alias(
         }
         TypeOwned::ObjectLiteral(fields) => {
             for field in fields {
-                let TypeOwned::Function(function) = &field.ty else {
-                    continue;
-                };
-                let owner = TsId::new(
-                    id.module.clone(),
-                    format!("{}::{}", id.name, field.name),
-                    id.discriminant,
-                );
-                declare_alias_params(&id, &owner, function, out, names);
+                declare_nested_params(&id, &id, &field.name, &field.ty, out, names);
             }
         }
         TypeOwned::Union(parts) => {
@@ -1074,15 +1066,14 @@ fn declare_nested_params(
         }
         TypeOwned::ObjectLiteral(fields) => {
             for field in fields {
-                let TypeOwned::Function(function) = &field.ty else {
-                    continue;
-                };
-                let inner_owner = TsId::new(
-                    alias.module.clone(),
-                    format!("{}::{param_name}::{}", owner.name, field.name),
-                    owner.discriminant,
+                declare_nested_params(
+                    alias,
+                    owner,
+                    &format!("{param_name}::{}", field.name),
+                    &field.ty,
+                    out,
+                    names,
                 );
-                declare_alias_params(alias, &inner_owner, function, out, names);
             }
         }
         TypeOwned::Union(parts) => {

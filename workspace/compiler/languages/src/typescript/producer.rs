@@ -2552,6 +2552,45 @@ mod tests {
     }
 
     #[test]
+    fn an_object_field_declares_bindings_inside_its_type() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"object-field","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export type Take = { bag: { read(left: number): void }; wrap: Promise<(left: string) => void> };\n\
+             export type Outer = (cb: { bag: { read(right: number): void } }) => void;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "object-field", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("object-field"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function nested in an object field must seal");
+        let left = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "left"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(left, 2, "each object field must declare its own left");
+        let right = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "right"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(right, 1, "a nested object field on a parameter must declare right");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
