@@ -1137,6 +1137,35 @@ mod tests {
     }
 
     #[test]
+    fn a_late_field_does_not_take_a_method_discriminant() {
+        // Method discs are `index * 1000`. A field's disc is its own index.
+        // Member 1's method and member 1000's field are the same number.
+        let mut source_text = String::from("export class C {\n  pad() {}\n  slot() {}\n");
+        for n in 2..1000 {
+            source_text.push_str(&format!("  f{n}: number;\n"));
+        }
+        source_text.push_str("  static slot: number;\n}\n");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"wide-class","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("index.d.ts"), &source_text).unwrap();
+        let source = PackageSource::new(dir.path(), "wide-class", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("wide-class"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a field past the method lattice must seal");
+        let slots = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "slot")
+            .count();
+        assert_eq!(slots, 2, "the method and the static field both survive");
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

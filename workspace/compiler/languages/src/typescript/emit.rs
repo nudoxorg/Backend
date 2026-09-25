@@ -678,7 +678,7 @@ fn emit_class(
     for (idx, member) in body.members.iter().enumerate() {
         match &member.kind {
             MemberKind::Property { ty } | MemberKind::Accessor { ty } => {
-                let field_id = child_id(&id, &member.name, idx as u32);
+                let field_id = child_id(&id, &member.name, class_field_disc(body, idx));
                 let fref: Ref<Field> = out.refer(field_id.clone());
                 field_refs.push(fref);
                 // Declare the field below after the Record.
@@ -2095,13 +2095,16 @@ fn reserve_enum_variants(
                                 // Fields use the member index itself, not
                                 // `index * 1000`. The first field is
                                 // discriminant 0, which a merged namespace
-                                // value of the same name also claims.
+                                // value of the same name also claims. A field
+                                // whose index lands on a same-named method
+                                // (`index * 1000`) moves, and the reservation
+                                // has to follow that disc.
                                 reserve_member(
                                     canonical,
                                     reserved,
                                     &qual,
                                     &member.name,
-                                    idx as u32,
+                                    class_field_disc(body, idx),
                                 );
                             }
                             MemberKind::Constructor(_) => {
@@ -2349,6 +2352,76 @@ fn param_id_for(owner: &TsId, param_name: &str, index: u32) -> TsId {
         ),
         index,
     )
+}
+
+/// A class field's discriminant.
+///
+/// The usual value is the member index, so a class whose fields never meet
+/// the method lattice keeps the ids it already sealed with. Method
+/// discriminants are `index * 1000`, so member 1000's field is the same
+/// number as member 1's method. Same name, same id, `finish` rejects the
+/// package. Step off those discs (and off any overload of that method).
+fn class_field_disc(body: &ClassBody, field_idx: usize) -> u32 {
+    let name = &body.members[field_idx].name;
+    let mut disc = field_idx as u32;
+    loop {
+        if !class_disc_taken(body, name, disc, field_idx) {
+            return disc;
+        }
+        if disc == u32::MAX {
+            return disc;
+        }
+        disc += 1;
+    }
+}
+
+fn class_disc_taken(body: &ClassBody, name: &str, disc: u32, except_idx: usize) -> bool {
+    for (idx, member) in body.members.iter().enumerate() {
+        if idx == except_idx {
+            continue;
+        }
+        let same_name = match &member.kind {
+            MemberKind::StaticBlock { name: block } => block == name,
+            _ => member.name == name,
+        };
+        if !same_name {
+            continue;
+        }
+        match &member.kind {
+            MemberKind::Method(sigs) => {
+                if sigs
+                    .iter()
+                    .enumerate()
+                    .any(|(overload_idx, _)| (idx * 1000 + overload_idx) as u32 == disc)
+                {
+                    return true;
+                }
+            }
+            MemberKind::Constructor(_) => {
+                if (idx * 1000) as u32 == disc {
+                    return true;
+                }
+            }
+            MemberKind::Property { .. }
+            | MemberKind::Accessor { .. }
+            | MemberKind::StaticBlock { .. } => {
+                if idx as u32 == disc {
+                    return true;
+                }
+            }
+        }
+    }
+    body.index_signatures
+        .iter()
+        .enumerate()
+        .any(|(idx_num, _)| {
+            let index_member = if idx_num == 0 {
+                "__index".to_string()
+            } else {
+                format!("__index_{idx_num}")
+            };
+            index_member == name && 3_000_000 + idx_num as u32 == disc
+        })
 }
 
 fn child_id(parent: &TsId, member: &str, local: u32) -> TsId {
