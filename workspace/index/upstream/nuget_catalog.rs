@@ -213,6 +213,7 @@ fn event_from_leaf(leaf: CatalogLeaf) -> Option<CatalogEvent> {
             name,
             version,
             dependencies,
+            checksum: None,
         }),
         LeafType::Unknown => None,
     }

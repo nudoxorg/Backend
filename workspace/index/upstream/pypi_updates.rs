@@ -116,6 +116,7 @@ fn event_from_item(title: &str, published: &str, since: &str) -> Option<(Catalog
             name: name.to_owned(),
             version: version.to_owned(),
             dependencies: Vec::new(),
+            checksum: None,
         },
         stamp,
     ))
@@ -254,6 +255,7 @@ mod tests {
             name: "zope.interface".into(),
             version: "6.0".into(),
             dependencies: Vec::new(),
+            checksum: None,
         }]);
         assert_eq!(page.latest, "2020-01-03T12:30:00");
         assert_eq!(

@@ -63,6 +63,8 @@ pub enum CatalogEvent {
         /// Direct dependency names the feed already carried. Empty when the
         /// feed has no manifest body.
         dependencies: Vec<String>,
+        /// Registry checksum hex, when the feed or version document carried one.
+        checksum: Option<String>,
     },
     /// A version was withdrawn (yanked/unlisted/deprecated).
     Withdrawn {
@@ -95,6 +97,14 @@ impl CatalogEvent {
         match self {
             CatalogEvent::Published { dependencies, .. } => dependencies,
             CatalogEvent::Withdrawn { .. } => &[],
+        }
+    }
+
+    /// Registry checksum hex, when this publish carried one.
+    pub fn checksum(&self) -> Option<&str> {
+        match self {
+            CatalogEvent::Published { checksum, .. } => checksum.as_deref(),
+            CatalogEvent::Withdrawn { .. } => None,
         }
     }
 }
@@ -136,6 +146,7 @@ pub async fn attach_document_dependencies(
             name,
             version,
             dependencies,
+            ..
         } = event
         else {
             continue;

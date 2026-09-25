@@ -183,7 +183,7 @@ impl<M: EmbeddingModel> Server<M> {
         cap: &WriteCap,
         coordinates: &PackageCoordinates,
     ) -> ServerResult<Initialized> {
-        self.ensure_initialized_with(cap, coordinates, &[]).await
+        self.ensure_initialized_with(cap, coordinates, &[], None).await
     }
 
     /// Like [`Self::ensure_initialized`], and when `dependencies` is non-empty
@@ -193,6 +193,7 @@ impl<M: EmbeddingModel> Server<M> {
         _cap: &WriteCap,
         coordinates: &PackageCoordinates,
         dependencies: &[String],
+        checksum: Option<&str>,
     ) -> ServerResult<Initialized> {
         let stores = self.base();
         let package = coordinates.id();
@@ -233,12 +234,15 @@ impl<M: EmbeddingModel> Server<M> {
         let enqueued = matches!(decision, InitializationDecision::Enqueue) && !already_pending;
         let wants_work = matches!(decision, InitializationDecision::Enqueue);
 
-        let published = crate::record::PackageRecord::published(
+        let mut published = crate::record::PackageRecord::published(
             coordinates.ecosystem(),
             coordinates.name.canonical(),
             coordinates.version.canonical(),
             dependencies,
         );
+        if let Some(digest) = checksum.and_then(crate::pid::sha256) {
+            published = published.with_content(digest);
+        }
         let fact_write = {
             let mut facts = self
                 .package_facts
@@ -253,7 +257,24 @@ impl<M: EmbeddingModel> Server<M> {
                     )
                     .is_some()
             {
-                crate::engine::turso_vc::FactWrite::Unchanged
+                match published.content {
+                    Some(digest) => facts
+                        .bind_content(
+                            coordinates.ecosystem().as_token(),
+                            coordinates.name.canonical().as_ref(),
+                            coordinates.version.canonical().as_ref(),
+                            digest,
+                        )
+                        .map_err(|error| {
+                            ServerError::Runtime(
+                                crate::server::registry::runtime::error::TextError::Io(
+                                    std::io::Error::other(error.to_string()),
+                                )
+                                .into(),
+                            )
+                        })?,
+                    None => crate::engine::turso_vc::FactWrite::Unchanged,
+                }
             } else {
                 facts.put_record(&published).map_err(|error| {
                     ServerError::Runtime(

@@ -5,7 +5,7 @@ use turso_versioning::orm::OrmResult;
 
 use crate::{pid::ContentDigest, record::PackageRecord};
 
-use super::turso_vc::VersionedCatalog;
+use super::turso_vc::{FactWrite, VersionedCatalog};
 
 impl VersionedCatalog {
     pub(super) fn retain_known_content(
@@ -24,6 +24,21 @@ impl VersionedCatalog {
         let mut kept = record.clone();
         kept.content = merge_content(prior, record.content);
         Ok(kept)
+    }
+
+    /// Set the artifact digest on an existing tip without dropping its edges.
+    pub fn bind_content(
+        &mut self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+        digest: crate::pid::ContentDigest,
+    ) -> OrmResult<FactWrite> {
+        let Some(mut record) = self.materialize(ecosystem, name, version)? else {
+            return Ok(FactWrite::Unchanged);
+        };
+        record.content = Some(digest);
+        self.put_record(&record)
     }
 }
 

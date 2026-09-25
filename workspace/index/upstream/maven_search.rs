@@ -76,6 +76,7 @@ pub fn parse_search(body: &[u8], since_ms: i64) -> Result<SearchPage, UpstreamEr
             name: format!("{}:{}", doc.g, doc.a),
             version: doc.v,
             dependencies: Vec::new(),
+            checksum: None,
         });
     }
     Ok(SearchPage {
@@ -188,6 +189,7 @@ mod tests {
             name: "org.slf4j:slf4j-api".into(),
             version: "2.0.9".into(),
             dependencies: Vec::new(),
+            checksum: None,
         }]);
         assert_eq!(page.latest_ms, 200);
         assert!(!page.exhausted);

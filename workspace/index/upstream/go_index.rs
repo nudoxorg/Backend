@@ -66,6 +66,7 @@ pub fn parse_index(body: &[u8], since: &str) -> Result<IndexPage, UpstreamError>
             name: row.path,
             version: row.version,
             dependencies: Vec::new(),
+            checksum: None,
         });
     }
     Ok(IndexPage {
@@ -166,6 +167,7 @@ mod tests {
             name: "rsc.io/quote".into(),
             version: "v1.5.2".into(),
             dependencies: Vec::new(),
+            checksum: None,
         }]);
         assert_eq!(page.latest, "2020-03-01T00:00:00Z");
         assert!(!page.exhausted);

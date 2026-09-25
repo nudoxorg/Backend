@@ -131,11 +131,15 @@ impl CratesCatalogFollower {
             if entry.updated_at > max_ts {
                 max_ts.clone_from(&entry.updated_at);
             }
-            let dependencies = if entry.yanked {
-                Vec::new()
+            let (dependencies, checksum) = if entry.yanked {
+                (Vec::new(), None)
             } else {
-                self.dependency_names(client, &entry.name, &entry.version)
-                    .await
+                (
+                    self.dependency_names(client, &entry.name, &entry.version)
+                        .await,
+                    self.version_checksum(client, &entry.name, &entry.version)
+                        .await,
+                )
             };
             let event = if entry.yanked {
                 CatalogEvent::Withdrawn {
@@ -147,6 +151,7 @@ impl CratesCatalogFollower {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
                     dependencies,
+                    checksum,
                 }
             };
             events.push(event);
@@ -206,12 +211,41 @@ impl CratesCatalogFollower {
             Err(_) => Vec::new(),
         }
     }
+
+    async fn version_checksum(
+        &self,
+        client: &UpstreamClient,
+        name: &str,
+        version: &str,
+    ) -> Option<String> {
+        let url = format!(
+            "{}/crates/{}/{}",
+            self.api_base,
+            path_segment(name),
+            path_segment(version)
+        );
+        let bytes = client.get(Language::Rust, &url).await.ok()?;
+        checksum_from_version_document(&bytes)
+    }
 }
 
-/// Crate names from a `/crates/{name}/{version}/dependencies` body.
-///
-/// `kind` of `normal` or absent is kept. `dev` and `build` are dropped. Names
-/// are sorted and de-duplicated.
+/// `version.checksum` from a crates.io version document. A short or missing
+/// field is `None`.
+pub fn checksum_from_version_document(body: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Body {
+        version: Version,
+    }
+    #[derive(Deserialize)]
+    struct Version {
+        checksum: Option<String>,
+    }
+    let parsed = serde_json::from_slice::<Body>(body).ok()?;
+    let checksum = parsed.version.checksum?;
+    crate::pid::sha256(&checksum).map(|_| checksum)
+}
+
+/// Crate names from a dependencies document. `normal` or absent kind is kept.
 pub fn normal_dependency_names(body: &[u8]) -> Vec<String> {
     #[derive(Deserialize)]
     struct Body {
@@ -247,7 +281,17 @@ pub fn normal_dependency_names(body: &[u8]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normal_dependency_names;
+    use super::{checksum_from_version_document, normal_dependency_names};
+
+    #[test]
+    fn a_version_document_yields_a_64_hex_checksum_only() {
+        let full = "ab".repeat(32);
+        let body = format!(r#"{{"version":{{"checksum":"{full}"}}}}"#);
+        assert_eq!(checksum_from_version_document(body.as_bytes()), Some(full));
+        let short = br#"{"version":{"checksum":"abcd"}}"#;
+        assert_eq!(checksum_from_version_document(short), None);
+        assert_eq!(checksum_from_version_document(br#"{"version":{}}"#), None);
+    }
 
     #[test]
     fn normal_dependencies_are_kept_and_dev_dependencies_are_dropped() {

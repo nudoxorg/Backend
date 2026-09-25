@@ -171,7 +171,12 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
                     // Dependency names from the feed land on the provisional
                     // record so the dependents sweep can run before compile.
                     match server
-                        .ensure_initialized_with(&cap, &coords, event.dependencies())
+                        .ensure_initialized_with(
+                            &cap,
+                            &coords,
+                            event.dependencies(),
+                            event.checksum(),
+                        )
                         .await
                     {
                         Ok(_) => {

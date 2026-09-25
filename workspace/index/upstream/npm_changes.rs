@@ -118,6 +118,7 @@ fn event_from_row(row: &ChangeRow) -> Option<CatalogEvent> {
             dependencies: dependency_names(row.doc.as_ref(), &version),
             name: row.id.clone(),
             version,
+            checksum: None,
         }),
         _ => None,
     }
@@ -230,6 +231,7 @@ mod tests {
                 name: "lodash".into(),
                 version: "4.17.21".into(),
                 dependencies: Vec::new(),
+                checksum: None,
             },
             CatalogEvent::Withdrawn {
                 name: "left-pad".into(),
@@ -261,6 +263,7 @@ mod tests {
             name: "left-pad".into(),
             version: "1.1.2".into(),
             dependencies: vec!["debug".into(), "ms".into()],
+            checksum: None,
         }]);
     }
 
@@ -277,6 +280,7 @@ mod tests {
             name: "@scope/pkg".into(),
             version: "2.0.0".into(),
             dependencies: Vec::new(),
+            checksum: None,
         }]);
         let again = parse_changes(&raw, 2).expect("replay");
         assert_eq!(page, again);
