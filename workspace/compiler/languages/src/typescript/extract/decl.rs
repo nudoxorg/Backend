@@ -598,6 +598,136 @@ fn require_bindings<'a>(
     out
 }
 
+fn is_whole_module_exports(mem: &oxc_ast::ast::StaticMemberExpression<'_>) -> bool {
+    matches!(&mem.object, Expression::Identifier(id) if id.name == "module")
+        && mem.property.name == "exports"
+}
+
+/// `module.exports = { left: function () {}, right: 1 }` declares `left` and
+/// `right`. A spread or a computed key has no stable name and is skipped.
+/// `require("pkg")` stays a package re-export. An identifier is not turned
+/// into a new const: the local declaration, when there is one, is the symbol.
+fn push_commonjs_object_properties<'a>(
+    object: &'a oxc_ast::ast::ObjectExpression<'a>,
+    source: &'a str,
+    semantic: &'a Semantic<'a>,
+    path: &Path,
+    declarations: &mut Vec<DeclFact>,
+    name_counts: &mut std::collections::HashMap<String, u32>,
+    cjs_exports: &mut CommonJsExports,
+    bindings: &std::collections::HashMap<String, String>,
+) {
+    use nudox_ir::entry::Visibility;
+    use oxc_ast::ast::ObjectPropertyKind;
+
+    for prop in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(prop) = prop else {
+            continue;
+        };
+        if prop.computed {
+            continue;
+        }
+        let export_name = property_key_name(&prop.key, source);
+        if export_name.is_empty() {
+            continue;
+        }
+        if let Expression::FunctionExpression(function) = &prop.value {
+            let span = function.span();
+            if declarations
+                .iter()
+                .any(|decl| decl.name == export_name && decl.span_start == span.start)
+            {
+                continue;
+            }
+            let decl_index = bump_count(&export_name, name_counts);
+            declarations.push(DeclFact {
+                name: export_name.clone(),
+                visibility: Visibility::Public,
+                doc: jsdoc::jsdoc_for_span(semantic, span),
+                body: DeclBody::Function(lower_function(function, source)),
+                module: path.to_path_buf(),
+                span_start: span.start,
+                span_end: span.end,
+                is_default: false,
+                decl_index,
+            });
+            cjs_exports
+                .named
+                .push((export_name.clone(), export_name));
+            continue;
+        }
+        if let Some(specifier) = require_specifier(&prop.value) {
+            if !is_package_specifier(&specifier) {
+                continue;
+            }
+            let span = prop.span();
+            let decl_index = bump_count(&export_name, name_counts);
+            declarations.push(DeclFact {
+                name: export_name.clone(),
+                visibility: Visibility::Public,
+                doc: jsdoc::jsdoc_for_span(semantic, span),
+                body: DeclBody::Reexport {
+                    module_request: specifier,
+                    import_name: "*".to_string(),
+                },
+                module: path.to_path_buf(),
+                span_start: span.start,
+                span_end: span.end,
+                is_default: false,
+                decl_index,
+            });
+            cjs_exports
+                .named
+                .push((export_name.clone(), export_name));
+            continue;
+        }
+        if let Some(local) = as_plain_identifier(&prop.value) {
+            if let Some(specifier) = bindings.get(&local).filter(|s| is_package_specifier(s)) {
+                let span = prop.span();
+                let decl_index = bump_count(&export_name, name_counts);
+                declarations.push(DeclFact {
+                    name: export_name.clone(),
+                    visibility: Visibility::Public,
+                    doc: jsdoc::jsdoc_for_span(semantic, span),
+                    body: DeclBody::Reexport {
+                        module_request: specifier.clone(),
+                        import_name: "*".to_string(),
+                    },
+                    module: path.to_path_buf(),
+                    span_start: span.start,
+                    span_end: span.end,
+                    is_default: false,
+                    decl_index,
+                });
+                cjs_exports.named.push((export_name, local));
+            } else if declarations.iter().any(|decl| decl.name == local) {
+                cjs_exports.named.push((export_name, local));
+            }
+            continue;
+        }
+        let span = prop.span();
+        let decl_index = bump_count(&export_name, name_counts);
+        let value = prop.value.span().source_text(source).to_string();
+        declarations.push(DeclFact {
+            name: export_name.clone(),
+            visibility: Visibility::Public,
+            doc: jsdoc::jsdoc_for_span(semantic, span),
+            body: DeclBody::Const(ConstBody {
+                ty: None,
+                value: Some(value),
+            }),
+            module: path.to_path_buf(),
+            span_start: span.start,
+            span_end: span.end,
+            is_default: false,
+            decl_index,
+        });
+        cjs_exports
+            .named
+            .push((export_name.clone(), export_name));
+    }
+}
+
 fn export_property_name(
     mem: &oxc_ast::ast::StaticMemberExpression<'_>,
     cjs: &CommonJsExports,
@@ -646,6 +776,21 @@ fn push_commonjs_value_decls<'a>(
         let AssignmentTarget::StaticMemberExpression(mem) = &assign.left else {
             continue;
         };
+        if is_whole_module_exports(mem) {
+            if let Expression::ObjectExpression(object) = &assign.right {
+                push_commonjs_object_properties(
+                    object,
+                    source,
+                    semantic,
+                    path,
+                    declarations,
+                    name_counts,
+                    cjs_exports,
+                    &bindings,
+                );
+            }
+            continue;
+        }
         let Some(export_name) = export_property_name(mem, cjs_exports) else {
             continue;
         };

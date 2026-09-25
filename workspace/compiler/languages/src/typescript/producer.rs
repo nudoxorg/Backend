@@ -1714,6 +1714,47 @@ mod tests {
     }
 
     #[test]
+    fn a_commonjs_object_export_declares_each_property() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"cjs-object","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.js"),
+            "module.exports = {\n\
+               left: function (s) { return s; },\n\
+               right: 1,\n\
+             };\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "cjs-object", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("cjs-object"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a CommonJS object export must seal");
+        let left = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "left"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(left, 1, "left must be the function property");
+        let right = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "right"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Const(_)))
+            })
+            .count();
+        assert_eq!(right, 1, "right must be the literal property");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
