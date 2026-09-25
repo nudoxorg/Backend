@@ -149,8 +149,9 @@ impl VersionedCatalog {
     }
 
     pub fn put_record(&mut self, record: &PackageRecord) -> OrmResult<FactWrite> {
-        let edges = self.sync_edges(record)?;
-        let fact = PackageFact::from_record(record)?;
+        let record = self.retain_known_content(record)?;
+        let edges = self.sync_edges(&record)?;
+        let fact = PackageFact::from_record(&record)?;
         let same = self
             .get(&fact.ecosystem, &fact.name, &fact.version)
             .is_some_and(|tip| tip.payload_hash == fact.payload_hash);

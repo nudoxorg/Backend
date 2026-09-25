@@ -4,13 +4,13 @@
 //! concept/version DOIs, Software Heritage SWHID / ISO 18670, Package URL)
 //! separates five claims that must not share one string:
 //!
-//! * **Concept** — the work, across versions (Zenodo concept DOI). Opaque.
-//!   This is the catalog [`PackageId`](heart::PackageId).
+//! * **Concept** — the work, across versions (Zenodo concept DOI). Opaque. This
+//!   is the catalog [`PackageId`](heart::PackageId).
 //! * **Version** — one release coordinate. Opaque, and not the concept id.
 //! * **Content** — the bytes (SWHID, gitoid, a registry checksum). Intrinsic:
 //!   the identifier *is* the digest.
-//! * **Location** — where the bytes are fetched today. Replaceable. Not part
-//!   of identity. A withdrawn object still resolves (tombstone), it is not
+//! * **Location** — where the bytes are fetched today. Replaceable. Not part of
+//!   identity. A withdrawn object still resolves (tombstone), it is not
 //!   deleted.
 //! * **Rendering** — purl, `swh:`, `doi:`. Derived for export. Never a storage
 //!   key. A purl names a version coordinate, not bytes.
@@ -18,8 +18,8 @@
 //! Assigned identifiers stay opaque: a local name that is a URL, a purl, or an
 //! `swh:`/`doi:`/`ark:` string is rejected. Those are locators or renderings.
 
-use heart::identity::package_id_from_parts;
-use heart::PackageId;
+use heart::{PackageId, identity::package_id_from_parts};
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use thiserror::Error;
 
@@ -36,7 +36,7 @@ pub enum PidError {
 
 /// Bytes a content PID names. The algorithm is part of the identity: the same
 /// hex under SHA-256 and BLAKE3 is not the same object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ContentDigest {
     /// Catalog CAS digest.
     Blake3([u8; 32]),
@@ -179,14 +179,27 @@ pub fn require_opaque(local_name: &str) -> Result<(), PidError> {
         || lower.starts_with("swh:")
         || lower.starts_with("doi:")
         || lower.starts_with("ark:");
-    let locator = lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.contains("://");
+    let locator =
+        lower.starts_with("http://") || lower.starts_with("https://") || lower.contains("://");
     if rendering || locator {
         Err(PidError::NotOpaque)
     } else {
         Ok(())
     }
+}
+
+/// A full git SHA-1 as a content PID. Anything shorter or non-hex is not one.
+#[must_use]
+pub fn git_sha1(rev: &str) -> Option<ContentDigest> {
+    if rev.len() != 40 || !rev.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut bytes = [0u8; 20];
+    for (index, chunk) in rev.as_bytes().chunks(2).enumerate() {
+        let hex = std::str::from_utf8(chunk).ok()?;
+        bytes[index] = u8::from_str_radix(hex, 16).ok()?;
+    }
+    Some(ContentDigest::GitSha1(bytes))
 }
 
 /// Package URL rendering of a version coordinate.

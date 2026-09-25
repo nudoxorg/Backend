@@ -97,6 +97,12 @@ pub struct PackageRecord {
     pub downloads: Option<u64>,
     /// This version is yanked or withdrawn on its registry.
     pub yanked: bool,
+    /// Bytes this version currently names, when ingest observed a digest.
+    ///
+    /// Absent from the JSON when unknown, so a record with no digest keeps
+    /// the same payload hash it had before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<crate::pid::ContentDigest>,
     /// Direct dependency edges, in manifest order.
     pub edges: Vec<DepEdge>,
 }
@@ -189,8 +195,16 @@ impl PackageRecord {
             repository,
             downloads,
             yanked,
+            content: None,
             edges,
         }
+    }
+
+    /// Bind a content digest. The version coordinate stays the same.
+    #[must_use]
+    pub fn with_content(mut self, content: crate::pid::ContentDigest) -> Self {
+        self.content = Some(content);
+        self
     }
 
     /// Dependency names the dependents sweep should count.

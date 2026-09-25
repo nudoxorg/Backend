@@ -454,3 +454,80 @@ fn withdrawing_keeps_the_edges_and_a_second_withdraw_is_unchanged() {
             .is_none()
     );
 }
+
+#[test]
+fn a_full_git_sha_binds_content_and_a_short_rev_does_not() {
+    use crate::{
+        edge_project::records_from_ops_named,
+        enums::SourceKind,
+        ids::PackageStemId,
+        pid::{BoundPid, ContentDigest, Resolve, VersionPid},
+        protocol::{CatalogOp, FacetWire, SourceAcquisitionWire, VersionCoordinates},
+    };
+    use heart::{Language, PackageId};
+
+    fn version_op(stem_id: PackageStemId, rev: &str) -> CatalogOp {
+        CatalogOp::UpsertVersion {
+            coordinates: VersionCoordinates {
+                version_id: PackageId::from_uuid(uuid::Uuid::from_u128(12)),
+                stem_id,
+                version_canonical: "v1".into(),
+                version_original: "v1".into(),
+            },
+            published_at: None,
+            toolchain: None,
+            license: None,
+            edges: Vec::new(),
+            facets: FacetWire::default(),
+            source: Some(SourceAcquisitionWire {
+                source_kind: SourceKind::Git,
+                source_pack: None,
+                source_rev: Some(rev.into()),
+                registry_checksum: None,
+                registry_package_uri: None,
+            }),
+        }
+    }
+
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let stem_id = PackageStemId::from_uuid(uuid::Uuid::from_u128(11));
+    let ops = [version_op(stem_id, sha), version_op(stem_id, "abcdef")];
+    let records = records_from_ops_named(&ops, Some((Language::Cpp, "example.test/repo")));
+    assert_eq!(records.len(), 2);
+    assert!(matches!(
+        records[0].content,
+        Some(ContentDigest::GitSha1(_))
+    ));
+    assert!(records[1].content.is_none());
+    let mut catalog = VersionedCatalog::open().expect("open");
+    catalog.put_record(&records[0]).expect("sha");
+    catalog
+        .put_record(&records[1])
+        .expect("short rev keeps the sha");
+    let Resolve::Live(kernel) = catalog
+        .resolve_version("cpp", "example.test/repo", "v1")
+        .expect("resolve")
+        .expect("row")
+    else {
+        panic!("live");
+    };
+    assert_eq!(
+        kernel.pid,
+        BoundPid::Version(VersionPid::mint("cpp", "example.test/repo", "v1"))
+    );
+    assert_eq!(kernel.checksum, records[0].content);
+    let other = "fedcba9876543210fedcba9876543210fedcba98";
+    let mut rebuilt = records[0].clone();
+    rebuilt.content = crate::pid::git_sha1(other);
+    catalog.put_record(&rebuilt).expect("new bytes");
+    let Resolve::Live(rebuilt_kernel) = catalog
+        .resolve_version("cpp", "example.test/repo", "v1")
+        .expect("resolve")
+        .expect("row")
+    else {
+        panic!("live");
+    };
+    assert_eq!(rebuilt_kernel.pid, kernel.pid);
+    assert_eq!(rebuilt_kernel.checksum, rebuilt.content);
+    assert_ne!(rebuilt_kernel.checksum, kernel.checksum);
+}

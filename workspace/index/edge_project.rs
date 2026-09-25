@@ -1,5 +1,4 @@
 //! One projection from a manifest [`DepEdge`] onto a catalog [`EdgeWire`].
-//!
 //! Feed publishes that only know names go through the same function after
 //! [`runtime_edges_from_names`](crate::record::runtime_edges_from_names). A
 //! peer edge is not an installed dependency, so it is absent here. Runtime and
@@ -60,11 +59,8 @@ pub enum LedgerEffect {
     },
 }
 
-/// Package records for the versions in `ops`.
-///
-/// A version is named by the [`CatalogOp::UpsertPackage`] in the same batch.
-/// A version whose stem is absent from the batch is skipped. Removals are
-/// omitted; use [`effects_from_ops`] when the batch can delete a version.
+/// Package records for the versions in `ops`. Removals are omitted; use
+/// [`effects_from_ops`] when the batch can delete a version.
 #[must_use]
 pub fn records_from_ops(ops: &[crate::protocol::CatalogOp]) -> Vec<crate::record::PackageRecord> {
     records_from_ops_named(ops, None)
@@ -137,13 +133,13 @@ pub fn effects_from_ops(
                 });
             }
             _ => {
-                let Some((stem_id, version, edges, license)) = version_view(op) else {
+                let Some((stem_id, version, edges, license, source_rev)) = version_view(op) else {
                     continue;
                 };
                 let Some((ecosystem, name)) = name_of(stem_id) else {
                     continue;
                 };
-                effects.push(LedgerEffect::Upsert(PackageRecord::from_parts(
+                let mut record = PackageRecord::from_parts(
                     ecosystem,
                     name,
                     version,
@@ -154,7 +150,11 @@ pub fn effects_from_ops(
                     None,
                     false,
                     edges.iter().map(edge_from_wire).collect(),
-                )));
+                );
+                if let Some(digest) = source_rev.and_then(crate::pid::git_sha1) {
+                    record = record.with_content(digest);
+                }
+                effects.push(LedgerEffect::Upsert(record));
             }
         }
     }
@@ -163,7 +163,13 @@ pub fn effects_from_ops(
 
 fn version_view(
     op: &crate::protocol::CatalogOp,
-) -> Option<(crate::ids::PackageStemId, &str, &[EdgeWire], Option<&str>)> {
+) -> Option<(
+    crate::ids::PackageStemId,
+    &str,
+    &[EdgeWire],
+    Option<&str>,
+    Option<&str>,
+)> {
     use crate::protocol::{CatalogOp, VersionDelta};
 
     match op {
@@ -171,12 +177,16 @@ fn version_view(
             coordinates,
             edges,
             license,
+            source,
             ..
         } => Some((
             coordinates.stem_id,
             coordinates.version_canonical.as_str(),
             edges,
             license.as_deref(),
+            source
+                .as_ref()
+                .and_then(|source| source.source_rev.as_deref()),
         )),
         CatalogOp::VersionDelta {
             delta: VersionDelta::Added { version } | VersionDelta::Changed { version },
@@ -185,6 +195,10 @@ fn version_view(
             version.coordinates.version_canonical.as_str(),
             &version.edges,
             version.license.as_deref(),
+            version
+                .source
+                .as_ref()
+                .and_then(|source| source.source_rev.as_deref()),
         )),
         _ => None,
     }

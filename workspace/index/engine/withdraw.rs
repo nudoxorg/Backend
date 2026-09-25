@@ -26,7 +26,7 @@ impl VersionedCatalog {
             pid: BoundPid::Version(VersionPid::mint(ecosystem, name, version)),
             locations: record.repository.into_iter().collect(),
             withdrawn: record.yanked,
-            checksum: None,
+            checksum: record.content,
         };
         debug_assert_eq!(
             fact.version_pid,
