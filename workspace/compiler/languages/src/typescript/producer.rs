@@ -1511,6 +1511,62 @@ mod tests {
     }
 
     #[test]
+    fn an_exported_namespace_import_is_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"ns-import","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("there.d.ts"), "export function kept(): void;\n").unwrap();
+        std::fs::write(
+            dir.path().join("mid.d.ts"),
+            "import * as left from \"left-pad\";\n\
+             export { left };\n\
+             import * as local from \"./there\";\n\
+             export { local };\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export { left, local } from \"./mid\";\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "ns-import", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("ns-import"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("an exported namespace import must seal");
+        let left = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "left"
+                    && entry.sym().source.ends_with("mid.d.ts")
+                    && matches!(entry.kind(), EntryInner::Reference(_))
+            })
+            .count();
+        assert_eq!(left, 1, "import * as left from a package must be declared");
+        let local = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "local"
+                && entry.sym().source.ends_with("mid.d.ts")
+                && matches!(entry.kind(), EntryInner::Reference(Ref::Intro(_)))
+        });
+        assert!(
+            local,
+            "import * as local from a file in the package must stay local"
+        );
+        let barreled = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "left"
+                && entry.sym().source.ends_with("index.d.ts")
+                && matches!(entry.kind(), EntryInner::Reference(Ref::Intro(_)))
+        });
+        assert!(
+            barreled,
+            "export {{ left }} from the mid file must point at that local binding"
+        );
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

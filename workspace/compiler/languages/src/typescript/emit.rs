@@ -192,7 +192,15 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
             &declared,
             &twins,
         );
-        emit_default_alias(module, Some(module_id), out, &declared, &twins);
+        emit_default_alias(module, Some(module_id.clone()), out, &declared, &twins);
+        emit_namespace_exports(
+            module,
+            Some(module_id),
+            out,
+            &resolver,
+            &declared,
+            &twins,
+        );
     }
 
     // ── Same-module occurrence graph ─────────────────────────────────────────
@@ -1215,7 +1223,7 @@ fn emit_static(
 /// — the fan-out already happened, if at all, at the module that owns the
 /// real declaration.
 fn resolve_export_target(
-    resolver: &Resolver,
+    _resolver: &Resolver,
     table_path: &Path,
     table: &crate::typescript::extract::ExportTable,
     name: &str,
@@ -1238,16 +1246,8 @@ fn resolve_export_target(
         }) => (0..*overload_count)
             .map(|discriminant| TsId::new(module.clone(), local_name.clone(), discriminant))
             .collect(),
-        Some(LocalExport::NamespaceOf(module_request)) => {
-            resolve_module_path(resolver, table_path, module_request)
-                .map(|ns_path| {
-                    vec![TsId::new(
-                        twins.canonical(&ns_path).to_path_buf(),
-                        MODULE_ROOT_NAME,
-                        0,
-                    )]
-                })
-                .unwrap_or_default()
+        Some(LocalExport::NamespaceOf(_)) => {
+            vec![TsId::new(module, name.to_string(), 0)]
         }
         Some(LocalExport::Unresolvable) => Vec::new(),
         None => vec![TsId::new(module, name.to_string(), 0)],
@@ -1325,6 +1325,11 @@ fn reexport_ids(
             }
         }
         let module_id = module_ts_id(module, twins);
+        for (name, local) in &module.exports.locals {
+            if matches!(local, crate::typescript::extract::LocalExport::NamespaceOf(_)) {
+                ids.insert(TsId::new(here.clone(), name.as_str(), 0));
+            }
+        }
         for decl in &module.declarations {
             if let DeclBody::Reexport { .. } = &decl.body {
                 ids.insert(decl_ts_id(decl, Some(&module_id), twins));
@@ -1635,6 +1640,36 @@ fn emit_unexpanded_star(
     let reexport_id = vacant_reexport_id(out, twins.canonical(&module.path), stem.as_str(), 0);
     let sym = reexport_symbol(module, &stem, star.span_start, star.span_end);
     let _: Ref<Module> = out.declare_ref(reexport_id, parent, sym, target_ref);
+}
+
+fn emit_namespace_exports(
+    module: &ModuleFacts,
+    parent: Option<TsId>,
+    out: &mut Lowering<TsId>,
+    resolver: &Resolver,
+    declared: &DeclareSet,
+    twins: &TwinPlan,
+) {
+    use crate::typescript::extract::LocalExport;
+    let canonical = twins.canonical(&module.path).to_path_buf();
+    for (export_name, local) in &module.exports.locals {
+        let LocalExport::NamespaceOf(module_request) = local else {
+            continue;
+        };
+        let id = TsId::new(canonical.clone(), export_name, 0);
+        if out.is_declared(&id) {
+            continue;
+        }
+        let target_ref = if let Some(tp) = resolve_module_path(resolver, &module.path, module_request)
+        {
+            let root = TsId::new(twins.canonical(&tp).to_path_buf(), MODULE_ROOT_NAME, 0);
+            refer_declared(out, declared, root)
+        } else {
+            out.refer_import(unresolved_module_key(module_request, MODULE_ROOT_NAME))
+        };
+        let sym = reexport_symbol(module, export_name, 0, 0);
+        let _: Ref<Module> = out.declare_ref(id, parent.clone(), sym, target_ref);
+    }
 }
 
 fn emit_default_alias(
