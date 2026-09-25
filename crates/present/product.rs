@@ -634,6 +634,9 @@ fn project_row(record: &ProjectRecord) -> ProductRecord {
     if let Some(lockfile) = record.lockfile.as_ref() {
         tags.push(format!("lockfile {}", lockfile.as_str()));
     }
+    for name in record.member_manifest_names.iter() {
+        tags.push(format!("member {}", name.as_str()));
+    }
     ProductRecord::new(
         record.name.as_str().to_owned(),
         Some(record.name.as_str().to_owned()),

@@ -218,11 +218,17 @@ impl ProductState {
                 mark_seen,
             ),
             SurfaceCommand::Projects => (
-                SurfaceReply::Projects(self.state.projects.clone().into_boxed_slice()),
+                SurfaceReply::Projects(enrich_projects(
+                    &self.state.projects,
+                    view,
+                    workspace,
+                )?),
                 false,
             ),
             SurfaceCommand::ProjectCreate { name, lockfile } => (
-                SurfaceReply::ProjectCreated(self.create_project(name, lockfile)?),
+                SurfaceReply::ProjectCreated(
+                    enrich_project(self.create_project(name, lockfile)?, view, workspace)?,
+                ),
                 true,
             ),
             SurfaceCommand::ProjectDelete { project } => (
@@ -230,15 +236,27 @@ impl ProductState {
                 true,
             ),
             SurfaceCommand::ProjectAdd { project, package } => (
-                SurfaceReply::ProjectAdded(self.change_member(&project, package, true)?),
+                SurfaceReply::ProjectAdded(enrich_project(
+                    self.change_member(&project, package, true)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::ProjectRemove { project, package } => (
-                SurfaceReply::ProjectRemoved(self.change_member(&project, package, false)?),
+                SurfaceReply::ProjectRemoved(enrich_project(
+                    self.change_member(&project, package, false)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::ProjectSync { project } => (
-                SurfaceReply::ProjectSynced(self.sync_project(&project)?),
+                SurfaceReply::ProjectSynced(enrich_project(
+                    self.sync_project(&project)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::Tree => (SurfaceReply::Tree(self.current_tree()), false),
@@ -388,6 +406,7 @@ impl ProductState {
             name,
             lockfile,
             members: Box::new([]),
+            member_manifest_names: Box::new([]),
         };
         self.state.projects.push(project.clone());
         Ok(project)
@@ -1007,6 +1026,63 @@ fn catalog_page(
 fn package_matches(package: &PackageReference, row: &RegistryPackageRecord) -> bool {
     &row.coordinate == package || row.name.as_str() == package.as_str()
 }
+
+fn enrich_projects(
+    projects: &[ProjectRecord],
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<Box<[ProjectRecord]>, String> {
+    projects
+        .iter()
+        .cloned()
+        .map(|project| enrich_project(project, view, workspace))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn enrich_project(
+    project: ProjectRecord,
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<ProjectRecord, String> {
+    let member_manifest_names = project
+        .members
+        .iter()
+        .map(|member| member_manifest_name(member, view, workspace))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
+    Ok(ProjectRecord {
+        member_manifest_names,
+        ..project
+    })
+}
+
+fn member_manifest_name(
+    member: &PackageReference,
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<ProductText, String> {
+    match member {
+        PackageReference::Local(label) => {
+            let project_root = Path::new(label.as_str());
+            if !project_root.is_dir() {
+                return Err(format!(
+                    "project member {} is not a local manifest path",
+                    label.as_str()
+                ));
+            }
+            let (name, _, _) = super::local_manifest::cargo_package_identity(project_root)?;
+            Ok(name)
+        }
+        PackageReference::Purl(_) => {
+            let records = indexed_package_records(view, member, workspace)?;
+            let record = records
+                .first()
+                .ok_or_else(|| format!("project member {} is not indexed", member.as_str()))?;
+            Ok(record.name.clone())
+        }
+    }
+}
 fn packages(
     catalog: &[RegistryPackageRecord],
     package: &PackageReference,
@@ -1028,6 +1104,14 @@ fn package_page(
     if !records.is_empty() {
         return Ok(records);
     }
+    if let PackageReference::Local(label) = package {
+        let project_root = Path::new(label.as_str());
+        if project_root.is_dir() && project_root.join("Cargo.toml").is_file() {
+            return Ok(Box::new([super::local_manifest::cargo_registry_record(
+                project_root,
+            )?]));
+        }
+    }
     let PackageReference::Purl(_) = package else {
         return Err(format!(
             "package {} is not recorded in the registry catalog",
@@ -1039,6 +1123,9 @@ fn package_page(
             continue;
         }
         let project_root = Path::new(&row.label);
+        if !project_root.is_dir() || !project_root.join("Cargo.toml").is_file() {
+            continue;
+        }
         let (_, _, manifest) = super::local_manifest::cargo_package_identity(project_root)?;
         if &manifest == package {
             return Ok(Box::new([super::local_manifest::cargo_registry_record(
