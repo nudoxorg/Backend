@@ -512,7 +512,21 @@ fn emit_interface(
         } else {
             format!("__index_{idx_num}")
         };
-        let idx_id = child_id(&id, &index_member, idx_num as u32);
+        // A real method may already be named `__index`. Its id is
+        // `method_index * 1000`, which is 0 for the first method — the same
+        // disc this signature would use. Keep the method's id and move the
+        // synthetic one.
+        let taken = body.methods.iter().enumerate().any(|(method_idx, method)| {
+            method.name == index_member && (method_idx * 1000) as u32 == idx_num as u32
+        });
+        let index_disc = if taken {
+            // Method discs are multiples of 1000. `idx_num` is one of those
+            // when it collides, so the next integer is not.
+            idx_num as u32 + 1
+        } else {
+            idx_num as u32
+        };
+        let idx_id = child_id(&id, &index_member, index_disc);
         let idx_sym = Symbol {
             name: if idx_num == 0 {
                 "__index".to_string()

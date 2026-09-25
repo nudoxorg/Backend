@@ -1050,6 +1050,35 @@ mod tests {
     }
 
     #[test]
+    fn an_index_signature_does_not_take_a_method_named_index() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"index-method","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export interface Bag { __index(): void; [key: string]: unknown; }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "index-method", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("index-method"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a method named __index and an index signature must both seal");
+        let indexes = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "__index")
+            .count();
+        assert_eq!(
+            indexes, 2,
+            "the method and the index signature are different declarations"
+        );
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
