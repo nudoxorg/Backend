@@ -77,6 +77,8 @@ pub mod package;
 pub mod protocol;
 /// Durable scratch-backed indexing job queue.
 pub mod queue;
+/// Persistent identifiers: concept, version, and content stay distinct.
+pub mod pid;
 /// The one package-information model every ingest path emits.
 pub mod record;
 /// The registryless edge-resolution pass.
