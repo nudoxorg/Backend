@@ -16,8 +16,9 @@ impl TursoProjection {
     ///
     /// The exact-root fast path performs one metadata read and no writes.
     /// A different root keeps every stored row whose content hash still
-    /// matches and deletes only the identities the new root no longer names.
-    /// Rebuild is reserved for first boot, recovery, or a missed transition.
+    /// matches and writes only the identities that appeared, changed, or
+    /// disappeared. Rebuild is reserved for first boot, recovery, or a
+    /// missed transition.
     ///
     /// # Errors
     ///
@@ -68,8 +69,8 @@ impl TursoProjection {
                 .await?
         } else {
             let stored = stored_row_hashes(&tx).await?;
-            let (desired, changed_rows) = projection_mutations(&stored, view.rows());
-            for rows in view.rows().chunks(REBUILD_BATCH_ROWS) {
+            let (desired, due, changed_rows) = projection_mutations(&stored, view.rows());
+            for rows in due.chunks(REBUILD_BATCH_ROWS) {
                 upsert_rows(&tx, rows).await?;
             }
             delete_absent_rows(&tx, &desired).await?;
@@ -298,26 +299,32 @@ async fn stored_row_hashes(
     Ok(stored)
 }
 
-fn projection_mutations(
+fn projection_mutations<'row>(
     stored: &BTreeMap<String, [u8; 32]>,
-    rows: &[Row],
-) -> (BTreeSet<String>, u64) {
-    let mut desired = BTreeMap::<String, [u8; 32]>::new();
-    for row in rows {
-        desired.insert(row.id.stable_key(), *row_hash(row).as_bytes());
+    rows: &'row [Row],
+) -> (BTreeSet<String>, Vec<&'row Row>, u64) {
+    let mut last_index = BTreeMap::<String, usize>::new();
+    for (index, row) in rows.iter().enumerate() {
+        last_index.insert(row.id.stable_key(), index);
     }
+    let mut desired = BTreeSet::new();
+    let mut due = Vec::new();
     let mut changed = 0_u64;
-    for (id, hash) in &desired {
-        if stored.get(id) != Some(hash) {
+    for (id, index) in &last_index {
+        let row = &rows[*index];
+        let hash = *row_hash(row).as_bytes();
+        desired.insert(id.clone());
+        if stored.get(id) != Some(&hash) {
             changed = changed.saturating_add(1);
+            due.push(row);
         }
     }
     for id in stored.keys() {
-        if !desired.contains_key(id) {
+        if !desired.contains(id) {
             changed = changed.saturating_add(1);
         }
     }
-    (desired.into_keys().collect(), changed)
+    (desired, due, changed)
 }
 
 async fn delete_absent_rows(
@@ -350,7 +357,7 @@ async fn upsert_row(connection: &turso::Connection, row: &Row) -> turso::Result<
     connection.execute(UPSERT_ROW, row_values(row)).await
 }
 
-async fn upsert_rows(connection: &turso::Connection, rows: &[Row]) -> turso::Result<u64> {
+async fn upsert_rows(connection: &turso::Connection, rows: &[&Row]) -> turso::Result<u64> {
     if rows.is_empty() {
         return Ok(0);
     }
@@ -365,7 +372,10 @@ async fn upsert_rows(connection: &turso::Connection, rows: &[Row]) -> turso::Res
         sql.push_str("(?,?,?,?,?,?,?,?,?,?)");
     }
     sql.push_str(UPSERT_CONFLICT);
-    let values = rows.iter().flat_map(row_values).collect::<Vec<_>>();
+    let values = rows
+        .iter()
+        .flat_map(|row| row_values(row))
+        .collect::<Vec<_>>();
     connection
         .execute(&sql, turso::params_from_iter(values))
         .await
