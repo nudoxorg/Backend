@@ -14,7 +14,7 @@ mod structural;
 pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(super) use query::semantic_query_corpus;
 pub(super) use semantic::{ProjectedRows, StructuralSites, rows_for_indexed_sources};
-pub(super) use structural::{structural_call_graph_relations, structural_reference_facts};
+pub(crate) use structural::{structural_call_graph_relations, structural_reference_facts};
 
 use query::append_structural_query_facts;
 use semantic::{ProfileStalePaths, SourceRowProjection};

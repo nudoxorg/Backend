@@ -84,12 +84,6 @@ pub enum SelectionAdmissionFault<Id: Copy + Eq> {
     },
 }
 
-/// A manifest admission failure retaining the rejected positions and identity.
-pub type ExactManifestError = SelectionAdmissionFault<ExactSegmentId>;
-
-/// A lexical manifest admission failure preserving offending positions and identity.
-pub type LexicalManifestError = SelectionAdmissionFault<LexicalSegmentId>;
-
 fn heap_sort_indexes(indexes: &mut [usize], compare: impl Fn(usize, usize) -> core::cmp::Ordering) {
     let len = indexes.len();
     if len < 2 {

@@ -1609,7 +1609,7 @@ mod tests {
         let path = root.join("product-state.json");
         let mut state = ProductState::open(path.clone()).expect("open empty state");
         let reply = state
-            .execute(create("Nudox"), &view(), &[], &[])
+            .execute(create("Nudox"), &view(), &[], &[], None)
             .expect("create project");
         assert!(matches!(reply, SurfaceReply::ProjectCreated(_)));
         assert_eq!(state.state.epoch, 1);
@@ -1628,7 +1628,7 @@ mod tests {
         let path = root.join("product-state.json");
         let mut state = ProductState::open(path.clone()).expect("open empty state");
         state
-            .execute(create("Canonical"), &view(), &[], &[])
+            .execute(create("Canonical"), &view(), &[], &[], None)
             .expect("create project");
         fs::write(root.join(".product-state.json.9.9.tmp"), b"partial")
             .expect("interrupted sibling");
@@ -1662,7 +1662,7 @@ mod tests {
         let before = state.state.clone();
         assert!(
             state
-                .execute(create("Unpublished"), &view(), &[], &[])
+                .execute(create("Unpublished"), &view(), &[], &[], None)
                 .is_err()
         );
         assert_eq!(state.state, before);

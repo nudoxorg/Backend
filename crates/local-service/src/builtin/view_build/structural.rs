@@ -620,7 +620,7 @@ pub(super) fn structural_excerpt_calls(excerpt: &str, callee: &str) -> bool {
 
 /// Same-file call edges inferred from bounded declaration excerpts when no
 /// complete semantic publication supplies compiler-proven `Calls` links.
-pub(super) fn structural_call_graph_relations(
+pub(crate) fn structural_call_graph_relations(
     view: &backend_engine::ViewRoot,
     sources: &IndexedSources,
     package: backend_engine::PackageKey,
@@ -730,7 +730,7 @@ pub(super) fn structural_call_graph_relations(
 }
 
 /// Incoming call sites for one declaration when semantic references are absent.
-pub(super) fn structural_reference_facts(
+pub(crate) fn structural_reference_facts(
     view: &backend_engine::ViewRoot,
     sources: &super::super::IndexedSources,
     target: &str,
