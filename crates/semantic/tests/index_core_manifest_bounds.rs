@@ -112,6 +112,22 @@ fn duplicate_present_and_reversed_order_rejected_for_exact_and_lexical_manifests
             id: update_exact.id,
         })
     );
+    let extra_exact_rows = [ExactRow::present(b"extra", b"value")];
+    let extra_exact = ExactSegment::new(&extra_exact_rows).expect("extra exact segment");
+    assert_eq!(
+        ExactManifest::new(exact_snapshot, &[update_exact], &[]),
+        Err(ExactManifestError::SnapshotSelectionWidth {
+            selected: 2,
+            observed: 1,
+        })
+    );
+    assert_eq!(
+        ExactManifest::new(exact_snapshot, &[update_exact], &[extra_exact.id]),
+        Err(ExactManifestError::MissingNotSelected {
+            missing_position: 0,
+            id: extra_exact.id,
+        })
+    );
 
     let old_lexical_rows = [LexicalRow::new(
         b"needle",
@@ -145,6 +161,26 @@ fn duplicate_present_and_reversed_order_rejected_for_exact_and_lexical_manifests
             preceding_selected_position: 1,
             selected_position: 0,
             id: update_lexical.id,
+        })
+    );
+    let extra_lexical_rows = [LexicalRow::new(
+        b"extra",
+        document(2),
+        LexicalScore::from(1),
+    )];
+    let extra_lexical = LexicalSegment::new(&extra_lexical_rows).expect("extra lexical segment");
+    assert_eq!(
+        LexicalManifest::new(lexical_snapshot, &[update_lexical], &[]),
+        Err(LexicalManifestError::SnapshotSelectionWidth {
+            selected: 2,
+            observed: 1,
+        })
+    );
+    assert_eq!(
+        LexicalManifest::new(lexical_snapshot, &[update_lexical], &[extra_lexical.id]),
+        Err(LexicalManifestError::MissingNotSelected {
+            missing_position: 0,
+            id: extra_lexical.id,
         })
     );
 }

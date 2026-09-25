@@ -43,9 +43,9 @@ pub use backend_version::GenerationId;
 /// `u8`-wide lane instead of growing without limit.
 pub const MAX_SELECTED_SEGMENTS: usize = 255;
 
-/// One rejected selection-admission fact before it is mapped onto a manifest error.
+/// One rejected selection-admission fact for a manifest boundary.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum SelectionAdmissionFault<Id: Copy + Eq> {
+pub enum SelectionAdmissionFault<Id: Copy + Eq> {
     /// The selected present segment count exceeded the bounded query contract.
     SelectedSegmentLimit {
         /// Largest legal selected segment count.
@@ -120,6 +120,12 @@ enum SelectionAdmissionFault<Id: Copy + Eq> {
         id: Id,
     },
 }
+
+/// A manifest admission failure retaining the rejected positions and identity.
+pub type ExactManifestError = SelectionAdmissionFault<ExactSegmentId>;
+
+/// A lexical manifest admission failure preserving offending positions and identity.
+pub type LexicalManifestError = SelectionAdmissionFault<LexicalSegmentId>;
 
 fn validate_selection_admission<Id: Copy + Eq>(
     selected: &[Id],
@@ -278,70 +284,7 @@ impl<'manifest, 'segment> ExactManifest<'manifest, 'segment> {
             segments.len(),
             |index| segments[index].id,
             missing,
-        )
-        .map_err(|fault| match fault {
-            SelectionAdmissionFault::SelectedSegmentLimit { limit, observed } => {
-                ExactManifestError::SelectedSegmentLimit { limit, observed }
-            }
-            SelectionAdmissionFault::MissingSegmentLimit { limit, observed } => {
-                ExactManifestError::MissingSegmentLimit { limit, observed }
-            }
-            SelectionAdmissionFault::SnapshotSelectionWidth { selected, observed } => {
-                ExactManifestError::SnapshotSelectionWidth { selected, observed }
-            }
-            SelectionAdmissionFault::DuplicatePresentSegment {
-                left_position,
-                right_position,
-                id,
-            } => ExactManifestError::DuplicatePresentSegment {
-                left_position,
-                right_position,
-                id,
-            },
-            SelectionAdmissionFault::PresentAndMissing {
-                present_position,
-                missing_position,
-                id,
-            } => ExactManifestError::PresentAndMissing {
-                present_position,
-                missing_position,
-                id,
-            },
-            SelectionAdmissionFault::DuplicateMissingSegment {
-                left_position,
-                right_position,
-                id,
-            } => ExactManifestError::DuplicateMissingSegment {
-                left_position,
-                right_position,
-                id,
-            },
-            SelectionAdmissionFault::PresentNotSelected {
-                present_position,
-                id,
-            } => ExactManifestError::PresentNotSelected {
-                present_position,
-                id,
-            },
-            SelectionAdmissionFault::PresentOrderMismatch {
-                present_position,
-                preceding_selected_position,
-                selected_position,
-                id,
-            } => ExactManifestError::PresentOrderMismatch {
-                present_position,
-                preceding_selected_position,
-                selected_position,
-                id,
-            },
-            SelectionAdmissionFault::MissingNotSelected {
-                missing_position,
-                id,
-            } => ExactManifestError::MissingNotSelected {
-                missing_position,
-                id,
-            },
-        })?;
+        )?;
         Ok(Self {
             view: ExactManifestView {
                 snapshot: snapshot.id,
@@ -464,84 +407,6 @@ pub enum ExactTerminal<'manifest, 'bytes> {
     },
 }
 
-/// A manifest admission failure retaining the rejected positions and identity.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ExactManifestError {
-    /// The selected present segment count exceeded the bounded query contract.
-    SelectedSegmentLimit {
-        /// Largest legal selected segment count.
-        limit: usize,
-        /// Full untrusted selected segment count.
-        observed: usize,
-    },
-    /// The selected missing segment count exceeded the bounded query contract.
-    MissingSegmentLimit {
-        /// Largest legal selected missing segment count.
-        limit: usize,
-        /// Full untrusted selected missing segment count.
-        observed: usize,
-    },
-    /// Reachable and missing segments did not account for the snapshot selection.
-    SnapshotSelectionWidth {
-        /// Number of exact identities bound into the snapshot.
-        selected: usize,
-        /// Number supplied as reachable or missing.
-        observed: usize,
-    },
-    /// A reachable segment was not selected by the snapshot authority.
-    PresentNotSelected {
-        /// Reachable segment position.
-        present_position: usize,
-        /// Unselected segment identity.
-        id: ExactSegmentId,
-    },
-    /// Reachable update order disagreed with the order bound into the snapshot.
-    PresentOrderMismatch {
-        /// Reachable segment position whose order was rejected.
-        present_position: usize,
-        /// Snapshot position of the preceding reachable segment.
-        preceding_selected_position: usize,
-        /// Snapshot position of the rejected reachable segment.
-        selected_position: usize,
-        /// Rejected exact segment identity.
-        id: ExactSegmentId,
-    },
-    /// A missing identity was not selected by the snapshot authority.
-    MissingNotSelected {
-        /// Missing segment position.
-        missing_position: usize,
-        /// Unselected missing identity.
-        id: ExactSegmentId,
-    },
-    /// One segment identity appeared in two present positions.
-    DuplicatePresentSegment {
-        /// Earlier duplicate position.
-        left_position: usize,
-        /// Later duplicate position.
-        right_position: usize,
-        /// Repeated segment identity.
-        id: ExactSegmentId,
-    },
-    /// One segment identity appeared as both present and unavailable.
-    PresentAndMissing {
-        /// Present segment position.
-        present_position: usize,
-        /// Missing segment position.
-        missing_position: usize,
-        /// Conflicting segment identity.
-        id: ExactSegmentId,
-    },
-    /// One missing segment identity appeared in two positions.
-    DuplicateMissingSegment {
-        /// Earlier duplicate position.
-        left_position: usize,
-        /// Later duplicate position.
-        right_position: usize,
-        /// Repeated segment identity.
-        id: ExactSegmentId,
-    },
-}
-
 /// A checked borrowed manifest for one immutable lexical snapshot.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct LexicalManifest<'manifest, 'segment> {
@@ -656,70 +521,7 @@ impl<'manifest, 'segment> LexicalManifest<'manifest, 'segment> {
             segments.len(),
             |index| segments[index].id,
             missing,
-        )
-        .map_err(|fault| match fault {
-            SelectionAdmissionFault::SelectedSegmentLimit { limit, observed } => {
-                LexicalManifestError::SelectedSegmentLimit { limit, observed }
-            }
-            SelectionAdmissionFault::MissingSegmentLimit { limit, observed } => {
-                LexicalManifestError::MissingSegmentLimit { limit, observed }
-            }
-            SelectionAdmissionFault::SnapshotSelectionWidth { selected, observed } => {
-                LexicalManifestError::SnapshotSelectionWidth { selected, observed }
-            }
-            SelectionAdmissionFault::DuplicatePresentSegment {
-                left_position,
-                right_position,
-                id,
-            } => LexicalManifestError::DuplicatePresentSegment {
-                left_position,
-                right_position,
-                id,
-            },
-            SelectionAdmissionFault::PresentAndMissing {
-                present_position,
-                missing_position,
-                id,
-            } => LexicalManifestError::PresentAndMissing {
-                present_position,
-                missing_position,
-                id,
-            },
-            SelectionAdmissionFault::DuplicateMissingSegment {
-                left_position,
-                right_position,
-                id,
-            } => LexicalManifestError::DuplicateMissingSegment {
-                left_position,
-                right_position,
-                id,
-            },
-            SelectionAdmissionFault::PresentNotSelected {
-                present_position,
-                id,
-            } => LexicalManifestError::PresentNotSelected {
-                present_position,
-                id,
-            },
-            SelectionAdmissionFault::PresentOrderMismatch {
-                present_position,
-                preceding_selected_position,
-                selected_position,
-                id,
-            } => LexicalManifestError::PresentOrderMismatch {
-                present_position,
-                preceding_selected_position,
-                selected_position,
-                id,
-            },
-            SelectionAdmissionFault::MissingNotSelected {
-                missing_position,
-                id,
-            } => LexicalManifestError::MissingNotSelected {
-                missing_position,
-                id,
-            },
-        })?;
+        )?;
         Ok(Self {
             view: LexicalManifestView {
                 snapshot: snapshot.id,
@@ -999,80 +801,3 @@ pub enum LexicalTerminal<'manifest, 'output, 'bytes> {
     },
 }
 
-/// A lexical manifest admission failure preserving offending positions and identity.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum LexicalManifestError {
-    /// The selected present segment count exceeded the bounded query contract.
-    SelectedSegmentLimit {
-        /// Largest legal selected segment count.
-        limit: usize,
-        /// Full untrusted selected segment count.
-        observed: usize,
-    },
-    /// The selected missing segment count exceeded the bounded query contract.
-    MissingSegmentLimit {
-        /// Largest legal selected segment count.
-        limit: usize,
-        /// Full untrusted selected segment count.
-        observed: usize,
-    },
-    /// Reachable and missing segments did not account for the snapshot selection.
-    SnapshotSelectionWidth {
-        /// Number of lexical identities bound into the snapshot.
-        selected: usize,
-        /// Number supplied as reachable or missing.
-        observed: usize,
-    },
-    /// A reachable segment was not selected by the snapshot authority.
-    PresentNotSelected {
-        /// Reachable segment position.
-        present_position: usize,
-        /// Unselected segment identity.
-        id: LexicalSegmentId,
-    },
-    /// Reachable update order disagreed with the order bound into the snapshot.
-    PresentOrderMismatch {
-        /// Reachable segment position whose order was rejected.
-        present_position: usize,
-        /// Snapshot position of the preceding reachable segment.
-        preceding_selected_position: usize,
-        /// Snapshot position of the rejected reachable segment.
-        selected_position: usize,
-        /// Rejected lexical segment identity.
-        id: LexicalSegmentId,
-    },
-    /// A missing identity was not selected by the snapshot authority.
-    MissingNotSelected {
-        /// Missing segment position.
-        missing_position: usize,
-        /// Unselected missing identity.
-        id: LexicalSegmentId,
-    },
-    /// One segment identity appeared in two present positions.
-    DuplicatePresentSegment {
-        /// Earlier duplicate position.
-        left_position: usize,
-        /// Later duplicate position.
-        right_position: usize,
-        /// Repeated lexical segment identity.
-        id: LexicalSegmentId,
-    },
-    /// One segment identity appeared as both present and unavailable.
-    PresentAndMissing {
-        /// Present segment position.
-        present_position: usize,
-        /// Missing segment position.
-        missing_position: usize,
-        /// Conflicting lexical segment identity.
-        id: LexicalSegmentId,
-    },
-    /// One missing segment identity appeared in two positions.
-    DuplicateMissingSegment {
-        /// Earlier duplicate position.
-        left_position: usize,
-        /// Later duplicate position.
-        right_position: usize,
-        /// Repeated lexical segment identity.
-        id: LexicalSegmentId,
-    },
-}
