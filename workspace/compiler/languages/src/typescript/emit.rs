@@ -542,16 +542,7 @@ fn emit_interface(
         // `method_index * 1000`, which is 0 for the first method — the same
         // disc this signature would use. Keep the method's id and move the
         // synthetic one.
-        let taken = body.methods.iter().enumerate().any(|(method_idx, method)| {
-            method.name == index_member && (method_idx * 1000) as u32 == idx_num as u32
-        });
-        let index_disc = if taken {
-            // Method discs are multiples of 1000. `idx_num` is one of those
-            // when it collides, so the next integer is not.
-            idx_num as u32 + 1
-        } else {
-            idx_num as u32
-        };
+        let index_disc = interface_index_disc(body, idx_num);
         let idx_id = child_id(&id, &index_member, index_disc);
         let idx_sym = Symbol {
             name: if idx_num == 0 {
@@ -2148,6 +2139,22 @@ fn reserve_enum_variants(
                             interface_call_disc(body, call_num),
                         );
                     }
+                    // An index signature is `__index` at disc 0. A merged
+                    // namespace function of that name would take the same id.
+                    for (idx_num, _) in body.index_signatures.iter().enumerate() {
+                        let name = if idx_num == 0 {
+                            "__index".to_string()
+                        } else {
+                            format!("__index_{idx_num}")
+                        };
+                        reserve_member(
+                            canonical,
+                            reserved,
+                            &qual,
+                            &name,
+                            interface_index_disc(body, idx_num),
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -2368,6 +2375,27 @@ fn param_id_for(owner: &TsId, param_name: &str, index: u32) -> TsId {
         ),
         index,
     )
+}
+
+/// An interface index signature's discriminant.
+///
+/// The usual value is the signature index, so the first `__index` stays 0.
+/// A method of that name at `index * 1000` keeps its id and this signature
+/// moves to the next integer, which is not a method disc.
+fn interface_index_disc(body: &InterfaceBody, idx_num: usize) -> u32 {
+    let name = if idx_num == 0 {
+        "__index".to_string()
+    } else {
+        format!("__index_{idx_num}")
+    };
+    let taken = body.methods.iter().enumerate().any(|(method_idx, method)| {
+        method.name == name && (method_idx * 1000) as u32 == idx_num as u32
+    });
+    if taken {
+        idx_num as u32 + 1
+    } else {
+        idx_num as u32
+    }
 }
 
 /// A call signature's discriminant.

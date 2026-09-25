@@ -1286,6 +1286,35 @@ mod tests {
     }
 
     #[test]
+    fn an_index_signature_and_namespace_function_of_the_same_name_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"index-ns","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export interface I { [key: string]: number; }\n\
+             export namespace I { export function __index(): void; }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "index-ns", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("index-ns"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("an index signature and a namespace function must both seal");
+        let indexes = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "__index"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(indexes, 2, "the index signature and the namespace function both survive");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.
