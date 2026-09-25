@@ -420,8 +420,9 @@ fn lower_ts_type_impl<'a>(
                                 type_params,
                             );
                             let prefix = if idx.readonly { "readonly " } else { "" };
+                            let comment = leading_block_comment(source, idx.span().start);
                             members.push(AnonFieldOwned {
-                                name: format!("{prefix}[{}:{:?}]", param.name, key_ty),
+                                name: format!("{comment}{prefix}[{}:{:?}]", param.name, key_ty),
                                 ty: value_ty,
                                 optional: false,
                                 readonly: idx.readonly,
@@ -429,11 +430,16 @@ fn lower_ts_type_impl<'a>(
                         }
                     }
                     TSSignature::TSCallSignatureDeclaration(call) => {
-                        members.push(object_signature_field("()", call_like(call, source, type_params)));
+                        let comment = leading_block_comment(source, call.span().start);
+                        members.push(object_signature_field(
+                            &format!("{comment}()"),
+                            call_like(call, source, type_params),
+                        ));
                     }
                     TSSignature::TSConstructSignatureDeclaration(ctor) => {
+                        let comment = leading_block_comment(source, ctor.span().start);
                         members.push(object_signature_field(
-                            "new",
+                            &format!("{comment}new"),
                             construct_like(ctor, source, type_params),
                         ));
                     }
@@ -649,6 +655,20 @@ fn lower_ts_tuple_element<'a>(
                 |ty| lower_ts_type_impl(ty, source, type_params),
             )
         }
+    }
+}
+
+fn leading_block_comment(source: &str, start: u32) -> String {
+    let head = source.get(..start as usize).unwrap_or("");
+    let trimmed = head.trim_end();
+    let Some(open) = trimmed.rfind("/**") else {
+        return String::new();
+    };
+    let comment = &trimmed[open..];
+    if comment.ends_with("*/") {
+        comment.to_string()
+    } else {
+        String::new()
     }
 }
 

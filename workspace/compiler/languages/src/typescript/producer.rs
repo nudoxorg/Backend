@@ -831,6 +831,12 @@ mod tests {
                 "I",
             ),
             (
+                "object-index-doc",
+                "namespace N { export interface I { a: { /** a */ [k: string]: string } } }\n\
+                 namespace N { export interface I { a: { /** b */ [k: string]: string } } }\n",
+                "a",
+            ),
+            (
                 "docs",
                 "namespace N { /** one */ export interface I { x: string; } }\n\
                  namespace N { /** two */ export interface I { x: string; } }\n",
