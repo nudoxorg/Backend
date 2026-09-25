@@ -350,6 +350,89 @@ pub fn resolve_stem(source: &mut AdvisorySource) -> bool {
     true
 }
 
+/// Parse one RustSec advisory TOML file into an [`AdvisorySource`].
+///
+/// cargo-audit and cargo-deny both read this file shape. A single
+/// `versions.patched` requirement of the form `>= x` becomes
+/// `introduced:0,fixed:x`, the same window an OSV event range uses. Several
+/// patched requirements are not one window, so the range stays empty and the
+/// advisory is still upserted. The ecosystem is `crates.io`.
+pub fn parse_rustsec(text: &str, recorded_at: i64) -> Result<AdvisorySource, String> {
+    let value: toml::Value = toml::from_str(text).map_err(|err| err.to_string())?;
+    let advisory = value
+        .get("advisory")
+        .ok_or_else(|| "rustsec advisory has no [advisory]".to_owned())?;
+    let id = advisory
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "rustsec advisory has no id".to_owned())?;
+    let package = advisory
+        .get("package")
+        .and_then(toml::Value::as_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "rustsec advisory has no package".to_owned())?;
+    let url = advisory
+        .get("url")
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned);
+    let valid_from = advisory
+        .get("date")
+        .and_then(toml::Value::as_str)
+        .and_then(|date| rfc3339_millis(&format!("{date}T00:00:00Z")))
+        .unwrap_or(recorded_at);
+    let valid_to = advisory
+        .get("withdrawn")
+        .and_then(toml::Value::as_str)
+        .and_then(|date| rfc3339_millis(&format!("{date}T00:00:00Z")));
+    let patched = value
+        .get("versions")
+        .and_then(|versions| versions.get("patched"))
+        .and_then(toml::Value::as_array)
+        .map(|patched| {
+            patched
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .filter_map(patched_floor)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let version_range = if patched.len() == 1 {
+        Some(format!("introduced:0,fixed:{}", patched[0]))
+    } else {
+        None
+    };
+    let mut source = AdvisorySource {
+        upstream_id: id.to_owned(),
+        stem_id: None,
+        version_range,
+        severity: None,
+        summary: advisory
+            .get("title")
+            .or_else(|| advisory.get("description"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned),
+        url,
+        valid_from,
+        valid_to,
+        recorded_at,
+        affected_name: Some(package.to_owned()),
+        affected_ecosystem: Some("crates.io".to_owned()),
+    };
+    resolve_stem(&mut source);
+    Ok(source)
+}
+
+/// The version a `>= x` patched requirement starts fixing.
+fn patched_floor(requirement: &str) -> Option<String> {
+    let requirement = requirement.trim();
+    let rest = requirement.strip_prefix(">=")?.trim();
+    if rest.is_empty() || rest.contains(|ch: char| ch.is_whitespace() || ch == ',') {
+        return None;
+    }
+    Some(rest.trim_start_matches('v').to_owned())
+}
+
 /// Parse an OSV document and resolve every affected package that this index
 /// can name.
 pub fn resolve_osv(body: &[u8], recorded_at: i64) -> Result<Vec<AdvisorySource>, String> {
@@ -578,5 +661,43 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn a_rustsec_file_uses_the_same_window_as_an_osv_range() {
+        let toml = r#"
+            [advisory]
+            id = "RUSTSEC-2020-0001"
+            package = "smallvec"
+            date = "2020-01-15"
+            url = "https://rustsec.org/advisories/RUSTSEC-2020-0001"
+            title = "overflow"
+
+            [versions]
+            patched = [">= 1.6.1"]
+        "#;
+        let rustsec = parse_rustsec(toml, 1).expect("rustsec");
+        let osv = &resolve_osv(
+            br#"{"id":"RUSTSEC-2020-0001","affected":[{"package":{"ecosystem":"crates.io","name":"smallvec"},"ranges":[{"events":[{"introduced":"0"},{"fixed":"1.6.1"}]}]}]}"#,
+            1,
+        )
+        .expect("osv")[0];
+        assert_eq!(rustsec.upstream_id, osv.upstream_id);
+        assert_eq!(rustsec.version_range, osv.version_range);
+        assert_eq!(rustsec.stem_id, osv.stem_id);
+        assert!(version_in_osv_range(rustsec.version_range.as_deref().unwrap(), "1.6.0"));
+        assert!(!version_in_osv_range(rustsec.version_range.as_deref().unwrap(), "1.6.1"));
+
+        let several = r#"
+            [advisory]
+            id = "RUSTSEC-2"
+            package = "smallvec"
+            date = "2020-01-15"
+            [versions]
+            patched = [">= 0.2.19", ">= 0.3.1"]
+        "#;
+        let split = parse_rustsec(several, 1).expect("two lines");
+        assert!(split.version_range.is_none());
+        assert_eq!(split.catalog_ops().len(), 1);
     }
 }
