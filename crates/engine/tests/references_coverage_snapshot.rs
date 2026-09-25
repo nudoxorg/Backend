@@ -1858,38 +1858,43 @@ static CSHARP_SYMBOLS: &[Snap] = &[
     },
 ];
 
+// The pinned Nix Linux libclang and the macOS Clang authority produce
+// different, repeatable reference planes over the same corpus sources. Linux
+// values below were identical in independent PR builds 2195 and 2205; keep
+// both baselines exact instead of weakening the assertion with a range.
+const CLANG_LINUX: bool = cfg!(target_os = "linux");
 static CLANG_PACKAGES: &[SnapPackage] = &[
     SnapPackage {
         package: "pugixml",
         entities: 2585,
-        occurrences: 3509,
+        occurrences: if CLANG_LINUX { 3511 } else { 3509 },
         cross_file_entities: 0,
         cross_file_occurrences: 0,
-        links: 2142,
-        link_occurrences: 3509,
-        link_occurrences_with_source: 3509,
-        note: "Clang lane: name-token extents replaced whole-CallExpr extents, so most sites verify on the identifier; includes now surface as Import link occurrences and cross-file references travel as Stable targets instead of being dropped. Remaining: header-hosted declarations stay out of the main-file image (no cross-file closure — cross_file_* stay 0), macro-generated sites keep expression extents, and the pugixml row's occurrence/link totals sit slightly under the prior pin (-30/-19) because include-file fact rows moved out of the main-file planes while the new import/override planes added less back.",
+        links: if CLANG_LINUX { 2144 } else { 2142 },
+        link_occurrences: if CLANG_LINUX { 3511 } else { 3509 },
+        link_occurrences_with_source: if CLANG_LINUX { 3511 } else { 3509 },
+        note: "Clang lane: name-token extents replaced whole-CallExpr extents, so most sites verify on the identifier; includes now surface as Import link occurrences and cross-file references travel as Stable targets instead of being dropped. Remaining: header-hosted declarations stay out of the main-file image (no cross-file closure — cross_file_* stay 0), macro-generated sites keep expression extents. Exact Linux/macOS pins retain each authority's measured reference plane.",
     },
     SnapPackage {
         package: "json-c",
         entities: 408,
-        occurrences: 713,
+        occurrences: if CLANG_LINUX { 717 } else { 713 },
         cross_file_entities: 0,
         cross_file_occurrences: 0,
-        links: 512,
-        link_occurrences: 713,
-        link_occurrences_with_source: 713,
+        links: if CLANG_LINUX { 505 } else { 512 },
+        link_occurrences: if CLANG_LINUX { 717 } else { 713 },
+        link_occurrences_with_source: if CLANG_LINUX { 717 } else { 713 },
         note: "Clang lane: name-token extents replaced whole-CallExpr extents, so most sites verify on the identifier; includes now surface as Import link occurrences and cross-file references travel as Stable targets instead of being dropped. Remaining: header-hosted declarations stay out of the main-file image (no cross-file closure — cross_file_* stay 0) and macro-generated sites keep expression extents.",
     },
     SnapPackage {
         package: "inih",
         entities: 51,
-        occurrences: 16,
+        occurrences: if CLANG_LINUX { 17 } else { 16 },
         cross_file_entities: 0,
         cross_file_occurrences: 0,
-        links: 13,
-        link_occurrences: 16,
-        link_occurrences_with_source: 16,
+        links: if CLANG_LINUX { 14 } else { 13 },
+        link_occurrences: if CLANG_LINUX { 17 } else { 16 },
+        link_occurrences_with_source: if CLANG_LINUX { 17 } else { 16 },
         note: "Clang lane: name-token extents replaced whole-CallExpr extents, so most sites verify on the identifier; includes now surface as Import link occurrences and cross-file references travel as Stable targets instead of being dropped. Remaining: header-hosted declarations stay out of the main-file image (no cross-file closure — cross_file_* stay 0) and macro-generated sites keep expression extents.",
     },
     SnapPackage {
@@ -1948,6 +1953,7 @@ static CLANG_SYMBOLS: &[Snap] = &[
         link_occ_src: 0,
         note: "",
     },
+    #[cfg(not(target_os = "linux"))]
     Snap {
         package: "pugixml",
         role: "method",
@@ -1963,6 +1969,23 @@ static CLANG_SYMBOLS: &[Snap] = &[
         link_occ: 1,
         link_occ_src: 1,
         note: "",
+    },
+    #[cfg(target_os = "linux")]
+    Snap {
+        package: "pugixml",
+        role: "method",
+        symbol: "xpath_context",
+        grep_total: 19,
+        decl_est: 2,
+        ir_local: 0,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Linux Clang's sampled method has no reference occurrence; this zero is a pinned coverage gap, not a pass-by-absence.",
     },
     Snap {
         package: "pugixml",
@@ -4183,6 +4206,10 @@ fn csharp_references_snapshot() {
 
 #[test]
 fn clang_references_snapshot() {
+    assert!(
+        cfg!(any(target_os = "linux", target_os = "macos")),
+        "Clang reference snapshot needs a measured baseline for this platform"
+    );
     drive_lane("clang", CLANG_PACKAGES, CLANG_SYMBOLS, baseline_mode());
 }
 

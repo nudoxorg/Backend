@@ -612,6 +612,25 @@ in
             };
           }
           {
+            # These five tests each bootstrap real rust-analyzer/Cargo
+            # workspaces but their names miss the general native-compiler
+            # filter. Build 2205 killed all five at the closure default of
+            # 180s while they contended with the grouped corpus. Give them
+            # the same exclusive native-compiler lease and a bounded budget
+            # for the multiple real compilations each performs. Focused M3
+            # runs finished in 100s, 116s, 186s, 83s, and 84s respectively;
+            # the 540s ceiling leaves Linux headroom without making a hang
+            # unbounded.
+            filter = "test(rust_workspace_member_lifecycle_chains_two_generations) | test(rust_hrtb_where_predicates_lower_into_the_free_lane) | test(rust_impl_self_type_names_discriminate_generic_argument_variants) | test(rust_impl_signature_key_dedups_twins_and_keeps_siblings) | test(identity_counts_match_prechange_oracle)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+            slow-timeout = {
+              period = "90s";
+              terminate-after = 6;
+            };
+          }
+          {
             # `rust_real_corpus_repro`'s two whole-fleet probes and
             # `compiler_corpus`'s `real_package_inventory_...` all match the
             # general `/corpus|...|real_package/` filter below, so they

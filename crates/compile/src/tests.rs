@@ -1245,16 +1245,54 @@ fn supervisor_enforces_workspace_growth() -> Result<(), Box<dyn Error>> {
 #[cfg(unix)]
 #[test]
 fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> {
-    // Bash can print several bounded fork-failure diagnostics before exiting
-    // under RLIMIT_NPROC. The assertion is about the process-count terminal;
-    // a tiny stderr ceiling would test OutputLimit instead.
+    // A single fork attempt has a prompt, unambiguous terminal. Bash retries
+    // a rejected background fork for longer than the supervisor deadline.
+    // Concourse runs as root, which Linux exempts from RLIMIT_NPROC. In that
+    // case the supervised Python process drops to a fresh unprivileged UID
+    // before attempting the fork; the baseline makes global fork exhaustion
+    // fail the test rather than masquerade as process-limit enforcement.
+    const FORK_PROBE: &str = r#"import errno, os, sys
+if sys.platform.startswith('linux') and os.geteuid() == 0:
+    uid = 60000 + os.getppid() % 5000
+    os.setgid(uid)
+    os.setuid(uid)
+try:
+    pid = os.fork()
+except OSError as error:
+    if error.errno == errno.EAGAIN:
+        print('FORK_DENIED_EAGAIN')
+        sys.exit(73)
+    raise
+if pid == 0:
+    os._exit(0)
+os.waitpid(pid, 0)
+print('FORK_ALLOWED')"#;
+    let python = test_python_executable().ok_or("Python fork probe is unavailable")?;
+    let baseline = command(
+        python.clone(),
+        &["-c", FORK_PROBE],
+        limits(64, 256, Duration::from_secs(10), 512)?,
+    )?
+    .run()?;
+    assert_eq!(
+        baseline.terminal(),
+        ProcessTerminal::Success,
+        "{baseline:?}"
+    );
+    assert!(baseline
+        .stdout()
+        .windows(b"FORK_ALLOWED".len())
+        .any(|part| part == b"FORK_ALLOWED"));
+
     let process_limits =
-        limits(64, 4096, Duration::from_secs(2), 4096)?.with_process_count_limit(1)?;
-    let script = format!("{} 1 & wait", test_coreutils_executable("sleep").display());
-    let process = command(test_shell_executable(), &["-c", &script], process_limits)?;
-    let receipt = process.run()?;
-    assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
-    assert_ne!(receipt.status(), Some(0));
+        limits(64, 256, Duration::from_secs(10), 512)?.with_process_count_limit(1)?;
+    let receipt = command(python, &["-c", FORK_PROBE], process_limits)?.run()?;
+    assert_eq!(receipt.terminal(), ProcessTerminal::Exit, "{receipt:?}");
+    assert_eq!(receipt.status(), Some(73), "{receipt:?}");
+    assert!(receipt
+        .stdout()
+        .windows(b"FORK_DENIED_EAGAIN".len())
+        .any(|part| part == b"FORK_DENIED_EAGAIN"));
     assert!(receipt.reaped());
     Ok(())
 }
