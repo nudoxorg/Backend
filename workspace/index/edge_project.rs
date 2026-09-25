@@ -210,6 +210,10 @@ fn version_view(
     }
 }
 
+pub(crate) fn edges_from_wires(wires: &[EdgeWire]) -> Vec<DepEdge> {
+    wires.iter().map(edge_from_wire).collect()
+}
+
 fn edge_from_wire(wire: &EdgeWire) -> DepEdge {
     use smol_str::SmolStr;
 

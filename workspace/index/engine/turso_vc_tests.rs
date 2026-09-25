@@ -679,3 +679,48 @@ fn a_feed_republish_replaces_runtime_names_and_keeps_build() {
     ]);
     assert_eq!(catalog.dependents(), catalog.dependents_from_tips());
 }
+
+#[test]
+fn a_feed_snapshot_wins_when_the_record_still_names_the_old_runtime_edge() {
+    use crate::{
+        enums::{EdgeKind, EdgeSource},
+        protocol::EdgeSnapshot,
+        record::{DepClass, DepEdge, PackageRecord},
+    };
+    use heart::Language;
+
+    let mut catalog = VersionedCatalog::open().expect("open");
+    let mut record = PackageRecord::published(Language::Rust, "app", "1.0.0", &["serde"]);
+    record.edges.push(DepEdge {
+        name: "cc".into(),
+        requirement: None,
+        class: DepClass::Build,
+        kind: EdgeKind::Build,
+        optional: false,
+        dep_ecosystem: None,
+    });
+    catalog.put_record(&record).expect("seed");
+
+    let snapshot = EdgeSnapshot::feed(crate::edge_project::project_edges(
+        Language::Rust,
+        &PackageRecord::published(Language::Rust, "app", "1.0.0", &["tokio"]).edges,
+        EdgeSource::Feed,
+    ));
+    catalog.put_observed(&record, &snapshot).expect("feed");
+
+    let tip = catalog
+        .materialize("rust", "app", "1.0.0")
+        .expect("read")
+        .expect("row");
+    let mut names: Vec<_> = tip
+        .edges
+        .iter()
+        .map(|edge| (edge.kind, edge.name.as_str()))
+        .collect();
+    names.sort_by_key(|pair| (pair.0.as_token(), pair.1));
+    assert_eq!(names, vec![
+        (EdgeKind::Build, "cc"),
+        (EdgeKind::Runtime, "tokio")
+    ]);
+    assert_eq!(catalog.dependents(), catalog.dependents_from_tips());
+}

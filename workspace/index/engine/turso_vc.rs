@@ -168,8 +168,13 @@ impl VersionedCatalog {
     ) -> OrmResult<FactWrite> {
         match edges {
             crate::protocol::EdgeSnapshot::Unobserved => self.put_body(record),
-            crate::protocol::EdgeSnapshot::Replace { kinds, .. } => {
-                self.put_scoped(record, Some(kinds))
+            crate::protocol::EdgeSnapshot::Replace { kinds, wires } => {
+                let mut scoped = record.clone();
+                scoped.edges = crate::edge_project::edges_from_wires(wires)
+                    .into_iter()
+                    .filter(|edge| kinds.contains(&edge.kind))
+                    .collect();
+                self.put_scoped(&scoped, Some(kinds.as_slice()))
             }
         }
     }
