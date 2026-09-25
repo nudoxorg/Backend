@@ -7,14 +7,16 @@
 
 use std::path::PathBuf;
 
-// ── Stable id ─────────────────────────────────────────────────────────────────
+// ── Stable id
+// ─────────────────────────────────────────────────────────────────
 
 /// A Clang Unified Symbol Resolution string.
 ///
 /// Stable across TUs; unique per declaration; the right `Producer::Id`.
 pub type Usr = String;
 
-// ── Visibility ────────────────────────────────────────────────────────────────
+// ── Visibility
+// ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OracleVisibility {
@@ -68,10 +70,17 @@ pub enum OracleType {
         ret: Box<OracleType>,
         params: Vec<OracleType>,
     },
-    /// Reference to a named type; `args` is non-empty for template instantiations.
+    /// Reference to a named type; `args` is non-empty for template
+    /// instantiations.
+    ///
+    /// `decl_usr` is the declaration libclang resolved, when it has one.
+    /// Lowering uses it to emit a same-package
+    /// [`nudox_ir::kinds::Type::Nominal`] only for a USR this oracle will
+    /// actually declare. A name with no declaration USR stays a spelling.
     Named {
         name: String,
         args: Vec<OracleType>,
+        decl_usr: Option<Usr>,
     },
     /// A template type-parameter use (e.g. `T` in `template<typename T>`).
     TypeVar(String),
@@ -79,7 +88,8 @@ pub enum OracleType {
     Inferred,
 }
 
-// ── Parameters ────────────────────────────────────────────────────────────────
+// ── Parameters
+// ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct OracleParam {
@@ -90,7 +100,8 @@ pub struct OracleParam {
     pub byte_offset: usize,
 }
 
-// ── Generic parameters ────────────────────────────────────────────────────────
+// ── Generic parameters
+// ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum OracleGenericParam {
@@ -116,7 +127,8 @@ pub enum OracleReceiver {
     MutRef,
 }
 
-// ── Function-level modifiers ──────────────────────────────────────────────────
+// ── Function-level modifiers
+// ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OracleFnMod {
@@ -130,7 +142,8 @@ pub enum OracleFnMod {
     NoReturn,
 }
 
-// ── Declared items ────────────────────────────────────────────────────────────
+// ── Declared items
+// ────────────────────────────────────────────────────────────
 
 /// A single function / method / overload.
 #[derive(Debug, Clone)]
@@ -260,7 +273,8 @@ pub struct Reference {
     pub byte_end: usize,
 }
 
-// ── Collected oracle output ───────────────────────────────────────────────────
+// ── Collected oracle output
+// ───────────────────────────────────────────────────
 
 /// The fully-owned result of the extraction pass.
 ///
@@ -278,4 +292,12 @@ pub struct ClangOracle {
     pub aliases: Vec<OracleAlias>,
     pub vars: Vec<OracleVar>,
     pub references: Vec<Reference>,
+    /// Main files of the parses merged into this oracle, one path per parse.
+    ///
+    /// This is the list of translation units the producer opened, not the set
+    /// of files reachable by `#include`. A package header that was opened once
+    /// appears once; a header re-parsed for every includer would appear once
+    /// per includer. Paths outside the package (system headers) are never
+    /// pushed — those files are not chosen as translation units.
+    pub main_files: Vec<PathBuf>,
 }

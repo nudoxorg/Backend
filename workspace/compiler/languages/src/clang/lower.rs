@@ -15,8 +15,8 @@
 //! system, NOT source-level annotations. They are represented in the oracle
 //! as distinct type wrappers (`OracleType::ConstPointer`, the `mutable` flag
 //! on `LValueRef`/`Reference`, etc.) and are already lowered faithfully to
-//! `Primitive::ConstPointer` / `Primitive::MutPointer` / `Reference { mutable }`.
-//! Wrapping them again in `Type::Annotated` would duplicate the information
+//! `Primitive::ConstPointer` / `Primitive::MutPointer` / `Reference { mutable
+//! }`. Wrapping them again in `Type::Annotated` would duplicate the information
 //! already in those structural variants and mislead consumers that treat
 //! `Annotated` as a source-level attribute rather than a type qualifier.
 //!
@@ -27,15 +27,15 @@
 //!
 //! Conclusion: `Type::Annotated` is intentionally NOT wired for C/C++ in this
 //! producer. If a future oracle version exposes `__attribute__` or
-//! `[[nodiscard]]` type annotations, a new `OracleType::Annotated { inner, attr }`
-//! variant and a trivial match arm would be the right extension point.
+//! `[[nodiscard]]` type annotations, a new `OracleType::Annotated { inner, attr
+//! }` variant and a trivial match arm would be the right extension point.
 //!
 //! # `GenericParam::Type::variance`
 //!
 //! C++ template type parameters have no declaration-site variance keyword.
 //! Variance is `None` for all `GenericParam::Type` entries from this producer.
 //!
-//! # `OracleType::Named` — not a `Type::TypeVar`
+//! # `OracleType::Named` — local nominal, `std::` import, or a spelling
 //!
 //! An unresolved named type (`OracleType::Named`) previously lowered to
 //! `Type::TypeVar(name)`, the same variant used for a genuine template
@@ -43,11 +43,28 @@
 //! generic parameter" with "this is an ordinary named type we have no
 //! resolution path for" — the two are semantically opposite (a `TypeVar` is
 //! alpha-equivalent and excluded from identity skeletons by name; a named
-//! type's identity is exactly its name). It now lowers to
+//! type's identity is exactly its name).
+//!
+//! `lower_type` takes the [`Lowering`] sink. A declaration this package
+//! already extracted becomes [`Lowering::nominal`] / [`Lowering::apply`] on
+//! that USR — a local nominal, not a stringly `Type::Nominal`. A name the
+//! oracle spelled as `std::…` becomes [`Lowering::nominal_import`] /
+//! [`Lowering::apply_import`]. `refer` on a `std::` USR would make `finish`
+//! return `Undeclared`, because this producer never declares the standard
+//! library. Anything else stays
 //! `Type::Unknown(UnknownType::UnresolvedExternal { name })`, keeping the
-//! spelling. `lower_type` takes only `&OracleType` — it has no `Lowering`
-//! sink and so cannot resolve this against the package's own declared USRs
-//! or build a `Ref::Foreign`; a later registry link pass owns that.
+//! spelling.
+//!
+//! # `OracleType::RValueRef` is not `T&`
+//!
+//! [`Primitive::Reference`](nudox_ir::kinds::ty::Primitive::Reference) is an
+//! lvalue reference (`T&`, Rust `&T`). `T&&` used to lower to that same
+//! primitive with `mutable: true`, so `f(T&)` and `f(T&&)` minted one
+//! skeleton. There is still no rvalue-reference primitive. `T&&` lowers to
+//! `Type::Apply` whose base is `Type::no_ir_representation("rvalue-reference")`
+//! and whose argument is the pointee. That is not `Primitive::Reference`, and
+//! it keeps the pointee so two rvalue overloads that differ in `T` stay
+//! distinct.
 //!
 //! **Identity note:** this moves `IntroId`s for overload sets whose
 //! signature mentions an unresolved named type (an entry's skeleton is
@@ -60,10 +77,15 @@
 //! variant→opcode mapping and needed no change for a new *caller* of an
 //! existing variant.
 
-use std::path::PathBuf;
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use nudox_ir::{
+    change::EcosystemId,
     entry::{SourceLocation, Symbol, Unlocated, Visibility},
+    foreign::ForeignKey,
     kinds::{
         Alias, Const, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function, GenericParam,
         Module, Param, ParamAttribute, Receiver, Record, RecordForm, Static, Type, Variant,
@@ -79,29 +101,31 @@ use crate::clang::oracle::{
     OracleVariant, OracleVisibility, Usr,
 };
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Public entry point
+// ────────────────────────────────────────────────────────
 
 /// Emit all declarations from `oracle` into `out`.
 ///
 /// Called from [`ClangProducer::lower`].
 pub fn lower_oracle(oracle: &ClangOracle, out: &mut Lowering<Usr>) {
+    let locals = LocalNames::from_oracle(oracle);
     for ns in &oracle.namespaces {
         lower_namespace(ns, out);
     }
     for rec in &oracle.records {
-        lower_record(rec, oracle, out);
+        lower_record(rec, oracle, out, &locals);
     }
     for fun in &oracle.functions {
-        lower_function(fun, oracle, out);
+        lower_function(fun, out, &locals);
     }
     for e in &oracle.enums {
         lower_enum(e, oracle, out);
     }
     for alias in &oracle.aliases {
-        lower_alias(alias, out);
+        lower_alias(alias, out, &locals);
     }
     for var in &oracle.vars {
-        lower_var(var, out);
+        lower_var(var, out, &locals);
     }
     for reference in &oracle.references {
         let Some(owner) = oracle.functions.iter().find(|f| f.usr == reference.owner) else {
@@ -131,7 +155,8 @@ pub fn lower_oracle(oracle: &ClangOracle, out: &mut Lowering<Usr>) {
     }
 }
 
-// ── Symbol construction ───────────────────────────────────────────────────────
+// ── Symbol construction
+// ───────────────────────────────────────────────────────
 
 fn make_sym(
     name: &str,
@@ -170,7 +195,8 @@ fn parent_id(parent_usr: &Option<Usr>) -> Option<Usr> {
     parent_usr.clone()
 }
 
-// ── Namespace → Module ────────────────────────────────────────────────────────
+// ── Namespace → Module
+// ────────────────────────────────────────────────────────
 
 fn lower_namespace(ns: &OracleNamespace, out: &mut Lowering<Usr>) {
     let sym = make_sym(
@@ -185,7 +211,12 @@ fn lower_namespace(ns: &OracleNamespace, out: &mut Lowering<Usr>) {
 
 // ── Record (struct / class / union) ──────────────────────────────────────────
 
-fn lower_record(rec: &OracleRecord, oracle: &ClangOracle, out: &mut Lowering<Usr>) {
+fn lower_record(
+    rec: &OracleRecord,
+    oracle: &ClangOracle,
+    out: &mut Lowering<Usr>,
+    locals: &LocalNames,
+) {
     // Collect field Refs first.  Fields are in `oracle.fields` keyed by parent USR.
     let fields: Vec<_> = oracle
         .fields
@@ -198,7 +229,11 @@ fn lower_record(rec: &OracleRecord, oracle: &ClangOracle, out: &mut Lowering<Usr
     let generics: Vec<GenericParam> = rec.generics.iter().map(lower_generic_param).collect();
 
     // Super-types.
-    let super_types: Vec<Type> = rec.super_types.iter().map(lower_type).collect();
+    let super_types: Vec<Type> = rec
+        .super_types
+        .iter()
+        .map(|ty| lower_type(ty, out, locals))
+        .collect();
 
     let form = if rec.is_union {
         RecordForm::Union
@@ -228,13 +263,13 @@ fn lower_record(rec: &OracleRecord, oracle: &ClangOracle, out: &mut Lowering<Usr
         .iter()
         .filter(|f| f.parent_usr.as_deref() == Some(&rec.usr))
     {
-        lower_field(field, out);
+        lower_field(field, out, locals);
     }
 }
 
 // ── Field ─────────────────────────────────────────────────────────────────────
 
-fn lower_field(f: &OracleField, out: &mut Lowering<Usr>) {
+fn lower_field(f: &OracleField, out: &mut Lowering<Usr>, locals: &LocalNames) {
     let sym = make_sym(
         &f.name,
         f.source_file.clone(),
@@ -253,7 +288,7 @@ fn lower_field(f: &OracleField, out: &mut Lowering<Usr>) {
 
     let kind = Field::builder()
         .key(FieldKey::Named)
-        .ty(lower_type(&f.ty))
+        .ty(lower_type(&f.ty, out, locals))
         .attributes(attrs)
         .build();
 
@@ -262,7 +297,7 @@ fn lower_field(f: &OracleField, out: &mut Lowering<Usr>) {
 
 // ── Function ─────────────────────────────────────────────────────────────────
 
-fn lower_function(fun: &OracleFunction, _oracle: &ClangOracle, out: &mut Lowering<Usr>) {
+fn lower_function(fun: &OracleFunction, out: &mut Lowering<Usr>, locals: &LocalNames) {
     // Build Param entries inline using a per-param synthetic USR.
     let input_refs: Vec<_> = fun
         .params
@@ -305,7 +340,7 @@ fn lower_function(fun: &OracleFunction, _oracle: &ClangOracle, out: &mut Lowerin
             }
 
             let kind = Param::builder()
-                .ty(lower_type(&p.ty))
+                .ty(lower_type(&p.ty, out, locals))
                 .attributes(param_attrs)
                 .build();
 
@@ -362,7 +397,9 @@ fn lower_function(fun: &OracleFunction, _oracle: &ClangOracle, out: &mut Lowerin
             attrs: Box::new([]),
             cfg: None,
         };
-        let kind = Param::builder().ty(lower_type(&fun.ret)).build();
+        let kind = Param::builder()
+            .ty(lower_type(&fun.ret, out, locals))
+            .build();
         out.declare_at(
             ret_usr,
             Some(fun.usr.clone()),
@@ -474,7 +511,7 @@ fn lower_variant(v: &OracleVariant, out: &mut Lowering<Usr>) {
 
 // ── Alias ─────────────────────────────────────────────────────────────────────
 
-fn lower_alias(a: &OracleAlias, out: &mut Lowering<Usr>) {
+fn lower_alias(a: &OracleAlias, out: &mut Lowering<Usr>, locals: &LocalNames) {
     let sym = make_sym(
         &a.name,
         a.source_file.clone(),
@@ -482,13 +519,16 @@ fn lower_alias(a: &OracleAlias, out: &mut Lowering<Usr>) {
         &a.documentation,
         a.visibility,
     );
-    let kind = Alias::builder().target(lower_type(&a.target)).build();
+    let kind = Alias::builder()
+        .target(lower_type(&a.target, out, locals))
+        .build();
     out.declare(a.usr.clone(), parent_id(&a.parent_usr), sym, kind);
 }
 
-// ── Variable (const / static) ─────────────────────────────────────────────────
+// ── Variable (const / static)
+// ─────────────────────────────────────────────────
 
-fn lower_var(v: &OracleVar, out: &mut Lowering<Usr>) {
+fn lower_var(v: &OracleVar, out: &mut Lowering<Usr>, locals: &LocalNames) {
     let sym = make_sym(
         &v.name,
         v.source_file.clone(),
@@ -496,7 +536,7 @@ fn lower_var(v: &OracleVar, out: &mut Lowering<Usr>) {
         &v.documentation,
         v.visibility,
     );
-    let ty = lower_type(&v.ty);
+    let ty = lower_type(&v.ty, out, locals);
 
     if v.is_const {
         let kind = Const::builder().ty(ty).build();
@@ -507,9 +547,142 @@ fn lower_var(v: &OracleVar, out: &mut Lowering<Usr>) {
     }
 }
 
-// ── Type lowering ─────────────────────────────────────────────────────────────
+// ── Same-package nominals ────────────────────────────────────────────────────
 
-fn lower_type(ty: &OracleType) -> Type {
+/// USRs this oracle will declare, plus unambiguous spellings of those USRs.
+///
+/// `nominal` / `apply` call `refer`, and `finish` demands a declaration for
+/// every referred id. Only USRs in `by_usr` are safe. A `std::` name is never
+/// looked up here.
+struct LocalNames {
+    by_usr: HashSet<String>,
+    by_name: HashMap<String, String>,
+}
+
+impl LocalNames {
+    fn from_oracle(oracle: &ClangOracle) -> Self {
+        let mut by_usr = HashSet::new();
+        let mut provisional: HashMap<String, Option<String>> = HashMap::new();
+        let mut parents: HashMap<&str, (&str, Option<&str>)> = HashMap::new();
+        for ns in &oracle.namespaces {
+            parents.insert(
+                ns.usr.as_str(),
+                (ns.name.as_str(), ns.parent_usr.as_deref()),
+            );
+        }
+        for rec in &oracle.records {
+            parents.insert(
+                rec.usr.as_str(),
+                (rec.name.as_str(), rec.parent_usr.as_deref()),
+            );
+        }
+        for en in &oracle.enums {
+            parents.insert(
+                en.usr.as_str(),
+                (en.name.as_str(), en.parent_usr.as_deref()),
+            );
+        }
+
+        let mut note = |name: &str, usr: &str| {
+            if name.is_empty() {
+                return;
+            }
+            match provisional.entry(name.to_owned()) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(Some(usr.to_owned()));
+                }
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    if slot.get().as_deref() != Some(usr) {
+                        slot.insert(None);
+                    }
+                }
+            }
+        };
+
+        for rec in &oracle.records {
+            by_usr.insert(rec.usr.clone());
+            note(&rec.name, &rec.usr);
+            let qualified = qualify_name(&parents, rec.parent_usr.as_deref(), &rec.name);
+            if qualified != rec.name {
+                note(&qualified, &rec.usr);
+            }
+        }
+        for en in &oracle.enums {
+            by_usr.insert(en.usr.clone());
+            note(&en.name, &en.usr);
+            let qualified = qualify_name(&parents, en.parent_usr.as_deref(), &en.name);
+            if qualified != en.name {
+                note(&qualified, &en.usr);
+            }
+        }
+        for alias in &oracle.aliases {
+            by_usr.insert(alias.usr.clone());
+            note(&alias.name, &alias.usr);
+            let qualified = qualify_name(&parents, alias.parent_usr.as_deref(), &alias.name);
+            if qualified != alias.name {
+                note(&qualified, &alias.usr);
+            }
+        }
+
+        let by_name = provisional
+            .into_iter()
+            .filter_map(|(name, usr)| usr.map(|usr| (name, usr)))
+            .collect();
+        Self { by_usr, by_name }
+    }
+
+    /// The USR to `nominal`, if this package declares the type.
+    ///
+    /// A resolved declaration USR wins. A spelling is used only when it names
+    /// exactly one local declaration. A declaration USR that is *not* local
+    /// (a system header, the standard library) does not fall through to a
+    /// same-spelled local — that would point `std::string` at a local `string`.
+    fn local_usr(&self, name: &str, decl_usr: Option<&str>) -> Option<String> {
+        if let Some(usr) = decl_usr {
+            if self.by_usr.contains(usr) {
+                return Some(usr.to_owned());
+            }
+            return None;
+        }
+        self.by_name.get(name).cloned()
+    }
+}
+
+fn qualify_name(
+    parents: &HashMap<&str, (&str, Option<&str>)>,
+    parent: Option<&str>,
+    name: &str,
+) -> String {
+    let mut parts = vec![name];
+    let mut cur = parent;
+    for _ in 0..32 {
+        let Some(usr) = cur else { break };
+        let Some((parent_name, next)) = parents.get(usr) else {
+            break;
+        };
+        parts.push(*parent_name);
+        cur = *next;
+    }
+    parts.reverse();
+    parts.join("::")
+}
+
+fn is_std_spelling(name: &str) -> bool {
+    let name = name.trim_start_matches("::");
+    name == "std" || name.starts_with("std::")
+}
+
+fn std_foreign_key(name: &str) -> ForeignKey {
+    let spelled = name.trim_start_matches("::");
+    let leaf = spelled.rsplit("::").next().unwrap_or(spelled);
+    let display = leaf.split('<').next().unwrap_or(leaf);
+    ForeignKey::in_namespace(EcosystemId::new("cpp"), "std", spelled, display)
+}
+
+// ── Type lowering
+// ─────────────────────────────────────────────────────────────
+
+fn lower_type(ty: &OracleType, out: &mut Lowering<Usr>, locals: &LocalNames) -> Type {
     use nudox_ir::kinds::ty::{Primitive, Width};
 
     match ty {
@@ -526,41 +699,46 @@ fn lower_type(ty: &OracleType) -> Type {
         OracleType::Float { bits } => Type::Primitive(Primitive::Float(fixed_width(*bits))),
         OracleType::FloatArch => Type::Primitive(Primitive::Float(Width::Arch)),
 
-        OracleType::ConstPointer(inner) => {
-            Type::Primitive(Primitive::ConstPointer(Box::new(lower_type(inner))))
-        }
-        OracleType::MutPointer(inner) => {
-            Type::Primitive(Primitive::MutPointer(Box::new(lower_type(inner))))
-        }
+        OracleType::ConstPointer(inner) => Type::Primitive(Primitive::ConstPointer(Box::new(
+            lower_type(inner, out, locals),
+        ))),
+        OracleType::MutPointer(inner) => Type::Primitive(Primitive::MutPointer(Box::new(
+            lower_type(inner, out, locals),
+        ))),
         OracleType::LValueRef { mutable, ty } => Type::Primitive(Primitive::Reference {
             lifetime: None,
             mutable: *mutable,
-            ty: Box::new(lower_type(ty)),
+            ty: Box::new(lower_type(ty, out, locals)),
         }),
         OracleType::RValueRef(inner) => {
-            // No dedicated RValueRef in the IR; model as mutable reference.
-            Type::Primitive(Primitive::Reference {
-                lifetime: None,
-                mutable: true,
-                ty: Box::new(lower_type(inner)),
-            })
+            // `Primitive::Reference` is `T&`. Wrapping the pointee in `Apply`
+            // keeps `T&&` off that primitive and keeps the pointee in the
+            // skeleton. `refer` is not involved.
+            let pointee = lower_type(inner, out, locals);
+            Type::Apply {
+                base: Box::new(Type::no_ir_representation("rvalue-reference")),
+                args: [pointee].into(),
+            }
         }
         OracleType::Array { ty, len } => Type::Array {
-            ty: Box::new(lower_type(ty)),
+            ty: Box::new(lower_type(ty, out, locals)),
             length: *len,
         },
-        OracleType::Slice(inner) => Type::Slice(Box::new(lower_type(inner))),
+        OracleType::Slice(inner) => Type::Slice(Box::new(lower_type(inner, out, locals))),
         OracleType::FnPtr { ret, params } => {
             // C function pointers lower to Type::FunctionPointer.
             // `params` are the positional parameter types in order.
             // `ret` is the return type; if void, lower to None (no return).
             // ABI is None (C default / language default — no __attribute__ ABI
             // annotation is surfaced at this level by libclang).
-            let lowered_params: Vec<Type> = params.iter().map(lower_type).collect();
+            let lowered_params: Vec<Type> = params
+                .iter()
+                .map(|ty| lower_type(ty, out, locals))
+                .collect();
             let lowered_ret = if matches!(ret.as_ref(), OracleType::Void) {
                 None
             } else {
-                Some(Box::new(lower_type(ret)))
+                Some(Box::new(lower_type(ret, out, locals)))
             };
             Type::FunctionPointer {
                 params: lowered_params.into_boxed_slice(),
@@ -568,33 +746,11 @@ fn lower_type(ty: &OracleType) -> Type {
                 abi: None,
             }
         }
-        OracleType::Named { name, args } if args.is_empty() => {
-            // A nominal type reference (a `struct`/`class`/`enum`/alias name),
-            // NOT a template type-parameter use — those are the distinct
-            // `OracleType::TypeVar` case below, which the oracle already tells
-            // apart from this one. `Type::TypeVar(name)` here was therefore a
-            // lie: it told every downstream consumer "this is a generic
-            // parameter" about ordinary named types, most of which are not.
-            //
-            // `lower_type` has no access to the `Lowering` sink (it takes only
-            // `&OracleType`), so it cannot look this name up against the
-            // package's own declared USRs and cannot build a same-package
-            // `Nominal` ref or a `Ref::Foreign`. `Type::unresolved_external`
-            // is the honest residue: a real named type this producer has a
-            // spelling for and no resolution path to, exactly the case
-            // `UnknownType::UnresolvedExternal` documents. A later registry
-            // link pass — not this function — is what can turn it into a
-            // `Ref`.
-            Type::unresolved_external(name.clone())
-        }
-        OracleType::Named { name, args } => {
-            let base = Box::new(Type::unresolved_external(name.clone()));
-            let lowered_args: Vec<Type> = args.iter().map(lower_type).collect();
-            Type::Apply {
-                base,
-                args: lowered_args.into(),
-            }
-        }
+        OracleType::Named {
+            name,
+            args,
+            decl_usr,
+        } => lower_named(name, args, decl_usr.as_deref(), out, locals),
         OracleType::TypeVar(name) => Type::TypeVar(name.clone()),
         // `auto` / `__auto_type` / `decltype(auto)` — the source *asked* for
         // inference and libclang did not resolve it at oracle time.
@@ -606,13 +762,42 @@ fn lower_type(ty: &OracleType) -> Type {
     }
 }
 
+fn lower_named(
+    name: &str,
+    args: &[OracleType],
+    decl_usr: Option<&str>,
+    out: &mut Lowering<Usr>,
+    locals: &LocalNames,
+) -> Type {
+    let lowered_args: Vec<Type> = args.iter().map(|ty| lower_type(ty, out, locals)).collect();
+    if let Some(usr) = locals.local_usr(name, decl_usr) {
+        // Same-package declaration. `apply` is `nominal` when `args` is empty.
+        // The kind marker is erased by `into_raw`; the USR is the one
+        // `lower_record` / `lower_enum` / `lower_alias` declares.
+        return out.apply::<Record>(usr, lowered_args);
+    }
+    if is_std_spelling(name) {
+        // Not `refer`: this package does not declare `std`.
+        return out.apply_import(std_foreign_key(name), lowered_args);
+    }
+    if lowered_args.is_empty() {
+        Type::unresolved_external(name.to_owned())
+    } else {
+        Type::Apply {
+            base: Box::new(Type::unresolved_external(name.to_owned())),
+            args: lowered_args.into(),
+        }
+    }
+}
+
 fn fixed_width(bits: u16) -> nudox_ir::kinds::ty::Width {
     use nudox_ir::kinds::ty::Width;
     use std::num::NonZero;
     Width::Fixed(NonZero::new(bits).unwrap_or(NonZero::new(8).unwrap()))
 }
 
-// ── Generic param lowering ────────────────────────────────────────────────────
+// ── Generic param lowering
+// ────────────────────────────────────────────────────
 
 fn lower_generic_param(p: &OracleGenericParam) -> GenericParam {
     match p {
@@ -648,15 +833,40 @@ fn lower_generic_param(p: &OracleGenericParam) -> GenericParam {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nudox_ir::index::Ref;
+
+    fn lower_alone(ty: &OracleType) -> (Type, Lowering<Usr>) {
+        let pkg_id = nudox_ir::package::PackageId::path("/tmp");
+        let root_sym = nudox_ir::entry::Symbol {
+            name: "test".to_owned(),
+            visibility: nudox_ir::entry::Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::from("/tmp"),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        let mut out = Lowering::new(pkg_id, root_sym);
+        let lowered = lower_type(
+            ty,
+            &mut out,
+            &LocalNames::from_oracle(&ClangOracle::default()),
+        );
+        (lowered, out)
+    }
 
     /// `OracleType::Inferred` must lower to `Type::Inferred`, not `Type::Any`.
     ///
     /// Clang's `auto`, `__auto_type`, and `decltype(auto)` all produce
-    /// `OracleType::Inferred` in the oracle. These are producer resolution gaps,
-    /// not genuine top types — `Type::Any` would be semantically wrong.
+    /// `OracleType::Inferred` in the oracle. These are producer resolution
+    /// gaps, not genuine top types — `Type::Any` would be semantically
+    /// wrong.
     #[test]
     fn inferred_oracle_type_lowers_to_inferred_not_any() {
-        let ty = lower_type(&OracleType::Inferred);
+        let (ty, _) = lower_alone(&OracleType::Inferred);
         assert!(
             matches!(ty, Type::Inferred),
             "OracleType::Inferred must lower to Type::Inferred; got {ty:?}"
@@ -674,10 +884,13 @@ mod tests {
     fn unresolved_named_type_lowers_to_unresolved_external_not_typevar() {
         use nudox_ir::kinds::UnknownType;
 
-        let ty = lower_type(&OracleType::Named {
+        let (ty, out) = lower_alone(&OracleType::Named {
             name: "SomeStruct".to_owned(),
             args: Vec::new(),
+            decl_usr: None,
         });
+        out.finish()
+            .expect("an unresolved name must not refer() an undeclared id");
         assert_eq!(
             ty,
             Type::Unknown(UnknownType::UnresolvedExternal {
@@ -695,7 +908,7 @@ mod tests {
     /// to `Type::TypeVar`, distinct from an unresolved named type above.
     #[test]
     fn template_type_parameter_use_still_lowers_to_typevar() {
-        let ty = lower_type(&OracleType::TypeVar("T".to_owned()));
+        let (ty, _) = lower_alone(&OracleType::TypeVar("T".to_owned()));
         assert!(
             matches!(ty, Type::TypeVar(ref n) if n == "T"),
             "a real template type-parameter use must stay Type::TypeVar; got {ty:?}"
@@ -708,12 +921,13 @@ mod tests {
     fn unresolved_named_type_with_args_keeps_apply_wrapper() {
         use nudox_ir::kinds::UnknownType;
 
-        let ty = lower_type(&OracleType::Named {
+        let (ty, _) = lower_alone(&OracleType::Named {
             name: "Foo".to_owned(),
             args: vec![OracleType::Integer {
                 signed: true,
                 bits: 32,
             }],
+            decl_usr: None,
         });
         match ty {
             Type::Apply { base, args } => {
@@ -727,5 +941,74 @@ mod tests {
             }
             other => panic!("expected Type::Apply, got {other:?}"),
         }
+    }
+
+    /// A USR this package declares lowers through the sink to a local nominal.
+    /// `finish` succeeds only because that USR is declared in the same pass.
+    #[test]
+    fn named_type_declared_in_this_package_is_a_local_nominal() {
+        let mut oracle = ClangOracle::default();
+        oracle.records.push(OracleRecord {
+            usr: "USR-Session".to_owned(),
+            name: "Session".to_owned(),
+            source_file: std::path::PathBuf::from("session.hpp"),
+            byte_offset: 0,
+            is_class: false,
+            is_union: false,
+            generics: Vec::new(),
+            super_types: Vec::new(),
+            fields: Vec::new(),
+            documentation: String::new(),
+            visibility: OracleVisibility::Public,
+            parent_usr: None,
+        });
+        let locals = LocalNames::from_oracle(&oracle);
+        let pkg_id = nudox_ir::package::PackageId::path("/tmp");
+        let root_sym = nudox_ir::entry::Symbol {
+            name: "test".to_owned(),
+            visibility: nudox_ir::entry::Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::from("/tmp"),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        let mut out = Lowering::new(pkg_id, root_sym);
+        let ty = lower_type(
+            &OracleType::Named {
+                name: "Session".to_owned(),
+                args: Vec::new(),
+                decl_usr: Some("USR-Session".to_owned()),
+            },
+            &mut out,
+            &locals,
+        );
+        assert!(
+            matches!(ty, Type::Nominal(Ref::Local(_))),
+            "a type this package declares must be a local nominal, got {ty:?}"
+        );
+        lower_oracle(&oracle, &mut out);
+        out.finish()
+            .expect("the local nominal's USR is declared by lower_oracle");
+    }
+
+    /// `std::` is a foreign nominal. `refer()` would make `finish` return
+    /// `Undeclared` because this package never declares the standard library.
+    #[test]
+    fn std_spelled_name_is_nominal_import_and_finish_succeeds() {
+        let (ty, out) = lower_alone(&OracleType::Named {
+            name: "std::string".to_owned(),
+            args: Vec::new(),
+            decl_usr: Some("c:@N@std@T@string".to_owned()),
+        });
+        assert!(
+            matches!(ty, Type::Nominal(Ref::Foreign { .. })),
+            "std::string must be nominal_import, not refer(); got {ty:?}"
+        );
+        out.finish()
+            .expect("nominal_import must not leave an undeclared local id");
     }
 }

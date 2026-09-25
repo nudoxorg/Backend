@@ -8,19 +8,19 @@
 //! # Why this exists
 //!
 //! [`super::producer::find_sources`] discovers translation units by walking
-//! the package root for `.c`/`.cpp` extensions — it has no way to know a
-//! project's `-I`/`-isystem` include paths, because those live outside the
-//! source tree, in whatever built the project. A real project almost always
-//! splits headers from implementation (`include/` vs `src/`, or a `vendor/`
-//! tree, or an unrelated system dependency's headers) and passes `-I` flags
-//! for all of it. Without them, libclang cannot resolve `#include "..."` /
-//! `#include <...>` directives that reach outside the single file's own
+//! the package root for `.c`/`.cpp` sources and for package headers — it has no
+//! way to know a project's `-I`/`-isystem` include paths, because those live
+//! outside the source tree, in whatever built the project. A real project
+//! almost always splits headers from implementation (`include/` vs `src/`, or a
+//! `vendor/` tree, or an unrelated system dependency's headers) and passes `-I`
+//! flags for all of it. Without them, libclang cannot resolve `#include "..."`
+//! / `#include <...>` directives that reach outside the single file's own
 //! directory: it treats the miss as a diagnostic, not a hard parse error
 //! ([`super::extract::extract_file`] does not currently surface parse
 //! diagnostics — see that function), so the practical effect is silent:
 //! declarations that depend on the missing header's types are skipped or
-//! degrade to [`crate::clang::oracle::OracleType::Inferred`], not an error a caller
-//! can see.
+//! degrade to [`crate::clang::oracle::OracleType::Inferred`], not an error a
+//! caller can see.
 //!
 //! # What this does *not* do
 //!
@@ -37,7 +37,8 @@
 //!
 //! This also does not change *which* files [`super::producer::find_sources`]
 //! decides are translation units — a `compile_commands.json` entry only
-//! enriches the argument list for a file the directory walk already found;
+//! enriches the argument list for a file the directory walk already found
+//! (a `.c`/`.cpp`, or a package header opened as its own main file);
 //! it is not (yet) used as the authoritative file list. A project whose real
 //! build compiles a strict subset of the `.c`/`.cpp` files under its root
 //! (platform-specific files behind build-system `if`s, vendored files not
@@ -350,19 +351,16 @@ mod tests {
             "-std=c11".to_owned(),
         ];
         let rewritten = rewrite_relative_include_paths(&args, directory);
-        assert_eq!(
-            rewritten,
-            vec![
-                "cc".to_owned(),
-                "-I/project/root/include".to_owned(),
-                "-I".to_owned(),
-                "/project/root/vendor/include".to_owned(),
-                "-isystem".to_owned(),
-                "/project/root/third_party".to_owned(),
-                "-I/already/absolute".to_owned(),
-                "-std=c11".to_owned(),
-            ]
-        );
+        assert_eq!(rewritten, vec![
+            "cc".to_owned(),
+            "-I/project/root/include".to_owned(),
+            "-I".to_owned(),
+            "/project/root/vendor/include".to_owned(),
+            "-isystem".to_owned(),
+            "/project/root/third_party".to_owned(),
+            "-I/already/absolute".to_owned(),
+            "-std=c11".to_owned(),
+        ]);
     }
 
     #[test]

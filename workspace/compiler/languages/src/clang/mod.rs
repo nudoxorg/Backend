@@ -13,12 +13,18 @@
 //!
 //! # Header-filtering
 //!
-//! A libclang TU for a `.c`/`.cpp` file transitively includes all headers it
-//! pulls in — including system headers, libc, STL, etc.  The producer filters
-//! all cursors down to the file it was asked to parse by comparing each
-//! entity's *resolved* file (`clang_getFileLocation`, which follows macro
-//! expansion to a concrete file — see `extract::is_in_main_file`'s doc
-//! comment) against that path directly, rather than trusting
+//! Package-root headers are translation units. A header-only library has no
+//! `.c`/`.cpp` that contains its declarations, and a header merely `#include`d
+//! from a `.cpp` is not that `.cpp`'s main file, so the visitor would drop it.
+//! Each package header is opened once, as the main file of its own parse.
+//! System headers are not in that walk.
+//!
+//! A libclang TU still transitively includes every header it pulls in —
+//! including system headers, libc, STL, etc. The producer filters cursors
+//! down to the file it was asked to parse by comparing each entity's
+//! *resolved* file (`clang_getFileLocation`, which follows macro expansion to
+//! a concrete file — see `extract::is_in_main_file`'s doc comment) against
+//! that path directly, rather than trusting
 //! [`Entity::is_in_main_file`]/`clang_Location_isFromMainFile`: that call
 //! answers `false` for any declaration whose opening token comes from a
 //! macro expansion — e.g. `namespace nlohmann` opened via
@@ -48,9 +54,9 @@
 //!
 //! # IR gaps
 //!
-//! * **Macro constants**: `#define FOO 42`-style macros that are purely
-//!   numeric constants are not emitted; libclang does not expose their values
-//!   in the AST in a typed way without extra token work.
+//! * **Macro constants**: `#define FOO 42`-style macros that are purely numeric
+//!   constants are not emitted; libclang does not expose their values in the
+//!   AST in a typed way without extra token work.
 //!
 //! * **Operator overloads**: emitted as regular functions with their mangled
 //!   name (e.g. `"operator+"`) — the IR has no `FnModifier::Operator`.

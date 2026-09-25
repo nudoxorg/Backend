@@ -20,7 +20,8 @@ use crate::clang::oracle::{
     OracleVar, OracleVariant, OracleVisibility, Reference, Usr,
 };
 
-// ── Public entry points ───────────────────────────────────────────────────────
+// ── Public entry points
+// ───────────────────────────────────────────────────────
 
 /// Parse a real file on disk and return fully-owned oracle data.
 pub fn extract_file(index: &Index<'_>, path: &Path, args: &[&str]) -> ClangOracle {
@@ -35,7 +36,12 @@ pub fn extract_file(index: &Index<'_>, path: &Path, args: &[&str]) -> ClangOracl
             return ClangOracle::default();
         }
     };
-    extract_tu(&tu, path)
+    let mut oracle = extract_tu(&tu, path);
+    // Record the file we asked libclang to open, not a header it pulled in.
+    // `merge_oracle` concatenates these and does not dedup them, so a header
+    // parsed once per includer is visible as repeated paths.
+    oracle.main_files.push(path.to_path_buf());
+    oracle
 }
 
 /// Parse an **in-memory** source string under the given virtual filename.
@@ -63,7 +69,8 @@ pub fn extract_unsaved(
     extract_tu(&tu, virtual_path)
 }
 
-// ── TU extraction ─────────────────────────────────────────────────────────────
+// ── TU extraction
+// ─────────────────────────────────────────────────────────────
 
 fn extract_tu(tu: &TranslationUnit<'_>, main_file: &Path) -> ClangOracle {
     let mut oracle = ClangOracle::default();
@@ -111,7 +118,8 @@ fn is_in_main_file(entity: Entity<'_>, main_file: &Path) -> bool {
     entity_file(entity) == main_file
 }
 
-// ── Recursive entity visitor ──────────────────────────────────────────────────
+// ── Recursive entity visitor
+// ──────────────────────────────────────────────────
 
 fn visit_entity(
     oracle: &mut ClangOracle,
@@ -170,7 +178,8 @@ fn visit_entity(
     }
 }
 
-// ── Namespace ─────────────────────────────────────────────────────────────────
+// ── Namespace
+// ─────────────────────────────────────────────────────────────────
 
 fn visit_namespace(
     oracle: &mut ClangOracle,
@@ -294,7 +303,8 @@ fn visit_field(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<
     });
 }
 
-// ── Functions ─────────────────────────────────────────────────────────────────
+// ── Functions
+// ─────────────────────────────────────────────────────────────────
 
 fn visit_function(
     oracle: &mut ClangOracle,
@@ -347,33 +357,33 @@ fn collect_references(oracle: &mut ClangOracle, entity: Entity<'_>, owner: &str)
         if matches!(
             child.get_kind(),
             EntityKind::DeclRefExpr | EntityKind::MemberRefExpr | EntityKind::CallExpr
-        )
-            && let Some(target) = child.get_reference() {
-                let target_kind = target.get_kind();
-                if matches!(
-                    target_kind,
-                    EntityKind::FunctionDecl
-                        | EntityKind::FunctionTemplate
-                        | EntityKind::Method
-                        | EntityKind::Constructor
-                        | EntityKind::Destructor
-                ) {
-                    let target_usr = entity_usr(target);
-                    if let Some(range) = child.get_range() {
-                        let start = range.get_start().get_file_location();
-                        let end = range.get_end().get_file_location();
-                        if !target_usr.is_empty() {
-                            oracle.references.push(Reference {
-                                owner: owner.to_owned(),
-                                target: target_usr,
-                                source_file: entity_file(child),
-                                byte_start: start.offset as usize,
-                                byte_end: end.offset as usize,
-                            });
-                        }
+        ) && let Some(target) = child.get_reference()
+        {
+            let target_kind = target.get_kind();
+            if matches!(
+                target_kind,
+                EntityKind::FunctionDecl
+                    | EntityKind::FunctionTemplate
+                    | EntityKind::Method
+                    | EntityKind::Constructor
+                    | EntityKind::Destructor
+            ) {
+                let target_usr = entity_usr(target);
+                if let Some(range) = child.get_range() {
+                    let start = range.get_start().get_file_location();
+                    let end = range.get_end().get_file_location();
+                    if !target_usr.is_empty() {
+                        oracle.references.push(Reference {
+                            owner: owner.to_owned(),
+                            target: target_usr,
+                            source_file: entity_file(child),
+                            byte_start: start.offset as usize,
+                            byte_end: end.offset as usize,
+                        });
                     }
                 }
             }
+        }
         collect_references(oracle, child, owner);
     }
 }
@@ -512,7 +522,8 @@ fn visit_enum(
     }
 }
 
-// ── Aliases ───────────────────────────────────────────────────────────────────
+// ── Aliases
+// ───────────────────────────────────────────────────────────────────
 
 fn visit_alias(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&str>) {
     let name = match entity.get_name() {
@@ -541,7 +552,8 @@ fn visit_alias(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<
     });
 }
 
-// ── Variables ─────────────────────────────────────────────────────────────────
+// ── Variables
+// ─────────────────────────────────────────────────────────────────
 
 fn visit_var(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&str>) {
     let name = match entity.get_name() {
@@ -596,7 +608,8 @@ fn visit_macro(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<
     });
 }
 
-// ── Generics / templates ──────────────────────────────────────────────────────
+// ── Generics / templates
+// ──────────────────────────────────────────────────────
 
 fn generic_params(children: &[Entity<'_>]) -> Vec<OracleGenericParam> {
     let mut params = Vec::new();
@@ -632,7 +645,59 @@ fn base_specifiers(entity: Entity<'_>, children: &[Entity<'_>]) -> Vec<OracleTyp
         .collect()
 }
 
-// ── Type resolution ───────────────────────────────────────────────────────────
+// ── Type resolution
+// ───────────────────────────────────────────────────────────
+
+/// A named type, with the declaration USR when libclang resolved one and with
+/// `std::` spelled on the name when the declaration lives in namespace `std`.
+///
+/// The prefix is how lowering tells a standard-library name from a same-package
+/// one without calling [`Lowering::refer`](nudox_ir::lower::Lowering::refer) on
+/// a USR this package will never declare. Display names from libclang are often
+/// the unqualified typedef (`string`, `vector`) even when the semantic parent
+/// is `namespace std`.
+fn named_type(ty: CType<'_>, name: String, args: Vec<OracleType>) -> OracleType {
+    OracleType::Named {
+        name: spell_std_name(ty, name),
+        args,
+        decl_usr: declaration_usr(ty),
+    }
+}
+
+fn declaration_usr(ty: CType<'_>) -> Option<String> {
+    let usr = ty.get_declaration()?.get_usr()?.0;
+    if usr.is_empty() { None } else { Some(usr) }
+}
+
+fn spell_std_name(ty: CType<'_>, name: String) -> String {
+    if name.starts_with("std::") || name.starts_with("::std::") {
+        return name;
+    }
+    if declared_in_namespace_std(ty) {
+        format!("std::{name}")
+    } else {
+        name
+    }
+}
+
+fn declared_in_namespace_std(ty: CType<'_>) -> bool {
+    let mut cur = ty.get_declaration();
+    let mut hops = 0;
+    while let Some(ent) = cur {
+        if hops > 32 {
+            break;
+        }
+        hops += 1;
+        if ent.get_kind() == EntityKind::TranslationUnit {
+            break;
+        }
+        if ent.get_kind() == EntityKind::Namespace && ent.get_name().as_deref() == Some("std") {
+            return true;
+        }
+        cur = ent.get_semantic_parent();
+    }
+    false
+}
 
 pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
     match ty.get_kind() {
@@ -733,10 +798,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
             let name = ty
                 .get_typedef_name()
                 .unwrap_or_else(|| ty.get_display_name());
-            OracleType::Named {
-                name,
-                args: Vec::new(),
-            }
+            named_type(ty, name, Vec::new())
         }
         TypeKind::Record | TypeKind::Enum => {
             let name = ty
@@ -750,7 +812,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
                 .flatten()
                 .map(resolve_type)
                 .collect();
-            OracleType::Named { name, args }
+            named_type(ty, name, args)
         }
         TypeKind::Unexposed => {
             // Try canonical form first.
@@ -764,10 +826,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
                 // `type-parameter-0-0` is a template type param use.
                 OracleType::TypeVar(name)
             } else if !name.is_empty() {
-                OracleType::Named {
-                    name,
-                    args: Vec::new(),
-                }
+                named_type(ty, name, Vec::new())
             } else {
                 OracleType::Inferred
             }
@@ -778,16 +837,14 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
             if name.is_empty() {
                 OracleType::Inferred
             } else {
-                OracleType::Named {
-                    name,
-                    args: Vec::new(),
-                }
+                named_type(ty, name, Vec::new())
             }
         }
     }
 }
 
-// ── Width helpers ─────────────────────────────────────────────────────────────
+// ── Width helpers
+// ─────────────────────────────────────────────────────────────
 
 fn width_int(ty: CType<'_>, signed: bool) -> OracleType {
     match ty.get_sizeof().ok().map(|b| (b * 8) as u16) {
@@ -803,7 +860,8 @@ fn width_float(ty: CType<'_>) -> OracleType {
     }
 }
 
-// ── Metadata helpers ──────────────────────────────────────────────────────────
+// ── Metadata helpers
+// ──────────────────────────────────────────────────────────
 
 fn entity_usr(entity: Entity<'_>) -> Usr {
     entity.get_usr().map(|u| u.0).unwrap_or_default()
