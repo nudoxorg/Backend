@@ -1567,6 +1567,12 @@ fn emit_static(
     if let Some(ty) = &body.ty {
         declare_nested_params(&id, &id, "ty", ty, out, names);
     }
+    if let Some(ty) = &body.satisfies {
+        declare_nested_params(&id, &id, "satisfies", ty, out, names);
+    }
+    if let Some(ty) = &body.cast {
+        declare_nested_params(&id, &id, "cast", ty, out, names);
+    }
 }
 
 // ── Re-exports
@@ -3270,6 +3276,8 @@ fn body_match(a: &DeclBody, b: &DeclBody) -> bool {
         (DeclBody::Static(a), DeclBody::Static(b)) => {
             a.is_mutable == b.is_mutable
                 && opt_type_match(a.ty.as_ref(), b.ty.as_ref())
+                && opt_type_match(a.satisfies.as_ref(), b.satisfies.as_ref())
+                && opt_type_match(a.cast.as_ref(), b.cast.as_ref())
                 && opt_empty(&a.value, &b.value)
         }
         (DeclBody::Namespace(a), DeclBody::Namespace(b)) => a.is_ambient == b.is_ambient,

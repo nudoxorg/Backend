@@ -2697,6 +2697,38 @@ mod tests {
     }
 
     #[test]
+    fn a_let_initializer_declares_each_function_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"let-init","version":"1.0.0","types":"index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.ts"),
+            "export let call = ((s: string) => s) satisfies (left: number) => void;\n\
+             export let held: (right: number) => void = null as (mid: number) => void;\n\
+             export var angled = <(far: number) => void>null;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "let-init", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("let-init"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a function on a let initializer must seal");
+        for name in ["left", "right", "mid", "far"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn a_let_annotation_declares_each_function_binding() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

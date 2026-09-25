@@ -2801,6 +2801,8 @@ fn lower_variable<'a>(
                     ty: ty.clone(),
                     value: value.clone(),
                     is_mutable: matches!(v.kind, VariableDeclarationKind::Let),
+                    satisfies: satisfied.clone(),
+                    cast: cast.clone(),
                 })
             };
             let is_exported = force_exported || exported_names.contains(&name);

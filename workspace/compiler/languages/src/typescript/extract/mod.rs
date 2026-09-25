@@ -364,6 +364,10 @@ pub struct StaticBody {
     pub ty: Option<TypeOwned>,
     pub value: Option<String>,
     pub is_mutable: bool,
+    /// The type in `expr satisfies T`. Not the binding's declared type.
+    pub satisfies: Option<TypeOwned>,
+    /// An `as` assertion that is not already `ty`.
+    pub cast: Option<TypeOwned>,
 }
 
 /// An index signature member: `[k: KeyName: KeyType]: ValueType`.
