@@ -1422,7 +1422,10 @@ fn parse_lockfile(path: &Path) -> Result<Box<[PackageReference]>, String> {
         } else if let Some(value) = line.strip_prefix("version = ")
             && let Some(name) = name.take()
         {
-            rows.insert(format!("{name}@{}", value.trim_matches(['\"', '\'', ','])));
+            rows.insert(format!(
+                "pkg:cargo/{name}@{}",
+                value.trim_matches(['\"', '\'', ','])
+            ));
         } else if let Some((name, version)) = line.split_once("==") {
             rows.insert(format!("{name}@{version}"));
         } else if let Some(value) = line.strip_prefix("require ")
