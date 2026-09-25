@@ -1,32 +1,35 @@
 //! The Server — the coordination mesh and the single request entrypoint.
 //!
-//! The server fronts a **federation** of registries ([`heart::Federation`]): one
-//! definitive base (centrally hosted) plus zero or more self-hosted overlays
-//! that extend and override it. Each source is a full stack of *connected*
-//! (`Live`) backing stores, so the server is only constructible once every store
-//! of every source has verified — "served a request against a store that wasn't
-//! up" is a compile error. Assembly brings each source's stores up
-//! **concurrently** through the shared [`heart::Connect`] trait and one uniform
-//! [`ServerError`].
+//! The server fronts a **federation** of registries ([`heart::Federation`]):
+//! one definitive base (centrally hosted) plus zero or more self-hosted
+//! overlays that extend and override it. Each source is a full stack of
+//! *connected* (`Live`) backing stores, so the server is only constructible
+//! once every store of every source has verified — "served a request against a
+//! store that wasn't up" is a compile error. Assembly brings each source's
+//! stores up **concurrently** through the shared [`heart::Connect`] trait and
+//! one uniform [`ServerError`].
 //!
 //! Fields are private; the read/coordination flows reach them through accessors
 //! (the common single-source path delegates to the definitive base).
 
-// ── Layer-facade (§8 re-layering compatibility shim) ──────────────────────────
-// The staged `server` modules were authored against the *old monolithic
-// `registry`* surface, where the data/storage/coordination plane, the graph
-// plane and the vector plane all hung off one crate. Post-relayering they are
-// split three ways: `index` (data/storage/coordination), `registry`
-// (`graph` + `vector`) and `heart` (`client`). Rather than rewrite every `use`
-// across ~13k lines of moved composition, this crate re-projects the three
-// layers under the paths the moved code expects:
+// ── Layer-facade (§8 re-layering compatibility shim)
+// ────────────────────────── The staged `server` modules were authored against
+// the *old monolithic `registry`* surface, where the data/storage/coordination
+// plane, the graph plane and the vector plane all hung off one crate.
+// Post-relayering they are split three ways: `index`
+// (data/storage/coordination), `registry` (`graph` + `vector`) and `heart`
+// (`client`). Rather than rewrite every `use` across ~13k lines of moved
+// composition, this crate re-projects the three layers under the paths the
+// moved code expects:
 //
 //   * a crate-local `mod registry` that *shadows* the extern-prelude `registry`
 //     crate: it re-exports the `index` modules under their old names PLUS the
-//     real registry's `graph`/`vector`. Bare `registry::…` and `crate::server::registry::…`
-//     paths in the moved modules both resolve here.
-//   * a crate-local `mod vector` re-exporting `::registry::vector` (+ its `core`
-//     submodules flattened) so `vector::shard`/`vector::quant`/… keep resolving.
+//     real registry's `graph`/`vector`. Bare `registry::…` and
+//     `crate::server::registry::…` paths in the moved modules both resolve
+//     here.
+//   * a crate-local `mod vector` re-exporting `::registry::vector` (+ its
+//     `core` submodules flattened) so `vector::shard`/`vector::quant`/… keep
+//     resolving.
 //
 // The real crates remain reachable as `::index`, `::registry`, `::heart`.
 #[allow(unused_imports)]
@@ -47,18 +50,18 @@ pub mod registry {
     /// session module (exploration-graph semilattice, now owned by
     /// `crate::runtime::session` per the first redistribution wave).
     pub mod runtime {
-        pub use crate::runtime::error::{RuntimeError, SessionError, TextError};
-        pub use crate::runtime::session;
-        pub use crate::runtime::*;
+        pub use crate::runtime::{
+            error::{RuntimeError, SessionError, TextError},
+            session, *,
+        };
     }
     // The old `registry::index` module is now `crate::catalog`.
     pub use crate::catalog as index;
     // The old `registry::store::Store` is now `crate::cas::Store`; re-export the
     // module and the type at the facade root (moved code says `registry::Store`).
-    pub use crate::cas as store;
     pub use crate::{
         BlobError, GlobalPackage, IngestError, Package, QueueError, RegistryError, Store,
-        StoreError,
+        StoreError, cas as store,
     };
 
     // Graph + vector planes → real `::registry`.
@@ -71,12 +74,14 @@ pub mod registry {
 /// et al. resolve.
 #[allow(unused_imports)]
 pub mod vector {
-    pub use ::registry::vector::core::{
-        admission, embed, embedding, fusion, key, license, model, quant, recipe, routing, shard,
-        store,
+    pub use ::registry::vector::{
+        cache,
+        core::{
+            admission, embed, embedding, fusion, key, license, model, quant, recipe, routing,
+            shard, store,
+        },
+        gate, local, remote, *,
     };
-    pub use ::registry::vector::*;
-    pub use ::registry::vector::{cache, gate, local, remote};
 }
 
 pub mod authz;
@@ -84,8 +89,8 @@ pub mod bakery;
 // `session` moved to `crate::runtime::session` (first redistribution wave).
 // `ingest` moved to `crate::ingest::archive` (first redistribution wave).
 // `compiler_client` DELETED — the compiler daemon it spoke to no longer exists
-// (the cage is ephemeral, SMOLVM-PLAN). See CONSOLIDATION-NOTES §9c. The compile
-// call in the indexing pipeline was stubbed on the `index` side.
+// (the cage is ephemeral, SMOLVM-PLAN). See CONSOLIDATION-NOTES §9c. The
+// compile call in the indexing pipeline was stubbed on the `index` side.
 mod catalog_follower;
 pub mod config;
 pub mod coordination;
@@ -96,25 +101,28 @@ pub mod rerank;
 pub mod save;
 pub mod search;
 /// The federation-aware sync driver (CONSOLIDATION-NOTES §8e): fan a verified
-/// content item across the federation topology over `heart::sync` + `transport`.
+/// content item across the federation topology over `heart::sync` +
+/// `transport`.
 pub mod sync;
 
-use std::num::NonZeroU32;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
-use crate::compiled::ObjectCompiledStore;
-use crate::runtime::session::ScratchSessionStore;
-use crate::server::registry::vector::{EmbeddingCache, EmbeddingModel};
-use crate::server::registry::{
-    Store,
-    coordination::Outbox,
-    index::{GlobalStore, InstanceToken},
-    metadata::{Specifics, Synonyms},
-    queue::{Queue, RetryPolicy},
+use crate::{
+    compiled::ObjectCompiledStore,
+    runtime::session::ScratchSessionStore,
+    server::{
+        registry::{
+            Store,
+            coordination::Outbox,
+            index::{GlobalStore, InstanceToken},
+            metadata::{Specifics, Synonyms},
+            queue::{Queue, RetryPolicy},
+            vector::{EmbeddingCache, EmbeddingModel},
+        },
+        vector::remote::store::{CollectionConfig, RemoteStore, ensure_collection},
+    },
+    store::writer::CatalogWriter,
 };
-use crate::server::vector::remote::store::{CollectionConfig, RemoteStore, ensure_collection};
-use crate::store::writer::CatalogWriter;
 use heart::{BackendKind, Connect, ConnectError, ConnectFailure, Federation, Live};
 
 pub use config::{Deployment, Endpoints, Limits, Role, ServerConfiguration, SourceConfig};
@@ -127,8 +135,7 @@ pub use error::{ServerError, ServerResult};
 /// resolving during the dissolution without a mechanical crate-wide rename.
 pub type Server<M> = Driver<M>;
 
-use crate::server::search::registry::PackageSearchIndex;
-use crate::server::search::semantic::embedder::HttpEmbedder;
+use crate::server::search::{registry::PackageSearchIndex, semantic::embedder::HttpEmbedder};
 
 /// The retry schedule every source's job queue runs under: five attempts with
 /// exponential backoff between one second and five minutes.
@@ -147,7 +154,8 @@ const EMBEDDING_CACHE_CAPACITY: u64 = 65_536;
 pub type CatalogEngine = crate::engine::dolt::DoltEngine;
 
 /// The full set of connected backing stores for one federated source. Every
-/// source — definitive or overlay — is a complete, independently-verified stack.
+/// source — definitive or overlay — is a complete, independently-verified
+/// stack.
 pub struct SourceStores<M: EmbeddingModel> {
     /// Global index / orchestration spine (the versioned catalog).
     pub global_store: GlobalStore<CatalogEngine>,
@@ -166,7 +174,8 @@ pub struct SourceStores<M: EmbeddingModel> {
     /// Replica-local symbol-search index (tantivy over the catalog's
     /// `symbols_proj` projection) — the precise/literal search surface
     /// (`SourceStores::search`). Kept caught up by [`poll::text_index_poller`],
-    /// which pulls the Text-sink outbox through [`crate::runtime::text::Poller`].
+    /// which pulls the Text-sink outbox through
+    /// [`crate::runtime::text::Poller`].
     pub text: Arc<crate::runtime::text::TextIndex>,
     /// The catalog-outbox → [`Self::text`] poller for this source, driven once
     /// per tick by [`poll::text_index_poller`]. Owned here (rather than
@@ -188,20 +197,22 @@ pub struct SourceStores<M: EmbeddingModel> {
     pub usage_backend: Arc<crate::search::usages::SharedUsageBackend>,
 }
 
-/// The assembled server, generic over the embedding-model brand `M` (lifted into
-/// the type so a wrong-*model* vector store — not merely wrong-dimension — can
-/// never be wired in).
+/// The assembled server, generic over the embedding-model brand `M` (lifted
+/// into the type so a wrong-*model* vector store — not merely wrong-dimension —
+/// can never be wired in).
 pub struct Driver<M: EmbeddingModel> {
     /// The resolved configuration this server was built from.
     config: ServerConfiguration,
 
-    /// The federation of sources: the definitive base plus overlays, each a full
-    /// connected stack. Reads resolve overlay-first (override), then base.
+    /// The federation of sources: the definitive base plus overlays, each a
+    /// full connected stack. Reads resolve overlay-first (override), then
+    /// base.
     federation: Federation<SourceStores<M>>,
 
     /// The query planner — the only place a *user-facing* semantic gate is
     /// minted ([`registry::vector::SemanticGate::issue`]). Store readiness uses
-    /// the separate [`registry::vector::SemanticGate::for_readiness`] constructor.
+    /// the separate [`registry::vector::SemanticGate::for_readiness`]
+    /// constructor.
     planner: crate::server::search::SearchPlanner,
 
     /// The (model-branded) query embedder behind the gated semantic path.
@@ -212,35 +223,41 @@ pub struct Driver<M: EmbeddingModel> {
 
     /// Points whose Qdrant upsert has already succeeded. A re-delivery with the
     /// same vector hash is not written again. Entries are recorded only after
-    /// `upsert` returns.
+    /// `upsert` returns, and the same rows live in `scratch.sqlite`.
     vector_ledger: std::sync::Mutex<crate::frontier::vector::UpsertLedger>,
+
+    /// Scratch connection that persists [`Self::vector_ledger`]. Separate from
+    /// the session store so a vector write does not take the session lock.
+    vector_scratch: std::sync::Mutex<crate::scratch::ScratchStore>,
 
     /// Per-session exploration graphs (join-semilattice merge), backed by the
     /// ephemeral `scratch.sqlite` store (INDEX-PLAN ID-2/ID-19). The backing
     /// `sessions` table is created when the scratch store is opened.
     sessions: ScratchSessionStore,
 
-    /// Keyword-normalization heuristics (synonyms + specifics), loaded once from
-    /// `config.metadata_data_dir`. `None` disables them (the extractor then runs
-    /// with `(None, None)`, name/identifier facets only). Loaded once because the
-    /// tables are expensive to parse and immutable for the process lifetime.
+    /// Keyword-normalization heuristics (synonyms + specifics), loaded once
+    /// from `config.metadata_data_dir`. `None` disables them (the extractor
+    /// then runs with `(None, None)`, name/identifier facets only). Loaded
+    /// once because the tables are expensive to parse and immutable for the
+    /// process lifetime.
     heuristics: Option<Heuristics>,
 
     /// The compiled-output lookup store for `POST /v1/compiled/lookup` (SV-6),
     /// sharing the definitive base's object-store backend. Records are written
-    /// by the iroh SyncService apply-hook via [`registry::compiled::ObjectCompiledStore::record`]
-    /// after a merged change-set is verified and applied.
+    /// by the iroh SyncService apply-hook via
+    /// [`registry::compiled::ObjectCompiledStore::record`] after a merged
+    /// change-set is verified and applied.
     compiled_store: ObjectCompiledStore,
 
     /// The shard-bakery claim ledger + artifact index (the catalog\'s
-    /// `edgepack_artifacts` table). `None` when `config.bakery.enabled` is false — callers
-    /// check with [`Self::edgepacks`] before using.
+    /// `edgepack_artifacts` table). `None` when `config.bakery.enabled` is
+    /// false — callers check with [`Self::edgepacks`] before using.
     edgepacks: Option<std::sync::Arc<crate::server::bakery::CatalogEdgepackStore>>,
 }
 
-/// The metadata keyword-normalization tables, loaded once at assembly and shared
-/// (read-only) across every facet extraction. Bundling both keeps the "either
-/// both wired or neither" invariant the extractor expects.
+/// The metadata keyword-normalization tables, loaded once at assembly and
+/// shared (read-only) across every facet extraction. Bundling both keeps the
+/// "either both wired or neither" invariant the extractor expects.
 pub struct Heuristics {
     synonyms: Synonyms,
     specifics: Specifics,
@@ -258,12 +275,14 @@ impl Heuristics {
         })
     }
 
-    /// The synonym table, ready to pass to `crate::server::registry::metadata::rich::extract`.
+    /// The synonym table, ready to pass to
+    /// `crate::server::registry::metadata::rich::extract`.
     pub fn synonyms(&self) -> &Synonyms {
         &self.synonyms
     }
 
-    /// The specifics table, ready to pass to `crate::server::registry::metadata::rich::extract`.
+    /// The specifics table, ready to pass to
+    /// `crate::server::registry::metadata::rich::extract`.
     pub fn specifics(&self) -> &Specifics {
         &self.specifics
     }
@@ -272,7 +291,8 @@ impl Heuristics {
 impl<M: EmbeddingModel> Driver<M> {
     /// Assemble a server: connect the definitive base and every overlay
     /// concurrently, then materialize the federation. Any single connection
-    /// failure of any source aborts assembly with a context-rich [`ServerError`].
+    /// failure of any source aborts assembly with a context-rich
+    /// [`ServerError`].
     ///
     /// Access control for hosted deployments is enforced at the fronting proxy
     /// (see [`heart::access`]); there is no in-process policy trait yet.
@@ -299,7 +319,6 @@ impl<M: EmbeddingModel> Driver<M> {
             endpoints.embeddings_api_key.clone(),
         );
         let embedding_cache = EmbeddingCache::new(EMBEDDING_CACHE_CAPACITY);
-        let vector_ledger = std::sync::Mutex::new(crate::frontier::vector::UpsertLedger::new());
 
         // Exploration-graph sessions live in the ephemeral scratch store
         // (`scratch.sqlite`) under the definitive source's data directory — working
@@ -314,6 +333,17 @@ impl<M: EmbeddingModel> Driver<M> {
                 ServerError::Runtime(registry::runtime::error::SessionError::Scratch(error).into())
             })?;
         let sessions = ScratchSessionStore::new(scratch_store);
+        let vector_scratch = crate::scratch::ScratchStore::open(
+            &scratch_dir.join("scratch.sqlite"),
+        )
+        .map_err(|error| {
+            ServerError::Runtime(registry::runtime::error::SessionError::Scratch(error).into())
+        })?;
+        let vector_ledger =
+            std::sync::Mutex::new(vector_scratch.load_vector_ledger().map_err(|error| {
+                ServerError::Runtime(registry::runtime::error::SessionError::Scratch(error).into())
+            })?);
+        let vector_scratch = std::sync::Mutex::new(vector_scratch);
 
         // The compiler daemon is gone (the cage is ephemeral, SMOLVM-PLAN); no
         // long-lived compile client is constructed. The indexing pipeline's
@@ -352,6 +382,7 @@ impl<M: EmbeddingModel> Driver<M> {
             embedder,
             embedding_cache,
             vector_ledger,
+            vector_scratch,
             sessions,
             heuristics,
             compiled_store,
@@ -366,8 +397,8 @@ impl<M: EmbeddingModel> Driver<M> {
         self.heuristics.as_ref()
     }
 
-    /// Build and connect the full store stack for one configured source, bringing
-    /// its backends up concurrently.
+    /// Build and connect the full store stack for one configured source,
+    /// bringing its backends up concurrently.
     async fn connect_source(
         cfg: &SourceConfig,
         poll_interval: Duration,
@@ -511,8 +542,8 @@ impl<M: EmbeddingModel> Driver<M> {
         &self.config
     }
 
-    /// The full federation of sources (base + overlays), for queries that resolve
-    /// across sources with overlay-override precedence.
+    /// The full federation of sources (base + overlays), for queries that
+    /// resolve across sources with overlay-override precedence.
     pub fn federation(&self) -> &Federation<SourceStores<M>> {
         &self.federation
     }
@@ -550,8 +581,9 @@ impl<M: EmbeddingModel> Driver<M> {
         &self.base().semantics
     }
 
-    /// The model-branded query embedder behind the gated semantic path — also the
-    /// embedder the vector fan-out consumer drives to materialize symbol points.
+    /// The model-branded query embedder behind the gated semantic path — also
+    /// the embedder the vector fan-out consumer drives to materialize
+    /// symbol points.
     pub(crate) fn embedder(&self) -> &HttpEmbedder<M> {
         &self.embedder
     }
@@ -564,6 +596,10 @@ impl<M: EmbeddingModel> Driver<M> {
     /// Hashes of vector points already upserted in this process.
     pub(crate) fn vector_ledger(&self) -> &std::sync::Mutex<crate::frontier::vector::UpsertLedger> {
         &self.vector_ledger
+    }
+
+    pub(crate) fn vector_scratch(&self) -> &std::sync::Mutex<crate::scratch::ScratchStore> {
+        &self.vector_scratch
     }
 
     /// The per-session exploration graphs (scratch-backed; process-local).
@@ -701,9 +737,9 @@ impl<M: EmbeddingModel> Driver<M> {
         }
     }
 
-    /// Serve until shutdown: bind the HTTP router to `config.serving_address` and
-    /// run the background pollers (queue workers + derived-store consumers) for
-    /// every source in the federation.
+    /// Serve until shutdown: bind the HTTP router to `config.serving_address`
+    /// and run the background pollers (queue workers + derived-store
+    /// consumers) for every source in the federation.
     pub async fn serve(self: Arc<Self>) -> ServerResult<()> {
         let listener = tokio::net::TcpListener::bind(self.config.serving_address)
             .await
@@ -718,10 +754,10 @@ impl<M: EmbeddingModel> Driver<M> {
 
     /// Serve on an already-bound listener.
     ///
-    /// Production uses [`Self::serve`] so configuration owns the listen address.
-    /// Tests and embedders use this entry point to keep the listener reservation
-    /// across setup and to discover an ephemeral port without a bind-then-release
-    /// race.
+    /// Production uses [`Self::serve`] so configuration owns the listen
+    /// address. Tests and embedders use this entry point to keep the
+    /// listener reservation across setup and to discover an ephemeral port
+    /// without a bind-then-release race.
     pub async fn serve_on(self: Arc<Self>, listener: tokio::net::TcpListener) -> ServerResult<()> {
         // The `metrics` recorder behind `/metrics` (fanned out to OTLP) is
         // installed by `heart::telemetry::init` in `main`, before any request or

@@ -45,9 +45,7 @@ impl PointId {
 pub fn upserts_to_skip<'a>(prior: &'a [PointId], next: &'a [PointId]) -> Vec<&'a PointId> {
     let required = required_ids(prior, next);
     next.iter()
-        .filter(|point| {
-            !required.contains(&(point.package.as_str(), point.intro_hex.as_str()))
-        })
+        .filter(|point| !required.contains(&(point.package.as_str(), point.intro_hex.as_str())))
         .collect()
 }
 
@@ -55,14 +53,15 @@ pub fn upserts_to_skip<'a>(prior: &'a [PointId], next: &'a [PointId]) -> Vec<&'a
 pub fn upserts_required<'a>(prior: &'a [PointId], next: &'a [PointId]) -> Vec<&'a PointId> {
     let required = required_ids(prior, next);
     next.iter()
-        .filter(|point| {
-            required.contains(&(point.package.as_str(), point.intro_hex.as_str()))
-        })
+        .filter(|point| required.contains(&(point.package.as_str(), point.intro_hex.as_str())))
         .collect()
 }
 
 /// Tree-and-string twin of [`upserts_required`]. Not the function callers use.
-pub fn upserts_required_via_keys<'a>(prior: &'a [PointId], next: &'a [PointId]) -> Vec<&'a PointId> {
+pub fn upserts_required_via_keys<'a>(
+    prior: &'a [PointId],
+    next: &'a [PointId],
+) -> Vec<&'a PointId> {
     let required = required_ids_via_keys(prior, next);
     next.iter()
         .filter(|point| required.contains(&point.identity()))
@@ -108,7 +107,8 @@ fn key(point: &PointId) -> (&str, &str) {
 }
 
 /// Indices of the last input occurrence of each `(package, intro)`, ordered by
-/// that pair. Sorting with the input index descending puts the last write first.
+/// that pair. Sorting with the input index descending puts the last write
+/// first.
 fn latest_idx(points: &[PointId]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..points.len()).collect();
     order.sort_by(|&i, &j| key(&points[i]).cmp(&key(&points[j])).then(j.cmp(&i)));
@@ -125,7 +125,10 @@ fn latest_idx(points: &[PointId]) -> Vec<usize> {
     out
 }
 
-fn required_ids_via_keys(prior: &[PointId], next: &[PointId]) -> std::collections::BTreeSet<SmolStr> {
+fn required_ids_via_keys(
+    prior: &[PointId],
+    next: &[PointId],
+) -> std::collections::BTreeSet<SmolStr> {
     let prior_keys: Vec<ContentKey> = prior.iter().map(PointId::content_key).collect();
     let next_keys: Vec<ContentKey> = next.iter().map(PointId::content_key).collect();
     let delta = content_delta(&prior_keys, &next_keys);
@@ -164,11 +167,26 @@ impl UpsertLedger {
     /// Record points whose upsert returned successfully.
     pub fn commit(&mut self, points: &[PointId]) {
         for point in points {
-            self.written.insert(
-                (point.package.clone(), point.intro_hex.clone()),
+            self.restore(
+                point.package.as_str(),
+                point.intro_hex.as_str(),
                 point.content_hash,
             );
         }
+    }
+
+    /// Install one hash loaded from scratch. Same effect as [`Self::commit`]
+    /// for a single point that is already known to have been written.
+    pub fn restore(&mut self, package: &str, intro_hex: &str, content_hash: [u8; 32]) {
+        self.written.insert(
+            (SmolStr::new(package), SmolStr::new(intro_hex)),
+            content_hash,
+        );
+    }
+
+    /// Drop every hash for `package` after its Qdrant points are deleted.
+    pub fn forget_package(&mut self, package: &str) {
+        self.written.retain(|(stored, _), _| stored != package);
     }
 }
 

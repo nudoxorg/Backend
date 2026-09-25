@@ -3,12 +3,13 @@
 //! # Purpose
 //!
 //! The scratch store holds the scheduler's working state: job queue, long-poll
-//! wanted records, writer-sticky exploration sessions, and worker lease claims
-//! (INDEX-PLAN ID-2, ID-19, §2, §11, §13). It is **not** part of the
-//! versioned catalog: it is never replicated to remotes, never snapshotted by
-//! Dolt, and may be deleted at any time. On restart the scheduler rebuilds its
-//! in-memory picture from the durable catalog and re-enqueues whatever work is
-//! still outstanding.
+//! wanted records, writer-sticky exploration sessions, worker lease claims,
+//! and the hashes of Qdrant points already upserted (INDEX-PLAN ID-2, ID-19,
+//! §2, §11, §13). It is **not** part of the versioned catalog: it is never
+//! replicated to remotes, never snapshotted by Dolt, and may be deleted at
+//! any time. On restart the scheduler rebuilds its in-memory picture from the
+//! durable catalog and re-enqueues whatever work is still outstanding. Deleting
+//! the vector-point rows only causes those points to be upserted again.
 //!
 //! # Storage
 //!
@@ -25,6 +26,7 @@
 pub mod claims;
 pub mod jobs;
 pub mod sessions;
+pub mod vector_points;
 pub mod wanted;
 
 // Re-export row and enum types so callers can use them without reaching into
@@ -48,7 +50,8 @@ pub enum Error {
     /// The requested row does not exist.
     ///
     /// Returned by operations that require a row to be present (e.g. strict
-    /// session lookup). Operations that tolerate absence return `Option` instead.
+    /// session lookup). Operations that tolerate absence return `Option`
+    /// instead.
     #[error("scratch row not found: {description}")]
     NotFound {
         /// Human-readable description of what was missing (table + key).
@@ -57,7 +60,8 @@ pub enum Error {
 }
 
 impl Error {
-    /// Whether this error is a SQLite `UNIQUE`/primary-key constraint violation.
+    /// Whether this error is a SQLite `UNIQUE`/primary-key constraint
+    /// violation.
     ///
     /// Consumers that treat "row already exists" as success (e.g. an idempotent
     /// `create_session` racing a concurrent creator) can branch on this without
@@ -181,7 +185,8 @@ impl ScratchStore {
 
     // ── wanted ────────────────────────────────────────────────────────────────
 
-    /// Record that a client wants `coordinate` compiled, returning the new row id.
+    /// Record that a client wants `coordinate` compiled, returning the new row
+    /// id.
     pub fn add_wanted(&self, coordinate: &str, requested_at: i64) -> Result<i64, Error> {
         Ok(wanted::add(&self.connection, coordinate, requested_at)?)
     }
@@ -235,8 +240,8 @@ impl ScratchStore {
     ///
     /// Exploration sessions (interactive symbol navigation) accumulate a
     /// join-semilattice graph in the `graph_state` column. This accessor is the
-    /// read half of that store; [`ScratchStore::set_session_graph_state`] is the
-    /// write half.
+    /// read half of that store; [`ScratchStore::set_session_graph_state`] is
+    /// the write half.
     pub fn session_graph_state(&self, session_id: &str) -> Result<Option<String>, Error> {
         Ok(sessions::get(&self.connection, session_id)?.and_then(|row| row.graph_state))
     }
@@ -285,7 +290,8 @@ impl ScratchStore {
     ///
     /// The read half of the lease protocol: a settling worker calls this to
     /// re-check it still owns a live claim before committing a terminal
-    /// transition (the scratch analog of the postgres `lease_still_held` guard).
+    /// transition (the scratch analog of the postgres `lease_still_held`
+    /// guard).
     pub fn get_job_claim(&self, job_key: &str) -> Result<Option<ClaimRow>, Error> {
         Ok(claims::get(&self.connection, job_key)?)
     }
@@ -314,6 +320,39 @@ impl ScratchStore {
     pub fn expired_claims(&self, now: i64) -> Result<Vec<ClaimRow>, Error> {
         Ok(claims::expired(&self.connection, now)?)
     }
+
+    // ── vector points ─────────────────────────────────────────────────────────
+
+    /// Record hashes whose Qdrant upsert has already returned successfully.
+    pub fn record_vector_points(
+        &self,
+        points: &[crate::frontier::vector::PointId],
+    ) -> Result<(), Error> {
+        for point in points {
+            vector_points::record(
+                &self.connection,
+                point.package.as_str(),
+                point.intro_hex.as_str(),
+                &point.content_hash,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Rebuild the in-memory ledger from recorded hashes.
+    pub fn load_vector_ledger(&self) -> Result<crate::frontier::vector::UpsertLedger, Error> {
+        let mut ledger = crate::frontier::vector::UpsertLedger::new();
+        for (package, intro, hash) in vector_points::load(&self.connection)? {
+            ledger.restore(&package, &intro, hash);
+        }
+        Ok(ledger)
+    }
+
+    /// Forget every recorded hash for `package` after its points are deleted.
+    pub fn forget_vector_package(&self, package: &str) -> Result<(), Error> {
+        vector_points::forget_package(&self.connection, package)?;
+        Ok(())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -322,13 +361,15 @@ impl ScratchStore {
 
 /// Create all four scratch tables if they do not already exist.
 ///
-/// Called once during [`ScratchStore::open`] / [`ScratchStore::open_in_memory`].
-/// All DDL statements use `CREATE TABLE IF NOT EXISTS` so this is idempotent.
+/// Called once during [`ScratchStore::open`] /
+/// [`ScratchStore::open_in_memory`]. All DDL statements use `CREATE TABLE IF
+/// NOT EXISTS` so this is idempotent.
 fn initialize_schema(connection: &rusqlite::Connection) -> Result<(), Error> {
     jobs::create_table(connection)?;
     wanted::create_table(connection)?;
     sessions::create_table(connection)?;
     claims::create_table(connection)?;
+    vector_points::create_table(connection)?;
     Ok(())
 }
 
@@ -496,5 +537,48 @@ mod tests {
             .claim_job("job-yyy", "worker-2", 2000, 4000)
             .expect("takeover must not error");
         assert!(taken_over, "expired claim must be reclaimable");
+    }
+
+    #[test]
+    fn vector_ledger_survives_reopen_and_ignores_an_unstaged_hash() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("scratch.sqlite");
+        let kept = crate::frontier::vector::PointId {
+            package: smol_str::SmolStr::new("ab"),
+            intro_hex: smol_str::SmolStr::new("c"),
+            content_hash: [7; 32],
+        };
+        let sibling = crate::frontier::vector::PointId {
+            package: smol_str::SmolStr::new("a"),
+            intro_hex: smol_str::SmolStr::new("bc"),
+            content_hash: [7; 32],
+        };
+        {
+            let scratch = ScratchStore::open(&path).expect("open");
+            scratch
+                .record_vector_points(&[kept.clone()])
+                .expect("record");
+        }
+        let scratch = ScratchStore::open(&path).expect("reopen");
+        let mut ledger = scratch.load_vector_ledger().expect("load");
+        let memory = {
+            let mut memory = crate::frontier::vector::UpsertLedger::new();
+            memory.commit(std::slice::from_ref(&kept));
+            memory
+        };
+        assert!(!ledger.needs_write(&kept));
+        assert!(ledger.needs_write(&sibling));
+        assert_eq!(ledger.needs_write(&kept), memory.needs_write(&kept));
+        assert_eq!(ledger.needs_write(&sibling), memory.needs_write(&sibling));
+        let rewritten = crate::frontier::vector::PointId {
+            content_hash: [8; 32],
+            ..kept.clone()
+        };
+        assert!(ledger.needs_write(&rewritten));
+        scratch
+            .forget_vector_package(kept.package.as_str())
+            .expect("forget");
+        ledger = scratch.load_vector_ledger().expect("reload");
+        assert!(ledger.needs_write(&kept));
     }
 }

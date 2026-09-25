@@ -9,8 +9,7 @@
 
 #[allow(unused_imports)]
 use crate::server::{registry, vector};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use crate::server::registry::coordination::{OutboxEntry, OutboxOp, SinkKind};
 use heart::PackageId;
@@ -18,10 +17,10 @@ use registry::vector::{
     EmbedRole, EmbeddingCache, EmbeddingKey, EmbeddingModel, PointId, VectorPoint, VectorStore,
 };
 
-use crate::server::coordination::indexing::Indexer;
-use crate::server::error::ServerResult;
-use crate::server::search::semantic::embedder::HttpEmbedder;
-use crate::server::{Server, SourceStores};
+use crate::server::{
+    Server, SourceStores, coordination::indexing::Indexer, error::ServerResult,
+    search::semantic::embedder::HttpEmbedder,
+};
 
 /// How long a crashed loop waits before its supervisor restarts it.
 const SUPERVISOR_BACKOFF: Duration = Duration::from_secs(5);
@@ -38,10 +37,11 @@ const GC_INTERVAL: Duration = Duration::from_secs(3600);
 /// underlying loop surfaces an error (a poisoned postgres connection, say).
 ///
 /// `drain` is the graceful-shutdown signal: once fired the worker stops
-/// dequeuing new jobs (in-flight jobs already finish inside `run_worker_until`),
-/// `run_worker_until` returns `Ok(())`, and this supervisor exits cleanly rather
-/// than restarting — so [`Server::serve`] can wait a bounded drain window for
-/// in-flight work to settle before aborting the remaining pollers.
+/// dequeuing new jobs (in-flight jobs already finish inside
+/// `run_worker_until`), `run_worker_until` returns `Ok(())`, and this
+/// supervisor exits cleanly rather than restarting — so [`Server::serve`] can
+/// wait a bounded drain window for in-flight work to settle before aborting the
+/// remaining pollers.
 pub(crate) async fn queue_worker<M: EmbeddingModel>(
     server: Arc<Server<M>>,
     drain: tokio_util::sync::CancellationToken,
@@ -155,7 +155,8 @@ async fn consume_once<M: EmbeddingModel>(
 ///   signal [`crate::server::coordination::search`]-adjacent tests read to
 ///   confirm the intent was acknowledged);
 /// - [`SinkKind::Vector`] embeds each symbol and upserts a [`VectorPoint`] into
-///   qdrant (keyed by a symbol-derived point id, so a re-embed replaces in place);
+///   qdrant (keyed by a symbol-derived point id, so a re-embed replaces in
+///   place);
 /// - [`SinkKind::Graph`] is a no-op until the IR reverse-position index lands.
 ///
 /// **`Delete`** — removes the package's search projection from the sink.
@@ -163,12 +164,12 @@ async fn consume_once<M: EmbeddingModel>(
 /// search visibility ends. Per sink:
 /// - [`SinkKind::Text`] issues a `delete_term` on the replica-local *package*
 ///   tantivy index, then commits — note this does **not** yet tombstone the
-///   symbol-level [`crate::runtime::text::TextIndex`] `text_index_poller` feeds;
-///   `TextIndex` currently exposes no delete-by-package primitive, so a withdrawn
-///   package's symbols remain precise-searchable until a future symbol-level
-///   tombstone lands (tracked, not exercised by any current test);
-/// - [`SinkKind::Vector`] deletes all qdrant points whose payload
-///   `package` field matches the package uuid;
+///   symbol-level [`crate::runtime::text::TextIndex`] `text_index_poller`
+///   feeds; `TextIndex` currently exposes no delete-by-package primitive, so a
+///   withdrawn package's symbols remain precise-searchable until a future
+///   symbol-level tombstone lands (tracked, not exercised by any current test);
+/// - [`SinkKind::Vector`] deletes all qdrant points whose payload `package`
+///   field matches the package uuid;
 /// - [`SinkKind::Graph`] nothing to tombstone yet.
 ///
 /// Every write is idempotent (upsert-by-id / replace-by-key / delete-missing-
@@ -205,6 +206,7 @@ async fn materialize<M: EmbeddingModel>(
                         server.embedder(),
                         server.embedding_cache(),
                         server.vector_ledger(),
+                        server.vector_scratch(),
                         stores,
                         &symbols,
                     )
@@ -231,7 +233,15 @@ async fn materialize<M: EmbeddingModel>(
             // Blob / CAS data is retained — mirror keeps full history.
             match entry.kind {
                 SinkKind::Text => delete_package_from_index(stores, entry.package).await?,
-                SinkKind::Vector => delete_vector(stores, entry.package).await?,
+                SinkKind::Vector => {
+                    delete_vector(
+                        stores,
+                        server.vector_ledger(),
+                        server.vector_scratch(),
+                        entry.package,
+                    )
+                    .await?
+                }
                 // See the upsert arm: the graph/usage plane moved to the IR
                 // reverse index (Terminus removed); nothing to tombstone here yet.
                 SinkKind::Graph => {}
@@ -250,16 +260,17 @@ async fn materialize<M: EmbeddingModel>(
 
 /// Vector sink: embed each symbol's fully-qualified name (as code) and upsert a
 /// [`VectorPoint`] into the remote (qdrant) store. The point id is derived
-/// deterministically from the symbol id ([`PointId::from_symbol`]), so a re-embed
-/// replaces the point rather than duplicating it. Each point carries the
-/// filterable payload (`language`/`package`/`kind`) plus its `symbol_id`, so
-/// search can recover the [`heart::SymbolId`] from a hit (the derived point id is
-/// not itself the symbol uuid). Embeddings are taken through the shared cache so
-/// a re-delivery of unchanged symbols is cheap.
+/// deterministically from the symbol id ([`PointId::from_symbol`]), so a
+/// re-embed replaces the point rather than duplicating it. Each point carries
+/// the filterable payload (`language`/`package`/`kind`) plus its `symbol_id`,
+/// so search can recover the [`heart::SymbolId`] from a hit (the derived point
+/// id is not itself the symbol uuid). Embeddings are taken through the shared
+/// cache so a re-delivery of unchanged symbols is cheap.
 async fn materialize_vector<M: EmbeddingModel>(
     embedder: &HttpEmbedder<M>,
     cache: &EmbeddingCache<M>,
     ledger: &std::sync::Mutex<crate::frontier::vector::UpsertLedger>,
+    scratch: &std::sync::Mutex<crate::scratch::ScratchStore>,
     stores: &SourceStores<M>,
     symbols: &[heart::Symbol],
 ) -> ServerResult<()> {
@@ -283,14 +294,11 @@ async fn materialize_vector<M: EmbeddingModel>(
             intro_hex: smol_str::SmolStr::new(symbol.id.as_uuid().to_string()),
             content_hash: blake3::hash(embedding_bytes(embedding.as_slice())).into(),
         };
-        staged.push((
-            fingerprint,
-            VectorPoint {
-                id: PointId::from_symbol(&symbol.id),
-                vector: embedding,
-                payload: crate::server::bakery::symbol_payload(symbol),
-            },
-        ));
+        staged.push((fingerprint, VectorPoint {
+            id: PointId::from_symbol(&symbol.id),
+            vector: embedding,
+            payload: crate::server::bakery::symbol_payload(symbol),
+        }));
     }
 
     let pending: Vec<_> = {
@@ -311,13 +319,20 @@ async fn materialize_vector<M: EmbeddingModel>(
         .await
         .map_err(|error| crate::server::error::ServerError::from(error))?;
 
+    let committed: Vec<_> = pending
+        .iter()
+        .map(|(fingerprint, _)| fingerprint.clone())
+        .collect();
+    {
+        let scratch = scratch.lock().unwrap_or_else(|poison| poison.into_inner());
+        scratch.record_vector_points(&committed).map_err(|error| {
+            crate::server::error::ServerError::Runtime(
+                crate::runtime::error::SessionError::Scratch(error).into(),
+            )
+        })?;
+    }
     let mut guard = ledger.lock().unwrap_or_else(|poison| poison.into_inner());
-    guard.commit(
-        &pending
-            .iter()
-            .map(|(fingerprint, _)| fingerprint.clone())
-            .collect::<Vec<_>>(),
-    );
+    guard.commit(&committed);
     Ok(())
 }
 
@@ -354,13 +369,31 @@ async fn delete_package_from_index<M: EmbeddingModel>(
 /// [`RemoteStore::delete_by_package`]: vector::remote::store::RemoteStore::delete_by_package
 async fn delete_vector<M: EmbeddingModel>(
     stores: &SourceStores<M>,
+    ledger: &std::sync::Mutex<crate::frontier::vector::UpsertLedger>,
+    scratch: &std::sync::Mutex<crate::scratch::ScratchStore>,
     package: PackageId,
 ) -> ServerResult<()> {
+    let package_key = package.as_uuid().to_string();
     stores
         .semantics
-        .delete_by_package(&package.as_uuid().to_string())
+        .delete_by_package(&package_key)
         .await
-        .map_err(|error| crate::server::error::ServerError::from(error))
+        .map_err(|error| crate::server::error::ServerError::from(error))?;
+    {
+        let scratch = scratch.lock().unwrap_or_else(|poison| poison.into_inner());
+        scratch
+            .forget_vector_package(&package_key)
+            .map_err(|error| {
+                crate::server::error::ServerError::Runtime(
+                    crate::runtime::error::SessionError::Scratch(error).into(),
+                )
+            })?;
+    }
+    ledger
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .forget_package(&package_key);
+    Ok(())
 }
 
 /// The storage-reclamation duty: a coarse periodic sweep that reclaims what is
@@ -372,30 +405,32 @@ async fn delete_vector<M: EmbeddingModel>(
 /// **What it reclaims today — outbox rows below every sink's watermark.** Each
 /// source's outbox accumulates one row per `(package, generation, sink)`; once
 /// *every* derived sink has consumed a row it can never be re-delivered, so it
-/// is dead weight. [`registry::coordination::Outbox::gc_consumed`] deletes every
-/// row at or below the minimum watermark across all sinks — a conservative floor
-/// that is `0` (deletes nothing) unless every sink has acked, so a lagging or
-/// not-yet-created sink is never outrun.
+/// is dead weight. [`registry::coordination::Outbox::gc_consumed`] deletes
+/// every row at or below the minimum watermark across all sinks — a
+/// conservative floor that is `0` (deletes nothing) unless every sink has
+/// acked, so a lagging or not-yet-created sink is never outrun.
 ///
-/// **What it does NOT reclaim yet — orphaned CAS blobs.** Deleting a `cas/{hash}`
-/// blob safely requires proving no live pointer or generation references it, and
-/// the reference set is not currently enumerable from one place:
+/// **What it does NOT reclaim yet — orphaned CAS blobs.** Deleting a
+/// `cas/{hash}` blob safely requires proving no live pointer or generation
+/// references it, and the reference set is not currently enumerable from one
+/// place:
 /// - `ptr/{package-id}` objects point at the *manifest* hash, and each manifest
-///   in turn references its section hashes — so a live blob set is the transitive
-///   closure over every package's current manifest, not a single table;
+///   in turn references its section hashes — so a live blob set is the
+///   transitive closure over every package's current manifest, not a single
+///   table;
 /// - `parse_status.content_hash` and `symbols.generation` name generations, but
 ///   there is no index from a blob hash back to "is any live manifest still
-///   referencing it", and object stores offer no atomic "list-then-delete under a
-///   reference lock", so a naive mark-and-sweep races an in-flight `put_manifest`
-///   (which writes the blob before repointing `ptr/`) and could delete a blob a
-///   concurrent emit is about to reference.
+///   referencing it", and object stores offer no atomic "list-then-delete under
+///   a reference lock", so a naive mark-and-sweep races an in-flight
+///   `put_manifest` (which writes the blob before repointing `ptr/`) and could
+///   delete a blob a concurrent emit is about to reference.
 ///
 /// A correct blob GC therefore needs either (a) a generation-count / refcount
 /// side table maintained transactionally with `put_manifest`, or (b) a
 /// stop-the-world mark phase that first snapshots every `ptr/` → manifest →
 /// section closure and only sweeps blobs older than that snapshot's start. Both
-/// are additive follow-ups; until one lands, deleting blobs is not provably safe,
-/// so this loop performs the outbox purge only.
+/// are additive follow-ups; until one lands, deleting blobs is not provably
+/// safe, so this loop performs the outbox purge only.
 ///
 /// The blob-enumeration primitive the closure above needs — [`Store::list_cas`]
 /// — now exists (Phase 4f), so this loop emits an observability gauge of the
@@ -405,8 +440,8 @@ async fn delete_vector<M: EmbeddingModel>(
 ///
 /// TODO(blob-gc, DAEMON-PLAN §5-ops): add CAS blob reclamation once a
 /// transactional blob-reference count (or a snapshot-fenced mark-sweep) exists;
-/// see the closure/race notes above for exactly why the naive list-and-delete is
-/// unsafe. The `list_cas()` gauge below is the read-only, race-free half.
+/// see the closure/race notes above for exactly why the naive list-and-delete
+/// is unsafe. The `list_cas()` gauge below is the read-only, race-free half.
 #[tracing::instrument(skip_all, name = "cas_gc")]
 pub(crate) async fn cas_gc<M: EmbeddingModel>(server: Arc<Server<M>>) {
     loop {
@@ -493,7 +528,8 @@ pub(crate) async fn text_index_poller<M: EmbeddingModel>(server: Arc<Server<M>>)
 const PACKAGE_SIGNALS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Periodic sweep: reverse-dependency counts + per-ecosystem popularity CDF.
-/// Writes only when values change (touch discipline so tantivy does not full-resync).
+/// Writes only when values change (touch discipline so tantivy does not
+/// full-resync).
 #[tracing::instrument(skip_all, name = "package_signals_poller")]
 pub(crate) async fn package_signals_poller<M: EmbeddingModel>(server: Arc<Server<M>>) {
     // Stagger first run slightly so it does not pile onto boot with index sync.
