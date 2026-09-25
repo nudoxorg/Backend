@@ -682,9 +682,6 @@ fn push_commonjs_value_decls<'a>(
         if !is_package_specifier(specifier) {
             continue;
         }
-        if declarations.iter().any(|decl| decl.name == export_name) {
-            continue;
-        }
         let span = assign.span();
         let decl_index = bump_count(&export_name, name_counts);
         declarations.push(DeclFact {
