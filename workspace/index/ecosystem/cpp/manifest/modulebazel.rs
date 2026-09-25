@@ -294,7 +294,10 @@ bazel_dep(name = "abseil-cpp", version = "20230802.1")
             Some("0.0.9")
         );
         assert_eq!(
-            manifest.facts.dependencies[0].requirement.as_deref(),
+            crate::ecosystem::manifest::ManifestFacts::into_facts(manifest)
+                .dependencies[0]
+                .requirement
+                .as_deref(),
             Some("0.0.9")
         );
     }
@@ -347,13 +350,8 @@ bazel_dep(name = "abseil-cpp", version = "20230802.1")
     #[test]
     fn parse_facts_mirror_synced() {
         let text = "bazel_dep(name = \"zlib\", version = \"1.3\")\n";
-        let manifest = parse(text);
-        assert!(
-            manifest
-                .facts
-                .dependency_names()
-                .contains(&"zlib".to_owned())
-        );
+        let facts = crate::ecosystem::manifest::ManifestFacts::into_facts(parse(text));
+        assert!(facts.dependency_names().contains(&"zlib".to_owned()));
     }
 
     #[test]

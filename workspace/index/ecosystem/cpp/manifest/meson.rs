@@ -500,19 +500,9 @@ subproject('googletest')
     #[test]
     fn parse_facts_dependencies_mirror_synced() {
         let text = "dependency('openssl')\nsubproject('catch2')\n";
-        let manifest = parse(text);
-        assert!(
-            manifest
-                .facts
-                .dependency_names()
-                .contains(&"openssl".to_owned())
-        );
-        assert!(
-            manifest
-                .facts
-                .dependency_names()
-                .contains(&"catch2".to_owned())
-        );
+        let facts = crate::ecosystem::manifest::ManifestFacts::into_facts(parse(text));
+        assert!(facts.dependency_names().contains(&"openssl".to_owned()));
+        assert!(facts.dependency_names().contains(&"catch2".to_owned()));
     }
 
     // ── `license:` / `license_files:` (P6 gap fill) ──────────────────────────

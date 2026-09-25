@@ -113,6 +113,8 @@ fn unknown_suffix_yields_empty_manifest() {
 
 #[test]
 fn mechanism_tokens_are_stable() {
+    use crate::enums::TextEnum;
+
     assert_eq!(DependencyMechanism::FindPackage.as_token(), "find_package");
     assert_eq!(DependencyMechanism::PkgConfig.as_token(), "pkg_config");
     assert_eq!(DependencyMechanism::Submodule.as_token(), "submodule");
@@ -262,8 +264,8 @@ fn every_mechanism_matches_its_catalog_kind_and_requirement() {
         manifest.push_dependency(record);
     }
 
-    for (edge, (mechanism, requirement)) in manifest
-        .facts
+    let facts = crate::ecosystem::manifest::ManifestFacts::into_facts(manifest);
+    for (edge, (mechanism, requirement)) in facts
         .dependencies
         .iter()
         .zip(mechanisms.iter().zip(requirements))
@@ -289,7 +291,7 @@ fn every_mechanism_matches_its_catalog_kind_and_requirement() {
         crate::ecosystem::Language::Cpp,
         "demo",
         "1.0.0",
-        &manifest.facts.dependencies,
+        &facts.dependencies,
     )
     .expect("edges");
     let mut kinds: Vec<_> = observed

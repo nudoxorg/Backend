@@ -211,14 +211,13 @@ mod tests {
 
     #[test]
     fn parse_vcpkg_dependencies_token_mirror_in_sync() {
-        // facts.dependencies must mirror the dependency token list.
         let text = r#"{"dependencies": ["zlib", {"name": "libpng"}]}"#;
         let manifest = parse(text);
-        assert_eq!(manifest.facts.dependency_names(), vec![
-            "zlib".to_owned(),
-            "libpng".to_owned()
-        ]);
         assert_eq!(manifest.dependencies.len(), 2);
+        assert_eq!(
+            crate::ecosystem::manifest::ManifestFacts::into_facts(manifest).dependency_names(),
+            vec!["zlib".to_owned(), "libpng".to_owned()]
+        );
     }
 
     // ── `documentation` field (P6 gap fill) ─────────────────────────────────

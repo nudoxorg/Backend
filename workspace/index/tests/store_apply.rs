@@ -560,11 +560,12 @@ fn every_cpp_mechanism_matches_on_sql_and_the_ledger() {
         record.requirement = Some(format!("^{index}"));
         manifest.push_dependency(record);
     }
+    let facts = index::ecosystem::manifest::ManifestFacts::into_facts(manifest);
     let observed = feed_edges(
         heart::Language::Rust,
         "pkg1",
         "1.0.1",
-        &manifest.facts.dependencies,
+        &facts.dependencies,
     )
     .expect("edges");
 

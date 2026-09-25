@@ -233,13 +233,10 @@ mod tests {
     #[test]
     fn parse_facts_mirror_synced() {
         let text = "[submodule \"lib\"]\n\turl = https://github.com/owner/lib.git\n";
-        let manifest = parse(text);
-        assert!(
-            manifest
-                .facts
-                .dependency_names()
-                .contains(&"github.com/owner/lib".to_owned())
-        );
+        let facts = crate::ecosystem::manifest::ManifestFacts::into_facts(parse(text));
+        assert!(facts
+            .dependency_names()
+            .contains(&"github.com/owner/lib".to_owned()));
     }
 
     #[test]

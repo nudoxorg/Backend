@@ -33,42 +33,9 @@ pub mod vcpkg;
 #[cfg(test)]
 mod tests;
 
-/// The mechanism by which a `cpp` dependency is declared — the `edges.kind`
-/// vocabulary (REGISTRYLESS RL-5). Recorded exactly as the producer saw it
-/// (EDB); resolution to a stem happens later (IDB).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DependencyMechanism {
-    /// CMake `find_package(<Name>)`.
-    FindPackage,
-    /// pkg-config (`pkg_check_modules`, `.pc` `Requires:`, meson
-    /// `dependency()`).
-    PkgConfig,
-    /// A git submodule (`.gitmodules`).
-    Submodule,
-    /// CMake `FetchContent_Declare(<n> GIT_REPOSITORY …)`.
-    FetchContent,
-    /// A meson subproject / wrap (`subproject('<n>')`).
-    Wrap,
-    /// A vcpkg / Conan recipe dependency.
-    Recipe,
-    /// A Bazel `bazel_dep(name, version)`.
-    BazelDep,
-}
-
-impl DependencyMechanism {
-    /// The stable lowercase token stored in `edges.kind`.
-    pub const fn as_token(self) -> &'static str {
-        match self {
-            DependencyMechanism::FindPackage => "find_package",
-            DependencyMechanism::PkgConfig => "pkg_config",
-            DependencyMechanism::Submodule => "submodule",
-            DependencyMechanism::FetchContent => "fetchcontent",
-            DependencyMechanism::Wrap => "wrap",
-            DependencyMechanism::Recipe => "recipe",
-            DependencyMechanism::BazelDep => "bazel_dep",
-        }
-    }
-}
+/// How a `cpp` dependency was declared. This is the catalog
+/// [`crate::enums::EdgeKind`]; parsers do not keep a second vocabulary.
+pub type DependencyMechanism = crate::enums::EdgeKind;
 
 /// One extracted dependency: the literal requirement token and the mechanism
 /// that introduced it (REGISTRYLESS §8).
@@ -107,39 +74,26 @@ pub struct CppManifest {
 
 impl CppManifest {
     /// A manifest carrying only typed dependency records (no facets).
+    ///
+    /// Catalog edges appear when the manifest is folded through
+    /// [`ManifestFacts::into_facts`].
     pub fn from_dependencies(dependencies: Vec<DependencyRecord>) -> Self {
-        let facts = ExtractedFacts {
-            dependencies: dependencies.iter().map(edge_for).collect(),
-            ..ExtractedFacts::default()
-        };
         Self {
-            facts,
+            facts: ExtractedFacts::default(),
             dependencies,
         }
     }
 
-    /// Push a typed dependency record, keeping the erased `facts.dependencies`
-    /// token mirror in sync.
+    /// Push a typed dependency record. The catalog edge is projected later.
     pub fn push_dependency(&mut self, record: DependencyRecord) {
-        self.facts.dependencies.push(edge_for(&record));
         self.dependencies.push(record);
     }
 }
 
-fn edge_for(record: &DependencyRecord) -> crate::record::DepEdge {
-    use crate::enums::EdgeKind;
-    let kind = match record.mechanism {
-        DependencyMechanism::FindPackage => EdgeKind::FindPackage,
-        DependencyMechanism::PkgConfig => EdgeKind::PkgConfig,
-        DependencyMechanism::Submodule => EdgeKind::Submodule,
-        DependencyMechanism::FetchContent => EdgeKind::FetchContent,
-        DependencyMechanism::Wrap => EdgeKind::Wrap,
-        DependencyMechanism::Recipe => EdgeKind::Recipe,
-        DependencyMechanism::BazelDep => EdgeKind::BazelDep,
-    };
+fn project_edge(record: &DependencyRecord) -> crate::record::DepEdge {
     let mut edge = crate::record::DepEdge::runtime(record.token.clone());
-    edge.kind = kind;
-    edge.class = crate::engine::class_of_kind(kind);
+    edge.kind = record.mechanism;
+    edge.class = crate::engine::class_of_kind(record.mechanism);
     if let Some(requirement) = record
         .requirement
         .as_deref()
@@ -152,7 +106,9 @@ fn edge_for(record: &DependencyRecord) -> crate::record::DepEdge {
 
 impl ManifestFacts for CppManifest {
     fn into_facts(self) -> ExtractedFacts {
-        self.facts
+        let mut facts = self.facts;
+        facts.dependencies = self.dependencies.iter().map(project_edge).collect();
+        facts
     }
 }
 
