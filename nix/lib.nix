@@ -13,6 +13,8 @@
 let
   inherit (pkgs) lib;
 
+  doltliteAmalgamation = import ./doltlite-amalgamation.nix { pkgs = pkgs; };
+
   # One complete toolchain serves packages and the devshell. Hooks only omit
   # source/docs, which they do not consume.
   rustComponents = rec {
@@ -63,6 +65,13 @@ let
         GIT_CONFIG_GLOBAL = ./git-https-instead-of-ssh.config;
       };
       inherit buildFeatures;
+      # Gitignored DoltLite amalgamation; fetch the manifest-pinned archive
+      # before cargo builds rusqdoltlite (dolt-engine is on by default).
+      postPatch = ''
+        cp ${doltliteAmalgamation}/doltlite.c workspace/vendor/doltlite/
+        cp ${doltliteAmalgamation}/doltlite.h workspace/vendor/doltlite/
+        cp ${doltliteAmalgamation}/doltliteext.h workspace/vendor/doltlite/
+      '';
       RUSTC_BOOTSTRAP = "1";
       # This LLVM cannot lower qdrant-edge's AVX-512 VNNI kernels (vpdpbusd).
       # Disable them at compile time; runtime dispatch falls back to AVX2.
