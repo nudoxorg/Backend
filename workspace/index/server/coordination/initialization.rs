@@ -206,23 +206,28 @@ impl<M: EmbeddingModel> Server<M> {
         let enqueued = matches!(decision, InitializationDecision::Enqueue) && !already_pending;
         let wants_work = matches!(decision, InitializationDecision::Enqueue);
 
-        if enqueued {
-            // Publishing the record and enqueueing the job are each idempotent
-            // (identity upsert; unique live job per package), so this pair
-            // converges even if the process dies between the two writes.
-            let mut record = provisional_global_package(coordinates);
-            record.facets = facets_from_dependency_names(dependencies);
-            let published = crate::record::PackageRecord::published(
-                coordinates.ecosystem(),
-                coordinates.name.canonical(),
-                coordinates.version.canonical(),
-                dependencies,
-            );
+        let published = crate::record::PackageRecord::published(
+            coordinates.ecosystem(),
+            coordinates.name.canonical(),
+            coordinates.version.canonical(),
+            dependencies,
+        );
+        let fact_write = {
+            let mut facts = self
+                .package_facts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if dependencies.is_empty()
+                && facts
+                    .get(
+                        coordinates.ecosystem().as_token(),
+                        coordinates.name.canonical().as_ref(),
+                        coordinates.version.canonical().as_ref(),
+                    )
+                    .is_some()
             {
-                let mut facts = self
-                    .package_facts
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                crate::engine::turso_vc::FactWrite::Unchanged
+            } else {
                 facts.put_record(&published).map_err(|error| {
                     ServerError::Runtime(
                         crate::server::registry::runtime::error::TextError::Io(
@@ -230,13 +235,33 @@ impl<M: EmbeddingModel> Server<M> {
                         )
                         .into(),
                     )
-                })?;
+                })?
             }
-            stores
-                .global_store
-                .upsert(&record)
-                .await
-                .map_err(RegistryError::from)?;
+        };
+        if enqueued
+            || (already_pending
+                && matches!(fact_write, crate::engine::turso_vc::FactWrite::Revised(_)))
+        {
+            // Publishing the record and enqueueing the job are each idempotent
+            // (identity upsert; unique live job per package), so this pair
+            // converges even if the process dies between the two writes.
+            // A later publish with a new dependency list revises the versioned
+            // row and replaces feed edges without rewriting lifecycle state.
+            let mut record = provisional_global_package(coordinates);
+            record.facets = facets_from_dependency_names(dependencies);
+            if enqueued {
+                stores
+                    .global_store
+                    .upsert(&record)
+                    .await
+                    .map_err(RegistryError::from)?;
+            } else {
+                stores
+                    .global_store
+                    .replace_feed_edges(&record)
+                    .await
+                    .map_err(RegistryError::from)?;
+            }
         }
 
         // Enqueue on EVERY call that wants work, not only the first.

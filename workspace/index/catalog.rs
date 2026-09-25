@@ -22,15 +22,18 @@ use heart::{
     timed_probe,
 };
 
-use crate::engine::VersioningEngine;
-use crate::ids::PackageStemId;
-use crate::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
-use crate::store::writer::CatalogWriter;
-use crate::store::{MetaStore, lifecycle};
+use crate::{
+    engine::VersioningEngine,
+    enums::{EdgeKind, EdgeSource},
+    ids::PackageStemId,
+    protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
+    store::{MetaStore, lifecycle, writer::CatalogWriter},
+};
 
-use crate::package::Coordinates as PackageCoordinates;
-use crate::schema::catalog_map;
-use crate::{GlobalPackage, error::IndexError};
+use crate::{
+    GlobalPackage, error::IndexError, package::Coordinates as PackageCoordinates,
+    schema::catalog_map,
+};
 
 /// The `{organization}/{database}` instance token every deterministic global
 /// identifier is salted with, so a [`SymbolId`] is recomputable offline from
@@ -43,7 +46,8 @@ pub struct InstanceToken(String);
 
 impl InstanceToken {
     /// Validate and wrap an `{organization}/{database}` instance token.
-    /// Rejects anything that is not exactly two non-empty, slash-separated segments.
+    /// Rejects anything that is not exactly two non-empty, slash-separated
+    /// segments.
     pub fn new(token: impl Into<String>) -> Result<Self, IndexError> {
         let token = token.into();
         match token.split_once('/') {
@@ -54,7 +58,8 @@ impl InstanceToken {
         }
     }
 
-    /// The validated `organization/database` token, used as the salt for identifier derivation.
+    /// The validated `organization/database` token, used as the salt for
+    /// identifier derivation.
     pub fn token(&self) -> &str {
         &self.0
     }
@@ -71,7 +76,8 @@ pub struct GlobalStore<Engine: VersioningEngine> {
     /// The catalog's single writer; all reads go through its engine too.
     writer: Arc<CatalogWriter<Engine>>,
 
-    /// The instance every global symbol identifier in this store is derived against.
+    /// The instance every global symbol identifier in this store is derived
+    /// against.
     instance: InstanceToken,
 }
 
@@ -109,7 +115,8 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
         coordinates.id()
     }
 
-    /// Mint the deterministic [`SymbolId`] for an entry, salted with this store's instance.
+    /// Mint the deterministic [`SymbolId`] for an entry, salted with this
+    /// store's instance.
     pub fn symbol_id(&self, uri: &EntryUri) -> SymbolId {
         uri.symbol_id(self.instance.token())
     }
@@ -135,6 +142,45 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             name_canonical: coordinates.name.canonical().to_owned(),
             name_original: coordinates.name.original().to_owned(),
         }
+    }
+
+    /// Replace the version's feed edges and facets without rewriting lifecycle.
+    ///
+    /// Used when a package is already pending and a later publish carries a
+    /// different dependency list. [`Self::upsert`] would also rewrite state
+    /// and is reserved for the first enqueue.
+    pub async fn replace_feed_edges(&self, package: &GlobalPackage) -> Result<(), IndexError> {
+        let coordinates = &package.package.coordinates;
+        let facet_wire = match &package.facets {
+            Some(facets) => {
+                let (keywords, quality_ppm, extras) = catalog_map::facets_to_row(facets)?;
+                FacetWire {
+                    keywords,
+                    quality_ppm,
+                    extras,
+                }
+            }
+            None => FacetWire::default(),
+        };
+        let toolchain_json =
+            serde_json::to_string(&package.package.toolchain).map_err(IndexError::ToolchainJson)?;
+        self.writer.apply_ops(&[CatalogOp::UpsertVersion {
+            coordinates: Self::version_coordinates(coordinates),
+            published_at: None,
+            toolchain: Some(crate::protocol::ToolchainRef(toolchain_json.into())),
+            license: None,
+            edges: feed_edge_wires(
+                coordinates.ecosystem(),
+                package
+                    .facets
+                    .as_ref()
+                    .map(|facets| facets.dependencies.as_slice())
+                    .unwrap_or(&[]),
+            ),
+            facets: facet_wire,
+            source: None,
+        }])?;
+        Ok(())
     }
 
     fn version_coordinates(coordinates: &PackageCoordinates) -> VersionCoordinates {
@@ -176,7 +222,14 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
                 published_at: None,
                 toolchain: Some(crate::protocol::ToolchainRef(toolchain_json.into())),
                 license: None,
-                edges: Vec::new(),
+                edges: feed_edge_wires(
+                    coordinates.ecosystem(),
+                    package
+                        .facets
+                        .as_ref()
+                        .map(|facets| facets.dependencies.as_slice())
+                        .unwrap_or(&[]),
+                ),
                 facets: facet_wire,
                 source: None,
             },
@@ -208,7 +261,8 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
         Ok(())
     }
 
-    /// Advance a package's lifecycle state (e.g. `Progressing(Compiling)` → `Stored`).
+    /// Advance a package's lifecycle state (e.g. `Progressing(Compiling)` →
+    /// `Stored`).
     pub async fn set_state(
         &self,
         package: PackageId,
@@ -358,7 +412,8 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
         Ok(())
     }
 
-    /// Read a package's serving-projection symbols back out of the global index.
+    /// Read a package's serving-projection symbols back out of the global
+    /// index.
     pub async fn symbols_for(&self, package: PackageId) -> Result<Vec<heart::Symbol>, IndexError> {
         let (_, _, _, ecosystem_token, ..) = lifecycle::version_record(self.engine(), package)?
             .ok_or(IndexError::NotFound { package })?;
@@ -463,8 +518,10 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     /// so crates.io volume never sets npm's percentile floor. Only writes when
     /// the stored value changes.
     pub async fn refresh_popularity_percentiles(&self) -> Result<u64, IndexError> {
-        use crate::metadata::SearchFacets;
-        use crate::search::ranking::popularity::{DEPENDENT_DOWNLOAD_EQUIV, assign_percentiles};
+        use crate::{
+            metadata::SearchFacets,
+            search::ranking::popularity::{DEPENDENT_DOWNLOAD_EQUIV, assign_percentiles},
+        };
         use std::collections::HashMap;
 
         let pages = self.collect_facet_pages()?;
@@ -572,6 +629,24 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     }
 }
 
+/// Runtime feed edges for the dependency names already stored on facets.
+///
+/// Each name is one [`EdgeKind::Runtime`] edge from [`EdgeSource::Feed`]. The
+/// requirement is empty because the catalog publish carried a name only.
+pub fn feed_edge_wires(ecosystem: heart::Language, names: &[smol_str::SmolStr]) -> Vec<EdgeWire> {
+    names
+        .iter()
+        .map(|name| EdgeWire {
+            dep_ecosystem: ecosystem,
+            dep_name_canonical: name.to_string(),
+            requirement: String::new(),
+            kind: EdgeKind::Runtime,
+            source: EdgeSource::Feed,
+            resolved_stem: None,
+        })
+        .collect()
+}
+
 /// Pack a 16-byte [`SymbolId`] into the BLOB32 `intro_id` slot (zero-padded).
 fn symbol_slot(identifier: SymbolId) -> [u8; 32] {
     let mut slot = [0u8; 32];
@@ -614,5 +689,28 @@ impl<Engine: VersioningEngine + Send + Sync> Probeable for GlobalStore<Engine> {
             }
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod feed_edge_tests {
+    use super::feed_edge_wires;
+    use crate::enums::{EdgeKind, EdgeSource};
+    use heart::Language;
+    use smol_str::SmolStr;
+
+    #[test]
+    fn feed_edges_are_runtime_edges_for_each_facet_name() {
+        let edges = feed_edge_wires(Language::Java, &[
+            SmolStr::new("org.slf4j:slf4j-api"),
+            SmolStr::new("junit:junit"),
+        ]);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].dep_ecosystem, Language::Java);
+        assert_eq!(edges[0].dep_name_canonical, "org.slf4j:slf4j-api");
+        assert_eq!(edges[0].kind, EdgeKind::Runtime);
+        assert_eq!(edges[0].source, EdgeSource::Feed);
+        assert!(edges[0].requirement.is_empty());
+        assert!(edges[0].resolved_stem.is_none());
     }
 }
