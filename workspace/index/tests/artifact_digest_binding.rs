@@ -7,7 +7,10 @@ use index::{
     engine::turso_vc::VersionedCatalog,
     pid::{ContentDigest, VersionPid, artifact_digest},
     record::PackageRecord,
-    upstream::{catalog::CatalogEvent, npm_changes::parse_changes, nuget_catalog::parse_leaf},
+    upstream::{
+        catalog::CatalogEvent, merge_document_facts, npm_changes::parse_changes,
+        nuget_catalog::parse_leaf, pypi_document_facts, pypi_updates::parse_updates,
+    },
 };
 
 fn published_from(event: &CatalogEvent, ecosystem: Language) -> PackageRecord {
@@ -86,4 +89,71 @@ fn npm_and_nuget_digests_survive_a_later_git_revision() {
             VersionPid::mint(ecosystem, name, version).local_name()
         );
     }
+}
+
+#[test]
+fn a_pypi_sdist_sha256_binds_through_the_follower_merge() {
+    let rss = br#"<rss><channel>
+        <item><title>requests 2.31.0</title><pubDate>Wed, 01 Jan 2020 00:00:00 GMT</pubDate></item>
+    </channel></rss>"#;
+    let mut event = parse_updates(rss, "")
+        .expect("rss")
+        .events
+        .into_iter()
+        .next()
+        .expect("publish");
+    assert!(event.checksum().is_none());
+
+    let hex = "cd".repeat(32);
+    let body = format!(
+        r#"{{"info":{{"requires_dist":["urllib3>=1.21.1","charset-normalizer"]}},"urls":[
+            {{"packagetype":"bdist_wheel","digests":{{"sha256":"{hex}"}}}},
+            {{"packagetype":"sdist","digests":{{"sha256":"abcd"}}}},
+            {{"packagetype":"sdist","digests":{{"sha256":"{hex}"}}}}
+        ]}}"#
+    );
+    let facts = pypi_document_facts(body.as_bytes());
+    let from_json = artifact_digest(facts.checksum.as_deref().expect("sdist")).expect("sha256");
+    merge_document_facts(&mut event, facts);
+    let from_event = artifact_digest(event.checksum().expect("event")).expect("sha256");
+    assert_eq!(from_json, from_event);
+    assert!(matches!(from_event, ContentDigest::Sha256(_)));
+
+    let mut held = CatalogEvent::Published {
+        name: "requests".into(),
+        version: "2.31.0".into(),
+        dependencies: vec!["certifi".into()],
+        checksum: Some("ab".repeat(32)),
+    };
+    merge_document_facts(&mut held, pypi_document_facts(body.as_bytes()));
+    assert_eq!(held.checksum(), Some("ab".repeat(32).as_str()));
+    assert_eq!(
+        held.dependencies(),
+        &["charset-normalizer".to_owned(), "urllib3".to_owned()][..]
+    );
+
+    let record = published_from(&event, heart::Language::Python);
+    let mut catalog = VersionedCatalog::open().expect("catalog");
+    catalog.put_record(&record).expect("put");
+    let mut again = catalog
+        .materialize("python", "requests", "2.31.0")
+        .expect("read")
+        .expect("row");
+    assert_eq!(again.content, Some(from_event));
+    assert_eq!(again.edges.len(), 2);
+    again.content = Some(ContentDigest::GitSha1([0x11; 20]));
+    catalog.put_record(&again).expect("git");
+    let tip = catalog
+        .materialize("python", "requests", "2.31.0")
+        .expect("tip")
+        .expect("row");
+    assert_eq!(tip.content, Some(from_event));
+    assert_eq!(tip.edges.len(), 2);
+    assert_eq!(
+        catalog
+            .get("python", "requests", "2.31.0")
+            .expect("fact")
+            .version_pid,
+        VersionPid::mint("python", "requests", "2.31.0").local_name()
+    );
 }

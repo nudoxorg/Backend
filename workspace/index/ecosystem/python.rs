@@ -359,19 +359,48 @@ pub fn parse_pyproject_toml(text: &str) -> ExtractedFacts {
 /// entry, a requirement with no name, or a name the grammar rejects is
 /// dropped. The result is sorted and de-duplicated.
 pub fn requires_dist_names(body: &[u8]) -> Vec<String> {
+    pypi_release(body).0
+}
+
+/// Dependency names and the sdist SHA-256 from one PyPI version JSON body.
+///
+/// The checksum is the `sdist` file's `digests.sha256` when that field is 64
+/// hex. A wheel digest is not the version's source artifact.
+pub fn pypi_release(body: &[u8]) -> (Vec<String>, Option<String>) {
     #[derive(serde::Deserialize)]
     struct Body {
         info: Option<Info>,
+        #[serde(default)]
+        urls: Vec<ReleaseFile>,
     }
     #[derive(serde::Deserialize)]
     struct Info {
         requires_dist: Option<Vec<Option<String>>>,
     }
+    #[derive(serde::Deserialize)]
+    struct ReleaseFile {
+        #[serde(default)]
+        packagetype: Option<String>,
+        #[serde(default)]
+        digests: Option<Digests>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Digests {
+        #[serde(default)]
+        sha256: Option<String>,
+    }
     let Ok(parsed) = serde_json::from_slice::<Body>(body) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
+    let checksum = parsed.urls.iter().find_map(|file| {
+        if file.packagetype.as_deref() != Some("sdist") {
+            return None;
+        }
+        let hex = file.digests.as_ref()?.sha256.as_deref()?;
+        crate::pid::sha256(hex).map(|_| hex.to_owned())
+    });
     let Some(requirements) = parsed.info.and_then(|info| info.requires_dist) else {
-        return Vec::new();
+        return (Vec::new(), checksum);
     };
     let mut names: Vec<String> = requirements
         .into_iter()
@@ -382,7 +411,7 @@ pub fn requires_dist_names(body: &[u8]) -> Vec<String> {
         .collect();
     names.sort();
     names.dedup();
-    names
+    (names, checksum)
 }
 
 /// Extract the package name from a PEP 508 requirement string.
@@ -1041,5 +1070,37 @@ file = "LICENSE.txt"
         ]);
         assert!(requires_dist_names(b"{}").is_empty());
         assert!(requires_dist_names(b"not-json").is_empty());
+    }
+
+    #[test]
+    fn an_sdist_sha256_is_kept_and_a_wheel_digest_is_not() {
+        let hex = "ab".repeat(32);
+        let body = format!(
+            r#"{{"info":{{"requires_dist":["requests"]}},"urls":[
+                {{"packagetype":"bdist_wheel","digests":{{"sha256":"{hex}"}}}},
+                {{"packagetype":"sdist","digests":{{"sha256":"{hex}"}}}}
+            ]}}"#
+        );
+        let (names, checksum) = pypi_release(body.as_bytes());
+        assert_eq!(names, vec!["requests".to_owned()]);
+        assert_eq!(checksum.as_deref(), Some(hex.as_str()));
+        let wheel_only = format!(
+            r#"{{"urls":[{{"packagetype":"bdist_wheel","digests":{{"sha256":"{hex}"}}}}]}}"#
+        );
+        assert_eq!(pypi_release(wheel_only.as_bytes()).1, None);
+        assert_eq!(
+            pypi_release(br#"{"urls":[{"packagetype":"sdist","digests":{"sha256":"abcd"}}]}"#).1,
+            None
+        );
+        let later = format!(
+            r#"{{"urls":[
+                {{"packagetype":"sdist","digests":{{"sha256":"abcd"}}}},
+                {{"packagetype":"sdist","digests":{{"sha256":"{hex}"}}}}
+            ]}}"#
+        );
+        assert_eq!(
+            pypi_release(later.as_bytes()).1.as_deref(),
+            Some(hex.as_str())
+        );
     }
 }

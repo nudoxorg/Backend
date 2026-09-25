@@ -146,13 +146,9 @@ impl MavenSearchFollower {
         );
         let bytes = client.get(Language::Java, &url).await?;
         let mut page = parse_search(&bytes, since_ms)?;
-        attach_document_dependencies(
-            client,
-            Language::Java,
-            &mut page.events,
-            pom_url,
-            crate::ecosystem::pom_dependency_names,
-        )
+        attach_document_dependencies(client, Language::Java, &mut page.events, pom_url, |body| {
+            super::catalog::DocumentFacts::names(crate::ecosystem::pom_dependency_names(body))
+        })
         .await;
         Ok(CatalogBatch {
             events: page.events,

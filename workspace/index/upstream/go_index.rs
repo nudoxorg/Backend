@@ -126,9 +126,11 @@ impl GoIndexFollower {
                 ))
             },
             |body| {
-                std::str::from_utf8(body)
-                    .map(crate::ecosystem::require_names)
-                    .unwrap_or_default()
+                super::catalog::DocumentFacts::names(
+                    std::str::from_utf8(body)
+                        .map(crate::ecosystem::require_names)
+                        .unwrap_or_default(),
+                )
             },
         )
         .await;

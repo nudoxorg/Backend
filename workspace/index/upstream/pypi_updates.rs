@@ -10,7 +10,9 @@
 use crate::ecosystem::Language;
 
 use super::{
-    catalog::{CatalogBatch, CatalogCursor, CatalogEvent, attach_document_dependencies},
+    catalog::{
+        CatalogBatch, CatalogCursor, CatalogEvent, DocumentFacts, attach_document_dependencies,
+    },
     path_segment,
 };
 use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};
@@ -162,6 +164,15 @@ fn month_number(name: &str) -> Option<u8> {
     })
 }
 
+/// Dependency names and the sdist SHA-256 from a PyPI version JSON body.
+pub fn document_facts(body: &[u8]) -> DocumentFacts {
+    let (dependencies, checksum) = crate::ecosystem::pypi_release(body);
+    DocumentFacts {
+        dependencies,
+        checksum,
+    }
+}
+
 fn cursor_since(cursor: &CatalogCursor) -> String {
     match &cursor.0 {
         serde_json::Value::String(text) => text.clone(),
@@ -206,7 +217,7 @@ impl PypiUpdatesFollower {
                     path_segment(version)
                 ))
             },
-            crate::ecosystem::requires_dist_names,
+            document_facts,
         )
         .await;
         let next = if page.latest.is_empty() {

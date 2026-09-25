@@ -63,7 +63,8 @@ pub enum CatalogEvent {
         /// Direct dependency names the feed already carried. Empty when the
         /// feed has no manifest body.
         dependencies: Vec<String>,
-        /// Registry checksum hex, when the feed or version document carried one.
+        /// Registry checksum hex, when the feed or version document carried
+        /// one.
         checksum: Option<String>,
     },
     /// A version was withdrawn (yanked/unlisted/deprecated).
@@ -128,34 +129,65 @@ pub struct CatalogBatch {
 // The trait
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Fill [`CatalogEvent::Published::dependencies`] from a second document.
+/// Names and an optional artifact checksum from one already-fetched document.
+pub struct DocumentFacts {
+    /// Direct dependency names.
+    pub dependencies: Vec<String>,
+    /// Registry checksum spelling, when the document carried one.
+    pub checksum: Option<String>,
+}
+
+impl DocumentFacts {
+    /// A document that names dependencies and no checksum.
+    pub fn names(dependencies: Vec<String>) -> Self {
+        Self {
+            dependencies,
+            checksum: None,
+        }
+    }
+}
+
+/// Copy a document onto a publish. Dependencies replace the list. A checksum
+/// lands only when the event has none and the spelling is an artifact digest.
+pub fn merge_document_facts(event: &mut CatalogEvent, facts: DocumentFacts) {
+    let CatalogEvent::Published {
+        dependencies,
+        checksum,
+        ..
+    } = event
+    else {
+        return;
+    };
+    *dependencies = facts.dependencies;
+    if checksum.is_none() {
+        *checksum = facts
+            .checksum
+            .filter(|text| crate::pid::artifact_digest(text).is_some());
+    }
+}
+
+/// Fill a publish event from a second document.
 ///
 /// `url_for` returns `None` when the coordinate cannot name a document; that
-/// event keeps the list it already has. A failed fetch does the same. A
-/// successful body replaces the list with `names_from`. Withdrawn events are
-/// skipped. Feeds whose manifest rides in the page itself do not call this.
+/// event keeps what it already has. A failed fetch does the same. A
+/// successful body replaces the dependency list and, when the document names
+/// a checksum, the event checksum. Withdrawn events are skipped.
 pub async fn attach_document_dependencies(
     client: &crate::upstream::UpstreamClient,
     language: Language,
     events: &mut [CatalogEvent],
     url_for: impl Fn(&str, &str) -> Option<String>,
-    names_from: impl Fn(&[u8]) -> Vec<String>,
+    facts_from: impl Fn(&[u8]) -> DocumentFacts,
 ) {
-    for event in events {
-        let CatalogEvent::Published {
-            name,
-            version,
-            dependencies,
-            ..
-        } = event
-        else {
+    for event in events.iter_mut() {
+        if !matches!(event, CatalogEvent::Published { .. }) {
             continue;
-        };
-        let Some(url) = url_for(name, version) else {
+        }
+        let Some(url) = url_for(event.name(), event.version()) else {
             continue;
         };
         if let Ok(body) = client.get(language, &url).await {
-            *dependencies = names_from(&body);
+            merge_document_facts(event, facts_from(&body));
         }
     }
 }

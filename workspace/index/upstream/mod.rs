@@ -20,8 +20,8 @@ pub mod percent;
 pub mod pypi_updates;
 
 pub use catalog::{
-    CatalogBatch, CatalogCursor, CatalogEvent, CatalogFollower, PollFuture,
-    attach_document_dependencies,
+    CatalogBatch, CatalogCursor, CatalogEvent, CatalogFollower, DocumentFacts, PollFuture,
+    attach_document_dependencies, merge_document_facts,
 };
 pub use crates_catalog::CratesCatalogFollower;
 pub use go_index::GoIndexFollower;
@@ -29,7 +29,7 @@ pub use maven_search::MavenSearchFollower;
 pub use npm_changes::NpmChangesFollower;
 pub use nuget_catalog::NuGetCatalogFollower;
 pub use percent::path_segment;
-pub use pypi_updates::PypiUpdatesFollower;
+pub use pypi_updates::{PypiUpdatesFollower, document_facts as pypi_document_facts};
 
 use std::{
     collections::HashMap,
