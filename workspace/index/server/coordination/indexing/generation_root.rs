@@ -1,10 +1,10 @@
 //! One generation-root commit for both the wire stream and the in-process
 //! table.
 //!
-//! Duplicate intro ids keep the last input occurrence, then each survivor is
-//! encoded once. [`crate::frontier::ir::project`] drops payloads whose intro
-//! already sits at that hash. Location stays on the root row, so a move does
-//! not change the payload hash.
+//! Duplicate intro ids keep the last input occurrence. Every survivor is
+//! hashed. [`crate::frontier::ir::project`] then names the payloads to store,
+//! and only those entries are encoded into bytes. Location stays on the root
+//! row, so a move does not change the payload hash.
 
 use crate::server::registry::blob::creation::BlobBuilder;
 
@@ -151,9 +151,8 @@ fn commit_unique(
 ) -> Result<Vec<crate::frontier::ir::IrEntryKey>, String> {
     let mut rows = Vec::with_capacity(entries.len());
     let mut keys = Vec::with_capacity(entries.len());
-    let mut bodies = Vec::with_capacity(entries.len());
     for (intro, parent, entry) in entries {
-        let (content, body) = storage_bytes(entry);
+        let content = ir::content::entry_storage_hash(entry);
         keys.push(crate::frontier::ir::IrEntryKey {
             intro_id: *intro.as_bytes(),
             content_hash: *content.as_bytes(),
@@ -165,7 +164,6 @@ fn commit_unique(
             source: entry.sym().source.clone(),
             span: entry.sym().span.clone(),
         });
-        bodies.push(body);
     }
     let delta = crate::frontier::ir::project(prior, &keys);
     let mut write =
@@ -173,25 +171,20 @@ fn commit_unique(
     for key in delta.added.iter().chain(delta.changed.iter()) {
         write.insert(key.intro_id);
     }
-    let payloads = keys.iter().zip(bodies).filter_map(|(key, body)| {
-        write.contains(&key.intro_id).then(|| {
-            (
-                ir::change::ContentBlake3::from_raw(key.content_hash),
-                bytes::Bytes::from(body),
-            )
-        })
-    });
+    let payloads = entries
+        .iter()
+        .zip(&keys)
+        .filter_map(|((_, _, entry), key)| {
+            write.contains(&key.intro_id).then(|| {
+                (
+                    ir::change::ContentBlake3::from_raw(key.content_hash),
+                    bytes::Bytes::from(ir::content::entry_storage_payload(entry)),
+                )
+            })
+        });
     let root = ir::generation::GenerationRoot::build(package.clone(), rows);
     builder
         .set_generation_root(&root, payloads)
         .map_err(|err| format!("set_generation_root failed: {err}"))?;
     Ok(keys)
-}
-
-/// Encode an entry once. The storage hash is BLAKE3 of those bytes, which is
-/// what [`ir::content::entry_storage_hash`] computes by encoding again.
-fn storage_bytes(entry: &ir::entry::Entry) -> (ir::change::ContentBlake3, Vec<u8>) {
-    let body = ir::content::entry_storage_payload(entry);
-    let content = ir::change::ContentBlake3::from_raw(*blake3::hash(&body).as_bytes());
-    (content, body)
 }
