@@ -86,6 +86,7 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
     // a second, independent one — see `resolve_module_path`'s doc comment for
     // the real-package failure this fixes.
     let resolver = make_resolver();
+    let names = NameIndex::build(modules);
 
     for module in modules {
         let module_id = module_ts_id(module);
@@ -135,6 +136,7 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 &export_index,
                 &resolver,
                 &HashSet::new(),
+                &names,
             );
         }
     }
@@ -157,6 +159,7 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                     &export_index,
                     &resolver,
                     &pending,
+                    &names,
                 );
             }
         }
@@ -303,14 +306,15 @@ fn emit_decl(
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
     pending: &HashSet<TsId>,
+    names: &NameIndex,
 ) {
     let id = decl_ts_id(decl, parent.as_ref());
     let sym = make_sym(decl);
 
     match &decl.body {
-        DeclBody::Interface(body) => emit_interface(id, parent, sym, body, out),
-        DeclBody::Class(body) => emit_class(id, parent, sym, body, out),
-        DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out),
+        DeclBody::Interface(body) => emit_interface(id, parent, sym, body, out, names),
+        DeclBody::Class(body) => emit_class(id, parent, sym, body, out, names),
+        DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out, names),
         DeclBody::Enum(body) => emit_enum(id, parent, sym, body, out),
         DeclBody::Namespace(body) => {
             emit_namespace(
@@ -323,11 +327,12 @@ fn emit_decl(
                 export_index,
                 resolver,
                 pending,
+                names,
             );
         }
-        DeclBody::Function(body) => emit_function(id, parent, sym, body, out),
-        DeclBody::Const(body) => emit_const(id, parent, sym, body, out),
-        DeclBody::Static(body) => emit_static(id, parent, sym, body, out),
+        DeclBody::Function(body) => emit_function(id, parent, sym, body, out, names),
+        DeclBody::Const(body) => emit_const(id, parent, sym, body, out, names),
+        DeclBody::Static(body) => emit_static(id, parent, sym, body, out, names),
         DeclBody::Reexport {
             module_request,
             import_name,
@@ -356,9 +361,14 @@ fn emit_interface(
     sym: Symbol,
     body: &InterfaceBody,
     out: &mut Lowering<TsId>,
+    names: &NameIndex,
 ) {
-    let generics = lower_generics(&body.generics);
-    let supers: Vec<Type> = body.extends.iter().map(lower_type).collect();
+    let generics = lower_generics(&body.generics, out, names, &id.module);
+    let supers: Vec<Type> = body
+        .extends
+        .iter()
+        .map(|t| lower_type(t, out, names, &id.module))
+        .collect();
 
     let _trait_ref: Ref<Trait> = out.declare(
         id.clone(),
@@ -402,7 +412,7 @@ fn emit_interface(
             attrs: Box::new([]),
             cfg: None,
         };
-        emit_function(method_id, Some(id.clone()), method_sym, &method.sig, out);
+        emit_function(method_id, Some(id.clone()), method_sym, &method.sig, out, names);
     }
 
     // Emit properties as child Field entries.
@@ -421,13 +431,14 @@ fn emit_interface(
             cfg: None,
         };
         let attrs = field_attrs(&prop.modifiers);
+        let field_ty = prop.ty.as_ref().map(|t| lower_type(t, out, names, &id.module));
         let _: Ref<Field> = out.declare(
             prop_id,
             Some(id.clone()),
             prop_sym,
             Field::builder()
                 .key(FieldKey::Named)
-                .maybe_ty(prop.ty.as_ref().map(lower_type))
+                .maybe_ty(field_ty)
                 .attributes(attrs)
                 .build(),
         );
@@ -484,7 +495,7 @@ fn emit_interface(
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
-        emit_function(idx_id, Some(id.clone()), idx_sym, &index_fn_body, out);
+        emit_function(idx_id, Some(id.clone()), idx_sym, &index_fn_body, out, names);
     }
 
     // Emit construct signatures as synthetic `new[_N]` Function entries (item 6).
@@ -511,7 +522,7 @@ fn emit_interface(
             attrs: Box::new([]),
             cfg: None,
         };
-        emit_function(cs_id, Some(id.clone()), cs_sym, cs, out);
+        emit_function(cs_id, Some(id.clone()), cs_sym, cs, out, names);
     }
 }
 
@@ -523,12 +534,21 @@ fn emit_class(
     sym: Symbol,
     body: &ClassBody,
     out: &mut Lowering<TsId>,
+    names: &NameIndex,
 ) {
-    let generics = lower_generics(&body.generics);
-    let super_types: Vec<Type> = body.extends.iter().map(lower_type).collect();
+    let generics = lower_generics(&body.generics, out, names, &id.module);
+    let super_types: Vec<Type> = body
+        .extends
+        .iter()
+        .map(|t| lower_type(t, out, names, &id.module))
+        .collect();
     // implements → also super_types (TypeScript models them the same way)
     let mut all_supers = super_types;
-    all_supers.extend(body.implements.iter().map(lower_type));
+    all_supers.extend(
+        body.implements
+            .iter()
+            .map(|t| lower_type(t, out, names, &id.module)),
+    );
 
     // Collect field refs first (need to declare fields as children).
     // Because Lowering is order-independent we can refer before declaring.
@@ -568,13 +588,14 @@ fn emit_class(
                 {
                     attrs.push(FieldAttribute::Mutable);
                 }
+                let field_ty = ty.as_ref().map(|t| lower_type(t, out, names, &id.module));
                 let _: Ref<Field> = out.declare(
                     field_id,
                     Some(id.clone()),
                     field_sym,
                     Field::builder()
                         .key(FieldKey::Named)
-                        .maybe_ty(ty.as_ref().map(lower_type))
+                        .maybe_ty(field_ty)
                         .attributes(attrs)
                         .build(),
                 );
@@ -630,7 +651,7 @@ fn emit_class(
                         attrs: Box::new([]),
                         cfg: None,
                     };
-                    emit_function(method_id, Some(id.clone()), method_sym, sig, out);
+                    emit_function(method_id, Some(id.clone()), method_sym, sig, out, names);
                 }
             }
             MemberKind::Constructor(s) => {
@@ -655,7 +676,7 @@ fn emit_class(
                     attrs: Box::new([]),
                     cfg: None,
                 };
-                emit_function(method_id, Some(id.clone()), method_sym, s, out);
+                emit_function(method_id, Some(id.clone()), method_sym, s, out, names);
             }
             // ── Item 4: Static block → synthetic Function (item 4) ────────
             MemberKind::StaticBlock { name: block_name } => {
@@ -687,7 +708,7 @@ fn emit_class(
                     span_start: member.span_start,
                     span_end: member.span_end,
                 };
-                emit_function(sb_id, Some(id.clone()), sb_sym, &static_fn_body, out);
+                emit_function(sb_id, Some(id.clone()), sb_sym, &static_fn_body, out, names);
             }
             // Fields / Accessors were already emitted above.
             MemberKind::Property { .. } | MemberKind::Accessor { .. } => {}
@@ -703,9 +724,10 @@ fn emit_type_alias(
     sym: Symbol,
     body: &TypeAliasBody,
     out: &mut Lowering<TsId>,
+    names: &NameIndex,
 ) {
-    let generics = lower_generics(&body.generics);
-    let target = lower_type(&body.target);
+    let generics = lower_generics(&body.generics, out, names, &id.module);
+    let target = lower_type(&body.target, out, names, &id.module);
     let _: Ref<Alias> = out.declare(
         id,
         parent,
@@ -777,6 +799,7 @@ fn emit_namespace(
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
     pending: &HashSet<TsId>,
+    names: &NameIndex,
 ) {
     let _: Ref<Module> = out.declare(id.clone(), parent, sym, Module);
 
@@ -789,6 +812,7 @@ fn emit_namespace(
             export_index,
             resolver,
             pending,
+            names,
         );
     }
 }
@@ -801,8 +825,9 @@ fn emit_function(
     sym: Symbol,
     body: &FunctionBody,
     out: &mut Lowering<TsId>,
+    names: &NameIndex,
 ) {
-    let generics = lower_generics(&body.generics);
+    let generics = lower_generics(&body.generics, out, names, &id.module);
 
     let mut modifiers: Vec<FnModifier> = Vec::new();
     if body.is_async {
@@ -856,7 +881,7 @@ fn emit_function(
         param_ids.push((
             param_id,
             Param::builder()
-                .maybe_ty(p.ty.as_ref().map(lower_type))
+                .maybe_ty(p.ty.as_ref().map(|t| lower_type(t, out, names, &id.module)))
                 .attributes(attrs)
                 .build(),
             p.span_start,
@@ -898,11 +923,12 @@ fn emit_function(
             attrs: Box::new([]),
             cfg: None,
         };
+        let ret_ty = lower_type(ret, out, names, &id.module);
         let _: Ref<Param> = out.declare(
             ret_id,
             Some(id.clone()),
             param_sym,
-            Param::builder().ty(lower_type(ret)).build(),
+            Param::builder().ty(ret_ty).build(),
         );
     }
 
@@ -949,10 +975,11 @@ fn emit_const(
     sym: Symbol,
     body: &ConstBody,
     out: &mut Lowering<TsId>,
+    names: &NameIndex,
 ) {
     // The declaration exists; the type annotation does not. `const x = 1` is
     // not the same claim as `const x: any = 1`.
-    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, lower_type);
+    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, &id.module));
     let _: Ref<Const> = out.declare(
         id,
         parent,
@@ -975,10 +1002,11 @@ fn emit_static(
     sym: Symbol,
     body: &StaticBody,
     out: &mut Lowering<TsId>,
+    names: &NameIndex,
 ) {
     // The declaration exists; the type annotation does not. `const x = 1` is
     // not the same claim as `const x: any = 1`.
-    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, lower_type);
+    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, &id.module));
     let _: Ref<Static> = out.declare(
         id,
         parent,
@@ -1424,7 +1452,71 @@ fn resolve_module_path(resolver: &Resolver, current: &Path, specifier: &str) -> 
 
 // ── Type lowering: TypeOwned → IR Type ────────────────────────────────────────
 
-pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
+/// Names this package will declare, keyed so a nominal can become a `Ref`
+/// before the declaration is emitted. `refer` leaves a slot; the later
+/// `declare` fills it. A name declared more than once is omitted: guessing
+/// the wrong id is worse than leaving it unresolved.
+pub(crate) struct NameIndex {
+    by_file: HashMap<(PathBuf, String), TsId>,
+    unique: HashMap<String, TsId>,
+}
+
+impl NameIndex {
+    fn empty() -> Self {
+        NameIndex {
+            by_file: HashMap::new(),
+            unique: HashMap::new(),
+        }
+    }
+
+    fn build(modules: &[ModuleFacts]) -> Self {
+        let mut by_file: HashMap<(PathBuf, String), TsId> = HashMap::new();
+        let mut file_clash: HashSet<(PathBuf, String)> = HashSet::new();
+        let mut unique: HashMap<String, TsId> = HashMap::new();
+        let mut clash: HashSet<String> = HashSet::new();
+        for module in modules {
+            let parent = module_ts_id(module);
+            for decl in &module.declarations {
+                if matches!(decl.body, DeclBody::Reexport { .. }) {
+                    continue;
+                }
+                let id = decl_ts_id(decl, Some(&parent));
+                let file_key = (module.path.clone(), decl.name.clone());
+                if by_file.contains_key(&file_key) {
+                    file_clash.insert(file_key);
+                } else {
+                    by_file.insert(file_key, id.clone());
+                }
+                if unique.contains_key(&decl.name) {
+                    clash.insert(decl.name.clone());
+                } else {
+                    unique.insert(decl.name.clone(), id);
+                }
+            }
+        }
+        for key in file_clash {
+            by_file.remove(&key);
+        }
+        for name in clash {
+            unique.remove(&name);
+        }
+        NameIndex { by_file, unique }
+    }
+
+    fn resolve(&self, module: &Path, name: &str) -> Option<TsId> {
+        self.by_file
+            .get(&(module.to_path_buf(), name.to_string()))
+            .or_else(|| self.unique.get(name))
+            .cloned()
+    }
+}
+
+pub(crate) fn lower_type(
+    ty: &TypeOwned,
+    out: &mut Lowering<TsId>,
+    names: &NameIndex,
+    module: &Path,
+) -> Type {
     match ty {
         // TypeScript is the language that makes the `Any` / `Unknown` split
         // unarguable, because it ships both and they are *not* interchangeable:
@@ -1455,21 +1547,28 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             Type::Primitive(Primitive::Builtin(s.clone()))
         }
         TypeOwned::Nominal(name) => {
-            // This helper has no lowering sink, so it cannot mint the local
-            // `Ref` required by `Type::Nominal`. Preserve the unresolved name
-            // explicitly instead of misrepresenting an imported declaration as
-            // a language builtin.
-            Type::unresolved_external(name.clone())
+            if let Some(id) = names.resolve(module, name) {
+                // Kind marker is erased by `into_raw`. The id is the one
+                // `emit_decl` will declare for this name.
+                out.nominal::<Module>(id)
+            } else {
+                Type::unresolved_external(name.clone())
+            }
         }
         TypeOwned::TypeVar(name) => {
-            // TypeVar represents a generic type parameter use (e.g. `T` in `Array<T>`).
-            // `Type::TypeVar(String)` exists in nudox-ir as of the dual-fidelity body
-            // plane commit. Use it directly.
-            Type::TypeVar(name.clone())
+            // Extraction treats every bare identifier as a type variable when
+            // it has no generic-parameter set. A name this package declares
+            // (`AxiosResponse`) is a nominal ref. A real parameter (`T`) is not
+            // in the declaration index and stays a type variable.
+            if let Some(id) = names.resolve(module, name) {
+                out.nominal::<Module>(id)
+            } else {
+                Type::TypeVar(name.clone())
+            }
         }
         TypeOwned::Apply { base, args } => {
-            let base_ty = lower_type(base);
-            let arg_tys: Vec<Type> = args.iter().map(lower_type).collect();
+            let base_ty = lower_type(base, out, names, module);
+            let arg_tys: Vec<Type> = args.iter().map(|t| lower_type(t, out, names, module)).collect();
             Type::Apply {
                 base: Box::new(base_ty),
                 args: arg_tys.into_boxed_slice(),
@@ -1477,13 +1576,13 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
         }
         TypeOwned::Union(arms) => Type::Union(
             arms.iter()
-                .map(lower_type)
+                .map(|t| lower_type(t, out, names, module))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         ),
         TypeOwned::Intersection(arms) => Type::Intersection(
             arms.iter()
-                .map(lower_type)
+                .map(|t| lower_type(t, out, names, module))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         ),
@@ -1493,16 +1592,16 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                 .map(|m| match m {
                     TypeOwned::NamedTupleElem { label, ty } => TupleElement::Named {
                         label: label.clone(),
-                        ty: lower_type(ty),
+                        ty: lower_type(ty, out, names, module),
                     },
-                    other => TupleElement::Positional(lower_type(other)),
+                    other => TupleElement::Positional(lower_type(other, out, names, module)),
                 })
                 .collect();
             Type::Tuple(elems.into_boxed_slice())
         }
         TypeOwned::Array(inner) => {
             // Model `T[]` as a Slice.
-            Type::Slice(Box::new(lower_type(inner)))
+            Type::Slice(Box::new(lower_type(inner, out, names, module)))
         }
         // ── Named tuple element (item 10) ─────────────────────────────────
         // When NamedTupleElem appears outside a Tuple context (the
@@ -1512,7 +1611,7 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
         TypeOwned::NamedTupleElem { label, ty } => Type::Tuple(
             [TupleElement::Named {
                 label: label.clone(),
-                ty: lower_type(ty),
+                ty: lower_type(ty, out, names, module),
             }]
             .into(),
         ),
@@ -1528,9 +1627,9 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                 // treats it as implicit-any, but the source did not write
                 // `any` — under `--noImplicitAny` this is an error, and the
                 // IR must be able to tell the two apart.
-                .map(|p| p.ty.as_ref().map_or(Type::UNANNOTATED, lower_type))
+                .map(|p| p.ty.as_ref().map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, module)))
                 .collect();
-            let ret = body.return_type.as_ref().map(|r| Box::new(lower_type(r)));
+            let ret = body.return_type.as_ref().map(|r| Box::new(lower_type(r, out, names, module)));
             // TypeScript functions are always managed; no ABI.
             Type::FunctionPointer {
                 params: params.into_boxed_slice(),
@@ -1545,10 +1644,10 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             then_ty,
             else_ty,
         } => Type::Conditional {
-            check: Box::new(lower_type(check)),
-            extends_ty: Box::new(lower_type(extends_ty)),
-            then_ty: Box::new(lower_type(then_ty)),
-            else_ty: Box::new(lower_type(else_ty)),
+            check: Box::new(lower_type(check, out, names, module)),
+            extends_ty: Box::new(lower_type(extends_ty, out, names, module)),
+            then_ty: Box::new(lower_type(then_ty, out, names, module)),
+            else_ty: Box::new(lower_type(else_ty, out, names, module)),
         },
         TypeOwned::Mapped {
             key_var,
@@ -1558,8 +1657,8 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             optional,
         } => Type::Mapped {
             key_var: key_var.clone(),
-            source: Box::new(lower_type(source)),
-            value: Box::new(lower_type(value)),
+            source: Box::new(lower_type(source, out, names, module)),
+            value: Box::new(lower_type(value, out, names, module)),
             readonly: *readonly,
             optional: *optional,
         },
@@ -1572,7 +1671,7 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                         IrPart::Literal(s.clone())
                     }
                     crate::typescript::extract::TemplatePart::Interpolated(ty) => {
-                        IrPart::Interpolated(Box::new(lower_type(ty)))
+                        IrPart::Interpolated(Box::new(lower_type(ty, out, names, module)))
                     }
                 })
                 .collect();
@@ -1584,7 +1683,7 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                 .iter()
                 .map(|m| AnonField {
                     name: m.name.clone(),
-                    ty: lower_type(&m.ty),
+                    ty: lower_type(&m.ty, out, names, module),
                     optional: m.optional,
                     readonly: m.readonly,
                 })
@@ -1612,7 +1711,12 @@ fn lower_literal(lit: &LiteralOwned) -> Type {
 
 // ── Generic param lowering ─────────────────────────────────────────────────────
 
-fn lower_generics(params: &[GenericParamOwned]) -> Vec<GenericParam> {
+fn lower_generics(
+    params: &[GenericParamOwned],
+    out: &mut Lowering<TsId>,
+    names: &NameIndex,
+    module: &Path,
+) -> Vec<GenericParam> {
     params
         .iter()
         .map(|p| GenericParam::Type {
@@ -1620,10 +1724,10 @@ fn lower_generics(params: &[GenericParamOwned]) -> Vec<GenericParam> {
             bounds: p
                 .bounds
                 .iter()
-                .map(lower_type)
+                .map(|t| lower_type(t, out, names, module))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-            default: p.default.as_ref().map(lower_type),
+            default: p.default.as_ref().map(|t| lower_type(t, out, names, module)),
             // Wire TS 4.7+ `in`/`out` declaration-site variance annotations.
             // `None` when no modifier was present (the common case).
             variance: p.variance,
@@ -1683,6 +1787,26 @@ fn field_attrs(m: &MemberModifiers) -> Vec<FieldAttribute> {
 mod cc2_tests {
     use super::*;
     use nudox_ir::kinds::UnknownType;
+    use std::path::Path;
+
+    fn bare(ty: &TypeOwned) -> Type {
+        let mut out = Lowering::new(
+            nudox_ir::id::PackageId::path("t"),
+            Symbol {
+                name: "root".to_string(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: Path::new("t.ts").to_path_buf(),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            },
+        );
+        lower_type(ty, &mut out, &NameIndex::empty(), Path::new("t.ts"))
+    }
 
     /// TypeScript ships both spellings, and they are not interchangeable.
     ///
@@ -1694,8 +1818,8 @@ mod cc2_tests {
     /// exists to let you find.
     #[test]
     fn unknown_is_the_top_type_and_any_is_the_escape_hatch() {
-        let unknown = lower_type(&TypeOwned::Unknown);
-        let any = lower_type(&TypeOwned::Any);
+        let unknown = bare(&TypeOwned::Unknown);
+        let any = bare(&TypeOwned::Any);
         assert_eq!(unknown, Type::Any, "`unknown` is TypeScript's top type");
         assert_eq!(
             any,
@@ -1715,16 +1839,16 @@ mod cc2_tests {
         let unannotated = Type::UNANNOTATED;
         assert_ne!(
             unannotated,
-            lower_type(&TypeOwned::Any),
+            bare(&TypeOwned::Any),
             "`(x) => …` and `(x: any) => …` are different source"
         );
-        assert_ne!(unannotated, lower_type(&TypeOwned::Unknown));
+        assert_ne!(unannotated, bare(&TypeOwned::Unknown));
         assert_eq!(unannotated.to_string(), "?unannotated");
     }
 
     #[test]
     fn unresolved_nominal_preserves_external_name() {
-        let ty = lower_type(&TypeOwned::Nominal("ImportedWidget".to_string()));
+        let ty = bare(&TypeOwned::Nominal("ImportedWidget".to_string()));
         assert_eq!(
             ty,
             Type::Unknown(nudox_ir::kinds::UnknownType::UnresolvedExternal {

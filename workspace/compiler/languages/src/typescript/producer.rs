@@ -155,7 +155,19 @@ mod tests {
         entry::EntryInner,
         foreign::Unlinked,
         index::Ref,
+        kind::Kind,
+        kinds::ty::Type,
     };
+
+    fn type_is_nominal(kind: &EntryInner) -> bool {
+        match kind {
+            EntryInner::Owned(Kind::Param(p)) => matches!(p.ty, Some(Type::Nominal(_))),
+            EntryInner::Owned(Kind::Record(r)) => {
+                r.super_types.iter().any(|t| matches!(t, Type::Nominal(_)))
+            }
+            _ => false,
+        }
+    }
 
     #[test]
     fn commonjs_require_bindings_are_not_fabricated_constants() {
@@ -269,6 +281,38 @@ mod tests {
             local,
             "the barrel's answer reexport must point at the later file, not a foreign key"
         );
+    }
+
+    #[test]
+    fn same_file_nominal_is_a_local_ref() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"noms","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export class B {}\nexport class A extends B {}\nexport class AxiosResponse {}\nexport function f(): AxiosResponse;\n",
+        )
+        .expect("write declarations");
+
+        let source = PackageSource::new(dir.path(), "noms", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("noms"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("same-file nominals must seal");
+
+        let nominal = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "return" && type_is_nominal(entry.kind())
+        });
+        assert!(
+            nominal,
+            "f(): AxiosResponse must lower the return type to a nominal ref"
+        );
+        let extends = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "A" && type_is_nominal(entry.kind())
+        });
+        assert!(extends, "class A extends B must record B as a nominal ref");
     }
 
     #[test]
