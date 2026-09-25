@@ -232,6 +232,33 @@ pub(crate) fn compare_candidates(a: &Candidate, b: &Candidate) -> std::cmp::Orde
 // Name-hit collection
 // ---------------------------------------------------------------------------
 
+/// Keep `next` only when it belongs in the current top `limit`.
+///
+/// The walk order of packages is not the rank order. Stopping at the first
+/// `limit` hits drops a better match that appears later. `worst` is the index
+/// of the kept row that sorts last.
+fn consider(kept: &mut Vec<Candidate>, worst: &mut usize, limit: usize, next: Candidate) {
+    if limit == usize::MAX || kept.len() < limit {
+        if !kept.is_empty()
+            && compare_candidates(&next, &kept[*worst]) == std::cmp::Ordering::Greater
+        {
+            *worst = kept.len();
+        }
+        kept.push(next);
+        return;
+    }
+    if compare_candidates(&next, &kept[*worst]) == std::cmp::Ordering::Less {
+        kept[*worst] = next;
+        *worst = (1..kept.len()).fold(0, |worst, index| {
+            if compare_candidates(&kept[index], &kept[worst]) == std::cmp::Ordering::Greater {
+                index
+            } else {
+                worst
+            }
+        });
+    }
+}
+
 pub(crate) fn collect_name_hits(
     packages: &[std::sync::Arc<crate::store::package::PackageView>],
     query: &SearchQuery,
@@ -249,6 +276,7 @@ pub(crate) fn collect_name_hits(
     };
 
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut worst = 0usize;
 
     for pkg in packages {
         if !query.package_matches(pkg.lineage()) {
@@ -259,10 +287,6 @@ pub(crate) fn collect_name_hits(
         let pkg_name = pkg.lineage().name.as_str();
 
         for entry in indexes.by_name.prefix(&prefix_lower) {
-            if candidates.len() >= limit {
-                break;
-            }
-
             // Apply kind filter.
             let Some(ir_entry) = pkg.view().entry(entry.intro) else {
                 continue;
@@ -289,7 +313,7 @@ pub(crate) fn collect_name_hits(
                 disc,
             );
 
-            candidates.push(Candidate {
+            consider(&mut candidates, &mut worst, limit, Candidate {
                 row: HitRow {
                     key,
                     display_name: leaf,
@@ -319,8 +343,9 @@ pub(crate) fn collect_name_hits(
 ///
 /// They answer the same reader question — "show me things shaped like this" —
 /// at two levels of precision, and the reader does not switch sections when
-/// they get more specific. `struct` and `return:Result` are both type questions;
-/// only the second is a *signature* question, and only the second was missing.
+/// they get more specific. `struct` and `return:Result` are both type
+/// questions; only the second is a *signature* question, and only the second
+/// was missing.
 ///
 /// The kind path is unchanged and still runs for every query that names no
 /// facet, so nothing that worked before stops working. See
@@ -507,11 +532,9 @@ fn collect_kind_facet_hits(
     }
 
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut worst = 0usize;
 
     for pkg in packages {
-        if candidates.len() >= limit {
-            break;
-        }
         if !query.package_matches(pkg.lineage()) {
             continue;
         }
@@ -524,9 +547,6 @@ fn collect_kind_facet_hits(
                 continue;
             };
             for &intro in intros {
-                if candidates.len() >= limit {
-                    break;
-                }
                 let Some(ir_entry) = pkg.view().entry(intro) else {
                     continue;
                 };
@@ -536,7 +556,7 @@ fn collect_kind_facet_hits(
                 let leaf: SharedStr = SharedStr::from(leaf_str);
                 let qualified = qualified_display_name(indexes, intro, leaf_str, pkg_name);
 
-                candidates.push(Candidate {
+                consider(&mut candidates, &mut worst, limit, Candidate {
                     row: HitRow {
                         key,
                         display_name: leaf,
@@ -583,21 +603,23 @@ fn keyword_to_kinds(lower: &str) -> Vec<KindDiscriminant> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use nudox_ir::change::IntroId;
 
-    use crate::store::index::{AliasIndex, NameIndex, PostingList};
-    use crate::store::package::PackageIndexes;
+    use crate::store::{
+        index::{AliasIndex, NameIndex, PostingList},
+        package::PackageIndexes,
+    };
 
     use super::qualified_display_name;
 
     /// docs/ISSUES.md F1: `qualified_display_name` returns `path_of` as-is, so
-    /// a crate whose root module shares the crate name (`memchr::memchr::Memchr`)
-    /// renders `memchr.memchr.memchr.Memchr` in search hits. Adjacent identical
-    /// segments must collapse — the same rule signature rendering already
-    /// applies via `collapse_repeated_segments`.
+    /// a crate whose root module shares the crate name
+    /// (`memchr::memchr::Memchr`) renders `memchr.memchr.memchr.Memchr` in
+    /// search hits. Adjacent identical segments must collapse — the same
+    /// rule signature rendering already applies via
+    /// `collapse_repeated_segments`.
     #[test]
     fn qualified_display_name_does_not_repeat_the_crate_root_segment() {
         let intro = IntroId::from_raw([7u8; 32]);
@@ -623,5 +645,39 @@ mod tests {
             &*got, "memchr.Memchr",
             "adjacent crate-name runs must collapse; got {got}"
         );
+    }
+
+    #[test]
+    fn a_later_higher_score_replaces_the_first_kept_hit() {
+        fn candidate(score: f32, name: &str, byte: u8) -> super::Candidate {
+            use nudox_ir::{
+                change::{EcosystemId, PackageLineageId, PackageName, StableRef},
+                kind::KindDiscriminant,
+            };
+
+            use crate::wire::{HitRow, KindTag, Provenance, SharedStr};
+
+            super::Candidate {
+                row: HitRow {
+                    key: StableRef::new(
+                        PackageLineageId::new(EcosystemId::new("test"), PackageName::new("pkg")),
+                        IntroId::from_raw([byte; 32]),
+                    ),
+                    display_name: SharedStr::from(name),
+                    sig_preview: Vec::new(),
+                    kind: KindTag::Known(KindDiscriminant::Function),
+                    provenance: Provenance::TrustedLocal,
+                    score,
+                },
+                qualified: SharedStr::from(name),
+            }
+        }
+
+        let mut kept = Vec::new();
+        let mut worst = 0usize;
+        super::consider(&mut kept, &mut worst, 1, candidate(0.1, "early", 1));
+        super::consider(&mut kept, &mut worst, 1, candidate(0.9, "later", 2));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(&*kept[0].row.display_name, "later");
     }
 }
