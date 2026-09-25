@@ -42,7 +42,7 @@ use backend_frontend_java::legacy::{
     jar::Jar,
     purl::MavenCoordinates,
 };
-use backend_semantic::ir::{EntityKind, FragmentView, ItemKind};
+use backend_semantic::ir::{EntityKind, FragmentView, ItemKind, ReferenceKind};
 use backend_semantic::vocabulary::{JavaRelease, LanguageProfile, NativeTool, Stage};
 use backend_store::journal::{DurablePublisher, PublicationLimits, PublicationPaths};
 use backend_version::{ArtifactId, IrFragmentDomain, IrFragmentEncoding};
@@ -608,7 +608,10 @@ struct FileLaws {
     image_bytes: usize,
     fragment_bytes: usize,
     occurrence_present: bool,
-    occurrence_absent: bool,
+    /// Every occurrence kind the fragment carries, in fragment order.
+    occurrence_kinds: Vec<ReferenceKind>,
+    /// Whether the file declares any executable (method or constructor).
+    has_executable: bool,
     fragment: Vec<u8>,
     declarations: usize,
     references: usize,
@@ -689,15 +692,24 @@ fn lower_frozen_file(
             cause: "Java extension payload or type facts absent".into(),
         });
     }
-    let occurrence_present = view
+    let occurrence_kinds = view
         .occurrences()
-        .is_some_and(|mut rows| rows.next().is_some());
-    let occurrence_absent = view.occurrences().is_none();
+        .map(|rows| {
+            rows.map(|row| {
+                row.map(|row| row.occurrence.kind).map_err(|error| {
+                    TestError::Fragment(format!("{purl} {path}: occurrence: {error:?}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
     Ok(FileLaws {
         image_bytes: image_bytes.len(),
         fragment_bytes: fragment.fragment.as_ref().len(),
-        occurrence_present,
-        occurrence_absent,
+        occurrence_present: !occurrence_kinds.is_empty(),
+        occurrence_kinds,
+        has_executable,
         fragment: fragment.fragment.as_ref().to_vec(),
         declarations,
         references,
@@ -797,12 +809,18 @@ fn journey_row(
     let mut total_image_bytes = 0;
     let mut total_fragment_bytes = 0;
     let mut occurrence_present = false;
+    let mut occurrence_kinds = Vec::new();
     let mut fragments = Vec::with_capacity(extracted.len());
     for (name, bytes) in &extracted {
         let laws = lower_frozen_file(row.purl, name, bytes, &classpath, &temp.path, bench)?;
         total_image_bytes += laws.image_bytes;
         total_fragment_bytes += laws.fragment_bytes;
         occurrence_present |= laws.occurrence_present;
+        occurrence_kinds.extend(
+            laws.occurrence_kinds
+                .iter()
+                .map(|kind| (name.clone(), laws.has_executable, *kind)),
+        );
         println!(
             "CORPUS|{}|{}|{}|{}|{}|{}|{}",
             row.purl,
@@ -815,34 +833,47 @@ fn journey_row(
         );
         fragments.push(laws.fragment);
     }
-    if !occurrence_present {
+    if row_index == ANNOTATIONS_ROW {
+        // A call can only occur inside an executable body. `NotNull` and
+        // `Nullable` declare annotation types with no executable, so they
+        // carry no call; `ApiStatus`'s private constructor does call
+        // (`throw new AssertionError(...)`). Annotation members still name
+        // types in value position, e.g. `NotNull.exception() default
+        // Exception.class`, and that reference must survive as a type
+        // reference.
+        if let Some((path, _, kind)) = occurrence_kinds.iter().find(|(_, executable, kind)| {
+            !executable && matches!(kind, ReferenceKind::FunctionCall | ReferenceKind::MethodCall)
+        }) {
+            return Err(TestError::Law {
+                purl: row.purl,
+                path: path.clone(),
+                cause: format!("a file with no executable carried a {kind:?} occurrence"),
+            });
+        }
+        if !occurrence_kinds.iter().any(|(path, _, kind)| {
+            path.ends_with("/ApiStatus.java") && *kind == ReferenceKind::FunctionCall
+        }) {
+            return Err(TestError::Law {
+                purl: row.purl,
+                path: "org/jetbrains/annotations/ApiStatus.java".into(),
+                cause: "the constructor's `new AssertionError(...)` call was lost".into(),
+            });
+        }
+        if !occurrence_kinds.iter().any(|(path, _, kind)| {
+            path.ends_with("/NotNull.java") && *kind == ReferenceKind::TypeReference
+        }) {
+            return Err(TestError::Law {
+                purl: row.purl,
+                path: "org/jetbrains/annotations/NotNull.java".into(),
+                cause: "the `Exception.class` default lost its type-reference occurrence".into(),
+            });
+        }
+    } else if !occurrence_present {
         return Err(TestError::Law {
             purl: row.purl,
             path: extracted[0].0.clone(),
             cause: "row carried no occurrence row".into(),
         });
-    }
-    if row_index == ANNOTATIONS_ROW {
-        // NotNull and its neighboring annotations use @Target, @Retention,
-        // and other meta-annotations: those are real typed references. Keep
-        // the negative-plane proof, but ground it in a genuinely reference-
-        // free package declaration instead of pretending the corpus row is
-        // empty. This fixture runs through the same javac and lowerer path.
-        let empty_package = lower_frozen_file(
-            "fixture:empty-package",
-            "fixture/package-info.java",
-            b"package fixture;\n",
-            &[],
-            &temp.path,
-            bench,
-        )?;
-        if !empty_package.occurrence_absent || empty_package.occurrence_present {
-            return Err(TestError::Law {
-                purl: row.purl,
-                path: "fixture/package-info.java".into(),
-                cause: "reference-free package did not assert typed occurrence absence".into(),
-            });
-        }
     }
     println!(
         "CORPUS|{}|{}|{}|{}|{}|{}|{}",

@@ -1969,22 +1969,22 @@ package maven:org.opentest4j:opentest4j@1.3.0 file=org/opentest4j/opentest4j/1.3
 	Record org.opentest4j.TestSkippedException :: struct org.opentest4j.TestSkippedException
 	Field serialVersionUID :: serialVersionUID: i64
 	Field nullValueWrapper :: nullValueWrapper: org.opentest4j.ValueWrapper
-	Parameter value :: value: ?no-ir-representation(java.lang.Object) [placeholder:?no-ir-representation]
+	Parameter value :: value: object
 	Parameter org.opentest4j.ValueWrapper :: org.opentest4j.ValueWrapper: org.opentest4j.ValueWrapper
-	Function create :: fn create(value: ?no-ir-representation(java.lang.Object)) -> org.opentest4j.ValueWrapper [placeholder:?no-ir-representation]
-	Parameter value :: value: ?no-ir-representation(java.lang.Object) [placeholder:?no-ir-representation]
-	Parameter stringRepresentation :: stringRepresentation: ?no-ir-representation(java.lang.String) [placeholder:?no-ir-representation]
+	Function create :: fn create(value: object) -> org.opentest4j.ValueWrapper
+	Parameter value :: value: object
+	Parameter stringRepresentation :: stringRepresentation: str
 	Parameter org.opentest4j.ValueWrapper :: org.opentest4j.ValueWrapper: org.opentest4j.ValueWrapper
-	Function create :: fn create(value: ?no-ir-representation(java.lang.Object), stringRepresentation: ?no-ir-representation(java.lang.String)) -> org.opentest4j.ValueWrapper [placeholder:?no-ir-representation]
+	Function create :: fn create(value: object, stringRepresentation: str) -> org.opentest4j.ValueWrapper
 	Field value :: value: ?no-ir-representation(java.io.Serializable) [placeholder:?no-ir-representation]
 	Field type :: type: ?no-ir-representation(java.lang.Class) [placeholder:?no-ir-representation]
-	Field stringRepresentation :: stringRepresentation: ?no-ir-representation(java.lang.String) [placeholder:?no-ir-representation]
+	Field stringRepresentation :: stringRepresentation: str
 	Field identityHashCode :: identityHashCode: i32
-	Field ephemeralValue :: ephemeralValue: ?no-ir-representation(java.lang.Object) [placeholder:?no-ir-representation]
-	Parameter value :: value: ?no-ir-representation(java.lang.Object) [placeholder:?no-ir-representation]
-	Parameter stringRepresentation :: stringRepresentation: ?no-ir-representation(java.lang.String) [placeholder:?no-ir-representation]
-	Function <init> :: fn <init>(value: ?no-ir-representation(java.lang.Object), stringRepresentation: ?no-ir-representation(java.lang.String)) [placeholder:?no-ir-representation]
-summary entities=25 signature rendered=25 unavailable=0 placeholder=12 malformed=0 canonical ok=25 err=0 document ok=25 err=0
+	Field ephemeralValue :: ephemeralValue: object
+	Parameter value :: value: object
+	Parameter stringRepresentation :: stringRepresentation: str
+	Function <init> :: fn <init>(value: object, stringRepresentation: str)
+summary entities=25 signature rendered=25 unavailable=0 placeholder=2 malformed=0 canonical ok=25 err=0 document ok=25 err=0
 package maven:org.ow2.asm:asm@9.6 file=org/ow2/asm/asm/9.6/org/objectweb/asm/ClassReader.java bytes=172115
 	Namespace org.objectweb.asm :: namespace org.objectweb.asm
 	Record org.objectweb.asm.ClassReader :: struct org.objectweb.asm.ClassReader

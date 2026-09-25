@@ -575,13 +575,39 @@ in
             # `rust_cfg_disabled_items_do_not_leak` "finished in 255.94s"
             # (14 fixtures); `rust_gated_and_facade_crate_roots_admit_the_empty_product`
             # "finished in 143.87s" (8 fixtures + 5 real corpus crates).
-            filter = "test(rust_cfg_disabled_items_do_not_leak) | test(rust_gated_and_facade_crate_roots_admit_the_empty_product)";
+            # Every other probe in the binary is the same class and ran into
+            # the 180s default in the gate:
+            # `rust_impl_self_type_names_discriminate_generic_argument_variants`
+            # measured 160.0s, 172.4s, 150.5s+ and a 180.0s kill across four
+            # runs; `rust_hrtb_where_predicates_lower_into_the_free_lane`
+            # 129.3s, 140.1s, 172.3s; `rust_impl_signature_key_dedups_twins_and_keeps_siblings`
+            # 126.3s. The override therefore names the binary.
+            filter = "binary(rust_remaining_terminals)";
             test-group = "native-compiler";
             threads-required = 2;
             priority = 90;
             slow-timeout = {
               period = "90s";
               terminate-after = 6;
+            };
+          }
+          {
+            # `rust_corpus`'s `twenty_real_crates_compile_with_decoded_lanes`
+            # compiles twenty real crates plus two workspace crates, one
+            # uncached rust-analyzer sysroot load each (the same class as the
+            # two overrides around it). Its name matches none of the
+            # native-compiler filter words, so it fell through to the 60s x 3
+            # default and the gate killed it at 180.016s. Measured standalone
+            # (debug build, gate environment, idle machine): "finished in
+            # 452.29s"; per crate 14.4-21.0s, backend-semantic 92.7s. The
+            # budget is about twice that measurement to absorb gate load.
+            filter = "binary_id(backend-engine::rust_corpus) & test(twenty_real_crates_compile_with_decoded_lanes)";
+            test-group = "native-compiler";
+            threads-required = 2;
+            priority = 90;
+            slow-timeout = {
+              period = "120s";
+              terminate-after = 8;
             };
           }
           {

@@ -97,6 +97,9 @@ pub(crate) enum ExpectedType {
     /// Exact owned-IR builtin role, including language-specific numeric
     /// widths/roles which do not fit the compact three-primitive opcode set.
     Builtin(BuiltinType),
+    /// A builtin under a non-nullable reference annotation: C#'s nullable
+    /// context reports `string` as a non-nullable reference type.
+    NonNullableBuiltin(BuiltinType),
     Callable,
     Nominal,
     Structural,
@@ -361,7 +364,9 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
         (CorpusLanguage::Rust, 2) => ExpectedType::Reference,
         (CorpusLanguage::Clang, _) => ExpectedType::Structural,
         (CorpusLanguage::TypeScript, 0) => ExpectedType::Builtin(BuiltinType::Bool),
-        (CorpusLanguage::TypeScript, 1) => ExpectedType::Builtin(BuiltinType::Number),
+        // The TypeScript lane lowers `number` (keyword and checker alike)
+        // to its IEEE-754 double, `Float(64)`.
+        (CorpusLanguage::TypeScript, 1) => ExpectedType::Builtin(BuiltinType::F64),
         (CorpusLanguage::TypeScript, 2) => ExpectedType::Builtin(BuiltinType::String),
         (CorpusLanguage::Python, 0) => ExpectedType::Builtin(BuiltinType::Bool),
         (CorpusLanguage::Python, 1) => ExpectedType::Builtin(BuiltinType::ArbitraryInteger),
@@ -374,7 +379,7 @@ fn expected_facts(package: CorpusPackage) -> ExpectedFacts {
         (CorpusLanguage::Java, 2) => ExpectedType::Builtin(BuiltinType::String),
         (CorpusLanguage::CSharp, 0) => ExpectedType::Builtin(BuiltinType::Bool),
         (CorpusLanguage::CSharp, 1) => ExpectedType::Builtin(BuiltinType::I32),
-        (CorpusLanguage::CSharp, 2) => ExpectedType::Builtin(BuiltinType::String),
+        (CorpusLanguage::CSharp, 2) => ExpectedType::NonNullableBuiltin(BuiltinType::String),
         (CorpusLanguage::Rust, 0) => ExpectedType::Builtin(BuiltinType::Bool),
         (CorpusLanguage::Rust, 1) => ExpectedType::Builtin(BuiltinType::I32),
         // `ordinal % 3` closes this arm out at runtime. Keep the fallback

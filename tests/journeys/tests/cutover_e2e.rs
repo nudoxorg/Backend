@@ -10,6 +10,10 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 #[cfg(unix)]
+#[path = "../src/fake_registry.rs"]
+mod fake_registry;
+
+#[cfg(unix)]
 mod unix_journeys {
     use backend_compile::{
         Authority, Coverage, FlowSchema, InputContentSchema, InputKind, ProfileSchema,
@@ -981,7 +985,9 @@ mod unix_journeys {
             assert!(worker.is_running(), "worker exited while awaiting {label}");
             assert!(
                 Instant::now() < deadline,
-                "timed out awaiting {label}: {snapshot:?}"
+                "timed out awaiting {label}: {snapshot:?}\nlocald stderr:\n{}\nworker stderr:\n{}",
+                locald.stderr_snapshot(),
+                worker.stderr_snapshot()
             );
             thread::yield_now();
         }
@@ -1921,20 +1927,96 @@ mod unix_journeys {
         (key.to_bytes(), record)
     }
 
-    fn probe_package_after(
-        entries: &[([u8; 32], backend_engine::ProductSourceRecord)],
-        label: &str,
-    ) -> String {
-        let floor = entries.iter().map(|(key, _)| *key).max().unwrap_or([0; 32]);
-        (0..10_000_u64)
+    /// The releases the remote-dispatch journey adds, all served by one
+    /// loopback registry started before the daemon.
+    ///
+    /// Each release's archive holds a Rust source with no `Cargo.toml`, so
+    /// the daemon indexes it and its Rust authority deterministically records
+    /// `Unavailable(ProjectAuthority)` (the missing manifest) in the semantic
+    /// publication relation, which is the Product recipe's input. Names and
+    /// versions sit near the registry's bounds (256-byte names, 128-byte
+    /// versions) so under a hundred rows overflow one 64 KiB canonical node
+    /// and the relation becomes multilevel.
+    struct ProbeCatalog {
+        initial: Vec<String>,
+        warm: String,
+        fallback: String,
+    }
+
+    const PROBE_RELEASES: usize = 96;
+
+    fn probe_purl(name: &str) -> String {
+        format!("pkg:cargo/{name}@{}", probe_version())
+    }
+
+    fn probe_version() -> String {
+        // The registry admits versions up to 128 bytes.
+        format!("1.0.0-{}", "v".repeat(120))
+    }
+
+    fn probe_catalog() -> ProbeCatalog {
+        let initial = (0..PROBE_RELEASES)
+            .map(|index| {
+                probe_purl(&format!(
+                    "backend-remote-probe-{index:02}-{}",
+                    "x".repeat(220)
+                ))
+            })
+            .collect::<Vec<_>>();
+        // The warm delta must sort after every key already committed, so the
+        // warm frontier walk reuses the whole existing prefix.
+        let floor = initial
+            .iter()
+            .map(|purl| backend_engine::package_key(purl).to_bytes())
+            .max()
+            .unwrap_or([0; 32]);
+        // The key is a uniform hash, so the maximum of 96 keys can sit very
+        // close to the top of the key space; search far enough to cross it.
+        // The warm release's name is deliberately shorter than the others:
+        // real package names differ in length, and the semantic relation's
+        // Merkle pages must still list such rows in order.
+        let warm = (0..4_000_000_u64)
             .map(|nonce| {
-                format!(
-                    "backend-remote-probe-{label}-{nonce:04}-{}",
-                    "y".repeat(180)
-                )
+                probe_purl(&format!(
+                    "backend-remote-probe-warm-{nonce:07}-{}",
+                    "y".repeat(207)
+                ))
             })
             .find(|candidate| backend_engine::package_key(candidate).to_bytes() > floor)
-            .unwrap_or_else(|| panic!("find a deterministic package key after the warm frontier"))
+            .unwrap_or_else(|| panic!("find a deterministic package key after the warm frontier"));
+        let fallback = probe_purl(&format!(
+            "backend-remote-probe-fallback-{}",
+            "z".repeat(220)
+        ));
+        ProbeCatalog {
+            initial,
+            warm,
+            fallback,
+        }
+    }
+
+    fn probe_registry(catalog: &ProbeCatalog) -> super::fake_registry::FakeRegistry {
+        let packages = catalog
+            .initial
+            .iter()
+            .chain([&catalog.warm, &catalog.fallback])
+            .map(|purl| {
+                let name = purl
+                    .strip_prefix("pkg:cargo/")
+                    .and_then(|rest| rest.split_once('@'))
+                    .map(|(name, _)| name.to_owned())
+                    .unwrap_or_else(|| panic!("probe purl shape: {purl}"));
+                super::fake_registry::FakePackage {
+                    name,
+                    version: probe_version(),
+                    files: vec![super::fake_registry::FakeFile {
+                        path: "lib.rs",
+                        contents: "pub fn remote_probe() {}\n",
+                    }],
+                }
+            })
+            .collect();
+        super::fake_registry::FakeRegistry::start("cargo", packages)
     }
 
     fn seed_local_product_route(
@@ -1969,37 +2051,42 @@ mod unix_journeys {
         expected_output: Vec<u8>,
     }
 
+    /// Adds every probe release but the last on a daemon with no worker.
+    ///
+    /// Under a hundred registry adds keep the single owner busy for about a
+    /// minute. Doing them before the worker is attached keeps that bulk setup
+    /// off the worker connection under test; the durable workspace carries
+    /// the relation to the daemon that dispatches.
+    fn add_initial_probe_packages(
+        locald_endpoint: &Path,
+        catalog: &ProbeCatalog,
+    ) -> Vec<ProductEntry> {
+        let mut client = backend_mcp::UnixCommandTransport::connect(locald_endpoint)
+            .unwrap_or_else(|error| panic!("connect bulk mutation client: {error}"));
+        let mut entries = catalog
+            .initial
+            .iter()
+            .enumerate()
+            .take(catalog.initial.len().saturating_sub(1))
+            .map(|(index, package)| add_probe_package(&mut client, package, index))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(key, _)| *key);
+        entries
+    }
+
     fn queue_remote_probe(
         locald_endpoint: &Path,
         locald: &mut ChildGuard,
         worker: &mut ChildGuard,
+        catalog: &ProbeCatalog,
+        mut entries: Vec<ProductEntry>,
     ) -> ProductProbe {
         // This command gives the sole owner loop a deterministic turn to
         // install the already-negotiated asynchronous transport.
         let _health = cli_health(locald_endpoint, "remote worker readiness health");
-        // Keep every Cargo package name inside the registry's 256-byte
-        // admission bound. Enough independently valid rows still force a
-        // multilevel canonical relation and exercise descendant proofs plus
-        // the worker's depth-first warm-CAS walk.
-        let packages = (0..96)
-            .map(|index| {
-                format!(
-                    "backend-remote-probe-{index:02}-{}",
-                    "x".repeat(180)
-                )
-            })
-            .collect::<Vec<_>>();
+        let packages = catalog.initial.clone();
         let mut client = backend_mcp::UnixCommandTransport::connect(locald_endpoint)
-            .unwrap_or_else(|error| panic!("connect bulk mutation client: {error}"));
-        let mut entries = Vec::with_capacity(packages.len());
-        for (index, package) in packages
-            .iter()
-            .enumerate()
-            .take(packages.len().saturating_sub(1))
-        {
-            entries.push(add_probe_package(&mut client, package, index));
-        }
-        entries.sort_by_key(|(key, _)| *key);
+            .unwrap_or_else(|error| panic!("connect remote mutation client: {error}"));
 
         // Observe the already split root locally. The following mutation is
         // then an exact adjacent delta, so remote placement is learned from
@@ -2230,12 +2317,12 @@ mod unix_journeys {
         proxy: &WorkerProxyGuard,
         entries: &mut Vec<ProductEntry>,
         cold: ClosureTraffic,
+        package: &str,
     ) {
         let mut mutation = backend_mcp::UnixCommandTransport::connect(locald_endpoint)
             .unwrap_or_else(|error| panic!("connect warm delta client: {error}"));
         let index = entries.len();
-        let package = probe_package_after(entries, "warm");
-        entries.push(add_probe_package(&mut mutation, &package, index));
+        entries.push(add_probe_package(&mut mutation, package, index));
         entries.sort_by_key(|(key, _)| *key);
         let request = product_request(entries);
         let expected = expected_product_output(entries);
@@ -2273,15 +2360,12 @@ mod unix_journeys {
         worker: &mut ChildGuard,
         proxy: &WorkerProxyGuard,
         entries: &mut Vec<ProductEntry>,
+        package: &str,
     ) {
         let mut mutation = backend_mcp::UnixCommandTransport::connect(locald_endpoint)
             .unwrap_or_else(|error| panic!("connect fallback delta client: {error}"));
         let index = entries.len();
-        let package = format!(
-            "backend-remote-probe-fallback-{}",
-            "z".repeat(180)
-        );
-        entries.push(add_probe_package(&mut mutation, &package, index));
+        entries.push(add_probe_package(&mut mutation, package, index));
         entries.sort_by_key(|(key, _)| *key);
         let request = product_request(entries);
         let expected = expected_product_output(entries);
@@ -2324,11 +2408,29 @@ mod unix_journeys {
         // measure warm Merkle-frontier reuse. It injects a wrong attempt for
         // the third result and holds the valid result until exact cancellation.
         let proxy = spawn_worker_proxy(&proxy_endpoint, &worker_endpoint, Some(3));
-        let locald_args = locald_args(
+        let catalog = probe_catalog();
+        let registry = probe_registry(&catalog);
+        // Bulk setup runs on a daemon with no worker attached; the daemon
+        // under test reopens the same durable workspace with the worker.
+        let setup_args = locald_args_with_registry(
+            &locald_endpoint,
+            &workspace,
+            &authority_secret,
+            None,
+            Some(registry.endpoint()),
+            3_000,
+        );
+        let mut setup = ChildGuard::spawn("backend-locald", &setup_args, &[]);
+        wait_for_socket(&locald_endpoint, &mut setup);
+        let entries = add_initial_probe_packages(&locald_endpoint, &catalog);
+        drop(setup);
+        let _ = std::fs::remove_file(&locald_endpoint);
+        let locald_args = locald_args_with_registry(
             &locald_endpoint,
             &workspace,
             &authority_secret,
             Some(&proxy_endpoint),
+            Some(registry.endpoint()),
             3_000,
         );
         let mut locald = ChildGuard::spawn("backend-locald", &locald_args, &[]);
@@ -2342,7 +2444,13 @@ mod unix_journeys {
         );
         assert!(negotiated.negotiations >= 1);
 
-        let mut probe = queue_remote_probe(&locald_endpoint, &mut locald, &mut worker);
+        let mut probe = queue_remote_probe(
+            &locald_endpoint,
+            &mut locald,
+            &mut worker,
+            &catalog,
+            entries,
+        );
         let cold = observe_cold_product(&locald_endpoint, &mut locald, &mut worker, &proxy, &probe);
         advance_and_observe_warm_product(
             &locald_endpoint,
@@ -2351,6 +2459,7 @@ mod unix_journeys {
             &proxy,
             &mut probe.entries,
             cold,
+            &catalog.warm,
         );
         advance_and_observe_fallback(
             &locald_endpoint,
@@ -2358,6 +2467,14 @@ mod unix_journeys {
             &mut worker,
             &proxy,
             &mut probe.entries,
+            &catalog.fallback,
+        );
+        assert!(
+            registry
+                .requests()
+                .iter()
+                .any(|path| path.starts_with("/archive/")),
+            "probe releases never crossed the registry download path"
         );
 
         drop(locald);
@@ -2374,13 +2491,26 @@ mod unix_journeys {
         (output.status, output.stdout)
     }
 
-    fn spawn_json_mcp(endpoint: &Path, project: &Path, input: &[u8]) -> Output {
+    /// Runs the JSON-RPC MCP against the daemon's own workspace. The MCP
+    /// signs continuation cursors with that workspace's authority secret, so
+    /// it must read the same file the daemon was started with; without an
+    /// explicit workspace it would look beside the indexed project instead.
+    fn spawn_json_mcp(
+        endpoint: &Path,
+        workspace: &Path,
+        authority_secret: &Path,
+        project: &Path,
+        input: &[u8],
+    ) -> Output {
         let mut command = ProcessCommand::new(binary("backend-mcp"));
         command
             .arg("--endpoint")
             .arg(endpoint)
+            .arg("--workspace")
+            .arg(workspace)
             .arg("--project")
-            .arg(project);
+            .arg(project)
+            .env("BACKEND_LOCALD_AUTHORITY_SECRET_FILE", authority_secret);
         bounded_command(command, "backend-mcp JSON-RPC", Some(input))
     }
 
@@ -2410,6 +2540,26 @@ mod unix_journeys {
         worker_endpoint: Option<&Path>,
         timeout_ms: u64,
     ) -> Vec<OsString> {
+        locald_args_with_registry(
+            endpoint,
+            workspace,
+            authority_secret,
+            worker_endpoint,
+            None,
+            timeout_ms,
+        )
+    }
+
+    /// Daemon arguments whose `pkg:cargo` adds are served by `registry`, a
+    /// loopback canonical feed, instead of the official index.
+    fn locald_args_with_registry(
+        endpoint: &Path,
+        workspace: &Path,
+        authority_secret: &Path,
+        worker_endpoint: Option<&Path>,
+        registry: Option<&str>,
+        timeout_ms: u64,
+    ) -> Vec<OsString> {
         let mut args = vec![
             OsString::from("--endpoint"),
             endpoint.as_os_str().to_owned(),
@@ -2420,6 +2570,14 @@ mod unix_journeys {
             OsString::from("--authority-secret-file"),
             authority_secret.as_os_str().to_owned(),
         ];
+        if let Some(registry) = registry {
+            args.extend([
+                OsString::from("--registry-endpoint"),
+                OsString::from(registry),
+                OsString::from("--registry-ecosystem"),
+                OsString::from("cargo"),
+            ]);
+        }
         if let Some(worker_endpoint) = worker_endpoint {
             args.extend([
                 OsString::from("--worker-endpoint"),
@@ -2595,9 +2753,13 @@ mod unix_journeys {
             OsString::from("--profile"),
             OsString::from("builtin"),
             OsString::from("--authority-secret-file"),
-            authority_secret.into_os_string(),
+            authority_secret.clone().into_os_string(),
+            // An outline reply proves every node with its full row
+            // (document, signature, and source excerpt); for this 21-row
+            // fixture that measured between 64 KiB and 96 KiB, so a 64 KiB
+            // frame refused `backend.outline`. The product default is 1 MiB.
             OsString::from("--max-frame"),
-            OsString::from("65536"),
+            OsString::from("262144"),
             OsString::from("--timeout-ms"),
             // Cold seven-language indexing can cross one second after the
             // remote process journey has exercised fsync-heavy paths. Keep
@@ -2888,7 +3050,13 @@ mod unix_journeys {
         .map(|request| request.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-        let json_mcp = spawn_json_mcp(&endpoint, &project, mcp_input.as_bytes());
+        let json_mcp = spawn_json_mcp(
+            &endpoint,
+            &workspace,
+            &authority_secret,
+            &project,
+            mcp_input.as_bytes(),
+        );
         assert!(
             json_mcp.status.success(),
             "JSON-RPC MCP failed: stdout={} stderr={}",
@@ -3136,12 +3304,27 @@ mod unix_journeys {
                     }
                 )
         }));
+        // A local compiler owner proves a toolchain by probing its identity
+        // and holding it; the readiness projection reports that as `Active`
+        // (a runtime owns the bytes, without a fresh readiness proof) or, while
+        // the probe runs, `Probing`. It never holds a residence lease or runs a
+        // fresh readiness probe, so `Resident` or `Ready` here would claim more
+        // than the owner proved, and `Revoked` is not a state it can reach.
         assert!(
             native_semantic_slots.iter().all(|status| {
-                matches!(status.lifecycle(), CapabilityLifecycle::Unavailable(_))
-                    || matches!(status.lifecycle(), CapabilityLifecycle::Installed)
+                matches!(
+                    status.lifecycle(),
+                    CapabilityLifecycle::Unavailable(_)
+                        | CapabilityLifecycle::Probing
+                        | CapabilityLifecycle::Installed
+                        | CapabilityLifecycle::Active
+                )
             }),
-            "semantic capability advertised an unproved runtime lifecycle"
+            "semantic capability advertised an unproved runtime lifecycle: {:?}",
+            native_semantic_slots
+                .iter()
+                .map(|status| (status.family(), status.lifecycle()))
+                .collect::<Vec<_>>()
         );
 
         // Traverse the outline projection through the real socket one bounded

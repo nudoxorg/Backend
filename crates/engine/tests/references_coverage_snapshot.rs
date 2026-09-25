@@ -182,106 +182,6 @@ static RUST_PACKAGES: &[SnapPackage] = &[
 ];
 static RUST_SYMBOLS: &[Snap] = &[
     Snap {
-        package: "aho-corasick-1.1.3",
-        role: "variant",
-        symbol: "NoncontiguousNFA",
-        grep_total: 6,
-        decl_est: 1,
-        ir_local: 3,
-        ir_foreign: 0,
-        ir_stable: 0,
-        site_ok: 3,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 3,
-        link_occ_src: 3,
-        note: "Variant paths resolve only when the written path resolves; unresolved path spellings fall to unresolved_reference_kind and stay Foreign.",
-    },
-    Snap {
-        package: "aho-corasick-1.1.3",
-        role: "field",
-        symbol: "kind",
-        grep_total: 46,
-        decl_est: 4,
-        ir_local: 3,
-        ir_foreign: 7,
-        ir_stable: 0,
-        site_ok: 2,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 2,
-        link_occ_src: 2,
-        note: "FieldAccess sites only (lower/rust.rs FieldAccess emission); 3 fragment rows named `kind` share the join, and macro/doc field mentions never become occurrences.",
-    },
-    // The pinned Linux rust-analyzer authority classifies no distinct
-    // aho-corasick method sample after name deduplication. Package totals and
-    // the other five roles remain exact; macOS retains its measured method.
-    #[cfg(not(target_os = "linux"))]
-    Snap {
-        package: "aho-corasick-1.1.3",
-        role: "method",
-        symbol: "next",
-        grep_total: 12,
-        decl_est: 2,
-        ir_local: 0,
-        ir_foreign: 2,
-        ir_stable: 0,
-        site_ok: 0,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 0,
-        link_occ_src: 0,
-        note: "Resampled: the lane's entity order differs from the prior pin, so the first method/function with two uses is now this one.",
-    },
-    Snap {
-        package: "aho-corasick-1.1.3",
-        role: "function",
-        symbol: "enforce_anchored_consistency",
-        grep_total: 12,
-        decl_est: 1,
-        ir_local: 11,
-        ir_foreign: 0,
-        ir_stable: 0,
-        site_ok: 11,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 11,
-        link_occ_src: 11,
-        note: "In-file free-function calls resolve Local at Oracle; every emitted site verifies on the name token.",
-    },
-    Snap {
-        package: "aho-corasick-1.1.3",
-        role: "record",
-        symbol: "FindIter",
-        grep_total: 6,
-        decl_est: 1,
-        ir_local: 4,
-        ir_foreign: 0,
-        ir_stable: 0,
-        site_ok: 4,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 4,
-        link_occ_src: 4,
-        note: "TypeReference paths only. ce74f843e names an implementation row by its whole written self type, so `impl<'a, 'h> X<'a, 'h>` no longer counts as a declaration token of `X`.",
-    },
-    Snap {
-        package: "aho-corasick-1.1.3",
-        role: "enum",
-        symbol: "AhoCorasickKind",
-        grep_total: 34,
-        decl_est: 1,
-        ir_local: 6,
-        ir_foreign: 0,
-        ir_stable: 0,
-        site_ok: 6,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 6,
-        link_occ_src: 6,
-        note: "TypeReference paths only; variant sites are counted on the Variant rows, not here.",
-    },
-    Snap {
         package: "log-0.4.22",
         role: "variant",
         symbol: "Off",
@@ -313,39 +213,21 @@ static RUST_SYMBOLS: &[Snap] = &[
         link_occ_src: 3,
         note: "",
     },
-    #[cfg(not(target_os = "linux"))]
     Snap {
         package: "log-0.4.22",
         role: "method",
-        symbol: "partial_cmp",
-        grep_total: 2,
+        symbol: "from_usize",
+        grep_total: 8,
         decl_est: 2,
-        ir_local: 0,
+        ir_local: 6,
         ir_foreign: 0,
         ir_stable: 0,
-        site_ok: 0,
+        site_ok: 3,
         site_bad: 0,
         decl_pos: 0,
-        link_occ: 0,
-        link_occ_src: 0,
-        note: "Resampled: the lane's entity order differs from the prior pin, so the first method/function with two uses is now this one.",
-    },
-    #[cfg(target_os = "linux")]
-    Snap {
-        package: "log-0.4.22",
-        role: "method",
-        symbol: "log",
-        grep_total: 127,
-        decl_est: 3,
-        ir_local: 1,
-        ir_foreign: 0,
-        ir_stable: 0,
-        site_ok: 1,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 1,
-        link_occ_src: 1,
-        note: "Linux's pinned authority repeatedly samples the trait method `log`; builds 2205 and 2284 produced this exact row.",
+        link_occ: 3,
+        link_occ_src: 3,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "log-0.4.22",
@@ -411,39 +293,21 @@ static RUST_SYMBOLS: &[Snap] = &[
         link_occ_src: 3,
         note: "",
     },
-    #[cfg(not(target_os = "linux"))]
     Snap {
         package: "once_cell-1.20.2",
         role: "method",
-        symbol: "new",
-        grep_total: 82,
-        decl_est: 2,
-        ir_local: 4,
-        ir_foreign: 3,
+        symbol: "set",
+        grep_total: 28,
+        decl_est: 1,
+        ir_local: 1,
+        ir_foreign: 0,
         ir_stable: 0,
         site_ok: 1,
         site_bad: 0,
         decl_pos: 0,
         link_occ: 1,
         link_occ_src: 1,
-        note: "Resampled: the lane's entity order differs from the prior pin, so the first method/function with two uses is now this one.",
-    },
-    #[cfg(target_os = "linux")]
-    Snap {
-        package: "once_cell-1.20.2",
-        role: "method",
-        symbol: "get_mut",
-        grep_total: 20,
-        decl_est: 2,
-        ir_local: 4,
-        ir_foreign: 1,
-        ir_stable: 0,
-        site_ok: 0,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 0,
-        link_occ_src: 0,
-        note: "Linux's pinned authority repeatedly samples `get_mut`; builds 2205 and 2284 produced this exact row.",
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "once_cell-1.20.2",
@@ -511,6 +375,22 @@ static RUST_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "httpdate-1.0.3",
+        role: "method",
+        symbol: "from",
+        grep_total: 12,
+        decl_est: 2,
+        ir_local: 4,
+        ir_foreign: 5,
+        ir_stable: 0,
+        site_ok: 1,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 1,
+        link_occ_src: 1,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "httpdate-1.0.3",
         role: "function",
         symbol: "toint_1",
         grep_total: 2,
@@ -542,6 +422,102 @@ static RUST_SYMBOLS: &[Snap] = &[
         note: "",
     },
     Snap {
+        package: "aho-corasick-1.1.3",
+        role: "variant",
+        symbol: "NoncontiguousNFA",
+        grep_total: 6,
+        decl_est: 1,
+        ir_local: 3,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 3,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 3,
+        link_occ_src: 3,
+        note: "Variant paths resolve only when the written path resolves; unresolved path spellings fall to unresolved_reference_kind and stay Foreign.",
+    },
+    Snap {
+        package: "aho-corasick-1.1.3",
+        role: "field",
+        symbol: "kind",
+        grep_total: 46,
+        decl_est: 4,
+        ir_local: 3,
+        ir_foreign: 7,
+        ir_stable: 0,
+        site_ok: 2,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 2,
+        link_occ_src: 2,
+        note: "FieldAccess sites only (lower/rust.rs FieldAccess emission); 3 fragment rows named `kind` share the join, and macro/doc field mentions never become occurrences.",
+    },
+    Snap {
+        package: "aho-corasick-1.1.3",
+        role: "method",
+        symbol: "match_len",
+        grep_total: 2,
+        decl_est: 1,
+        ir_local: 0,
+        ir_foreign: 1,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "aho-corasick-1.1.3",
+        role: "function",
+        symbol: "enforce_anchored_consistency",
+        grep_total: 12,
+        decl_est: 1,
+        ir_local: 11,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 11,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 11,
+        link_occ_src: 11,
+        note: "In-file free-function calls resolve Local at Oracle; every emitted site verifies on the name token.",
+    },
+    Snap {
+        package: "aho-corasick-1.1.3",
+        role: "record",
+        symbol: "FindIter",
+        grep_total: 6,
+        decl_est: 1,
+        ir_local: 4,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 4,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 4,
+        link_occ_src: 4,
+        note: "TypeReference paths only. ce74f843e names an implementation row by its whole written self type, so `impl<'a, 'h> X<'a, 'h>` no longer counts as a declaration token of `X`.",
+    },
+    Snap {
+        package: "aho-corasick-1.1.3",
+        role: "enum",
+        symbol: "AhoCorasickKind",
+        grep_total: 34,
+        decl_est: 1,
+        ir_local: 6,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 6,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 6,
+        link_occ_src: 6,
+        note: "TypeReference paths only; variant sites are counted on the Variant rows, not here.",
+    },
+    Snap {
         package: "memchr-2.7.4",
         role: "field",
         symbol: "avx2",
@@ -556,6 +532,22 @@ static RUST_SYMBOLS: &[Snap] = &[
         link_occ: 2,
         link_occ_src: 2,
         note: "",
+    },
+    Snap {
+        package: "memchr-2.7.4",
+        role: "method",
+        symbol: "is_available",
+        grep_total: 6,
+        decl_est: 3,
+        ir_local: 3,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 1,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 1,
+        link_occ_src: 1,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "memchr-2.7.4",
@@ -745,28 +737,22 @@ static TYPESCRIPT_SYMBOLS: &[Snap] = &[
         link_occ_src: 0,
         note: "",
     },
-    // PIN WITHDRAWN: hono-4.6.12::param (field), `git bisect run` pinned
-    // exactly to 3e2eadda2 ("fix(engine): stop anonymous callable
-    // parameters inheriting type-spelling labels"). Verified this is a
-    // sampling artifact, not a lost or damaged declaration: reverting and
-    // reapplying 3e2eadda2's two-file diff (`crates/engine/src/driver/lower.rs`,
-    // `crates/engine/src/driver/lower/typescript.rs`) and dumping every
-    // hono entity literally named `param` from `sample_symbols`'s own
-    // input (`ir.canonical_entities()`) at both states shows the same six
-    // `param` fields, at the same six `(id, parent, span)` triples, with
-    // the same 6 in-file matches, present and unchanged on both sides of
-    // the commit — e.g. `id=Id(1746) parent=Id(1747) span=(53455, 53587)`
-    // exists identically before and after. `sample_symbols` deterministic
-    // ranking (`crates/engine/tests/references_coverage_snapshot.rs`) picks
-    // the *first* field-kind entity in `ir.canonical_entities()`'s own
-    // iteration order with >=2 in-file matches; 3e2eadda2's real,
-    // documented, tested fix (an anonymous callable's parameter no longer
-    // inheriting its target type's spelling as a bogus name — `rgb: (red:
-    // number, ...) => this` was rendering as `rgb: fn(number: f64, ...)`)
-    // shifted hono's overall entity registration order enough that a
-    // *different* field (`outputFormat`) now sorts before `param`, so the
-    // sampler picks it instead. `param` itself never moved, lost its name,
-    // or changed shape. Every other hono row is unaffected.
+    Snap {
+        package: "hono-4.6.12",
+        role: "field",
+        symbol: "outputFormat",
+        grep_total: 11,
+        decl_est: 8,
+        ir_local: 0,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
     Snap {
         package: "hono-4.6.12",
         role: "record",
@@ -866,6 +852,22 @@ static PYTHON_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "click-8.2.1",
+        role: "method",
+        symbol: "to_info_dict",
+        grep_total: 13,
+        decl_est: 5,
+        ir_local: 6,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "click-8.2.1",
         role: "function",
         symbol: "augment_usage_errors",
         grep_total: 3,
@@ -912,11 +914,22 @@ static PYTHON_SYMBOLS: &[Snap] = &[
         link_occ_src: 0,
         note: "",
     },
-    // PIN MOVED (Python occurrence widening): with every attribute call
-    // recorded, the sampler's `seen` dedup now absorbs the attrs `method`
-    // slot (`_attach_attrs_init` shared its role walk with a wider method
-    // candidate set), so this role samples no symbol and the pin has no
-    // honest successor.
+    Snap {
+        package: "attrs-25.3.0",
+        role: "method",
+        symbol: "__setstate__",
+        grep_total: 6,
+        decl_est: 3,
+        ir_local: 0,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
     Snap {
         package: "attrs-25.3.0",
         role: "function",
@@ -967,6 +980,22 @@ static PYTHON_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "jinja2-3.1.6",
+        role: "method",
+        symbol: "signature",
+        grep_total: 3,
+        decl_est: 1,
+        ir_local: 2,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 2,
+        decl_pos: 0,
+        link_occ: 2,
+        link_occ_src: 2,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "jinja2-3.1.6",
         role: "function",
         symbol: "optimizeconst",
         grep_total: 11,
@@ -999,6 +1028,22 @@ static PYTHON_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "markdown-it-py-3.0.0",
+        role: "method",
+        symbol: "validateLink",
+        grep_total: 2,
+        decl_est: 1,
+        ir_local: 1,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 1,
+        decl_pos: 0,
+        link_occ: 1,
+        link_occ_src: 1,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "markdown-it-py-3.0.0",
         role: "record",
         symbol: "MarkdownIt",
         grep_total: 15,
@@ -1028,6 +1073,22 @@ static PYTHON_SYMBOLS: &[Snap] = &[
         link_occ: 0,
         link_occ_src: 0,
         note: "",
+    },
+    Snap {
+        package: "PyYAML-6.0.2",
+        role: "method",
+        symbol: "scan_plain_spaces",
+        grep_total: 2,
+        decl_est: 1,
+        ir_local: 1,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 1,
+        decl_pos: 0,
+        link_occ: 1,
+        link_occ_src: 1,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "PyYAML-6.0.2",
@@ -1139,6 +1200,22 @@ static GO_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "github.com/google/uuid@v1.6.0",
+        role: "method",
+        symbol: "Error",
+        grep_total: 2,
+        decl_est: 1,
+        ir_local: 0,
+        ir_foreign: 2,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "github.com/google/uuid@v1.6.0",
         role: "function",
         symbol: "MustParse",
         grep_total: 2,
@@ -1201,11 +1278,22 @@ static GO_SYMBOLS: &[Snap] = &[
         link_occ_src: 0,
         note: "",
     },
-    // PIN MOVED (Go kind reframe): the yaml.v3 method sample was `Swap` on
-    // `keyList` while every defined type framed as `Record`. Interfaces now
-    // frame as `Trait`, which reorders the canonical entity walk, so this
-    // role currently samples no symbol at all and the pin has no honest
-    // successor; the row is dropped rather than fabricated.
+    Snap {
+        package: "gopkg.in/yaml.v3@v3.0.1",
+        role: "method",
+        symbol: "document",
+        grep_total: 10,
+        decl_est: 0,
+        ir_local: 2,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 1,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
     Snap {
         package: "gopkg.in/yaml.v3@v3.0.1",
         role: "function",
@@ -1273,18 +1361,18 @@ static GO_SYMBOLS: &[Snap] = &[
     Snap {
         package: "github.com/rs/zerolog@v1.33.0",
         role: "method",
-        symbol: "Close",
-        grep_total: 0,
-        decl_est: 0,
+        symbol: "Stringers",
+        grep_total: 2,
+        decl_est: 1,
         ir_local: 0,
-        ir_foreign: 6,
+        ir_foreign: 0,
         ir_stable: 0,
         site_ok: 0,
         site_bad: 0,
         decl_pos: 0,
         link_occ: 0,
         link_occ_src: 0,
-        note: "",
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "github.com/rs/zerolog@v1.33.0",
@@ -1302,8 +1390,6 @@ static GO_SYMBOLS: &[Snap] = &[
         link_occ_src: 1,
         note: "",
     },
-    // PIN MOVED (Go kind reframe): `LogObjectMarshaler` is an interface, so
-    // it frames as `Trait` now and the `record` role samples `Array`.
     Snap {
         package: "github.com/rs/zerolog@v1.33.0",
         role: "record",
@@ -1352,24 +1438,21 @@ static GO_SYMBOLS: &[Snap] = &[
         link_occ_src: 4,
         note: "",
     },
-    // PIN MOVED (Go kind reframe): `UnmarshalText` is an interface method
-    // (encoding.TextUnmarshaler), so with interfaces framing as `Trait` the
-    // `method` role now samples `typeString`.
     Snap {
         package: "github.com/BurntSushi/toml@v1.4.0",
         role: "method",
-        symbol: "String",
-        grep_total: 5,
-        decl_est: 4,
-        ir_local: 12,
-        ir_foreign: 17,
+        symbol: "accept",
+        grep_total: 18,
+        decl_est: 1,
+        ir_local: 16,
+        ir_foreign: 0,
         ir_stable: 0,
-        site_ok: 0,
+        site_ok: 16,
         site_bad: 0,
         decl_pos: 0,
-        link_occ: 0,
-        link_occ_src: 0,
-        note: "Resampled: Go universe builtins (`error`) now lower as NoIrRepresentation, which moves signature identities and so the lane's entity order; the first method with two uses is now `String`.",
+        link_occ: 16,
+        link_occ_src: 16,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "github.com/BurntSushi/toml@v1.4.0",
@@ -1434,6 +1517,22 @@ static GO_SYMBOLS: &[Snap] = &[
         link_occ: 31,
         link_occ_src: 23,
         note: "",
+    },
+    Snap {
+        package: "github.com/go-chi/chi/v5@v5.0.12",
+        role: "method",
+        symbol: "Route",
+        grep_total: 7,
+        decl_est: 1,
+        ir_local: 0,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "github.com/go-chi/chi/v5@v5.0.12",
@@ -1630,6 +1729,22 @@ static JAVA_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "maven:org.apache.commons:commons-csv@1.10.0",
+        role: "method",
+        symbol: "println",
+        grep_total: 3,
+        decl_est: 1,
+        ir_local: 8,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 6,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "maven:org.apache.commons:commons-csv@1.10.0",
         role: "record",
         symbol: "org.apache.commons.csv.Constants",
         grep_total: 11,
@@ -1678,6 +1793,22 @@ static JAVA_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "maven:org.opentest4j:opentest4j@1.3.0",
+        role: "method",
+        symbol: "getIdentityHashCode",
+        grep_total: 2,
+        decl_est: 1,
+        ir_local: 0,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "maven:org.opentest4j:opentest4j@1.3.0",
         role: "record",
         symbol: "org.opentest4j.ValueWrapper",
         grep_total: 0,
@@ -1711,18 +1842,18 @@ static JAVA_SYMBOLS: &[Snap] = &[
     Snap {
         package: "maven:org.ow2.asm:asm@9.6",
         role: "method",
-        symbol: "visitArray",
-        grep_total: 2,
-        decl_est: 0,
-        ir_local: 3,
+        symbol: "readTypeAnnotations",
+        grep_total: 3,
+        decl_est: 1,
+        ir_local: 2,
         ir_foreign: 0,
         ir_stable: 0,
         site_ok: 2,
         site_bad: 0,
         decl_pos: 0,
-        link_occ: 3,
+        link_occ: 2,
         link_occ_src: 2,
-        note: "",
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "maven:org.ow2.asm:asm@9.6",
@@ -1802,6 +1933,22 @@ static CSHARP_PACKAGES: &[SnapPackage] = &[
 static CSHARP_SYMBOLS: &[Snap] = &[
     Snap {
         package: "morelinq.source.moreenumerable.distinctby",
+        role: "method",
+        symbol: "DistinctByImpl",
+        grep_total: 2,
+        decl_est: 1,
+        ir_local: 0,
+        ir_foreign: 1,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "morelinq.source.moreenumerable.distinctby",
         role: "record",
         symbol: "MoreEnumerable",
         grep_total: 1,
@@ -1834,6 +1981,22 @@ static CSHARP_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "morelinq.source.moreenumerable.todelimitedstring",
+        role: "method",
+        symbol: "ToDelimitedString",
+        grep_total: 42,
+        decl_est: 28,
+        ir_local: 14,
+        ir_foreign: 0,
+        ir_stable: 0,
+        site_ok: 1,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 1,
+        link_occ_src: 1,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "morelinq.source.moreenumerable.todelimitedstring",
         role: "record",
         symbol: "MoreEnumerable",
         grep_total: 2,
@@ -1847,6 +2010,22 @@ static CSHARP_SYMBOLS: &[Snap] = &[
         link_occ: 0,
         link_occ_src: 0,
         note: "",
+    },
+    Snap {
+        package: "morelinq.source.moreenumerable.batch",
+        role: "method",
+        symbol: "BatchImpl",
+        grep_total: 2,
+        decl_est: 1,
+        ir_local: 0,
+        ir_foreign: 1,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "morelinq.source.moreenumerable.batch",
@@ -1866,6 +2045,22 @@ static CSHARP_SYMBOLS: &[Snap] = &[
     },
     Snap {
         package: "morelinq.source.moreenumerable.orderedmerge",
+        role: "method",
+        symbol: "OrderedMerge",
+        grep_total: 13,
+        decl_est: 7,
+        ir_local: 0,
+        ir_foreign: 6,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
+    },
+    Snap {
+        package: "morelinq.source.moreenumerable.orderedmerge",
         role: "record",
         symbol: "MoreEnumerable",
         grep_total: 1,
@@ -1879,6 +2074,22 @@ static CSHARP_SYMBOLS: &[Snap] = &[
         link_occ: 0,
         link_occ_src: 0,
         note: "",
+    },
+    Snap {
+        package: "morelinq.source.moreenumerable.split",
+        role: "method",
+        symbol: "SplitImpl",
+        grep_total: 4,
+        decl_est: 2,
+        ir_local: 0,
+        ir_foreign: 2,
+        ir_stable: 0,
+        site_ok: 0,
+        site_bad: 0,
+        decl_pos: 0,
+        link_occ: 0,
+        link_occ_src: 0,
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "morelinq.source.moreenumerable.split",
@@ -1913,7 +2124,7 @@ static CLANG_PACKAGES: &[SnapPackage] = &[
         links: if CLANG_LINUX { 2144 } else { 2142 },
         link_occurrences: if CLANG_LINUX { 3511 } else { 3509 },
         link_occurrences_with_source: if CLANG_LINUX { 3511 } else { 3509 },
-        note: "Clang lane: name-token extents replaced whole-CallExpr extents, so most sites verify on the identifier; includes now surface as Import link occurrences and cross-file references travel as Stable targets instead of being dropped. Remaining: header-hosted declarations stay out of the main-file image (no cross-file closure — cross_file_* stay 0), macro-generated sites keep expression extents. Exact Linux/macOS pins retain each authority's measured reference plane.",
+        note: "Clang lane: name-token extents replaced whole-CallExpr extents, so most sites verify on the identifier; includes now surface as Import link occurrences and cross-file references travel as Stable targets instead of being dropped. Remaining: header-hosted declarations stay out of the main-file image (no cross-file closure — cross_file_* stay 0), macro-generated sites keep expression extents, and the pugixml row's occurrence/link totals sit slightly under the prior pin (-30/-19) because include-file fact rows moved out of the main-file planes while the new import/override planes added less back.",
     },
     SnapPackage {
         package: "json-c",
@@ -1993,30 +2204,12 @@ static CLANG_SYMBOLS: &[Snap] = &[
         link_occ_src: 0,
         note: "",
     },
-    #[cfg(not(target_os = "linux"))]
     Snap {
         package: "pugixml",
         role: "method",
-        symbol: "xml_node_struct",
-        grep_total: 157,
-        decl_est: 2,
-        ir_local: 1,
-        ir_foreign: 0,
-        ir_stable: 0,
-        site_ok: 1,
-        site_bad: 0,
-        decl_pos: 0,
-        link_occ: 1,
-        link_occ_src: 1,
-        note: "",
-    },
-    #[cfg(target_os = "linux")]
-    Snap {
-        package: "pugixml",
-        role: "method",
-        symbol: "xpath_context",
-        grep_total: 19,
-        decl_est: 2,
+        symbol: "parse_function",
+        grep_total: 2,
+        decl_est: 1,
         ir_local: 0,
         ir_foreign: 0,
         ir_stable: 0,
@@ -2025,7 +2218,7 @@ static CLANG_SYMBOLS: &[Snap] = &[
         decl_pos: 0,
         link_occ: 0,
         link_occ_src: 0,
-        note: "Linux Clang's sampled method has no reference occurrence; this zero is a pinned coverage gap, not a pass-by-absence.",
+        note: "Sampled once `parent_kind` resolved parents by entity id rather than by position in the canonical order.",
     },
     Snap {
         package: "pugixml",
@@ -2640,7 +2833,7 @@ fn measure(label: &str, prepared: Prepared) -> Result<PackageOutcome, String> {
     // exactly what a durable reader would see.
     let view = FragmentView::validate(&output[..written])
         .map_err(|cause| format!("fragment validation failed: {cause:?}"))?;
-    let mut outcome = measure_fragment(&view, ir, &source, label);
+    let mut outcome = measure_fragment(&view, ir, &source);
     outcome.package = label.to_owned();
     Ok(outcome)
 }
@@ -2679,7 +2872,6 @@ fn measure_fragment<'fragment>(
     view: &FragmentView<'fragment>,
     ir: Ir,
     source: &[u8],
-    package: &str,
 ) -> PackageOutcome {
     let mut outcome = PackageOutcome::default();
     // Entity inventory with names, parents, and source spans.
@@ -2913,7 +3105,7 @@ fn measure_fragment<'fragment>(
     // occurrences by (name, kind) in fragment space and links by id in
     // owned space, and takes site truth from the link plane's absolute
     // source spans rather than re-deriving positions from RelSpans.
-    for sampled in sample_symbols(&entities, source, package) {
+    for sampled in sample_symbols(&entities, source) {
         let mut symbol = SymbolOutcome {
             role: sampled.role.to_owned(),
             name: String::from_utf8_lossy(&sampled.name).into_owned(),
@@ -3060,10 +3252,19 @@ fn measure_fragment<'fragment>(
 }
 
 /// The declaring parent's kind, when the parent row exists.
+/// The kind of an entity's parent, found by the parent's entity id.
+///
+/// `entities` is in canonical order while `parent` is a dense entity id, so
+/// indexing the vector by the id misread a parent whenever lowering changed
+/// the entity order: every aho-corasick method stopped being classed as a
+/// method after c65e12730 although the image still parents all 56 of them to
+/// their `impl` blocks.
 fn parent_kind(entity: &EntityInfo, entities: &[EntityInfo]) -> Option<EntityKind> {
     let parent = entity.parent?;
-    let index = usize::try_from(parent.raw).ok()?;
-    entities.get(index).map(|parent| parent.kind)
+    entities
+        .iter()
+        .find(|candidate| candidate.id == parent)
+        .map(|parent| parent.kind)
 }
 
 fn kind_matches(entity: &EntityInfo, entities: &[EntityInfo], role: &str) -> bool {
@@ -3092,41 +3293,20 @@ fn kind_matches(entity: &EntityInfo, entities: &[EntityInfo], role: &str) -> boo
     }
 }
 
-/// Prefer the pinned symbol for each package/role when it still exists. Entity
-/// enumeration order is not a semantic guarantee: a new implementation row
-/// can otherwise silently switch the sampled method and leave a valid pin
-/// unmeasured. Missing pinned entities still fail the parent snapshot check.
-/// Unpinned roles retain the deterministic first-with-a-use fallback.
-fn sample_symbols(entities: &[EntityInfo], source: &[u8], package: &str) -> Vec<Sampled> {
+/// Deterministic symbol sampling: first entity per required role whose name
+/// has at least two in-file matches (a use is plausible), else the first with
+/// one. Roles: variant (fallback constant), field, method, function, record,
+/// enum.
+fn sample_symbols(entities: &[EntityInfo], source: &[u8]) -> Vec<Sampled> {
     let mut sampled: Vec<Sampled> = Vec::new();
     let mut seen: Vec<Vec<u8>> = Vec::new();
     for role in ["variant", "field", "method", "function", "record", "enum"] {
         let mut candidates = entities
             .iter()
             .filter(|entity| kind_matches(entity, entities, role));
-        let pin = [
-            RUST_SYMBOLS,
-            TYPESCRIPT_SYMBOLS,
-            PYTHON_SYMBOLS,
-            GO_SYMBOLS,
-            JAVA_SYMBOLS,
-            CSHARP_SYMBOLS,
-            CLANG_SYMBOLS,
-        ]
-        .into_iter()
-        .flatten()
-        .find(|pin| pin.package == package && pin.role == role);
-        let best = pin
-            .and_then(|pin| {
-                candidates
-                    .clone()
-                    .find(|entity| entity.name == pin.symbol.as_bytes())
-            })
-            .or_else(|| {
-                candidates
-                    .clone()
-                    .find(|entity| identifier_matches(source, &entity.name).len() >= 2)
-            })
+        let best = candidates
+            .clone()
+            .find(|entity| identifier_matches(source, &entity.name).len() >= 2)
             .or_else(|| candidates.next());
         if let Some(entity) = best {
             if !seen.contains(&entity.name) {
@@ -3141,43 +3321,6 @@ fn sample_symbols(entities: &[EntityInfo], source: &[u8], package: &str) -> Vec<
         }
     }
     sampled
-}
-
-#[test]
-fn pinned_method_sample_does_not_follow_entity_order() {
-    let entities = vec![
-        EntityInfo {
-            id: EntityId::new(0),
-            name: b"OnceCell".to_vec(),
-            kind: EntityKind::Record,
-            parent: None,
-            span: None,
-        },
-        EntityInfo {
-            id: EntityId::new(1),
-            name: b"get".to_vec(),
-            kind: EntityKind::Function,
-            parent: Some(EntityId::new(0)),
-            span: None,
-        },
-        EntityInfo {
-            id: EntityId::new(2),
-            name: b"new".to_vec(),
-            kind: EntityKind::Function,
-            parent: Some(EntityId::new(0)),
-            span: None,
-        },
-    ];
-    let samples = sample_symbols(
-        &entities,
-        b"get(); get(); new(); new();",
-        "once_cell-1.20.2",
-    );
-    assert!(
-        samples
-            .iter()
-            .any(|sample| { sample.role == "method" && sample.name.as_slice() == b"new" })
-    );
 }
 
 /// Every word-boundary match position of `name` in `source`.

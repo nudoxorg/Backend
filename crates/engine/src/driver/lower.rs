@@ -4516,7 +4516,7 @@ const fn builtin_from_spelling(spelling: &[u8], width: u32) -> Option<BuiltinTyp
         b"complex" => Some(BuiltinType::Complex),
         b"decimal" | b"Decimal" => Some(BuiltinType::Decimal),
         b"object" | b"Object" | b"java.lang.Object" => Some(BuiltinType::Object),
-        b"string" | b"str" | b"String" => Some(BuiltinType::String),
+        b"string" | b"str" | b"String" | b"java.lang.String" => Some(BuiltinType::String),
         b"boolean" | b"bool" | b"Boolean" => Some(BuiltinType::Bool),
         b"number" => Some(BuiltinType::Number),
         b"unknown" => Some(BuiltinType::Unknown),

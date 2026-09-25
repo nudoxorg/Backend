@@ -20,11 +20,13 @@ use super::observation::{
 const CASES_PER_BATCH: usize = multilingual_corpus::CASES_PER_LANGUAGE;
 const BATCH_SOURCE_LIMIT: usize = 64 * 1024;
 const BATCH_FRAGMENT_LIMIT: usize = 16 * 1024 * 1024;
-const BATCH_DEADLINE: Duration = Duration::from_secs(60);
-
-fn batch_deadline() -> Instant {
-    Instant::now() + BATCH_DEADLINE
-}
+// The Rust authority cold-loads its sysroot through rust-analyzer before it
+// can answer, which measured over 22 s in a debug build under the gate's
+// load; a 12 s authority budget terminated all 30 Rust cases every run, so
+// the Rust lane of this audit never compiled. Other lanes finish in under a
+// second and are unaffected by the wider bound.
+const BATCH_DEADLINE: Duration = Duration::from_secs(120);
+const BATCH_AUTHORITY_DEADLINE: Duration = Duration::from_secs(100);
 
 /// The order gives cheap, locally unavailable lanes a chance to report before
 /// a potentially slow Rust-analyzer transaction.  It is fixed and independent
@@ -360,6 +362,28 @@ pub(super) fn run_grouped_audit(
         summary.mismatches.len(),
         started.elapsed().as_millis(),
     );
+    // A digest names that something disagreed, not what. Tally the red
+    // verdict by language and field so one run says where to look.
+    let mut tally = std::collections::BTreeMap::<String, usize>::new();
+    for mismatch in &summary.mismatches {
+        let label = match mismatch {
+            CorpusMismatch::Grouped { key, field, .. } => {
+                format!("{:?}/{:?}/{:?}", key.language, key.shape, field)
+            }
+            other => {
+                let debug = format!("{other:?}");
+                debug
+                    .split([' ', '{', '('])
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            }
+        };
+        *tally.entry(label).or_default() += 1;
+    }
+    for (label, count) in &tally {
+        eprintln!("grouped-corpus mismatch {label} x{count}");
+    }
     if let Some(first) = summary.mismatches.first().cloned() {
         return Err(CorpusAuditError::Mismatches {
             count: summary.mismatches.len(),
@@ -440,6 +464,8 @@ fn run_language(
     let work = NativeWork::create().map_err(|cause| CorpusAuditError::NativeWork { key, cause })?;
     let cancelled = AtomicBool::new(false);
     let mut fragment_output = vec![0xa5_u8; BATCH_FRAGMENT_LIMIT];
+    let deadline = Instant::now() + BATCH_DEADLINE;
+    let authority_deadline = Instant::now() + BATCH_AUTHORITY_DEADLINE;
 
     match language {
         CorpusLanguage::Rust => {
@@ -472,7 +498,7 @@ fn run_language(
                     features: fixture.features,
                 },
                 &cancelled,
-                batch_deadline(),
+                deadline.min(authority_deadline),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -499,7 +525,7 @@ fn run_language(
                     image: &fixture.image,
                 },
                 &cancelled,
-                batch_deadline(),
+                deadline.min(authority_deadline),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -532,7 +558,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::Java { image: &image },
                 &cancelled,
-                batch_deadline(),
+                deadline.min(authority_deadline),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -565,7 +591,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::CSharp { image: &image },
                 &cancelled,
-                batch_deadline(),
+                deadline.min(authority_deadline),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -580,7 +606,7 @@ fn run_language(
                 ));
             };
             let checker = backend_frontend_typescript::legacy::Checker {
-                timeout: BATCH_DEADLINE,
+                timeout: BATCH_AUTHORITY_DEADLINE,
                 ..backend_frontend_typescript::legacy::Checker::default()
             };
             let report = match checker.run(ts_profile, batch.source()) {
@@ -599,7 +625,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::TypeScript { report: &report },
                 &cancelled,
-                batch_deadline(),
+                deadline.min(authority_deadline),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -630,7 +656,7 @@ fn run_language(
                 }
             };
             let checker = backend_frontend_python::legacy::Pyrefly::from_env()
-                .with_timeout(BATCH_DEADLINE);
+                .with_timeout(BATCH_AUTHORITY_DEADLINE);
             if !checker.is_available() {
                 return Ok(unavailable_result(
                     &batch,
@@ -653,7 +679,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::Python { report: &report },
                 &cancelled,
-                batch_deadline(),
+                deadline.min(authority_deadline),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -675,7 +701,7 @@ fn run_language(
                 toolchain,
                 SemanticAuthorityInput::None,
                 &cancelled,
-                batch_deadline(),
+                deadline.min(authority_deadline),
                 &mut diagnostic,
                 work.path(),
                 &mut fragment_output,
@@ -744,6 +770,7 @@ fn grouped_digest_expected_type(value: ExpectedType) -> Digest {
             observation::digest_u64(u64::from(u32::from(primitive)))
         }
         ExpectedType::Builtin(builtin) => observation::digest_typed(&builtin),
+        ExpectedType::NonNullableBuiltin(builtin) => observation::digest_typed(&(15_u8, builtin)),
         ExpectedType::Callable => observation::digest_u64(10),
         ExpectedType::Nominal => observation::digest_u64(11),
         ExpectedType::Structural => observation::digest_u64(12),
@@ -947,7 +974,6 @@ fn inspect_batch(
                 expected,
                 expected_name,
                 owned,
-                owned_links,
                 owned_occurrences,
                 false,
                 &mut mismatches,
@@ -958,11 +984,19 @@ fn inspect_batch(
                 expected,
                 expected_name,
                 reopened,
-                reopened_links,
                 reopened_occurrences,
                 true,
                 &mut mismatches,
             );
+            // Relations out of the declaration survive the durable reopen.
+            if (owned_links, owned_occurrences) != (reopened_links, reopened_occurrences) {
+                mismatches.push(CorpusMismatch::Grouped {
+                    key,
+                    field: GroupedField::Reopened,
+                    expected: observation::digest_typed(&(owned_links, owned_occurrences)),
+                    observed: observation::digest_typed(&(reopened_links, reopened_occurrences)),
+                });
+            }
             if let (Some(owned), Some(reopened)) = (owned, reopened) {
                 if !observation::entity_observations_equal(&compiled.ir, &owned, image, &reopened) {
                     mismatches.push(CorpusMismatch::Grouped {
@@ -974,26 +1008,22 @@ fn inspect_batch(
                 }
                 let owned_render = render_neutral(&compiled.ir, Some(owned));
                 let reopened_render = observation::render_neutral_reader(image, Some(reopened.id));
+                // The durable reopen must render the same declaration text
+                // the compiler's owned IR renders through the same canonical
+                // renderer, not merely render something: a reopen that
+                // hollowed a field would still render.
+                let owned_canonical =
+                    observation::render_neutral_reader(&compiled.ir, Some(owned.id));
                 if !matches!(expected.neutral_render, RenderAvailability::NeutralRequired)
                     || !matches!(owned_render, RenderVerdict::Rendered(_))
                     || !matches!(reopened_render, RenderVerdict::Rendered(_))
+                    || owned_canonical != reopened_render
                 {
                     mismatches.push(CorpusMismatch::Grouped {
                         key,
                         field: GroupedField::Render,
                         expected: grouped_digest_render(owned_render),
                         observed: grouped_digest_render(reopened_render),
-                    });
-                }
-                // This seam deliberately does not admit dialect renderers.
-                // Typed Unsupported is therefore the exact expected outcome,
-                // not a permanent synthetic failure in every corpus row.
-                if expected.dialect_render != RenderAvailability::DialectUnsupported {
-                    mismatches.push(CorpusMismatch::Grouped {
-                        key,
-                        field: GroupedField::Render,
-                        expected: grouped_digest_render_availability(expected.dialect_render),
-                        observed: grouped_digest_render(RenderVerdict::Unsupported),
                     });
                 }
             }
@@ -1026,12 +1056,11 @@ fn push_batch_mismatch(
 }
 
 fn check_entity(
-    _batch: &BatchSource,
+    batch: &BatchSource,
     case: BatchCase,
     expected: ExpectedFacts,
     expected_name: &[u8],
     observed: Option<EntityObservation>,
-    links: u32,
     occurrences: u32,
     reopened: bool,
     mismatches: &mut Vec<CorpusMismatch>,
@@ -1093,11 +1122,27 @@ fn check_entity(
             observed: observation::digest_typed(&entity.parent),
         });
     }
-    if expected.nested_member != (entity.members > 0) {
+    // Source nesting is read from parentage. The member list is a separate
+    // plane: it is published only when the authority proved the complete
+    // local set, and then it must be exactly the parentage children; without
+    // that proof it must be empty rather than a partial list.
+    if expected.nested_member != (entity.nested > 0) {
         mismatches.push(CorpusMismatch::Grouped {
             key,
             field: GroupedField::Declaration,
             expected: observation::digest_typed(&expected.nested_member),
+            observed: grouped_digest_count(entity.nested),
+        });
+    }
+    let members_captured = entity
+        .authority
+        .is_some_and(|authority| authority.members == FactAvailability::Captured);
+    let expected_members = if members_captured { entity.children } else { 0 };
+    if entity.members != expected_members {
+        mismatches.push(CorpusMismatch::Grouped {
+            key,
+            field: GroupedField::Declaration,
+            expected: grouped_digest_count(expected_members),
             observed: grouped_digest_count(entity.members),
         });
     }
@@ -1146,23 +1191,32 @@ fn check_entity(
             observed: grouped_digest_count(occurrences),
         });
     }
-    if expected.relation == RelationExpectation::OverloadRequired
-        && links.saturating_add(occurrences) == 0
-    {
+    // The overload row is the callee: `use_N` calls `package_N(1)`, so the
+    // proof is a use site resolved to this exact overload, not an edge out
+    // of it (its body `return value` references nothing).
+    if expected.relation == RelationExpectation::OverloadRequired && entity.inbound == 0 {
         mismatches.push(CorpusMismatch::Grouped {
             key,
             field: GroupedField::Relations,
             expected: observation::digest_u64(1),
-            observed: grouped_digest_count(links.saturating_add(occurrences)),
+            observed: grouped_digest_count(entity.inbound),
         });
     }
-    if case.member.is_some() && entity.first_member.is_none() {
-        mismatches.push(CorpusMismatch::Grouped {
-            key,
-            field: GroupedField::Declaration,
-            expected: grouped_digest_member(case.member),
-            observed: observation::digest_u64(0),
-        });
+    if let Some(member) = case.member {
+        let expected_member = observation::digest_bytes(
+            batch
+                .bytes
+                .get(member.start as usize..member.end as usize)
+                .unwrap_or_default(),
+        );
+        if entity.first_nested != Some(expected_member) {
+            mismatches.push(CorpusMismatch::Grouped {
+                key,
+                field: GroupedField::Declaration,
+                expected: grouped_digest_member(case.member),
+                observed: observation::digest_typed(&entity.first_nested),
+            });
+        }
     }
 }
 

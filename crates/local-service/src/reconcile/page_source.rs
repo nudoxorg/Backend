@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::Arc;
 
-use super::{encode_key, encode_row};
+use super::{encode_row, wire_key};
 
 const CLOSURE_SCHEMA: u32 = 1;
 
@@ -189,7 +189,7 @@ impl<R: CanonicalRelation> ProductPageSource<R> {
             backend_engine::product_closure_manifest(workspace, relation_digest.0, input_version);
         let manifest_version = ObjectVersion::<ImmutableObjectSchema>::from_value(&manifest);
         let root = MerkleRoot::from_admitted_manifest(CLOSURE_SCHEMA, manifest_version);
-        let first_key = first_key_value.map(encode_key::<R>).unwrap_or_default();
+        let first_key = first_key_value.map(wire_key::<R>).unwrap_or_default();
         // Empty source relations are valid workspace states. Their canonical
         // relation leaf is still paged and admitted; the empty first key is
         // a checked boundary marker rather than a fabricated row claim.
@@ -407,7 +407,7 @@ impl<R: CanonicalRelation> ProductPageSource<R> {
                     self.remember_transfer(version.to_bytes(), Arc::clone(&row_bytes));
                     self.remember_object(version.to_bytes(), row_bytes);
                     rows.push(MerkleObject {
-                        key: encode_key::<R>(key),
+                        key: wire_key::<R>(key),
                         key_id,
                         version: version.to_bytes(),
                         len: u64::try_from(row_len).map_err(|_| ReplicationError::Overflow)?,
@@ -430,7 +430,7 @@ impl<R: CanonicalRelation> ProductPageSource<R> {
                         child.handle(),
                     );
                     output.push(backend_engine::MerkleChild {
-                        first_key: encode_key::<R>(child.first_key()),
+                        first_key: wire_key::<R>(child.first_key()),
                         end_key: None,
                         digest: NodeDigest(child.handle().root().to_bytes()),
                         level: child.level(),
@@ -450,7 +450,7 @@ impl<R: CanonicalRelation> ProductPageSource<R> {
                     let next_key = match next {
                         WorkspaceRelationNodePage::Branch { children, .. } => children
                             .first()
-                            .map(|child| encode_key::<R>(child.first_key())),
+                            .map(|child| wire_key::<R>(child.first_key())),
                         WorkspaceRelationNodePage::Leaf { .. } => None,
                     };
                     if let Some(next_key) = next_key
@@ -785,7 +785,7 @@ impl<R: CanonicalRelation> MerklePageSource for ProductPageSource<R> {
                         first_key: child_summary
                             .first_key
                             .as_ref()
-                            .map(encode_key::<R>)
+                            .map(wire_key::<R>)
                             .unwrap_or_default(),
                         end_key: None,
                         digest: NodeDigest(child.id().to_bytes()),
@@ -796,7 +796,7 @@ impl<R: CanonicalRelation> MerklePageSource for ProductPageSource<R> {
                 }
                 let next_first_key = iter
                     .next()
-                    .and_then(|next| next.summary().first_key.map(|key| encode_key::<R>(&key)));
+                    .and_then(|next| next.summary().first_key.map(|key| wire_key::<R>(&key)));
                 for index in 0..children_out.len().saturating_sub(1) {
                     children_out[index].end_key = Some(children_out[index + 1].first_key.clone());
                 }
@@ -823,7 +823,7 @@ impl<R: CanonicalRelation> MerklePageSource for ProductPageSource<R> {
                     self.remember_transfer(version.to_bytes(), Arc::clone(&row_bytes));
                     self.remember_object(version.to_bytes(), row_bytes);
                     rows.push(MerkleObject {
-                        key: encode_key::<R>(key),
+                        key: wire_key::<R>(key),
                         key_id,
                         version: version.to_bytes(),
                         len,

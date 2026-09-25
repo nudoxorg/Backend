@@ -60,13 +60,32 @@ pub fn page_from_document_with_graph_relations(
     graph_relations: &[GraphRelation],
     notes: Vec<Fault>,
 ) -> Page {
-    let identity = Identity::parse_with_key(coordinate, IdentityKey::Symbol(document.symbol));
-    let language = page_language(&identity, members, document.symbol);
+    // A semantic coordinate is content-addressed and spells no path, so the
+    // page reads its path and line from the document's captured site, as
+    // `Record::from_row` does for the same row; otherwise every compiler
+    // backed page would render `language: unknown`.
+    let captured = document.location.captured();
+    let identity = Identity::parse_with_key(coordinate, IdentityKey::Symbol(document.symbol))
+        .with_captured_source(
+            captured.map(backend_library::SourceLocation::path),
+            captured.map(backend_library::SourceLocation::start_line),
+        );
+    // The page's own row. A structural row is keyed by
+    // `symbol_key(coordinate)`, the key the document echoes; a compiler
+    // backed row is keyed by its compiler identity instead, so it is found
+    // by its exact coordinate. Its key is the one its members name as their
+    // parent and its graph edges name as their end.
+    let own = members.iter().find(|row| {
+        row.id == RowId::Symbol(document.symbol)
+            || (matches!(row.id, RowId::Symbol(_)) && row.label == coordinate)
+    });
+    let centre = match own.map(|row| row.id) {
+        Some(RowId::Symbol(symbol)) => symbol,
+        _ => document.symbol,
+    };
+    let language = page_language(&identity, members, centre);
     let source = source_from(&identity, &document.location, &document.excerpt);
-    let kind = members
-        .iter()
-        .find(|row| row.id == RowId::Symbol(document.symbol))
-        .and_then(|row| row.kind);
+    let kind = own.and_then(|row| row.kind);
     let signature = document
         .signature
         .as_ref()
@@ -74,8 +93,8 @@ pub fn page_from_document_with_graph_relations(
     let page = Page::new(identity, kind, source)
         .with_language(language)
         .with_prose(Prose::from_fragments(&document.fragments))
-        .with_members(member_groups(members, document.symbol))
-        .with_relations(relation_groups(relations, document.symbol, graph_relations))
+        .with_members(member_groups(members, centre))
+        .with_relations(relation_groups(relations, centre, graph_relations))
         .with_notes(notes);
     match signature {
         Some(value) => page.with_signature(value),
@@ -153,12 +172,23 @@ fn site_from(identity: &Identity, availability: &SourceAvailability) -> Option<S
     }
 }
 
+/// One row's identity, with the source site its producer captured when the
+/// coordinate itself spells none (the same derivation `Record::from_row`
+/// uses, so a member or relation names the path a search result names).
+fn row_identity(row: &Row) -> Identity {
+    let captured = row.source.captured();
+    Identity::parse_with_key(&row.label, row.id.into()).with_captured_source(
+        captured.map(backend_library::SourceLocation::path),
+        captured.map(backend_library::SourceLocation::start_line),
+    )
+}
+
 fn member_groups(rows: &[Row], parent: SymbolKey) -> Box<[MemberGroup]> {
     let members = rows
         .iter()
         .filter(|row| row.parent == Some(parent) && row.id != RowId::Symbol(parent))
         .map(|row| {
-            let identity = Identity::parse_with_key(&row.label, row.id.into());
+            let identity = row_identity(row);
             let language = identity.language();
             let member = Member::new(
                 identity,
@@ -206,10 +236,10 @@ fn relation_groups(
             labels
         };
         for label in labels {
-            groups.entry(label).or_default().push(Relation::new(
-                Identity::parse_with_key(&row.label, row.id.into()),
-                row.kind,
-            ));
+            groups
+                .entry(label)
+                .or_default()
+                .push(Relation::new(row_identity(row), row.kind));
         }
     }
     if groups.is_empty() {

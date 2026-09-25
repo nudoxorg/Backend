@@ -357,7 +357,7 @@ fn registry_source_path<'url>(package_root: &Path) -> Result<PathBuf, RustPurlEr
     Ok(package_root.join("src/lib.rs"))
 }
 
-fn parse_edition<'url>(spelling: &str) -> Result<RustEdition, RustPurlError<'url>> {
+fn parse_edition(spelling: &str) -> Result<RustEdition, RustPurlError<'static>> {
     match spelling {
         "2015" => Ok(RustEdition::Rust2015),
         "2018" => Ok(RustEdition::Rust2018),
@@ -370,29 +370,75 @@ fn parse_edition<'url>(spelling: &str) -> Result<RustEdition, RustPurlError<'url
 }
 
 fn registry_edition<'url>(package_root: &Path) -> Result<RustEdition, RustPurlError<'url>> {
+    manifest_edition(package_root)
+}
+
+/// Reads the Rust edition a package's `Cargo.toml` declares, as Cargo does.
+///
+/// A package without an `edition` key is edition 2015, Cargo's default. A
+/// package that inherits `edition.workspace = true` takes the edition of the
+/// nearest ancestor manifest's `[workspace.package]` table.
+///
+/// # Errors
+///
+/// Returns the manifest read failure, an edition spelling outside the closed
+/// set, or an inherited edition no ancestor workspace declares.
+pub fn manifest_edition(package_root: &Path) -> Result<RustEdition, RustPurlError<'static>> {
     let manifest = package_root.join("Cargo.toml");
     let contents = fs::read_to_string(&manifest).map_err(|source| RustPurlError::ManifestIo {
         path: manifest.clone(),
         source,
     })?;
-    let mut in_package = false;
+    match table_edition(&contents, "[package]")? {
+        EditionKey::Written(edition) => Ok(edition),
+        EditionKey::Absent => Ok(RustEdition::Rust2015),
+        EditionKey::Inherited => {
+            let mut ancestor = package_root.parent();
+            while let Some(directory) = ancestor {
+                let candidate = directory.join("Cargo.toml");
+                if let Ok(contents) = fs::read_to_string(&candidate)
+                    && let EditionKey::Written(edition) =
+                        table_edition(&contents, "[workspace.package]")?
+                {
+                    return Ok(edition);
+                }
+                ancestor = directory.parent();
+            }
+            Err(RustPurlError::UnknownEdition {
+                spelling: "edition.workspace = true".to_owned(),
+            })
+        }
+    }
+}
+
+enum EditionKey {
+    Written(RustEdition),
+    Inherited,
+    Absent,
+}
+
+fn table_edition(contents: &str, table: &str) -> Result<EditionKey, RustPurlError<'static>> {
+    let mut inside = false;
     for line in contents.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_package = line == "[package]";
+            inside = line == table;
             continue;
         }
-        if !in_package {
+        if !inside {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
         let key = key.trim();
-        if key != "edition" && key != "edition.workspace" {
+        let value = value.trim();
+        if key == "edition.workspace" || (key == "edition" && value.starts_with('{')) {
+            return Ok(EditionKey::Inherited);
+        }
+        if key != "edition" {
             continue;
         }
-        let value = value.trim();
         let Some(spelling) = value
             .strip_prefix('"')
             .and_then(|value| value.strip_suffix('"'))
@@ -401,9 +447,9 @@ fn registry_edition<'url>(package_root: &Path) -> Result<RustEdition, RustPurlEr
                 spelling: value.to_owned(),
             });
         };
-        return parse_edition(spelling);
+        return parse_edition(spelling).map(EditionKey::Written);
     }
-    Ok(RustEdition::Rust2015)
+    Ok(EditionKey::Absent)
 }
 
 /// Exact parse or location failures; rejected PURLs are retained on parse errors.

@@ -862,6 +862,20 @@ fn profile_of(frontends: &FrontendSet, path: &Path) -> Option<LanguageProfile> {
     dialect(language, &extension)
 }
 
+/// Returns the key the view uses to pair a publication with its files.
+///
+/// A path names its language and dialect, never a Rust crate's edition: the
+/// edition belongs to the crate and is chosen when it is compiled. A
+/// publication compiled as edition 2021 must still be recognized as the
+/// semantic answer for the `.rs` files [`source_profile`] keys as the default
+/// edition, so every Rust edition shares one lane key.
+pub(super) const fn lane_profile(profile: LanguageProfile) -> LanguageProfile {
+    match profile {
+        LanguageProfile::Rust(_) => LanguageProfile::Rust(RustEdition::Rust2024),
+        other => other,
+    }
+}
+
 /// Selects the dialect a claimed extension names inside one language.
 ///
 /// Only TypeScript and Clang carry two dialects; every other language has a

@@ -264,7 +264,7 @@ pub(super) fn audit_real_inventory(
                     &row_artifacts,
                     &mut unavailable,
                     &mut mismatches,
-                );
+                )?;
                 match disposition {
                     RealCaseDisposition::Output {
                         mismatches: count,
@@ -424,13 +424,19 @@ fn unescape_line(text: &str) -> String {
 /// the worker's typed outcome to the audit's sinks. A worker that dies by
 /// signal, exits without a typed outcome, or hits the hard cap becomes a
 /// [`AuthorityUnavailableCause::RowProcessCrash`] row — never an aborted run.
+///
+/// A worker the harness could not run at all (no row log, no spawn, no wait)
+/// is not a row outcome: it is an audit I/O fault and ends the run red. It
+/// used to be filed as a `RowProcessCrash { signal: -1, code: -1 }` row, which
+/// the verdict counts as unavailable, so a full disk turned every remaining
+/// row into a passing crash and the audit could go green having run nothing.
 fn drive_row_in_worker(
     case: inventory::RealPackageCase,
     source: &inventory::ResolvedPackageSource,
     artifacts: &FixtureDir,
     unavailable_sink: &mut Vec<CorpusMismatch>,
     mismatch_sink: &mut Vec<CorpusMismatch>,
-) -> RealCaseDisposition {
+) -> Result<RealCaseDisposition, CorpusAuditError> {
     drive_row_in_worker_with_env(
         case,
         source,
@@ -450,18 +456,24 @@ fn drive_row_in_worker_with_env(
     unavailable_sink: &mut Vec<CorpusMismatch>,
     mismatch_sink: &mut Vec<CorpusMismatch>,
     extra_env: &[(&str, &str)],
-) -> RealCaseDisposition {
+) -> Result<RealCaseDisposition, CorpusAuditError> {
     let outcome_path = artifacts.child(&format!("row-{}.outcome", case.ordinal));
     let log_path = artifacts.child(&format!("row-{}.log", case.ordinal));
     let _ = fs::remove_file(&outcome_path);
-    let status = spawn_row_worker(case, &outcome_path, &log_path, extra_env);
+    let status =
+        spawn_row_worker(case, &outcome_path, &log_path, extra_env).map_err(|source| {
+            CorpusAuditError::Io {
+                phase: AuditIoPhase::Fixture,
+                source,
+            }
+        })?;
     let outcome = fs::read_to_string(&outcome_path)
         .ok()
         .and_then(|text| parse_row_outcome(&text, case, unavailable_sink, mismatch_sink));
-    match outcome {
+    Ok(match outcome {
         Some(disposition) => disposition,
         None => {
-            let cause = row_crash_cause(status.as_ref());
+            let cause = row_crash_cause(&status);
             let log_tail = fs::read(&log_path)
                 .map(|bytes| {
                     let start = bytes.len().saturating_sub(2048);
@@ -481,18 +493,19 @@ fn drive_row_in_worker_with_env(
             });
             RealCaseDisposition::Unavailable(cause)
         }
-    }
+    })
 }
 
 /// Spawns one row worker (`current_exe` re-invoked against the worker test)
-/// and waits for it. Spawn faults are reported as a `None` status; the hard
-/// cap kills the worker and reports the resulting signal status.
+/// and waits for it. Harness faults (no executable, no row log, no spawn, no
+/// wait) are errors; the hard cap kills the worker and reports the resulting
+/// signal status.
 fn spawn_row_worker(
     case: inventory::RealPackageCase,
     outcome_path: &Path,
     log_path: &Path,
     extra_env: &[(&str, &str)],
-) -> Option<ExitStatus> {
+) -> io::Result<ExitStatus> {
     spawn_row_worker_with_cap(case, outcome_path, log_path, extra_env, ROW_WORKER_HARD_CAP)
 }
 
@@ -504,18 +517,19 @@ fn spawn_row_worker_with_cap(
     log_path: &Path,
     extra_env: &[(&str, &str)],
     cap: Duration,
-) -> Option<ExitStatus> {
-    let executable = match std::env::current_exe() {
-        Ok(executable) => executable,
-        Err(error) => {
-            eprintln!(
-                "real-row-spawn ordinal={} coord={:?} error={error}",
+) -> io::Result<ExitStatus> {
+    let row_fault = |what: &str, error: io::Error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "row worker ordinal={} coord={:?}: {what}: {error}",
                 case.ordinal,
                 case.coordinate.raw()
-            );
-            return None;
-        }
+            ),
+        )
     };
+    let executable =
+        std::env::current_exe().map_err(|error| row_fault("resolve the test binary", error))?;
     let mut command = Command::new(executable);
     command.args([row_worker_test_name().as_str(), "--exact", "--nocapture"]);
     command.env("NUDOX_AUDIT_ROW", case.ordinal.to_string());
@@ -536,39 +550,18 @@ fn spawn_row_worker_with_cap(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let log = fs::File::create(log_path);
-    let Ok(log) = log else {
-        eprintln!(
-            "real-row-spawn ordinal={} coord={:?} could not create its row log",
-            case.ordinal,
-            case.coordinate.raw()
-        );
-        return None;
-    };
-    let Ok(log_duplicate) = log.try_clone() else {
-        eprintln!(
-            "real-row-spawn ordinal={} coord={:?} could not share its row log",
-            case.ordinal,
-            case.coordinate.raw()
-        );
-        return None;
-    };
+    let log = fs::File::create(log_path).map_err(|error| row_fault("create its row log", error))?;
+    let log_duplicate = log
+        .try_clone()
+        .map_err(|error| row_fault("share its row log", error))?;
     command.stdout(log).stderr(log_duplicate);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            eprintln!(
-                "real-row-spawn ordinal={} coord={:?} error={error}",
-                case.ordinal,
-                case.coordinate.raw()
-            );
-            return None;
-        }
-    };
+    let mut child = command
+        .spawn()
+        .map_err(|error| row_fault("spawn the worker", error))?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
+            Ok(Some(status)) => return Ok(status),
             Ok(None) if started.elapsed() < cap => {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -578,16 +571,12 @@ fn spawn_row_worker_with_cap(
                     case.ordinal,
                     case.coordinate.raw()
                 );
-                return reap_row_worker_tree(&mut child);
+                return reap_row_worker_tree(&mut child)
+                    .map_err(|error| row_fault("reap the capped worker", error));
             }
             Err(error) => {
-                eprintln!(
-                    "real-row-spawn ordinal={} coord={:?} wait failed: {error}",
-                    case.ordinal,
-                    case.coordinate.raw()
-                );
                 let _ = reap_row_worker_tree(&mut child);
-                return None;
+                return Err(row_fault("wait for the worker", error));
             }
         }
     }
@@ -598,7 +587,7 @@ fn spawn_row_worker_with_cap(
 /// child alone is only a fallback for hosts without process-group support;
 /// killing the group is what keeps a capped worker's supervised native
 /// children (oracle/checker processes) from being re-parented and leaking.
-fn reap_row_worker_tree(child: &mut std::process::Child) -> Option<ExitStatus> {
+fn reap_row_worker_tree(child: &mut std::process::Child) -> io::Result<ExitStatus> {
     #[cfg(unix)]
     {
         let killed_group = i32::try_from(child.id())
@@ -615,22 +604,19 @@ fn reap_row_worker_tree(child: &mut std::process::Child) -> Option<ExitStatus> {
     {
         let _ = child.kill();
     }
-    child.wait().ok()
+    child.wait()
 }
 
 /// The typed disposition for a worker that produced no outcome file record.
-fn row_crash_cause(status: Option<&ExitStatus>) -> AuthorityUnavailableCause {
-    let (signal, code) = match status {
-        Some(status) => {
-            #[cfg(unix)]
-            let signal = std::os::unix::process::ExitStatusExt::signal(status).unwrap_or(0);
-            #[cfg(not(unix))]
-            let signal = 0;
-            (signal, status.code().unwrap_or(-1))
-        }
-        None => (-1, -1),
-    };
-    AuthorityUnavailableCause::RowProcessCrash { signal, code }
+fn row_crash_cause(status: &ExitStatus) -> AuthorityUnavailableCause {
+    #[cfg(unix)]
+    let signal = std::os::unix::process::ExitStatusExt::signal(status).unwrap_or(0);
+    #[cfg(not(unix))]
+    let signal = 0;
+    AuthorityUnavailableCause::RowProcessCrash {
+        signal,
+        code: status.code().unwrap_or(-1),
+    }
 }
 
 /// Writes a typed `internal` outcome record for a worker whose drive failed
@@ -2170,6 +2156,32 @@ mod worker_isolation_tests {
         }
     }
 
+    /// A harness that cannot run the worker at all is an audit fault, never a
+    /// row outcome. With the row log's directory gone (the shape a full disk
+    /// produces), spawning must fail with the I/O error rather than return a
+    /// status the audit would file as a passing `RowProcessCrash` row.
+    #[test]
+    fn a_worker_the_harness_cannot_start_is_an_error_not_a_crash_row() {
+        let case = inventory::real_package_cases()
+            .next()
+            .expect("the committed fleet manifest always selects at least one case");
+        let artifacts = FixtureDir::new("unstartable-worker").expect("fixture directory");
+        let missing = artifacts.child("removed");
+        let result = spawn_row_worker_with_cap(
+            case,
+            &missing.join("row.outcome"),
+            &missing.join("row.log"),
+            &[],
+            Duration::from_secs(1),
+        );
+        let error = result.expect_err("a row log that cannot be created must fail the harness");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+        assert!(
+            error.to_string().contains("create its row log"),
+            "the fault names what the harness could not do: {error}"
+        );
+    }
+
     /// A worker process killed by a signal must map to a typed
     /// `RowProcessCrash` carrying the exact signal, and an outcome file
     /// without an outcome record must parse as no disposition.
@@ -2178,7 +2190,7 @@ mod worker_isolation_tests {
         let mut suicide = Command::new("sh");
         suicide.arg("-c").arg("kill -9 $$");
         let status = suicide.status().expect("child status");
-        let cause = row_crash_cause(Some(&status));
+        let cause = row_crash_cause(&status);
         assert!(
             matches!(
                 cause,
@@ -2359,7 +2371,8 @@ mod worker_isolation_tests {
             &mut first_unavailable,
             &mut first_mismatches,
             &[("NUDOX_ROW_WORKER_FAULT", "abort")],
-        );
+        )
+        .expect("the harness runs the worker");
         assert!(
             matches!(
                 crashed,
@@ -2378,7 +2391,8 @@ mod worker_isolation_tests {
             &artifacts,
             &mut second_unavailable,
             &mut second_mismatches,
-        );
+        )
+        .expect("the harness runs the worker");
         assert!(
             !matches!(
                 recovered,
@@ -2428,7 +2442,8 @@ mod worker_isolation_tests {
             &mut unavailable,
             &mut mismatches,
             &[("NUDOX_ROW_WORKER_FAULT", "abort")],
-        );
+        )
+        .expect("the harness runs the worker");
         let crashed = matches!(
             disposition,
             RealCaseDisposition::Unavailable(AuthorityUnavailableCause::RowProcessCrash {
@@ -2494,7 +2509,7 @@ mod worker_isolation_tests {
             ],
             Duration::from_secs(4),
         );
-        let cause = row_crash_cause(status.as_ref());
+        let cause = row_crash_cause(&status.expect("the harness runs the worker"));
         assert!(
             matches!(
                 cause,

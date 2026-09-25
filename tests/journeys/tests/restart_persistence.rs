@@ -1357,24 +1357,39 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     let reconnect_started = Instant::now();
     let mut reconnected_subscription = LocalSubscriptionTransport::connect(&endpoint)
         .expect("connect subscription after daemon restart");
-    let resumed = reconnected_subscription
-        .subscribe_with_certificate(
-            SubscriptionRequest::new(subscription_cursor, 64).expect("subscription credit"),
-            None,
-        )
-        .expect("resume live subscription after restart");
-    match resumed {
-        CursorRead::Events { cursor, .. } => {
+    // The resumed cursor predates the restart, so the owner may answer with
+    // events on the recovered root or with a complete reset. A reset larger
+    // than one page is served only through a durable snapshot lease and is
+    // refused on this path with that typed reason, so a correct client
+    // re-hydrates through the lease, as the desktop does.
+    match reconnected_subscription.subscribe_with_certificate(
+        SubscriptionRequest::new(subscription_cursor, 64).expect("subscription credit"),
+        None,
+    ) {
+        Ok(CursorRead::Events { cursor, .. }) => {
             assert_eq!(
                 cursor.root(),
                 recovered_root,
                 "subscription event cursor root drifted"
             );
         }
-        CursorRead::Reset { cursor, root, .. } => {
+        Ok(CursorRead::Reset { cursor, root, .. }) => {
             assert!(cursor.root() == root.root());
             assert!(root.root() == recovered_root || root.root() == new_root);
         }
+        Err(backend_client::ClientError::Protocol(reason))
+            if reason.contains("durable snapshot lease") =>
+        {
+            let (root, cursor) = reconnected_subscription
+                .bootstrap_root()
+                .expect("re-hydrate the reset through a durable lease after restart");
+            assert!(cursor.root() == root.root());
+            assert!(
+                root.root() == recovered_root || root.root() == new_root,
+                "re-hydrated root is neither the recovered nor the new atomic root"
+            );
+        }
+        Err(error) => panic!("resume live subscription after restart: {error:?}"),
     }
     drop(subscription);
     note(
@@ -1395,9 +1410,12 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     );
     let package = PackageReference::parse(project.to_string_lossy().into_owned())
         .expect("admit local semantic package");
+    // The history may be a typed refusal when every language of the project
+    // is unavailable in this environment; either way, the restart must not
+    // change what the owner answers.
     let semantic_before = recovered_session
         .semantic_versions(package.clone())
-        .expect("read semantic publication history");
+        .map_err(|error| format!("{error:?}"));
     let semantic_root = final_report.revision().root();
 
     let offline_started = Instant::now();
@@ -1417,7 +1435,7 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     );
     let semantic_after = offline_session
         .semantic_versions(package)
-        .expect("read semantic publication after offline reopen");
+        .map_err(|error| format!("{error:?}"));
     assert_eq!(
         semantic_after, semantic_before,
         "semantic publication changed after restart"
@@ -1576,7 +1594,9 @@ fn registry_archive_cache_reuses_published_object_after_process_restart() {
     // `RegistrySource::endpoint_for_owner`), not the raw endpoint identity.
     let registry_source = RegistrySource::new(registry_endpoint).with_native(false);
     let journal = storage_root(
-        &workspace.join("registry").join(REGISTRY_SOURCE_ROOT_VERSION),
+        &workspace
+            .join("registry")
+            .join(REGISTRY_SOURCE_ROOT_VERSION),
         &registry_source.endpoint_for_owner(),
     )
     .join("registry.journal");

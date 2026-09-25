@@ -753,7 +753,7 @@ impl SyntaxFrontend {
         declarations.push(module_declaration(path, self.language)?);
         let mut excerpt_bytes = 0usize;
         for definition in resolved {
-            let declaration_source = node_text(definition.node, text);
+            let declaration_source = node_text(excerpt_node(definition.node), text);
             excerpt_bytes = excerpt_bytes
                 .checked_add(bounded_excerpt_end(declaration_source))
                 .ok_or(SyntaxError::TooManySourceBytes)?;
@@ -1029,6 +1029,33 @@ fn signature_node(mut node: Node<'_>) -> Node<'_> {
     node
 }
 
+/// Returns the node whose text is a declaration's source as written.
+///
+/// A capture is often the declarator inside a definition: a C or C++
+/// function captures `beacon_entry(unsigned long level)` while the reader
+/// wrote `unsigned long beacon_entry(unsigned long level) { ... }`, and an
+/// exported TypeScript function captures the function without `export`.
+/// The excerpt climbs to the enclosing definition, but only while it starts
+/// on the same line, because the excerpt is numbered from the declaration's
+/// own line: a decorator or `template<...>` line above it would shift every
+/// number shown.
+fn excerpt_node(mut node: Node<'_>) -> Node<'_> {
+    for _ in 0..2 {
+        let Some(parent) = node.parent() else {
+            break;
+        };
+        if !matches!(
+            parent.kind(),
+            "function_definition" | "declaration" | "export_statement" | "template_declaration"
+        ) || parent.start_position().row != node.start_position().row
+        {
+            break;
+        }
+        node = parent;
+    }
+    node
+}
+
 fn declaration_signature(node: Node<'_>, source: &str) -> String {
     let text = node_text(signature_node(node), source).trim();
     let end = text
@@ -1042,7 +1069,7 @@ fn declaration_documentation(mut node: Node<'_>, source: &str) -> String {
     for _ in 0..3 {
         let comments = preceding_comments(node, source);
         if !comments.is_empty() {
-            return bounded(&comments.join("\n"));
+            return bounded(&xml_documentation_text(&comments.join("\n")));
         }
         if let Some(docstring) = enclosed_docstring(node, source) {
             return bounded(&docstring);
@@ -1165,6 +1192,61 @@ fn clean_comment(comment: &str) -> String {
                 .trim_end_matches("*/")
                 .trim()
         })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Reads the prose out of a C# XML documentation comment.
+///
+/// `/// <summary>Builds a beacon.</summary>` is the documentation convention
+/// C# tooling reads, and its prose is the element text, not the markup: shown
+/// verbatim, every C# summary rendered as `<summary>Builds a beacon.</summary>`.
+/// The `<summary>` body is the declaration's summary; without one, element
+/// markup is dropped and a reference element (`<see cref="Beacon"/>`,
+/// `<paramref name="level"/>`) keeps the name it points at. Text without an
+/// XML documentation element, such as a Rust comment naming `Vec<T>`, is
+/// returned unchanged.
+fn xml_documentation_text(text: &str) -> String {
+    const ELEMENTS: [&str; 6] = [
+        "<summary",
+        "<param ",
+        "<returns",
+        "<remarks",
+        "<see ",
+        "<inheritdoc",
+    ];
+    if !ELEMENTS.iter().any(|element| text.contains(element)) {
+        return text.to_owned();
+    }
+    let body = text
+        .split_once("<summary>")
+        .and_then(|(_, rest)| rest.split_once("</summary>"))
+        .map_or(text, |(summary, _)| summary);
+    let mut output = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(open) = rest.find('<') {
+        output.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find('>') else {
+            output.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let tag = &rest[open + 1..open + close];
+        if let Some(reference) = ["cref=\"", "name=\"", "langword=\""]
+            .iter()
+            .find_map(|attribute| tag.split_once(attribute))
+            .and_then(|(_, value)| value.split_once('"'))
+            .map(|(value, _)| value)
+        {
+            output.push_str(reference.rsplit(':').next().unwrap_or(reference));
+        }
+        rest = &rest[open + close + 1..];
+    }
+    output.push_str(rest);
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
 }
