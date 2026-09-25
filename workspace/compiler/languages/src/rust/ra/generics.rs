@@ -21,7 +21,7 @@ use nudox_ir::{
     index::RawRef,
     kinds::{GenericParam, WherePred},
 };
-use ra_ap_syntax::ast::{self, HasGenericArgs, HasName, HasTypeBounds};
+use ra_ap_syntax::ast::{self, HasName, HasTypeBounds};
 
 use super::{
     ctx::{LowerCtx, PathKey},
@@ -213,21 +213,11 @@ fn path_type_to_type(
         && let Some(key) = id_of(ctx, def)
         && let Some(raw_ref) = ref_for(&key)
     {
-        // Generic args on the trait ref; only type args kept.
-        let type_args: Box<[nudox_ir::kinds::Type]> = path
-            .segment()
-            .and_then(|s| s.generic_arg_list())
-            .map(|list| {
-                list.generic_args()
-                    .filter_map(|arg| match arg {
-                        ast::GenericArg::TypeArg(ta) => {
-                            ta.ty().map(|t| ty::lower_ast_type(ctx, &t, ref_for))
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Parenthesized `Fn(i32) -> bool` as well as `Foo<T>`. A bare
+        // `generic_arg_list` drops the former, so `dyn Fn(i32) -> bool` and
+        // `dyn Fn(u8) -> String` collapse to the same nominal.
+        let type_args: Box<[nudox_ir::kinds::Type]> =
+            ty::last_segment_type_args_pub(ctx, &path, ref_for).into_boxed_slice();
 
         let base = nudox_ir::kinds::Type::Nominal(raw_ref);
         if type_args.is_empty() {
