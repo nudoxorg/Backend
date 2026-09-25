@@ -12,28 +12,25 @@ fn parse(suffix: &'static str, bytes: &[u8]) -> Option<CppManifest> {
 fn candidate_order_is_stable() {
     let candidates = manifest_candidates();
     let suffixes: Vec<&str> = candidates.iter().map(|c| c.path_suffix).collect();
-    assert_eq!(
-        suffixes,
-        vec![
-            "vcpkg.json",
-            "conanfile.py",
-            "conanfile.txt",
-            "CMakeLists.txt",
-            "meson.build",
-            "MODULE.bazel",
-            ".gitmodules",
-            ".pc.in",
-            ".pc",
-            "LICENSE",
-            "LICENSE.txt",
-            "LICENSE.md",
-            "LICENCE",
-            "LICENCE.txt",
-            "LICENCE.md",
-            "COPYING",
-            "COPYING.txt",
-        ]
-    );
+    assert_eq!(suffixes, vec![
+        "vcpkg.json",
+        "conanfile.py",
+        "conanfile.txt",
+        "CMakeLists.txt",
+        "meson.build",
+        "MODULE.bazel",
+        ".gitmodules",
+        ".pc.in",
+        ".pc",
+        "LICENSE",
+        "LICENSE.txt",
+        "LICENSE.md",
+        "LICENCE",
+        "LICENCE.txt",
+        "LICENCE.md",
+        "COPYING",
+        "COPYING.txt",
+    ]);
 }
 
 #[test]
@@ -167,7 +164,7 @@ fn deeply_nested_cmake_parens() {
 
 #[test]
 fn utf8_bom_stripped_before_vcpkg_json_dispatch() {
-    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    let mut bytes = vec![0xef, 0xbb, 0xbf];
     bytes.extend_from_slice(br#"{"description":"has a bom","license":"MIT"}"#);
     let manifest = parse("vcpkg.json", &bytes).unwrap();
     assert_eq!(manifest.facts.description.as_deref(), Some("has a bom"));
@@ -176,7 +173,7 @@ fn utf8_bom_stripped_before_vcpkg_json_dispatch() {
 
 #[test]
 fn utf8_bom_stripped_before_cmake_dispatch() {
-    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    let mut bytes = vec![0xef, 0xbb, 0xbf];
     bytes.extend_from_slice(b"find_package(ZLIB REQUIRED)\n");
     let manifest = parse("CMakeLists.txt", &bytes).unwrap();
     assert!(manifest.dependencies.iter().any(|d| d.token == "ZLIB"));
@@ -184,7 +181,7 @@ fn utf8_bom_stripped_before_cmake_dispatch() {
 
 #[test]
 fn bom_only_input_is_empty_manifest_not_panic() {
-    let bytes = [0xEF, 0xBB, 0xBF];
+    let bytes = [0xef, 0xbb, 0xbf];
     let manifest = parse("CMakeLists.txt", &bytes).unwrap();
     assert_eq!(manifest, CppManifest::default());
 }
@@ -213,8 +210,8 @@ fn adversarial_battery_never_panics_across_all_candidates() {
         "unicode 名前 \u{1F600} \u{0}".as_bytes(),
         b"key = \"unterminated",
         b"[section \"unterminated",
-        &[0xC0, 0x80],                   // overlong/invalid UTF-8
-        &[0xFF, 0xFE, b'a', 0, b'b', 0], // UTF-16-ish garbage
+        &[0xc0, 0x80],                   // overlong/invalid UTF-8
+        &[0xff, 0xfe, b'a', 0, b'b', 0], // UTF-16-ish garbage
     ];
     for candidate in manifest_candidates() {
         for input in battery {
@@ -233,4 +230,80 @@ fn one_megabyte_unbroken_token_across_all_candidates() {
     for candidate in manifest_candidates() {
         let _ = parse_manifest(candidate, giant.as_bytes());
     }
+}
+
+/// Every declaring mechanism is the catalog kind with the same token, and
+/// the version survives onto that edge. A recipe counts as runtime. The
+/// other mechanisms are build edges. The feed snapshot replaces exactly
+/// those kinds.
+#[test]
+fn every_mechanism_matches_its_catalog_kind_and_requirement() {
+    use crate::{
+        enums::{EdgeKind, TextEnum},
+        record::DepClass,
+    };
+
+    let mechanisms = [
+        DependencyMechanism::FindPackage,
+        DependencyMechanism::PkgConfig,
+        DependencyMechanism::Submodule,
+        DependencyMechanism::FetchContent,
+        DependencyMechanism::Wrap,
+        DependencyMechanism::Recipe,
+        DependencyMechanism::BazelDep,
+    ];
+    let requirements = ["1.2.3", ">= 2.40", "", ">=1.1", "0.0.9", "20230802.1", "  "];
+    let mut manifest = CppManifest::default();
+    for (mechanism, requirement) in mechanisms.iter().zip(requirements) {
+        let mut record = DependencyRecord::new(mechanism.as_token(), *mechanism);
+        if !requirement.is_empty() {
+            record.requirement = Some((*requirement).to_owned());
+        }
+        manifest.push_dependency(record);
+    }
+
+    for (edge, (mechanism, requirement)) in manifest
+        .facts
+        .dependencies
+        .iter()
+        .zip(mechanisms.iter().zip(requirements))
+    {
+        let kind = EdgeKind::from_token(mechanism.as_token()).expect("catalog kind");
+        assert_eq!(edge.kind, kind);
+        assert_eq!(edge.kind.as_token(), mechanism.as_token());
+        let class = if *mechanism == DependencyMechanism::Recipe {
+            DepClass::Runtime
+        } else {
+            DepClass::Build
+        };
+        assert_eq!(edge.class, class);
+        let expected = if requirement.is_empty() {
+            None
+        } else {
+            Some(requirement)
+        };
+        assert_eq!(edge.requirement.as_deref(), expected);
+    }
+
+    let observed = crate::edge_project::feed_edges(
+        crate::ecosystem::Language::Cpp,
+        "demo",
+        "1.0.0",
+        &manifest.facts.dependencies,
+    )
+    .expect("edges");
+    let mut kinds: Vec<_> = observed
+        .snapshot
+        .kinds()
+        .iter()
+        .map(|kind| kind.as_token())
+        .collect();
+    kinds.sort_unstable();
+    let mut expected: Vec<_> = mechanisms
+        .iter()
+        .map(|mechanism| mechanism.as_token())
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(kinds, expected);
+    assert_eq!(observed.record.runtime_names(), vec!["recipe"]);
 }
