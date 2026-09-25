@@ -943,6 +943,41 @@ mod tests {
     }
 
     #[test]
+    fn enum_and_namespace_member_of_the_same_name_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"enum-ns","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export enum E { A = 1 }\nexport namespace E { export function A(): void; }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "enum-ns", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("enum-ns"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("an enum variant and a namespace function of the same name must both seal");
+        let variants = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "A" && matches!(entry.kind(), EntryInner::Owned(Kind::Variant(_)))
+            })
+            .count();
+        let functions = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "A" && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(variants, 1, "enum variant A must be declared");
+        assert_eq!(functions, 1, "namespace function A must be declared");
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

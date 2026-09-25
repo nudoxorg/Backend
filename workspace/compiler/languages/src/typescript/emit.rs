@@ -1901,11 +1901,29 @@ impl TwinPlan {
         let mut skip: SkipSet = HashMap::new();
         let mut disc: DiscMap = HashMap::new();
         let mut extra_paths = HashMap::new();
+        // Enum variants are not declarations in this plan. They are emitted
+        // later as `E::A` at discriminant `index`. A merged namespace member
+        // of the same name would take that same id and `finish` would return
+        // Duplicate. Reserve the variant discs first so the member moves.
+        let mut reserved: HashMap<PathBuf, HashMap<String, HashSet<u32>>> = HashMap::new();
+        for module in modules {
+            let canonical_path = canonical
+                .get(&module.path)
+                .map(PathBuf::as_path)
+                .unwrap_or(module.path.as_path());
+            reserve_enum_variants(
+                &module.declarations,
+                None,
+                canonical_path,
+                &mut reserved,
+            );
+        }
         for module in modules {
             admit_decls(
                 &module.declarations,
                 None,
                 &canonical,
+                &reserved,
                 &mut occupied,
                 &mut skip,
                 &mut disc,
@@ -1971,10 +1989,44 @@ impl TwinPlan {
     }
 }
 
+/// Variant ids of an enum whose own discriminant is 0 (`decl_index` 0, the
+/// first declaration of that name). `child_name` then writes `Enum::Variant`
+/// at discriminant `index`, which is exactly the id a merged namespace
+/// member would otherwise claim.
+fn reserve_enum_variants(
+    decls: &[DeclFact],
+    parent_qual: Option<&str>,
+    canonical: &Path,
+    reserved: &mut HashMap<PathBuf, HashMap<String, HashSet<u32>>>,
+) {
+    for decl in decls {
+        let qual = match parent_qual {
+            Some(parent) => format!("{parent}::{}", decl.name),
+            None => decl.name.clone(),
+        };
+        if let DeclBody::Enum(body) = &decl.body
+            && decl.decl_index == 0
+        {
+            for (idx, variant) in body.variants.iter().enumerate() {
+                reserved
+                    .entry(canonical.to_path_buf())
+                    .or_default()
+                    .entry(format!("{qual}::{}", variant.name))
+                    .or_default()
+                    .insert(idx as u32);
+            }
+        }
+        if let DeclBody::Namespace(body) = &decl.body {
+            reserve_enum_variants(&body.children, Some(&qual), canonical, reserved);
+        }
+    }
+}
+
 fn admit_decls<'a>(
     decls: &'a [DeclFact],
     parent_qual: Option<&str>,
     canonical_of: &HashMap<PathBuf, PathBuf>,
+    reserved: &HashMap<PathBuf, HashMap<String, HashSet<u32>>>,
     occupied: &mut Occupied<'a>,
     skip: &mut SkipSet,
     disc: &mut DiscMap,
@@ -2008,6 +2060,10 @@ fn admit_decls<'a>(
                 None => AdmitHit::Absent,
             }
         };
+        let held_by_variant = reserved
+            .get(canonical)
+            .and_then(|by_name| by_name.get(qual.as_str()))
+            .is_some_and(|discs| discs.contains(&preferred));
         match hit {
             AdmitHit::SameFileSameBody => {
                 // The same body written twice in one file (interface merging,
@@ -2029,6 +2085,19 @@ fn admit_decls<'a>(
                     occupied
                         .get(canonical)
                         .and_then(|by_name| by_name.get(qual.as_str())),
+                    reserved.get(canonical).and_then(|by_name| by_name.get(qual.as_str())),
+                );
+                remember_disc(disc, &decl.module, &qual, preferred, decl.span_start, fresh);
+                insert_kept(occupied, canonical, &qual, fresh, decl);
+            }
+            AdmitHit::Absent if held_by_variant => {
+                // `preferred` is an enum variant of this merged name. Keep
+                // the variant's id and move this member off it.
+                let fresh = fresh_discriminant(
+                    occupied
+                        .get(canonical)
+                        .and_then(|by_name| by_name.get(qual.as_str())),
+                    reserved.get(canonical).and_then(|by_name| by_name.get(qual.as_str())),
                 );
                 remember_disc(disc, &decl.module, &qual, preferred, decl.span_start, fresh);
                 insert_kept(occupied, canonical, &qual, fresh, decl);
@@ -2042,6 +2111,7 @@ fn admit_decls<'a>(
                 &body.children,
                 Some(&qual),
                 canonical_of,
+                reserved,
                 occupied,
                 skip,
                 disc,
@@ -2157,15 +2227,22 @@ fn child_id(parent: &TsId, member: &str, local: u32) -> TsId {
     TsId::new(parent.module.clone(), child_name(parent, member), local)
 }
 
-fn fresh_discriminant(by_disc: Option<&HashMap<u32, KeptBody<'_>>>) -> u32 {
-    let Some(by_disc) = by_disc else {
-        return 0;
-    };
+fn fresh_discriminant(
+    by_disc: Option<&HashMap<u32, KeptBody<'_>>>,
+    reserved: Option<&HashSet<u32>>,
+) -> u32 {
     let mut disc = 0u32;
-    while by_disc.contains_key(&disc) {
-        disc = disc.saturating_add(1);
+    loop {
+        let taken = by_disc.is_some_and(|kept| kept.contains_key(&disc))
+            || reserved.is_some_and(|held| held.contains(&disc));
+        if !taken {
+            return disc;
+        }
+        if disc == u32::MAX {
+            return disc;
+        }
+        disc += 1;
     }
-    disc
 }
 
 /// Whole suffixes, longest first. `Path::extension` of `kinds.d.ts` is `ts`.
