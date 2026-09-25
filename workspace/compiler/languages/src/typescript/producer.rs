@@ -1602,6 +1602,42 @@ mod tests {
     }
 
     #[test]
+    fn an_export_assignment_of_a_function_expression_is_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"export-fn","version":"1.0.0","main":"index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.ts"),
+            "export = function (s: string): string { return s; };\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "export-fn", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("export-fn"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("export = of a function expression must seal");
+        let exported = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "default"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(exported, 1, "export = function must declare the function");
+        let param = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "s" && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(param, 1, "the function parameter must be declared");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
