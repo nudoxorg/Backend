@@ -345,7 +345,7 @@ fn attach_generation_root(
     for index in order {
         let symbol = &staged[index];
         let entry = ir_vcs::lower::lower_payload(&symbol.payload);
-        let content = ir::content::entry_storage_hash(&entry);
+        let (content, body) = storage_bytes(&entry);
         keys.push(crate::frontier::ir::IrEntryKey {
             intro_id: *symbol.intro.as_bytes(),
             content_hash: *content.as_bytes(),
@@ -357,7 +357,7 @@ fn attach_generation_root(
             source: entry.sym().source.clone(),
             span: entry.sym().span.clone(),
         });
-        bodies.push(ir::content::entry_storage_payload(&entry));
+        bodies.push(body);
     }
 
     commit_root(builder, package, rows, keys, bodies, prior)
@@ -382,7 +382,7 @@ pub(in crate::server::coordination) fn attach_table_generation_root(
     let mut keys = Vec::with_capacity(table.len());
     let mut bodies = Vec::with_capacity(table.len());
     for (intro, entry) in table.iter_sorted() {
-        let content = ir::content::entry_storage_hash(entry);
+        let (content, body) = storage_bytes(entry);
         keys.push(crate::frontier::ir::IrEntryKey {
             intro_id: *intro.as_bytes(),
             content_hash: *content.as_bytes(),
@@ -394,9 +394,17 @@ pub(in crate::server::coordination) fn attach_table_generation_root(
             source: entry.sym().source.clone(),
             span: entry.sym().span.clone(),
         });
-        bodies.push(ir::content::entry_storage_payload(entry));
+        bodies.push(body);
     }
     commit_root(builder, package, rows, keys, bodies, prior)
+}
+
+/// Encode an entry once. The storage hash is BLAKE3 of those bytes, which is
+/// what [`ir::content::entry_storage_hash`] computes by encoding again.
+fn storage_bytes(entry: &ir::entry::Entry) -> (ir::change::ContentBlake3, Vec<u8>) {
+    let body = ir::content::entry_storage_payload(entry);
+    let content = ir::change::ContentBlake3::from_raw(*blake3::hash(&body).as_bytes());
+    (content, body)
 }
 
 fn commit_root(

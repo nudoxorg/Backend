@@ -285,3 +285,14 @@ fn the_two_hashes_are_domain_separated() {
         "the two hashes must never coincide, even when their inputs do"
     );
 }
+
+/// The storage hash is BLAKE3 of the payload bytes, so a caller can encode
+/// once and hash those bytes instead of encoding a second time.
+#[test]
+fn storage_hash_is_blake3_of_the_payload_bytes() {
+    use nudox_ir::change::ContentBlake3;
+    let entry = with_name("widget");
+    let body = entry_storage_payload(&entry);
+    let hashed = ContentBlake3::from_raw(*blake3::hash(&body).as_bytes());
+    assert_eq!(entry_storage_hash(&entry), hashed);
+}
