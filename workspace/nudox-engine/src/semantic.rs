@@ -492,7 +492,8 @@ impl SemanticIndex {
         // The position is a sound stand-in for the lineage in the comparator
         // because `vectors` is a `BTreeMap`: its iteration order *is* lineage
         // order, so ordering by index and ordering by key agree exactly.
-        let mut scored: Vec<(usize, IntroId, f32)> = Vec::new();
+        let mut best: std::collections::BinaryHeap<WorstFirst> =
+            std::collections::BinaryHeap::with_capacity(limit);
         for (index, vectors) in guard.vectors.values().enumerate() {
             for vector in vectors {
                 if vector.values.len() != query.len() {
@@ -503,22 +504,60 @@ impl SemanticIndex {
                     // were one.
                     continue;
                 }
-                scored.push((index, vector.intro, dot(&vector.values, &query)));
+                let candidate = WorstFirst(index, vector.intro, dot(&vector.values, &query));
+                if best.len() < limit {
+                    best.push(candidate);
+                } else if best.peek().is_some_and(|worst| &candidate < worst) {
+                    best.pop();
+                    best.push(candidate);
+                }
             }
         }
-
+        let mut scored: Vec<(usize, IntroId, f32)> =
+            best.into_iter().map(|item| (item.0, item.1, item.2)).collect();
         scored.sort_by(|a, b| {
             b.2.total_cmp(&a.2)
                 .then_with(|| a.0.cmp(&b.0))
                 .then_with(|| a.1.cmp(&b.1))
         });
-        scored.truncate(limit);
 
         let lineages: Vec<&PackageLineageId> = guard.vectors.keys().collect();
         scored
             .into_iter()
             .map(|(index, intro, score)| (lineages[index].clone(), intro, score))
             .collect()
+    }
+}
+
+/// A neighbor that sorts as worse than another with the same score when its
+/// package comes later in lineage order, then when its intro is later.
+///
+/// The heap root is the worst of the current top set, so a better neighbor
+/// replaces it. The final order is still score descending, lineage ascending,
+/// intro ascending.
+struct WorstFirst(usize, IntroId, f32);
+
+impl PartialEq for WorstFirst {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for WorstFirst {}
+
+impl PartialOrd for WorstFirst {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for WorstFirst {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .2
+            .total_cmp(&self.2)
+            .then_with(|| self.0.cmp(&other.0))
+            .then_with(|| self.1.cmp(&other.1))
     }
 }
 
@@ -788,5 +827,35 @@ mod tests {
             hits[1].2, 0.0,
             "a zero vector must score exactly 0, not NaN"
         );
+    }
+
+    /// The bounded top set is the prefix of a full ranking. A heap that drops
+    /// a later tie-break winner fails this even when every cosine is distinct.
+    #[test]
+    fn bounded_neighbors_match_a_full_ranking() {
+        let index = SemanticIndex::new();
+        let mut state = 0x1234_5678u32;
+        for package in 0..40u16 {
+            let mut vectors = Vec::new();
+            for symbol in 0..8u16 {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                let x = (state % 200) as f32 - 100.0;
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                let y = (state % 200) as f32 - 100.0;
+                let mut raw = [0u8; 32];
+                let id = package * 8 + symbol;
+                raw[0] = (id >> 8) as u8;
+                raw[1] = id as u8;
+                vectors.push((IntroId::from_raw(raw), vec![x, y]));
+            }
+            index
+                .insert_package(lineage(&format!("p{package}")), vectors, 2)
+                .unwrap();
+        }
+        let full = index.nearest(&[1.0, 0.0], 320);
+        let bounded = index.nearest(&[1.0, 0.0], 7);
+        assert_eq!(full.len(), 320);
+        assert_eq!(bounded, full[..7]);
+        assert!(index.nearest(&[1.0, 0.0], 0).is_empty());
     }
 }
