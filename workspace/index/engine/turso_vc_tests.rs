@@ -269,10 +269,24 @@ fn a_repeated_name_keeps_the_first_requirement() {
         .materialize("rust", "memchr", "2.8.3")
         .expect("join")
         .expect("row");
-    assert_eq!(tip.edges.len(), 1);
+    assert_eq!(tip.edges.len(), 2);
     assert_eq!(tip.edges[0].requirement.as_deref(), Some("^1"));
     assert!(tip.edges[0].optional);
     assert_eq!(tip.edges[0].class, DepClass::Runtime);
+    assert_eq!(tip.edges[1].class, DepClass::Dev);
+    assert_eq!(tip.edges[1].requirement.as_deref(), Some("^9"));
+    let mut duplicate = first.clone();
+    duplicate.requirement = Some(SmolStr::new("^2"));
+    let mut again = record.clone();
+    again.edges.push(duplicate);
+    let sync = catalog.sync_edges(&again).expect("same class");
+    assert_eq!(sync.revised, 0);
+    assert_eq!(sync.unchanged, 2);
+    let kept = catalog
+        .materialize("rust", "memchr", "2.8.3")
+        .expect("join")
+        .expect("row");
+    assert_eq!(kept.edges[0].requirement.as_deref(), Some("^1"));
 }
 
 #[test]

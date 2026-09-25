@@ -119,6 +119,7 @@ struct PackageKey {
 #[derive(Clone)]
 struct EdgeTip {
     name: SmolStr,
+    class: SmolStr,
     hash: SmolStr,
 }
 
@@ -190,13 +191,14 @@ impl VersionedCatalog {
         let mut next = Vec::with_capacity(record.edges.len());
         let mut seen = std::collections::BTreeSet::new();
         for edge in &record.edges {
-            if !seen.insert(edge.name.clone()) {
+            let class = edge_fact::class_token_of(edge.class);
+            if !seen.insert((edge.name.clone(), class)) {
                 continue;
             }
             let hash = edge_fact::hash_edge(edge);
-            let same = current
-                .iter()
-                .any(|tip| tip.name == edge.name && tip.hash.as_str() == hash);
+            let same = current.iter().any(|tip| {
+                tip.name == edge.name && tip.class.as_str() == class && tip.hash.as_str() == hash
+            });
             if same {
                 unchanged += 1;
             } else {
@@ -206,12 +208,16 @@ impl VersionedCatalog {
             }
             next.push(EdgeTip {
                 name: edge.name.clone(),
+                class: SmolStr::new(class),
                 hash: SmolStr::new(hash),
             });
         }
         let mut removed = 0;
         for stored in &current {
-            if next.iter().any(|edge| edge.name == stored.name) {
+            if next
+                .iter()
+                .any(|edge| edge.name == stored.name && edge.class == stored.class)
+            {
                 continue;
             }
             commit = Some(self.db.table::<EdgeFact>().version_delete(
@@ -220,6 +226,7 @@ impl VersionedCatalog {
                     key.package.as_str(),
                     key.version.as_str(),
                     stored.name.as_str(),
+                    stored.class.as_str(),
                 ),
                 "remove edge",
             )?);
@@ -288,7 +295,13 @@ impl VersionedCatalog {
         };
         let mut edges = Vec::with_capacity(tips.len());
         for tip in tips {
-            let Some(row) = self.get_edge(ecosystem, name, version, tip.name.as_str()) else {
+            let Some(row) = self.db.table::<EdgeFact>().get(&edge_fact::edge_pk(
+                ecosystem,
+                name,
+                version,
+                tip.name.as_str(),
+                tip.class.as_str(),
+            )) else {
                 continue;
             };
             edges.push(row.to_edge()?);
@@ -309,9 +322,11 @@ impl VersionedCatalog {
         version: &str,
         name: &str,
     ) -> Option<EdgeFact> {
-        self.db
-            .table::<EdgeFact>()
-            .get(&edge_fact::edge_pk(ecosystem, package, version, name))
+        edge_fact::class_tokens().iter().find_map(|class| {
+            self.db.table::<EdgeFact>().get(&edge_fact::edge_pk(
+                ecosystem, package, version, name, class,
+            ))
+        })
     }
 
     /// Historical read at `at`. `None` when the row did not exist then.

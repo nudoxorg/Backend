@@ -45,6 +45,8 @@ pub mod compiled;
 pub mod coordination;
 /// Per-ecosystem name/version/upstream/manifest grammar.
 pub mod ecosystem;
+
+pub mod edge_project;
 /// The catalog engine facade (DoltLite / test-engine) behind all access.
 pub mod engine;
 /// SeaORM entities for the catalog tables (schema v4).

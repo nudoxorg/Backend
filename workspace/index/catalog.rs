@@ -24,7 +24,6 @@ use heart::{
 
 use crate::{
     engine::VersioningEngine,
-    enums::{EdgeKind, EdgeSource},
     ids::PackageStemId,
     protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
     store::{MetaStore, lifecycle, writer::CatalogWriter},
@@ -507,11 +506,12 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             .iter()
             .filter_map(|(package, ecosystem, name, facets)| {
                 let key = (ecosystem.as_token().to_owned(), name.to_string());
-                let runtime = deps_by_package
-                    .get(&key)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let version_edges = if edged.contains(package) { runtime } else { &[] };
+                let runtime = deps_by_package.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+                let version_edges = if edged.contains(package) {
+                    runtime
+                } else {
+                    &[]
+                };
                 let facet_names = facets
                     .as_ref()
                     .map(|facets| facets.dependencies.as_slice())
@@ -666,17 +666,11 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
 /// Each name is one [`EdgeKind::Runtime`] edge from [`EdgeSource::Feed`]. The
 /// requirement is empty because the catalog publish carried a name only.
 pub fn feed_edge_wires(ecosystem: heart::Language, names: &[smol_str::SmolStr]) -> Vec<EdgeWire> {
-    names
-        .iter()
-        .map(|name| EdgeWire {
-            dep_ecosystem: ecosystem,
-            dep_name_canonical: name.to_string(),
-            requirement: String::new(),
-            kind: EdgeKind::Runtime,
-            source: EdgeSource::Feed,
-            resolved_stem: None,
-        })
-        .collect()
+    crate::edge_project::project_edges(
+        ecosystem,
+        &crate::record::runtime_edges_from_names(names),
+        crate::enums::EdgeSource::Feed,
+    )
 }
 
 /// Pack a 16-byte [`SymbolId`] into the BLOB32 `intro_id` slot (zero-padded).

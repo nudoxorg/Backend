@@ -42,7 +42,7 @@ impl VersionedRow for EdgeFact {
         "optional",
         "payload_hash",
     ];
-    const PK: &'static [&'static str] = &["ecosystem", "package", "version", "name"];
+    const PK: &'static [&'static str] = &["ecosystem", "package", "version", "name", "class"];
     const TABLE: &'static str = "package_edges";
 
     fn from_row(row: &VcRow) -> Result<Self, OrmError> {
@@ -113,13 +113,19 @@ pub(in crate::engine) fn edge_pk(
     package: &str,
     version: &str,
     name: &str,
+    class: &str,
 ) -> Vec<VcValue> {
     vec![
         VcValue::Text(ecosystem.to_owned()),
         VcValue::Text(package.to_owned()),
         VcValue::Text(version.to_owned()),
         VcValue::Text(name.to_owned()),
+        VcValue::Text(class.to_owned()),
     ]
+}
+
+pub(in crate::engine) fn class_tokens() -> &'static [&'static str] {
+    &["runtime", "dev", "build", "optional", "peer"]
 }
 
 impl EdgeFact {
@@ -136,6 +142,10 @@ impl EdgeFact {
             optional: self.optional == "1",
         })
     }
+}
+
+pub(in crate::engine) fn class_token_of(class: DepClass) -> &'static str {
+    class_token(class)
 }
 
 fn class_token(class: DepClass) -> &'static str {
