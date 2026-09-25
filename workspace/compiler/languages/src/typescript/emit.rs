@@ -885,32 +885,60 @@ fn emit_type_alias(
     );
     // A function type's parameters are declarations. `FunctionPointer` keeps
     // their types; the names live as `Param` children of this alias.
-    if let TypeOwned::Function(function) = &body.target {
-        for (idx, param) in function.params.iter().enumerate() {
-            let param_id = param_id_for(&id, &param.name, idx as u32);
-            let param_sym = Symbol {
-                name: param.name.clone(),
-                visibility: Visibility::Public,
-                documentation: String::new(),
-                source: id.module.clone(),
-                span: (param.span_start as usize)..(param.span_end as usize),
-                aliases: Box::new([]),
-                deprecation: None,
-                doc_links: Box::new([]),
-                attrs: Box::new([]),
-                cfg: None,
-            };
-            let ty = param
-                .ty
-                .as_ref()
-                .map(|ty| lower_type(ty, out, names, &id.module));
-            let _: Ref<Param> = out.declare(
-                param_id,
-                Some(id.clone()),
-                param_sym,
-                Param::builder().maybe_ty(ty).build(),
-            );
+    // Methods of an object type use a distinct owner name so two methods
+    // that both have a parameter `left` do not share an id.
+    match &body.target {
+        TypeOwned::Function(function) => {
+            declare_alias_params(&id, &id, function, out, names);
         }
+        TypeOwned::ObjectLiteral(fields) => {
+            for field in fields {
+                let TypeOwned::Function(function) = &field.ty else {
+                    continue;
+                };
+                let owner = TsId::new(
+                    id.module.clone(),
+                    format!("{}::{}", id.name, field.name),
+                    id.discriminant,
+                );
+                declare_alias_params(&id, &owner, function, out, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn declare_alias_params(
+    alias: &TsId,
+    owner: &TsId,
+    function: &crate::typescript::extract::FunctionBody,
+    out: &mut Lowering<TsId>,
+    names: &DeclareSet,
+) {
+    for (idx, param) in function.params.iter().enumerate() {
+        let param_id = param_id_for(owner, &param.name, idx as u32);
+        let param_sym = Symbol {
+            name: param.name.clone(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: alias.module.clone(),
+            span: (param.span_start as usize)..(param.span_end as usize),
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        let ty = param
+            .ty
+            .as_ref()
+            .map(|ty| lower_type(ty, out, names, &alias.module));
+        let _: Ref<Param> = out.declare(
+            param_id,
+            Some(alias.clone()),
+            param_sym,
+            Param::builder().maybe_ty(ty).build(),
+        );
     }
 }
 

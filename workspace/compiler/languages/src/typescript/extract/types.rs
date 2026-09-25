@@ -347,60 +347,25 @@ fn lower_ts_type_impl<'a>(
                             .key
                             .static_name()
                             .map_or_else(|| "__method".to_string(), |s| s.to_string());
-                        let params: Vec<TypeOwned> = m
-                            .params
-                            .items
-                            .iter()
-                            .map(|p| {
-                                p.type_annotation.as_ref().map_or(TypeOwned::Any, |a| {
-                                    lower_ts_type_impl(&a.type_annotation, source, type_params)
-                                })
-                            })
-                            .collect();
                         let ret = m
                             .return_type
                             .as_ref()
                             .map(|r| lower_ts_type_impl(&r.type_annotation, source, type_params));
-                        // Anonymous method member inside an object-type literal
-                        // (`{ foo(x: number): void }` as a type annotation, not
-                        // a declaration): the per-parameter type is all that
-                        // survived the earlier `params` map (it discarded each
-                        // `FormalParameter` node), so there is no independent
-                        // per-parameter span here. The whole `TSMethodSignature`
-                        // node's span (`m.span()`) is used for both the
-                        // synthetic `FunctionBody` and each synthetic
-                        // `ParamFact` it wraps — real bytes that do contain the
-                        // parameter, not a precise sub-span of it, and neither
-                        // is a declared IR entry needing identity (this feeds
-                        // `AnonFieldOwned`, never `emit.rs`'s `declare()`).
                         let span = m.span();
                         members.push(AnonFieldOwned {
                             name,
                             ty: TypeOwned::Function(Box::new(FunctionBody {
                                 generics: vec![],
-                                params: params
-                                    .into_iter()
-                                    .map(|ty| ParamFact {
-                                        name: "_".to_string(),
-                                        ty: Some(ty),
-                                        is_optional: false,
-                                        is_rest: false,
-                                        is_readonly: false,
-                                        initializer: None,
-                                        decorators: Vec::new(),
-                                        span_start: span.start,
-                                        span_end: span.end,
-                                    })
-                                    .collect(),
+                                params: lower_formal_params(&m.params, source, type_params),
                                 return_type: ret,
                                 is_async: false,
                                 is_generator: false,
                                 has_body: false,
                                 receiver: ReceiverKind::None,
-                this_ty: None,
-                abstract_construct: false,
-                body_text: None,
-                leading_doc: None,
+                                this_ty: None,
+                                abstract_construct: false,
+                                body_text: None,
+                                leading_doc: None,
                                 span_start: span.start,
                                 span_end: span.end,
                             })),
