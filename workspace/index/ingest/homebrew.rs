@@ -19,19 +19,21 @@
 //! tarballs (git is preferred when P6 enumerates the stem directly) is honored
 //! by emitting `source: None` on the version — brew only records the checksum.
 
-use crate::ecosystem::Language;
-use crate::ecosystem::repo::normalize_repo_url;
-use crate::enums::SourceKind;
-use crate::enums::{AliasConfidence, EdgeKind, EdgeSource};
-use crate::ids::PackageStemId;
-use crate::protocol::{
-    CatalogOp, EdgeWire, FacetWire, PackageStemWire, SourceAcquisitionWire, VersionCoordinates,
+use crate::{
+    ecosystem::{Language, repo::normalize_repo_url},
+    enums::{AliasConfidence, EdgeKind, EdgeSource, SourceKind},
+    ids::PackageStemId,
+    protocol::{
+        CatalogOp, EdgeWire, FacetWire, PackageStemWire, SourceAcquisitionWire, VersionCoordinates,
+    },
 };
 
-use crate::ingest::enumerate::{cpp_stem_id, cpp_version_id};
-use crate::ingest::follower::{Follower, FollowerBatch, FollowerError, PollCadence};
-use crate::ingest::transport::{FeedRequest, FeedResponse, FeedTransport};
-use crate::ingest::watermark::FeedWatermark;
+use crate::ingest::{
+    enumerate::{cpp_stem_id, cpp_version_id},
+    follower::{Follower, FollowerBatch, FollowerError, PollCadence},
+    transport::{FeedRequest, FeedResponse, FeedTransport},
+    watermark::FeedWatermark,
+};
 
 /// The stable feed id (the `feed_watermarks` primary key).
 pub const FEED_ID: &str = "homebrew";
@@ -227,7 +229,8 @@ fn resolve_stem(formula: &Formula) -> StemResolution {
 }
 
 /// Build the recipe edges for a formula from its runtime + build dependencies
-/// (REGISTRYLESS-PLAN §7.1 step 4; recorded literally per RL-5, resolved later).
+/// (REGISTRYLESS-PLAN §7.1 step 4; recorded literally per RL-5, resolved
+/// later).
 fn recipe_edges(formula: &Formula) -> Vec<EdgeWire> {
     let mut edges =
         Vec::with_capacity(formula.dependencies.len() + formula.build_dependencies.len());
@@ -308,7 +311,7 @@ pub fn parse_formulae(body: &[u8]) -> Result<Vec<CatalogOp>, FollowerError> {
                 published_at: None,
                 toolchain: None,
                 license: formula.license.clone(),
-                edges: recipe_edges(formula),
+                edges: crate::protocol::EdgeSnapshot::recipe(recipe_edges(formula)),
                 facets: FacetWire {
                     keywords: formula.desc.clone(),
                     quality_ppm: None,

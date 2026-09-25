@@ -132,7 +132,7 @@ pub fn enumerate_git_versions<Repository: GitRepository>(
             published_at: None,
             toolchain: None,
             license: None,
-            edges: Vec::new(),
+            edges: crate::protocol::EdgeSnapshot::unobserved(),
             facets: FacetWire::default(),
             source: Some(SourceAcquisitionWire {
                 source_kind: SourceKind::Git,
@@ -241,7 +241,7 @@ fn enumerate_pseudo_version<Repository: GitRepository>(
         published_at: None,
         toolchain: None,
         license: None,
-        edges: Vec::new(),
+        edges: crate::protocol::EdgeSnapshot::unobserved(),
         facets: FacetWire::default(),
         source: Some(SourceAcquisitionWire {
             source_kind: SourceKind::Git,
@@ -297,7 +297,7 @@ mod tests {
             published_at: None,
             toolchain: None,
             license: None,
-            edges: Vec::new(),
+            edges: crate::protocol::EdgeSnapshot::unobserved(),
             facets: FacetWire::default(),
             source: Some(SourceAcquisitionWire {
                 source_kind: SourceKind::Git,

@@ -7,9 +7,9 @@
 //!
 //! `common::migrated_disk_writer` opens `index::engine::Configured` at a real
 //! path. Under the default feature set that is `DoltEngine` — the vendored
-//! DoltLite prolly-tree store — so every byte counted below is the **product's**
-//! storage cost, including the version history a versioned catalog necessarily
-//! writes alongside the rows.
+//! DoltLite prolly-tree store — so every byte counted below is the
+//! **product's** storage cost, including the version history a versioned
+//! catalog necessarily writes alongside the rows.
 //!
 //! That was not true before 2026-08-08. This helper used to be pinned to
 //! `MemoryEngine::open_at_path`, and the paragraph here used to justify it with
@@ -17,12 +17,13 @@
 //! DoltLite C amalgamation is absent)". The amalgamation is present and the
 //! engine builds; the justification had simply outlived its own truth. The
 //! numbers taken under the old helper were real SQLite bytes for a storage
-//! engine this product does not use, and they are **not comparable** to the ones
-//! this file emits now — expect them to move, upward, because a prolly tree
-//! stores content-addressed chunks plus history where stock SQLite stored
+//! engine this product does not use, and they are **not comparable** to the
+//! ones this file emits now — expect them to move, upward, because a prolly
+//! tree stores content-addressed chunks plus history where stock SQLite stored
 //! B-tree pages and nothing else.
 //!
-//! Measured on 2026-08-08, both columns from this file's own `cost case=` lines:
+//! Measured on 2026-08-08, both columns from this file's own `cost case=`
+//! lines:
 //!
 //! | checkpoint | packages added | before (stock SQLite) | after (DoltLite) |
 //! |---|---:|---:|---:|
@@ -50,9 +51,9 @@
 //!
 //! The package total also moved 154 → 155 — that is `nix/corpus.nix`
 //! gaining an entry on another track, not an effect of the engine swap.
-//! `docs/INDEX-CAPABILITY.md` §2.2 and `docs/ISSUES.md`'s `storage-numbers` row still
-//! quote the pre-swap column and need updating; both are outside this change's
-//! file scope.
+//! `docs/INDEX-CAPABILITY.md` §2.2 and `docs/ISSUES.md`'s `storage-numbers` row
+//! still quote the pre-swap column and need updating; both are outside this
+//! change's file scope.
 //!
 //! # Corpus
 //!
@@ -69,13 +70,14 @@ mod common;
 use common::{
     CorpusFixture, available_corpus_fixtures, language_for_ecosystem, migrated_disk_writer,
 };
-use heart::Language;
-use heart::identity::derive::package_id_from_parts;
-use index::entity::edges;
-use index::enums::{EdgeKind, EdgeSource};
-use index::ids::{PackageId, PackageStemId};
-use index::protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates};
-use index::store::{Catalog, MetaStore};
+use heart::{Language, identity::derive::package_id_from_parts};
+use index::{
+    entity::edges,
+    enums::{EdgeKind, EdgeSource},
+    ids::{PackageId, PackageStemId},
+    protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
+    store::{Catalog, MetaStore},
+};
 use sea_orm::{
     ColumnTrait, DbBackend, EntityTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait,
 };
@@ -173,7 +175,7 @@ fn ops_for_fixture(fixture: &CorpusFixture) -> Option<(CatalogOp, CatalogOp)> {
         published_at: None,
         toolchain: None,
         license,
-        edges,
+        edges: index::protocol::EdgeSnapshot::carrying(edges),
         facets: FacetWire::default(),
         source: None,
     };

@@ -9,15 +9,19 @@ use std::cell::RefCell;
 
 use common::{migrated_writer, stem_id, version_id};
 
-use index::enums::SinkKind;
-use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
-use index::store::MetaStore;
-use index::store::follower::{FollowerError, SinkFollower, drain_once};
-use index::tables::outbox::OutboxRow;
+use index::{
+    enums::SinkKind,
+    protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates},
+    store::{
+        MetaStore,
+        follower::{FollowerError, SinkFollower, drain_once},
+    },
+    tables::outbox::OutboxRow,
+};
 
-/// A test follower that records every `seq` it projects, so a test can assert on
-/// exactly which rows were (re)delivered. Optionally fails on a chosen `seq` to
-/// simulate a mid-batch projection error.
+/// A test follower that records every `seq` it projects, so a test can assert
+/// on exactly which rows were (re)delivered. Optionally fails on a chosen `seq`
+/// to simulate a mid-batch projection error.
 struct RecordingFollower {
     sink: SinkKind,
     projected: RefCell<Vec<i64>>,
@@ -91,7 +95,7 @@ fn seed_versions(
             published_at: Some(1000),
             toolchain: None,
             license: None,
-            edges: Vec::new(),
+            edges: index::protocol::EdgeSnapshot::unobserved(),
             facets: FacetWire::default(),
             source: None,
         });

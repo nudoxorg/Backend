@@ -66,6 +66,9 @@ pub struct DepEdge {
     pub requirement: Option<SmolStr>,
     /// Which table or scope the edge came from.
     pub class: DepClass,
+    /// Catalog kind this edge replaces. Recipe and runtime share a class and
+    /// stay distinct rows because the kind is part of the identity.
+    pub kind: crate::enums::EdgeKind,
     /// The manifest marked this edge optional without moving it to
     /// [`DepClass::Optional`] (Cargo `optional = true` inside
     /// `[dependencies]`).
@@ -122,6 +125,7 @@ impl DepEdge {
             name: name.into(),
             requirement: None,
             class: DepClass::Runtime,
+            kind: crate::enums::EdgeKind::Runtime,
             optional: false,
             dep_ecosystem: None,
         }
@@ -263,6 +267,10 @@ mod tests {
             name: smol(name),
             requirement: None,
             class,
+            kind: match class {
+                DepClass::Runtime | DepClass::Optional => crate::enums::EdgeKind::Runtime,
+                DepClass::Dev | DepClass::Build | DepClass::Peer => crate::enums::EdgeKind::Build,
+            },
             optional,
             dep_ecosystem: None,
         }
@@ -355,6 +363,7 @@ mod tests {
                 name: smol("something"),
                 requirement: Some(smol(">=1")),
                 class: DepClass::Runtime,
+                kind: crate::enums::EdgeKind::Runtime,
                 optional: false,
                 dep_ecosystem: None,
             }],

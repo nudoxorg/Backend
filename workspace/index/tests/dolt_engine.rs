@@ -4,21 +4,21 @@
 //! Exercises the full production path with no fakes: open an in-memory
 //! `catalog.dolt` → migrate to schema v4 → apply a batch (package + version +
 //! edges + outbox) in one transaction → commit the batch (a real `dolt_commit`)
-//! → claim the outbox → page `changed_since` → read a table **as of** the pinned
-//! commit through the `dolt_at_<table>` time-travel path.
+//! → claim the outbox → page `changed_since` → read a table **as of** the
+//! pinned commit through the `dolt_at_<table>` time-travel path.
 #![cfg(feature = "dolt-engine")]
 
 mod common;
 
 use heart::query::{AsOf, UnixMilliseconds};
-use index::engine::dolt::DoltEngine;
-use index::engine::{CatalogEngine, VersioningEngine};
-use index::enums::{EdgeKind, EdgeSource, SinkKind};
-use index::ids::{PackageId, PackageStemId};
-use index::migrations::runner::migrate_to_v4;
-use index::protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates};
-use index::store::writer::CatalogWriter;
-use index::store::{Catalog, CatalogCursor, MetaStore};
+use index::{
+    engine::{CatalogEngine, VersioningEngine, dolt::DoltEngine},
+    enums::{EdgeKind, EdgeSource, SinkKind},
+    ids::{PackageId, PackageStemId},
+    migrations::runner::migrate_to_v4,
+    protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
+    store::{Catalog, CatalogCursor, MetaStore, writer::CatalogWriter},
+};
 
 fn stem(seed: u8) -> PackageStemId {
     let mut bytes = [0u8; 16];
@@ -64,14 +64,14 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
             published_at: Some(1_700_000_000_000),
             toolchain: None,
             license: Some("MIT".to_owned()),
-            edges: vec![EdgeWire {
+            edges: index::protocol::EdgeSnapshot::carrying(vec![EdgeWire {
                 dep_ecosystem: heart::Language::Rust,
                 dep_name_canonical: "tokio".to_owned(),
                 requirement: "^1".to_owned(),
                 kind: EdgeKind::Runtime,
                 source: EdgeSource::Manifest,
                 resolved_stem: None,
-            }],
+            }]),
             facets: FacetWire {
                 keywords: Some("web http".to_owned()),
                 quality_ppm: Some(900_000),
@@ -165,22 +165,22 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
 
 /// The regression test for the defect this whole engine wiring exists to make
 /// impossible: `index` links **two** SQLite implementations into every binary
-/// that enables `dolt-engine` — DoltLite for the versioned catalog, and the stock
-/// SQLite that `rusqlite`'s `bundled` feature statically embeds for the ephemeral
-/// scratch store (INDEX-PLAN ID-2).
+/// that enables `dolt-engine` — DoltLite for the versioned catalog, and the
+/// stock SQLite that `rusqlite`'s `bundled` feature statically embeds for the
+/// ephemeral scratch store (INDEX-PLAN ID-2).
 ///
 /// They used to be indistinguishable at link time. `rusqdoltlite` declared bare
 /// `sqlite3_*` externs with no `#[link]`, and their 291 exported names overlap
-/// stock SQLite's 280 exactly, so the linker satisfied both crates from whichever
-/// archive it happened to scan first. When the DoltLite amalgamation was absent
-/// entirely, the catalog silently *became* the scratch store's engine: plain SQL
-/// worked, history did not exist, and the only symptom was `dolt_commit` failing
-/// as "no such function" somewhere else entirely.
+/// stock SQLite's 280 exactly, so the linker satisfied both crates from
+/// whichever archive it happened to scan first. When the DoltLite amalgamation
+/// was absent entirely, the catalog silently *became* the scratch store's
+/// engine: plain SQL worked, history did not exist, and the only symptom was
+/// `dolt_commit` failing as "no such function" somewhere else entirely.
 ///
 /// Asserting on content, not on `is_ok()`: the two connections must report
-/// **different** SQLite versions, and `dolt_version()` must exist on exactly one
-/// of them. A build where one engine had been substituted for the other passes
-/// neither check.
+/// **different** SQLite versions, and `dolt_version()` must exist on exactly
+/// one of them. A build where one engine had been substituted for the other
+/// passes neither check.
 #[test]
 fn catalog_and_scratch_store_are_two_distinct_engines_in_the_same_binary() {
     // The scratch store's engine: stock SQLite via rusqlite/bundled.
@@ -232,20 +232,20 @@ fn catalog_and_scratch_store_are_two_distinct_engines_in_the_same_binary() {
 
 /// The guard on the mechanism this file's existence depends on.
 ///
-/// Everything above proves `DoltEngine` works. Nothing above proves the *rest of
-/// the suite* runs on it — and for the whole life of this file, it did not.
+/// Everything above proves `DoltEngine` works. Nothing above proves the *rest
+/// of the suite* runs on it — and for the whole life of this file, it did not.
 /// `default = ["test-engine"]` routed every other test binary through
 /// `MemoryEngine`, whose `dolt_commit` appends to a `Vec`, and this file was
-/// gated behind a non-default feature so it never compiled to say otherwise. The
-/// suite was uniformly green and uniformly measuring a fake.
+/// gated behind a non-default feature so it never compiled to say otherwise.
+/// The suite was uniformly green and uniformly measuring a fake.
 ///
 /// So this asserts on the shared harness, not on a locally-opened engine:
 /// `common::migrated_writer` is the constructor the other eight test binaries
 /// call, and a commit taken through it must be a real DoltLite content hash —
 /// 40 hex characters. The fake cannot produce one; its hashes are 64-character
 /// BLAKE3 hex, so the assertion fails on length before it can fail on content.
-/// Flipping the default back, or making [`index::engine::Configured`] prefer the
-/// fake when Cargo unifies both features on, fails here and nowhere else.
+/// Flipping the default back, or making [`index::engine::Configured`] prefer
+/// the fake when Cargo unifies both features on, fails here and nowhere else.
 #[test]
 fn the_shared_test_harness_runs_on_the_real_versioned_engine() {
     let writer = common::migrated_writer();

@@ -17,6 +17,10 @@ fn edge(name: &str, class: DepClass) -> DepEdge {
         name: SmolStr::new(name),
         requirement: None,
         class,
+        kind: match class {
+            DepClass::Runtime | DepClass::Optional => index::enums::EdgeKind::Runtime,
+            DepClass::Dev | DepClass::Build | DepClass::Peer => index::enums::EdgeKind::Build,
+        },
         optional: false,
         dep_ecosystem: None,
     }

@@ -130,6 +130,7 @@ fn edge_rows<E: CatalogEngine>(engine: &E) -> Result<BTreeMap<String, Vec<DepEdg
                 Some(SmolStr::new(requirement))
             },
             class,
+            kind,
             optional: false,
             dep_ecosystem: Language::from_token(&dep_ecosystem),
         })))

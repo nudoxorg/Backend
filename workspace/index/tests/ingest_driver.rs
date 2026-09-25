@@ -6,15 +6,15 @@ mod common;
 
 use common::migrated_writer;
 
-use index::enums::AliasConfidence;
-use index::protocol::CatalogOp;
-use index::store::Catalog;
+use index::{enums::AliasConfidence, protocol::CatalogOp, store::Catalog};
 
-use index::ingest::driver::{DriveOutcome, FollowerDriver};
-use index::ingest::follower::{Follower, FollowerBatch, FollowerError, PollCadence};
-use index::ingest::homebrew::{FEED_ID, HomebrewFollower, parse_formulae};
-use index::ingest::transport::{FixtureTransport, TransportError};
-use index::ingest::watermark::{FeedWatermark, MemoryWatermarkStore, WatermarkStore};
+use index::ingest::{
+    driver::{DriveOutcome, FollowerDriver},
+    follower::{Follower, FollowerBatch, FollowerError, PollCadence},
+    homebrew::{FEED_ID, HomebrewFollower, parse_formulae},
+    transport::{FixtureTransport, TransportError},
+    watermark::{FeedWatermark, MemoryWatermarkStore, WatermarkStore},
+};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/homebrew_formula.json");
 const FORMULA_URL: &str = "https://formulae.brew.sh/api/formula.json";
@@ -125,7 +125,7 @@ fn homebrew_recipe_edges_recorded_literally() {
             coordinates: _,
             edges,
             ..
-        } if !edges.is_empty() && edges.len() == 6 => Some(edges.clone()),
+        } if edges.wires().len() == 6 => Some(edges.wires().to_vec()),
         _ => None,
     });
     let edges = curl_edges.expect("curl's 6 recipe edges");
@@ -220,7 +220,10 @@ fn a_fresh_feed_watermark_resumes_the_catalog_etag() {
         .drive_once(&follower, 2000)
         .expect("resume");
     assert!(matches!(outcome, DriveOutcome::NoChange));
-    let cursor = resumed.feed_watermark(FEED_ID).expect("read").expect("cursor");
+    let cursor = resumed
+        .feed_watermark(FEED_ID)
+        .expect("read")
+        .expect("cursor");
     assert_eq!(cursor.last_ref.as_deref(), Some("etag-v1"));
     assert_eq!(cursor.last_checked_at, 2000);
 }
@@ -270,7 +273,7 @@ struct BadBatchFollower;
 
 impl BadBatchFollower {
     fn stem() -> index::ids::PackageStemId {
-        index::ids::PackageStemId::from_uuid(uuid::Uuid::from_u128(0xDEAD))
+        index::ids::PackageStemId::from_uuid(uuid::Uuid::from_u128(0xdead))
     }
 }
 
@@ -286,8 +289,10 @@ impl Follower for BadBatchFollower {
         _previous: Option<&FeedWatermark>,
         now_unix_ms: i64,
     ) -> Result<FollowerBatch, FollowerError> {
-        use index::ids::PackageId;
-        use index::protocol::{FacetWire, PackageStemWire, VersionCoordinates};
+        use index::{
+            ids::PackageId,
+            protocol::{FacetWire, PackageStemWire, VersionCoordinates},
+        };
         let stem = Self::stem();
         let package = CatalogOp::UpsertPackage {
             stem: PackageStemWire {
@@ -311,12 +316,12 @@ impl Follower for BadBatchFollower {
             published_at: None,
             toolchain: None,
             license: None,
-            edges: Vec::new(),
+            edges: index::protocol::EdgeSnapshot::unobserved(),
             facets: FacetWire::default(),
             source: None,
         };
         Ok(FollowerBatch {
-            ops: vec![package, make_version(0xBEEF), make_version(0xCAFE)],
+            ops: vec![package, make_version(0xbeef), make_version(0xcafe)],
             next_watermark: FeedWatermark {
                 feed: "bad-batch".to_owned(),
                 last_ref: Some("should-not-persist".to_owned()),

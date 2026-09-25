@@ -14,8 +14,7 @@ use crate::{
     engine::{self, CatalogEngine, Value},
     entity::{
         advisories, edges, feed_watermarks, generations, git_watermarks, listing_events, outbox,
-        package_aliases,
-        packages, repo_facts, repo_lineage, sink_watermarks,
+        package_aliases, packages, repo_facts, repo_lineage, sink_watermarks,
     },
     enums::{OutboxOperation, SinkKind, SourceKind, TextEnum},
     ids::PackageId,
@@ -472,10 +471,48 @@ fn apply_run(tx: &dyn CatalogEngine, run: &[CatalogOp]) -> Result<usize, MetaErr
     }
 }
 
-/// True when the incoming edge payload is not the stored one.
+/// Delete stored edges of `kinds` that `wires` no longer name.
 ///
-/// `IS NOT` keeps a NULL `resolved_stem` comparable: `!=` would drop the row
-/// whenever either side is NULL and the requirement would never update.
+/// Kinds outside the snapshot stay. An empty wire list clears `kinds`.
+fn delete_replaced_edges(
+    tx: &dyn CatalogEngine,
+    version: PackageId,
+    kinds: &[crate::enums::EdgeKind],
+    wires: &[crate::protocol::EdgeWire],
+) -> Result<usize, MetaError> {
+    if kinds.is_empty() {
+        return Ok(0);
+    }
+    let mut sql = String::from("DELETE FROM edges WHERE dependent_version = ? AND kind IN (");
+    let mut params = vec![Value::Blob(version.as_uuid().as_bytes().to_vec())];
+    for (index, kind) in kinds.iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        sql.push('?');
+        params.push(Value::text(kind.as_token()));
+    }
+    sql.push(')');
+    let kept: Vec<_> = wires
+        .iter()
+        .filter(|wire| kinds.contains(&wire.kind))
+        .collect();
+    if !kept.is_empty() {
+        sql.push_str(" AND NOT (");
+        for (index, wire) in kept.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(" OR ");
+            }
+            sql.push_str("(dep_ecosystem = ? AND dep_name_canonical = ? AND kind = ?)");
+            params.push(Value::text(wire.dep_ecosystem.as_token()));
+            params.push(Value::text(&wire.dep_name_canonical));
+            params.push(Value::text(wire.kind.as_token()));
+        }
+        sql.push(')');
+    }
+    tx.execute(&sql, &params).map_err(MetaError::from)
+}
+
 fn edge_payload_differs() -> sea_orm::sea_query::SimpleExpr {
     let excluded = |column| Expr::col((Alias::new("excluded"), column));
     let differs = |column| Expr::col(column).binary(BinOper::IsNot, excluded(column));
@@ -573,26 +610,40 @@ fn upsert_versions_batch(
         }
     }
 
-    // One statement per version so an unchanged edge set reports zero affected
-    // rows and does not join the outbox. A requirement or source change does.
-    // Removed names stay: this upsert is additive. Replacement goes through
-    // `replace_runtime_edges`.
-    let mut edges_by_version: Vec<(PackageId, Vec<edges::ActiveModel>)> = Vec::new();
+    // One statement per version. [`EdgeSnapshot::Unobserved`] leaves stored
+    // edges alone. [`EdgeSnapshot::Replace`] is the complete set for its
+    // kinds, so an empty wire list clears those kinds and no others.
+    let mut edges_by_version: Vec<(PackageId, crate::protocol::EdgeSnapshot)> = Vec::new();
     for op in run {
         let CatalogOp::UpsertVersion {
             coordinates,
-            edges: edge_wires,
+            edges: snapshot,
             ..
         } = op
         else {
             unreachable!("run is homogeneous by construction")
         };
-        if edge_wires.is_empty() {
+        if matches!(snapshot, crate::protocol::EdgeSnapshot::Unobserved) {
             continue;
         }
-        let dependent_version = *coordinates.version_id.as_uuid();
-        let models = edge_wires
+        if let Some((_, existing)) = edges_by_version
+            .iter_mut()
+            .find(|(id, _)| *id == coordinates.version_id)
+        {
+            *existing = snapshot.clone();
+        } else {
+            edges_by_version.push((coordinates.version_id, snapshot.clone()));
+        }
+    }
+    for (version, snapshot) in edges_by_version {
+        let crate::protocol::EdgeSnapshot::Replace { kinds, wires } = &snapshot else {
+            continue;
+        };
+        let removed = delete_replaced_edges(tx, version, kinds, wires)?;
+        let dependent_version = *version.as_uuid();
+        let models: Vec<_> = wires
             .iter()
+            .filter(|edge| kinds.contains(&edge.kind))
             .map(|edge| edges::ActiveModel {
                 dependent_version: Set(dependent_version),
                 dep_ecosystem: Set(edge.dep_ecosystem.as_token().to_owned()),
@@ -603,16 +654,12 @@ fn upsert_versions_batch(
                 source: Set(edge.source),
             })
             .collect();
-        if let Some((_, existing)) = edges_by_version
-            .iter_mut()
-            .find(|(id, _)| *id == coordinates.version_id)
-        {
-            existing.extend(models);
-        } else {
-            edges_by_version.push((coordinates.version_id, models));
+        if models.is_empty() {
+            if removed != 0 && !changed.contains(&version) {
+                changed.push(version);
+            }
+            continue;
         }
-    }
-    for (version, models) in edges_by_version {
         let stmt = edges::Entity::insert_many(models)
             .on_conflict(
                 OnConflict::columns([
@@ -631,7 +678,7 @@ fn upsert_versions_batch(
             )
             .build(DbBackend::Sqlite);
         let affected = engine::exec(tx, stmt)?;
-        if affected != 0 && !changed.contains(&version) {
+        if (affected != 0 || removed != 0) && !changed.contains(&version) {
             changed.push(version);
         }
     }

@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use smol_str::SmolStr;
 
 use super::edge_fact;
-use crate::record::PackageRecord;
+use crate::{enums::TextEnum, record::PackageRecord};
 
 pub use edge_fact::{EdgeFact, EdgeSync};
 
@@ -118,6 +118,8 @@ pub(super) struct PackageKey {
 pub(super) struct EdgeTip {
     pub(super) name: SmolStr,
     pub(super) class: SmolStr,
+    /// Catalog kind token. Scope deletes match this, not the folded class.
+    pub(super) kind: SmolStr,
     /// Empty when the dependency is in the depending package's ecosystem.
     pub(super) dep_ecosystem: SmolStr,
     pub(super) hash: SmolStr,
@@ -156,8 +158,41 @@ impl VersionedCatalog {
     }
 
     pub fn put_record(&mut self, record: &PackageRecord) -> OrmResult<FactWrite> {
+        self.put_scoped(record, None)
+    }
+
+    pub fn put_observed(
+        &mut self,
+        record: &PackageRecord,
+        edges: &crate::protocol::EdgeSnapshot,
+    ) -> OrmResult<FactWrite> {
+        match edges {
+            crate::protocol::EdgeSnapshot::Unobserved => self.put_body(record),
+            crate::protocol::EdgeSnapshot::Replace { kinds, .. } => {
+                self.put_scoped(record, Some(kinds))
+            }
+        }
+    }
+
+    fn put_body(&mut self, record: &PackageRecord) -> OrmResult<FactWrite> {
         let record = self.retain_known_content(record)?;
-        let edges = self.sync_edges(&record)?;
+        let fact = PackageFact::from_record(&record)?;
+        let same = self
+            .get(&fact.ecosystem, &fact.name, &fact.version)
+            .is_some_and(|tip| tip.payload_hash == fact.payload_hash);
+        if same {
+            return Ok(FactWrite::Unchanged);
+        }
+        Ok(FactWrite::Revised(self.upsert(&fact)?))
+    }
+
+    fn put_scoped(
+        &mut self,
+        record: &PackageRecord,
+        kinds: Option<&[crate::enums::EdgeKind]>,
+    ) -> OrmResult<FactWrite> {
+        let record = self.retain_known_content(record)?;
+        let edges = self.sync_edges_in(&record, kinds)?;
         let fact = PackageFact::from_record(&record)?;
         let same = self
             .get(&fact.ecosystem, &fact.name, &fact.version)
@@ -178,7 +213,9 @@ impl VersionedCatalog {
         effect: &crate::edge_project::LedgerEffect,
     ) -> OrmResult<FactWrite> {
         match effect {
-            crate::edge_project::LedgerEffect::Upsert(record) => self.put_record(record),
+            crate::edge_project::LedgerEffect::Upsert { record, edges } => {
+                self.put_observed(record, edges)
+            }
             crate::edge_project::LedgerEffect::Remove {
                 ecosystem,
                 name,
@@ -205,7 +242,7 @@ impl VersionedCatalog {
                     &pid,
                     tip.dep_ecosystem.as_str(),
                     tip.name.as_str(),
-                    tip.class.as_str(),
+                    tip.kind.as_str(),
                 ),
                 "drop edge",
             )?);
@@ -229,30 +266,52 @@ impl VersionedCatalog {
     }
 
     pub fn sync_edges(&mut self, record: &PackageRecord) -> OrmResult<EdgeSync> {
+        self.sync_edges_in(record, None)
+    }
+
+    fn sync_edges_in(
+        &mut self,
+        record: &PackageRecord,
+        kinds: Option<&[crate::enums::EdgeKind]>,
+    ) -> OrmResult<EdgeSync> {
         let pid = SmolStr::new(edge_fact::version_pid_of(
             record.ecosystem.as_token(),
             record.canonical_name.as_str(),
             record.version.as_str(),
         ));
         let current = self.edge_tips.get(&pid).cloned().unwrap_or_default();
+        let in_scope = |kind: &str| {
+            kinds.is_none_or(|kinds| kinds.iter().any(|scoped| scoped.as_token() == kind))
+        };
         let mut revised = 0;
         let mut unchanged = 0;
         let mut commit = None;
-        let mut next = Vec::with_capacity(record.edges.len());
+        let mut next: Vec<EdgeTip> = current
+            .iter()
+            .filter(|tip| !in_scope(tip.kind.as_str()))
+            .cloned()
+            .collect();
         let mut seen = std::collections::BTreeSet::new();
         for edge in &record.edges {
+            if !in_scope(edge.kind.as_token()) {
+                continue;
+            }
             let class = edge_fact::class_token_of(edge.class);
             let dep_ecosystem = edge
                 .dep_ecosystem
                 .map(|ecosystem| SmolStr::new(ecosystem.as_token()))
                 .unwrap_or_default();
-            if !seen.insert((edge.name.clone(), class, dep_ecosystem.clone())) {
+            if !seen.insert((
+                edge.name.clone(),
+                edge.kind.as_token(),
+                dep_ecosystem.clone(),
+            )) {
                 continue;
             }
             let hash = edge_fact::hash_edge(edge);
             let same = current.iter().any(|tip| {
                 tip.name == edge.name
-                    && tip.class.as_str() == class
+                    && tip.kind.as_str() == edge.kind.as_token()
                     && tip.dep_ecosystem == dep_ecosystem
                     && tip.hash.as_str() == hash
             });
@@ -266,15 +325,19 @@ impl VersionedCatalog {
             next.push(EdgeTip {
                 name: edge.name.clone(),
                 class: SmolStr::new(class),
+                kind: SmolStr::new(edge.kind.as_token()),
                 dep_ecosystem,
                 hash: SmolStr::new(hash),
             });
         }
         let mut removed = 0;
         for stored in &current {
+            if !in_scope(stored.kind.as_str()) {
+                continue;
+            }
             if next.iter().any(|edge| {
                 edge.name == stored.name
-                    && edge.class == stored.class
+                    && edge.kind == stored.kind
                     && edge.dep_ecosystem == stored.dep_ecosystem
             }) {
                 continue;
@@ -284,7 +347,7 @@ impl VersionedCatalog {
                     pid.as_str(),
                     stored.dep_ecosystem.as_str(),
                     stored.name.as_str(),
-                    stored.class.as_str(),
+                    stored.kind.as_str(),
                 ),
                 "remove edge",
             )?);

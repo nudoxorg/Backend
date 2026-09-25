@@ -7,9 +7,13 @@ mod common;
 
 use common::{migrated_writer, stem_id, version_id};
 
-use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
-use index::store::lifecycle::{ArchiveCacheMeta, get_archive_cache_meta, set_archive_cache_meta};
-use index::store::{MetaError, MetaStore};
+use index::{
+    protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates},
+    store::{
+        MetaError, MetaStore,
+        lifecycle::{ArchiveCacheMeta, get_archive_cache_meta, set_archive_cache_meta},
+    },
+};
 
 fn upsert_package(seed: u8) -> CatalogOp {
     CatalogOp::UpsertPackage {
@@ -35,7 +39,7 @@ fn upsert_version(stem_seed: u8, version_seed: u8) -> CatalogOp {
         published_at: Some(1000),
         toolchain: None,
         license: Some("MIT".to_owned()),
-        edges: Vec::new(),
+        edges: index::protocol::EdgeSnapshot::unobserved(),
         facets: FacetWire::default(),
         source: None,
     }
@@ -78,26 +82,18 @@ fn set_overwrites_a_previous_value() {
         .apply_ops(&[upsert_package(3), upsert_version(3, 3)])
         .expect("seed package+version");
 
-    set_archive_cache_meta(
-        writer.engine(),
-        version_id(3),
-        &ArchiveCacheMeta {
-            etag: Some("\"first\"".to_owned()),
-            last_modified: None,
-        },
-    )
+    set_archive_cache_meta(writer.engine(), version_id(3), &ArchiveCacheMeta {
+        etag: Some("\"first\"".to_owned()),
+        last_modified: None,
+    })
     .expect("first write");
 
     // A later fetch observes a fresh ETag and no Last-Modified this time —
     // the new write must fully replace the old row, not merge with it.
-    set_archive_cache_meta(
-        writer.engine(),
-        version_id(3),
-        &ArchiveCacheMeta {
-            etag: Some("\"second\"".to_owned()),
-            last_modified: None,
-        },
-    )
+    set_archive_cache_meta(writer.engine(), version_id(3), &ArchiveCacheMeta {
+        etag: Some("\"second\"".to_owned()),
+        last_modified: None,
+    })
     .expect("second write");
 
     let read_back = get_archive_cache_meta(writer.engine(), version_id(3)).expect("read");
@@ -112,14 +108,10 @@ fn set_on_a_version_with_no_row_is_a_missing_row_error() {
     let writer = migrated_writer();
     let never_inserted = version_id(99);
 
-    let err = set_archive_cache_meta(
-        writer.engine(),
-        never_inserted,
-        &ArchiveCacheMeta {
-            etag: Some("\"x\"".to_owned()),
-            last_modified: None,
-        },
-    )
+    let err = set_archive_cache_meta(writer.engine(), never_inserted, &ArchiveCacheMeta {
+        etag: Some("\"x\"".to_owned()),
+        last_modified: None,
+    })
     .expect_err("no such versions row");
 
     assert!(matches!(err, MetaError::MissingRow { .. }), "{err:?}");
@@ -132,14 +124,10 @@ fn clearing_a_validator_the_origin_stopped_sending_round_trips_to_none() {
         .apply_ops(&[upsert_package(4), upsert_version(4, 4)])
         .expect("seed package+version");
 
-    set_archive_cache_meta(
-        writer.engine(),
-        version_id(4),
-        &ArchiveCacheMeta {
-            etag: Some("\"had-one\"".to_owned()),
-            last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".to_owned()),
-        },
-    )
+    set_archive_cache_meta(writer.engine(), version_id(4), &ArchiveCacheMeta {
+        etag: Some("\"had-one\"".to_owned()),
+        last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".to_owned()),
+    })
     .expect("first write");
 
     // Caller explicitly clears both — e.g. the origin migrated away from

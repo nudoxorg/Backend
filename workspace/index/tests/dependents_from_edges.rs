@@ -61,7 +61,7 @@ fn version(seed: u8, version_name: &str, edges: Vec<EdgeWire>, facets: FacetWire
         published_at: None,
         toolchain: None,
         license: None,
-        edges,
+        edges: index::protocol::EdgeSnapshot::carrying(edges),
         facets,
         source: None,
     }
@@ -174,7 +174,10 @@ async fn two_versions_of_one_package_union_their_runtime_edges() {
             published_at: None,
             toolchain: None,
             license: None,
-            edges: vec![runtime(heart::Language::Rust, "tokio")],
+            edges: index::protocol::EdgeSnapshot::carrying(vec![runtime(
+                heart::Language::Rust,
+                "tokio",
+            )]),
             facets: facets_of(&[]),
             source: None,
         },
@@ -305,7 +308,7 @@ async fn stored_generation_and_feed_republish_share_one_runtime_replace() {
             published_at: None,
             toolchain: None,
             license: None,
-            edges: vec![build_edge("criterion")],
+            edges: index::protocol::EdgeSnapshot::carrying(vec![build_edge("criterion")]),
             facets: facets_of(&["serde"]),
             source: None,
         }])
@@ -559,7 +562,7 @@ async fn a_driven_batch_keeps_sql_and_the_ledger_on_one_union() {
         published_at: None,
         toolchain: None,
         license: None,
-        edges: vec![
+        edges: index::protocol::EdgeSnapshot::carrying(vec![
             runtime(Language::Rust, "serde"),
             runtime(Language::Rust, "tokio"),
             runtime(Language::Rust, "app"),
@@ -571,7 +574,7 @@ async fn a_driven_batch_keeps_sql_and_the_ledger_on_one_union() {
                 source: EdgeSource::Manifest,
                 resolved_stem: None,
             },
-        ],
+        ]),
         facets: facets_of(&[]),
         source: None,
     };
@@ -669,4 +672,61 @@ async fn a_driven_batch_keeps_sql_and_the_ledger_on_one_union() {
         Some(1)
     );
     assert!(!degree.contains_key(&(Language::Rust, SmolStr::new("tokio"))));
+}
+
+#[test]
+fn an_unobserved_rewrite_keeps_both_stores_and_a_manifest_clear_drops_them() {
+    let writer = migrated_writer();
+    let mut ledger = index::engine::turso_vc::VersionedCatalog::open().expect("ledger");
+    let commit = |ops: &[CatalogOp],
+                  ledger: &mut index::engine::turso_vc::VersionedCatalog,
+                  fallback: Option<(Language, &str)>| {
+        writer.apply_ops(ops).expect("sql");
+        for effect in index::edge_project::effects_from_ops(ops, fallback) {
+            ledger.apply_effect(&effect).expect("ledger");
+        }
+    };
+    let seeded = vec![
+        package(5, "app"),
+        version(
+            5,
+            "1.0.0",
+            vec![runtime(Language::Rust, "serde")],
+            facets_of(&[]),
+        ),
+    ];
+    commit(&seeded, &mut ledger, None);
+    let quiet = version(5, "1.0.0", vec![], facets_of(&[]));
+    commit(
+        std::slice::from_ref(&quiet),
+        &mut ledger,
+        Some((Language::Rust, "app")),
+    );
+    assert_eq!(edge_kinds(writer.engine(), version_id(5)), vec![(
+        "runtime".to_owned(),
+        "serde".to_owned()
+    )]);
+    let kept = ledger
+        .materialize("rust", "app", "1.0.0")
+        .expect("read")
+        .expect("row");
+    assert_eq!(kept.edges.len(), 1);
+    assert_eq!(kept.edges[0].name.as_str(), "serde");
+
+    let mut cleared = version(5, "1.0.0", vec![], facets_of(&[]));
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut cleared {
+        *edges = index::protocol::EdgeSnapshot::manifest(Vec::new());
+    }
+    commit(
+        std::slice::from_ref(&cleared),
+        &mut ledger,
+        Some((Language::Rust, "app")),
+    );
+    assert!(edge_kinds(writer.engine(), version_id(5)).is_empty());
+    let gone = ledger
+        .materialize("rust", "app", "1.0.0")
+        .expect("read")
+        .expect("row");
+    assert!(gone.edges.is_empty());
+    assert_eq!(ledger.dependents(), ledger.dependents_from_tips());
 }

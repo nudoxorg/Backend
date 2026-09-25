@@ -7,6 +7,7 @@ use common::{gen_stamp, migrated_writer, stem_id, version_id};
 
 use heart::query::{AsOf, UnixMilliseconds};
 use index::{
+    engine::CatalogEngine,
     enums::{EdgeKind, EdgeSource, IrStatus, ListingStatus, SinkKind},
     protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
     store::{Catalog, CatalogCursor, MetaError, MetaStore},
@@ -41,7 +42,7 @@ fn upsert_version(stem_seed: u8, version_seed: u8) -> CatalogOp {
         published_at: Some(1000),
         toolchain: None,
         license: Some("MIT".to_owned()),
-        edges: Vec::new(),
+        edges: index::protocol::EdgeSnapshot::unobserved(),
         facets: FacetWire::default(),
         source: None,
     }
@@ -118,7 +119,7 @@ fn reapplying_the_same_edge_emits_nothing_and_a_new_requirement_does() {
     let writer = migrated_writer();
     let mut first = upsert_version(1, 1);
     if let CatalogOp::UpsertVersion { edges, .. } = &mut first {
-        edges.push(edge("1"));
+        *edges = index::protocol::EdgeSnapshot::manifest(vec![edge("1")]);
     }
     writer
         .apply_ops(&[upsert_package(1), first.clone()])
@@ -129,7 +130,7 @@ fn reapplying_the_same_edge_emits_nothing_and_a_new_requirement_does() {
 
     let mut revised = upsert_version(1, 1);
     if let CatalogOp::UpsertVersion { edges, .. } = &mut revised {
-        edges.push(edge("^1"));
+        *edges = index::protocol::EdgeSnapshot::manifest(vec![edge("^1")]);
     }
     let report = writer.apply_ops(&[revised]).expect("requirement change");
     assert_eq!(report.outbox_rows, 1, "a changed requirement must notify");
@@ -412,4 +413,87 @@ fn as_of_time_resolves_each_instant_to_the_newest_commit_at_or_before_it() {
     // Before the first commit is a typed NoCommitAtInstant error, not a panic.
     let before = writer.at(&AsOf::Time(UnixMilliseconds(1)));
     assert!(matches!(before, Err(MetaError::NoCommitAtInstant)));
+}
+
+fn named_edge(name: &str) -> EdgeWire {
+    EdgeWire {
+        dep_ecosystem: heart::Language::Rust,
+        dep_name_canonical: name.to_owned(),
+        requirement: String::new(),
+        kind: EdgeKind::Runtime,
+        source: EdgeSource::Manifest,
+        resolved_stem: None,
+    }
+}
+
+fn edge_names(
+    writer: &index::store::writer::CatalogWriter<index::engine::Configured>,
+) -> Vec<String> {
+    writer
+        .engine()
+        .query_rows(
+            "SELECT dep_name_canonical FROM edges ORDER BY dep_name_canonical",
+            &[],
+            &mut |row| row.get_text(0),
+        )
+        .expect("edges")
+}
+
+#[test]
+fn a_shorter_edge_list_drops_the_omitted_name_and_an_empty_list_does_not() {
+    let writer = migrated_writer();
+    let mut first = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut first {
+        *edges =
+            index::protocol::EdgeSnapshot::manifest(vec![named_edge("serde"), named_edge("tokio")]);
+    }
+    writer
+        .apply_ops(&[upsert_package(1), first])
+        .expect("first");
+    assert_eq!(edge_names(&writer), vec![
+        "serde".to_owned(),
+        "tokio".to_owned()
+    ]);
+
+    let mut shorter = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut shorter {
+        *edges = index::protocol::EdgeSnapshot::manifest(vec![named_edge("serde")]);
+    }
+    writer.apply_ops(&[shorter]).expect("shrink");
+    assert_eq!(edge_names(&writer), vec!["serde".to_owned()]);
+
+    writer
+        .apply_ops(&[upsert_version(1, 1)])
+        .expect("empty keeps");
+    assert_eq!(edge_names(&writer), vec!["serde".to_owned()]);
+
+    let mut cleared = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut cleared {
+        *edges = index::protocol::EdgeSnapshot::manifest(Vec::new());
+    }
+    writer.apply_ops(&[cleared]).expect("clear");
+    assert!(edge_names(&writer).is_empty());
+}
+
+#[test]
+fn a_runtime_replace_leaves_a_recipe_edge() {
+    let writer = migrated_writer();
+    let mut seeded = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut seeded {
+        let mut recipe = named_edge("openssl");
+        recipe.kind = EdgeKind::Recipe;
+        *edges = index::protocol::EdgeSnapshot::recipe(vec![recipe]);
+    }
+    writer
+        .apply_ops(&[upsert_package(1), seeded])
+        .expect("recipe");
+    let mut runtime = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut runtime {
+        *edges = index::protocol::EdgeSnapshot::feed(vec![named_edge("serde")]);
+    }
+    writer.apply_ops(&[runtime]).expect("runtime");
+    assert_eq!(edge_names(&writer), vec![
+        "openssl".to_owned(),
+        "serde".to_owned()
+    ]);
 }

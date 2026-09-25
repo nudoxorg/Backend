@@ -248,6 +248,7 @@ fn a_repeated_name_keeps_the_first_requirement() {
         name: SmolStr::new("libc"),
         requirement: Some(SmolStr::new("^9")),
         class: DepClass::Dev,
+        kind: crate::enums::EdgeKind::Build,
         optional: false,
         dep_ecosystem: None,
     };
@@ -349,6 +350,7 @@ fn dropping_a_version_tombstones_the_tip_and_keeps_the_prior_commit() {
             name: "cc".into(),
             requirement: None,
             class: crate::record::DepClass::Build,
+            kind: crate::enums::EdgeKind::Build,
             optional: false,
             dep_ecosystem: None,
         }],
@@ -479,7 +481,7 @@ fn a_full_git_sha_binds_content_and_a_short_rev_does_not() {
             published_at: None,
             toolchain: None,
             license: None,
-            edges: Vec::new(),
+            edges: crate::protocol::EdgeSnapshot::unobserved(),
             facets: FacetWire::default(),
             source: Some(SourceAcquisitionWire {
                 source_kind: SourceKind::Git,
@@ -557,7 +559,7 @@ fn a_registry_sha256_beats_a_git_sha_and_keeps_the_version_pid() {
         published_at: None,
         toolchain: None,
         license: None,
-        edges: Vec::new(),
+        edges: crate::protocol::EdgeSnapshot::unobserved(),
         facets: FacetWire::default(),
         source: Some(SourceAcquisitionWire {
             source_kind: SourceKind::Git,

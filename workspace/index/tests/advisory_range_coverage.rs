@@ -125,7 +125,7 @@ fn version(stem: index::ids::PackageStemId, id: index::ids::PackageId, name: &st
         published_at: None,
         toolchain: None,
         license: None,
-        edges: Vec::new(),
+        edges: index::protocol::EdgeSnapshot::unobserved(),
         facets: FacetWire::default(),
         source: None,
     }

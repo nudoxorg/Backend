@@ -48,19 +48,18 @@
 
 mod common;
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use common::{migrated_writer, stem_id, version_id};
 
 use heart::content::ContentHash;
-use index::catalog::{GlobalStore, InstanceToken};
-use index::coordination::Outbox;
-use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
-use index::runtime::text::query::TextQuery;
-use index::runtime::text::{Poller, TextIndex};
-use index::store::MetaStore;
-use index::store::lifecycle::upsert_symbol_projection;
+use index::{
+    catalog::{GlobalStore, InstanceToken},
+    coordination::Outbox,
+    protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates},
+    runtime::text::{Poller, TextIndex, query::TextQuery},
+    store::{MetaStore, lifecycle::upsert_symbol_projection},
+};
 
 /// A symbol name distinctive enough that a substring/token hit could not be
 /// an accident of some other fixture.
@@ -99,7 +98,7 @@ async fn text_sink_recovers_after_symbols_land_post_registration() {
                 published_at: None,
                 toolchain: None,
                 license: None,
-                edges: Vec::new(),
+                edges: index::protocol::EdgeSnapshot::unobserved(),
                 facets: FacetWire::default(),
                 source: None,
             },

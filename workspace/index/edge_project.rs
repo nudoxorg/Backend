@@ -46,8 +46,13 @@ pub fn project_edges(ecosystem: Language, edges: &[DepEdge], source: EdgeSource)
 /// One effect a catalog batch has on the versioned package ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LedgerEffect {
-    /// Write or revise this package and its edges.
-    Upsert(crate::record::PackageRecord),
+    /// Write or revise this package. `edges` says which kinds move.
+    Upsert {
+        /// Package body. Its edges are the replacement list.
+        record: crate::record::PackageRecord,
+        /// Which stored edges this write may replace.
+        edges: crate::protocol::EdgeSnapshot,
+    },
     /// Tombstone this package version and every edge it owns.
     Remove {
         /// Ecosystem of the removed package.
@@ -79,7 +84,7 @@ pub fn records_from_ops_named(
     effects_from_ops(ops, fallback)
         .into_iter()
         .filter_map(|effect| match effect {
-            LedgerEffect::Upsert(record) => Some(record),
+            LedgerEffect::Upsert { record, .. } => Some(record),
             LedgerEffect::Remove { .. } => None,
         })
         .collect()
@@ -149,7 +154,7 @@ pub fn effects_from_ops(
                     None,
                     None,
                     false,
-                    edges.iter().map(edge_from_wire).collect(),
+                    edges.wires().iter().map(edge_from_wire).collect(),
                 );
                 if let Some(digest) = crate::pid::observed_content(
                     source.and_then(|source| source.registry_checksum.as_deref()),
@@ -157,7 +162,10 @@ pub fn effects_from_ops(
                 ) {
                     record = record.with_content(digest);
                 }
-                effects.push(LedgerEffect::Upsert(record));
+                effects.push(LedgerEffect::Upsert {
+                    record,
+                    edges: edges.clone(),
+                });
             }
         }
     }
@@ -169,7 +177,7 @@ fn version_view(
 ) -> Option<(
     crate::ids::PackageStemId,
     &str,
-    &[EdgeWire],
+    &crate::protocol::EdgeSnapshot,
     Option<&str>,
     Option<&crate::protocol::SourceAcquisitionWire>,
 )> {
@@ -214,6 +222,7 @@ fn edge_from_wire(wire: &EdgeWire) -> DepEdge {
             Some(SmolStr::new(&wire.requirement))
         },
         class,
+        kind: wire.kind,
         optional: false,
         dep_ecosystem: Some(wire.dep_ecosystem),
     }
@@ -237,6 +246,10 @@ mod tests {
             name: SmolStr::new(name),
             requirement: requirement.map(SmolStr::new),
             class,
+            kind: match class {
+                DepClass::Runtime | DepClass::Optional => EdgeKind::Runtime,
+                DepClass::Dev | DepClass::Build | DepClass::Peer => EdgeKind::Build,
+            },
             optional: false,
             dep_ecosystem: None,
         }
@@ -296,7 +309,11 @@ mod tests {
                 published_at: None,
                 toolchain: None,
                 license: Some("MIT".into()),
-                edges: project_edges(Language::Rust, &edges_for_batch(), EdgeSource::Manifest),
+                edges: crate::protocol::EdgeSnapshot::manifest(project_edges(
+                    Language::Rust,
+                    &edges_for_batch(),
+                    EdgeSource::Manifest,
+                )),
                 facets: FacetWire::default(),
                 source: None,
             },

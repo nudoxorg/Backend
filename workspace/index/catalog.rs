@@ -180,7 +180,7 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             published_at: None,
             toolchain: Some(crate::protocol::ToolchainRef(toolchain_json.into())),
             license: None,
-            edges: Vec::new(),
+            edges: crate::protocol::EdgeSnapshot::unobserved(),
             facets: facet_wire,
             source: None,
         }])?;
@@ -226,14 +226,14 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
                 published_at: None,
                 toolchain: Some(crate::protocol::ToolchainRef(toolchain_json.into())),
                 license: None,
-                edges: feed_edge_wires(
+                edges: crate::protocol::EdgeSnapshot::feed(feed_edge_wires(
                     coordinates.ecosystem(),
                     package
                         .facets
                         .as_ref()
                         .map(|facets| facets.dependencies.as_slice())
                         .unwrap_or(&[]),
-                ),
+                )),
                 facets: facet_wire,
                 source: None,
             },

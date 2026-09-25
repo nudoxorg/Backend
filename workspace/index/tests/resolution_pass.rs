@@ -1,4 +1,5 @@
-//! Integration tests for the registryless resolution pass (REGISTRYLESS §8, P8/P10).
+//! Integration tests for the registryless resolution pass (REGISTRYLESS §8,
+//! P8/P10).
 //!
 //! Exercises the full path against the in-memory catalog: seed system model
 //! packages + aliases, ingest a version whose edges carry literal C/C++ tokens,
@@ -10,13 +11,15 @@ mod common;
 use common::migrated_writer;
 
 use heart::Language;
-use index::engine::{CatalogEngine, Value};
-use index::enums::{EdgeKind, EdgeSource};
-use index::ids::{PackageStemId, version_id};
-use index::protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates};
-use index::resolution::{ResolutionReport, resolve_unresolved_edges};
-use index::seed_models::{system_model_seed_ops, system_stem_id};
-use index::store::{MetaStore, writer::CatalogWriter};
+use index::{
+    engine::{CatalogEngine, Value},
+    enums::{EdgeKind, EdgeSource},
+    ids::{PackageStemId, version_id},
+    protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
+    resolution::{ResolutionReport, resolve_unresolved_edges},
+    seed_models::{system_model_seed_ops, system_stem_id},
+    store::{MetaStore, writer::CatalogWriter},
+};
 
 /// A deterministic version id from a seed.
 fn version(seed: u8) -> heart::PackageId {
@@ -95,7 +98,7 @@ fn ingest_consumer(writer: &CatalogWriter<index::engine::Configured>) {
                 published_at: Some(1000),
                 toolchain: None,
                 license: None,
-                edges: vec![
+                edges: index::protocol::EdgeSnapshot::carrying(vec![
                     EdgeWire {
                         dep_ecosystem: Language::Cpp,
                         dep_name_canonical: "ZLIB".to_owned(),
@@ -120,7 +123,7 @@ fn ingest_consumer(writer: &CatalogWriter<index::engine::Configured>) {
                         source: EdgeSource::Manifest,
                         resolved_stem: None,
                     },
-                ],
+                ]),
                 facets: FacetWire::default(),
                 source: None,
             },

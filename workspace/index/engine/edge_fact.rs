@@ -5,7 +5,10 @@ use turso_versioning::{
     vtab_log::{VcRow, VcValue},
 };
 
-use crate::record::{DepClass, DepEdge, PackageRecord};
+use crate::{
+    enums::TextEnum,
+    record::{DepClass, DepEdge, PackageRecord},
+};
 
 /// One dependency edge, versioned apart from the package body.
 ///
@@ -30,6 +33,8 @@ pub struct EdgeFact {
     pub requirement: String,
     /// [`DepClass`] token.
     pub class: String,
+    /// Catalog [`crate::enums::EdgeKind`] token. Primary key, not the class.
+    pub kind: String,
     /// `1` when the manifest marked the edge optional.
     pub optional: String,
     /// BLAKE3 hex of requirement, class, and optional.
@@ -48,8 +53,9 @@ impl VersionedRow for EdgeFact {
         "class",
         "optional",
         "payload_hash",
+        "kind",
     ];
-    const PK: &'static [&'static str] = &["version_pid", "dep_ecosystem", "name", "class"];
+    const PK: &'static [&'static str] = &["version_pid", "dep_ecosystem", "name", "kind"];
     const TABLE: &'static str = "package_edges";
 
     fn from_row(row: &VcRow) -> Result<Self, OrmError> {
@@ -71,6 +77,7 @@ impl VersionedRow for EdgeFact {
             class: text(7, "class")?,
             optional: text(8, "optional")?,
             payload_hash: text(9, "payload_hash")?,
+            kind: text(10, "kind")?,
         })
     }
 
@@ -86,6 +93,7 @@ impl VersionedRow for EdgeFact {
             VcValue::Text(self.class.clone()),
             VcValue::Text(self.optional.clone()),
             VcValue::Text(self.payload_hash.clone()),
+            VcValue::Text(self.kind.clone()),
         ])
     }
 }
@@ -108,6 +116,7 @@ impl EdgeFact {
                 .unwrap_or_default(),
             requirement: edge.requirement.as_deref().unwrap_or("").to_owned(),
             class: class_token(edge.class).to_owned(),
+            kind: edge.kind.as_token().to_owned(),
             optional: if edge.optional { "1" } else { "0" }.to_owned(),
             payload_hash: hash_edge(edge),
         }
@@ -148,10 +157,6 @@ pub(in crate::engine) fn edge_pk(
     ]
 }
 
-pub(in crate::engine) fn class_tokens() -> &'static [&'static str] {
-    &["runtime", "dev", "build", "optional", "peer"]
-}
-
 impl EdgeFact {
     /// Rebuild the manifest edge this row stores.
     pub(in crate::engine) fn to_edge(&self) -> Result<DepEdge, OrmError> {
@@ -175,6 +180,8 @@ impl EdgeFact {
                 Some(smol_str::SmolStr::new(&self.requirement))
             },
             class: class_from_token(&self.class)?,
+            kind: crate::enums::EdgeKind::from_token(&self.kind)
+                .map_err(|_| OrmError::Decode(format!("package_edges.kind {}", self.kind)))?,
             optional: self.optional == "1",
         })
     }
@@ -232,6 +239,8 @@ pub(in crate::engine) fn hash_edge(edge: &DepEdge) -> String {
     hasher.update(edge.requirement.as_deref().unwrap_or("").as_bytes());
     hasher.update(&[0xff]);
     hasher.update(class_token(edge.class).as_bytes());
+    hasher.update(&[0xff]);
+    hasher.update(edge.kind.as_token().as_bytes());
     hasher.update(&[0xff]);
     hasher.update(if edge.optional {
         b"1".as_slice()

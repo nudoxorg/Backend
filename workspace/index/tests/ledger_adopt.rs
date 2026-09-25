@@ -44,14 +44,14 @@ fn a_fresh_ledger_adopts_the_sql_tip_and_a_second_pass_is_unchanged() {
                 published_at: None,
                 toolchain: None,
                 license: Some("MIT".into()),
-                edges: vec![EdgeWire {
+                edges: index::protocol::EdgeSnapshot::carrying(vec![EdgeWire {
                     dep_ecosystem: heart::Language::Rust,
                     dep_name_canonical: "libc".into(),
                     requirement: "^0.2".into(),
                     kind: EdgeKind::Runtime,
                     source: EdgeSource::Manifest,
                     resolved_stem: None,
-                }],
+                }]),
                 facets: FacetWire {
                     keywords,
                     quality_ppm,

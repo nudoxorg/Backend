@@ -14,7 +14,7 @@ use heart::Language;
 use crate::{
     enums::{
         AliasConfidence, EdgeKind, EdgeSource, IrStatus, LineageEvidence, LineageRelation,
-        ListingStatus, SourceKind,
+        ListingStatus, SourceKind, TextEnum,
     },
     ids::{ChannelTip, GenerationStamp, ObjectPackHash, PackageId, PackageStemId},
 };
@@ -70,6 +70,88 @@ pub struct EdgeWire {
     pub resolved_stem: Option<PackageStemId>,
 }
 
+/// What one catalog write knows about a version's dependency edges.
+///
+/// [`EdgeSnapshot::Unobserved`] is a listing that never read a manifest, so
+/// stored edges stay. [`EdgeSnapshot::Replace`] is the complete set for
+/// `kinds`; an empty wire list clears those kinds and leaves every other kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EdgeSnapshot {
+    /// This write did not observe dependencies.
+    Unobserved,
+    /// Complete set for `kinds`. Kinds absent from the list stay stored.
+    Replace {
+        /// Kinds this write is allowed to delete.
+        kinds: Vec<EdgeKind>,
+        /// Edges to write. Each kind should be one of `kinds`.
+        wires: Vec<EdgeWire>,
+    },
+}
+
+impl EdgeSnapshot {
+    /// A git listing, or any write that must not touch stored edges.
+    #[must_use]
+    pub fn unobserved() -> Self {
+        Self::Unobserved
+    }
+
+    /// `wires` replace every edge whose kind is in `kinds`, including when
+    /// `wires` is empty.
+    #[must_use]
+    pub fn replace(kinds: impl IntoIterator<Item = EdgeKind>, wires: Vec<EdgeWire>) -> Self {
+        let mut kinds: Vec<_> = kinds.into_iter().collect();
+        kinds.sort_by_key(|kind| kind.as_token());
+        kinds.dedup();
+        Self::Replace { kinds, wires }
+    }
+
+    /// A manifest publish: authoritative for runtime and build edges.
+    #[must_use]
+    pub fn manifest(wires: Vec<EdgeWire>) -> Self {
+        Self::replace([EdgeKind::Runtime, EdgeKind::Build], wires)
+    }
+
+    /// A catalog feed publish: authoritative for runtime edges only.
+    #[must_use]
+    pub fn feed(wires: Vec<EdgeWire>) -> Self {
+        Self::replace([EdgeKind::Runtime], wires)
+    }
+
+    /// A formula publish: authoritative for recipe edges only.
+    #[must_use]
+    pub fn recipe(wires: Vec<EdgeWire>) -> Self {
+        Self::replace([EdgeKind::Recipe], wires)
+    }
+
+    /// Replace the kinds present in `wires`. An empty list observes nothing.
+    #[must_use]
+    pub fn carrying(wires: Vec<EdgeWire>) -> Self {
+        if wires.is_empty() {
+            return Self::Unobserved;
+        }
+        let kinds: Vec<_> = wires.iter().map(|wire| wire.kind).collect();
+        Self::replace(kinds, wires)
+    }
+
+    /// Wires this snapshot writes. Unobserved writes none.
+    #[must_use]
+    pub fn wires(&self) -> &[EdgeWire] {
+        match self {
+            Self::Unobserved => &[],
+            Self::Replace { wires, .. } => wires,
+        }
+    }
+
+    /// Kinds this snapshot may delete. Unobserved deletes none.
+    #[must_use]
+    pub fn kinds(&self) -> &[EdgeKind] {
+        match self {
+            Self::Unobserved => &[],
+            Self::Replace { kinds, .. } => kinds,
+        }
+    }
+}
+
 /// Facet payload for a version (keywords, quality, extras JSON).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FacetWire {
@@ -119,8 +201,8 @@ pub struct VersionRecordWire {
     pub toolchain: Option<ToolchainRef>,
     /// SPDX license expression.
     pub license: Option<String>,
-    /// Dependency edges.
-    pub edges: Vec<EdgeWire>,
+    /// Dependency edges this write is allowed to replace.
+    pub edges: EdgeSnapshot,
     /// Search facets.
     pub facets: FacetWire,
     /// Source acquisition provenance.
@@ -239,8 +321,8 @@ pub enum CatalogOp {
         toolchain: Option<ToolchainRef>,
         /// SPDX license expression.
         license: Option<String>,
-        /// Dependency edges (EDB).
-        edges: Vec<EdgeWire>,
+        /// Dependency edges this write is allowed to replace.
+        edges: EdgeSnapshot,
         /// Facet payload.
         facets: FacetWire,
         /// Source acquisition provenance.

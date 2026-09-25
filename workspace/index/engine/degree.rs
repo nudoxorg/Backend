@@ -15,6 +15,7 @@ use smol_str::SmolStr;
 use turso_versioning::orm::OrmResult;
 
 use crate::{
+    enums::TextEnum,
     record::DepEdge,
     search::ranking::dependents::{DependencyRow, count_dependents},
 };
@@ -133,7 +134,7 @@ impl VersionedCatalog {
                 &pid,
                 tip.dep_ecosystem.as_str(),
                 tip.name.as_str(),
-                tip.class.as_str(),
+                tip.kind.as_str(),
             )) else {
                 continue;
             };
@@ -151,12 +152,13 @@ impl VersionedCatalog {
     ) -> Option<EdgeFact> {
         let pid = self.pid_owned(ecosystem, package, version)?;
         for dep in ["", ecosystem] {
-            for class in super::edge_fact::class_tokens() {
-                if let Some(row) = self
-                    .db
-                    .table::<EdgeFact>()
-                    .get(&super::edge_fact::edge_pk(&pid, dep, name, class))
-                {
+            for kind in crate::enums::EdgeKind::all_variants() {
+                if let Some(row) = self.db.table::<EdgeFact>().get(&super::edge_fact::edge_pk(
+                    &pid,
+                    dep,
+                    name,
+                    kind.as_token(),
+                )) {
                     return Some(row);
                 }
             }

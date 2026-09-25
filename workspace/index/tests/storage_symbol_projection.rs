@@ -7,9 +7,10 @@
 //!
 //! `index` has no language producer of its own (that plane is
 //! `nudox-ir`/`nudox-store`/`nudox-languages`, out of this crate's
-//! dependency graph entirely — see docs/AGENTS-DOCTRINE.md §1). It cannot lower a
-//! real crate into the ~1,300–1,900 real IR entries docs/LIMITATIONS.md L1 reports
-//! for memchr 2.8.3 without reaching into a plane this task's scope excludes.
+//! dependency graph entirely — see docs/AGENTS-DOCTRINE.md §1). It cannot lower
+//! a real crate into the ~1,300–1,900 real IR entries docs/LIMITATIONS.md L1
+//! reports for memchr 2.8.3 without reaching into a plane this task's scope
+//! excludes.
 //!
 //! What this test *can* do, and does: scan every real `.rs` file under a real
 //! fixture's `src/` for top-level `pub fn|struct|enum|trait|const|static|type`
@@ -33,8 +34,8 @@
 //! `common::migrated_disk_writer` used to open `MemoryEngine::open_at_path` —
 //! stock SQLite — because `dolt-engine` was not the default. It now opens
 //! `index::engine::Configured`, which under the default feature set is the real
-//! DoltLite prolly-tree engine. Row and scan counts are unchanged (the same real
-//! source, read the same way); only the bytes moved:
+//! DoltLite prolly-tree engine. Row and scan counts are unchanged (the same
+//! real source, read the same way); only the bytes moved:
 //!
 //! | case | rows | before (stock SQLite) | after (DoltLite) | B/row before → after |
 //! |---|---:|---:|---:|---|
@@ -43,25 +44,28 @@
 //!
 //! **Direction and cause, so this is not read as a regression.** It is upward
 //! because the two engines store different things. Stock SQLite wrote B-tree
-//! pages and nothing else; the prolly tree writes content-addressed chunks *plus*
-//! the version history that makes the catalog versioned at all, and it does so
-//! per write rather than amortised across a page. The old numbers were never the
-//! product's storage cost — they described a storage engine this product does
-//! not ship — so these are not a 40× regression against them, they are the first
-//! measurement of the thing itself. `docs/INDEX-CAPABILITY.md` §2.3 still quotes the
-//! old figures and needs updating.
+//! pages and nothing else; the prolly tree writes content-addressed chunks
+//! *plus* the version history that makes the catalog versioned at all, and it
+//! does so per write rather than amortised across a page. The old numbers were
+//! never the product's storage cost — they described a storage engine this
+//! product does not ship — so these are not a 40× regression against them, they
+//! are the first measurement of the thing itself. `docs/INDEX-CAPABILITY.md`
+//! §2.3 still quotes the old figures and needs updating.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 
 use common::{migrated_disk_writer, real_crates_root};
-use heart::Language;
-use heart::identity::derive::package_id_from_parts;
-use index::ids::{PackageId, PackageStemId};
-use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
-use index::store::MetaStore;
-use index::store::lifecycle::{symbols_for_version, upsert_symbol_projection};
+use heart::{Language, identity::derive::package_id_from_parts};
+use index::{
+    ids::{PackageId, PackageStemId},
+    protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates},
+    store::{
+        MetaStore,
+        lifecycle::{symbols_for_version, upsert_symbol_projection},
+    },
+};
 
 fn stem_id_for(ecosystem: Language, name: &str) -> PackageStemId {
     let id = package_id_from_parts([ecosystem.as_token().as_bytes(), name.as_bytes()]);
@@ -231,7 +235,7 @@ fn ingest_real_symbols(
                 published_at: None,
                 toolchain: None,
                 license: None,
-                edges: Vec::new(),
+                edges: index::protocol::EdgeSnapshot::unobserved(),
                 facets: FacetWire::default(),
                 source: None,
             },
