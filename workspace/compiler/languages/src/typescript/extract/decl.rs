@@ -935,32 +935,14 @@ fn extract_statement<'a>(
         }
 
         Statement::TSImportEqualsDeclaration(import) => {
-            let TSModuleReference::ExternalModuleReference(external) = &import.module_reference
-            else {
-                return vec![];
-            };
             let name = import.id.name.to_string();
-            let span = import.span();
-            let decl_index = bump_count(&name, name_counts);
             let is_exported = exported_names.contains(&name);
-            vec![DeclFact {
-                name,
-                visibility: if is_exported {
-                    nudox_ir::entry::Visibility::Public
-                } else {
-                    nudox_ir::entry::Visibility::Private
-                },
-                doc: jsdoc::jsdoc_for_span(semantic, span),
-                body: DeclBody::Reexport {
-                    module_request: external.expression.value.to_string(),
-                    import_name: "*".to_string(),
-                },
-                module: path.to_path_buf(),
-                span_start: span.start,
-                span_end: span.end,
-                is_default: false,
-                decl_index,
-            }]
+            let visibility = if is_exported {
+                nudox_ir::entry::Visibility::Public
+            } else {
+                nudox_ir::entry::Visibility::Private
+            };
+            import_equals_fact(import, semantic, path, visibility, name_counts)
         }
 
         Statement::TSModuleDeclaration(m) => {
@@ -1148,8 +1130,64 @@ fn extract_declaration<'a>(
             name_counts,
         ),
 
+        Declaration::TSImportEqualsDeclaration(import) => {
+            import_equals_fact(import, semantic, path, visibility, name_counts)
+        }
+
         _ => vec![],
     }
+}
+
+/// `import Name = require("pkg")` is a package reference.
+/// `import Name = Bar` and `import Name = NS.Bar` are aliases of that spelling.
+///
+/// The alias target is a nominal name. Lowering resolves it when this package
+/// declares it, and otherwise records an unresolved external. It does not
+/// `refer` a name that will never be declared.
+fn import_equals_fact<'a>(
+    import: &'a oxc_ast::ast::TSImportEqualsDeclaration<'a>,
+    semantic: &'a Semantic<'a>,
+    path: &Path,
+    visibility: nudox_ir::entry::Visibility,
+    name_counts: &mut std::collections::HashMap<String, u32>,
+) -> Vec<DeclFact> {
+    let name = import.id.name.to_string();
+    let span = import.span();
+    let decl_index = bump_count(&name, name_counts);
+    let body = match &import.module_reference {
+        TSModuleReference::ExternalModuleReference(external) => DeclBody::Reexport {
+            module_request: external.expression.value.to_string(),
+            import_name: "*".to_string(),
+        },
+        TSModuleReference::IdentifierReference(id) => DeclBody::TypeAlias(TypeAliasBody {
+            generics: Vec::new(),
+            target: super::TypeOwned::Nominal(id.name.to_string()),
+        }),
+        TSModuleReference::QualifiedName(qualified) => DeclBody::TypeAlias(TypeAliasBody {
+            generics: Vec::new(),
+            target: super::TypeOwned::Nominal(qualified_module_name(qualified)),
+        }),
+    };
+    vec![DeclFact {
+        name,
+        visibility,
+        doc: jsdoc::jsdoc_for_span(semantic, span),
+        body,
+        module: path.to_path_buf(),
+        span_start: span.start,
+        span_end: span.end,
+        is_default: false,
+        decl_index,
+    }]
+}
+
+fn qualified_module_name(name: &oxc_ast::ast::TSQualifiedName<'_>) -> String {
+    let left = match &name.left {
+        oxc_ast::ast::TSTypeName::IdentifierReference(id) => id.name.to_string(),
+        oxc_ast::ast::TSTypeName::QualifiedName(inner) => qualified_module_name(inner),
+        oxc_ast::ast::TSTypeName::ThisExpression(_) => "this".to_string(),
+    };
+    format!("{left}.{}", name.right.name)
 }
 
 // ── Default export

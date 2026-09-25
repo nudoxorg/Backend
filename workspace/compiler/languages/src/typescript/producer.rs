@@ -1460,6 +1460,101 @@ mod tests {
     }
 
     #[test]
+    fn a_local_import_equals_is_an_alias_of_its_target() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"import-alias","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export class Bar {}\n\
+             import Foo = Bar;\n\
+             export import Pub = Bar;\n\
+             import Gone = NotDeclared;\n\
+             export namespace NS { export class Bar {} }\n\
+             import Qual = NS.Bar;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "import-alias", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("import-alias"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a local import-equals must seal");
+        let bar = produced
+            .table
+            .iter()
+            .find(|(id, entry)| {
+                entry.sym().name == "Bar"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Record(_)))
+                    && produced.table.parent_of(*id).is_some_and(|parent| {
+                        produced
+                            .table
+                            .get(parent)
+                            .is_some_and(|p| p.sym().name != "NS")
+                    })
+            })
+            .map(|(id, _)| id);
+        let foo_points_at_bar = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "Foo"
+                && match entry.kind() {
+                    EntryInner::Owned(Kind::Alias(alias)) => match alias.target.as_ref() {
+                        Some(Type::Nominal(Ref::Intro(id))) => bar == Some(*id),
+                        _ => false,
+                    },
+                    _ => false,
+                }
+        });
+        assert!(
+            foo_points_at_bar,
+            "import Foo = Bar must be an alias of the local class"
+        );
+        let pub_is_public = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "Pub"
+                && entry.sym().visibility == nudox_ir::entry::Visibility::Public
+                && matches!(entry.kind(), EntryInner::Owned(Kind::Alias(_)))
+        });
+        assert!(pub_is_public, "export import Pub = Bar must be a public alias");
+        let gone = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "Gone"
+                && match entry.kind() {
+                    EntryInner::Owned(Kind::Alias(alias)) => {
+                        matches!(
+                            alias.target.as_ref(),
+                            Some(Type::Unknown(nudox_ir::kinds::ty::UnknownType::UnresolvedExternal {
+                                name,
+                            })) if name == "NotDeclared"
+                        )
+                    }
+                    _ => false,
+                }
+        });
+        assert!(
+            gone,
+            "import Gone = NotDeclared must stay an alias and must not invent a slot"
+        );
+        let qual = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "Qual"
+                && match entry.kind() {
+                    EntryInner::Owned(Kind::Alias(alias)) => {
+                        matches!(
+                            alias.target.as_ref(),
+                            Some(Type::Unknown(nudox_ir::kinds::ty::UnknownType::UnresolvedExternal {
+                                name,
+                            })) if name == "NS.Bar"
+                        )
+                    }
+                    _ => false,
+                }
+        });
+        assert!(
+            qual,
+            "import Qual = NS.Bar must name the qualified target"
+        );
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.
