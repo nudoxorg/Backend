@@ -393,6 +393,12 @@ path = "tests/mcp/refs_non_rust_languages.rs"
 name = "mcp_multi_turn_surfaces"
 path = "tests/mcp/multi_turn_surfaces.rs"
 
+# Two generations of one TypeScript package. select_version and diff are the
+# surfaces the single-version conversation never reaches.
+[[test]]
+name = "mcp_two_version_conversation"
+path = "tests/mcp/two_version_conversation.rs"
+
 # axios 1.6.7 and the three packages its manifest names, in one engine.
 # The tarballs are not in the repo; extract them under /tmp/medium/npm/src
 # (or set NUDOX_MEDIUM_NPM) and run with --ignored.
