@@ -429,3 +429,64 @@ async fn ledger_degree_matches_the_sql_sweep_on_same_ecosystem_edges() {
     assert_eq!(dependents_of(writer.engine(), 2), 1, "facet fallback stays on SQL");
     assert!(!degree.contains_key(&rust("tokio")));
 }
+
+#[tokio::test]
+async fn a_homebrew_recipe_edge_counts_on_the_sweep_and_the_adopted_ledger() {
+    let writer = Arc::new(migrated_writer());
+    let openssl = PackageStemWire {
+        stem_id: stem_id(2),
+        ecosystem: Language::Cpp,
+        name_struct: "pkg:generic/openssl".into(),
+        name_canonical: "openssl".into(),
+        name_original: "openssl".into(),
+    };
+    let curl = PackageStemWire {
+        stem_id: stem_id(5),
+        ecosystem: Language::Cpp,
+        name_struct: "pkg:generic/curl".into(),
+        name_canonical: "curl".into(),
+        name_original: "curl".into(),
+    };
+    writer
+        .apply_ops(&[
+            CatalogOp::UpsertPackage {
+                stem: openssl,
+                repo_url: None,
+            },
+            CatalogOp::UpsertPackage {
+                stem: curl,
+                repo_url: None,
+            },
+            version(2, "1.0.0", vec![], facets_of(&[])),
+            version(
+                5,
+                "8.0.0",
+                vec![EdgeWire {
+                    dep_ecosystem: Language::Cpp,
+                    dep_name_canonical: "openssl".into(),
+                    requirement: String::new(),
+                    kind: EdgeKind::Recipe,
+                    source: EdgeSource::Feed,
+                    resolved_stem: None,
+                }],
+                facets_of(&[]),
+            ),
+        ])
+        .expect("catalog writes");
+    let store = GlobalStore::new(
+        Arc::clone(&writer),
+        InstanceToken::new("test/recipe-degree").expect("instance"),
+    );
+    store.refresh_dependents().await.expect("sweep");
+    assert_eq!(dependents_of(writer.engine(), 2), 1);
+
+    let mut ledger = index::engine::turso_vc::VersionedCatalog::open().expect("ledger");
+    ledger.adopt_catalog(writer.engine()).expect("adopt");
+    assert_eq!(
+        ledger
+            .dependents()
+            .get(&(Language::Cpp, SmolStr::new("openssl")))
+            .copied(),
+        Some(1)
+    );
+}

@@ -670,7 +670,7 @@ pub fn distinct_runtime_dependents<E: CatalogEngine>(
             Expr::col((versions::Entity, versions::Column::StemId))
                 .equals((packages::Entity, packages::Column::StemId)),
         )
-        .and_where(Expr::col((edges::Entity, edges::Column::Kind)).eq("runtime"))
+        .and_where(in_degree_kind().into())
         .and_where(
             Expr::col((edges::Entity, edges::Column::DepEcosystem))
                 .equals((packages::Entity, packages::Column::Ecosystem)),
@@ -710,7 +710,7 @@ pub fn versions_with_runtime_edges<E: CatalogEngine>(
             Expr::col((versions::Entity, versions::Column::StemId))
                 .equals((packages::Entity, packages::Column::StemId)),
         )
-        .and_where(Expr::col((edges::Entity, edges::Column::Kind)).eq("runtime"))
+        .and_where(in_degree_kind().into())
         .and_where(
             Expr::col((edges::Entity, edges::Column::DepEcosystem))
                 .equals((packages::Entity, packages::Column::Ecosystem)),
@@ -721,6 +721,16 @@ pub fn versions_with_runtime_edges<E: CatalogEngine>(
     })
     .map_err(MetaError::from)?;
     Ok(ids.into_iter().collect())
+}
+
+/// Kinds that fold to a runtime in-degree: a manifest runtime edge and a
+/// Homebrew recipe edge. Build, dev, and peer edges stay out.
+fn in_degree_kind() -> sea_orm::sea_query::Condition {
+    use sea_orm::sea_query::{Condition, Expr};
+
+    Condition::any()
+        .add(Expr::col((edges::Entity, edges::Column::Kind)).eq("runtime"))
+        .add(Expr::col((edges::Entity, edges::Column::Kind)).eq("recipe"))
 }
 
 fn version_id_from_blob(blob: &[u8]) -> Result<PackageId, crate::engine::EngineError> {
