@@ -1003,6 +1003,22 @@ fn emit_function(
     // instead of a degenerate `0..0`.
     let mut param_ids: Vec<(TsId, Param, u32, u32)> = Vec::with_capacity(body.params.len());
 
+    if let Some(this_ty) = &body.this_ty {
+        // `this` is a real parameter. Extraction records its type and then
+        // drops the binding, so the declaration never reached `finish`.
+        let param_id = param_id_for(&id, "this", 0);
+        let pref: Ref<Param> = out.refer(param_id.clone());
+        param_refs.push(pref);
+        param_ids.push((
+            param_id,
+            Param::builder()
+                .ty(lower_type(this_ty, out, names, &id.module))
+                .build(),
+            body.span_start,
+            body.span_end,
+        ));
+    }
+
     for (idx, p) in body.params.iter().enumerate() {
         // The discriminant must fold in `id.discriminant`, not just the
         // local param index: `id.discriminant` is how the caller

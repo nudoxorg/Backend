@@ -1108,6 +1108,35 @@ mod tests {
     }
 
     #[test]
+    fn a_this_parameter_is_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"this-param","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export function f(this: Widget, x: number): void;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "this-param", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("this-param"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a this-parameter must seal");
+        let this_params = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "this"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(this_params, 1, "the this parameter must be declared");
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
