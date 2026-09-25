@@ -610,7 +610,7 @@ fn lower_class_like(
         field_refs.push(r);
     }
     for e in &decl.members.events {
-        let field_id = member_id(&type_doc_id, "E", &e.name);
+        let field_id = event_doc_id(e, &type_doc_id);
         let r: Ref<Field> = out.refer(field_id);
         field_refs.push(r);
     }
@@ -1132,7 +1132,7 @@ fn lower_event(
     name_to_doc_id: &HashMap<String, String>,
     out: &mut Lowering<String>,
 ) {
-    let field_id = member_id(parent_id, "E", &e.name);
+    let field_id = event_doc_id(e, parent_id);
     let parsed = xmldoc::parse_opt(e.doc.as_deref());
 
     let mut extra: Vec<String> = Vec::new();
@@ -1602,6 +1602,17 @@ fn method_doc_id(m: &schema::Method, parent_id: &str) -> String {
 /// parameter list — `P:Ns.Type.Item(System.Int32)` vs
 /// `P:Ns.Type.Item(System.String)` — exactly like it does for methods, so
 /// preferring it here is the same fix as `method_doc_id`, not a new one.
+/// Roslyn's event doc-id distinguishes two explicit implementations that
+/// share `evt.Name` (`E:Ns.C.I1#Changed` versus `E:Ns.C.I2#Changed`). The
+/// short name alone made `finish` return `Duplicate` for that pair.
+fn event_doc_id(e: &schema::Event, parent_id: &str) -> String {
+    if e.doc_id.is_empty() {
+        member_id(parent_id, "E", &e.name)
+    } else {
+        e.doc_id.clone()
+    }
+}
+
 fn property_doc_id(p: &schema::Property, parent_id: &str, kind: &str) -> String {
     if p.doc_id.is_empty() {
         member_id(parent_id, kind, &p.name)

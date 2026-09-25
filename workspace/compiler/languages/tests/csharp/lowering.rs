@@ -1943,3 +1943,65 @@ fn out_parameter_is_not_the_same_attribute_as_ref_parameter() {
          both were {out_attrs:?}"
     );
 }
+
+/// Two explicit interface events share `IEventSymbol.Name`. Roslyn's doc-id
+/// is what keeps them apart. A name-only id makes `finish` return Duplicate.
+#[test]
+fn explicit_interface_events_with_the_same_name_both_survive() {
+    let json = r#"{
+      "format": 1,
+      "assembly": { "name": "Evt" },
+      "diagnostics": {},
+      "namespaces": [],
+      "types": [{
+        "docId": "T:Evt.C",
+        "qualifiedName": "Evt.C",
+        "simpleName": "C",
+        "kind": "CLASS",
+        "namespace": "Evt",
+        "modifiers": ["public"],
+        "typeParams": [],
+        "interfaces": [],
+        "attributes": [],
+        "hidden": false,
+        "forwarded": false,
+        "docInherited": false,
+        "members": {
+          "fields": [],
+          "properties": [],
+          "events": [
+            {
+              "name": "Changed",
+              "docId": "E:Evt.C.I1#Changed",
+              "type": { "kind": "named", "name": "System.EventHandler", "args": [], "owner": null, "nullable": "none", "typeKind": "Class" },
+              "accessibility": "private"
+            },
+            {
+              "name": "Changed",
+              "docId": "E:Evt.C.I2#Changed",
+              "type": { "kind": "named", "name": "System.EventHandler", "args": [], "owner": null, "nullable": "none", "typeKind": "Class" },
+              "accessibility": "private"
+            }
+          ],
+          "constructors": [],
+          "methods": [],
+          "operators": [],
+          "conversions": [],
+          "indexers": [],
+          "nested": []
+        }
+      }]
+    }"#;
+    let extraction = parse_extraction(json.as_bytes()).expect("fixture parses");
+    let pkg = lower(&extraction).unwrap_or_else(|err| {
+        panic!("two explicit events must not be Duplicate: {err:?}")
+    });
+    let changed = pkg
+        .iter()
+        .filter(|(_, entry)| entry.sym().name == "Changed")
+        .count();
+    assert_eq!(
+        changed, 2,
+        "both explicit Changed events must be declared"
+    );
+}
