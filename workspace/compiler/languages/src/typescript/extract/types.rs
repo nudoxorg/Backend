@@ -358,28 +358,19 @@ fn lower_ts_type_impl<'a>(
                             .key
                             .static_name()
                             .map_or_else(|| "__method".to_string(), |s| s.to_string());
-                        let ret = m
-                            .return_type
-                            .as_ref()
-                            .map(|r| lower_ts_type_impl(&r.type_annotation, source, type_params));
-                        let span = m.span();
+                        let body = signature_body(
+                            &m.params,
+                            m.return_type.as_deref(),
+                            m.type_parameters.as_deref(),
+                            m.this_param.as_deref(),
+                            m.span(),
+                            source,
+                            type_params,
+                            false,
+                        );
                         members.push(AnonFieldOwned {
                             name,
-                            ty: TypeOwned::Function(Box::new(FunctionBody {
-                                generics: vec![],
-                                params: lower_formal_params(&m.params, source, type_params),
-                                return_type: ret,
-                                is_async: false,
-                                is_generator: false,
-                                has_body: false,
-                                receiver: ReceiverKind::None,
-                                this_ty: None,
-                                abstract_construct: false,
-                                body_text: None,
-                                leading_doc: None,
-                                span_start: span.start,
-                                span_end: span.end,
-                            })),
+                            ty: TypeOwned::Function(Box::new(body)),
                             optional: m.optional,
                             readonly: false,
                         });

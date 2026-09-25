@@ -1005,6 +1005,9 @@ fn declare_alias_params(
     if let Some(ret) = &function.return_type {
         declare_nested_params(alias, owner, "return", ret, out, names);
     }
+    if let Some(this_ty) = &function.this_ty {
+        declare_nested_params(alias, owner, "this", this_ty, out, names);
+    }
     declare_generic_bindings(alias, owner, &function.generics, out, names);
 }
 
