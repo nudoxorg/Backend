@@ -400,6 +400,28 @@ mod tests {
         );
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+
+        #[test]
+        fn any_padding_matches_the_string_map(
+            rows in proptest::collection::vec(
+                ("[ A-Za-z]{0,6}", proptest::collection::vec("[ A-Za-z]{0,6}", 0..6)),
+                0..8,
+            )
+        ) {
+            let built: Vec<DependencyRow> = rows
+                .into_iter()
+                .map(|(name, deps)| DependencyRow {
+                    ecosystem: Language::Rust,
+                    name: SmolStr::new(name),
+                    dependencies: deps.into_iter().map(SmolStr::new).collect(),
+                })
+                .collect();
+            proptest::prop_assert_eq!(count_dependents(built.clone()), count_dependents_mapped(&built));
+        }
+    }
+
     fn time(body: impl FnOnce()) -> u128 {
         let start = std::time::Instant::now();
         body();
