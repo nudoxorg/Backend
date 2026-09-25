@@ -61,7 +61,7 @@ let
           "grit-lib-0.5.0" = "sha256-1nNJ9zlGKxIu3at0jVs9Lo7BQLyCmspuJRjDuvWw+0s=";
           "lsp-types-0.95.2" = "sha256-+f3XtEm0fSvgl12LVSeGJGnPElGScAufh9dmMOqKnI8=";
           "pyrefly-1.3.0-dev.1" = "sha256-ngBgvB7SRIRWuc/BdbIao3Sr4wj7l+L2qkITsv+Ekag=";
-          "smolfile-1.6.1" = "sha256-3TpuKwjHwazr4EJTfRaK7sK20ONosqKtUBt+GmTfmGQ=";
+          "smolfile-1.6.1" = "sha256-6foxhpMNKEfrEqIcrz7g04aN/2fd0cEzOcIOgWQE1XI=";
           "tsz-binder-0.1.48" = "sha256-dmOcoNcf+c8op4y3x3426gGcR9qbPiXOUXJuDn010h4=";
           "trustfall-0.8.1" = "sha256-BeT7dLLJvurdpO0HkFA3wtn202OQFSLkoTZrNMPiI9w=";
           "turso_versioning-0.8.0-pre.7" = "sha256-7KTwfmax5uB6IlwIGlgzH6UIxGe5ihoZfZPn4X16cSU=";
