@@ -163,7 +163,17 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             }
             None => FacetWire::default(),
         };
-        lifecycle::delete_version_edges(self.engine(), coordinates.id())?;
+        let wires = feed_edge_wires(
+            coordinates.ecosystem(),
+            package
+                .facets
+                .as_ref()
+                .map(|facets| facets.dependencies.as_slice())
+                .unwrap_or(&[]),
+        );
+        // Runtime names move with the publish. Build, recipe, and find-package
+        // rows written by a stored generation stay on the same version.
+        lifecycle::replace_runtime_edges(self.engine(), coordinates.id(), &wires)?;
         let toolchain_json =
             serde_json::to_string(&package.package.toolchain).map_err(IndexError::ToolchainJson)?;
         self.writer.apply_ops(&[CatalogOp::UpsertVersion {
@@ -171,14 +181,7 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             published_at: None,
             toolchain: Some(crate::protocol::ToolchainRef(toolchain_json.into())),
             license: None,
-            edges: feed_edge_wires(
-                coordinates.ecosystem(),
-                package
-                    .facets
-                    .as_ref()
-                    .map(|facets| facets.dependencies.as_slice())
-                    .unwrap_or(&[]),
-            ),
+            edges: Vec::new(),
             facets: facet_wire,
             source: None,
         }])?;
@@ -485,7 +488,9 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     pub async fn refresh_dependents(&self) -> Result<u64, IndexError> {
         use std::collections::HashMap;
 
-        use crate::search::ranking::dependents::{DependencyRow, count_dependents, names_for_sweep};
+        use crate::search::ranking::dependents::{
+            DependencyRow, count_dependents, names_for_sweep,
+        };
 
         let pages = self.collect_facet_pages()?;
         let mut edges_by_version: HashMap<PackageId, Vec<smol_str::SmolStr>> = HashMap::new();

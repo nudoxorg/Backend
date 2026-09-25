@@ -19,13 +19,13 @@ use std::sync::Arc;
 
 use heart::{PackageId, ResolutionState, content::ContentHash};
 
-use crate::engine::VersioningEngine;
-use crate::enums::{OutboxOperation, SinkKind as CatalogSinkKind};
-use crate::store::writer::CatalogWriter;
-use crate::store::{apply, lifecycle, read};
+use crate::{
+    engine::VersioningEngine,
+    enums::{OutboxOperation, SinkKind as CatalogSinkKind},
+    store::{apply, lifecycle, read, writer::CatalogWriter},
+};
 
-use crate::catalog::GlobalStore;
-use crate::error::OutboxError;
+use crate::{catalog::GlobalStore, error::OutboxError};
 
 /// What the outbox consumer should do when it sees this entry.
 ///
@@ -227,6 +227,16 @@ impl<Engine: VersioningEngine + Send + Sync> Outbox<Engine> {
                 extras.as_deref(),
             )
             .map_err(OutboxError::Catalog)?;
+            if !facets.dependencies.is_empty() {
+                if let Some(record) = lifecycle::version_record(self.engine(), package)
+                    .map_err(OutboxError::Catalog)?
+                {
+                    let ecosystem = crate::schema::codec::ecosystem_from_token(&record.3)?;
+                    let wires = crate::catalog::feed_edge_wires(ecosystem, &facets.dependencies);
+                    lifecycle::replace_runtime_edges(self.engine(), package, &wires)
+                        .map_err(OutboxError::Catalog)?;
+                }
+            }
         }
         self.emit(
             package,
@@ -375,7 +385,8 @@ pub struct SinkLockGuard {
 }
 
 impl SinkLockGuard {
-    /// Explicit release (drop also releases; this exists for call-site clarity).
+    /// Explicit release (drop also releases; this exists for call-site
+    /// clarity).
     pub async fn release(self) -> Result<(), OutboxError> {
         Ok(())
     }

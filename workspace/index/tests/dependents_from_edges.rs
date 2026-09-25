@@ -10,17 +10,20 @@ mod common;
 use std::sync::Arc;
 
 use common::{migrated_writer, stem_id, version_id};
-use heart::content::ContentHash;
-use heart::{Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain};
-use index::catalog::{GlobalStore, InstanceToken};
-use index::package::{Coordinates, PackageName};
-use index::Package;
-use index::store::MetaStore;
-use index::enums::{EdgeKind, EdgeSource};
-use index::metadata::SearchFacets;
-use index::protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates};
-use index::schema::catalog_map;
-use index::store::lifecycle;
+use heart::{
+    Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain, content::ContentHash,
+};
+use index::{
+    Package,
+    catalog::{GlobalStore, InstanceToken},
+    engine::CatalogEngine,
+    enums::{EdgeKind, EdgeSource},
+    metadata::SearchFacets,
+    package::{Coordinates, PackageName},
+    protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates},
+    schema::catalog_map,
+    store::{MetaStore, lifecycle},
+};
 use smol_str::SmolStr;
 
 fn facets_of(names: &[&str]) -> FacetWire {
@@ -111,17 +114,14 @@ async fn sweep_counts_runtime_edges_and_falls_back_to_facets() {
         version(
             7,
             "1.0.0",
-            vec![
-                runtime(heart::Language::Python, "serde"),
-                EdgeWire {
-                    dep_ecosystem: heart::Language::Rust,
-                    dep_name_canonical: "criterion".to_owned(),
-                    requirement: String::new(),
-                    kind: EdgeKind::Build,
-                    source: EdgeSource::Manifest,
-                    resolved_stem: None,
-                },
-            ],
+            vec![runtime(heart::Language::Python, "serde"), EdgeWire {
+                dep_ecosystem: heart::Language::Rust,
+                dep_name_canonical: "criterion".to_owned(),
+                requirement: String::new(),
+                kind: EdgeKind::Build,
+                source: EdgeSource::Manifest,
+                resolved_stem: None,
+            }],
             facets_of(&[]),
         ),
     ];
@@ -136,9 +136,17 @@ async fn sweep_counts_runtime_edges_and_falls_back_to_facets() {
 
     let engine = writer.engine();
     assert_eq!(dependents_of(engine, 1), 1, "serde is a runtime edge");
-    assert_eq!(dependents_of(engine, 2), 1, "tokio is a facet-only fallback");
+    assert_eq!(
+        dependents_of(engine, 2),
+        1,
+        "tokio is a facet-only fallback"
+    );
     assert_eq!(dependents_of(engine, 3), 0, "leftover facet is not an edge");
-    assert_eq!(dependents_of(engine, 4), 0, "a build edge is not a dependent");
+    assert_eq!(
+        dependents_of(engine, 4),
+        0,
+        "a build edge is not a dependent"
+    );
 }
 
 fn stored_package(name: &str, dependencies: &[&str]) -> index::GlobalPackage {
@@ -192,4 +200,134 @@ async fn a_stored_package_keeps_its_state_when_edges_are_replaced() {
     let edges = lifecycle::scan_runtime_edges(writer.engine()).expect("edges");
     let names: Vec<_> = edges.into_iter().map(|(_, name)| name).collect();
     assert_eq!(names, vec!["tokio".to_owned()]);
+}
+
+fn build_edge(name: &str) -> EdgeWire {
+    EdgeWire {
+        dep_ecosystem: heart::Language::Rust,
+        dep_name_canonical: name.to_owned(),
+        requirement: String::new(),
+        kind: EdgeKind::Build,
+        source: EdgeSource::Manifest,
+        resolved_stem: None,
+    }
+}
+
+fn edge_kinds(
+    engine: &index::engine::Configured,
+    version: index::ids::PackageId,
+) -> Vec<(String, String)> {
+    engine
+        .query_rows(
+            "SELECT kind, dep_name_canonical FROM edges WHERE dependent_version = ? ORDER BY kind, dep_name_canonical",
+            &[index::engine::Value::Blob(
+                version.as_uuid().as_bytes().to_vec(),
+            )],
+            &mut |row| Ok((row.get_text(0)?, row.get_text(1)?)),
+        )
+        .expect("edge kinds")
+}
+
+/// A stored generation and a later feed republish share one runtime replace.
+/// The build edge stays. An empty dependency list does not clear runtime edges.
+/// The sweep then counts the surviving runtime name.
+#[tokio::test]
+async fn stored_generation_and_feed_republish_share_one_runtime_replace() {
+    let writer = Arc::new(migrated_writer());
+    writer
+        .apply_ops(&[
+            package(1, "serde"),
+            package(2, "tokio"),
+            package(3, "criterion"),
+            version(1, "1.0.0", vec![], facets_of(&[])),
+            version(2, "1.0.0", vec![], facets_of(&[])),
+            version(3, "1.0.0", vec![], facets_of(&[])),
+        ])
+        .expect("target packages");
+
+    let store = GlobalStore::new(
+        Arc::clone(&writer),
+        InstanceToken::new("test/stored-runtime").expect("instance"),
+    );
+    let app = stored_package("app", &["serde"]);
+    store.upsert(&app).await.expect("first publish");
+    writer
+        .apply_ops(&[CatalogOp::UpsertVersion {
+            coordinates: VersionCoordinates {
+                version_id: app.id,
+                stem_id: GlobalStore::<index::engine::Configured>::stem_id(
+                    &app.package.coordinates,
+                ),
+                version_canonical: "1.0.0".into(),
+                version_original: "1.0.0".into(),
+            },
+            published_at: None,
+            toolchain: None,
+            license: None,
+            edges: vec![build_edge("criterion")],
+            facets: facets_of(&["serde"]),
+            source: None,
+        }])
+        .expect("plant build edge beside the runtime edge");
+    assert_eq!(edge_kinds(writer.engine(), app.id), vec![
+        ("build".to_owned(), "criterion".to_owned()),
+        ("runtime".to_owned(), "serde".to_owned()),
+    ]);
+
+    let outbox = index::coordination::Outbox::new(Arc::clone(&writer));
+    let mut stored_facets = SearchFacets::default();
+    stored_facets.dependencies = vec![SmolStr::new("tokio")];
+    outbox
+        .record_stored(
+            &store,
+            app.id,
+            ContentHash::from_bytes([4u8; 32]),
+            Some(&stored_facets),
+        )
+        .await
+        .expect("record stored");
+    assert_eq!(edge_kinds(writer.engine(), app.id), vec![
+        ("build".to_owned(), "criterion".to_owned()),
+        ("runtime".to_owned(), "tokio".to_owned()),
+    ]);
+
+    let mut empty = SearchFacets::default();
+    empty.dependencies.clear();
+    outbox
+        .record_stored(
+            &store,
+            app.id,
+            ContentHash::from_bytes([5u8; 32]),
+            Some(&empty),
+        )
+        .await
+        .expect("empty dependency list");
+    assert_eq!(
+        edge_kinds(writer.engine(), app.id),
+        vec![
+            ("build".to_owned(), "criterion".to_owned()),
+            ("runtime".to_owned(), "tokio".to_owned()),
+        ],
+        "an empty dependency list leaves the runtime edge"
+    );
+
+    let revised = stored_package("app", &["serde"]);
+    store
+        .replace_feed_edges(&revised)
+        .await
+        .expect("feed republish");
+    assert_eq!(edge_kinds(writer.engine(), app.id), vec![
+        ("build".to_owned(), "criterion".to_owned()),
+        ("runtime".to_owned(), "serde".to_owned()),
+    ]);
+
+    store.refresh_dependents().await.expect("sweep");
+    let engine = writer.engine();
+    assert_eq!(dependents_of(engine, 1), 1, "serde is the runtime edge");
+    assert_eq!(dependents_of(engine, 2), 0, "tokio was replaced");
+    assert_eq!(
+        dependents_of(engine, 3),
+        0,
+        "a build edge is not a dependent"
+    );
 }
