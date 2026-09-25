@@ -577,6 +577,59 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
                 .edges
                 .is_empty()
         );
+        let state_rowid = stored_state_rowid(&projection, target.as_str()).await;
+        let stored_root = stored_state_root(&projection, target.as_str()).await;
+        assert_eq!(stored_root.as_slice(), root_e.as_bytes());
+        let root_f = view_state_root(&[("graph".to_owned(), "f".to_owned())]);
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_f, &unavailable)
+                .await
+                .expect("keep matching state"),
+            ProjectionUpdate::Rebuilt { rows: 0 }
+        );
+        assert_eq!(
+            stored_state_rowid(&projection, target.as_str()).await,
+            state_rowid
+        );
+        assert_eq!(
+            stored_state_root(&projection, target.as_str())
+                .await
+                .as_slice(),
+            root_e.as_bytes()
+        );
+        let fenced = projection
+            .package_dependencies(&target)
+            .await
+            .expect("fenced state");
+        assert_eq!(fenced.root.as_ref(), root_f.as_bytes());
+        let fenced_state = fenced.state.expect("kept state");
+        assert_eq!(fenced_state.kind, 2);
+        assert_eq!(fenced_state.reason, "metadata timeout");
+        let changed = vec![(
+            target.clone(),
+            DependencyFacts::Unavailable(ProductText::new("registry reset").expect("reason")),
+        )];
+        let root_g = view_state_root(&[("graph".to_owned(), "g".to_owned())]);
+        projection
+            .synchronize_package_graph(root_g, &changed)
+            .await
+            .expect("replace state");
+        assert_eq!(
+            stored_state_root(&projection, target.as_str())
+                .await
+                .as_slice(),
+            root_g.as_bytes()
+        );
+        let replaced = projection
+            .package_dependencies(&target)
+            .await
+            .expect("replaced state");
+        assert_eq!(replaced.root.as_ref(), root_g.as_bytes());
+        assert_eq!(
+            replaced.state.expect("replaced").reason.as_str(),
+            "registry reset"
+        );
         std::fs::remove_file(&path).expect("remove projection");
     });
 }
@@ -674,4 +727,40 @@ fn stress_fts_projection_reports_build_query_and_delta_costs() {
             let _ = std::fs::remove_file(sidecar);
         }
     });
+}
+
+async fn stored_state_rowid(projection: &TursoProjection, source: &str) -> i64 {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT rowid FROM backend_projection_package_states WHERE source = ?1",
+            [source],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("state rowid query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("state rowid next: {error}"))
+        .unwrap_or_else(|| panic!("missing state {source}"));
+    row.get(0)
+        .unwrap_or_else(|error| panic!("state rowid decode: {error}"))
+}
+
+async fn stored_state_root(projection: &TursoProjection, source: &str) -> Vec<u8> {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT root FROM backend_projection_package_states WHERE source = ?1",
+            [source],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("state root query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("state root next: {error}"))
+        .unwrap_or_else(|| panic!("missing state {source}"));
+    row.get(0)
+        .unwrap_or_else(|error| panic!("state root decode: {error}"))
 }

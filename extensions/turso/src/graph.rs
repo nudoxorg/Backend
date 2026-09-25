@@ -1,6 +1,6 @@
 //! Package dependency projection and graph query decoding.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::schema::PackageGraphMetadata;
 use crate::{ProjectionError, ProjectionUpdate, TursoProjection};
@@ -39,8 +39,9 @@ impl TursoProjection {
     /// while every query still returns the exact root that supplied its facts.
     /// An identical root performs no writes; a new root keeps edges whose
     /// `facts_version` and payload already match, deletes edges that are gone,
-    /// and inserts edges that are new. Unknown or unavailable states replace
-    /// the previous projection for that synchronization.
+    /// and inserts edges that are new. An unknown or unavailable state is kept
+    /// when its source, kind, and reason still match, so a root-only change
+    /// does not rewrite that row. Queries fence on the metadata root.
     pub async fn synchronize_package_graph(
         &mut self,
         root: backend_library::ViewStateRoot,
@@ -78,9 +79,8 @@ impl TursoProjection {
                 rows: u64::try_from(current.edge_count).unwrap_or(0),
             });
         }
-        tx.execute("DELETE FROM backend_projection_package_states", ())
-            .await?;
         let mut known_edge_ids = Vec::new();
+        let mut desired_states = BTreeMap::new();
         for (source, state) in facts {
             match state {
                 DependencyFacts::Known(rows) => {
@@ -90,14 +90,17 @@ impl TursoProjection {
                     }
                 }
                 DependencyFacts::Unknown(reason) => {
-                    put_package_state(&tx, root_bytes, source, 1, reason.as_str()).await?;
+                    desired_states
+                        .insert(source.as_str().to_owned(), (1_i64, reason.as_str(), source));
                 }
                 DependencyFacts::Unavailable(reason) => {
-                    put_package_state(&tx, root_bytes, source, 2, reason.as_str()).await?;
+                    desired_states
+                        .insert(source.as_str().to_owned(), (2_i64, reason.as_str(), source));
                 }
             }
         }
         delete_orphan_edges(&tx, &known_edge_ids).await?;
+        retain_matching_states(&tx, root_bytes, &desired_states).await?;
         tx.execute(
             "INSERT INTO backend_projection_package_graph_meta (singleton, root, edge_count) \
              VALUES (1, ?1, ?2) ON CONFLICT(singleton) DO UPDATE SET \
@@ -134,7 +137,7 @@ impl TursoProjection {
         }
         drop(rows);
         let root = metadata.root.clone().into_boxed_slice();
-        let state = package_state_from(&tx, &metadata.root, source.as_str()).await?;
+        let state = package_state_from(&tx, source.as_str()).await?;
         tx.rollback().await?;
         Ok(RootedPackageGraph {
             root,
@@ -227,14 +230,13 @@ pub(crate) async fn package_graph_metadata_from(
 
 async fn package_state_from(
     connection: &turso::Connection,
-    root: &[u8],
     source: &str,
 ) -> Result<Option<PackageGraphState>, ProjectionError> {
     let mut rows = connection
         .query(
             "SELECT state, reason FROM backend_projection_package_states \
-             WHERE root=?1 AND source=?2",
-            turso::params![root, source],
+             WHERE source=?1 ORDER BY root",
+            [source],
         )
         .await?;
     let Some(row) = rows.next().await? else {
@@ -326,6 +328,53 @@ async fn delete_orphan_edges(
                 turso::params![edge_id.as_slice()],
             )
             .await?;
+    }
+    Ok(())
+}
+
+async fn retain_matching_states(
+    connection: &turso::Connection,
+    root: &[u8; 32],
+    desired: &BTreeMap<String, (i64, &str, &PackageReference)>,
+) -> Result<(), ProjectionError> {
+    let mut rows = connection
+        .query(
+            "SELECT root, source, state, reason FROM backend_projection_package_states \
+             ORDER BY root, source",
+            (),
+        )
+        .await?;
+    let mut stale = Vec::new();
+    let mut kept = BTreeSet::new();
+    while let Some(row) = rows.next().await? {
+        let stored_root: Vec<u8> = row.get(0)?;
+        let source: String = row.get(1)?;
+        let kind: i64 = row.get(2)?;
+        let reason: String = row.get(3)?;
+        let matches = desired
+            .get(&source)
+            .is_some_and(|(wanted_kind, wanted_reason, _)| {
+                *wanted_kind == kind && *wanted_reason == reason
+            });
+        if matches && kept.insert(source.clone()) {
+            continue;
+        }
+        stale.push((stored_root, source));
+    }
+    drop(rows);
+    for (stored_root, source) in stale {
+        connection
+            .execute(
+                "DELETE FROM backend_projection_package_states WHERE root=?1 AND source=?2",
+                turso::params![stored_root.as_slice(), source.as_str()],
+            )
+            .await?;
+    }
+    for (source, (kind, reason, reference)) in desired {
+        if kept.contains(source) {
+            continue;
+        }
+        put_package_state(connection, root, reference, *kind, reason).await?;
     }
     Ok(())
 }
