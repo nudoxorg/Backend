@@ -13,7 +13,7 @@ use heart::query::{AsOf, CatalogCommitHash};
 use crate::{
     codec::CodecError,
     engine::{self, CatalogEngine, Row, VersioningEngine},
-    entity::{outbox, packages, sink_watermarks, versions},
+    entity::{git_watermarks, outbox, packages, sink_watermarks, versions},
     enums::{OutboxOperation, SinkKind, TextEnum},
     ids::{GenerationStamp, PackageId, PackageStemId, version_id},
     tables::{outbox::OutboxRow, packages::PackageRow},
@@ -26,6 +26,20 @@ use super::{CatalogCursor, ChangedPage, MetaError, VersionSnapshot};
 pub struct CatalogAsOf {
     /// The concrete commit this view is pinned to.
     pub commit: CatalogCommitHash,
+}
+
+/// The catalog's last seen ref digest for `stem`, when a poll has recorded one.
+pub fn git_last_rev<E: CatalogEngine>(
+    engine: &E,
+    stem: PackageStemId,
+) -> Result<Option<String>, MetaError> {
+    let stmt = git_watermarks::Entity::find()
+        .filter(git_watermarks::Column::StemId.eq(stem))
+        .select_only()
+        .column(git_watermarks::Column::LastRev)
+        .build(DbBackend::Sqlite);
+    let mut rows = engine::query(engine, stmt, &mut |row| row.get_optional_text(0))?;
+    Ok(rows.pop().flatten())
 }
 
 /// One C++ package the git monitor should poll.

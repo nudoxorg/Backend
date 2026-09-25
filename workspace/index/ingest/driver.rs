@@ -285,10 +285,15 @@ where
         checked_at: i64,
         commit_time: u64,
     ) -> Result<GitDriveOutcome, Error> {
-        let previous = self
-            .watermarks
-            .git_watermark(stem)?
-            .and_then(|watermark| watermark.last_rev);
+        let previous = match self.watermarks.git_watermark(stem)? {
+            Some(watermark) => watermark.last_rev,
+            None => crate::store::read::git_last_rev(self.writer.engine(), stem).map_err(
+                |error| Error::Commit {
+                    feed: repo_url.to_owned(),
+                    message: error.to_string(),
+                },
+            )?,
+        };
         let prior = self.version_revs(stem)?;
         let outcome = monitor.tick(
             stem,

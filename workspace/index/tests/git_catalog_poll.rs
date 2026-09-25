@@ -93,4 +93,21 @@ fn listed_cpp_repos_commit_once_and_a_replay_is_unchanged() {
         )
         .expect("replay");
     assert!(matches!(second, GitDriveOutcome::NoChange));
+
+    let resumed = MemoryWatermarkStore::new();
+    let resumed_driver = FollowerDriver::new(&writer, &resumed).with_facts(&facts);
+    let third = resumed_driver
+        .drive_git_once(
+            &monitor,
+            target.stem_id,
+            &target.name,
+            &target.repo_url,
+            3_000,
+            1,
+        )
+        .expect("resume");
+    assert!(
+        matches!(third, GitDriveOutcome::NoChange),
+        "a fresh driver watermark resumes from the catalog last_rev"
+    );
 }
