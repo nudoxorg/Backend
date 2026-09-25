@@ -784,6 +784,8 @@ impl<M: EmbeddingModel> Driver<M> {
             {
                 tracing::info!("starting git follower");
                 pollers.spawn(catalog_follower::git_follower_worker(Arc::clone(self)));
+                tracing::info!("starting homebrew follower");
+                pollers.spawn(catalog_follower::homebrew_follower_worker(Arc::clone(self)));
             }
         }
         tracing::info!(?role, "background pollers started");

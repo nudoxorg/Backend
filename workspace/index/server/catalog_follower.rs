@@ -429,3 +429,46 @@ pub(crate) async fn git_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>
         tokio::time::sleep(interval).await;
     }
 }
+
+/// Poll the Homebrew formula feed through [`crate::ingest::HomebrewIngestor`].
+///
+/// Starts with the git follower when C++ is in `mirror.follow`. The ETag
+/// watermark lives under `data_directory/homebrew-watermarks`, so a restart
+/// resumes the same cursor.
+pub(crate) async fn homebrew_follower_worker<M: EmbeddingModel>(server: Arc<Server<M>>) {
+    let interval = server.config().limits.poll_interval;
+    let watermark_dir = server
+        .config()
+        .definitive
+        .data_directory()
+        .join("homebrew-watermarks");
+    let writer = std::sync::Arc::clone(server.base().global_store.writer());
+    let facts = server.package_facts();
+    tracing::info!("homebrew follower started");
+    loop {
+        let writer = std::sync::Arc::clone(&writer);
+        let facts = std::sync::Arc::clone(&facts);
+        let watermark_dir = watermark_dir.clone();
+        let joined = tokio::task::spawn_blocking(move || -> Result<crate::ingest::DriveOutcome, String> {
+            let mut ingestor = crate::ingest::HomebrewIngestor::new(
+                writer.as_ref(),
+                &watermark_dir,
+                crate::ingest::homebrew::DEFAULT_FORMULA_URL,
+            )
+            .map_err(|error| error.to_string())?
+            .with_facts(facts.as_ref());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as i64)
+                .unwrap_or(0);
+            ingestor.drive_once(now).map_err(|error| error.to_string())
+        })
+        .await;
+        match joined {
+            Ok(Ok(outcome)) => tracing::debug!(?outcome, "homebrew follower poll"),
+            Ok(Err(error)) => tracing::warn!(error = %error, "homebrew follower poll failed"),
+            Err(error) => tracing::warn!(error = %error, "homebrew follower task failed"),
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
