@@ -1736,7 +1736,14 @@ pub enum QueryEvent {
         rows: Arc<[QueryRow]>,
     },
     /// Terminal — all rows are complete.
-    Done { generation: Gen, total: u64 },
+    Done {
+        generation: Gen,
+        total: u64,
+        /// Set when a covered reverse edge's posting list was empty for a
+        /// symbol this query resolved. Callers attach it only on an empty
+        /// page; a query that produced rows leaves it unread.
+        empty_edge: Option<crate::graph::EmptyEdgeDiagnosis>,
+    },
     /// Terminal — query failed.
     Failed { generation: Gen, error: EngineError },
 }

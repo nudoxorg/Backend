@@ -48,33 +48,42 @@
 //! so that resolution sees the hints and can push filters down to the
 //! appropriate indexes.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use crate::store::{
     corpus::Corpus,
     package::{PackageView, TypePosition, TypeRef, typerefs_of_entry},
 };
-use futures::{StreamExt as _, lock::Mutex, stream};
-use nudox_ir::package::KeyTier;
+use futures::{Stream, StreamExt as _, lock::Mutex, stream};
 use nudox_ir::{
     change::{IntroId, PackageLineageId, StableRef},
     entry::{Deprecation, SourceLocation, Unlocated, Visibility},
     index::{RawRef, Ref},
     kind::{Kind, KindDiscriminant},
     kinds::{FnModifier, Receiver, Type},
+    package::KeyTier,
 };
 use thiserror::Error;
-use trustfall::FieldValue;
-use trustfall::provider::async_helpers;
-use trustfall::provider::{
-    AsVertex, AsyncAdapter, ContextOutcomeStream, ContextStream, EdgeParameters, ResolveEdgeInfo,
-    ResolveInfo, Typename as _, VertexInfo as _, VertexStream,
+use trustfall::{
+    FieldValue,
+    provider::{
+        AsVertex, AsyncAdapter, ContextOutcomeStream, ContextStream, EdgeParameters,
+        ResolveEdgeInfo, ResolveInfo, Typename as _, VertexInfo as _, VertexStream, async_helpers,
+    },
 };
 
-use crate::graph::plan::{PackagePlan, SymbolPlan, plan_packages, plan_symbols};
-use crate::graph::probe::{AdapterProbe, StoreProbe};
-use crate::graph::vertex::{OccurrenceVertex, SymbolVertex, Vertex};
+use crate::graph::{
+    edge_empty::{self, EdgeEmptyLog},
+    plan::{PackagePlan, SymbolPlan, plan_packages, plan_symbols},
+    probe::{AdapterProbe, StoreProbe},
+    vertex::{OccurrenceVertex, SymbolVertex, Vertex},
+};
 
 // ---------------------------------------------------------------------------
 // Error
@@ -146,15 +155,21 @@ pub enum Error {
 struct CorpusMemo {
     corpus: Corpus,
     probe: Option<Arc<AdapterProbe>>,
+    empty_edge_log: Option<Arc<EdgeEmptyLog>>,
     all: Mutex<Option<Arc<[Arc<PackageView>]>>>,
     by_lineage: Mutex<HashMap<PackageLineageId, Option<Arc<PackageView>>>>,
 }
 
 impl CorpusMemo {
-    fn new(corpus: Corpus, probe: Option<Arc<AdapterProbe>>) -> Arc<Self> {
+    fn new(
+        corpus: Corpus,
+        probe: Option<Arc<AdapterProbe>>,
+        empty_edge_log: Option<Arc<EdgeEmptyLog>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             corpus,
             probe,
+            empty_edge_log,
             all: Mutex::new(None),
             by_lineage: Mutex::new(HashMap::new()),
         })
@@ -209,6 +224,7 @@ impl CorpusMemo {
 pub struct CorpusAdapter {
     corpus: Corpus,
     probe: Option<Arc<AdapterProbe>>,
+    empty_edge_log: Option<Arc<EdgeEmptyLog>>,
 }
 
 impl CorpusAdapter {
@@ -217,6 +233,7 @@ impl CorpusAdapter {
         Self {
             corpus,
             probe: None,
+            empty_edge_log: None,
         }
     }
 
@@ -230,7 +247,18 @@ impl CorpusAdapter {
         Self {
             corpus,
             probe: Some(probe),
+            empty_edge_log: None,
         }
+    }
+
+    /// Record why a covered reverse edge's posting list was empty.
+    ///
+    /// The log is shared with the query driver, which reads it after the
+    /// result stream ends. Queries that do not ask for a coverage note leave
+    /// this unset, and those resolutions stay on the plain neighbor stream.
+    pub fn with_empty_edge_log(mut self, log: Arc<EdgeEmptyLog>) -> Self {
+        self.empty_edge_log = Some(log);
+        self
     }
 
     /// Borrow the underlying corpus handle.
@@ -244,7 +272,11 @@ impl CorpusAdapter {
     /// any one query, and caching the package list across queries would make
     /// a corpus insert invisible to the next one.
     fn memo(&self) -> Arc<CorpusMemo> {
-        CorpusMemo::new(self.corpus.clone(), self.probe.clone())
+        CorpusMemo::new(
+            self.corpus.clone(),
+            self.probe.clone(),
+            self.empty_edge_log.clone(),
+        )
     }
 }
 
@@ -762,11 +794,101 @@ fn posting_neighbors<'v, V: AsVertex<Vertex> + 'v>(
             });
         };
         let target = sv.stable_ref();
-        per_package(Arc::clone(&memo), move |pkg, memo| {
+        let neighbors = per_package(Arc::clone(&memo), move |pkg, memo| {
             memo.record(StoreProbe::IndexProbe);
             posting.probe(pkg, &target)
+        });
+        // Covered edges explain an empty posting for *this* symbol. The
+        // neighbor stream stays lazy; the note is recorded only once that
+        // stream has been polled to the end without yielding a vertex.
+        let Some(log) = memo
+            .empty_edge_log
+            .clone()
+            .filter(|_| edge_empty::is_covered_edge(edge))
+        else {
+            return neighbors;
+        };
+        let symbol_name = sv
+            .package
+            .view()
+            .entry(sv.intro)
+            .map(|entry| entry.sym().name.clone())
+            .unwrap_or_default();
+        let symbol_pkg = Arc::clone(&sv.package);
+        let memo = Arc::clone(&memo);
+        note_if_empty(neighbors, move || async move {
+            let packages = memo.all_packages().await;
+            log.record(edge_empty::diagnose_empty_edge(
+                edge,
+                &symbol_name,
+                symbol_pkg.as_ref(),
+                packages.as_ref(),
+            ));
         })
     })
+}
+
+/// Poll `inner` through, and run `on_empty` when it ends without a single item.
+///
+/// `on_empty` classifies the symbol whose posting list was just scanned. It
+/// runs only after that scan, so the package list it reads is the one the
+/// scan already cached.
+fn note_if_empty<'v, Fut>(
+    inner: VertexStream<'v, Result<Vertex, Error>>,
+    on_empty: impl FnOnce() -> Fut + 'v,
+) -> VertexStream<'v, Result<Vertex, Error>>
+where
+    Fut: Future<Output = ()> + 'v,
+{
+    Box::pin(NoteIfEmpty {
+        inner,
+        yielded: false,
+        make_finish: Some(Box::new(move || {
+            Box::pin(on_empty()) as Pin<Box<dyn Future<Output = ()> + 'v>>
+        })),
+        finish: None,
+    })
+}
+
+struct NoteIfEmpty<'v> {
+    inner: VertexStream<'v, Result<Vertex, Error>>,
+    yielded: bool,
+    make_finish: Option<Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + 'v>> + 'v>>,
+    finish: Option<Pin<Box<dyn Future<Output = ()> + 'v>>>,
+}
+
+impl<'v> Stream for NoteIfEmpty<'v> {
+    type Item = Result<Vertex, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.finish.is_none() {
+            match this.inner.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    this.yielded = true;
+                    return Poll::Ready(Some(item));
+                }
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) if this.yielded => return Poll::Ready(None),
+                Poll::Ready(None) => {
+                    if let Some(make) = this.make_finish.take() {
+                        this.finish = Some(make());
+                    }
+                }
+            }
+        }
+        if let Some(finish) = this.finish.as_mut() {
+            match finish.as_mut().poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(()) => {
+                    this.finish = None;
+                    Poll::Ready(None)
+                }
+            }
+        } else {
+            Poll::Ready(None)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

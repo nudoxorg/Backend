@@ -4,11 +4,11 @@
 //! # LR-8: this is a view, not a second engine
 //!
 //! The read/query tools bottom out in these `EngineHandle` calls. Names below
-//! are the `do_*` methods — the stable internal surface `tests/mcp_dump_responses.rs`
-//! is deliberately written against — not the MCP tool names, which are the
-//! consolidated nine of docs/MCP-SURFACE-PLAN.md §5.1 (`search`, `read`,
-//! `refs`, `packages`, `select_version`, `diff`, `index`, `graph`, `schema`);
-//! `server.rs` maps each tool onto one or more of these:
+//! are the `do_*` methods — the stable internal surface
+//! `tests/mcp_dump_responses.rs` is deliberately written against — not the MCP
+//! tool names, which are the consolidated nine of docs/MCP-SURFACE-PLAN.md §5.1
+//! (`search`, `read`, `refs`, `packages`, `select_version`, `diff`, `index`,
+//! `graph`, `schema`); `server.rs` maps each tool onto one or more of these:
 //!
 //! | `do_*` method | Engine call |
 //! |---|---|
@@ -36,19 +36,25 @@
 //! current package view directly and use the shared head projection with no
 //! section plan, timeline, markdown walk, channel, or cancellation race.
 
-use std::collections::{BTreeMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use crate::semantic::SectionState;
-use crate::wire::{
-    DocEvent, Gen, HitRow, KindDiscriminant, KindTag, PackageDiff, QueryEvent, RenderSection,
-    SearchEvent, SigToken, SourceLocation, SymbolHead, Timeline, VersionEvent,
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::atomic::{AtomicU64, Ordering},
 };
-use crate::{EngineHandle, GraphQuery, SearchQuery};
+
+use crate::{
+    EngineHandle, GraphQuery, SearchQuery,
+    semantic::SectionState,
+    wire::{
+        DocEvent, Gen, HitRow, KindDiscriminant, KindTag, PackageDiff, QueryEvent, RenderSection,
+        SearchEvent, SigToken, SourceLocation, SymbolHead, Timeline, VersionEvent,
+    },
+};
 use futures::future::try_join_all;
 
-use crate::mcp::error::McpError;
-use crate::mcp::key::{PackageLineageDto, SymbolKeyDto};
+use crate::mcp::{
+    error::McpError,
+    key::{PackageLineageDto, SymbolKeyDto},
+};
 
 mod args;
 mod results;
@@ -60,13 +66,13 @@ pub use args::{
     SelectVersionArgs, SemanticSearchArgs, SymbolFormat,
 };
 pub use results::{
-    CompactSymbolDoc, CompactSymbolReference, DiffVersionsResult, EdgeCoverageNote, FailedTarget,
-    GetOccurrencesResult, IndexPackageResult, IndexResult, IndexedPackage, IntegrityReport,
-    ListVersionsResult, LoadedPackagesResult, OccurrenceRow, OccurrenceSymbol, PackageSummary,
-    PackageWithVersions, PackagesResult, QueryResult, QueryResultRow, ReferenceCoverage,
-    RefsResult, RunningTarget, SchemaResult, SearchHitDoc, SearchResult, SelectVersionResult,
-    SemanticHitRow, SemanticSearchResult, SemanticStatus, SymbolDoc, SymbolsResult,
-    UnscannedDependencies, UsageRow, UsagesResult, VersionSummary,
+    CompactSymbolDoc, CompactSymbolReference, DiffVersionsResult, EdgeCoverageNote,
+    EdgeEmptyReason, FailedTarget, GetOccurrencesResult, IndexPackageResult, IndexResult,
+    IndexedPackage, IntegrityReport, ListVersionsResult, LoadedPackagesResult, OccurrenceRow,
+    OccurrenceSymbol, PackageSummary, PackageWithVersions, PackagesResult, QueryResult,
+    QueryResultRow, ReferenceCoverage, RefsResult, RunningTarget, SchemaResult, SearchHitDoc,
+    SearchResult, SelectVersionResult, SemanticHitRow, SemanticSearchResult, SemanticStatus,
+    SymbolDoc, SymbolsResult, UnscannedDependencies, UsageRow, UsagesResult, VersionSummary,
 };
 
 /// The Trustfall query behind `list_packages`.
@@ -107,31 +113,6 @@ pub const GET_OCCURRENCES_QUERY: &str = r#"
     }
 }
 "#;
-
-/// Edge pairs that answer the same relational question for disjoint sets of
-/// languages — `(dead edge name, the `TypePosition` it reads, the edge that
-/// answers instead)`. See [`NudoxTools::edge_coverage_note`]'s doc comment for
-/// how this is used and its documented limitations.
-///
-/// `Trait.implementors` reads `TypePosition::ImplementedTrait`, which only
-/// Rust's `impl` blocks ever populate; `subtypes` reads
-/// `TypePosition::SuperType`, which every *other* supported language
-/// populates and Rust never does (`schema.graphql`'s notes on both edges, and
-/// `workspace/compiler/languages/tests/producer_capabilities.rs`, are the
-/// authoritative source for this split — this list must stay consistent with
-/// both, not redefine the mapping a third time).
-const DEAD_EDGE_PAIRS: &[(&str, crate::store::package::TypePosition, &str)] = &[
-    (
-        "implementors",
-        crate::store::package::TypePosition::ImplementedTrait,
-        "subtypes",
-    ),
-    (
-        "subtypes",
-        crate::store::package::TypePosition::SuperType,
-        "implementors",
-    ),
-];
 
 /// Default number of rows a tool returns when the caller does not say.
 const DEFAULT_LIMIT: usize = 50;
@@ -214,8 +195,8 @@ fn report_integrity(integrity: &crate::Integrity) -> IntegrityReport {
 
 /// The engine-backed implementation of the eight §L6 tools.
 ///
-/// Holds the logic; [`crate::mcp::NudoxMcpServer`] holds the MCP surface that calls
-/// it. The split keeps every tool body testable without standing up a
+/// Holds the logic; [`crate::mcp::NudoxMcpServer`] holds the MCP surface that
+/// calls it. The split keeps every tool body testable without standing up a
 /// transport, and keeps `#[tool_router]`'s macro expansion off this file.
 ///
 /// Cheap to clone: an `EngineHandle` is an `Arc` pair.
@@ -227,7 +208,8 @@ pub struct NudoxTools {
     /// the `Gen` it answers; giving each tool call a fresh one keeps two
     /// concurrent MCP calls from reading each other's events.
     generation: std::sync::Arc<AtomicU64>,
-    /// Index jobs in flight, keyed by canonical PURL — see [`crate::mcp::index`].
+    /// Index jobs in flight, keyed by canonical PURL — see
+    /// [`crate::mcp::index`].
     ///
     /// On `NudoxTools` and not on the server, because rmcp builds one
     /// `NudoxMcpServer` per MCP *session*: a registry living there would let
@@ -534,7 +516,9 @@ impl NudoxTools {
         cache: &mut PackageCache,
         lineage: &crate::wire::PackageLineageId,
     ) -> Option<std::sync::Arc<crate::store::package::PackageView>> {
-        if let Some(cached) = cache.get(lineage) { cached.clone() } else {
+        if let Some(cached) = cache.get(lineage) {
+            cached.clone()
+        } else {
             let fetched = corpus.package(lineage).await;
             cache.insert(lineage.clone(), fetched.clone());
             fetched
@@ -677,12 +661,13 @@ impl NudoxTools {
     ///
     /// Each element of `args.keys` accepts exactly what [`Self::do_get_symbol`]
     /// accepts for its single `key` — the legacy `ecosystem:name#introhex`
-    /// string or an address (§4) — via the same [`Self::resolve_key_or_address`].
-    /// `SearchResult`'s doc comment promises a caller may "pass either it or
-    /// `address` straight to `read` or `refs`"; before this, `read`'s batched
-    /// path enforced only the legacy spelling, so an address that worked for a
-    /// single-symbol `read` or for `refs` was rejected here with a format
-    /// complaint the caller was never shown as a constraint.
+    /// string or an address (§4) — via the same
+    /// [`Self::resolve_key_or_address`]. `SearchResult`'s doc comment
+    /// promises a caller may "pass either it or `address` straight to
+    /// `read` or `refs`"; before this, `read`'s batched path enforced only
+    /// the legacy spelling, so an address that worked for a single-symbol
+    /// `read` or for `refs` was rejected here with a format complaint the
+    /// caller was never shown as a constraint.
     pub async fn do_get_symbols(&self, args: GetSymbolsArgs) -> Result<SymbolsResult, McpError> {
         if args.keys.is_empty() || args.keys.len() > 32 {
             return Err(McpError::InvalidArgument {
@@ -711,7 +696,9 @@ impl NudoxTools {
         let mut order = Vec::with_capacity(args.keys.len());
         for raw in &args.keys {
             let key = self.resolve_key_or_address(raw).await?;
-            let index = if let Some(&index) = unique_by_key.get(&key) { index } else {
+            let index = if let Some(&index) = unique_by_key.get(&key) {
+                index
+            } else {
                 let index = unique.len();
                 unique_by_key.insert(key.clone(), index);
                 unique.push(key);
@@ -751,7 +738,7 @@ impl NudoxTools {
         let mut bindings = BTreeMap::new();
         bindings.insert("key".to_owned(), SymbolKeyDto::from_wire(&key).0);
 
-        let (page, columns, has_more) = self
+        let (page, columns, has_more, _empty_edge) = self
             .run_query_page(
                 GraphQuery {
                     query: crate::graph::queries::FIND_USAGES.to_owned(),
@@ -806,7 +793,7 @@ impl NudoxTools {
         let mut bindings = BTreeMap::new();
         bindings.insert("key".to_owned(), SymbolKeyDto::from_wire(&key).0);
 
-        let (page, columns, has_more) = self
+        let (page, columns, has_more, _empty_edge) = self
             .run_query_page(
                 GraphQuery {
                     query: GET_OCCURRENCES_QUERY.to_owned(),
@@ -1223,8 +1210,8 @@ impl NudoxTools {
     /// still running when it expires is reported as
     /// [`IndexPackageResult::Running`] with its current stage — a true answer,
     /// not a timeout error. Calling again joins the same job (see
-    /// [`crate::mcp::index`]), which is what makes polling safe rather than a way to
-    /// start N producer runs.
+    /// [`crate::mcp::index`]), which is what makes polling safe rather than a
+    /// way to start N producer runs.
     pub async fn do_index_package(
         &self,
         args: IndexPackageArgs,
@@ -1474,8 +1461,10 @@ impl NudoxTools {
         next: &mut Vec<(String, bool)>,
         result: &mut IndexResult,
     ) {
-        use crate::mcp::index::IndexTarget;
-        use crate::packages::local::{Dependency, DependencyScan, declared_dependencies};
+        use crate::{
+            mcp::index::IndexTarget,
+            packages::local::{Dependency, DependencyScan, declared_dependencies},
+        };
 
         let IndexTarget::Local { root, language, .. } = target else {
             // A fetched package's sources are in the cache and its manifest is
@@ -1544,8 +1533,9 @@ impl NudoxTools {
     /// `list_versions`, minus the MCP wrapping.
     ///
     /// [`EngineHandle::versions`] is itself synchronous (the version registry
-    /// is fully resident in memory, see `crate::mcp::versions`'s module docs) so
-    /// there is no stream to drain here, unlike every other tool in this file.
+    /// is fully resident in memory, see `crate::mcp::versions`'s module docs)
+    /// so there is no stream to drain here, unlike every other tool in this
+    /// file.
     pub async fn do_list_versions(
         &self,
         args: ListVersionsArgs,
@@ -1631,11 +1621,8 @@ impl NudoxTools {
         }
         let limit = clamp_limit(args.limit);
         let offset = decode_cursor(args.cursor.as_deref())?;
-        // Borrowed before `args.query` moves into `GraphQuery` below — the
-        // coverage check below needs the query text, not just its result.
-        let query_text = args.query.clone();
 
-        let (page, columns, has_more) = self
+        let (page, columns, has_more, empty_edge) = self
             .run_query_page(
                 GraphQuery {
                     query: args.query,
@@ -1646,10 +1633,15 @@ impl NudoxTools {
             )
             .await?;
 
-        // Only a genuinely empty page needs checking — a page that came back
-        // with rows already answered, whatever edge it traversed.
-        let edge_coverage = if page.is_empty() {
-            self.edge_coverage_note(&query_text).await
+        // Only the first empty page of a covered edge carries the note. A
+        // later page that is empty because the cursor ran off the end is
+        // pagination, and a page that came back with rows already answered.
+        let edge_coverage = if page.is_empty() && offset == 0 {
+            empty_edge.map(|diagnosis| EdgeCoverageNote {
+                edge: diagnosis.edge,
+                answers_instead: diagnosis.answers_instead.to_owned(),
+                reason: diagnosis.reason,
+            })
         } else {
             None
         };
@@ -1662,68 +1654,6 @@ impl NudoxTools {
             next_cursor,
             edge_coverage,
         })
-    }
-
-    /// Whether an empty `graph_query` page is empty because the query
-    /// traversed an edge that is **empty by construction** for every package
-    /// currently loaded — see [`EdgeCoverageNote`]'s doc comment for the
-    /// incident this closes.
-    ///
-    /// # Why a substring check on the query text, not a parsed query plan
-    ///
-    /// The query text is Trustfall (a GraphQL subset). Knowing *for certain*
-    /// which edges a query traverses means parsing it and walking the
-    /// selection set — this crate already does that once, inside
-    /// `trustfall_core::frontend::parse`, and duplicating that walk here to
-    /// answer a narrower question is out of scope for what this closes. A
-    /// substring check on the two edge names this pair is about is a
-    /// conservative stand-in: it can only over-fire (an edge name appearing
-    /// in, say, a string literal `@filter` value that happens to spell
-    /// `"implementors"`), never under-fire on an actual traversal, and an
-    /// over-fire here only *adds* a note to a result that was already empty —
-    /// it never removes information a caller would otherwise have had. If a
-    /// third edge pair with this problem ever shows up, extend
-    /// [`DEAD_EDGE_PAIRS`] rather than reaching for a real query-plan walk;
-    /// the day this substring check produces a wrong note in practice is the
-    /// day it's worth replacing.
-    ///
-    /// # Why "packages currently loaded", not "packages this query touched"
-    ///
-    /// `graph_query` (unlike `refs`, which resolves one key's own package)
-    /// has no package argument to read scope from — a query runs over the
-    /// whole resident corpus unless its own `@filter` narrows it, and parsing
-    /// that filter is the same out-of-scope problem as above. Every package
-    /// in the corpus is therefore treated as "in scope": if literally none of
-    /// them ever records the position the dead edge reads, the edge is empty
-    /// by construction regardless of which packages this particular query
-    /// happened to touch, and the note fires correctly. The only imprecision
-    /// this can introduce is firing when a *typed but package-filtered* query
-    /// would have been correctly empty for the excluded package's language
-    /// alone — again a case where the note is added noise, not a wrong claim.
-    async fn edge_coverage_note(&self, query_text: &str) -> Option<EdgeCoverageNote> {
-        let corpus = self.engine.corpus();
-        let packages = corpus.packages().await;
-        for (edge, position, alternative) in DEAD_EDGE_PAIRS {
-            if !query_text.contains(edge) {
-                continue;
-            }
-            let any_package_records = packages
-                .iter()
-                .any(|pkg| pkg.indexes().records_type_position(*position));
-            if !any_package_records {
-                return Some(EdgeCoverageNote {
-                    edge: (*edge).to_owned(),
-                    answers_instead: (*alternative).to_owned(),
-                    reason: format!(
-                        "no package currently loaded records a `{edge}` relationship for any \
-                         symbol — it is empty by construction for these languages, not \
-                         because this particular question has no answer; `{alternative}` is \
-                         the edge that carries it here"
-                    ),
-                });
-            }
-        }
-        None
     }
 
     /// Drive one Trustfall query through the engine and collect up to `limit`
@@ -1743,6 +1673,7 @@ impl NudoxTools {
         let mut rows: Vec<QueryResultRow> = Vec::new();
         let mut truncated = false;
         let mut terminated = false;
+        let mut empty_edge = None;
 
         while let Ok(event) = rx.recv_async().await {
             match event {
@@ -1756,11 +1687,18 @@ impl NudoxTools {
                             break;
                         }
                         rows.push(QueryResultRow {
-                            cells: row.cells.iter().map(std::string::ToString::to_string).collect(),
+                            cells: row
+                                .cells
+                                .iter()
+                                .map(std::string::ToString::to_string)
+                                .collect(),
                         });
                     }
                 }
-                QueryEvent::Done { .. } => {
+                QueryEvent::Done {
+                    empty_edge: noted, ..
+                } => {
+                    empty_edge = noted;
                     terminated = true;
                     break;
                 }
@@ -1775,25 +1713,36 @@ impl NudoxTools {
             columns,
             rows,
             truncated,
+            empty_edge,
         })
     }
 
     /// Run `q`, fetching enough rows to cover one page at `offset`/`limit`,
     /// and slice that page out locally.
     ///
-    /// Returns `(page_rows, columns, has_more)`. See [`paginate_rows`] for
-    /// what `has_more` means when the fetch itself may have been capped
-    /// before the true end of the result set.
+    /// Returns `(page_rows, columns, has_more, empty_edge)`. See
+    /// [`paginate_rows`] for what `has_more` means when the fetch itself
+    /// may have been capped before the true end of the result set.
+    /// `empty_edge` is the coverage note recorded while resolving,
+    /// independent of which page was sliced out.
     async fn run_query_page(
         &self,
         q: GraphQuery,
         offset: usize,
         limit: usize,
-    ) -> Result<(Vec<QueryResultRow>, Vec<String>, bool), McpError> {
+    ) -> Result<
+        (
+            Vec<QueryResultRow>,
+            Vec<String>,
+            bool,
+            Option<crate::graph::EmptyEdgeDiagnosis>,
+        ),
+        McpError,
+    > {
         let fetch_limit = offset.saturating_add(limit).saturating_add(1);
         let raw = self.run_query(q, fetch_limit).await?;
         let (page, has_more) = paginate_rows(raw.rows, offset, limit, raw.truncated);
-        Ok((page, raw.columns, has_more))
+        Ok((page, raw.columns, has_more, raw.empty_edge))
     }
 }
 
@@ -1917,7 +1866,7 @@ pub(crate) fn signature_text(token: &SigToken) -> &str {
         SigToken::Ident(text)
         | SigToken::Ty { text, .. }
         | SigToken::Generic(text)
-        |         SigToken::Lifetime(text) => text.as_ref(),
+        | SigToken::Lifetime(text) => text.as_ref(),
         SigToken::Ws => " ",
     }
 }
@@ -1981,13 +1930,16 @@ fn paginate_rows<T>(
 /// paginated ones (`find_usages`, `graph_query`, via
 /// [`NudoxTools::run_query_page`]) decide what their own `next_cursor` is.
 struct RawQueryResult {
-    /// Column names, in the order the query's `@output` directives declared them.
+    /// Column names, in the order the query's `@output` directives declared
+    /// them.
     columns: Vec<String>,
     /// Every row collected, up to the fetch limit passed to `run_query`.
     rows: Vec<QueryResultRow>,
     /// `true` when the stream had more rows than the fetch limit allowed us
     /// to collect.
     truncated: bool,
+    /// Coverage note recorded for an empty covered edge during this query.
+    empty_edge: Option<crate::graph::EmptyEdgeDiagnosis>,
 }
 
 // ---------------------------------------------------------------------------

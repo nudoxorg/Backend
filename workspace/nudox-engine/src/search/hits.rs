@@ -617,6 +617,7 @@ mod tests {
             // Same: no type refs were built for this fixture, so an empty
             // set is truthful, not a placeholder.
             type_positions_recorded: std::collections::BTreeSet::new(),
+            unresolved_nominals: std::collections::BTreeMap::new(),
         };
         let got = qualified_display_name(&indexes, intro, "Memchr", "memchr");
         assert_eq!(

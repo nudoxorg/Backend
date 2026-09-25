@@ -14,12 +14,17 @@
 //! * `Error` and every public wire enum are `#[non_exhaustive]`.
 
 pub mod adapter;
+pub mod edge_empty;
 pub mod plan;
 pub mod probe;
 pub mod queries;
 pub mod vertex;
 
 pub use adapter::{CorpusAdapter, Error as GraphError};
+pub use edge_empty::{
+    EdgeEmptyLog, EdgeEmptyReason, EmptyEdgeDiagnosis, EmptyEdgeFacts, classify_empty_edge,
+    diagnose_empty_edge,
+};
 pub use plan::{PackagePlan, SymbolPlan};
 pub use probe::{AdapterProbe, StoreProbe};
 pub use vertex::Vertex;

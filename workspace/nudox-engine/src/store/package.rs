@@ -21,8 +21,7 @@
 //! rebuilding costs O(n log n) in the number of symbols — fast enough for
 //! hot-reload and cheap enough that we do not need a CAS-keyed cache at L1.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use nudox_ir::{
     change::{IntroId, PackageLineageId, StableRef},
@@ -50,7 +49,8 @@ mod typerefs {
     //! it was that they were *unanswerable*, at the index layer, no matter what
     //! the schema exposed:
     //!
-    //! * "what does `Point` implement?" — `Impl::self_ty` was never read at all;
+    //! * "what does `Point` implement?" — `Impl::self_ty` was never read at
+    //!   all;
     //! * "which functions return `Y`?" / "which fields are of type `Y`?" — the
     //!   example `graph_query`'s own tool description advertises.
     //!
@@ -75,7 +75,10 @@ mod typerefs {
         change::{IntroId, PackageLineageId, StableRef},
         index::{RawRef, Ref},
         kind::Kind,
-        kinds::{Param, Type},
+        kinds::{
+            Param, Type, UnknownType,
+            ty::{Primitive, TemplatePart, TupleElement},
+        },
         view::IrView,
     };
 
@@ -239,23 +242,43 @@ mod typerefs {
     /// every signature posting and put un-navigable `Param` rows in the
     /// answer.
     pub fn typerefs_of_entry(view: &IrView, intro: IntroId) -> Vec<TypeRef> {
+        entry_type_facts(view, intro).refs
+    }
+
+    /// Resolved type references plus nominal spellings at those same positions
+    /// that did not become a [`StableRef`].
+    pub(crate) struct EntryTypeFacts {
+        pub(crate) refs: Vec<TypeRef>,
+        pub(crate) unresolved: Vec<(TypePosition, String)>,
+    }
+
+    /// The type references and unresolved nominal spellings `intro` writes.
+    pub(crate) fn entry_type_facts(view: &IrView, intro: IntroId) -> EntryTypeFacts {
         let mut refs: Vec<TypeRef> = Vec::new();
+        let mut unresolved: Vec<(TypePosition, String)> = Vec::new();
         let package = view.package();
 
         let Some(entry) = view.entry(intro) else {
-            return refs;
+            return EntryTypeFacts { refs, unresolved };
         };
         let Some(kind) = entry.kind().as_owned_kind() else {
-            return refs;
+            return EntryTypeFacts { refs, unresolved };
         };
 
         match kind {
             Kind::Impl(impl_) => {
                 if let Some(of_ty) = &impl_.of {
-                    push_type(&mut refs, TypePosition::ImplementedTrait, of_ty, package);
+                    push_type(
+                        &mut refs,
+                        &mut unresolved,
+                        TypePosition::ImplementedTrait,
+                        of_ty,
+                        package,
+                    );
                 }
                 push_type(
                     &mut refs,
+                    &mut unresolved,
                     TypePosition::ImplSelf,
                     &impl_.self_ty,
                     package,
@@ -263,40 +286,88 @@ mod typerefs {
             }
             Kind::Trait(trait_) => {
                 for super_ty in &trait_.supers {
-                    push_type(&mut refs, TypePosition::Supertrait, super_ty, package);
+                    push_type(
+                        &mut refs,
+                        &mut unresolved,
+                        TypePosition::Supertrait,
+                        super_ty,
+                        package,
+                    );
                 }
             }
             Kind::Record(record) => {
                 for super_ty in &record.super_types {
-                    push_type(&mut refs, TypePosition::SuperType, super_ty, package);
+                    push_type(
+                        &mut refs,
+                        &mut unresolved,
+                        TypePosition::SuperType,
+                        super_ty,
+                        package,
+                    );
                 }
             }
             Kind::Field(field) => {
                 if let Some(ty) = &field.ty {
-                    push_type(&mut refs, TypePosition::FieldType, ty, package);
+                    push_type(
+                        &mut refs,
+                        &mut unresolved,
+                        TypePosition::FieldType,
+                        ty,
+                        package,
+                    );
                 }
             }
             Kind::Function(function) => {
                 for param in &function.input_params {
-                    push_param(&mut refs, TypePosition::Parameter, param, view);
+                    push_param(
+                        &mut refs,
+                        &mut unresolved,
+                        TypePosition::Parameter,
+                        param,
+                        view,
+                    );
                 }
                 for param in &function.output_params {
-                    push_param(&mut refs, TypePosition::Return, param, view);
+                    push_param(&mut refs, &mut unresolved, TypePosition::Return, param, view);
                 }
                 for thrown in &function.throws {
-                    push_type(&mut refs, TypePosition::Throws, thrown, package);
+                    push_type(
+                        &mut refs,
+                        &mut unresolved,
+                        TypePosition::Throws,
+                        thrown,
+                        package,
+                    );
                 }
             }
             Kind::Alias(alias) => {
                 if let Some(target) = &alias.target {
-                    push_type(&mut refs, TypePosition::AliasTarget, target, package);
+                    push_type(
+                        &mut refs,
+                        &mut unresolved,
+                        TypePosition::AliasTarget,
+                        target,
+                        package,
+                    );
                 }
             }
             Kind::Const(const_) => {
-                push_type(&mut refs, TypePosition::ValueType, &const_.ty, package);
+                push_type(
+                    &mut refs,
+                    &mut unresolved,
+                    TypePosition::ValueType,
+                    &const_.ty,
+                    package,
+                );
             }
             Kind::Static(static_) => {
-                push_type(&mut refs, TypePosition::ValueType, &static_.ty, package);
+                push_type(
+                    &mut refs,
+                    &mut unresolved,
+                    TypePosition::ValueType,
+                    &static_.ty,
+                    package,
+                );
             }
             // These kinds name no types of their own. An `Enum`'s payload
             // types live on its `Variant`s' `Field` entries, and a `Variant`'s
@@ -310,26 +381,41 @@ mod typerefs {
 
         refs.sort_unstable();
         refs.dedup();
-        refs
+        unresolved.sort_unstable();
+        unresolved.dedup();
+        EntryTypeFacts { refs, unresolved }
     }
 
     /// Record every target `ty` names, at the reach `position` calls for.
+    ///
+    /// Spellings that do not become a [`StableRef`] are recorded alongside,
+    /// at the same reach: a head-only position does not treat a generic
+    /// argument as the relationship, and a whole-expression position does.
     fn push_type(
         out: &mut Vec<TypeRef>,
+        unresolved: &mut Vec<(TypePosition, String)>,
         position: TypePosition,
         ty: &Type,
         package: &PackageLineageId,
     ) {
         let mut targets: Vec<StableRef> = Vec::new();
+        let mut spellings: Vec<String> = Vec::new();
         match position.reach() {
-            Reach::Head => targets.extend(head_stable_ref(ty, package)),
-            Reach::Whole => collect_stable_refs(ty, package, &mut targets),
+            Reach::Head => {
+                targets.extend(head_stable_ref(ty, package));
+                spellings.extend(head_unresolved_spelling(ty));
+            }
+            Reach::Whole => {
+                collect_stable_refs(ty, package, &mut targets);
+                collect_unresolved_spellings(ty, &mut spellings);
+            }
         }
         out.extend(
             targets
                 .into_iter()
                 .map(|target| TypeRef { position, target }),
         );
+        unresolved.extend(spellings.into_iter().map(|spelling| (position, spelling)));
     }
 
     /// Record the type of the `Param` entry `param` names.
@@ -341,6 +427,7 @@ mod typerefs {
     /// what the index cannot see, no reader is told it saw.
     fn push_param(
         out: &mut Vec<TypeRef>,
+        unresolved: &mut Vec<(TypePosition, String)>,
         position: TypePosition,
         param: &Ref<Param>,
         view: &IrView,
@@ -355,7 +442,7 @@ mod typerefs {
             return;
         };
         if let Some(ty) = &p.ty {
-            push_type(out, position, ty, view.package());
+            push_type(out, unresolved, position, ty, view.package());
         }
     }
 
@@ -430,6 +517,185 @@ mod typerefs {
             // `Ref::Local` really does not appear in a sealed table now: the
             // import arena that used to hide behind this variant is gone, and
             // `seal` reports any residual local in `SealReport::unmapped_local`.
+            Ref::Local(_) => None,
+        }
+    }
+
+    /// The unresolved nominal at the head of `ty`, if the head did not link.
+    fn head_unresolved_spelling(ty: &Type) -> Option<String> {
+        match ty {
+            Type::Nominal(raw_ref) => unresolved_spelling_of_raw(raw_ref),
+            Type::Apply { base, .. } => head_unresolved_spelling(base),
+            Type::Annotated { inner, .. } => head_unresolved_spelling(inner),
+            Type::Unknown(unknown) => unresolved_spelling_of_unknown(unknown),
+            Type::SelfType
+            | Type::Primitive(_)
+            | Type::Tuple(_)
+            | Type::Slice(_)
+            | Type::Array { .. }
+            | Type::Union(_)
+            | Type::Intersection(_)
+            | Type::Never
+            | Type::Any
+            | Type::TypeVar(_)
+            | Type::Wildcard { .. }
+            | Type::FunctionPointer { .. }
+            | Type::Conditional { .. }
+            | Type::Mapped { .. }
+            | Type::TemplateLiteral(_)
+            | Type::AnonymousRecord { .. }
+            | Type::ImplTrait(_)
+            | Type::DynTrait(_)
+            | Type::Inferred
+            | Type::QualifiedPath { .. } => None,
+        }
+    }
+
+    /// Every unresolved nominal spelling anywhere in `ty`.
+    ///
+    /// Exhaustive over [`Type`] and [`Primitive`] because
+    /// [`Type::for_each_ref`] only visits [`RawRef`]s. An
+    /// [`UnknownType::UnresolvedExternal`] carries a spelling and no ref,
+    /// so a ref-only walk would drop it.
+    fn collect_unresolved_spellings(ty: &Type, out: &mut Vec<String>) {
+        match ty {
+            Type::SelfType | Type::Never | Type::Any | Type::Inferred | Type::TypeVar(_) => {}
+            Type::Primitive(primitive) => collect_unresolved_in_primitive(primitive, out),
+            Type::Tuple(elements) => {
+                for element in elements.iter() {
+                    match element {
+                        TupleElement::Positional(inner) => collect_unresolved_spellings(inner, out),
+                        TupleElement::Named { ty, .. } => collect_unresolved_spellings(ty, out),
+                    }
+                }
+            }
+            Type::Slice(inner) | Type::Array { ty: inner, .. } => {
+                collect_unresolved_spellings(inner, out);
+            }
+            Type::Union(parts)
+            | Type::Intersection(parts)
+            | Type::ImplTrait(parts)
+            | Type::DynTrait(parts) => {
+                for part in parts.iter() {
+                    collect_unresolved_spellings(part, out);
+                }
+            }
+            Type::Unknown(unknown) => out.extend(unresolved_spelling_of_unknown(unknown)),
+            Type::Nominal(raw) => out.extend(unresolved_spelling_of_raw(raw)),
+            Type::Apply { base, args } => {
+                collect_unresolved_spellings(base, out);
+                for arg in args.iter() {
+                    collect_unresolved_spellings(arg, out);
+                }
+            }
+            Type::Wildcard { bound, .. } => {
+                if let Some(bound) = bound {
+                    collect_unresolved_spellings(bound, out);
+                }
+            }
+            Type::FunctionPointer { params, ret, .. } => {
+                for param in params.iter() {
+                    collect_unresolved_spellings(param, out);
+                }
+                if let Some(ret) = ret {
+                    collect_unresolved_spellings(ret, out);
+                }
+            }
+            Type::Annotated { inner, .. } => collect_unresolved_spellings(inner, out),
+            Type::Conditional {
+                check,
+                extends_ty,
+                then_ty,
+                else_ty,
+            } => {
+                collect_unresolved_spellings(check, out);
+                collect_unresolved_spellings(extends_ty, out);
+                collect_unresolved_spellings(then_ty, out);
+                collect_unresolved_spellings(else_ty, out);
+            }
+            Type::Mapped { source, value, .. } => {
+                collect_unresolved_spellings(source, out);
+                collect_unresolved_spellings(value, out);
+            }
+            Type::TemplateLiteral(parts) => {
+                for part in parts.iter() {
+                    if let TemplatePart::Interpolated(inner) = part {
+                        collect_unresolved_spellings(inner, out);
+                    }
+                }
+            }
+            Type::AnonymousRecord { members, .. } => {
+                for member in members.iter() {
+                    collect_unresolved_spellings(&member.ty, out);
+                }
+            }
+            Type::QualifiedPath {
+                self_ty, trait_ref, ..
+            } => {
+                collect_unresolved_spellings(self_ty, out);
+                if let Some(trait_ref) = trait_ref {
+                    collect_unresolved_spellings(trait_ref, out);
+                }
+            }
+        }
+    }
+
+    fn collect_unresolved_in_primitive(primitive: &Primitive, out: &mut Vec<String>) {
+        match primitive {
+            Primitive::Integer { .. }
+            | Primitive::Float(_)
+            | Primitive::Bool
+            | Primitive::Char
+            | Primitive::Str
+            | Primitive::Builtin(_) => {}
+            Primitive::MutPointer(inner) | Primitive::ConstPointer(inner) => {
+                collect_unresolved_spellings(inner, out);
+            }
+            Primitive::Reference { ty, .. } => collect_unresolved_spellings(ty, out),
+        }
+    }
+
+    fn unresolved_spelling_of_unknown(unknown: &UnknownType) -> Option<String> {
+        match unknown {
+            UnknownType::UnresolvedLocalName { name }
+            | UnknownType::UnresolvedExternal { name }
+                if !name.is_empty() =>
+            {
+                Some(name.clone())
+            }
+            UnknownType::UnresolvedLocalName { .. }
+            | UnknownType::UnresolvedExternal { .. }
+            | UnknownType::Unannotated
+            | UnknownType::DynamicallyTyped
+            | UnknownType::TruncatedAtDepthLimit
+            | UnknownType::OracleGap
+            | UnknownType::NoIrRepresentation { .. } => None,
+        }
+    }
+
+    /// A nominal ref that did not become a [`StableRef`], as the producer
+    /// spelled it.
+    fn unresolved_spelling_of_raw(raw: &RawRef) -> Option<String> {
+        match raw {
+            Ref::Intro(_) => None,
+            Ref::Foreign {
+                target: Some(_), ..
+            } => None,
+            Ref::Foreign {
+                target: None, key, ..
+            } => {
+                let display = key.display.as_ref();
+                if display.is_empty() {
+                    let path = key.path.as_ref();
+                    if path.is_empty() {
+                        None
+                    } else {
+                        Some(path.to_owned())
+                    }
+                } else {
+                    Some(display.to_owned())
+                }
+            }
             Ref::Local(_) => None,
         }
     }
@@ -669,12 +935,19 @@ pub struct PackageIndexes {
     /// language — `impl` blocks are a Rust-only construct) makes
     /// `Trait.implementors` empty *by construction* for that language, which
     /// looks identical, from an empty result alone, to a trait that
-    /// genuinely has no implementors. `NudoxTools::edge_coverage_note` reads
-    /// this — across every package currently loaded, not one at a time — to
-    /// tell a `graph_query` caller which of the two it is looking at, naming
-    /// the edge that *does* carry the relationship for these languages (see
-    /// `schema.graphql`'s notes on `Trait.implementors` / `subtypes`).
+    /// genuinely has no implementors. `implementors` uses this as a
+    /// corpus-wide fact. The other reverse edges do not: a package that
+    /// records `Return` for a different symbol still leaves an unlinked
+    /// return of *this* symbol unresolved.
     pub type_positions_recorded: std::collections::BTreeSet<TypePosition>,
+    /// Nominal spellings written at a [`TypePosition`] that did not become a
+    /// [`StableRef`]. Sorted and deduplicated per position.
+    ///
+    /// A reverse edge keys on resolved identity, so these names never appear
+    /// in [`Self::type_refs`]. They are why an empty `returnedBy` can mean
+    /// "the return type spelled this symbol and did not link" rather than
+    /// "nothing returns it".
+    pub unresolved_nominals: std::collections::BTreeMap<TypePosition, Vec<String>>,
 }
 
 impl PackageIndexes {
@@ -703,6 +976,10 @@ impl PackageIndexes {
         let mut by_alias = AliasIndex::new();
         let mut type_positions_recorded: std::collections::BTreeSet<TypePosition> =
             std::collections::BTreeSet::new();
+        let mut unresolved_nominals: std::collections::BTreeMap<
+            TypePosition,
+            std::collections::BTreeSet<String>,
+        > = std::collections::BTreeMap::new();
 
         // Single pass over the declaration table, in IntroId order.
         for (intro, entry) in view.entries_sorted() {
@@ -732,9 +1009,10 @@ impl PackageIndexes {
                 // `serde::de::Deserializer` must be discoverable by
                 // searching for `Deserializer`.
                 if let Some(leaf) = alias.rsplit("::").next()
-                    && !leaf.is_empty() {
-                        by_name.insert(leaf, intro);
-                    }
+                    && !leaf.is_empty()
+                {
+                    by_name.insert(leaf, intro);
+                }
             }
 
             // -- type_refs ---------------------------------------------------
@@ -742,9 +1020,16 @@ impl PackageIndexes {
             // was written in. `typerefs_of_entry` takes the view rather than
             // `entry` because a function's parameter and return types live on
             // its `Param` entries, not on the function.
-            for TypeRef { position, target } in typerefs_of_entry(view, intro) {
+            let facts = typerefs::entry_type_facts(view, intro);
+            for TypeRef { position, target } in facts.refs {
                 type_positions_recorded.insert(position);
                 type_refs_builder.push(target.clone(), (position, intro));
+            }
+            for (position, spelling) in facts.unresolved {
+                unresolved_nominals
+                    .entry(position)
+                    .or_default()
+                    .insert(spelling);
             }
         }
 
@@ -781,6 +1066,10 @@ impl PackageIndexes {
             by_alias,
             occurrences_recorded,
             type_positions_recorded,
+            unresolved_nominals: unresolved_nominals
+                .into_iter()
+                .map(|(position, spellings)| (position, spellings.into_iter().collect()))
+                .collect(),
         }
     }
 
@@ -815,6 +1104,17 @@ impl PackageIndexes {
     /// this").
     pub fn records_type_position(&self, position: TypePosition) -> bool {
         self.type_positions_recorded.contains(&position)
+    }
+
+    /// Spellings written at `position` that did not become a [`StableRef`].
+    ///
+    /// Empty when this package linked every nominal at that position, or
+    /// never wrote one. The slice is sorted.
+    pub fn unresolved_nominals_at(&self, position: TypePosition) -> &[String] {
+        self.unresolved_nominals
+            .get(&position)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// The entries that name `ty` in a *relational* position — the trait an
@@ -871,6 +1171,10 @@ pub struct PackageView {
     keys: KeyProvenance,
     /// All derived indexes, built once from `view` at construction time.
     indexes: PackageIndexes,
+    /// Occurrence owners or targets the producer submitted that sealing did
+    /// not attach. Absent from a view built without a [`SealReport`] — those
+    /// tables never had a rejection count to copy.
+    occurrence_attachments_rejected: bool,
 }
 
 /// Deliberately *not* derived.
@@ -909,6 +1213,7 @@ impl PackageView {
             provenance,
             KeyProvenance::Unrecorded,
             crate::PackageMetadata::default(),
+            false,
         )
     }
 
@@ -941,6 +1246,8 @@ impl PackageView {
             provenance,
             KeyProvenance::from_seal_report(report),
             metadata,
+            report.rejected_facts.undeclared_occurrence_owners > 0
+                || report.rejected_facts.undeclared_occurrence_targets > 0,
         )
     }
 
@@ -951,6 +1258,7 @@ impl PackageView {
         provenance: Provenance,
         keys: KeyProvenance,
         metadata: crate::PackageMetadata,
+        occurrence_attachments_rejected: bool,
     ) -> Self {
         let indexes = PackageIndexes::build(&view);
         Self {
@@ -959,6 +1267,7 @@ impl PackageView {
             metadata,
             keys,
             indexes,
+            occurrence_attachments_rejected,
         }
     }
 
@@ -1028,6 +1337,15 @@ impl PackageView {
     /// The derived indexes built from this package's IR.
     pub fn indexes(&self) -> &PackageIndexes {
         &self.indexes
+    }
+
+    /// Whether sealing rejected occurrence owners or targets for this package.
+    ///
+    /// `false` when no [`SealReport`] reached the view. Those rejected facts
+    /// are not in the occurrence map, so an empty `usages` posting cannot
+    /// tell "nothing calls this" from "the call was dropped at the boundary".
+    pub fn occurrence_attachments_rejected(&self) -> bool {
+        self.occurrence_attachments_rejected
     }
 }
 
