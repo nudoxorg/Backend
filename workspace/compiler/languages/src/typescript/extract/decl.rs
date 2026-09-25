@@ -1434,15 +1434,19 @@ fn export_assignment<'a>(
             (name, DeclBody::Function(lower_function(f, source)))
         }
         Expression::Identifier(_) => return vec![],
-        other => (
-            "default".to_string(),
-            DeclBody::Const(ConstBody {
-                ty: None,
-                value: Some(other.span().source_text(source).to_string()),
-                satisfies: None,
-                cast: None,
-            }),
-        ),
+        other => {
+            let asserted = asserted_type(other, source);
+            let satisfied = satisfies_type(other, source);
+            (
+                "default".to_string(),
+                DeclBody::Const(ConstBody {
+                    ty: asserted,
+                    value: Some(other.span().source_text(source).to_string()),
+                    satisfies: satisfied,
+                    cast: None,
+                }),
+            )
+        }
     };
     let decl_index = bump_count(&name, name_counts);
     vec![DeclFact {
@@ -1759,15 +1763,18 @@ fn extract_default_export<'a>(
                 return vec![];
             }
             let span = other.span();
+            let expr = other.as_expression();
+            let asserted = expr.and_then(|e| asserted_type(e, source));
+            let satisfied = expr.and_then(|e| satisfies_type(e, source));
             let discriminant = bump_count("default", name_counts);
             vec![DeclFact {
                 name: "default".to_string(),
                 visibility: Visibility::Public,
                 doc: jsdoc::jsdoc_for_span(semantic, span),
                 body: DeclBody::Const(ConstBody {
-                    ty: None,
+                    ty: asserted,
                     value: Some(span.source_text(source).to_string()),
-                    satisfies: None,
+                    satisfies: satisfied,
                     cast: None,
                 }),
                 module: path.to_path_buf(),
