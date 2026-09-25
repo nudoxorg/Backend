@@ -1276,12 +1276,10 @@ fn reexport_ids(
             }
             let target_path = resolve_module_path(resolver, &module.path, &indirect.module_request);
             if indirect.import_name == "*" {
-                if target_path.is_some() {
-                    ids.insert(TsId::new(here.clone(), export_name.as_str(), 0));
-                }
+                ids.insert(TsId::new(here.clone(), export_name.as_str(), 0));
                 continue;
             }
-            let n = target_path.as_ref().map_or(0, |p| {
+            let n = target_path.as_ref().map_or(1, |p| {
                 export_index.get(p.as_path()).map_or(1, |table| {
                     resolve_export_target(resolver, p, table, &indirect.import_name, twins).len()
                 })
@@ -1385,21 +1383,20 @@ fn emit_reexports(
                 export_name.as_str(),
                 0,
             );
-            if let Some(p) = target_path.as_ref() {
+            let target_ref = if let Some(p) = target_path.as_ref() {
                 let root = TsId::new(twins.canonical(p).to_path_buf(), MODULE_ROOT_NAME, 0);
-                let target_ref = refer_declared(out, declared, root);
-                let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
-            } else if is_package_specifier(&indirect.module_request) {
-                let target_ref = out.refer_import(package_foreign_key(
+                refer_declared(out, declared, root)
+            } else {
+                out.refer_import(unresolved_module_key(
                     &indirect.module_request,
                     MODULE_ROOT_NAME,
-                ));
-                let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
-            }
+                ))
+            };
+            let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
             continue;
         }
 
-        if target_path.is_none() && is_package_specifier(&indirect.module_request) {
+        if target_path.is_none() {
             let sym =
                 reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
             let reexport_id = vacant_reexport_id(
@@ -1408,10 +1405,8 @@ fn emit_reexports(
                 export_name.as_str(),
                 0,
             );
-            let target_ref = out.refer_import(package_foreign_key(
-                &indirect.module_request,
-                target_name,
-            ));
+            let target_ref =
+                out.refer_import(unresolved_module_key(&indirect.module_request, target_name));
             let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
             continue;
         }
@@ -2729,6 +2724,18 @@ fn npm_package_name(specifier: &str) -> String {
     } else {
         specifier.split('/').next().unwrap_or(specifier).to_string()
     }
+}
+
+fn unresolved_module_key(specifier: &str, display: &str) -> ForeignKey {
+    if is_package_specifier(specifier) {
+        return package_foreign_key(specifier, display);
+    }
+    ForeignKey::in_namespace(
+        EcosystemId::new("npm"),
+        specifier.to_string(),
+        Box::<str>::from(format!("{specifier}::{display}")),
+        Box::<str>::from(display),
+    )
 }
 
 fn package_foreign_key(specifier: &str, display: &str) -> ForeignKey {

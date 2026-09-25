@@ -1591,6 +1591,72 @@ mod tests {
     }
 
     #[test]
+    fn a_named_reexport_of_a_missing_file_is_a_foreign_reference() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"reexport-missing","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export { gone } from \"./missing\";\n\
+             export { local as renamed } from \"./also-missing\";\n\
+             export * as bundle from \"./no-bundle\";\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "reexport-missing", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("reexport-missing"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a reexport of a missing file must seal");
+        for name in ["gone", "renamed", "bundle"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name && matches!(entry.kind(), EntryInner::Reference(_))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a reference, not a dropped export");
+        }
+    }
+
+    #[test]
+    fn a_barrel_of_a_package_reexport_stays_local() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"reexport-chain","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("mid.d.ts"),
+            "export { pad } from \"left-pad\";\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export { pad } from \"./mid\";\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "reexport-chain", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("reexport-chain"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a barrel of a package reexport must seal");
+        let local = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "pad"
+                && entry.sym().source.ends_with("index.d.ts")
+                && matches!(entry.kind(), EntryInner::Reference(Ref::Intro(_)))
+        });
+        assert!(
+            local,
+            "the barrel pad must point at the local reexport, not a foreign key"
+        );
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.
