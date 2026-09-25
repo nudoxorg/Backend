@@ -631,6 +631,59 @@ fn prototype_method<'a>(
     }
 }
 
+/// `Foo.prototype = { bar: function (s) {}, baz: (n) => n }` declares each
+/// function property. The constructor stays the function it already is.
+fn prototype_object<'a>(
+    assign: &'a oxc_ast::ast::AssignmentExpression<'a>,
+    source: &'a str,
+    semantic: &'a Semantic<'a>,
+    path: &Path,
+    declarations: &mut Vec<DeclFact>,
+    name_counts: &mut std::collections::HashMap<String, u32>,
+) -> bool {
+    let AssignmentTarget::StaticMemberExpression(proto) = &assign.left else {
+        return false;
+    };
+    if proto.property.name != "prototype" {
+        return false;
+    }
+    let Expression::Identifier(_) = &proto.object else {
+        return false;
+    };
+    let Expression::ObjectExpression(object) = &assign.right else {
+        return false;
+    };
+    for prop in &object.properties {
+        let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(prop) = prop else {
+            continue;
+        };
+        if prop.computed {
+            continue;
+        }
+        let name = property_key_name(&prop.key, source);
+        if name.is_empty() {
+            continue;
+        }
+        let (body, span) = match &prop.value {
+            Expression::FunctionExpression(function) => {
+                (lower_function(function, source), function.span())
+            }
+            Expression::ArrowFunctionExpression(arrow) => (lower_arrow(arrow, source), arrow.span()),
+            _ => continue,
+        };
+        push_commonjs_function(
+            &name,
+            body,
+            span,
+            semantic,
+            path,
+            declarations,
+            name_counts,
+        );
+    }
+    true
+}
+
 fn is_whole_module_exports(mem: &oxc_ast::ast::StaticMemberExpression<'_>) -> bool {
     matches!(&mem.object, Expression::Identifier(id) if id.name == "module")
         && mem.property.name == "exports"
@@ -909,6 +962,16 @@ fn push_commonjs_value_decls<'a>(
                 declarations,
                 name_counts,
             );
+            continue;
+        }
+        if prototype_object(
+            assign,
+            source,
+            semantic,
+            path,
+            declarations,
+            name_counts,
+        ) {
             continue;
         }
         let AssignmentTarget::StaticMemberExpression(mem) = &assign.left else {

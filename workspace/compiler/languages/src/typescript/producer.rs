@@ -1951,6 +1951,51 @@ mod tests {
     }
 
     #[test]
+    fn a_commonjs_prototype_object_declares_each_method() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"cjs-proto-obj","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.js"),
+            "function Foo() {}\n\
+             Foo.prototype = {\n\
+               bar: function (s) { return s; },\n\
+               baz: (n) => n,\n\
+             };\n\
+             module.exports = Foo;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "cjs-proto-obj", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("cjs-proto-obj"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a prototype object must seal");
+        let foo = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "Foo"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(foo, 1, "the constructor must stay a function");
+        for name in ["bar", "baz"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a function");
+        }
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
