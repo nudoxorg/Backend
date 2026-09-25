@@ -115,6 +115,21 @@ struct CatalogLeaf {
     /// `false` means the version is unlisted (soft Withdrawn).
     #[serde(default = "default_listed")]
     listed: bool,
+    /// Framework groups. Absent on page items and on delete leaves.
+    #[serde(default, rename = "dependencyGroups")]
+    dependency_groups: Vec<DependencyGroup>,
+}
+
+#[derive(Deserialize, Default)]
+struct DependencyGroup {
+    #[serde(default)]
+    dependencies: Vec<DependencyRef>,
+}
+
+#[derive(Deserialize)]
+struct DependencyRef {
+    #[serde(default)]
+    id: Option<String>,
 }
 
 fn default_listed() -> bool {
@@ -168,7 +183,26 @@ fn recognized_leaf_type(token: &str) -> Option<LeafType> {
 /// `PackageDetails` is [`CatalogEvent::Published`] unless `listed` is false
 /// (soft unlist). Missing id/version or an unrecognized `@type` yields `None`;
 /// the follower skips those leaves.
+/// Dependency ids across every framework group.
+///
+/// NuGet ids are case-insensitive, so each id is lowercased before the sort.
+/// An id that appears in two groups is kept once. A blank id is dropped.
+fn dependency_names(groups: &[DependencyGroup]) -> Vec<String> {
+    let mut names: Vec<String> = groups
+        .iter()
+        .flat_map(|group| group.dependencies.iter())
+        .filter_map(|dependency| dependency.id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| id.to_ascii_lowercase())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn event_from_leaf(leaf: CatalogLeaf) -> Option<CatalogEvent> {
+    let dependencies = dependency_names(&leaf.dependency_groups);
     let (Some(name), Some(version)) = (leaf.package_id, leaf.package_version) else {
         return None;
     };
@@ -178,7 +212,7 @@ fn event_from_leaf(leaf: CatalogLeaf) -> Option<CatalogEvent> {
         LeafType::PackageDetails => Some(CatalogEvent::Published {
             name,
             version,
-            dependencies: Vec::new(),
+            dependencies,
         }),
         LeafType::Unknown => None,
     }
@@ -407,6 +441,33 @@ mod tests {
             }"#,
         );
         assert_published(page_item, "Adam.JSGenerator", "1.1.0");
+
+        let with_deps = parse_event(
+            r#"{
+                "@type": ["PackageDetails", "catalog:Permalink"],
+                "id": "Newtonsoft.Json",
+                "version": "13.0.3",
+                "dependencyGroups": [
+                    {"targetFramework": ".NETStandard2.0", "dependencies": [
+                        {"id": "Microsoft.CSharp", "range": "[4.3.0, )"},
+                        {"id": "  ", "range": "1.0.0"}
+                    ]},
+                    {"dependencies": [
+                        {"id": "microsoft.csharp", "range": "[4.3.0, )"},
+                        {"id": "System.Runtime", "range": "[4.3.0, )"}
+                    ]}
+                ]
+            }"#,
+        );
+        match with_deps {
+            Some(CatalogEvent::Published { dependencies, .. }) => {
+                assert_eq!(dependencies, vec![
+                    "microsoft.csharp".to_owned(),
+                    "system.runtime".to_owned()
+                ]);
+            }
+            other => panic!("expected dependency names, got {other:?}"),
+        }
 
         let page_delete = parse_event(
             r#"{
