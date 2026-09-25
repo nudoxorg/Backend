@@ -63,7 +63,13 @@ impl Producer for ClangProducer {
         // header itself is what keeps a header-only API. System headers are
         // outside this walk.
         let sources: Vec<_> = find_sources(root);
-        let cpp_package = sources.iter().any(|p| is_cpp(p) || is_cpp_header(p));
+        // A `.h` next to a `.cpp` is C++. A header-only C++ library often has
+        // no `.cpp` and no `.hpp` — Eigen and Boost ship `namespace` in `.h`.
+        // Those files were parsed as C and the package sealed without the
+        // class. A `.h` that does not look like C++ stays C.
+        let cpp_package = sources.iter().any(|p| {
+            is_cpp(p) || is_cpp_header(p) || (is_c_header(p) && header_looks_like_cpp(p))
+        });
 
         // A real project's own build knows its `-I`/`-D`/`-std` flags; a
         // bare per-extension default cannot (see `compile_commands`'s module
@@ -197,6 +203,19 @@ fn is_cpp_header(path: &std::path::Path) -> bool {
 
 fn is_c_header(path: &std::path::Path) -> bool {
     matches!(path.extension().and_then(|e| e.to_str()), Some("h"))
+}
+
+/// C++ tokens that are not C. A comment that mentions `class` can false-trigger;
+/// a header-only C library that only uses `struct` does not.
+fn header_looks_like_cpp(path: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let head: String = text.chars().take(64 * 1024).collect();
+    ["namespace ", "namespace\t", "template<", "template <", "constexpr", "nullptr"]
+        .iter()
+        .any(|token| head.contains(token))
+        || head.contains("class ")
 }
 
 fn is_header(path: &std::path::Path) -> bool {

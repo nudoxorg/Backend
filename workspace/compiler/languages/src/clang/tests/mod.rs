@@ -842,6 +842,36 @@ fn main_file_count(files: &[PathBuf], name: &str) -> usize {
     files.iter().filter(|p| file_name(p) == Some(name)).count()
 }
 
+/// A header-only C++ library that ships `.h` (no `.hpp`, no `.cpp`) is still
+/// C++. Parsing it as C drops the class.
+#[test]
+fn header_only_cxx_h_file_seals_the_class() {
+    let _guard = lock_clang();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("widget.h"),
+        r#"
+#pragma once
+namespace demo {
+class Widget {
+ public:
+  int n;
+};
+}
+"#,
+    )
+    .unwrap();
+
+    let table = produce_tree(root, "widget-h").table;
+    let widgets = records_named(&table, "Widget");
+    assert_eq!(
+        widgets.len(),
+        1,
+        "namespace/class in a .h file must seal as one Record, not be parsed away as C"
+    );
+}
+
 /// A header-only package has no `.c`/`.cpp` carrying the declarations. The
 /// header itself has to be the translation unit, or `is_in_main_file` drops
 /// every record in it.
