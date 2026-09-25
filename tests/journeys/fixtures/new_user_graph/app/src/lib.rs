@@ -11,5 +11,6 @@ pub fn decoy_mention() {
 
 /// Runs the application entrypoint.
 pub fn run_app() -> Result<String, String> {
+    let _ = journey_helper::helper_value();
     parse_config()
 }

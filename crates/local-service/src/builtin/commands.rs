@@ -391,10 +391,7 @@ fn execute_references(
         after = Some(next);
     }
     if !publication_found {
-        return Err(BuiltinModelError(
-            "references need a complete semantic publication; none is selected for this package"
-                .to_owned(),
-        ));
+        return execute_structural_references(daemon, target);
     }
     // Deterministic order by source position, then site; the bound is the
     // same bounded result contract every product reply obeys.
@@ -413,6 +410,39 @@ fn execute_references(
             .then_with(|| left.site.to_bytes().cmp(&right.site.to_bytes()))
     });
     facts.dedup();
+    let references = library.references(target, &facts).map_err(|error| {
+        BuiltinModelError(format!("project references through the catalog: {error}"))
+    })?;
+    Ok(backend_engine::SurfaceReply::References {
+        target: target.clone(),
+        references,
+    })
+}
+
+fn execute_structural_references(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    target: &backend_engine::ProductText,
+) -> Result<backend_engine::SurfaceReply, BuiltinModelError> {
+    let library = daemon.engine().daemon().library();
+    let view = library.view();
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let sources = super::read_indexed_sources(&snapshot)?;
+    let mut facts =
+        super::view_build::structural_reference_facts(view, &sources, target.as_str())?;
+    facts.sort_by(|left, right| {
+        left.evidence
+            .source
+            .as_ref()
+            .map(|span| (span.file.as_str(), span.start, span.end))
+            .cmp(
+                &right
+                    .evidence
+                    .source
+                    .as_ref()
+                    .map(|span| (span.file.as_str(), span.start, span.end)),
+            )
+            .then_with(|| left.site.to_bytes().cmp(&right.site.to_bytes()))
+    });
     let references = library.references(target, &facts).map_err(|error| {
         BuiltinModelError(format!("project references through the catalog: {error}"))
     })?;
@@ -2527,10 +2557,27 @@ impl CommandAdapter {
                     .as_mut()
                     .map_or(Ok(Vec::new()), RegistryGateway::catalog)
                     .map_err(BuiltinModelError)?;
-                let dependency_facts = self
+                let mut dependency_facts = self
                     .registry
                     .as_mut()
                     .map_or_else(Vec::new, RegistryGateway::dependency_facts);
+                let indexed = super::read_indexed_sources(
+                    &daemon.engine().daemon().owner().snapshot(),
+                )?;
+                for project in indexed.projects.values() {
+                    if project.label.starts_with("pkg:") {
+                        continue;
+                    }
+                    let project_root = std::path::Path::new(&project.label);
+                    if !project_root.join("Cargo.toml").is_file() {
+                        continue;
+                    }
+                    match super::local_manifest::cargo_dependency_facts(project_root) {
+                        Ok(Some(fact)) => dependency_facts.push(fact),
+                        Ok(None) => {}
+                        Err(error) => return Err(BuiltinModelError(error)),
+                    }
+                }
                 futures_executor::block_on(self.sql_projection.synchronize_package_graph(
                     daemon.engine().daemon().library().view().root(),
                     &dependency_facts,

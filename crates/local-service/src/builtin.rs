@@ -83,6 +83,8 @@ use registry::RegistryGateway;
 #[path = "builtin/product_state.rs"]
 mod product_state;
 use product_state::ProductState;
+#[path = "builtin/local_manifest.rs"]
+mod local_manifest;
 #[path = "builtin/coverage.rs"]
 mod coverage;
 use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};

@@ -8,7 +8,10 @@ use backend_engine::{
     SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject,
     ViewRoot,
 };
-use backend_library::{CommandMutation, command_spec};
+use backend_library::{
+    AdvisoryPackageDto, CommandMutation, RegistryDownloadCount, RegistryFactAvailability,
+    RegistryNativeMetadata, RegistryReleaseStanding, command_spec,
+};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -548,7 +551,12 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
                     RowId::Object(id) => id.to_bytes(),
                 }),
                 signature: row
-                    .and_then(|value| value.signature.as_deref())
+                    .and_then(|value| {
+                        value
+                            .excerpt
+                            .text()
+                            .or(value.signature.as_deref())
+                    })
                     .map(ProductText::new)
                     .transpose()
                     .map_err(|e| e.to_string())?,
@@ -672,14 +680,52 @@ fn dependents(
             return Ok(RegistryMetadata::NotRecorded(reason));
         }
     }
-    Ok(RegistryMetadata::Recorded(
-        catalog
-            .iter()
-            .filter(|record| sources.contains(&record.coordinate))
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    ))
+    let mut records = catalog
+        .iter()
+        .filter(|record| sources.contains(&record.coordinate))
+        .cloned()
+        .collect::<Vec<_>>();
+    for source in sources {
+        if records.iter().any(|record| record.coordinate == source) {
+            continue;
+        }
+        records.push(local_manifest_registry_record(&source)?);
+    }
+    Ok(RegistryMetadata::Recorded(records.into_boxed_slice()))
+}
+
+fn local_manifest_registry_record(
+    source: &PackageReference,
+) -> Result<RegistryPackageRecord, String> {
+    let PackageReference::Purl(coordinate) = source else {
+        return Err(format!(
+            "local manifest dependents require a pinned package URL, not {}",
+            source.as_str()
+        ));
+    };
+    let ecosystem = coordinate.package_type().registry().ok_or_else(|| {
+        format!(
+            "local manifest dependents require a registry ecosystem for {}",
+            source.as_str()
+        )
+    })?;
+    let native_metadata = RegistryNativeMetadata::unavailable(ecosystem, "local manifest");
+    Ok(RegistryPackageRecord {
+        coordinate: source.clone(),
+        ecosystem,
+        name: ProductText::new(coordinate.lineage_name()).map_err(|error| error.to_string())?,
+        version: ProductText::new(coordinate.version()).map_err(|error| error.to_string())?,
+        bytes: 0,
+        standing: RegistryReleaseStanding::Available,
+        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+        facts_version: [0; 32],
+        native_metadata_version: native_metadata
+            .identity()
+            .map_err(|error| error.to_string())?,
+        native_metadata,
+        forge_sources: Box::new([]),
+        advisory: AdvisoryPackageDto::unknown(),
+    })
 }
 fn subject_title(subject: &TreeSubject) -> ProductText {
     let text = match subject {
