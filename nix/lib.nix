@@ -63,6 +63,7 @@ let
         GIT_CONFIG_GLOBAL = ./git-https-instead-of-ssh.config;
       };
       inherit buildFeatures;
+      RUSTC_BOOTSTRAP = "1";
       cargoBuildFlags = [
         "-p"
         cargoPackage
