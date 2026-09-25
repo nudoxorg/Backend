@@ -728,6 +728,38 @@ fn push_commonjs_object_properties<'a>(
     }
 }
 
+fn push_commonjs_class<'a>(
+    class: &'a Class<'a>,
+    name: &str,
+    source: &'a str,
+    semantic: &'a Semantic<'a>,
+    path: &Path,
+    declarations: &mut Vec<DeclFact>,
+    name_counts: &mut std::collections::HashMap<String, u32>,
+) {
+    use nudox_ir::entry::Visibility;
+
+    let span = class.span();
+    if declarations
+        .iter()
+        .any(|decl| decl.name == name && decl.span_start == span.start)
+    {
+        return;
+    }
+    let decl_index = bump_count(name, name_counts);
+    declarations.push(DeclFact {
+        name: name.to_string(),
+        visibility: Visibility::Public,
+        doc: jsdoc::jsdoc_for_span(semantic, span),
+        body: DeclBody::Class(lower_class(class, source, semantic)),
+        module: path.to_path_buf(),
+        span_start: span.start,
+        span_end: span.end,
+        is_default: false,
+        decl_index,
+    });
+}
+
 fn export_property_name(
     mem: &oxc_ast::ast::StaticMemberExpression<'_>,
     cjs: &CommonJsExports,
@@ -788,12 +820,42 @@ fn push_commonjs_value_decls<'a>(
                     cjs_exports,
                     &bindings,
                 );
+            } else if let Expression::ClassExpression(class) = &assign.right {
+                let name = class
+                    .id
+                    .as_ref()
+                    .map(|id| id.name.to_string())
+                    .unwrap_or_else(|| "default".to_string());
+                push_commonjs_class(
+                    class,
+                    &name,
+                    source,
+                    semantic,
+                    path,
+                    declarations,
+                    name_counts,
+                );
+                cjs_exports.whole_module.get_or_insert(name);
             }
             continue;
         }
         let Some(export_name) = export_property_name(mem, cjs_exports) else {
             continue;
         };
+
+        if let Expression::ClassExpression(class) = &assign.right {
+            push_commonjs_class(
+                class,
+                &export_name,
+                source,
+                semantic,
+                path,
+                declarations,
+                name_counts,
+            );
+            cjs_exports.named.push((export_name.clone(), export_name));
+            continue;
+        }
 
         if let Expression::FunctionExpression(function) = &assign.right {
             let span = function.span();

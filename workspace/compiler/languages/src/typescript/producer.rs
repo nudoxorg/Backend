@@ -1755,6 +1755,64 @@ mod tests {
     }
 
     #[test]
+    fn a_commonjs_class_export_is_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"cjs-class","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.js"),
+            "module.exports = class Foo {\n\
+               bar() { return 1; }\n\
+             };\n\
+             exports.Baz = class {\n\
+               qux() { return 2; }\n\
+             };\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "cjs-class", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("cjs-class"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a CommonJS class export must seal");
+        let foo = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "Foo" && matches!(entry.kind(), EntryInner::Owned(Kind::Record(_)))
+            })
+            .count();
+        assert_eq!(foo, 1, "module.exports = class Foo must declare Foo");
+        let bar = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "bar"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(bar, 1, "Foo.bar must be declared");
+        let baz = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "Baz" && matches!(entry.kind(), EntryInner::Owned(Kind::Record(_)))
+            })
+            .count();
+        assert_eq!(baz, 1, "exports.Baz = class must declare Baz");
+        let qux = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "qux"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(qux, 1, "Baz.qux must be declared");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
