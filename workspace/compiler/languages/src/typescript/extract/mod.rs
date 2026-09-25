@@ -589,6 +589,10 @@ pub struct AnonFieldOwned {
     pub ty: TypeOwned,
     pub optional: bool,
     pub readonly: bool,
+    /// Key type of an index signature. Absent on ordinary fields. The field
+    /// type stays the value type; the key is walked on its own so a function
+    /// used as a key is still declared.
+    pub index_key: Option<TypeOwned>,
 }
 
 #[derive(Debug, Clone)]

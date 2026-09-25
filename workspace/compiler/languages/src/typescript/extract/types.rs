@@ -351,6 +351,7 @@ fn lower_ts_type_impl<'a>(
                             ty,
                             optional: p.optional,
                             readonly: p.readonly,
+                            index_key: None,
                         });
                     }
                     TSSignature::TSMethodSignature(m) => {
@@ -373,6 +374,7 @@ fn lower_ts_type_impl<'a>(
                             ty: TypeOwned::Function(Box::new(body)),
                             optional: m.optional,
                             readonly: false,
+                            index_key: None,
                         });
                     }
                     TSSignature::TSIndexSignature(idx) => {
@@ -394,6 +396,7 @@ fn lower_ts_type_impl<'a>(
                                 ty: value_ty,
                                 optional: false,
                                 readonly: idx.readonly,
+                                index_key: Some(key_ty),
                             });
                         }
                     }
@@ -646,6 +649,7 @@ fn object_signature_field(name: &str, body: FunctionBody) -> AnonFieldOwned {
         ty: TypeOwned::Function(Box::new(body)),
         optional: false,
         readonly: false,
+        index_key: None,
     }
 }
 

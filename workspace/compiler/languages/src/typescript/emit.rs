@@ -911,6 +911,9 @@ fn emit_type_alias(
         TypeOwned::ObjectLiteral(fields) => {
             for field in fields {
                 declare_nested_params(&id, &id, &field.name, &field.ty, out, names);
+                if let Some(key) = &field.index_key {
+                    declare_nested_params(&id, &id, &format!("{}::key", field.name), key, out, names);
+                }
             }
         }
         TypeOwned::Union(parts) => {
@@ -1077,6 +1080,16 @@ fn declare_nested_params(
                     out,
                     names,
                 );
+                if let Some(key) = &field.index_key {
+                    declare_nested_params(
+                        alias,
+                        owner,
+                        &format!("{param_name}::{}::key", field.name),
+                        key,
+                        out,
+                        names,
+                    );
+                }
             }
         }
         TypeOwned::Union(parts) => {
