@@ -603,9 +603,27 @@ fn apply_step(
                 ));
             }
             let next_viewport = Viewport::new(*width, *height, viewport.scale)?;
+            let scale = f32::from(viewport.scale);
+            let position = crate::position(0.0, 0.0);
             context
-                .update_window(window, |_, window, _| {
-                    window.resize(size(px(*width as f32), px(*height as f32)))
+                .update_window(window, |_, window, cx| {
+                    let pointer = window.mouse_position();
+                    window.resize(size(px(*width as f32), px(*height as f32)));
+                    // The test platform stores the size without calling
+                    // back: without this the layout never re-flows and the
+                    // "resized" frame is a crop of the old layout.
+                    window.bounds_changed(cx);
+                    window.set_scale_factor(scale);
+                    if pointer != position {
+                        window.dispatch_event(
+                            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                                position: pointer,
+                                pressed_button: driver_state.pressed_button,
+                                modifiers: driver_state.modifiers,
+                            }),
+                            cx,
+                        );
+                    }
                 })
                 .map_err(|error| CaptureError::Gpui(error.to_string()))?;
             *viewport = next_viewport;
@@ -785,7 +803,7 @@ fn draw_and_capture(
 /// the requested physical artifact dimensions. A smaller renderer surface is
 /// rejected rather than upscaled: upscaling a clipped scene would make the
 /// artifact appear complete while losing the logical layout contract.
-fn normalize_capture_image(
+pub(crate) fn normalize_capture_image(
     image: image::RgbaImage,
     viewport: Viewport,
 ) -> Result<image::RgbaImage, CaptureError> {
