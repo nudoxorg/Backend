@@ -945,6 +945,14 @@ fn emit_type_alias(
             declare_nested_params(&id, &id, "source", source, out, names);
             declare_nested_params(&id, &id, "value", value, out, names);
         }
+        TypeOwned::TemplateLiteral(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                let TemplatePart::Interpolated(inner) = part else {
+                    continue;
+                };
+                declare_nested_params(&id, &id, &format!("part{index}"), inner, out, names);
+            }
+        }
         _ => {}
     }
 }
@@ -1140,6 +1148,21 @@ fn declare_nested_params(
                 out,
                 names,
             );
+        }
+        TypeOwned::TemplateLiteral(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                let TemplatePart::Interpolated(inner) = part else {
+                    continue;
+                };
+                declare_nested_params(
+                    alias,
+                    owner,
+                    &format!("{param_name}::part{index}"),
+                    inner,
+                    out,
+                    names,
+                );
+            }
         }
         _ => {}
     }
