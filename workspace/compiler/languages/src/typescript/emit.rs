@@ -1454,6 +1454,14 @@ fn emit_function(
         };
         let _: Ref<Param> = out.declare(param_id, Some(id.clone()), param_sym, param);
     }
+    for param in &body.params {
+        if let Some(ty) = &param.ty {
+            declare_nested_params(&id, &id, &param.name, ty, out, names);
+        }
+    }
+    if let Some(ret) = &body.return_type {
+        declare_nested_params(&id, &id, "return", ret, out, names);
+    }
     declare_generic_bindings(&id, &id, &body.generics, out, names);
 }
 

@@ -2449,6 +2449,46 @@ mod tests {
     }
 
     #[test]
+    fn a_function_declaration_declares_nested_bindings() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"fn-nested","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export function take(cb: (left: number) => void, other: (left: string) => void): (right: number) => void;\n\
+             export interface Bag { read(cb: (mid: number) => void): void; }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "fn-nested", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("fn-nested"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a nested function on a declaration must seal");
+        let left = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "left"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+            })
+            .count();
+        assert_eq!(left, 2, "each callback must declare its own left");
+        for name in ["right", "mid"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.sym().name == name
+                        && matches!(entry.kind(), EntryInner::Owned(Kind::Param(_)))
+                })
+                .count();
+            assert_eq!(count, 1, "{name} must be a parameter");
+        }
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(
