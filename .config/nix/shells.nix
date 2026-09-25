@@ -24,9 +24,10 @@ let
       ;
   };
   common = corpusEnv // {
-    # Use the repository's leased Cargo wrapper so independent worktrees share
-    # compiler objects through sccache without sharing mutable target graphs.
-    BACKEND_STABLE_CARGO = "${tools.parallelCargo}/bin/cargo";
+    BACKEND_STABLE_CARGO = toolchains.stableCargo;
+    # PR build/test commands opt into the leased wrapper; general tooling keeps
+    # raw Cargo so immutable Nix checks do not require a mutable Git worktree.
+    BACKEND_PARALLEL_CARGO = "${tools.parallelCargo}/bin/cargo";
     BACKEND_RUSTFMT = toolchains.rustfmt;
     BACKEND_CONFIG_SNAPSHOT = toString ../.;
     BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
