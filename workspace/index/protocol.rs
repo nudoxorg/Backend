@@ -177,6 +177,10 @@ pub struct AdvisoryWire {
     pub valid_to: Option<i64>,
     /// When the advisory was recorded.
     pub recorded_at: i64,
+    /// Upstream advisory id (`RUSTSEC-…`, `GHSA-…`), kept so a range can
+    /// name the same listing reason an explicit version list uses.
+    #[serde(default)]
+    pub upstream_id: String,
 }
 
 /// A toolchain reference on the wire (opaque digest/ref string).

@@ -72,6 +72,7 @@ impl AdvisorySource {
             valid_from: self.valid_from,
             valid_to: self.valid_to,
             recorded_at: self.recorded_at,
+            upstream_id: self.upstream_id.clone(),
         }
     }
 
@@ -104,10 +105,7 @@ impl AdvisorySource {
         let Some(range) = self.version_range.as_deref() else {
             return Vec::new();
         };
-        if range.contains("introduced:")
-            || range.contains("fixed:")
-            || range.contains("last_affected:")
-        {
+        if is_event_range(range) {
             return Vec::new();
         }
         let mut seen = std::collections::HashSet::new();
@@ -362,6 +360,71 @@ pub fn resolve_osv(body: &[u8], recorded_at: i64) -> Result<Vec<AdvisorySource>,
     Ok(sources)
 }
 
+/// Whether `version` falls inside an OSV event range.
+///
+/// `introduced:0` opens the window at the beginning. `fixed` is exclusive.
+/// `last_affected` is inclusive. A version that is not semver (including a
+/// git revision) is outside the window. An explicit comma-separated version
+/// list is not an event range.
+pub fn version_in_osv_range(range: &str, version: &str) -> bool {
+    if !is_event_range(range) {
+        return false;
+    }
+    let Some(candidate) = parse_semver(version) else {
+        return false;
+    };
+    let mut inside = false;
+    for part in range.split(',') {
+        let part = part.trim();
+        if let Some(introduced) = part.strip_prefix("introduced:") {
+            inside = introduced == "0"
+                || parse_semver(introduced).is_some_and(|floor| candidate >= floor);
+        } else if let Some(fixed) = part.strip_prefix("fixed:") {
+            if inside && parse_semver(fixed).is_some_and(|ceiling| candidate >= ceiling) {
+                inside = false;
+            }
+        } else if let Some(last) = part.strip_prefix("last_affected:") {
+            if inside && parse_semver(last).is_some_and(|ceiling| candidate > ceiling) {
+                inside = false;
+            }
+        }
+    }
+    inside
+}
+
+fn is_event_range(range: &str) -> bool {
+    range.contains("introduced:") || range.contains("fixed:") || range.contains("last_affected:")
+}
+
+fn parse_semver(raw: &str) -> Option<semver::Version> {
+    let raw = raw.trim().strip_prefix('v').unwrap_or(raw.trim());
+    semver::Version::parse(raw).ok()
+}
+
+/// Advisory listings for catalog versions that an event range already covers.
+///
+/// Explicit version lists stay on [`AdvisorySource::catalog_ops`]. A withdrawn
+/// advisory and a range with no resolved stem add nothing here.
+pub fn range_listings_for(
+    source: &AdvisorySource,
+    known: &[(PackageId, &str)],
+) -> Vec<CatalogOp> {
+    if source.valid_to.is_some() {
+        return Vec::new();
+    }
+    let Some(range) = source.version_range.as_deref() else {
+        return Vec::new();
+    };
+    if !is_event_range(range) {
+        return Vec::new();
+    }
+    known
+        .iter()
+        .filter(|(_, version)| version_in_osv_range(range, version))
+        .map(|(version, _)| advisory_listing_event(*version, source.valid_from, &source.upstream_id))
+        .collect()
+}
+
 pub fn advisory_listing_event(version: PackageId, valid_from: i64, upstream_id: &str) -> CatalogOp {
     CatalogOp::SetListing {
         version,
@@ -489,7 +552,19 @@ mod tests {
         }
         assert_eq!(ops.len(), 2);
 
+        assert!(version_in_osv_range("introduced:0,fixed:1.6.1", "1.6.0"));
+        assert!(!version_in_osv_range("introduced:0,fixed:1.6.1", "1.6.1"));
+        assert!(version_in_osv_range("introduced:1.2.0,last_affected:1.2.5", "1.2.5"));
+        assert!(!version_in_osv_range("introduced:1.2.0,last_affected:1.2.5", "1.2.6"));
+        assert!(!version_in_osv_range("introduced:0,fixed:1.0.0", "abc123"));
+
         let ranged = br#"{"id":"RUSTSEC-1","affected":[{"package":{"ecosystem":"crates.io","name":"smallvec"},"ranges":[{"events":[{"introduced":"0"},{"fixed":"1.6.1"}]}]}]}"#;
+        let ranged_source = &resolve_osv(ranged, 1).expect("range")[0];
+        let covered = heart::identity::PackageId::from_uuid(uuid::Uuid::from_u128(1));
+        let fixed = heart::identity::PackageId::from_uuid(uuid::Uuid::from_u128(2));
+        let listings = range_listings_for(ranged_source, &[(covered, "1.0.0"), (fixed, "1.6.1")]);
+        assert_eq!(listings.len(), 1);
+        assert!(matches!(listings[0], CatalogOp::SetListing { version, .. } if version == covered));
         assert_eq!(
             resolve_osv(ranged, 1).expect("range")[0]
                 .catalog_ops()

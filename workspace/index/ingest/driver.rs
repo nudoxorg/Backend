@@ -21,7 +21,7 @@
 //! not against whichever engine a build selected. Every build and every test
 //! instantiates it with the real DoltLite writer.
 
-use crate::engine::VersioningEngine;
+use crate::engine::{CatalogEngine, VersioningEngine};
 use crate::protocol::{CatalogOp, VersionDelta, VersionRecordWire};
 use crate::store::writer::CatalogWriter;
 use crate::store::{Catalog, MetaStore};
@@ -32,6 +32,47 @@ use crate::ingest::homebrew::HomebrewFollower;
 use crate::ingest::monitor::{GitMonitor, MonitorError, TickOutcome};
 use crate::ingest::transport::HttpTransport;
 use crate::ingest::watermark::{FileWatermarkStore, GitWatermark, WatermarkError, WatermarkStore};
+
+/// Add advisory listings for catalog versions an OSV event range covers.
+pub fn expand_advisory_ranges<E: CatalogEngine>(
+    engine: &E,
+    ops: &[CatalogOp],
+) -> Result<Vec<CatalogOp>, crate::store::MetaError> {
+    use crate::ingest::advisory::range_listings_for;
+    use crate::ingest::advisory::AdvisorySource;
+    use crate::store::read::version_snapshots;
+
+    let mut expanded = Vec::with_capacity(ops.len());
+    for op in ops {
+        expanded.push(op.clone());
+        let CatalogOp::UpsertAdvisory { advisory } = op else {
+            continue;
+        };
+        let Some(stem) = advisory.stem_id else {
+            continue;
+        };
+        let snaps = version_snapshots(engine, stem)?;
+        let known: Vec<_> = snaps
+            .iter()
+            .map(|snap| (snap.version_id, snap.version_canonical.as_str()))
+            .collect();
+        let source = AdvisorySource {
+            upstream_id: advisory.upstream_id.clone(),
+            stem_id: advisory.stem_id,
+            version_range: advisory.version_range.clone(),
+            severity: advisory.severity.clone(),
+            summary: advisory.summary.clone(),
+            url: advisory.url.clone(),
+            valid_from: advisory.valid_from,
+            valid_to: advisory.valid_to,
+            recorded_at: advisory.recorded_at,
+            affected_name: None,
+            affected_ecosystem: None,
+        };
+        expanded.extend(range_listings_for(&source, &known));
+    }
+    Ok(expanded)
+}
 
 /// What one drive step did — for logging and test assertions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,9 +212,15 @@ where
         // apply_ops stages the whole batch in one transaction; a single bad op
         // rolls it all back and we bail *before* committing or advancing the
         // watermark.
+        let ops = expand_advisory_ranges(self.writer.engine(), &batch.ops).map_err(|error| {
+            Error::Commit {
+                feed: feed.clone(),
+                message: error.to_string(),
+            }
+        })?;
         let report = self
             .writer
-            .apply_ops(&batch.ops)
+            .apply_ops(&ops)
             .map_err(|error| Error::Commit {
                 feed: feed.clone(),
                 message: error.to_string(),
