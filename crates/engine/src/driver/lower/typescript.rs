@@ -464,6 +464,8 @@ struct Projector<'x, 'report, 'source> {
     facts_by_name: HashMap<&'source [u8], Vec<u32>>,
     /// First registered fact ordinal per binding-name span start.
     fact_at_name: HashMap<u32, u32>,
+    /// Variable-binding initializer span per pushed constant or static fact.
+    binding_init_spans: HashMap<u32, Option<Span>>,
     /// Synthetic (unregistered) type-expression facts per exact spelling,
     /// consulted only for hash-consing an identical anonymous embodiment.
     synthetic_by_name: HashMap<&'source [u8], Vec<u32>>,
@@ -1362,12 +1364,24 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         best.map(|(_, ordinal)| ordinal)
     }
 
+    /// True when two variable-binding initializer spans are the same proven
+    /// source extent, including both being absent.
+    fn binding_init_spans_match(left: Option<Span>, right: Option<Span>) -> bool {
+        match (left, right) {
+            (None, None) => true,
+            (Some(left), Some(right)) => left.start == right.start && left.end == right.end,
+            _ => false,
+        }
+    }
+
     /// Finds an earlier registered fact of `kind` and exact `name` bytes in
     /// the same lexical scope whose row is byte-identical this bare row (same
-    /// record, no children). Such rows are indistinguishable in the flattened
+    /// record, no children) and whose initializer matches when the kind is a
+    /// variable binding. Such rows are indistinguishable in the flattened
     /// lane, so the first is reused instead of minting a rejected twin.
     /// Structurally distinct same-name declarations (overloads, differently
-    /// typed block variables) never match and stay distinct.
+    /// typed block variables, or bindings with different initializers) never
+    /// match and stay distinct.
     fn merged_simple_declaration(
         &self,
         kind: EntityKind,
@@ -1375,6 +1389,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         declaration: Span,
         record: SemanticTypeRecord<'source>,
         _child_count: u8,
+        init_span: Option<Span>,
     ) -> Option<u32> {
         let candidates = self
             .facts_by_name
@@ -1403,6 +1418,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 continue;
             }
             if self.enclosing_registered_owner(decl_start, Some(ordinal)) != owner {
+                continue;
+            }
+            if matches!(kind, EntityKind::Constant | EntityKind::Static)
+                && !Self::binding_init_spans_match(
+                    self.binding_init_spans.get(&ordinal).copied().flatten(),
+                    init_span,
+                )
+            {
                 continue;
             }
             return Some(ordinal);
@@ -3053,6 +3076,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             facts_by_name: HashMap::new(),
             fact_at_name: HashMap::new(),
+            binding_init_spans: HashMap::new(),
             synthetic_by_name: HashMap::new(),
             owner_index: Vec::new(),
             owner_ancestor: Vec::new(),
@@ -3404,6 +3428,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         declaration_span,
                         record,
                         0,
+                        None,
                     )
                     .is_some()
                 {
@@ -3496,30 +3521,44 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 let extension = self.extension(type_parameter_start)?;
                 let record = cells.record;
                 let child_count = cells.len;
-                let fact = with_cells(
+                let init_span = declarator.init.as_ref().map(|init| init.span());
+                let mut fact = with_cells(
                     SemanticFact::new(entity_kind, name_bytes, LEAF_PRODUCT)
                         .with_extension(extension),
                     cells,
                 );
                 // A block-scope redeclaration the flattened lane cannot
-                // distinguish from an earlier one (`const value` in two
-                // sibling blocks) is byte-identical at the row level. The
-                // first row owns the binding; occurrences resolve to it.
-                if child_count == 0
-                    && self
-                        .merged_simple_declaration(
-                            entity_kind,
-                            name_bytes,
-                            declaration_span,
-                            record,
-                            0,
-                        )
-                        .is_some()
-                {
-                    continue;
+                // distinguish from an earlier one (`const value = 1` in two
+                // sibling blocks) is byte-identical at the row level and
+                // carries the same initializer. The first row owns the
+                // binding; occurrences of either spelling resolve to it.
+                if child_count == 0 {
+                    if let Some(ordinal) = self.merged_simple_declaration(
+                        entity_kind,
+                        name_bytes,
+                        declaration_span,
+                        record,
+                        0,
+                        init_span,
+                    ) {
+                        self.fact_at_name.insert(name_span.start, ordinal);
+                        continue;
+                    }
+                }
+                let twins = self.indistinguishable_signature_twins(declaration_span, &fact);
+                if twins > 0 {
+                    let mut hash = Sha256::new();
+                    hash.update(b"compiler.typescript.binding-twin.v1\0");
+                    hash.update(twins.to_le_bytes());
+                    let mut discriminator = [0_u8; 16];
+                    discriminator.copy_from_slice(&hash.finalize()[..16]);
+                    fact = fact.with_identity_discriminator(discriminator);
                 }
                 let ordinal = self.push(fact)?;
                 self.register(ordinal, declaration_span, name_span, entity_kind)?;
+                if matches!(entity_kind, EntityKind::Constant | EntityKind::Static) {
+                    self.binding_init_spans.insert(ordinal, init_span);
+                }
                 self.claim_staged_members(member_base, ordinal);
                 if let Some(init) = declarator.init.as_ref() {
                     let init_span = init.span();
@@ -5612,6 +5651,78 @@ mod lane_tests {
         }
         if !found {
             return Err(LaneError::Missing("unresolved foreign occurrence"));
+        }
+        Ok(())
+    }
+
+    /// Different initializers keep sibling block bindings distinct: both
+    /// `const value` facts publish, and a use inside the second block
+    /// targets the second binding's own ordinal.
+    #[test]
+    fn merged_block_redeclaration_uses_keep_their_written_spelling() -> Result<(), LaneError> {
+        let source = "export function probe(): void {\n    {\n        const value = 1;\n    }\n    {\n        const value = 2;\n        value;\n    }\n}\n";
+        let view = lower_fragment(source, None)?;
+        let probe = {
+            let mut ordinal = None;
+            for entity in view.entities() {
+                if entity.kind != EntityKind::Function {
+                    continue;
+                }
+                let atom_index = usize::try_from(entity.name.raw)?;
+                let Some(atom) = view.atoms().nth(atom_index) else {
+                    continue;
+                };
+                if atom.bytes == b"probe".as_slice() {
+                    ordinal = Some(entity.entity.raw);
+                    break;
+                }
+            }
+            ordinal.ok_or(LaneError::Missing("probe function fact"))?
+        };
+        let mut values = Vec::new();
+        for entity in view.entities() {
+            if entity.kind != EntityKind::Constant {
+                continue;
+            }
+            let atom_index = usize::try_from(entity.name.raw)?;
+            let Some(atom) = view.atoms().nth(atom_index) else {
+                continue;
+            };
+            if atom.bytes == b"value".as_slice() {
+                values.push(entity.entity.raw);
+            }
+        }
+        if values.len() != 2 {
+            return Err(LaneError::Missing("two distinct value constants"));
+        }
+        let second_value = values[1];
+        let mut found = false;
+        for row in view
+            .occurrences()
+            .ok_or(LaneError::Missing("occurrence plane"))?
+        {
+            let row = row.map_err(LaneError::from)?;
+            let occurrence = row.occurrence;
+            if row.owner.raw != probe {
+                continue;
+            }
+            if occurrence.kind != backend_semantic::ir::ReferenceKind::VariableUse {
+                continue;
+            }
+            if occurrence.target
+                != backend_semantic::ir::OccurrenceTarget::Local(
+                    backend_semantic::ir::EntityId::new(second_value),
+                )
+            {
+                continue;
+            }
+            found = true;
+            if occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Index {
+                return Err(LaneError::Missing("index confidence"));
+            }
+        }
+        if !found {
+            return Err(LaneError::Missing("second-block value use occurrence"));
         }
         Ok(())
     }
