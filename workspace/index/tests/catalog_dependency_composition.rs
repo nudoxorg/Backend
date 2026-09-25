@@ -6,6 +6,7 @@
 
 use index::{
     ecosystem::{Language, pom_dependency_names, require_names, requires_dist_names},
+    record::{PackageRecord, edge_names_agree, runtime_edges_from_names},
     search::ranking::dependents::{DependencyRow, count_dependents},
     upstream::{crates_catalog::normal_dependency_names, maven_search::pom_url},
 };
@@ -72,4 +73,22 @@ fn four_manifests_agree_on_one_dependents_sweep() {
         pom_url("org.slf4j:slf4j-api", "2.0.9").as_deref(),
         Some("https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.pom")
     );
+
+    let published = PackageRecord::from_parts(
+        Language::Java,
+        "com.example:app",
+        "1.0.0",
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
+        runtime_edges_from_names(&["  org.slf4j:slf4j-api ", "org.slf4j:slf4j-api", " "]),
+    );
+    assert!(edge_names_agree(
+        &published,
+        &["org.slf4j:slf4j-api"]
+    ));
+    assert_eq!(published.edges.len(), 1);
 }

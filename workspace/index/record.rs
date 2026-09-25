@@ -101,6 +101,39 @@ pub struct PackageRecord {
     pub edges: Vec<DepEdge>,
 }
 
+impl DepEdge {
+    /// A runtime edge with no version requirement.
+    ///
+    /// Catalog feeds that publish a name and not a requirement use this.
+    #[must_use]
+    pub fn runtime(name: impl Into<SmolStr>) -> Self {
+        Self {
+            name: name.into(),
+            requirement: None,
+            class: DepClass::Runtime,
+            optional: false,
+        }
+    }
+}
+
+/// Runtime edges from catalog dependency names.
+///
+/// Blank names are dropped. Surviving names are trimmed and de-duplicated in
+/// first-seen order. Each edge is [`DepClass::Runtime`].
+#[must_use]
+pub fn runtime_edges_from_names(names: &[impl AsRef<str>]) -> Vec<DepEdge> {
+    let mut seen = HashSet::<String>::new();
+    let mut edges = Vec::new();
+    for name in names {
+        let trimmed = name.as_ref().trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_owned()) {
+            continue;
+        }
+        edges.push(DepEdge::runtime(trimmed));
+    }
+    edges
+}
+
 impl PackageRecord {
     /// Assemble a record from fields an ingest path already extracted.
     ///

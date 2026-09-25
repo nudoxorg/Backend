@@ -72,10 +72,21 @@ pub fn provisional_global_package(coordinates: &PackageCoordinates) -> GlobalPac
 /// none. Names are trimmed, emptied names dropped, then sorted and deduped.
 pub fn facets_from_dependency_names(names: &[String]) -> Option<crate::metadata::SearchFacets> {
     use smol_str::SmolStr;
-    let mut dependencies: Vec<SmolStr> = names
-        .iter()
-        .map(|name| name.trim())
-        .filter(|name| !name.is_empty())
+    let record = crate::record::PackageRecord::from_parts(
+        Language::Rust,
+        "provisional",
+        "0.0.0",
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
+        crate::record::runtime_edges_from_names(names),
+    );
+    let mut dependencies: Vec<SmolStr> = record
+        .runtime_names()
+        .into_iter()
         .map(SmolStr::new)
         .collect();
     if dependencies.is_empty() {
