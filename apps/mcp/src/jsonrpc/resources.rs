@@ -54,9 +54,10 @@ to *find* coordinates and `backend.document` is the way to read them.
 ## edges from a row
 
 `project`, `parent`, `children`, `related`, `referencedBy`, `sameProject`.
-`related` walks outward. `referencedBy` walks inward: who is affected if this
-declaration changes. An edge that may be empty needs `@optional`, or its row
-is dropped.
+`related` walks outward inside one package. `referencedBy` is that edge in
+reverse, still inside the package: a stable ref to another package stays an
+external node and is not joined across publications. An edge that may be
+empty needs `@optional`, or its row is dropped.
 
 ## worked queries
 
@@ -99,7 +100,7 @@ Each declaration and what it is nested inside:
 }
 ```
 
-Who is affected if one named declaration changes:
+Who in this package references one named declaration:
 
 ```graphql
 {

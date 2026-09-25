@@ -192,8 +192,8 @@ fn query_tool() -> Value {
         "name": QUERY_TOOL,
         "title": "Query the code graph",
         "description": "Run a typed Trustfall query over the indexed semantic graph. \
-    Use it after backend.index: outward neighbours are `related`, impact of a change is `referencedBy`, \
-    and a natural-language place to start is filtering `documentation` or `name`. \
+    After backend.index, `related` walks outward and `referencedBy` walks back, both inside one package. \
+    A question such as where error handling lives starts as a filter on `name` or `documentation`. \
     Read `backend://schema/query` first for the edges and worked queries.",
         "inputSchema": {
             "type": "object",

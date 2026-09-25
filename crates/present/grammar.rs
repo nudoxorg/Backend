@@ -483,7 +483,7 @@ pub const GRAMMARS: [CommandGrammar; 40] = [
             "Exact declaration coordinate to centre the neighbourhood on.",
         )],
         options: &[],
-        when: "Use after you have a coordinate to see callers and callees. For a change's impact across packages, query referencedBy.",
+        when: "Use after you have a coordinate to see callers and callees in this package. Package-level dependents are a separate call.",
     },
     CommandGrammar {
         name: "references",
@@ -574,7 +574,7 @@ pub const GRAMMARS: [CommandGrammar; 40] = [
             "Exact declaration coordinate to traverse from.",
         )],
         options: &[],
-        when: "Use to follow one declaration outward. Impact of editing it is the reverse edge, referencedBy, on backend.query.",
+        when: "Use to follow one declaration outward along calls and references in its package.",
     },
     CommandGrammar {
         name: "health",
