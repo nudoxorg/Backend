@@ -1228,6 +1228,35 @@ mod tests {
     }
 
     #[test]
+    fn a_construct_signature_does_not_take_a_method_discriminant() {
+        // Construct signatures use their index as the disc and the name
+        // `new_N`. A method at index 1 is also disc 1000.
+        let mut source_text = String::from("export interface Bag {\n  pad(): void;\n  new_1000(): void;\n");
+        for _ in 0..=1000 {
+            source_text.push_str("  new (): object;\n");
+        }
+        source_text.push_str("}\n");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"construct-disc","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("index.d.ts"), &source_text).unwrap();
+        let source = PackageSource::new(dir.path(), "construct-disc", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("construct-disc"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a construct signature on the method lattice must seal");
+        let news = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "new_1000")
+            .count();
+        assert_eq!(news, 2, "the method and the construct signature both survive");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.

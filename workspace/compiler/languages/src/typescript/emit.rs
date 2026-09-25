@@ -626,7 +626,7 @@ fn emit_interface(
         } else {
             format!("new_{cs_num}")
         };
-        let cs_id = child_id(&id, &construct_member, cs_num as u32);
+        let cs_id = child_id(&id, &construct_member, interface_construct_disc(body, cs_num));
         let cs_sym = Symbol {
             name: if cs_num == 0 {
                 "new".to_string()
@@ -2359,6 +2359,30 @@ fn param_id_for(owner: &TsId, param_name: &str, index: u32) -> TsId {
         ),
         index,
     )
+}
+
+/// A construct signature's discriminant.
+///
+/// The usual value is the signature index, so `new` stays 0 and `new_N`
+/// stays N. Method discriminants are `index * 1000`, so method 1 named
+/// `new_1000` is the same id as construct signature 1000. Step off that
+/// disc. The next integer is not a method disc: those are multiples of 1000.
+fn interface_construct_disc(body: &InterfaceBody, cs_num: usize) -> u32 {
+    let name = if cs_num == 0 {
+        "new".to_string()
+    } else {
+        format!("new_{cs_num}")
+    };
+    let mut disc = cs_num as u32;
+    loop {
+        let method_taken = body.methods.iter().enumerate().any(|(method_idx, method)| {
+            method.name == name && (method_idx * 1000) as u32 == disc
+        });
+        if !method_taken || disc == u32::MAX {
+            return disc;
+        }
+        disc += 1;
+    }
 }
 
 /// Interface property discriminants, in property order.
