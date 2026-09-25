@@ -226,6 +226,18 @@ async fn one_conversation_across_packages_search_read_refs_and_graph() {
         by_address.symbols[0].key, symbol.key,
         "the address and the key must be the same declaration"
     );
+    let messy = format!(" `{}` ", key.0.replace(':', "::").replace('#', ":"));
+    let by_messy = tools
+        .do_read(ReadArgs {
+            keys: vec![SymbolKeyDto(messy.clone())].into(),
+            format: SymbolFormat::Source,
+        })
+        .await
+        .unwrap_or_else(|err| panic!("a quoted rust-style key must still read: {messy}: {err}"));
+    assert_eq!(
+        by_messy.symbols[0].key, symbol.key,
+        "paste noise must not change which declaration is read"
+    );
 
     let f_hits = search_exact(&tools, "f", Some(vec!["Function".to_owned()])).await;
     assert_eq!(f_hits.len(), 1, "f must be the one function of that name");

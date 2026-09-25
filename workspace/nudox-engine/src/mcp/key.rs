@@ -67,17 +67,16 @@ impl SymbolKeyDto {
     /// Every failure is an [`McpError::MalformedKey`] carrying the input, so an
     /// agent that mangled a key sees what it actually sent.
     pub fn to_wire(&self) -> Result<SymbolKey, McpError> {
+        let loosened = loosen_symbol_key(&self.0);
         let malformed = |reason: &'static str| McpError::MalformedKey {
             key: self.0.clone(),
             reason,
         };
 
-        let (lineage, intro_hex) = self
-            .0
+        let (lineage, intro_hex) = loosened
             .split_once('#')
             .ok_or_else(|| malformed("expected 'ecosystem:name#introhex' — no '#' found"))?;
-        let (ecosystem, name) = lineage
-            .split_once(':')
+        let (ecosystem, name) = split_lineage(lineage)
             .ok_or_else(|| malformed("expected 'ecosystem:name' before '#' — no ':' found"))?;
         if ecosystem.is_empty() {
             return Err(malformed("ecosystem segment is empty"));
@@ -133,9 +132,8 @@ impl PackageLineageDto {
             reason,
         };
 
-        let (ecosystem, name) = self
-            .0
-            .split_once(':')
+        let loosened = loosen_lineage(&self.0);
+        let (ecosystem, name) = split_lineage(&loosened)
             .ok_or_else(|| malformed("expected 'ecosystem:name' — no ':' found"))?;
         if ecosystem.is_empty() {
             return Err(malformed("ecosystem segment is empty"));
@@ -154,6 +152,62 @@ impl PackageLineageDto {
 // ---------------------------------------------------------------------------
 // Hex parsing helpers
 // ---------------------------------------------------------------------------
+
+/// Drop the paste noise agents actually send: wrapping quotes or backticks,
+/// whitespace around the separators, a Rust-style `::`, a `0x` on the intro,
+/// and a colon used where `#` belongs when the last segment is 64 hex digits.
+///
+/// The canonical spelling (`from_wire`) does not change. A key that is
+/// genuinely the wrong shape still fails, with the original input echoed.
+fn loosen_symbol_key(raw: &str) -> String {
+    let compact = strip_wrapping(raw);
+    let mut out = String::with_capacity(compact.len());
+    for ch in compact.chars() {
+        if !ch.is_whitespace() {
+            out.push(ch);
+        }
+    }
+    if let Some(rest) = out.strip_prefix("0x") {
+        if rest.len() == 64 && rest.chars().all(|c| c.is_ascii_hexdigit()) {
+            return out;
+        }
+    }
+    let hash_at = out.rfind('#').or_else(|| {
+        let colon = out.rfind(':')?;
+        let tail = &out[colon + 1..];
+        let tail = tail.strip_prefix("0x").unwrap_or(tail);
+        (tail.len() == 64 && tail.chars().all(|c| c.is_ascii_hexdigit())).then_some(colon)
+    });
+    if let Some(idx) = hash_at {
+        let (lineage, intro) = out.split_at(idx);
+        let intro = intro.trim_start_matches(['#', ':']);
+        let intro = intro.strip_prefix("0x").unwrap_or(intro);
+        let lineage = lineage.replacen("::", ":", 1);
+        return format!("{lineage}#{intro}");
+    }
+    out.replacen("::", ":", 1)
+}
+
+fn loosen_lineage(raw: &str) -> String {
+    let compact = strip_wrapping(raw);
+    let mut out = String::with_capacity(compact.len());
+    for ch in compact.chars() {
+        if !ch.is_whitespace() {
+            out.push(ch);
+        }
+    }
+    out.replacen("::", ":", 1)
+}
+
+fn strip_wrapping(raw: &str) -> &str {
+    raw.trim().trim_matches(|c| matches!(c, '`' | '"' | '\''))
+}
+
+/// Split `ecosystem:name` on the first colon. The name may itself contain
+/// colons only after we have already peeled a mistaken intro separator.
+fn split_lineage(lineage: &str) -> Option<(&str, &str)> {
+    lineage.split_once(':')
+}
 
 /// Decode a 64-character hex string into an `IntroId`.
 ///
@@ -206,6 +260,40 @@ mod tests {
         let wire = dto.to_wire().expect("sample key parses");
         let back = SymbolKeyDto::from_wire(&wire);
         assert_eq!(dto, back, "wire -> string -> wire must be lossless");
+    }
+
+    #[test]
+    fn slightly_malformed_keys_parse_as_the_canonical_key() {
+        let canonical = sample_key();
+        let wire = SymbolKeyDto(canonical.clone())
+            .to_wire()
+            .expect("canonical key");
+        let hex = "ab".repeat(32);
+        let inputs = [
+            format!("  cargo:serde#{hex}  "),
+            format!("`cargo:serde#{hex}`"),
+            format!("\"cargo:serde#{hex}\""),
+            format!("cargo::serde#{hex}"),
+            format!("cargo:serde:{hex}"),
+            format!("cargo:serde#0x{hex}"),
+            format!("cargo : serde # {hex}"),
+        ];
+        for input in inputs {
+            let parsed = SymbolKeyDto(input.clone())
+                .to_wire()
+                .unwrap_or_else(|err| panic!("{input:?} should parse, got {err}"));
+            assert_eq!(parsed, wire, "{input:?}");
+            assert_eq!(
+                SymbolKeyDto::from_wire(&parsed).0,
+                canonical,
+                "output spelling stays canonical"
+            );
+        }
+        let lineage = PackageLineageDto(" `cargo::serde` ".into())
+            .to_wire()
+            .expect("lineage paste");
+        assert_eq!(lineage.ecosystem.as_str(), "cargo");
+        assert_eq!(lineage.name.as_str(), "serde");
     }
 
     #[test]

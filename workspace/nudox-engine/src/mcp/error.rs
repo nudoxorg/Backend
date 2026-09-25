@@ -363,12 +363,11 @@ impl McpError {
     fn help(&self) -> Option<&'static str> {
         match self {
             Self::MalformedKey { .. } => Some(
-                "Copy this key verbatim from a search_symbols, get_symbol, find_usages, or \
-                 graph_query result rather than constructing one by hand.",
+                "Copy a key from `search`, `read`, `refs`, or `graph`. Shape is \
+                 ecosystem:name# plus 64 hex digits. Whitespace and quotes are ignored.",
             ),
             Self::MalformedPackage { .. } => Some(
-                "Call list_packages to see the exact 'ecosystem:name' spelling for every loaded \
-                 package.",
+                "Call `packages` and copy an ecosystem:name lineage. Example: cargo:serde.",
             ),
             Self::InvalidArgument { argument, .. } if *argument == "kinds" => {
                 Some("Pick from data.validKinds, case-insensitive.")
