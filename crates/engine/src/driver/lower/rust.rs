@@ -3098,6 +3098,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let target = target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
             self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
         }
+        let mut emitted_function_call_spans = Vec::new();
         let paths: Vec<_> = authority.top_level_paths().collect();
         for path in &paths {
             // A path rust-analyzer could not resolve keeps its exact written
@@ -3128,12 +3129,32 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 Some(_) => OccurrenceConfidence::Oracle,
                 None => OccurrenceConfidence::Syntactic,
             };
+            if kind == ReferenceKind::FunctionCall {
+                if emitted_function_call_spans.contains(&span) {
+                    continue;
+                }
+                emitted_function_call_spans.push(span);
+            }
             self.emit_one_occurrence(
                 span,
                 kind,
                 ResolvedTarget::Definition(resolved.as_ref().and_then(path_definition)),
                 confidence,
                 Some(written),
+            )?;
+        }
+        for (span, target) in self.macro_function_calls()? {
+            if emitted_function_call_spans.contains(&span) {
+                continue;
+            }
+            emitted_function_call_spans.push(span);
+            let confidence = occurrence_confidence(target.is_some());
+            self.emit_one_occurrence(
+                span,
+                ReferenceKind::FunctionCall,
+                ResolvedTarget::Definition(target),
+                confidence,
+                None,
             )?;
         }
         let sites: Vec<MacroSite<'source>> = self.macro_sites.to_vec();
@@ -3188,6 +3209,64 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             }
         }
         Ok(accesses)
+    }
+
+    /// Streams function calls discovered through macro expansion. A macro
+    /// argument is a token tree in the source file; descending each token
+    /// reaches the expanded `CallExpr` rust-analyzer inferred and projects
+    /// the written callee identifier back onto this source buffer.
+    fn macro_function_calls(
+        &self,
+    ) -> Result<Vec<(ByteSpan, Option<ra_ap_hir::ModuleDef>)>, RustAuthorityError> {
+        let authority = self.authority;
+        let mut calls = Vec::new();
+        for macro_call in authority.macro_calls() {
+            let Some(token_tree) = macro_call.token_tree() else {
+                continue;
+            };
+            for token in token_tree
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|element| element.into_token())
+            {
+                for descended in authority.semantics.descend_into_macros_no_opaque(token, false) {
+                    let Some(call) = descended
+                        .value
+                        .parent()
+                        .and_then(|node| node.ancestors().find_map(ast::CallExpr::cast))
+                    else {
+                        continue;
+                    };
+                    let Some(callee) = call.expr() else {
+                        continue;
+                    };
+                    let Some(path_expr) = ast::PathExpr::cast(callee.syntax().clone()) else {
+                        continue;
+                    };
+                    let Some(path) = path_expr.path() else {
+                        continue;
+                    };
+                    if !is_call_position(&path) {
+                        continue;
+                    }
+                    let Some(name) = path
+                        .segments()
+                        .last()
+                        .and_then(|segment| segment.name_ref())
+                    else {
+                        continue;
+                    };
+                    let Ok(Some(projected_span)) = authority.projected_span(name.syntax()) else {
+                        continue;
+                    };
+                    let target = authority
+                        .resolve_path(&path)
+                        .and_then(|(resolution, _)| path_definition(&resolution));
+                    calls.push((projected_span, target));
+                }
+            }
+        }
+        Ok(calls)
     }
 
     /// Emits one occurrence fact, resolving the target through the pushed
@@ -4950,6 +5029,102 @@ mod tests {
         {
             return Err(TestError::Missing(
                 "oracle-local field target for macro-receiver access",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A function call inside a macro argument is authority-proven through
+    /// macro descent even though the written tree parses the argument as a
+    /// token tree. The occurrence keeps the invocation-site callee spelling,
+    /// its owning function, and the resolved local function target.
+    #[test]
+    fn macro_function_calls_commit_oracle_local_call_occurrences() -> Result<(), TestError> {
+        let source = "macro_rules! invoke {\n    ($e:expr) => { $e };\n}\n\npub fn target() {}\n\npub fn caller() {\n    invoke!(target());\n}\n";
+        let view = lower(source)?;
+        let caller = fact_of(&view, b"caller", EntityKind::Function)?;
+        let target = fact_of(&view, b"target", EntityKind::Function)?;
+        let function_calls = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FunctionCall)
+            .collect::<Vec<_>>();
+        if function_calls.len() != 1 {
+            return Err(TestError::Missing("exactly one macro function call occurrence"));
+        }
+        let (owner, call) = function_calls[0];
+        if owner != caller {
+            return Err(TestError::Missing("function call owned by caller"));
+        }
+        if call.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(target))
+            || call.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local function target for macro function call",
+            ));
+        }
+        let name_at = source
+            .find("invoke!(target())")
+            .ok_or(TestError::Missing("macro invocation in fixture source"))?
+            + "invoke!(".len();
+        let ir = owned_ir(source)?;
+        let mut verified = false;
+        for (_, occurrence) in ir.link_occurrences() {
+            let Some(link) = ir.link(occurrence.link) else {
+                continue;
+            };
+            if link.kind != backend_semantic::ir::LinkKind::Calls {
+                continue;
+            }
+            let Some(site) = occurrence.source else {
+                continue;
+            };
+            let start = usize::try_from(site.start())?;
+            let end = usize::try_from(site.end())?;
+            if source.as_bytes().get(start..end) != Some(b"target") {
+                continue;
+            }
+            verified = true;
+            if start != name_at {
+                return Err(TestError::Missing("function call at invocation spelling"));
+            }
+            let backend_semantic::ir::LinkTarget::Local(link_target) = link.target else {
+                return Err(TestError::Missing("local function link target"));
+            };
+            if ir.item(link_target).is_none_or(|item| item.name() != b"target") {
+                return Err(TestError::Missing("target function link target"));
+            }
+        }
+        if !verified {
+            return Err(TestError::Missing("invocation-site function call spelling"));
+        }
+        Ok(())
+    }
+
+    /// A source-level function call whose argument contains a macro is already
+    /// emitted by the path walk; macro descent must not emit the same
+    /// callee-name span again.
+    #[test]
+    fn macro_receiver_function_calls_emit_once() -> Result<(), TestError> {
+        let source = "macro_rules! identity {\n    ($e:expr) => { $e };\n}\n\npub fn target() {}\n\npub fn caller() {\n    target(identity!(()));\n}\n";
+        let view = lower(source)?;
+        let caller = fact_of(&view, b"caller", EntityKind::Function)?;
+        let target = fact_of(&view, b"target", EntityKind::Function)?;
+        let function_calls = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FunctionCall)
+            .collect::<Vec<_>>();
+        if function_calls.len() != 1 {
+            return Err(TestError::Missing("exactly one function call occurrence"));
+        }
+        let (owner, call) = function_calls[0];
+        if owner != caller {
+            return Err(TestError::Missing("function call owned by caller"));
+        }
+        if call.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(target))
+            || call.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local function target for macro-receiver call",
             ));
         }
         Ok(())
