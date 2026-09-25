@@ -708,6 +708,113 @@ mod tests {
         }
     }
 
+    /// A later, lower-cosine neighbor outranks an earlier private hit.
+    ///
+    /// `nearest` returns the private symbol first because its cosine is higher.
+    /// The section keeps one row. Stopping at that first neighbor would publish
+    /// the private symbol; ranking the over-fetch publishes the public one.
+    #[tokio::test]
+    async fn semantic_overfetch_prefers_a_later_public_symbol() {
+        use std::pin::Pin;
+        use std::sync::Arc;
+
+        use nudox_ir::{
+            apply::PristineIntroTable,
+            change::{EcosystemId, IntroId, PackageLineageId, PackageName},
+            entry::{Entry, Node, Symbol, Visibility},
+            kind::Kind,
+            kinds::Module,
+            view::IrView,
+        };
+
+        use crate::{
+            semantic::{EmbedRole, Embedder, EmbedderInfo, Error as EmbedError, SemanticIndex},
+            store::package::{PackageView, Provenance},
+        };
+
+        struct Fixed;
+
+        impl Embedder for Fixed {
+            fn info(&self) -> EmbedderInfo {
+                EmbedderInfo {
+                    model_id: SharedStr::from("fixed"),
+                    dimensions: 2,
+                    max_batch: 8,
+                    durable_canonical: false,
+                }
+            }
+
+            fn embed_batch<'a>(
+                &'a self,
+                texts: &'a [String],
+                _role: EmbedRole,
+            ) -> Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<f32>>, EmbedError>> + Send + 'a>>
+            {
+                Box::pin(async move { Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect()) })
+            }
+        }
+
+        fn intro(n: u8) -> IntroId {
+            IntroId::from_raw([n; 32])
+        }
+
+        fn entry(name: &str, visibility: Visibility) -> Entry {
+            Entry::new(
+                Symbol {
+                    name: name.to_owned(),
+                    visibility,
+                    documentation: String::new(),
+                    source: std::path::PathBuf::new(),
+                    span: 0..0,
+                    aliases: Box::new([]),
+                    deprecation: None,
+                    doc_links: Box::new([]),
+                    attrs: Box::new([]),
+                    cfg: None,
+                },
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Module(Module),
+            )
+        }
+
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("pkg"));
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), entry("hidden", Visibility::Private), None);
+        table.insert_live(intro(2), entry("shown", Visibility::Public), None);
+        let pkg = Arc::new(PackageView::build(
+            IrView::with_package(lineage.clone(), table),
+            Provenance::TrustedLocal,
+        ));
+
+        let semantic = SemanticIndex::new();
+        semantic
+            .insert_package(
+                lineage.clone(),
+                vec![
+                    (intro(1), vec![1.0, 0.0]),
+                    (intro(2), vec![0.5, 0.8660254]),
+                ],
+                2,
+            )
+            .expect("vectors");
+
+        let nearest = semantic.nearest(&[1.0, 0.0], 2);
+        assert_eq!(nearest[0].1, intro(1), "the private symbol is the closer neighbor");
+
+        let query = SearchQuery {
+            text: "anything".to_owned(),
+            kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
+            packages: Vec::new(),
+            limit: 1,
+        };
+        let (_state, rows) =
+            super::collect_semantic_hits(std::slice::from_ref(&pkg), &semantic, Some(&Fixed), &query)
+                .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(&*rows[0].display_name, "shown");
+    }
+
     #[tokio::test]
     async fn search_emits_done_as_terminal() {
         let engine = make_engine();
