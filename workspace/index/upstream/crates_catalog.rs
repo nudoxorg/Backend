@@ -128,6 +128,12 @@ impl CratesCatalogFollower {
             if entry.updated_at > max_ts {
                 max_ts.clone_from(&entry.updated_at);
             }
+            let dependencies = if entry.yanked {
+                Vec::new()
+            } else {
+                self.dependency_names(client, &entry.name, &entry.version)
+                    .await
+            };
             let event = if entry.yanked {
                 CatalogEvent::Withdrawn {
                     name: entry.name.clone(),
@@ -137,7 +143,7 @@ impl CratesCatalogFollower {
                 CatalogEvent::Published {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
-                    dependencies: Vec::new(),
+                    dependencies,
                 }
             };
             events.push(event);
@@ -173,6 +179,103 @@ impl CatalogFollower for CratesCatalogFollower {
     }
 }
 
+impl CratesCatalogFollower {
+    /// Normal dependencies of one published version.
+    ///
+    /// A failed fetch or a body that is not the dependencies document yields
+    /// an empty list. The publish still proceeds. Dev and build dependencies
+    /// are omitted, matching [`crate::ecosystem::rust::parse_cargo_toml`],
+    /// which reads only `[dependencies]`.
+    async fn dependency_names(
+        &self,
+        client: &UpstreamClient,
+        name: &str,
+        version: &str,
+    ) -> Vec<String> {
+        let url = format!(
+            "{}/crates/{}/{}/dependencies",
+            self.api_base,
+            path_segment(name),
+            path_segment(version)
+        );
+        match client.get(Language::Rust, &url).await {
+            Ok(bytes) => normal_dependency_names(&bytes),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+/// Crate names from a `/crates/{name}/{version}/dependencies` body.
+///
+/// `kind` of `normal` or absent is kept. `dev` and `build` are dropped. Names
+/// are sorted and de-duplicated.
+pub fn normal_dependency_names(body: &[u8]) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct Body {
+        #[serde(default)]
+        dependencies: Vec<Dep>,
+    }
+    #[derive(Deserialize)]
+    struct Dep {
+        #[serde(default)]
+        crate_id: String,
+        #[serde(default)]
+        kind: String,
+    }
+    let Ok(parsed) = serde_json::from_slice::<Body>(body) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = parsed
+        .dependencies
+        .into_iter()
+        .filter(|dep| dep.kind.is_empty() || dep.kind == "normal")
+        .map(|dep| dep.crate_id)
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn path_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests (offline)
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::normal_dependency_names;
+
+    #[test]
+    fn normal_dependencies_are_kept_and_dev_dependencies_are_dropped() {
+        let body = br#"{
+            "dependencies": [
+                {"crate_id": "serde", "req": "^1", "kind": "normal", "optional": false},
+                {"crate_id": "serde", "req": "^1", "kind": "normal", "optional": true},
+                {"crate_id": "tokio", "req": "1", "kind": "dev"},
+                {"crate_id": "cc", "req": "1", "kind": "build"},
+                {"crate_id": " libc ", "req": "0.2"},
+                {"crate_id": " ", "kind": "normal"}
+            ]
+        }"#;
+        assert_eq!(normal_dependency_names(body), vec![
+            "libc".to_owned(),
+            "serde".to_owned()
+        ]);
+        assert!(normal_dependency_names(b"not-json").is_empty());
+        assert!(normal_dependency_names(b"{}").is_empty());
+    }
+}
