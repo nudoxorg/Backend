@@ -393,6 +393,13 @@ path = "tests/mcp/refs_non_rust_languages.rs"
 name = "mcp_multi_turn_surfaces"
 path = "tests/mcp/multi_turn_surfaces.rs"
 
+# axios 1.6.7 and the three packages its manifest names, in one engine.
+# The tarballs are not in the repo; extract them under /tmp/medium/npm/src
+# (or set NUDOX_MEDIUM_NPM) and run with --ignored.
+[[test]]
+name = "mcp_medium_npm_conversation"
+path = "tests/mcp/medium_npm_conversation.rs"
+
 # Real corpus/package occurrence regressions for every non-Rust producer.
 [[test]]
 name = "mcp_real_package_references"
