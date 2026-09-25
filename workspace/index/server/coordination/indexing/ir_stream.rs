@@ -382,6 +382,38 @@ fn attach_generation_root(
     Ok(keys)
 }
 
+/// Intro ids and storage hashes from the package's current generation root.
+///
+/// A missing pointer, a manifest with no root, or a root that does not decode
+/// yields an empty prior. The next ingest then queues every payload, and the
+/// object store dedups by hash.
+pub(super) async fn prior_entry_keys(
+    blobs: &crate::cas::Store<heart::connection::Live>,
+    coordinates: &crate::package::Coordinates,
+) -> Vec<crate::frontier::ir::IrEntryKey> {
+    let manifest = match blobs.get_manifest(coordinates).await {
+        Ok(manifest) => manifest,
+        Err(_) => return Vec::new(),
+    };
+    let Some(root_ref) = manifest.root_ref else {
+        return Vec::new();
+    };
+    let bytes = match blobs.get_section(root_ref).await {
+        Ok(bytes) => bytes,
+        Err(_) => return Vec::new(),
+    };
+    let Ok(root) = ir::generation::GenerationRoot::decode(&bytes) else {
+        return Vec::new();
+    };
+    root.entries
+        .iter()
+        .map(|row| crate::frontier::ir::IrEntryKey {
+            intro_id: *row.intro.as_bytes(),
+            content_hash: *row.content.as_bytes(),
+        })
+        .collect()
+}
+
 /// The result of decoding one producer NdIrF1 stream (W1).
 ///
 /// `degraded_reason` is `None` only when the stream ran cleanly to a
@@ -1002,6 +1034,85 @@ mod tests {
             .expect("moved row keeps its content hash");
         assert_eq!(moved_row.span.start, 400);
         assert!(second.generation.iter().any(|key| key.content_hash == *alpha_hash));
+    }
+
+    #[tokio::test]
+    async fn prior_keys_loaded_from_the_store_skip_unchanged_payloads() {
+        use crate::ecosystem::PackageNameExt;
+        use heart::connection::Connect;
+        use heart::{PackageName, PackageVersion, RegistryOrigin};
+        use std::sync::Arc;
+
+        let coordinates = crate::package::Coordinates {
+            origin: RegistryOrigin::CratesIo,
+            name: PackageName::new(crate::ecosystem::Language::Rust, "acme").expect("name"),
+            version: PackageVersion::try_from((crate::ecosystem::Language::Rust, "1.0.0"))
+                .expect("version"),
+        };
+        let alpha = module_entry("alpha", "The alpha module.", 0);
+        let beta = module_entry("beta", "The beta module.", 20);
+        let frames = [
+            hello_frame(),
+            StreamFrame::Symbols {
+                batch: vec![alpha.clone(), beta.clone()],
+            },
+            finish(2),
+        ];
+        let bytes = encode_frames(&frames);
+        let mut builder = BlobBuilder::new(
+            coordinates.id(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
+        builder
+            .push_file(
+                "src/lib.rs".into(),
+                bytes::Bytes::from_static(b"fn main() {}\n"),
+            )
+            .expect("file");
+
+        let backend: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let store = crate::cas::Store::new(backend);
+        let store = Connect::connect(store).await.expect("connect");
+        let before = prior_entry_keys(&store, &coordinates).await;
+        assert!(before.is_empty(), "a package with no manifest has an empty prior");
+
+        let outcome = ingest_ir_bytes(&mut builder, &bytes, &before);
+        assert_eq!(outcome.degraded_reason, None);
+        assert_eq!(outcome.generation.len(), 2);
+        let (manifest, sections) = builder.finalize().expect("finalize");
+        crate::blob::emit::emit(&store, manifest, sections)
+            .await
+            .expect("emit");
+
+        let prior = prior_entry_keys(&store, &coordinates).await;
+        assert_eq!(prior.len(), 2);
+        for key in &outcome.generation {
+            assert!(
+                prior.iter().any(|loaded| loaded.intro_id == key.intro_id
+                    && loaded.content_hash == key.content_hash),
+                "loaded prior must match the root that was stored"
+            );
+        }
+
+        let mut again = BlobBuilder::new(
+            coordinates.id(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
+        again
+            .push_file(
+                "src/lib.rs".into(),
+                bytes::Bytes::from_static(b"fn main() {}\n"),
+            )
+            .expect("file");
+        let second = ingest_ir_bytes(&mut again, &bytes, &prior);
+        assert_eq!(second.degraded_reason, None);
+        let (_manifest, sections) = again.finalize().expect("finalize");
+        let queued = second.generation.iter().filter(|key| {
+            let hash = heart::content::ContentHash::from_bytes(key.content_hash);
+            sections.iter().any(|section| section.hash == hash)
+        });
+        assert_eq!(queued.count(), 0, "unchanged payloads must not be queued");
     }
 
     // ── In-process path: real reference edges flow from the sealed table ──
