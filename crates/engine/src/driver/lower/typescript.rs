@@ -48,8 +48,6 @@ const MAX_TYPE_DEPTH: u8 = 24;
 const UNSET: u32 = u32::MAX;
 /// The closed foreign ecosystem every unresolved TypeScript name lives in.
 const NPM_ECOSYSTEM: &str = "npm";
-/// Bound of staged JSDoc segments on one comment line.
-const MAX_JSDOC_SEGMENTS: usize = 16;
 
 /// Exact direct-authority rejection while borrowing OXC declaration facts.
 #[derive(Debug)]
@@ -4570,41 +4568,29 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(())
     }
 
-    /// Stages one JSDoc line's bounded fragment run and commits it after the
-    /// inter-line soft break.
+    /// Stages one JSDoc line and commits it after the inter-line soft break.
+    /// The doc lane's own capacity is the only bound; a line is not truncated.
     fn push_jsdoc_line(
         &mut self,
         owner: u32,
         line: &'source [u8],
         leading_break: bool,
     ) -> Result<bool, TypeScriptCollectError> {
-        let mut staged = [DocFragmentInput::SoftBreak; MAX_JSDOC_SEGMENTS];
-        let mut len = 0_usize;
-        let mut overflow = false;
+        let mut staged = Vec::new();
         let mut cursor = 0_usize;
         loop {
             let Some((at, is_link)) = earliest_inline_tag(line, cursor) else {
                 if let Some(rest) = line.get(cursor..)
                     && !rest.is_empty()
                 {
-                    stage_fragment(
-                        &mut staged,
-                        &mut len,
-                        &mut overflow,
-                        DocFragmentInput::Text(rest),
-                    );
+                    staged.push(DocFragmentInput::Text(rest));
                 }
                 break;
             };
             if let Some(before) = line.get(cursor..at)
                 && !before.is_empty()
             {
-                stage_fragment(
-                    &mut staged,
-                    &mut len,
-                    &mut overflow,
-                    DocFragmentInput::Text(before),
-                );
+                staged.push(DocFragmentInput::Text(before));
             }
             let content_start = at + TAG_WIDTH;
             match find_sub(line, b"}", content_start) {
@@ -4619,7 +4605,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         } else {
                             DocFragmentInput::Code(inner)
                         };
-                        stage_fragment(&mut staged, &mut len, &mut overflow, fragment);
+                        staged.push(fragment);
                     }
                     cursor = close + 1;
                 }
@@ -4627,23 +4613,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     if let Some(rest) = line.get(cursor..)
                         && !rest.is_empty()
                     {
-                        stage_fragment(
-                            &mut staged,
-                            &mut len,
-                            &mut overflow,
-                            DocFragmentInput::Text(rest),
-                        );
+                        staged.push(DocFragmentInput::Text(rest));
                     }
                     break;
                 }
             }
         }
-        if overflow {
-            // A JSDoc line with more segments than the staged bound cannot be
-            // emitted without truncation, which the lane forbids.
-            return Err(fault(FactFault::DocCapacity));
-        }
-        if len == 0 {
+        if staged.is_empty() {
             return Ok(false);
         }
         if leading_break {
@@ -4651,8 +4627,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 .push_doc(owner, DocFragmentInput::SoftBreak)
                 .map_err(fault)?;
         }
-        for fragment in staged.iter().take(len) {
-            self.facts.push_doc(owner, *fragment).map_err(fault)?;
+        for fragment in staged {
+            self.facts.push_doc(owner, fragment).map_err(fault)?;
         }
         Ok(true)
     }
@@ -5764,22 +5740,6 @@ fn checker_literal(
 
 /// Byte width of the `@code`/`@link` inline-tag headers.
 const TAG_WIDTH: usize = 6;
-
-/// Stages one JSDoc fragment, marking overflow past the bounded segment lane.
-fn stage_fragment<'source>(
-    staged: &mut [DocFragmentInput<'source>; MAX_JSDOC_SEGMENTS],
-    len: &mut usize,
-    overflow: &mut bool,
-    fragment: DocFragmentInput<'source>,
-) {
-    match staged.get_mut(*len) {
-        Some(slot) => {
-            *slot = fragment;
-            *len += 1;
-        }
-        None => *overflow = true,
-    }
-}
 
 /// Finds the earliest `{@link ...}` or `{@code ...}` tag header at or after
 /// `from`, returning its position and whether it is a link.

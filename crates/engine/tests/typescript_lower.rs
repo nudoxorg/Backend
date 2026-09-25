@@ -15,7 +15,7 @@ use backend_engine::driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{
-    DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
+    DecodedOccurrence, DecodedTypeFact, DocFragmentInput, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
     OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
 };
 use backend_frontend_typescript::legacy::{
@@ -353,6 +353,26 @@ fn jsdoc_commits_text_code_and_local_link_fragments() {
     );
     assert!(v.docs().is_some());
 }
+#[test]
+fn a_jsdoc_line_with_seventeen_code_tags_keeps_every_tag() {
+    let mut source = b"/** ".to_vec();
+    for index in 0..17 {
+        source.extend_from_slice(format!("{{@code {index}}} ").as_bytes());
+    }
+    source.extend_from_slice(b"*/\nexport interface Wide {}\n");
+    let source: &'static [u8] = Box::leak(source.into_boxed_slice());
+    let view = view(source, None);
+    let mut docs = view.docs().expect("docs");
+    let mut codes = 0_usize;
+    while let Some(fact) = docs.next() {
+        let fact = fact.expect("doc fact");
+        if matches!(fact.fragment, DocFragmentInput::Code(_)) {
+            codes += 1;
+        }
+    }
+    assert_eq!(codes, 17);
+}
+
 #[test]
 fn absent_jsdoc_commits_no_documentation_section() {
     let v = view(b"export interface Plain {}", None);
