@@ -102,33 +102,16 @@ pub fn provisional_global_package(coordinates: &PackageCoordinates) -> GlobalPac
 /// Facets that carry feed-supplied dependency names, or `None` when there are
 /// none. Names are trimmed, emptied names dropped, then sorted and deduped.
 pub fn facets_from_dependency_names(names: &[String]) -> Option<crate::metadata::SearchFacets> {
-    use smol_str::SmolStr;
-    let record = crate::record::PackageRecord::from_parts(
-        Language::Rust,
-        "provisional",
-        "0.0.0",
-        None,
-        None,
-        Vec::new(),
-        None,
-        None,
-        false,
-        crate::record::runtime_edges_from_names(names),
-    );
-    let mut dependencies: Vec<SmolStr> = record
-        .runtime_names()
-        .into_iter()
-        .map(SmolStr::new)
-        .collect();
+    let dependencies =
+        crate::record::runtime_facet_names(&crate::record::runtime_edges_from_names(names));
     if dependencies.is_empty() {
-        return None;
+        None
+    } else {
+        Some(crate::metadata::SearchFacets {
+            dependencies,
+            ..crate::metadata::SearchFacets::default()
+        })
     }
-    dependencies.sort();
-    dependencies.dedup();
-    Some(crate::metadata::SearchFacets {
-        dependencies,
-        ..crate::metadata::SearchFacets::default()
-    })
 }
 
 /// The stand-in toolchain recorded before a package has ever been compiled.
