@@ -36,10 +36,6 @@ pub(super) async fn run_search(
         return;
     }
 
-    // Semantic search still reads the resident corpus. Name and kind search
-    // use the corpus indexes and do not.
-    let packages = corpus.packages().await;
-
     // Both local sections read the resident corpus directly, so they are
     // complete the moment they run — whatever is resident *is* the world they
     // claim to have searched. Saying so explicitly, rather than letting the
@@ -156,7 +152,7 @@ pub(super) async fn run_search(
     // a caption, not an error.
     let semantic_start = Instant::now();
     let (state, rows) =
-        collect_semantic_hits(&packages, &semantic, embedder.as_deref(), &query).await;
+        collect_semantic_hits(&corpus, &semantic, embedder.as_deref(), &query).await;
     let semantic_elapsed = semantic_start.elapsed();
 
     if cancel.is_cancelled() {
@@ -202,7 +198,7 @@ pub(super) async fn run_search(
 /// That is the §8 "typed, not logged" rule applied to a caveat instead of a
 /// repair.
 pub(super) async fn collect_semantic_hits(
-    packages: &[std::sync::Arc<crate::store::package::PackageView>],
+    corpus: &Corpus,
     semantic: &crate::semantic::SemanticIndex,
     embedder: Option<&dyn crate::semantic::Embedder>,
     query: &SearchQuery,
@@ -228,7 +224,8 @@ pub(super) async fn collect_semantic_hits(
             Vec::new(),
         );
     };
-    if packages.is_empty() {
+    let lineages = corpus.lineages().await;
+    if lineages.is_empty() {
         return (
             SectionState::Unavailable {
                 reason: Unavailable::EmptyCorpus,
@@ -240,15 +237,16 @@ pub(super) async fn collect_semantic_hits(
     // Coverage is computed against the packages this query is actually allowed
     // to answer from, not against the whole corpus: with `packages: [memchr]`,
     // "3 of 20 indexed" would be a caveat about 19 packages the reader excluded
-    // themselves and is not waiting for.
-    let in_scope: Vec<&std::sync::Arc<crate::store::package::PackageView>> = packages
-        .iter()
-        .filter(|pkg| query.package_matches(pkg.lineage()))
+    // themselves and is not waiting for. Lineage ids are enough; the package
+    // body is loaded only for a neighbor the index actually returns.
+    let in_scope: Vec<_> = lineages
+        .into_iter()
+        .filter(|lineage| query.package_matches(lineage))
         .collect();
     let total = in_scope.len() as u32;
     let covered = in_scope
         .iter()
-        .filter(|pkg| semantic.contains(pkg.lineage()))
+        .filter(|lineage| semantic.contains(lineage))
         .count() as u32;
 
     let state = if covered == total {
@@ -306,7 +304,10 @@ pub(super) async fn collect_semantic_hits(
     // kind weights sort it ahead.
     let mut candidates: Vec<Candidate> = Vec::new();
     for (lineage, intro, cosine) in nearest {
-        let Some(pkg) = in_scope.iter().find(|p| *p.lineage() == lineage) else {
+        if !query.package_matches(&lineage) {
+            continue;
+        }
+        let Some(pkg) = corpus.package(&lineage).await else {
             continue;
         };
         let Some(ir_entry) = pkg.view().entry(intro) else {
@@ -327,7 +328,7 @@ pub(super) async fn collect_semantic_hits(
             row: HitRow {
                 key: nudox_ir::change::StableRef::new(lineage.clone(), intro),
                 display_name: SharedStr::from(leaf_str),
-                sig_preview: signature::tokens(ir_entry, pkg),
+                sig_preview: signature::tokens(ir_entry, &pkg),
                 kind: KindTag::Known(disc),
                 provenance: pkg.provenance().into(),
                 score: score_of(cosine_to_relevance(cosine), ir_entry.sym().visibility, disc),

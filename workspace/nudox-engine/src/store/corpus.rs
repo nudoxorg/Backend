@@ -264,6 +264,12 @@ impl Corpus {
         state.packages.values().cloned().collect()
     }
 
+    /// Lineage ids in corpus order, without cloning each [`PackageView`].
+    pub async fn lineages(&self) -> Vec<PackageLineageId> {
+        let state = self.inner.state.read().await;
+        state.packages.keys().cloned().collect()
+    }
+
     /// The number of packages currently in the corpus.
     pub async fn len(&self) -> usize {
         self.inner.state.read().await.packages.len()

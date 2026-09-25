@@ -206,8 +206,10 @@ async fn semantic_overfetch_prefers_a_later_public_symbol() {
         packages: Vec::new(),
         limit: 1,
     };
+    let corpus = crate::store::corpus::Corpus::new();
+    corpus.insert(pkg).await;
     let (_state, rows) = super::execute::collect_semantic_hits(
-        std::slice::from_ref(&pkg),
+        &corpus,
         &semantic,
         Some(&Fixed),
         &query,
