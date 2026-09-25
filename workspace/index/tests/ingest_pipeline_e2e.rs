@@ -36,25 +36,9 @@
 //! reverse), across three real polls: first observation, a genuine no-op,
 //! and a genuine new upstream release.
 //!
-//! # A real gap this composition exposed (not a test bug — see below)
-//!
-//! There are genuinely **two separate `git_watermarks` stores** in play, and
-//! building this composition is what makes that visible: (1) the catalog's
-//! own `git_watermarks` **table**, written only as a side effect of applying
-//! `CatalogOp::SourceMoved` — never on an `Unchanged` tick, because
-//! `TickOutcome::Unchanged` carries no ops at all — and never read back by
-//! any code in the crate outside this test's raw query; and (2)
-//! `ingest::watermark::MemoryWatermarkStore`, the driver-side, non-durable
-//! seam `drive_one_git_poll` writes on *every* tick, changed or not, so the
-//! crawl clock has somewhere to advance even when nothing moved. A first
-//! draft of this test asserted the catalog table's `last_checked_at` advanced
-//! on a no-op poll — a genuine assertion error, since only a `Moved` tick
-//! touches that table. Fixed by asserting each store for what it actually
-//! promises, and asserting the catalog-table gap explicitly below rather than
-//! papering over it: **a production `WatermarkStore` wired straight to the
-//! catalog's own tables (the crate's stated eventual design) would have no
-//! way to record "checked at t, nothing changed" against `git_watermarks` at
-//! all**, because there is no `CatalogOp` for a bare crawl-clock bump.
+//! An unchanged poll writes the catalog `git_watermarks` crawl clock and the
+//! driver watermark. It does not emit version ops or outbox rows. A moved
+//! poll still writes `SourceMoved` plus the reconciled version delta.
 
 mod common;
 
@@ -164,6 +148,11 @@ fn drive_one_git_poll<Repository: GitRepository>(
 
     match &outcome {
         TickOutcome::Unchanged { rev } => {
+            index::store::apply::record_git_checked(writer.engine(), stem, rev, now_ms)
+                .expect("catalog crawl clock");
+            writer
+                .commit_batch(&format!("git monitor: {SLUG} unchanged"))
+                .expect("commit crawl clock");
             watermarks
                 .put_git_watermark(&GitWatermark {
                     stem_id: stem,
@@ -354,18 +343,12 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
         "the driver-side crawl clock still advances on a no-op"
     );
 
-    // The CATALOG's own `git_watermarks` row does NOT — this is the real gap
-    // documented at the top of this file: `TickOutcome::Unchanged` carries no
-    // `CatalogOp`, so nothing applies a write, so the row this poll left
-    // behind is byte-for-byte identical to what poll 1 wrote. A production
-    // `WatermarkStore` backed directly by this table would silently lose
-    // every "checked, nothing changed" observation.
     let (catalog_rev2, catalog_checked_at2) =
         catalog_git_watermark_row(&writer, stem).expect("watermark row exists");
     assert_eq!(catalog_rev2.as_deref(), Some(rev1.as_str()));
     assert_eq!(
-        catalog_checked_at2, 1_000,
-        "the catalog's own git_watermarks row is untouched by a no-op poll — only a Moved tick writes it"
+        catalog_checked_at2, 2_000,
+        "an unchanged poll advances the catalog crawl clock without a version write"
     );
 
     // ── Poll 3: a genuine new upstream release lands — one more real,

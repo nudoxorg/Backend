@@ -302,6 +302,22 @@ where
 
         match outcome {
             TickOutcome::Unchanged { rev } => {
+                crate::store::apply::record_git_checked(
+                    self.writer.engine(),
+                    stem,
+                    &rev,
+                    checked_at,
+                )
+                .map_err(|error| Error::Commit {
+                    feed: repo_url.to_owned(),
+                    message: error.to_string(),
+                })?;
+                self.writer
+                    .commit_batch(&format!("git monitor: {repo_slug} unchanged"))
+                    .map_err(|error| Error::Commit {
+                        feed: repo_url.to_owned(),
+                        message: error.to_string(),
+                    })?;
                 self.watermarks.put_git_watermark(&GitWatermark {
                     stem_id: stem,
                     last_rev: Some(rev),

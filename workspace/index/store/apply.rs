@@ -793,6 +793,36 @@ pub fn advance_sink_watermark<E: CatalogEngine>(
     Ok(())
 }
 
+/// Record a git poll that saw the same ref digest.
+///
+/// This is the catalog clock for an unchanged tick. It does not emit a version
+/// row or an outbox intent. The caller commits the batch after this returns.
+pub fn record_git_checked<E: CatalogEngine>(
+    engine: &E,
+    stem: crate::ids::PackageStemId,
+    rev: &str,
+    checked_at: i64,
+) -> Result<(), MetaError> {
+    let model = git_watermarks::ActiveModel {
+        stem_id: Set(stem),
+        last_rev: Set(Some(rev.to_owned())),
+        last_checked_at: Set(checked_at),
+        last_error: Set(None),
+    };
+    let stmt = git_watermarks::Entity::insert(model)
+        .on_conflict(
+            OnConflict::column(git_watermarks::Column::StemId)
+                .update_columns([
+                    git_watermarks::Column::LastRev,
+                    git_watermarks::Column::LastCheckedAt,
+                ])
+                .to_owned(),
+        )
+        .build(DbBackend::Sqlite);
+    engine::exec(engine, stmt)?;
+    Ok(())
+}
+
 fn now_placeholder() -> i64 {
     use std::sync::atomic::{AtomicI64, Ordering};
     static CLOCK: AtomicI64 = AtomicI64::new(1);
