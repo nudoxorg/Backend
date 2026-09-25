@@ -196,26 +196,54 @@ struct PackageJson {
     dependencies: Option<serde_json::Value>,
     #[serde(default, rename = "optionalDependencies")]
     optional_dependencies: Option<serde_json::Value>,
+    #[serde(default, rename = "peerDependencies")]
+    peer_dependencies: Option<serde_json::Value>,
 }
 
-/// Runtime edges from an npm dependency map, then optional edges.
+/// npm dependency maps folded into one edge list.
 ///
-/// A name that appears in both maps stays required. The optional row is
-/// [`crate::record::DepClass::Optional`].
+/// `dependencies` wins over `optionalDependencies`, which wins over
+/// `peerDependencies`. A repeated name keeps the higher class.
 pub(crate) fn npm_package_edges<'a>(
     dependencies: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
     optional: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
+    peer: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
 ) -> Vec<crate::record::DepEdge> {
-    use crate::record::{DepClass, RuntimeEdgeFold};
+    use crate::record::DepClass;
 
-    let mut fold = RuntimeEdgeFold::prefer_required();
-    for (name, value) in dependencies {
-        fold.observe_edge(npm_edge(name, value, DepClass::Runtime, false));
+    let mut edges = Vec::new();
+    for (name, value) in peer {
+        push_npm(&mut edges, npm_edge(name, value, DepClass::Peer, false));
     }
     for (name, value) in optional {
-        fold.observe_edge(npm_edge(name, value, DepClass::Optional, true));
+        push_npm(&mut edges, npm_edge(name, value, DepClass::Optional, true));
     }
-    fold.finish()
+    for (name, value) in dependencies {
+        push_npm(&mut edges, npm_edge(name, value, DepClass::Runtime, false));
+    }
+    edges.sort_by(|left, right| left.name.cmp(&right.name));
+    edges
+}
+
+fn push_npm(edges: &mut Vec<crate::record::DepEdge>, edge: crate::record::DepEdge) {
+    if edge.name.is_empty() {
+        return;
+    }
+    if let Some(existing) = edges.iter_mut().find(|stored| stored.name == edge.name) {
+        if npm_rank(edge.class) > npm_rank(existing.class) {
+            *existing = edge;
+        }
+        return;
+    }
+    edges.push(edge);
+}
+
+fn npm_rank(class: crate::record::DepClass) -> u8 {
+    match class {
+        crate::record::DepClass::Runtime => 2,
+        crate::record::DepClass::Optional => 1,
+        _ => 0,
+    }
 }
 
 fn npm_edge(
@@ -277,6 +305,7 @@ pub fn parse_package_json(bytes: &[u8]) -> Option<ExtractedFacts> {
     let dependencies = npm_package_edges(
         object_pairs(pkg.dependencies.as_ref()),
         object_pairs(pkg.optional_dependencies.as_ref()),
+        object_pairs(pkg.peer_dependencies.as_ref()),
     );
 
     // Sanitize description: strip control chars.
@@ -338,7 +367,8 @@ mod tests {
         let json = br#"{
             "name": "demo",
             "dependencies": {"ms": "^2"},
-            "optionalDependencies": {"left-pad": "^1", "ms": "^2"}
+            "optionalDependencies": {"left-pad": "^1", "ms": "^2"},
+            "peerDependencies": {"react": "^18", "ms": "^3"}
         }"#;
         let facts = parse_package_json(json).expect("valid JSON");
         let left = facts
@@ -356,6 +386,13 @@ mod tests {
         assert_eq!(ms.class, crate::record::DepClass::Runtime);
         assert!(!ms.optional);
         assert_eq!(ms.requirement.as_deref(), Some("^2"));
+        let react = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "react")
+            .expect("react");
+        assert_eq!(react.class, crate::record::DepClass::Peer);
+        assert_eq!(react.requirement.as_deref(), Some("^18"));
     }
 
     #[test]

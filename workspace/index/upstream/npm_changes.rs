@@ -64,6 +64,8 @@ struct VersionDoc {
     dependencies: BTreeMap<String, serde_json::Value>,
     #[serde(default, rename = "optionalDependencies")]
     optional_dependencies: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "peerDependencies")]
+    peer_dependencies: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     dist: Option<Dist>,
 }
@@ -152,6 +154,9 @@ fn dependency_edges(doc: Option<&PackageDoc>, version: &str) -> Vec<crate::recor
             .iter()
             .map(|(name, value)| (name.as_str(), value)),
         body.optional_dependencies
+            .iter()
+            .map(|(name, value)| (name.as_str(), value)),
+        body.peer_dependencies
             .iter()
             .map(|(name, value)| (name.as_str(), value)),
     )
