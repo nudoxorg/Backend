@@ -145,6 +145,7 @@ where
     writer: &'writer CatalogWriter<Engine>,
     watermarks: FileWatermarkStore,
     follower: HomebrewFollower<HttpTransport>,
+    facts: Option<&'writer std::sync::Mutex<crate::engine::turso_vc::VersionedCatalog>>,
 }
 
 impl<'writer, Engine> HomebrewIngestor<'writer, Engine>
@@ -161,12 +162,27 @@ where
             writer,
             watermarks: FileWatermarkStore::open(watermark_dir)?,
             follower: HomebrewFollower::with_url(HttpTransport::new(), formula_url),
+            facts: None,
         })
+    }
+
+    /// Version each committed formula on `facts` after the SQL commit.
+    #[must_use]
+    pub fn with_facts(
+        mut self,
+        facts: &'writer std::sync::Mutex<crate::engine::turso_vc::VersionedCatalog>,
+    ) -> Self {
+        self.facts = Some(facts);
+        self
     }
 
     /// Poll Homebrew once, committing catalog ops before advancing its ETag.
     pub fn drive_once(&mut self, now_unix_ms: i64) -> Result<DriveOutcome, Error> {
-        FollowerDriver::new(self.writer, &self.watermarks).drive_once(&self.follower, now_unix_ms)
+        let mut driver = FollowerDriver::new(self.writer, &self.watermarks);
+        if let Some(facts) = self.facts {
+            driver = driver.with_facts(facts);
+        }
+        driver.drive_once(&self.follower, now_unix_ms)
     }
 
     /// The follower's requested steady-state cadence.

@@ -149,7 +149,10 @@ fn brew_transport() -> FixtureTransport {
 fn driver_commits_homebrew_batch_and_advances_watermark() {
     let writer = migrated_writer();
     let watermarks = MemoryWatermarkStore::new();
-    let driver = FollowerDriver::new(&writer, &watermarks);
+    let facts = std::sync::Mutex::new(
+        index::engine::turso_vc::VersionedCatalog::open().expect("versioned catalog"),
+    );
+    let driver = FollowerDriver::new(&writer, &watermarks).with_facts(&facts);
     let follower = HomebrewFollower::new(brew_transport());
 
     let outcome = driver.drive_once(&follower, 1000).expect("drive brew");
@@ -172,6 +175,30 @@ fn driver_commits_homebrew_batch_and_advances_watermark() {
     let zlib_stem = index::ingest::enumerate::cpp_stem_id("github.com/madler/zlib");
     let row = writer.get_package(zlib_stem).expect("read");
     assert!(row.is_some(), "zlib package committed to catalog");
+
+    let records = index::edge_project::records_from_ops(&parse_formulae(FIXTURE).expect("parse"));
+    assert_eq!(records.len(), 3);
+    let mut catalog = facts.lock().expect("facts");
+    for record in &records {
+        let tip = catalog
+            .materialize(
+                record.ecosystem.as_token(),
+                record.canonical_name.as_str(),
+                record.version.as_str(),
+            )
+            .expect("join")
+            .expect("versioned row");
+        assert_eq!(tip.edges.len(), record.edges.len());
+    }
+    let curl = records
+        .iter()
+        .find(|record| record.edges.len() == 6)
+        .expect("curl recipe edges");
+    assert!(
+        curl.edges
+            .iter()
+            .any(|edge| edge.name.as_str() == "openssl@3")
+    );
 }
 
 #[test]
