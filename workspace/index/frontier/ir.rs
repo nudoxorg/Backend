@@ -27,8 +27,10 @@ pub struct IrEntryKey {
 /// not hex-encode ids and it does not build a tree. Duplicate intro ids keep
 /// the last occurrence in input order, matching the previous map.
 pub fn project(prior: &[IrEntryKey], next: &[IrEntryKey]) -> Delta<IrEntryKey> {
-    let prior = latest_by_id(prior);
-    let next = latest_by_id(next);
+    merge_latest(latest_by_id(prior), latest_by_id(next))
+}
+
+fn merge_latest(prior: Vec<IrEntryKey>, next: Vec<IrEntryKey>) -> Delta<IrEntryKey> {
     let mut delta = Delta::empty();
     let mut i = 0;
     let mut j = 0;
@@ -98,25 +100,65 @@ pub fn project_via_map(prior: &[IrEntryKey], next: &[IrEntryKey]) -> Delta<IrEnt
 
 /// One row per intro id: the last occurrence in input order, then sorted by id
 /// so the merge can walk both sides once.
+///
+/// Order is an MSD radix on the raw id bytes ([`crate::frontier::id_radix`]).
+/// A comparison sort of the same keys is [`latest_by_cmp`], kept only so the
+/// bench can fail a rewrite that puts that sort back on this path.
 fn latest_by_id(entries: &[IrEntryKey]) -> Vec<IrEntryKey> {
-    let mut order: Vec<usize> = (0..entries.len()).collect();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let mut order: Vec<u32> = (0..entries.len() as u32).collect();
+    crate::frontier::id_radix::sort_ids(&mut order, |index, byte| {
+        entries[index as usize].intro_id[byte]
+    });
+    dedup_last(entries, &order)
+}
+
+/// Comparison-sort twin of [`latest_by_id`]. Same last-wins rule. Not used by
+/// [`project`].
+fn latest_by_cmp(entries: &[IrEntryKey]) -> Vec<IrEntryKey> {
+    let mut order: Vec<u32> = (0..entries.len() as u32).collect();
     order.sort_by(|&i, &j| {
-        entries[i]
+        entries[i as usize]
             .intro_id
-            .cmp(&entries[j].intro_id)
+            .cmp(&entries[j as usize].intro_id)
             .then(j.cmp(&i))
     });
+    // `sort_by` with reverse index puts the last input first inside a tie.
+    // Collapse by keeping the first of each id run.
     let mut out = Vec::with_capacity(entries.len());
     let mut previous: Option<[u8; 32]> = None;
     for index in order {
-        let id = entries[index].intro_id;
-        if previous == Some(id) {
+        let entry = entries[index as usize];
+        if previous == Some(entry.intro_id) {
             continue;
         }
-        previous = Some(id);
-        out.push(entries[index]);
+        previous = Some(entry.intro_id);
+        out.push(entry);
     }
     out
+}
+
+fn dedup_last(entries: &[IrEntryKey], order: &[u32]) -> Vec<IrEntryKey> {
+    let mut out = Vec::with_capacity(entries.len());
+    let mut index = 0;
+    while index < order.len() {
+        let mut end = index + 1;
+        let id = entries[order[index] as usize].intro_id;
+        while end < order.len() && entries[order[end] as usize].intro_id == id {
+            end += 1;
+        }
+        out.push(entries[order[end - 1] as usize]);
+        index = end;
+    }
+    out
+}
+
+/// [`project`] with the comparison-sort preparation. The radix path must
+/// classify identically and beat this on a large id set.
+pub fn project_via_cmp(prior: &[IrEntryKey], next: &[IrEntryKey]) -> Delta<IrEntryKey> {
+    merge_latest(latest_by_cmp(prior), latest_by_cmp(next))
 }
 
 /// Whether applying `delta` must rewrite the IR root.
@@ -253,6 +295,79 @@ mod tests {
         assert!(
             merge_ns.saturating_mul(2) < map_ns,
             "merge {merge_ns} ns was not 2× under map {map_ns} ns — the hot path regressed toward the tree"
+        );
+    }
+
+    /// Radix preparation must classify like the comparison sort, and it must
+    /// beat that sort on a large random id set. Putting `latest_by_cmp` back
+    /// inside `project` makes `radix_ns` and `cmp_ns` the same algorithm, so
+    /// the 2× gate fails.
+    #[test]
+    fn radix_project_matches_and_beats_comparison_sort() {
+        let mut prior = Vec::with_capacity(32_768);
+        let mut next = Vec::with_capacity(32_768);
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let mut ident = || {
+            let mut id = [0u8; 32];
+            for chunk in id.chunks_mut(8) {
+                state = state
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .wrapping_add(0x6a09_e667);
+                chunk.copy_from_slice(&state.to_le_bytes());
+            }
+            id
+        };
+        for n in 0..32_768u32 {
+            let id = ident();
+            prior.push(IrEntryKey {
+                intro_id: id,
+                content_hash: [1; 32],
+            });
+            let mut hash = [1u8; 32];
+            if n % 32 == 0 {
+                hash[0] = 2;
+            }
+            if n % 17 != 0 {
+                next.push(IrEntryKey {
+                    intro_id: id,
+                    content_hash: hash,
+                });
+            }
+            if n == 10 {
+                prior.push(IrEntryKey {
+                    intro_id: id,
+                    content_hash: [9; 32],
+                });
+            }
+        }
+        let mut left = project(&prior, &next);
+        let mut right = project_via_cmp(&prior, &next);
+        let sort = |delta: &mut Delta<IrEntryKey>| {
+            delta.added.sort_by_key(|entry| entry.intro_id);
+            delta.changed.sort_by_key(|entry| entry.intro_id);
+            delta.removed.sort_by_key(|entry| entry.intro_id);
+        };
+        sort(&mut left);
+        sort(&mut right);
+        assert_eq!(left, right);
+
+        let loops = 8u32;
+        let radix_ns = time_ns(|| {
+            for _ in 0..loops {
+                std::hint::black_box(project(&prior, &next));
+            }
+        });
+        let cmp_ns = time_ns(|| {
+            for _ in 0..loops {
+                std::hint::black_box(project_via_cmp(&prior, &next));
+            }
+        });
+        eprintln!(
+            "cost case=frontier/ir_radix entries=32768 loops={loops} radix_ns={radix_ns} cmp_ns={cmp_ns}"
+        );
+        assert!(
+            radix_ns.saturating_mul(2) < cmp_ns,
+            "radix {radix_ns} ns was not 2× under comparison sort {cmp_ns} ns"
         );
     }
 

@@ -14,12 +14,13 @@
 //!    [`ranking::Candidate::popularity_weight`] uses dependents alone
 //!    (converted via `DEPENDENT_DOWNLOAD_EQUIV`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ecosystem::Language;
 use smol_str::SmolStr;
 
 /// One package's contribution to the sweep: who it is and what it depends on.
+#[derive(Clone)]
 pub struct DependencyRow {
     pub ecosystem: Language,
     /// Canonical lowercase package name.
@@ -38,25 +39,7 @@ pub struct DependencyRow {
 pub fn count_dependents(
     rows: impl IntoIterator<Item = DependencyRow>,
 ) -> HashMap<(Language, SmolStr), u32> {
-    // Collapse duplicate (ecosystem, name) dependers: track which (eco, name)
-    // pairs we've already processed as a depender so their deps count only once.
-    let mut seen_dependers: HashSet<(Language, SmolStr)> = HashSet::new();
-    let mut counts: HashMap<(Language, SmolStr), u32> = HashMap::new();
-
-    for row in rows {
-        let depender_key = (row.ecosystem, row.name.clone());
-        if !seen_dependers.insert(depender_key) {
-            continue;
-        }
-        for dep in &row.dependencies {
-            if *dep == row.name {
-                continue; // self-dependency: ignore
-            }
-            *counts.entry((row.ecosystem, dep.clone())).or_default() += 1;
-        }
-    }
-
-    counts
+    crate::lane::count_dependents(rows)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

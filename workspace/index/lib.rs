@@ -59,6 +59,8 @@ pub mod health;
 pub mod identity;
 /// Catalog id newtypes (blob ids) plus heart `PackageId`.
 pub mod ids;
+/// Interned dependency counts and radix rank order.
+pub mod lane;
 /// Upstream feed and git ingestion (followers, drivers, watermarks).
 pub mod ingest;
 /// Package metadata and facet extraction heuristics.

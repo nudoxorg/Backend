@@ -385,13 +385,8 @@ fn rank_pipeline<T>(
     // ── Stage (b): sort by fused score desc, name asc for ties ───────────────
     // Attach scores as a parallel vec then zip-sort so we avoid adding a field
     // to the generic Candidate.
-    let mut indexed: Vec<(usize, f32)> = fused.into_iter().enumerate().collect();
-    indexed.sort_unstable_by(|(ai, ascore), (bi, bscore)| {
-        bscore
-            .partial_cmp(ascore)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| candidates[*ai].name.cmp(&candidates[*bi].name))
-    });
+    let order = crate::lane::order_desc_score_asc_name(&fused, |index| candidates[index].name.as_str());
+    let indexed: Vec<(usize, f32)> = order.into_iter().map(|index| (index, fused[index])).collect();
     // Rebuild candidates in sorted order.
     let mut sorted: Vec<Candidate<T>> = {
         // Safety: each index appears exactly once, so we can drain by taking
