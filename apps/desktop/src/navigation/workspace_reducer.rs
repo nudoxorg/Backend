@@ -34,16 +34,54 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
             let mut settings = next.settings().clone();
             settings.appearance = match settings.appearance {
                 AppearancePreference::Abyss => AppearancePreference::Glacier,
-                AppearancePreference::Glacier => AppearancePreference::Abyss,
+                AppearancePreference::Glacier | AppearancePreference::System => {
+                    AppearancePreference::Abyss
+                }
             };
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
         }
-        Intent::SetTextScale { up } => {
+        Intent::SetAppearance(appearance) => {
             let mut settings = next.settings().clone();
-            settings.text_scale = settings.text_scale.step(*up);
+            settings.appearance = *appearance;
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
+        }
+        Intent::Zoom { display, step } => {
+            let mut settings = next.settings().clone();
+            settings.zoom = settings.zoom.step(display, *step);
+            next = next.with_settings(settings);
+            effects.push(Effect::Persist);
+        }
+        Intent::ZoomTo { display, percent } => {
+            let mut settings = next.settings().clone();
+            settings.zoom = settings.zoom.to_percent(display, *percent);
+            next = next.with_settings(settings);
+            effects.push(Effect::Persist);
+        }
+        Intent::SetDensity(density) => {
+            let mut settings = next.settings().clone();
+            settings.density = *density;
+            next = next.with_settings(settings);
+            effects.push(Effect::Persist);
+        }
+        Intent::SetContrast(contrast) => {
+            let mut settings = next.settings().clone();
+            settings.contrast = *contrast;
+            next = next.with_settings(settings);
+            effects.push(Effect::Persist);
+        }
+        Intent::SetMotion(motion) => {
+            let mut settings = next.settings().clone();
+            settings.motion = *motion;
+            settings.reduced_motion = *motion == crate::model::MotionPreference::Reduced;
+            next = next.with_settings(settings);
+            effects.push(Effect::Persist);
+        }
+        Intent::OpenInbox => {
+            let mut session = next.session().clone();
+            session.overlay = Some(Overlay::Inbox);
+            next = next.with_session(session);
         }
         Intent::TogglePrivacy => {
             let mut settings = next.settings().clone();

@@ -1,6 +1,7 @@
 //! Immutable model, selectors, virtualization, and durable local state.
 
 pub mod local_package;
+pub mod pages;
 pub mod persistence;
 pub mod selectors;
 pub mod snapshot;
@@ -18,9 +19,10 @@ pub use persistence::{
 };
 pub use selectors::{KeyedSelectorCache, LayoutKey, RowHeightCache, SelectorKey};
 pub use snapshot::{
-    AppSnapshot, AppearancePreference, CatalogState, ConnectionStatus, DeltaId, DocumentState,
+    AppSnapshot, AppearancePreference, CatalogState, ConnectionStatus, ContrastPreference,
+    DeltaId, DensityPreference, DocumentState, MotionPreference,
     DocumentTab, ObjectId, PackageSummary, PrivacyPreference, ProjectPhase, ProjectState,
-    ServiceMode, SessionState, SettingsState, ShelfItem, ShelfState, TextScalePreference,
+    ServiceMode, SessionState, SettingsState, ShelfItem, ShelfState, ZoomPreference, ZoomStep,
     WorkspaceProject, WorkspaceState,
 };
 pub use viewport::{

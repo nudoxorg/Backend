@@ -1,7 +1,6 @@
 //! Engine DTO → immutable snapshot mapping.
 
 use super::actor::{EngineDto, EngineEvent, EngineFault};
-use super::client::package_summary;
 use crate::core::{Resource, VersionedRoot};
 use crate::model::{AppSnapshot, CatalogState, ProjectPhase};
 use crate::navigation::RequestId;
@@ -36,6 +35,11 @@ pub enum MappingError {
 }
 
 /// Applies one actor event to a snapshot after authority/staleness checks.
+///
+/// # Errors
+/// Returns a [`MappingError`] when the event is stale, names another basis
+/// or request, or carries an engine fault the snapshot does not represent.
+#[allow(clippy::too_many_lines, clippy::result_large_err)] // one arm per DTO; errors are drained once
 pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapshot, MappingError> {
     let EngineEvent {
         basis,
@@ -132,7 +136,7 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
             request,
             basis: dto_basis,
             command: _,
-            reply,
+            reply: _,
         } => {
             if request != event_request {
                 return Err(MappingError::RequestMismatch {
@@ -146,28 +150,11 @@ pub fn map_event(current: &AppSnapshot, event: EngineEvent) -> Result<AppSnapsho
                     observed: dto_basis,
                 });
             }
-            let packages = match reply {
-                backend_library::SurfaceReply::Explored(records)
-                | backend_library::SurfaceReply::Package(records)
-                | backend_library::SurfaceReply::IndexSearch(records)
-                | backend_library::SurfaceReply::PackageVersions(records) => Some(
-                    records
-                        .iter()
-                        .filter_map(package_summary)
-                        .collect::<Vec<_>>()
-                        .into(),
-                ),
-                backend_library::SurfaceReply::PackageProfile { latest, .. } => latest
-                    .as_ref()
-                    .and_then(package_summary)
-                    .map(|package| Arc::from([package])),
-                _ => None,
-            };
-            let snapshot = packages.map_or_else(
-                || current.with_key(current.key(), None),
-                |packages| current.with_catalog(CatalogState { packages }, current.key()),
-            );
-            Ok(snapshot)
+            // A product surface reply is page data for one identity (a
+            // package, its versions, its dependents). It is never the Orbit
+            // catalog: that slot is owned by the root/index `Explore` read.
+            // Page data lands in the keyed `DataStore`, not in the snapshot.
+            Ok(current.with_key(current.key(), None))
         }
         EngineDto::Index {
             request,
@@ -337,6 +324,7 @@ fn mark_index_failed(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::navigation::RequestId;

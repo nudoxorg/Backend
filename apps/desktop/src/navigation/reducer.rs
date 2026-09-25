@@ -1,8 +1,7 @@
 //! Pure route/state reducer.
 
 use super::intent::{Effect, EngineCommand, Intent, Reduction};
-use super::route::{OrbitRoute, Overlay, Route, SourceRoute};
-use crate::core::ProjectId;
+use super::route::{OrbitRoute, Overlay, Route};
 
 /// Applies one typed intent without touching GPUI, clocks, files, or sockets.
 #[must_use]
@@ -18,23 +17,18 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
             navigate(&mut next, route);
             effects.push(Effect::Persist);
         }
-        Intent::OpenSource {
-            package,
-            coordinate,
-            line,
-            object,
-        } => {
-            navigate(
-                &mut next,
-                Route::Source(SourceRoute {
-                    project: project_context(snapshot),
-                    package,
-                    page: coordinate,
-                    line,
-                    selected: object,
-                }),
-            );
-            effects.push(Effect::Persist);
+        Intent::SetView(view) => {
+            if let Some(route) = snapshot.route().with_view(view) {
+                replace(&mut next, route);
+                effects.push(Effect::Persist);
+            }
+        }
+        Intent::SetRelease(at) => {
+            let route = snapshot.route().with_release(at);
+            if &route != snapshot.route() {
+                replace(&mut next, route);
+                effects.push(Effect::Persist);
+            }
         }
         Intent::ZoomOut => {
             if let Some(route) = snapshot.route().zoom_out() {
@@ -104,6 +98,11 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         Intent::ToggleReducedMotion => {
             let mut settings = next.settings().clone();
             settings.reduced_motion = !settings.reduced_motion;
+            settings.motion = if settings.reduced_motion {
+                crate::model::MotionPreference::Reduced
+            } else {
+                crate::model::MotionPreference::System
+            };
             next = next.with_settings(settings);
             effects.push(Effect::Persist);
         }
@@ -154,7 +153,13 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
         Intent::ToggleShelf
         | Intent::ToggleContext
         | Intent::ToggleAppearance
-        | Intent::SetTextScale { .. }
+        | Intent::SetAppearance(_)
+        | Intent::Zoom { .. }
+        | Intent::ZoomTo { .. }
+        | Intent::SetDensity(_)
+        | Intent::SetContrast(_)
+        | Intent::SetMotion(_)
+        | Intent::OpenInbox
         | Intent::TogglePrivacy
         | Intent::ToggleAdvisories
         | Intent::ToggleCache
@@ -183,12 +188,10 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
 }
 
 fn navigate(snapshot: &mut crate::model::AppSnapshot, route: Route) {
-    if snapshot.route() == &route {
-        if snapshot.overlay().is_some() {
-            let mut session = snapshot.session().clone();
-            session.overlay = None;
-            *snapshot = snapshot.with_session(session);
-        }
+    // Arriving at the place you are (another view, another line) is not
+    // navigation: it replaces the entry, so Back still leaves the place.
+    if snapshot.route().same_place(&route) {
+        replace(snapshot, route);
         return;
     }
     let mut session = snapshot.session().clone();
@@ -200,31 +203,18 @@ fn navigate(snapshot: &mut crate::model::AppSnapshot, route: Route) {
     *snapshot = snapshot.with_session(session);
 }
 
+/// Replaces the current entry without touching back/forward history.
+fn replace(snapshot: &mut crate::model::AppSnapshot, route: Route) {
+    let mut session = snapshot.session().clone();
+    session.route = route;
+    session.overlay = None;
+    *snapshot = snapshot.with_session(session);
+}
+
 fn open_overlay(snapshot: &mut crate::model::AppSnapshot, overlay: Overlay) {
     let mut session = snapshot.session().clone();
     session.overlay = Some(overlay);
     *snapshot = snapshot.with_session(session);
-}
-
-fn project_context(snapshot: &crate::model::AppSnapshot) -> Option<ProjectId> {
-    route_project(snapshot.route()).or_else(|| {
-        snapshot
-            .session()
-            .back
-            .to_vec()
-            .into_iter()
-            .find_map(|route| route_project(&route))
-    })
-}
-
-fn route_project(route: &Route) -> Option<ProjectId> {
-    match route {
-        Route::Orbit(OrbitRoute::Project(project)) => Some(project.clone()),
-        Route::Orbit(OrbitRoute::Home) => None,
-        Route::Package(route) => route.project.clone(),
-        Route::Page(route) => route.project.clone(),
-        Route::Source(route) => route.project.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -232,7 +222,29 @@ mod tests {
     use super::*;
     use crate::core::VersionedRoot;
     use crate::model::AppSnapshot;
-    use crate::navigation::route::{Coordinate, PackageLane, PackageRoute, PageRoute};
+    use crate::navigation::route::{Coordinate, PackageLane, PackageRoute, ReleaseId, SymbolRoute, View};
+
+    fn package_route(selected: Option<crate::model::ObjectId>) -> Route {
+        Route::Package(PackageRoute {
+            project: None,
+            package: crate::core::PackageId::new("pkg").expect("package"),
+            lane: PackageLane::Overview,
+            selected,
+            at: None,
+        })
+    }
+
+    fn symbol_route(name: &str, view: View) -> Route {
+        Route::Symbol(SymbolRoute {
+            project: None,
+            package: crate::core::PackageId::new("pkg").expect("package"),
+            id: Coordinate::new(&format!("pkg::{name}")).expect("coordinate"),
+            at: None,
+            view,
+            line: None,
+            selected: None,
+        })
+    }
 
     fn snapshot() -> AppSnapshot {
         AppSnapshot::empty(VersionedRoot::synthetic(
@@ -252,18 +264,8 @@ mod tests {
     #[test]
     fn route_navigation_is_typed_and_back_forward_is_deterministic() {
         let initial = snapshot();
-        let package = Route::Package(PackageRoute {
-            project: None,
-            package: crate::core::PackageId::new("pkg").expect("package"),
-            lane: PackageLane::Overview,
-            selected: None,
-        });
-        let page = Route::Page(PageRoute {
-            project: None,
-            package: crate::core::PackageId::new("pkg").expect("package"),
-            coordinate: Coordinate::new("pkg::Item").expect("coordinate"),
-            selected: None,
-        });
+        let package = package_route(None);
+        let page = symbol_route("Item", View::Page);
         let a = reduce(&initial, Intent::Navigate(package)).snapshot;
         let b = reduce(&a, Intent::Navigate(page)).snapshot;
         let c = reduce(&b, Intent::Back).snapshot;
@@ -275,12 +277,7 @@ mod tests {
     #[test]
     fn zoom_out_retains_selection_and_overlay_does_not_change_content_history() {
         let initial = snapshot();
-        let package = Route::Package(PackageRoute {
-            project: None,
-            package: crate::core::PackageId::new("pkg").expect("package"),
-            lane: PackageLane::Overview,
-            selected: Some(crate::model::ObjectId::test(7)),
-        });
+        let package = package_route(Some(crate::model::ObjectId::test(7)));
         let page = reduce(&initial, Intent::Navigate(package)).snapshot;
         let zoomed = reduce(&page, Intent::ZoomOut).snapshot;
         assert!(matches!(zoomed.route(), Route::Orbit(OrbitRoute::Home)));
@@ -302,32 +299,39 @@ mod tests {
     }
 
     #[test]
-    fn source_descent_retains_the_current_project_context() {
-        let initial = snapshot();
-        let project = crate::core::ProjectId::test(9).expect("project");
-        let package = crate::core::PackageId::new("pkg").expect("package");
-        let page = Route::Page(crate::navigation::route::PageRoute {
-            project: Some(project.clone()),
-            package: package.clone(),
-            coordinate: crate::navigation::route::Coordinate::new("pkg::Item").expect("coordinate"),
-            selected: None,
-        });
-        let page = reduce(&initial, Intent::Navigate(page)).snapshot;
-        let source = reduce(
-            &page,
-            Intent::OpenSource {
-                package,
-                coordinate: crate::navigation::route::Coordinate::new("pkg::Item")
-                    .expect("coordinate"),
-                line: 4,
-                object: None,
-            },
-        )
-        .snapshot;
-        let Route::Source(source) = source.route() else {
-            panic!("source route")
-        };
-        assert_eq!(source.project.as_ref(), Some(&project));
+    fn switching_view_replaces_the_entry_and_back_leaves_the_declaration() {
+        let package = reduce(&snapshot(), Intent::Navigate(package_route(None))).snapshot;
+        let page = reduce(&package, Intent::Navigate(symbol_route("Item", View::Page))).snapshot;
+        let depth = page.session().back.len();
+        let code = reduce(&page, Intent::SetView(View::Code)).snapshot;
+        assert_eq!(code.route(), &symbol_route("Item", View::Code));
+        let graph = reduce(&code, Intent::SetView(View::Graph)).snapshot;
+        assert_eq!(graph.session().back.len(), depth, "no view switch pushed history");
+        // Navigating to the place you are (another view) is also a replace.
+        let again = reduce(&graph, Intent::Navigate(symbol_route("Item", View::Page))).snapshot;
+        assert_eq!(again.session().back.len(), depth);
+        // Back leaves the declaration for the package, whatever the view.
+        let back = reduce(&again, Intent::Back).snapshot;
+        assert_eq!(back.route(), package.route());
+        // Forward returns to the declaration in the view it was left in.
+        let forward = reduce(&back, Intent::Forward).snapshot;
+        assert_eq!(forward.route(), &symbol_route("Item", View::Page));
+        // A view switch on a place with no views changes nothing.
+        let unchanged = reduce(&package, Intent::SetView(View::Code));
+        assert_eq!(unchanged.snapshot.route(), package.route());
+        assert!(unchanged.effects.is_empty());
+    }
+
+    #[test]
+    fn a_release_is_viewed_in_place_and_returns_to_the_pin() {
+        let page = reduce(&snapshot(), Intent::Navigate(symbol_route("Item", View::Page))).snapshot;
+        let depth = page.session().back.len();
+        let release = ReleaseId::new("1.0.190").expect("release");
+        let viewing = reduce(&page, Intent::SetRelease(Some(release.clone()))).snapshot;
+        assert_eq!(viewing.route().at(), Some(&release));
+        assert_eq!(viewing.session().back.len(), depth, "re-scoping is not navigation");
+        let pinned = reduce(&viewing, Intent::SetRelease(None)).snapshot;
+        assert_eq!(pinned.route(), page.route());
     }
 
     #[test]

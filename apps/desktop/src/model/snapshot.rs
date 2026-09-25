@@ -6,8 +6,9 @@
 //! untouched shelf, document, settings, and session branches remain shared.
 
 pub use super::workspace::{
-    AppearancePreference, ConnectionStatus, PrivacyPreference, ProjectPhase, ServiceMode,
-    SettingsState, TextScalePreference, WorkspaceProject, WorkspaceState,
+    AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
+    MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState, ZoomPreference, ZoomStep,
+    WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::{DocumentId, LocalProjectId, PackageId, ResourceIdentity, VersionedRoot};
 use crate::core::state::Resource;
@@ -351,7 +352,7 @@ impl AppSnapshot {
     /// Returns a copy with a changed route and back/forward state handled by
     /// the typed navigation reducer.
     #[must_use]
-    pub(crate) fn with_session(&self, session: SessionState) -> Self {
+    pub fn with_session(&self, session: SessionState) -> Self {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),
@@ -369,7 +370,7 @@ impl AppSnapshot {
 
     /// Returns a copy with a new shelf branch, sharing every other branch.
     #[must_use]
-    pub(crate) fn with_shelf(&self, shelf: ShelfState) -> Self {
+    pub fn with_shelf(&self, shelf: ShelfState) -> Self {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::new(shelf),
@@ -387,7 +388,7 @@ impl AppSnapshot {
 
     /// Returns a copy with a new settings branch, sharing every other branch.
     #[must_use]
-    pub(crate) fn with_settings(&self, settings: SettingsState) -> Self {
+    pub fn with_settings(&self, settings: SettingsState) -> Self {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),
@@ -462,7 +463,7 @@ impl AppSnapshot {
 
     /// Returns a copy with changed project lifecycle rows.
     #[must_use]
-    pub(crate) fn with_workspace(&self, workspace: WorkspaceState) -> Self {
+    pub fn with_workspace(&self, workspace: WorkspaceState) -> Self {
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {
             shelf: Arc::clone(&self.data.shelf),

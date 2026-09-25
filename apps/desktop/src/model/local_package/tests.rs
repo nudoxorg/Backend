@@ -289,6 +289,26 @@ fn cargo_reader_resolves_the_same_workspace_offline() -> Outcome {
     assert_fixture_features(&package)
 }
 
+/// A folder that is one member of a bigger workspace is that package: its
+/// dossier names its own dependencies, never its siblings'.
+#[test]
+fn a_member_folder_reads_only_its_own_package() -> Outcome {
+    let scratch = workspace_fixture("member")?;
+    let member = LocalProjectId::from_path(&scratch.0.join("nested/deep/beta")).map_err(text)?;
+    let package = LocalPackageLoader::default().load(&member);
+    assert_eq!(package.source, LocalPackageSource::Cargo, "{package:#?}");
+    assert_eq!(package.name.as_ref(), "beta");
+    assert_eq!(package.version.as_deref(), Some("0.2.0"));
+    assert_eq!(package.members, 1);
+    let names = package
+        .dependencies
+        .iter()
+        .map(|dependency| dependency.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["renamed"], "only beta's own dependency: {names:?}");
+    Ok(())
+}
+
 #[test]
 fn a_folder_without_a_manifest_is_named_by_its_readme_or_folder() -> Outcome {
     let titled = Scratch::new("no-manifest-readme")?;

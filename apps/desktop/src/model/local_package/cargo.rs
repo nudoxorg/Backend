@@ -212,6 +212,7 @@ pub(super) fn project(
         .collect::<Vec<_>>();
     members.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
     let selected = root_package(root, &members);
+    let selected_manifest = selected.map(|package| package.manifest_path.clone());
     let readme = selected
         .and_then(|package| {
             let file = package.readme.as_ref()?;
@@ -232,6 +233,7 @@ pub(super) fn project(
         categories: selected.map_or_else(Vec::new, |package| package.categories.clone()),
         readme,
     };
+    let members = scope_to_member(root, members, selected_manifest.as_deref());
     let dependencies = dependencies(members.iter().flat_map(|package| {
         package.dependencies.iter().map(|dependency| {
             let name = dependency
@@ -260,6 +262,29 @@ pub(super) fn project(
         features,
         count,
     )
+}
+
+/// Keeps only the selected package when the project folder is one member of
+/// a larger Cargo workspace: its dossier must not list every sibling's
+/// dependencies. A folder that is the workspace root keeps every member.
+fn scope_to_member(
+    root: &Path,
+    mut members: Vec<CargoPackage>,
+    selected: Option<&str>,
+) -> Vec<CargoPackage> {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let enclosed = |package: &CargoPackage| {
+        let manifest = Path::new(&package.manifest_path);
+        std::fs::canonicalize(manifest)
+            .unwrap_or_else(|_| manifest.to_path_buf())
+            .starts_with(&canonical_root)
+    };
+    if let Some(selected) = selected
+        && !members.iter().all(enclosed)
+    {
+        members.retain(|package| package.manifest_path == selected);
+    }
+    members
 }
 
 /// Finds the member whose manifest is the project root's `Cargo.toml`.

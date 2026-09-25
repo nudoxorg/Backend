@@ -1,5 +1,7 @@
 //! Runtime race tests kept next to the actor/coordinator boundary.
 
+#![allow(clippy::expect_used, clippy::panic)]
+
 use super::actor::{EngineClient, EngineDto, EngineFault, EngineRequest};
 use super::coordinator::{DesktopRuntime, RuntimeEvent};
 use crate::core::VersionedRoot;
@@ -97,11 +99,16 @@ fn latest_root_supersedes_older_refreshes_without_ui_waiting() {
             .any(|event| matches!(event, RuntimeEvent::SnapshotChanged(_)))
     );
     assert!(runtime.is_inflight(request));
-    for _ in 0..100 {
-        if !runtime.poll().is_empty() {
-            break;
+    // The actor wakes the owner when the result lands; the owner never spins.
+    let mut wake = runtime.take_wake().expect("wake signal");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while runtime.is_inflight(request) {
+        if wake.try_take() {
+            runtime.poll();
+        } else {
+            assert!(std::time::Instant::now() < deadline, "the root never landed");
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        std::thread::yield_now();
     }
     assert!(!runtime.is_inflight(request));
 }
@@ -274,4 +281,145 @@ fn local_package_read_runs_off_the_producer_lane_and_survives_a_root_advance() -
     assert_eq!(package.version.as_deref(), Some("3.1.4"));
     assert_eq!(package.dependencies.len(), 1);
     Ok(())
+}
+
+/// A registry release fixture shaped exactly like the producer's DTO.
+pub(super) fn registry_record(name: &str, version: &str) -> backend_library::RegistryPackageRecord {
+    use backend_library::{
+        AdvisoryPackageDto, PackageReference, ProductText, RegistryDownloadCount,
+        RegistryEcosystem, RegistryNativeMetadata, RegistryPackageRecord,
+        RegistryReleaseStanding,
+    };
+    let native_metadata = RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "fixture");
+    RegistryPackageRecord {
+        coordinate: PackageReference::parse(format!("pkg:cargo/{name}@{version}"))
+            .expect("fixture package"),
+        ecosystem: RegistryEcosystem::Cargo,
+        name: ProductText::new(name).expect("fixture name"),
+        version: ProductText::new(version).expect("fixture version"),
+        bytes: 1_024,
+        standing: RegistryReleaseStanding::Available,
+        downloads: RegistryDownloadCount::Exact(42),
+        facts_version: [0; 32],
+        native_metadata_version: native_metadata
+            .identity()
+            .expect("fixture metadata identity"),
+        native_metadata,
+        forge_sources: Box::new([]),
+        advisory: AdvisoryPackageDto::unknown(),
+    }
+}
+
+/// Answers the root with a three-package Orbit catalog and a package
+/// surface with that one package — the exact replies a package visit sees.
+struct CatalogClient;
+
+impl EngineClient for CatalogClient {
+    fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        match request {
+            EngineRequest::Root { request, basis, .. } => {
+                let (key, revision) = next_key(*basis);
+                let catalog = ["alpha", "beta", "gamma"]
+                    .iter()
+                    .filter_map(|name| {
+                        super::client::package_summary(&registry_record(name, "1.0.0"))
+                    })
+                    .collect::<Vec<_>>();
+                Ok(EngineDto::Root {
+                    request: *request,
+                    basis: *basis,
+                    key,
+                    revision,
+                    delta: None,
+                    project: None,
+                    catalog: Some(catalog.into()),
+                })
+            }
+            EngineRequest::Surface {
+                request,
+                basis,
+                command,
+                ..
+            } => Ok(EngineDto::Surface {
+                request: *request,
+                basis: *basis,
+                command: command.clone(),
+                reply: match command {
+                    backend_library::SurfaceCommand::PackageVersions { .. } => {
+                        backend_library::SurfaceReply::PackageVersions(Box::new([
+                            registry_record("beta", "0.9.0"),
+                            registry_record("beta", "1.0.0"),
+                        ]))
+                    }
+                    _ => backend_library::SurfaceReply::Package(Box::new([registry_record(
+                        "beta", "1.0.0",
+                    )])),
+                },
+            }),
+            other => EchoClient.execute(other),
+        }
+    }
+}
+
+fn poll_until(runtime: &mut DesktopRuntime, request: RequestId) {
+    for _ in 0..10_000 {
+        runtime.poll();
+        if !runtime.is_inflight(request) {
+            return;
+        }
+        std::thread::yield_now();
+    }
+    panic!("request {request:?} never landed");
+}
+
+fn catalog_names(runtime: &DesktopRuntime) -> Vec<String> {
+    runtime
+        .snapshot()
+        .catalog()
+        .loaded_value()
+        .map(|catalog| {
+            catalog
+                .packages
+                .iter()
+                .map(|package| package.name.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// P0 regression: visiting a package (its Overview lane issues `package`,
+/// its Releases lane `package-versions`) must never replace the Orbit
+/// catalog with that one package's rows.
+#[test]
+fn visiting_a_package_never_overwrites_the_orbit_catalog() {
+    let actor = super::actor::EngineActor::start(CatalogClient, 4).expect("actor thread");
+    let mut runtime = DesktopRuntime::new(snapshot(), actor);
+    let request = runtime.allocate_request();
+    let basis = runtime.snapshot().key();
+    runtime.dispatch(Intent::RefreshRoot { basis, request });
+    poll_until(&mut runtime, request);
+    assert_eq!(catalog_names(&runtime), ["alpha", "beta", "gamma"]);
+
+    let package = backend_library::PackageReference::parse("pkg:cargo/beta@1.0.0")
+        .expect("package reference");
+    for command in [
+        backend_library::SurfaceCommand::Package {
+            package: package.clone(),
+        },
+        backend_library::SurfaceCommand::PackageVersions { package },
+    ] {
+        let request = runtime.allocate_request();
+        let basis = runtime.snapshot().key();
+        runtime.dispatch(Intent::RefreshSurface {
+            command,
+            basis,
+            request,
+        });
+        poll_until(&mut runtime, request);
+        assert_eq!(
+            catalog_names(&runtime),
+            ["alpha", "beta", "gamma"],
+            "a package surface reply replaced the Orbit catalog"
+        );
+    }
 }

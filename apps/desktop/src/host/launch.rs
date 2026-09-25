@@ -1,14 +1,14 @@
 //! Native startup for the v3 desktop.
 //!
 //! Startup chooses the workspace owner, admits one producer root, restores
-//! durable shelf/session state, and then hands one `UiRootEntity` to GPUI.
-//! No legacy model or transport entity is created on this path.
+//! durable shelf/session state, installs the state owner and the data plane,
+//! and mounts the [`Shell`](crate::shell::Shell) as the window root.
 
 use super::lease::{DesktopHost, HostError, HostMode};
 use crate::core::{LocalProjectId, VersionedRoot};
 use crate::model::{AppSnapshot, PersistenceRecovery, PersistentState, SessionState};
+use crate::runtime::reads::{ReadPool, SessionReader};
 use crate::runtime::{DesktopRuntime, EngineActor, LocalEngineClient, UiEntityGraph};
-use crate::theme::Theme;
 use backend_client::LocalSubscriptionTransport;
 use gpui::{
     App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
@@ -21,6 +21,8 @@ const DEADLINE: Duration = Duration::from_secs(20);
 const EXIT_NO_SERVICE: u8 = 70;
 const WINDOW: (f32, f32) = (1380.0, 880.0);
 const MINIMUM: (f32, f32) = (320.0, 480.0);
+/// Read sessions in the page-data pool; index/admin work has its own lane.
+const READ_SESSIONS: usize = 3;
 
 /// Starts the native application and its embedded local-first owner.
 #[must_use]
@@ -58,25 +60,38 @@ fn run(opened: Opened) {
         }
     };
     let runtime = DesktopRuntime::new(snapshot, actor);
+    let endpoint = host.endpoint().to_path_buf();
+    let reads = match ReadPool::start(READ_SESSIONS, |_| SessionReader::connect(&endpoint)) {
+        Ok(reads) => Some(reads),
+        Err(error) => {
+            // The window still opens; every page then says it has no read lane.
+            eprintln!("backend-desktop: start read pool: {error}");
+            None
+        }
+    };
     gpui::Application::with_platform(gpui_platform::current_platform(false))
-        .with_assets(crate::ui::icon::Assets)
+        .with_assets(facet::icons::Assets)
         .run(move |cx: &mut App| {
             if let Err(error) = install(cx) {
                 eprintln!("backend-desktop: install UI assets: {error}");
                 return;
             }
-            let graph = UiEntityGraph::install(cx, runtime, Some(persistence));
-            let root = graph.root.clone();
+            let graph = UiEntityGraph::install_with_reads(cx, runtime, Some(persistence), reads);
+            // Temporary: `NUDOX_DEBUG_PAGE="search:Engine;orbit;health"` opens a
+            // plain-text window onto the data plane (see runtime::debug_page).
+            if let Ok(spec) = std::env::var("NUDOX_DEBUG_PAGE") {
+                crate::runtime::debug_page::open_window(
+                    cx,
+                    graph.store.clone(),
+                    crate::runtime::debug_page::parse_keys(&spec),
+                );
+            }
             let options = window_options(cx);
             if let Err(error) = cx.open_window(options, move |window, cx| {
-                root.update(cx, |root, cx| {
-                    root.observe_window_activation(window, cx);
-                });
-                // gpui_component::Root is the native key/focus boundary. It
-                // installs Tab/Shift-Tab dispatch and lets FocusTrapElement
-                // contain modal traversal while UiRootEntity remains the
-                // product state owner below it.
-                cx.new(|cx| gpui_component::Root::new(root, window, cx).bordered(false))
+                let shell = crate::shell::open_shell(&graph, window, cx);
+                // gpui_component::Root hosts the component layer the Ask
+                // field's input engine (IME) expects; the shell is its view.
+                cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
             }) {
                 eprintln!("backend-desktop: open window: {error}");
             }
@@ -85,13 +100,9 @@ fn run(opened: Opened) {
     drop(host);
 }
 
-fn install(cx: &mut App) -> gpui::Result<()> {
+fn install(cx: &mut App) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     gpui_component::init(cx);
-    crate::theme::fonts::install(cx)?;
-    let theme = Theme::default();
-    crate::theme::sync_components(cx, &theme);
-    cx.set_global(theme);
-    Ok(())
+    facet::fonts::install(cx)
 }
 
 fn window_options(cx: &mut App) -> WindowOptions {
