@@ -29,6 +29,7 @@ use crate::server::{Server, SourceStores};
 
 pub(super) mod cage;
 pub(super) mod facets;
+pub(super) mod generation_root;
 pub(super) mod ir_stream;
 
 pub(super) use ir_stream::{

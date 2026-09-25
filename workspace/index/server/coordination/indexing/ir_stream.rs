@@ -4,6 +4,12 @@ use std::collections::HashMap;
 
 use crate::server::registry::blob::creation::BlobBuilder;
 
+use super::generation_root::{StagedSymbol, attach_generation_root};
+
+pub(in crate::server::coordination) use super::generation_root::{
+    attach_table_generation_root, prior_entry_keys,
+};
+
 /// Decode the cage producer's IR stream bytes, stage them onto `builder`, and
 /// return the symbol identifier list for the emit/facets path.
 ///
@@ -302,171 +308,6 @@ pub(super) fn ingest_ir_bytes(
         generation,
         degraded_reason,
     }
-}
-
-/// One symbol kept long enough to build a [`ir::generation::GenerationRoot`].
-struct StagedSymbol {
-    intro: ir::change::IntroId,
-    parent: Option<ir::change::IntroId>,
-    payload: ir_vcs::wire::OwnedEntryPayload,
-}
-
-/// Dual-write a generation root beside the opaque IR blob.
-///
-/// Payloads are [`ir::content::entry_storage_payload`] bytes, addressed by
-/// [`ir::content::entry_storage_hash`]. Location stays on the root row, so a
-/// move does not change the payload hash. [`crate::frontier::ir::project`]
-/// decides which payloads are queued: an intro id already stored at the same
-/// hash is left in the root and omitted from `payloads`.
-fn attach_generation_root(
-    builder: &mut BlobBuilder,
-    staged: &[StagedSymbol],
-    package: Option<&ir::change::PackageLineageId>,
-    prior: &[crate::frontier::ir::IrEntryKey],
-) -> Result<Vec<crate::frontier::ir::IrEntryKey>, String> {
-    let Some(package) = package else {
-        return Ok(Vec::new());
-    };
-    if staged.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut last_at: std::collections::HashMap<ir::change::IntroId, usize> =
-        std::collections::HashMap::with_capacity(staged.len());
-    for (index, symbol) in staged.iter().enumerate() {
-        last_at.insert(symbol.intro, index);
-    }
-    let mut order: Vec<usize> = last_at.into_values().collect();
-    order.sort_unstable();
-
-    let mut rows = Vec::with_capacity(order.len());
-    let mut keys = Vec::with_capacity(order.len());
-    let mut bodies = Vec::with_capacity(order.len());
-    for index in order {
-        let symbol = &staged[index];
-        let entry = ir_vcs::lower::lower_payload(&symbol.payload);
-        let (content, body) = storage_bytes(&entry);
-        keys.push(crate::frontier::ir::IrEntryKey {
-            intro_id: *symbol.intro.as_bytes(),
-            content_hash: *content.as_bytes(),
-        });
-        rows.push(ir::generation::RootEntry {
-            intro: symbol.intro,
-            content,
-            parent: symbol.parent,
-            source: entry.sym().source.clone(),
-            span: entry.sym().span.clone(),
-        });
-        bodies.push(body);
-    }
-
-    commit_root(builder, package, rows, keys, bodies, prior)
-}
-
-/// Dual-write a generation root from a sealed in-process table.
-///
-/// The table already holds semantic [`ir::entry::Entry`] values, so this path
-/// does not go through the wire payload. Location stays on the root row.
-/// [`crate::frontier::ir::project`] omits payloads whose intro hash is already
-/// stored.
-pub(in crate::server::coordination) fn attach_table_generation_root(
-    builder: &mut BlobBuilder,
-    table: &ir::apply::PristineIntroTable,
-    package: &ir::change::PackageLineageId,
-    prior: &[crate::frontier::ir::IrEntryKey],
-) -> Result<Vec<crate::frontier::ir::IrEntryKey>, String> {
-    if table.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut rows = Vec::with_capacity(table.len());
-    let mut keys = Vec::with_capacity(table.len());
-    let mut bodies = Vec::with_capacity(table.len());
-    for (intro, entry) in table.iter_sorted() {
-        let (content, body) = storage_bytes(entry);
-        keys.push(crate::frontier::ir::IrEntryKey {
-            intro_id: *intro.as_bytes(),
-            content_hash: *content.as_bytes(),
-        });
-        rows.push(ir::generation::RootEntry {
-            intro,
-            content,
-            parent: table.parent_of(intro),
-            source: entry.sym().source.clone(),
-            span: entry.sym().span.clone(),
-        });
-        bodies.push(body);
-    }
-    commit_root(builder, package, rows, keys, bodies, prior)
-}
-
-/// Encode an entry once. The storage hash is BLAKE3 of those bytes, which is
-/// what [`ir::content::entry_storage_hash`] computes by encoding again.
-fn storage_bytes(entry: &ir::entry::Entry) -> (ir::change::ContentBlake3, Vec<u8>) {
-    let body = ir::content::entry_storage_payload(entry);
-    let content = ir::change::ContentBlake3::from_raw(*blake3::hash(&body).as_bytes());
-    (content, body)
-}
-
-fn commit_root(
-    builder: &mut BlobBuilder,
-    package: &ir::change::PackageLineageId,
-    rows: Vec<ir::generation::RootEntry>,
-    keys: Vec<crate::frontier::ir::IrEntryKey>,
-    bodies: Vec<Vec<u8>>,
-    prior: &[crate::frontier::ir::IrEntryKey],
-) -> Result<Vec<crate::frontier::ir::IrEntryKey>, String> {
-    let delta = crate::frontier::ir::project(prior, &keys);
-    let mut write = std::collections::HashSet::with_capacity(delta.added.len() + delta.changed.len());
-    for key in delta.added.iter().chain(delta.changed.iter()) {
-        write.insert(key.intro_id);
-    }
-    let payloads = keys
-        .iter()
-        .zip(bodies)
-        .filter(|(key, _)| write.contains(&key.intro_id))
-        .map(|(key, body)| {
-            (
-                ir::change::ContentBlake3::from_raw(key.content_hash),
-                bytes::Bytes::from(body),
-            )
-        });
-    let root = ir::generation::GenerationRoot::build(package.clone(), rows);
-    builder
-        .set_generation_root(&root, payloads)
-        .map_err(|err| format!("set_generation_root failed: {err}"))?;
-    Ok(keys)
-}
-
-/// Intro ids and storage hashes from the package's current generation root.
-///
-/// A missing pointer, a manifest with no root, or a root that does not decode
-/// yields an empty prior. The next ingest then queues every payload, and the
-/// object store dedups by hash.
-pub(in crate::server::coordination) async fn prior_entry_keys(
-    blobs: &crate::cas::Store<heart::connection::Live>,
-    coordinates: &crate::package::Coordinates,
-) -> Vec<crate::frontier::ir::IrEntryKey> {
-    let manifest = match blobs.get_manifest(coordinates).await {
-        Ok(manifest) => manifest,
-        Err(_) => return Vec::new(),
-    };
-    let Some(root_ref) = manifest.root_ref else {
-        return Vec::new();
-    };
-    let bytes = match blobs.get_section(root_ref).await {
-        Ok(bytes) => bytes,
-        Err(_) => return Vec::new(),
-    };
-    let Ok(root) = ir::generation::GenerationRoot::decode(&bytes) else {
-        return Vec::new();
-    };
-    root.entries
-        .iter()
-        .map(|row| crate::frontier::ir::IrEntryKey {
-            intro_id: *row.intro.as_bytes(),
-            content_hash: *row.content.as_bytes(),
-        })
-        .collect()
 }
 
 /// The result of decoding one producer NdIrF1 stream (W1).
