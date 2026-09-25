@@ -968,13 +968,7 @@ fn emit_function(
         // `TsId(module, "<name>::param::<param>", idx)` and collide in
         // `Lowering::finish` as "declared more than once" even though the
         // functions themselves were correctly disambiguated.
-        let param_id = TsId::new(
-            id.module.clone(),
-            format!("{}::param::{}", id.name, p.name),
-            id.discriminant
-                .saturating_mul(1000)
-                .saturating_add(idx as u32),
-        );
+        let param_id = param_id_for(&id, &p.name, idx as u32);
         let pref: Ref<Param> = out.refer(param_id.clone());
         param_refs.push(pref);
 
@@ -2112,6 +2106,41 @@ fn child_name(parent: &TsId, member: &str) -> String {
     } else {
         format!("{}#{}::{}", parent.name, parent.discriminant, member)
     }
+}
+
+/// Parameter id for one function overload.
+///
+/// The common case folds the function's discriminant into the numeric half
+/// (`disc * 1000 + index`). That product does not fit in `u32` once a
+/// function's own discriminant is at least `u32::MAX / 1000` — an interface
+/// method past member 4294, because the method id is already `index * 1000`.
+/// `saturating_mul` then pinned every such parameter at `u32::MAX`, and two
+/// overloads that shared a parameter name were one id declared twice.
+///
+/// When the product fits, the id is unchanged. When it does not, the
+/// function discriminant moves into the name, which is the same trick
+/// `child_name` uses for a parent overload, and the parameter index stays
+/// the discriminant.
+fn param_id_for(owner: &TsId, param_name: &str, index: u32) -> TsId {
+    if let Some(disc) = owner
+        .discriminant
+        .checked_mul(1000)
+        .and_then(|base| base.checked_add(index))
+    {
+        return TsId::new(
+            owner.module.clone(),
+            format!("{}::param::{}", owner.name, param_name),
+            disc,
+        );
+    }
+    TsId::new(
+        owner.module.clone(),
+        format!(
+            "{}#{}::param::{}",
+            owner.name, owner.discriminant, param_name
+        ),
+        index,
+    )
 }
 
 fn child_id(parent: &TsId, member: &str, local: u32) -> TsId {

@@ -1009,6 +1009,43 @@ mod tests {
         }
     }
 
+    /// An interface method's id is `member_index * 1000`. Folding that into
+    /// the parameter discriminant (`* 1000` again) overflows `u32` once the
+    /// interface has more than 4294 members. Two overloads of one name past
+    /// that point used to declare the same parameter id.
+    #[test]
+    fn late_interface_overloads_keep_distinct_parameters() {
+        let mut src = String::from("export interface Huge {\n");
+        for i in 0..4295 {
+            src.push_str(&format!("  m{i}(x: number): void;\n"));
+        }
+        src.push_str("  tail(x: number): void;\n  tail(x: string): void;\n}\n");
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"huge-iface","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(dir.path().join("index.d.ts"), src).expect("write declarations");
+
+        let source = PackageSource::new(dir.path(), "huge-iface", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("huge-iface"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("overloads past the discriminant ceiling must seal, not Duplicate");
+
+        let tails = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| entry.sym().name == "tail")
+            .count();
+        assert_eq!(
+            tails, 2,
+            "both tail overloads must be declared, not collapsed onto one parameter id"
+        );
+    }
+
     /// axios 1.6.7 plus the three packages its manifest names.
     /// Extract them under `/tmp/medium/npm/src` before running.
     #[test]
