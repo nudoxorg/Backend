@@ -267,9 +267,10 @@ pub(crate) fn collect_name_hits(
             let Some(ir_entry) = pkg.view().entry(entry.intro) else {
                 continue;
             };
-            let Some(disc) = ir_entry.kind().discriminant() else {
-                continue;
-            };
+            let disc = ir_entry
+                .kind()
+                .discriminant()
+                .unwrap_or(KindDiscriminant::Reexport);
             if !query.kind_matches(disc) {
                 continue;
             }
@@ -479,7 +480,10 @@ fn collect_signature_hits(
 /// Collect hits from the kind facet index.
 ///
 /// If the query text matches a kind label (e.g. `"fn"` → `Function`) we emit
-/// all symbols of that kind. Otherwise we use the kind filter from the query.
+/// all symbols of that kind. An empty query with an explicit kind filter lists
+/// that kind. A name plus a kind filter is a name search: [`collect_name_hits`]
+/// already applies the filter, and listing every symbol of the kind here would
+/// ignore the name.
 fn collect_kind_facet_hits(
     packages: &[std::sync::Arc<crate::store::package::PackageView>],
     query: &SearchQuery,
@@ -490,16 +494,14 @@ fn collect_kind_facet_hits(
         query.limit
     };
 
-    // Determine which kind discriminant(s) to emit for the "type" section.
-    // Priority:
-    //   1. If the query text matches a kind keyword, use that kind.
-    //   2. If an explicit kind filter is set, use that filter.
-    //   3. Otherwise, emit nothing (name section already covers everything).
-    let target_kinds: Vec<KindDiscriminant> = if query.kinds.is_empty() {
-        let lower = query.text.to_lowercase();
-        keyword_to_kinds(&lower)
-    } else {
+    let text = query.text.trim();
+    let from_keyword = keyword_to_kinds(&text.to_lowercase());
+    let target_kinds: Vec<KindDiscriminant> = if !from_keyword.is_empty() {
+        from_keyword
+    } else if text.is_empty() {
         query.kinds.clone()
+    } else {
+        return Vec::new();
     };
 
     if target_kinds.is_empty() {

@@ -710,9 +710,11 @@ impl PackageIndexes {
             by_name.insert(entry.sym().name.clone(), intro);
 
             // -- by_kind -----------------------------------------------------
-            if let Some(disc) = entry.kind().discriminant() {
-                by_kind.entry(disc).or_default().push(intro);
-            }
+            let disc = entry
+                .kind()
+                .discriminant()
+                .unwrap_or(KindDiscriminant::Reexport);
+            by_kind.entry(disc).or_default().push(intro);
 
             // -- paths -------------------------------------------------------
             if let Some(path) = moniker_path(view.table(), intro) {

@@ -385,6 +385,14 @@ required-features = ["fixtures"]
 name = "mcp_refs_non_rust_languages"
 path = "tests/mcp/refs_non_rust_languages.rs"
 
+# One engine load. packages, search, read, refs, and graph are one conversation:
+# a key from search must open in read, the same key must come back on the next
+# search, and an empty graph edge must say why. The schema card must stay
+# smaller than the full SDL.
+[[test]]
+name = "mcp_multi_turn_surfaces"
+path = "tests/mcp/multi_turn_surfaces.rs"
+
 # Real corpus/package occurrence regressions for every non-Rust producer.
 [[test]]
 name = "mcp_real_package_references"

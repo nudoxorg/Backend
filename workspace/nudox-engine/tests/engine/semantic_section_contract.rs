@@ -50,9 +50,10 @@
 //! still true of a query that names neither a kind nor a facet, which is why
 //! the tests below still pass an explicit `KindDiscriminant`.
 //!
-//! **`SECTION_TYPE`'s kind path is still a facet, not a text search.** Given a
-//! kind filter it returns every symbol of that kind whatever the query text
-//! says. So the zero-hit test below still deliberately passes NO kind filter.
+//! **`SECTION_TYPE`'s kind path is a facet, not a text search.** It emits every
+//! symbol of a kind only when the query text is itself a kind keyword, or is
+//! empty and a kind filter is set. A name plus a kind filter is answered by
+//! the name section, so the zero-hit test below still passes no kind filter.
 
 use std::collections::BTreeMap;
 
@@ -142,8 +143,9 @@ async fn observe(
     Observed { rows, states }
 }
 
-/// With no embedder, section 2 is empty **and says why** — while sections 0 and
-/// 1 return real hits.
+/// With no embedder, section 2 is empty **and says why** — while the name
+/// section returns real hits. A name plus a kind filter does not also fill
+/// the kind facet.
 ///
 /// The conjunction is what makes this a test rather than a tautology, and the
 /// third conjunct is the one that changed: it is no longer "section 2 is
@@ -168,10 +170,10 @@ async fn a_build_with_no_model_reports_unavailable_rather_than_no_results() {
          because section 2 is behaving. Fix search first. Rows: {:?}",
         seen.rows
     );
-    assert!(
-        type_ > 0,
-        "SECTION_TYPE returned no rows for a matching query — same problem. \
-         Rows: {:?}",
+    assert_eq!(
+        type_, 0,
+        "SECTION_TYPE must not list every Record when the query is the name \
+         \"point\". The name section already applied the kind filter. Rows: {:?}",
         seen.rows
     );
 
