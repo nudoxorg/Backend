@@ -1079,6 +1079,35 @@ mod tests {
     }
 
     #[test]
+    fn a_call_signature_is_declared() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"callable","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export interface Fn { (value: number): string; }\n\
+             export interface Bag { __call(): void; (value: number): string; }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "callable", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("callable"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a callable interface must seal");
+        let calls = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "__call"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(calls, 3, "Fn's call, Bag's method, and Bag's call");
+    }
+
+    #[test]
     fn same_file_uniform_functions_stay_distinct() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

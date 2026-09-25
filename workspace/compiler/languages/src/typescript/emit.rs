@@ -505,6 +505,38 @@ fn emit_interface(
         );
     }
 
+    // Emit call signatures as synthetic `__call` functions. A method may
+    // already be named `__call` at discriminant 0; that method keeps its id.
+    for (call_num, call) in body.call_signatures.iter().enumerate() {
+        let call_member = if call_num == 0 {
+            "__call".to_string()
+        } else {
+            format!("__call_{call_num}")
+        };
+        let taken = body.methods.iter().enumerate().any(|(method_idx, method)| {
+            method.name == call_member && (method_idx * 1000) as u32 == call_num as u32
+        });
+        let call_disc = if taken {
+            call_num as u32 + 1
+        } else {
+            call_num as u32
+        };
+        let call_id = child_id(&id, &call_member, call_disc);
+        let call_sym = Symbol {
+            name: call_member,
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: id.module.clone(),
+            span: (call.span_start as usize)..(call.span_end as usize),
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        emit_function(call_id, Some(id.clone()), call_sym, call, out, names);
+    }
+
     // Emit index signatures as synthetic `__index[_N]` Function entries (item 5).
     for (idx_num, idx_sig) in body.index_signatures.iter().enumerate() {
         let index_member = if idx_num == 0 {
