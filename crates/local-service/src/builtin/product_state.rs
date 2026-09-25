@@ -59,6 +59,12 @@ pub(super) struct ProductState {
 }
 
 impl ProductState {
+    pub(super) fn workspace_path(&self) -> Result<&Path, String> {
+        self.path
+            .parent()
+            .ok_or_else(|| "product state path has no parent workspace".to_owned())
+    }
+
     pub(super) fn open(path: PathBuf) -> Result<Self, String> {
         let state = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -171,31 +177,34 @@ impl ProductState {
                 SurfaceReply::Dependencies(dependencies(dependency_facts, &package)?),
                 false,
             ),
-            SurfaceCommand::PackageVersions { package } => (
-                SurfaceReply::PackageVersions(versions(catalog, &package)),
-                false,
-            ),
+            SurfaceCommand::PackageVersions { package } => {
+                let workspace = self.workspace_path()?;
+                (
+                    SurfaceReply::PackageVersions(versions(view, catalog, workspace, &package)?),
+                    false,
+                )
+            }
             SurfaceCommand::SemanticVersions { .. }
             | SurfaceCommand::SelectSemanticVersion { .. } => {
                 return Err(
                     "semantic version history requires compiler publication authority".to_owned(),
                 );
             }
-            SurfaceCommand::PackageProfile { package } => (profile(catalog, &package), false),
+            SurfaceCommand::PackageProfile { package } => {
+                let workspace = self.workspace_path()?;
+                (profile(view, catalog, workspace, &package)?, false)
+            }
             SurfaceCommand::Dependents { package } => (
                 SurfaceReply::Dependents(dependents(catalog, dependency_facts, &package)?),
                 false,
             ),
-            SurfaceCommand::Owner { owner } => (
-                SurfaceReply::Owner(RegistryMetadata::NotRecorded(
-                    ProductText::new(format!(
-                        "the configured feed does not record publisher facts for {}",
-                        owner.as_str()
-                    ))
-                    .map_err(|e| e.to_string())?,
-                )),
-                false,
-            ),
+            SurfaceCommand::Owner { owner } => {
+                let workspace = self.workspace_path()?;
+                (
+                    SurfaceReply::Owner(owner_page(view, catalog, workspace, &owner)?),
+                    false,
+                )
+            }
             SurfaceCommand::Subscribe { package, project } => (
                 SurfaceReply::Subscribed(self.subscribe(package, project.as_ref())?),
                 true,
@@ -572,6 +581,76 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
         .map(Vec::into_boxed_slice)
 }
 
+fn owner_page(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    workspace: &Path,
+    query: &ProductText,
+) -> Result<RegistryMetadata<Box<[RegistryPackageRecord]>>, String> {
+    let needle = query.as_str();
+    let mut records = Vec::new();
+    let mut seen = BTreeSet::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Symbol(_)) {
+            continue;
+        }
+        let (name, path) = declaration_identity(row)?;
+        if name != needle {
+            continue;
+        }
+        let project_root = row
+            .label
+            .split_once("::")
+            .map(|(project, _)| project)
+            .ok_or_else(|| format!("declaration row {} has no owning project", row.label))?;
+        let source_root =
+            super::local_manifest::indexed_package_source_root(project_root, workspace)?;
+        let package_record = super::local_manifest::cargo_registry_record(&source_root)?;
+        if !seen.insert(package_record.coordinate.as_str().to_owned()) {
+            continue;
+        }
+        let file = RegistryPackageRecord {
+            coordinate: PackageReference::Local(
+                ProductText::new(format!("{project_root}::{path}"))
+                    .map_err(|error| error.to_string())?,
+            ),
+            ecosystem: package_record.ecosystem,
+            name: ProductText::new(path.clone()).map_err(|error| error.to_string())?,
+            version: ProductText::new(path).map_err(|error| error.to_string())?,
+            bytes: 0,
+            standing: RegistryReleaseStanding::Available,
+            downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+            facts_version: [0; 32],
+            native_metadata_version: package_record.native_metadata_version,
+            native_metadata: package_record.native_metadata.clone(),
+            forge_sources: Box::new([]),
+            advisory: AdvisoryPackageDto::unknown(),
+        };
+        records.push(package_record);
+        if seen.insert(file.coordinate.as_str().to_owned()) {
+            records.push(file);
+        }
+    }
+    if records.is_empty() {
+        let registry = catalog
+            .iter()
+            .filter(|record| record.name.as_str() == needle)
+            .cloned()
+            .collect::<Vec<_>>();
+        if registry.is_empty() {
+            return Ok(RegistryMetadata::NotRecorded(
+                ProductText::new(format!(
+                    "no indexed declaration or registry publisher named {}",
+                    needle
+                ))
+                .map_err(|error| error.to_string())?,
+            ));
+        }
+        return Ok(RegistryMetadata::Recorded(registry.into_boxed_slice()));
+    }
+    Ok(RegistryMetadata::Recorded(records.into_boxed_slice()))
+}
+
 fn explore_page(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
@@ -790,19 +869,62 @@ fn package_page(
     ))
 }
 fn versions(
+    view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
+    workspace: &Path,
     package: &PackageReference,
-) -> Box<[RegistryPackageRecord]> {
-    let mut rows = packages(catalog, package).into_vec();
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let indexed = indexed_package_coordinates(view, workspace)?;
+    let mut rows = catalog
+        .iter()
+        .filter(|row| version_matches(package, row))
+        .filter(|row| indexed.contains(row.coordinate.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
     rows.sort_by(|a, b| b.version.cmp(&a.version));
-    rows.into_boxed_slice()
+    Ok(rows.into_boxed_slice())
 }
-fn profile(catalog: &[RegistryPackageRecord], package: &PackageReference) -> SurfaceReply {
-    let rows = versions(catalog, package);
-    SurfaceReply::PackageProfile {
+
+fn indexed_package_coordinates(
+    view: &ViewRoot,
+    workspace: &Path,
+) -> Result<BTreeSet<String>, String> {
+    let mut coordinates = BTreeSet::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        if row.label.starts_with("pkg:") {
+            coordinates.insert(row.label.clone());
+            continue;
+        }
+        let source_root = super::local_manifest::indexed_package_source_root(&row.label, workspace)?;
+        let (_, _, manifest) = super::local_manifest::cargo_package_identity(&source_root)?;
+        coordinates.insert(manifest.as_str().to_owned());
+    }
+    Ok(coordinates)
+}
+
+fn version_matches(package: &PackageReference, row: &RegistryPackageRecord) -> bool {
+    if package_matches(package, row) {
+        return true;
+    }
+    match package {
+        PackageReference::Purl(query) => row.name.as_str() == query.lineage_name(),
+        PackageReference::Local(_) => false,
+    }
+}
+fn profile(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    workspace: &Path,
+    package: &PackageReference,
+) -> Result<SurfaceReply, String> {
+    let rows = versions(view, catalog, workspace, package)?;
+    Ok(SurfaceReply::PackageProfile {
         latest: rows.first().cloned(),
         versions: rows.len() as u64,
-    }
+    })
 }
 fn dependencies(
     facts: &[PackageDependencySourceFacts],

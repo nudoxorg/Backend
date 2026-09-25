@@ -7,7 +7,8 @@ use backend_library::{
     ProductText, RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability,
     RegistryNativeMetadata, RegistryReleaseStanding,
 };
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 fn read_cargo_package_table(project_root: &Path) -> Result<(Vec<u8>, toml::Value), String> {
     let manifest = project_root.join("Cargo.toml");
@@ -48,6 +49,78 @@ fn cargo_package_fields(
         ProductText::new(version).map_err(|error| error.to_string())?,
         source,
     ))
+}
+
+fn resolve_staged_package_root(directory: &Path, version: &str) -> Result<PathBuf, String> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| format!("read staged archive {}: {error}", directory.display()))?
+        .map(|entry| entry.map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, String>>()?;
+    if entries.len() != 1 {
+        return Ok(directory.to_path_buf());
+    }
+    let only = entries.pop().expect("single staged archive entry");
+    let name = only.file_name();
+    let wrapper = name.to_str().is_some_and(|name| {
+        name == "package" || (!version.is_empty() && name.ends_with(version))
+    });
+    if wrapper && only.file_type().map_err(|error| error.to_string())?.is_dir() {
+        return Ok(only.path());
+    }
+    Ok(directory.to_path_buf())
+}
+
+/// Returns the on-disk source root for one indexed project label.
+pub(crate) fn indexed_package_source_root(label: &str, workspace: &Path) -> Result<PathBuf, String> {
+    if !label.starts_with("pkg:") {
+        let root = Path::new(label);
+        if !root.is_dir() {
+            return Err(format!("indexed project {} is not a directory", label));
+        }
+        return Ok(root.to_path_buf());
+    }
+    let package = PackageReference::parse(label).map_err(|error| error.to_string())?;
+    let PackageReference::Purl(coordinate) = package else {
+        return Err(format!(
+            "indexed registry project requires a pinned package URL: {}",
+            label
+        ));
+    };
+    let staging_root = workspace.join("registry").join("registry-staging");
+    if !staging_root.is_dir() {
+        return Err(format!(
+            "registry staging is missing for indexed package {}",
+            label
+        ));
+    }
+    for entry in fs::read_dir(&staging_root)
+        .map_err(|error| format!("read registry staging {}: {error}", staging_root.display()))?
+    {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry
+            .path()
+            .canonicalize()
+            .map_err(|error| format!("canonical staged archive {}: {error}", entry.path().display()))?;
+        if !path.is_dir() {
+            continue;
+        }
+        let package_root = resolve_staged_package_root(&path, coordinate.version())?;
+        let (_, _, manifest) = cargo_package_fields(&package_root)?;
+        if manifest.as_str() == label {
+            return Ok(package_root);
+        }
+    }
+    Err(format!(
+        "indexed package {} has no staged source manifest",
+        label
+    ))
+}
+
+/// Reads the manifest package name for one indexed project label.
+pub(crate) fn indexed_package_manifest_name(label: &str, workspace: &Path) -> Result<String, String> {
+    let source_root = indexed_package_source_root(label, workspace)?;
+    let (name, _, _) = cargo_package_identity(&source_root)?;
+    Ok(name.as_str().to_owned())
 }
 
 /// Reads the canonical package identity declared by one indexed Cargo manifest.

@@ -2389,7 +2389,11 @@ impl CommandAdapter {
         // Reconcile even after a no-op source intent so a retry heals a crash
         // between the durable source commit and its derived view publication.
         let deployment = super::SemanticDeployment::from_remote(&self.remote_semantic);
-        let deltas = publish_builtin_view(daemon, &self.compiler, deployment)
+        let filesystem_workspace = self
+            .product_state
+            .workspace_path()
+            .map_err(BuiltinModelError)?;
+        let deltas = publish_builtin_view(daemon, &self.compiler, deployment, filesystem_workspace)
             .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
         project_view_deltas(&mut self.sql_projection, daemon, &deltas)
     }
