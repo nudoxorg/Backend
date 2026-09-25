@@ -1,12 +1,13 @@
 //! Unit tests for the Python emit layer.
 
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use super::*;
 use crate::python::oracle::{ConstData, FunctionData, ParamKind, ReceiverKind};
-use nudox_ir::kinds::Param;
-use nudox_ir::kinds::ty::Type;
-use nudox_ir::package::PackageId;
+use nudox_ir::{
+    kinds::{Param, ty::Type},
+    package::PackageId,
+};
 
 fn root_sym() -> Symbol {
     Symbol {
@@ -32,6 +33,7 @@ fn simple_module(name: &str, items: Vec<ItemData>) -> ModuleData {
         span: 0..0,
         source: PathBuf::from("fixture.py"),
         references: vec![],
+        imports: HashMap::new(),
     }
 }
 
@@ -74,10 +76,11 @@ fn emit_empty_module() {
 #[test]
 fn emit_function_in_module() {
     let oracle = PythonOracle {
-        modules: vec![simple_module(
-            "my_module",
-            vec![simple_function("my_module.greet", "greet", false)],
-        )],
+        modules: vec![simple_module("my_module", vec![simple_function(
+            "my_module.greet",
+            "greet",
+            false,
+        )])],
     };
     let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
     emit_package(&oracle, &mut sink);
@@ -92,10 +95,11 @@ fn emit_function_in_module() {
 #[test]
 fn emit_async_function_has_async_modifier() {
     let oracle = PythonOracle {
-        modules: vec![simple_module(
-            "my_module",
-            vec![simple_function("my_module.fetch", "fetch", true)],
-        )],
+        modules: vec![simple_module("my_module", vec![simple_function(
+            "my_module.fetch",
+            "fetch",
+            true,
+        )])],
     };
     let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
     emit_package(&oracle, &mut sink);
@@ -444,10 +448,11 @@ fn emit_protocol() {
 #[test]
 fn private_items_are_visibility_private() {
     let oracle = PythonOracle {
-        modules: vec![simple_module(
-            "my_module",
-            vec![simple_function("my_module._helper", "_helper", false)],
-        )],
+        modules: vec![simple_module("my_module", vec![simple_function(
+            "my_module._helper",
+            "_helper",
+            false,
+        )])],
     };
     let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
     emit_package(&oracle, &mut sink);
@@ -614,10 +619,11 @@ fn same_package_class_in_generic_apply_is_nominal() {
     };
 
     let oracle = PythonOracle {
-        modules: vec![simple_module(
-            "my_pkg",
-            vec![container_item, item_class, alias_item],
-        )],
+        modules: vec![simple_module("my_pkg", vec![
+            container_item,
+            item_class,
+            alias_item,
+        ])],
     };
     let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
     emit_package(&oracle, &mut sink);
@@ -855,4 +861,219 @@ fn varargs_and_kwargs_are_not_the_same_param_attribute() {
         kwargs_attrs.as_ref(),
         "*args and **kwargs must not share a ParamAttribute set; both were {args_attrs:?}"
     );
+}
+
+fn seal_sources(files: &[(&str, &str)]) -> nudox_ir::apply::PristineIntroTable {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (name, source) in files {
+        let path = dir.path().join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&path, source).expect("write fixture");
+    }
+    let src = crate::PackageSource::new(dir.path(), "pkg", "0.0.0");
+    let oracle = crate::python::syntax::build_oracle(&src).expect("syntax oracle");
+    let mut sink = Lowering::new(PackageId::path("pkg"), root_sym());
+    emit_package(&oracle, &mut sink);
+    let pkg = sink.finish().expect("finish");
+    let lineage = nudox_ir::change::PackageLineageId::new(
+        nudox_ir::change::EcosystemId::new("pypi"),
+        nudox_ir::change::PackageName::new("pkg"),
+    );
+    pkg.seal(&lineage, &nudox_ir::foreign::Unlinked).table
+}
+
+fn intro_named(
+    table: &nudox_ir::apply::PristineIntroTable,
+    name: &str,
+    file: &str,
+) -> nudox_ir::change::IntroId {
+    table
+        .iter()
+        .find(|(_, entry)| entry.sym().name == name && entry.sym().source.ends_with(file))
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("no {name} in {file}"))
+}
+
+fn function_named<'a>(
+    table: &'a nudox_ir::apply::PristineIntroTable,
+    name: &str,
+) -> &'a nudox_ir::kinds::Function {
+    table
+        .iter()
+        .find_map(|(_, entry)| {
+            if entry.sym().name != name {
+                return None;
+            }
+            entry.downcast::<Function>().map(|typed| typed.body())
+        })
+        .unwrap_or_else(|| panic!("no function {name}"))
+}
+
+fn input_names(table: &nudox_ir::apply::PristineIntroTable, func: &Function) -> Vec<String> {
+    func.input_params
+        .iter()
+        .map(|param| match param {
+            nudox_ir::index::Ref::Intro(id) => table
+                .get(*id)
+                .unwrap_or_else(|| panic!("param {id} missing"))
+                .sym()
+                .name
+                .clone(),
+            other => panic!("parameter ref was not sealed: {other:?}"),
+        })
+        .collect()
+}
+
+fn sealed_nominal(ty: &Type) -> nudox_ir::change::IntroId {
+    match ty {
+        Type::Nominal(nudox_ir::index::Ref::Intro(id)) => *id,
+        Type::Unknown(unknown) => panic!("sealed type is {unknown}, not Nominal"),
+        other => panic!("expected sealed Nominal, got {other:?}"),
+    }
+}
+
+/// `from .core import Context` then `ctx: Context` seals as Nominal of
+/// `click.core.Context`, even when another module also declares `Context`.
+#[test]
+fn imported_context_seals_as_nominal_of_that_declaration() {
+    let table = seal_sources(&[
+        ("click/__init__.py", ""),
+        ("click/core.py", "class Context:\n    pass\n"),
+        ("click/formatting.py", "class Context:\n    pass\n"),
+        (
+            "click/decorators.py",
+            "from .core import Context\n\n\
+             def use(ctx: Context) -> Context:\n    return ctx\n",
+        ),
+    ]);
+
+    let core = intro_named(&table, "Context", "core.py");
+    let formatting = intro_named(&table, "Context", "formatting.py");
+    let use_fn = function_named(&table, "use");
+    let params = input_names(&table, use_fn);
+    assert_eq!(params, vec!["ctx".to_owned()]);
+
+    let ctx = match &use_fn.input_params[0] {
+        nudox_ir::index::Ref::Intro(id) => table.get(*id).expect("ctx"),
+        other => panic!("ctx ref was not sealed: {other:?}"),
+    };
+    let ctx_ty = ctx
+        .downcast::<Param>()
+        .expect("ctx must be a Param")
+        .body()
+        .ty
+        .as_ref()
+        .expect("ctx has a type");
+    assert_eq!(
+        sealed_nominal(ctx_ty),
+        core,
+        "Context after importing click.core.Context must be that Nominal"
+    );
+    assert_ne!(sealed_nominal(ctx_ty), formatting);
+
+    let ret = match &use_fn.output_params[0] {
+        nudox_ir::index::Ref::Intro(id) => table.get(*id).expect("return"),
+        other => panic!("return ref was not sealed: {other:?}"),
+    };
+    let ret_ty = ret
+        .downcast::<Param>()
+        .expect("return must be a Param")
+        .body()
+        .ty
+        .as_ref()
+        .expect("return has a type");
+    assert_eq!(sealed_nominal(ret_ty), core);
+}
+
+/// `@overload` branches keep the parameter list written on that branch.
+#[test]
+fn overload_branches_keep_both_parameter_lists() {
+    let table = seal_sources(&[(
+        "mod.py",
+        "from typing import overload\n\n\
+         @overload\n\
+         def f(x: int) -> int: ...\n\
+         @overload\n\
+         def f(x: str, y: str) -> str: ...\n",
+    )]);
+
+    let param_ids: Vec<Vec<nudox_ir::change::IntroId>> = table
+        .iter()
+        .filter_map(|(_, entry)| {
+            if entry.sym().name != "f" {
+                return None;
+            }
+            let func = entry.downcast::<Function>()?.body();
+            Some(
+                func.input_params
+                    .iter()
+                    .map(|param| match param {
+                        nudox_ir::index::Ref::Intro(id) => *id,
+                        other => panic!("parameter ref was not sealed: {other:?}"),
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut lists: Vec<Vec<String>> = param_ids
+        .iter()
+        .map(|ids| {
+            ids.iter()
+                .map(|id| {
+                    table
+                        .get(*id)
+                        .unwrap_or_else(|| panic!("param {id} missing"))
+                        .sym()
+                        .name
+                        .clone()
+                })
+                .collect()
+        })
+        .collect();
+    lists.sort();
+    assert_eq!(
+        lists,
+        vec![vec!["x".to_owned()], vec!["x".to_owned(), "y".to_owned()],],
+        "the two overload branches must keep distinct, non-empty parameter lists"
+    );
+}
+
+/// Keyword-only `cls` is a parameter. A method's `self` is the receiver.
+#[test]
+fn keyword_only_cls_stays_and_method_receiver_is_not_a_parameter() {
+    use nudox_ir::kinds::{ParamAttribute, Receiver};
+
+    let table = seal_sources(&[(
+        "mod.py",
+        "def option(*param_decls, cls, **attrs):\n    pass\n\n\
+         class Box:\n    def m(self, x: int) -> None:\n        pass\n",
+    )]);
+
+    let option = function_named(&table, "option");
+    let option_params = input_names(&table, option);
+    assert_eq!(option_params, vec![
+        "param_decls".to_owned(),
+        "cls".to_owned(),
+        "attrs".to_owned(),
+    ]);
+    let cls = match &option.input_params[1] {
+        nudox_ir::index::Ref::Intro(id) => table.get(*id).expect("cls"),
+        other => panic!("cls ref was not sealed: {other:?}"),
+    };
+    let cls_param = cls.downcast::<Param>().expect("cls must be a Param");
+    assert_eq!(cls_param.sym().name, "cls");
+    assert!(
+        cls_param
+            .body()
+            .attributes
+            .contains(&ParamAttribute::KeywordOnly),
+        "keyword-only cls must stay and carry KeywordOnly, got {:?}",
+        cls_param.body().attributes
+    );
+
+    let method = function_named(&table, "m");
+    assert_eq!(method.receiver, Some(Receiver::SharedRef));
+    assert_eq!(input_names(&table, method), vec!["x".to_owned()]);
 }
