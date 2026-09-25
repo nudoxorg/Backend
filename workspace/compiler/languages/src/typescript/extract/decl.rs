@@ -18,14 +18,16 @@
 
 use std::path::Path;
 
-use oxc_ast::AstKind;
-use oxc_ast::ast::{
-    AccessorPropertyType, Argument, AssignmentOperator, AssignmentTarget, BindingPattern,
-    CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
-    Function, MethodDefinitionKind, MethodDefinitionType, PropertyDefinitionType, PropertyKey,
-    Statement, TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
-    TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName, TSSignature,
-    VariableDeclaration, VariableDeclarationKind,
+use oxc_ast::{
+    AstKind,
+    ast::{
+        AccessorPropertyType, Argument, AssignmentOperator, AssignmentTarget, BindingPattern,
+        CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
+        Function, MethodDefinitionKind, MethodDefinitionType, PropertyDefinitionType, PropertyKey,
+        Statement, TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
+        TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName, TSSignature,
+        VariableDeclaration, VariableDeclarationKind,
+    },
 };
 use oxc_ast_visit::Visit;
 use oxc_semantic::{Reference, Semantic};
@@ -43,7 +45,8 @@ use super::{
     types::{lower_ts_type, lower_ts_type_with_params, lower_type_params},
 };
 
-// ── Entry point ────────────────────────────────────────────────────────────────
+// ── Entry point
+// ────────────────────────────────────────────────────────────────
 
 /// Extract one module's declarations into owned `ModuleFacts`.
 pub fn extract_module<'a>(
@@ -153,6 +156,20 @@ pub fn extract_module<'a>(
         });
     }
 
+    // `exports.useState = function (initialState) { ... }` is an owned
+    // function. `var Router = require("router"); exports.Router = Router`
+    // is a reference to that package. Both are assignment expressions, so
+    // the statement walk above never sees them.
+    push_commonjs_value_decls(
+        &program.body,
+        source,
+        semantic,
+        path,
+        &mut declarations,
+        &mut name_counts,
+        &mut cjs_exports,
+    );
+
     // ── Reference occurrences ─────────────────────────────────────────────────
     // Must run after `declarations` is fully built: `record_occurrences` needs
     // the whole list to resolve both ends of every edge (see its doc comment).
@@ -185,7 +202,8 @@ pub fn extract_module<'a>(
     }
 }
 
-// ── Reference occurrences ───────────────────────────────────────────────────────
+// ── Reference occurrences
+// ───────────────────────────────────────────────────────
 
 /// Build this module's same-module occurrence graph from OXC's resolved
 /// symbol/reference table. See [`OccurrenceFact`]'s doc comment for the
@@ -292,7 +310,8 @@ fn classify_reference(semantic: &Semantic<'_>, reference: &Reference) -> Occurre
     OccurrenceKind::ValueUse
 }
 
-// ── CommonJS export recognition ─────────────────────────────────────────────────
+// ── CommonJS export recognition
+// ─────────────────────────────────────────────────
 
 struct RuntimeExport<'a> {
     export_name: String,
@@ -456,23 +475,23 @@ fn is_module_dot_exports(expr: &Expression) -> bool {
 /// live in real npm packages:
 ///
 /// - `require("specifier")` — the bare call. Mirrors `graph.rs`'s
-///   `as_require_call` (which additionally extracts the specifier, needed
-///   there for graph edges and not here); kept as a separate, smaller check
-///   in this module rather than sharing code across the
-///   `entry`/`extract`/`graph` boundary. `ws`'s `const WebSocket =
-///   require('./lib/websocket');` is this shape.
-/// - `__importDefault(require("specifier"))` / `__importStar(require("specifier"))`
-///   — `tsc`'s own `esModuleInterop`-compiled output for `import x from "y"` /
-///   `import * as x from "y"`. Recognizing only the bare call left every one
-///   of these fabricated as a `Const` whose "value" was the interop-wrapped
-///   require call rendered as if it were a string literal —
-///   `class-validator`'s bundled `bundles/class-validator.umd.js` is
-///   wall-to-wall this shape (`const isEmail_1 =
-///   __importDefault(require("validator/lib/isEmail"));`, ~70 occurrences in
-///   that one file).
+///   `as_require_call` (which additionally extracts the specifier, needed there
+///   for graph edges and not here); kept as a separate, smaller check in this
+///   module rather than sharing code across the `entry`/`extract`/`graph`
+///   boundary. `ws`'s `const WebSocket = require('./lib/websocket');` is this
+///   shape.
+/// - `__importDefault(require("specifier"))` /
+///   `__importStar(require("specifier"))` — `tsc`'s own
+///   `esModuleInterop`-compiled output for `import x from "y"` / `import * as x
+///   from "y"`. Recognizing only the bare call left every one of these
+///   fabricated as a `Const` whose "value" was the interop-wrapped require call
+///   rendered as if it were a string literal — `class-validator`'s bundled
+///   `bundles/class-validator.umd.js` is wall-to-wall this shape (`const
+///   isEmail_1 = __importDefault(require("validator/lib/isEmail"));`, ~70
+///   occurrences in that one file).
 /// - `require("specifier").propertyName` — a property read directly off the
-///   required module, no intermediate binding. `commander`'s
-///   `const EventEmitter = require('events').EventEmitter;` is this shape.
+///   required module, no intermediate binding. `commander`'s `const
+///   EventEmitter = require('events').EventEmitter;` is this shape.
 ///
 /// Recursion covers combinations of these that occur in practice
 /// (`__importDefault(require("x")).default`, not observed in the npm corpus
@@ -514,15 +533,171 @@ fn is_commonjs_import_call(call: &CallExpression) -> bool {
 }
 
 /// `expr` reduced to a plain identifier name, or `None` for anything else
-/// (a call expression, a literal, an object/array literal, …). Only the
-/// plain-identifier RHS is handled: `module.exports = require('./x')` and
-/// `exports.foo = function () { ... }` are real CommonJS shapes this does
-/// not attempt to model, a documented gap rather than a guess — see
-/// `CommonJsExports`'s doc comment and this module's `extract_module`.
+/// (a call expression, a literal, an object/array literal, …).
+///
+/// A function expression on the right of `exports.useState = function …`
+/// and an identifier bound with `require("pkg")` are handled by
+/// [`push_commonjs_value_decls`], not here.
 fn as_plain_identifier(expr: &Expression) -> Option<String> {
     match expr {
         Expression::Identifier(id) => Some(id.name.to_string()),
         _ => None,
+    }
+}
+
+/// A specifier that names another package (`"router"`, `"@scope/pkg"`),
+/// not a relative file.
+fn is_package_specifier(specifier: &str) -> bool {
+    !specifier.is_empty() && !specifier.starts_with('.') && !specifier.starts_with('/')
+}
+
+/// `require("specifier")`, including a property read off that call
+/// (`require("events").EventEmitter`).
+fn require_specifier(expr: &Expression<'_>) -> Option<String> {
+    match expr {
+        Expression::CallExpression(call) => {
+            let Expression::Identifier(callee) = &call.callee else {
+                return None;
+            };
+            if callee.name != "require" {
+                return None;
+            }
+            match call.arguments.first() {
+                Some(Argument::StringLiteral(lit)) => Some(lit.value.to_string()),
+                _ => None,
+            }
+        }
+        Expression::StaticMemberExpression(mem) => require_specifier(&mem.object),
+        _ => None,
+    }
+}
+
+fn require_bindings(body: &[Statement<'_>]) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let Statement::VariableDeclaration(var) = stmt else {
+            continue;
+        };
+        for declarator in &var.declarations {
+            let Some(name) = binding_pattern_name(&declarator.id) else {
+                continue;
+            };
+            let Some(init) = declarator.init.as_ref() else {
+                continue;
+            };
+            let Some(specifier) = require_specifier(init) else {
+                continue;
+            };
+            out.insert(name, specifier);
+        }
+    }
+    out
+}
+
+fn export_property_name(
+    mem: &oxc_ast::ast::StaticMemberExpression<'_>,
+    cjs: &CommonJsExports,
+) -> Option<String> {
+    let object_is_export_binding = match &mem.object {
+        Expression::Identifier(id) if id.name == "exports" => true,
+        Expression::Identifier(id) => cjs.whole_module.as_deref() == Some(id.name.as_str()),
+        other => is_module_dot_exports(other),
+    };
+    if object_is_export_binding {
+        Some(mem.property.name.to_string())
+    } else {
+        None
+    }
+}
+
+/// Top-level CommonJS assignments the statement walker does not turn into
+/// declarations.
+///
+/// - `exports.useState = function (initialState) { ... }` becomes an owned
+///   function named `useState`.
+/// - `var Router = require("router"); exports.Router = Router` becomes a
+///   re-export of package `router`, not a const and not a function.
+fn push_commonjs_value_decls<'a>(
+    body: &'a [Statement<'a>],
+    source: &'a str,
+    semantic: &'a Semantic<'a>,
+    path: &Path,
+    declarations: &mut Vec<DeclFact>,
+    name_counts: &mut std::collections::HashMap<String, u32>,
+    cjs_exports: &mut CommonJsExports,
+) {
+    use nudox_ir::entry::Visibility;
+
+    let bindings = require_bindings(body);
+    for stmt in body {
+        let Statement::ExpressionStatement(expr_stmt) = stmt else {
+            continue;
+        };
+        let Expression::AssignmentExpression(assign) = &expr_stmt.expression else {
+            continue;
+        };
+        if assign.operator != AssignmentOperator::Assign {
+            continue;
+        }
+        let AssignmentTarget::StaticMemberExpression(mem) = &assign.left else {
+            continue;
+        };
+        let Some(export_name) = export_property_name(mem, cjs_exports) else {
+            continue;
+        };
+
+        if let Expression::FunctionExpression(function) = &assign.right {
+            let span = function.span();
+            if declarations
+                .iter()
+                .any(|decl| decl.name == export_name && decl.span_start == span.start)
+            {
+                continue;
+            }
+            let decl_index = bump_count(&export_name, name_counts);
+            declarations.push(DeclFact {
+                name: export_name.clone(),
+                visibility: Visibility::Public,
+                doc: jsdoc::jsdoc_for_span(semantic, span),
+                body: DeclBody::Function(lower_function(function, source)),
+                module: path.to_path_buf(),
+                span_start: span.start,
+                span_end: span.end,
+                is_default: false,
+                decl_index,
+            });
+            cjs_exports.named.push((export_name.clone(), export_name));
+            continue;
+        }
+
+        let Some(local) = as_plain_identifier(&assign.right) else {
+            continue;
+        };
+        let Some(specifier) = bindings.get(&local) else {
+            continue;
+        };
+        if !is_package_specifier(specifier) {
+            continue;
+        }
+        if declarations.iter().any(|decl| decl.name == export_name) {
+            continue;
+        }
+        let span = assign.span();
+        let decl_index = bump_count(&export_name, name_counts);
+        declarations.push(DeclFact {
+            name: export_name,
+            visibility: Visibility::Public,
+            doc: jsdoc::jsdoc_for_span(semantic, span),
+            body: DeclBody::Reexport {
+                module_request: specifier.clone(),
+                import_name: "*".to_string(),
+            },
+            module: path.to_path_buf(),
+            span_start: span.start,
+            span_end: span.end,
+            is_default: false,
+            decl_index,
+        });
     }
 }
 
@@ -591,7 +766,8 @@ fn scan_commonjs_exports(body: &[Statement<'_>]) -> CommonJsExports {
     out
 }
 
-// ── Statement dispatch ─────────────────────────────────────────────────────────
+// ── Statement dispatch
+// ─────────────────────────────────────────────────────────
 
 fn extract_statement<'a>(
     stmt: &'a Statement<'a>,
@@ -766,7 +942,8 @@ fn extract_statement<'a>(
     }
 }
 
-// ── Declaration dispatch ───────────────────────────────────────────────────────
+// ── Declaration dispatch
+// ───────────────────────────────────────────────────────
 
 fn extract_declaration<'a>(
     decl: &'a Declaration<'a>,
@@ -930,7 +1107,8 @@ fn extract_declaration<'a>(
     }
 }
 
-// ── Default export ─────────────────────────────────────────────────────────────
+// ── Default export
+// ─────────────────────────────────────────────────────────────
 
 fn extract_default_export<'a>(
     kind: &'a ExportDefaultDeclarationKind<'a>,
@@ -1003,7 +1181,8 @@ fn extract_default_export<'a>(
     }
 }
 
-// ── Kind-specific lowering ─────────────────────────────────────────────────────
+// ── Kind-specific lowering
+// ─────────────────────────────────────────────────────
 
 fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
     let has_body = f.body.is_some();
@@ -1031,7 +1210,8 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
             .map(|p| p.name.to_string())
             .collect::<std::collections::HashSet<_>>()
     });
-    let params = lower_formal_parameters(&f.params, source, first_param_is_this, type_params.as_ref());
+    let params =
+        lower_formal_parameters(&f.params, source, first_param_is_this, type_params.as_ref());
 
     let return_type = f.return_type.as_ref().map(|ann| match &type_params {
         Some(set) => lower_ts_type_with_params(&ann.type_annotation, source, set),
@@ -1427,7 +1607,8 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                     token: d.span.source_text(source).to_string(),
                 })
                 .collect();
-            // Synthetic marker so downstream consumers can tell accessor from plain property.
+            // Synthetic marker so downstream consumers can tell accessor from plain
+            // property.
             decorators.push(AttrTok {
                 token: "accessor".to_string(),
             });
@@ -1868,7 +2049,8 @@ fn lower_namespace<'a>(
     }]
 }
 
-// ── Export / import table builders ─────────────────────────────────────────────
+// ── Export / import table builders
+// ─────────────────────────────────────────────
 
 fn build_export_table(
     module_record: &ModuleRecord<'_>,
@@ -2108,7 +2290,8 @@ fn build_import_table(module_record: &ModuleRecord<'_>) -> Vec<ImportFact> {
         .collect()
 }
 
-// ── Shared helpers ─────────────────────────────────────────────────────────────
+// ── Shared helpers
+// ─────────────────────────────────────────────────────────────
 
 fn property_key_name<'a>(key: &PropertyKey<'a>, source: &'a str) -> String {
     match key {

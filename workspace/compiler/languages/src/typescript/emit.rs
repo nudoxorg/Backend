@@ -15,19 +15,20 @@
 //!   re-exports inline below.
 //!
 //! # What remains (from link.rs)
-//! - Re-export chain resolution: `module_for_export` / `resolve_reexport_target`.
-//!   For `export { Foo } from "m"` we emit a `declare_ref` pointing at the
-//!   target module's entry.
+//! - Re-export chain resolution: `module_for_export` /
+//!   `resolve_reexport_target`. For `export { Foo } from "m"` we emit a
+//!   `declare_ref` pointing at the target module's entry.
 //! - Star-export fan-out: for `export * from "m"` we emit re-exports for each
 //!   name the target module exports.
 //!
-//! # Two passes
-//! Pass one declares every module and every non-reexport declaration, so a
-//! later file's symbol exists before anyone points at it. Pass two emits
-//! re-exports. A target that was declared is a local `refer`. A target that
-//! was not (`export *`, a `default` the other file never declared, a name in
-//! a file this package does not contain) is a `refer_import`. `refer` on an
-//! undeclared id is what made `Lowering::finish` reject the package.
+//! # Declare-set
+//! One set, built from `ModuleFacts` before any `refer`. It is every id this
+//! package will `declare` or `declare_ref`. A re-export target in the set is
+//! `refer()`'d (the later `declare_ref` fills the slot). A name this package
+//! will not declare is `refer_import`, never `refer` of an undeclared id.
+//! Nominal lowering uses the same set: a name in it goes through
+//! `Lowering::nominal`; a real generic parameter stays `Type::TypeVar`; an
+//! unknown name stays unresolved.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -45,9 +46,11 @@ use nudox_ir::{
     vocab::{Confidence, ReferenceKind, RelSpan},
 };
 
-use nudox_ir::change::EcosystemId;
-use nudox_ir::foreign::ForeignKey;
-use nudox_ir::lower::Lowering;
+use nudox_ir::{
+    change::{EcosystemId, PackageLineageId, PackageName},
+    foreign::ForeignKey,
+    lower::Lowering,
+};
 use oxc_resolver::Resolver;
 
 use crate::typescript::{
@@ -61,7 +64,8 @@ use crate::typescript::{
     id::TsId,
 };
 
-// ── Public entry point ─────────────────────────────────────────────────────────
+// ── Public entry point
+// ─────────────────────────────────────────────────────────
 
 /// Emit all modules into `out` in one pass.
 ///
@@ -86,10 +90,29 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
     // a second, independent one — see `resolve_module_path`'s doc comment for
     // the real-package failure this fixes.
     let resolver = make_resolver();
-    let names = NameIndex::build(modules);
+    let twins = TwinPlan::build(modules);
+    let declared = DeclareSet::build(modules, &twins, &export_index, &resolver);
 
     for module in modules {
-        let module_id = module_ts_id(module);
+        let module_id = module_ts_id(module, &twins);
+        if twins.is_secondary(&module.path) {
+            for decl in &module.declarations {
+                if matches!(decl.body, DeclBody::Reexport { .. }) {
+                    continue;
+                }
+                emit_decl(
+                    decl,
+                    Some(module_id.clone()),
+                    out,
+                    &module_index,
+                    &export_index,
+                    &resolver,
+                    &declared,
+                    &twins,
+                );
+            }
+            continue;
+        }
 
         // Declare the module itself as a `Module` kind.
         let _module_ref: Ref<Module> = out.declare(
@@ -100,6 +123,7 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 visibility: Visibility::Public,
                 documentation: module.module_doc.clone().unwrap_or_default(),
                 source: module.path.clone(),
+                aliases: twins.module_aliases(&module.path),
                 // The whole file, not `0..0`. `module.module_name` keeps
                 // only the file's last path segment
                 // (`specifier_to_module_name`), so two files sharing a
@@ -115,7 +139,6 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 // the tie unless two colliding files happen to be exactly
                 // the same byte length.
                 span: 0..module.source_len,
-                aliases: Box::new([]),
                 deprecation: None,
                 doc_links: Box::new([]),
                 attrs: Box::new([]),
@@ -135,20 +158,16 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 &module_index,
                 &export_index,
                 &resolver,
-                &HashSet::new(),
-                &names,
+                &declared,
+                &twins,
             );
         }
     }
 
-    // Ids pass 2 will `declare_ref`, including ones a barrel reaches before
-    // the file that owns them. `refer` on those fills a slot the later
-    // `declare_ref` completes. `refer_import` would seal and drop the edge.
-    let pending = pending_reexport_ids(modules, &export_index, &resolver);
-
-    // Pass 2: re-exports, now that every in-package target is declared.
+    // Pass 2: re-exports. Targets in the declare-set were reserved before
+    // any `refer`, so a barrel can point at a later `declare_ref`.
     for module in modules.iter() {
-        let module_id = module_ts_id(module);
+        let module_id = module_ts_id(module, &twins);
         for decl in &module.declarations {
             if matches!(decl.body, DeclBody::Reexport { .. }) {
                 emit_decl(
@@ -158,19 +177,21 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                     &module_index,
                     &export_index,
                     &resolver,
-                    &pending,
-                    &names,
+                    &declared,
+                    &twins,
                 );
             }
         }
         emit_reexports(
             module,
-            Some(module_id),
+            Some(module_id.clone()),
             out,
             &export_index,
             &resolver,
-            &pending,
+            &declared,
+            &twins,
         );
+        emit_default_alias(module, Some(module_id), out, &declared, &twins);
     }
 
     // ── Same-module occurrence graph ─────────────────────────────────────────
@@ -186,11 +207,11 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
     // keeps that one-pass-per-module loop free of a second piece of
     // bookkeeping it doesn't otherwise need.
     for module in modules {
-        let module_id = module_ts_id(module);
+        let module_id = module_ts_id(module, &twins);
         let decl_ids: Vec<TsId> = module
             .declarations
             .iter()
-            .map(|decl| decl_ts_id(decl, Some(&module_id)))
+            .map(|decl| decl_ts_id(decl, Some(&module_id), &twins))
             .collect();
 
         for occ in &module.occurrences {
@@ -243,7 +264,8 @@ fn occurrence_kind_and_confidence(kind: OccurrenceKind) -> (ReferenceKind, Confi
     }
 }
 
-// ── Module root TsId ──────────────────────────────────────────────────────────
+// ── Module root TsId
+// ──────────────────────────────────────────────────────────
 
 /// Sentinel name marking a `TsId` as a module root (`module_ts_id`), never a
 /// real declaration. `decl_ts_id` compares against this to tell "my parent is
@@ -251,8 +273,12 @@ fn occurrence_kind_and_confidence(kind: OccurrenceKind) -> (ReferenceKind, Confi
 /// real enclosing namespace" (qualify).
 const MODULE_ROOT_NAME: &str = "$module";
 
-fn module_ts_id(module: &ModuleFacts) -> TsId {
-    TsId::new(module.path.clone(), MODULE_ROOT_NAME, 0)
+fn module_ts_id(module: &ModuleFacts, twins: &TwinPlan) -> TsId {
+    TsId::new(
+        twins.canonical(&module.path).to_path_buf(),
+        MODULE_ROOT_NAME,
+        0,
+    )
 }
 
 /// Build the `TsId` for one declaration, qualified by its enclosing
@@ -262,12 +288,12 @@ fn module_ts_id(module: &ModuleFacts) -> TsId {
 /// file: two sibling namespaces (or namespaces nested at any depth) may each
 /// declare a member with the same local name without colliding. Two real
 /// examples hit by the npm corpus sweep:
-/// - `zod`'s `lib/helpers/util.d.ts` declares both `namespace objectUtil {
-///   type identity = ... }` and `namespace util { type identity = ... }` —
-///   distinct types that happen to share the name `identity`.
+/// - `zod`'s `lib/helpers/util.d.ts` declares both `namespace objectUtil { type
+///   identity = ... }` and `namespace util { type identity = ... }` — distinct
+///   types that happen to share the name `identity`.
 /// - `@types/node`'s `fs.d.ts` declares `namespace readFile { function
-///   __promisify__(...) }`, `namespace writeFile { function __promisify__(...) }`,
-///   … one `__promisify__` per overloaded top-level function, by Node's own
+///   __promisify__(...) }`, `namespace writeFile { function __promisify__(...)
+///   }`, … one `__promisify__` per overloaded top-level function, by Node's own
 ///   `util.promisify` typing convention (dozens of these per file).
 ///
 /// Before this function existed, `emit_decl` built every id as
@@ -285,18 +311,21 @@ fn module_ts_id(module: &ModuleFacts) -> TsId {
 /// top-level export and needs it to match exactly what got declared here —
 /// qualifying top-level ids too would silently break every re-export lookup
 /// in the 17 fixtures that already lower cleanly.
-fn decl_ts_id(decl: &DeclFact, parent: Option<&TsId>) -> TsId {
+fn qualified_decl_name(decl: &DeclFact, parent: Option<&TsId>) -> String {
     match parent {
-        Some(p) if p.name != MODULE_ROOT_NAME => TsId::new(
-            decl.module.clone(),
-            format!("{}::{}", p.name, decl.name),
-            decl.decl_index,
-        ),
-        _ => TsId::new(decl.module.clone(), decl.name.clone(), decl.decl_index),
+        Some(p) if p.name != MODULE_ROOT_NAME => format!("{}::{}", p.name, decl.name),
+        _ => decl.name.clone(),
     }
 }
 
-// ── Per-declaration emission ──────────────────────────────────────────────────
+fn decl_ts_id(decl: &DeclFact, parent: Option<&TsId>, twins: &TwinPlan) -> TsId {
+    let name = qualified_decl_name(decl, parent);
+    let disc = twins.discriminant(decl, &name);
+    TsId::new(twins.canonical(&decl.module).to_path_buf(), name, disc)
+}
+
+// ── Per-declaration emission
+// ──────────────────────────────────────────────────
 
 fn emit_decl(
     decl: &DeclFact,
@@ -305,16 +334,41 @@ fn emit_decl(
     module_index: &HashMap<&Path, &str>,
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
-    pending: &HashSet<TsId>,
-    names: &NameIndex,
+    declared: &DeclareSet,
+    twins: &TwinPlan,
 ) {
-    let id = decl_ts_id(decl, parent.as_ref());
-    let sym = make_sym(decl);
+    if twins.is_skipped(decl, parent.as_ref()) {
+        // The keeper already owns this id. Children of a merged namespace
+        // are still admitted one by one — a same-file pair never takes this
+        // branch, and a differing child keeps its own entry.
+        if let DeclBody::Namespace(body) = &decl.body {
+            let id = decl_ts_id(decl, parent.as_ref(), twins);
+            for child in &body.children {
+                emit_decl(
+                    child,
+                    Some(id.clone()),
+                    out,
+                    module_index,
+                    export_index,
+                    resolver,
+                    declared,
+                    twins,
+                );
+            }
+        }
+        return;
+    }
+
+    let id = decl_ts_id(decl, parent.as_ref(), twins);
+    let mut sym = make_sym(decl);
+    if let Some(extra) = twins.extra_paths.get(&id) {
+        sym.aliases = extra.clone().into_boxed_slice();
+    }
 
     match &decl.body {
-        DeclBody::Interface(body) => emit_interface(id, parent, sym, body, out, names),
-        DeclBody::Class(body) => emit_class(id, parent, sym, body, out, names),
-        DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out, names),
+        DeclBody::Interface(body) => emit_interface(id, parent, sym, body, out, declared),
+        DeclBody::Class(body) => emit_class(id, parent, sym, body, out, declared),
+        DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out, declared),
         DeclBody::Enum(body) => emit_enum(id, parent, sym, body, out),
         DeclBody::Namespace(body) => {
             emit_namespace(
@@ -326,18 +380,17 @@ fn emit_decl(
                 module_index,
                 export_index,
                 resolver,
-                pending,
-                names,
+                declared,
+                twins,
             );
         }
-        DeclBody::Function(body) => emit_function(id, parent, sym, body, out, names),
-        DeclBody::Const(body) => emit_const(id, parent, sym, body, out, names),
-        DeclBody::Static(body) => emit_static(id, parent, sym, body, out, names),
+        DeclBody::Function(body) => emit_function(id, parent, sym, body, out, declared),
+        DeclBody::Const(body) => emit_const(id, parent, sym, body, out, declared),
+        DeclBody::Static(body) => emit_static(id, parent, sym, body, out, declared),
         DeclBody::Reexport {
             module_request,
             import_name,
         } => {
-            // Re-export inline: handled here and in emit_reexports for table-driven ones.
             emit_inline_reexport(
                 id,
                 parent,
@@ -345,15 +398,16 @@ fn emit_decl(
                 module_request,
                 import_name,
                 out,
-                module_index,
                 resolver,
-                pending,
+                declared,
+                twins,
             );
         }
     }
 }
 
-// ── Interface → Trait ─────────────────────────────────────────────────────────
+// ── Interface → Trait
+// ─────────────────────────────────────────────────────────
 
 fn emit_interface(
     id: TsId,
@@ -361,7 +415,7 @@ fn emit_interface(
     sym: Symbol,
     body: &InterfaceBody,
     out: &mut Lowering<TsId>,
-    names: &NameIndex,
+    names: &DeclareSet,
 ) {
     let generics = lower_generics(&body.generics, out, names, &id.module);
     let supers: Vec<Type> = body
@@ -412,7 +466,14 @@ fn emit_interface(
             attrs: Box::new([]),
             cfg: None,
         };
-        emit_function(method_id, Some(id.clone()), method_sym, &method.sig, out, names);
+        emit_function(
+            method_id,
+            Some(id.clone()),
+            method_sym,
+            &method.sig,
+            out,
+            names,
+        );
     }
 
     // Emit properties as child Field entries.
@@ -431,7 +492,10 @@ fn emit_interface(
             cfg: None,
         };
         let attrs = field_attrs(&prop.modifiers);
-        let field_ty = prop.ty.as_ref().map(|t| lower_type(t, out, names, &id.module));
+        let field_ty = prop
+            .ty
+            .as_ref()
+            .map(|t| lower_type(t, out, names, &id.module));
         let _: Ref<Field> = out.declare(
             prop_id,
             Some(id.clone()),
@@ -495,7 +559,14 @@ fn emit_interface(
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
-        emit_function(idx_id, Some(id.clone()), idx_sym, &index_fn_body, out, names);
+        emit_function(
+            idx_id,
+            Some(id.clone()),
+            idx_sym,
+            &index_fn_body,
+            out,
+            names,
+        );
     }
 
     // Emit construct signatures as synthetic `new[_N]` Function entries (item 6).
@@ -526,7 +597,8 @@ fn emit_interface(
     }
 }
 
-// ── Class → Record ────────────────────────────────────────────────────────────
+// ── Class → Record
+// ────────────────────────────────────────────────────────────
 
 fn emit_class(
     id: TsId,
@@ -534,7 +606,7 @@ fn emit_class(
     sym: Symbol,
     body: &ClassBody,
     out: &mut Lowering<TsId>,
-    names: &NameIndex,
+    names: &DeclareSet,
 ) {
     let generics = lower_generics(&body.generics, out, names, &id.module);
     let super_types: Vec<Type> = body
@@ -716,7 +788,8 @@ fn emit_class(
     }
 }
 
-// ── Type alias → Alias ────────────────────────────────────────────────────────
+// ── Type alias → Alias
+// ────────────────────────────────────────────────────────
 
 fn emit_type_alias(
     id: TsId,
@@ -724,7 +797,7 @@ fn emit_type_alias(
     sym: Symbol,
     body: &TypeAliasBody,
     out: &mut Lowering<TsId>,
-    names: &NameIndex,
+    names: &DeclareSet,
 ) {
     let generics = lower_generics(&body.generics, out, names, &id.module);
     let target = lower_type(&body.target, out, names, &id.module);
@@ -736,7 +809,8 @@ fn emit_type_alias(
     );
 }
 
-// ── Enum → Enum + Variants ────────────────────────────────────────────────────
+// ── Enum → Enum + Variants
+// ────────────────────────────────────────────────────
 
 fn emit_enum(
     id: TsId,
@@ -798,8 +872,8 @@ fn emit_namespace(
     module_index: &HashMap<&Path, &str>,
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
-    pending: &HashSet<TsId>,
-    names: &NameIndex,
+    declared: &DeclareSet,
+    twins: &TwinPlan,
 ) {
     let _: Ref<Module> = out.declare(id.clone(), parent, sym, Module);
 
@@ -811,8 +885,8 @@ fn emit_namespace(
             module_index,
             export_index,
             resolver,
-            pending,
-            names,
+            declared,
+            twins,
         );
     }
 }
@@ -825,7 +899,7 @@ fn emit_function(
     sym: Symbol,
     body: &FunctionBody,
     out: &mut Lowering<TsId>,
-    names: &NameIndex,
+    names: &DeclareSet,
 ) {
     let generics = lower_generics(&body.generics, out, names, &id.module);
 
@@ -967,7 +1041,8 @@ fn param_name_from_id(full: &str) -> String {
     full.rsplit("::param::").next().unwrap_or(full).to_string()
 }
 
-// ── Const / Static ────────────────────────────────────────────────────────────
+// ── Const / Static
+// ────────────────────────────────────────────────────────────
 
 fn emit_const(
     id: TsId,
@@ -975,11 +1050,14 @@ fn emit_const(
     sym: Symbol,
     body: &ConstBody,
     out: &mut Lowering<TsId>,
-    names: &NameIndex,
+    names: &DeclareSet,
 ) {
     // The declaration exists; the type annotation does not. `const x = 1` is
     // not the same claim as `const x: any = 1`.
-    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, &id.module));
+    let ty = body
+        .ty
+        .as_ref()
+        .map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, &id.module));
     let _: Ref<Const> = out.declare(
         id,
         parent,
@@ -1002,11 +1080,14 @@ fn emit_static(
     sym: Symbol,
     body: &StaticBody,
     out: &mut Lowering<TsId>,
-    names: &NameIndex,
+    names: &DeclareSet,
 ) {
     // The declaration exists; the type annotation does not. `const x = 1` is
     // not the same claim as `const x: any = 1`.
-    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, &id.module));
+    let ty = body
+        .ty
+        .as_ref()
+        .map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, &id.module));
     let _: Ref<Static> = out.declare(
         id,
         parent,
@@ -1015,7 +1096,8 @@ fn emit_static(
     );
 }
 
-// ── Re-exports ─────────────────────────────────────────────────────────────────
+// ── Re-exports
+// ─────────────────────────────────────────────────────────────────
 
 /// Resolve `name`, as exported *without* a `from` clause by the module at
 /// `table_path` (whose export surface is `table`), to the `TsId`(s) a
@@ -1039,8 +1121,8 @@ fn emit_static(
 /// "m"`) used to build `TsId::new(table_path, name, 0)` directly — correct
 /// only when the target module's externally-visible name and its own
 /// `declare()`d name coincide. Real packages break that assumption two
-/// ways; see [`crate::typescript::extract::LocalExport`]'s doc comment. This is the one
-/// place both paths resolve through, so a package that reaches the same
+/// ways; see [`crate::typescript::extract::LocalExport`]'s doc comment. This is
+/// the one place both paths resolve through, so a package that reaches the same
 /// renamed or namespace-import export via either form resolves identically
 /// instead of one path working and the other dangling.
 ///
@@ -1063,17 +1145,16 @@ fn resolve_export_target(
     table_path: &Path,
     table: &crate::typescript::extract::ExportTable,
     name: &str,
+    twins: &TwinPlan,
 ) -> Vec<TsId> {
     use crate::typescript::extract::LocalExport;
 
+    let module = twins.canonical(table_path).to_path_buf();
+
     // `export *` and `ExportImportName::All` store the import name as `"*"`.
-    // Nothing declares that id. The star names the module, not a symbol.
+    // Nothing declares that id. The star names the module root, not a symbol.
     if name == "*" {
-        return vec![TsId::new(
-            table_path.to_path_buf(),
-            MODULE_ROOT_NAME,
-            0,
-        )];
+        return vec![TsId::new(module, MODULE_ROOT_NAME, 0)];
     }
 
     match table.locals.get(name) {
@@ -1081,32 +1162,38 @@ fn resolve_export_target(
             local_name,
             overload_count,
         }) => (0..*overload_count)
-            .map(|discriminant| {
-                TsId::new(table_path.to_path_buf(), local_name.clone(), discriminant)
-            })
+            .map(|discriminant| TsId::new(module.clone(), local_name.clone(), discriminant))
             .collect(),
         Some(LocalExport::NamespaceOf(module_request)) => {
             resolve_module_path(resolver, table_path, module_request)
-                .map(|ns_path| vec![TsId::new(ns_path, MODULE_ROOT_NAME, 0)])
+                .map(|ns_path| {
+                    vec![TsId::new(
+                        twins.canonical(&ns_path).to_path_buf(),
+                        MODULE_ROOT_NAME,
+                        0,
+                    )]
+                })
                 .unwrap_or_default()
         }
         Some(LocalExport::Unresolvable) => Vec::new(),
-        None => vec![TsId::new(table_path.to_path_buf(), name.to_string(), 0)],
+        None => vec![TsId::new(module, name.to_string(), 0)],
     }
 }
 
-/// Re-export ids this package will `declare_ref` in pass 2.
+/// Re-export ids this package will `declare_ref`.
 ///
 /// A barrel is emitted before the file it re-exports. The target id is often
-/// that later file's own `declare_ref`, which `is_declared` cannot see yet.
-/// `refer` on an id in this set leaves a slot that `declare_ref` fills.
-fn pending_reexport_ids(
+/// that later file's own `declare_ref`. Putting the id in the declare-set
+/// lets `refer` fill a slot the later `declare_ref` completes.
+fn reexport_ids(
     modules: &[ModuleFacts],
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
+    twins: &TwinPlan,
 ) -> HashSet<TsId> {
     let mut ids = HashSet::new();
     for module in modules {
+        let here = twins.canonical(&module.path).to_path_buf();
         let mut reexported: HashSet<String> = HashSet::new();
         for indirect in &module.exports.indirect {
             let export_name = &indirect.export_name;
@@ -1116,51 +1203,62 @@ fn pending_reexport_ids(
             let target_path = resolve_module_path(resolver, &module.path, &indirect.module_request);
             if indirect.import_name == "*" {
                 if target_path.is_some() {
-                    ids.insert(TsId::new(module.path.clone(), export_name.as_str(), 0));
+                    ids.insert(TsId::new(here.clone(), export_name.as_str(), 0));
                 }
                 continue;
             }
-            let n = target_path
-                .as_ref()
-                .map(|p| {
-                    export_index.get(p.as_path()).map_or(1, |table| {
-                        resolve_export_target(resolver, p, table, &indirect.import_name).len()
-                    })
+            let n = target_path.as_ref().map_or(0, |p| {
+                export_index.get(p.as_path()).map_or(1, |table| {
+                    resolve_export_target(resolver, p, table, &indirect.import_name, twins).len()
                 })
-                .unwrap_or(0);
+            });
             for discriminant in 0..n {
                 ids.insert(TsId::new(
-                    module.path.clone(),
+                    here.clone(),
                     export_name.as_str(),
                     discriminant as u32,
                 ));
             }
         }
         for star in &module.exports.star {
-            let Some(tp) = resolve_module_path(resolver, &module.path, &star.module_request) else {
-                continue;
-            };
-            let Some(target_table) = export_index.get(tp.as_path()) else {
-                continue;
-            };
-            for export_name in &target_table.exported_names {
-                if export_name == "*" || !reexported.insert(export_name.clone()) {
-                    continue;
+            let target_path = resolve_module_path(resolver, &module.path, &star.module_request);
+            let mut expanded = false;
+            if let Some(tp) = target_path.as_ref()
+                && let Some(target_table) = export_index.get(tp.as_path())
+            {
+                for export_name in &target_table.exported_names {
+                    if export_name == "*" || !reexported.insert(export_name.clone()) {
+                        continue;
+                    }
+                    let n =
+                        resolve_export_target(resolver, tp, target_table, export_name, twins).len();
+                    if n == 0 {
+                        continue;
+                    }
+                    expanded = true;
+                    for discriminant in 0..n {
+                        ids.insert(TsId::new(
+                            here.clone(),
+                            export_name.as_str(),
+                            discriminant as u32,
+                        ));
+                    }
                 }
-                let n = resolve_export_target(resolver, tp.as_path(), target_table, export_name).len();
-                for discriminant in 0..n {
-                    ids.insert(TsId::new(
-                        module.path.clone(),
-                        export_name.as_str(),
-                        discriminant as u32,
-                    ));
+            }
+            if !expanded {
+                let stem = specifier_stem(&star.module_request);
+                if stem != "*" && reexported.insert(stem.clone()) {
+                    ids.insert(TsId::new(here.clone(), stem.as_str(), 0));
                 }
             }
         }
+        let module_id = module_ts_id(module, twins);
         for decl in &module.declarations {
             if let DeclBody::Reexport { module_request, .. } = &decl.body {
-                if resolve_module_path(resolver, &decl.module, module_request).is_some() {
-                    ids.insert(decl_ts_id(decl, Some(&module_ts_id(module))));
+                let resolves =
+                    resolve_module_path(resolver, &decl.module, module_request).is_some();
+                if resolves || is_package_specifier(module_request) {
+                    ids.insert(decl_ts_id(decl, Some(&module_id), twins));
                 }
             }
         }
@@ -1174,7 +1272,8 @@ fn emit_reexports(
     out: &mut Lowering<TsId>,
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
-    pending: &HashSet<TsId>,
+    declared: &DeclareSet,
+    twins: &TwinPlan,
 ) {
     // One module can only ever declare one `TsId::new(module.path, name, 0)`
     // for its own re-export surface — both loops below write into that same
@@ -1205,10 +1304,18 @@ fn emit_reexports(
         // The target is the module root, never a symbol named `"*"`.
         if target_name == "*" {
             if let Some(p) = target_path.as_ref() {
-                let root = TsId::new(p.clone(), MODULE_ROOT_NAME, 0);
-                let target_ref = refer_resolved(out, pending, root);
-                let sym = reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
-                let reexport_id = TsId::new(module.path.clone(), export_name.as_str(), 0);
+                let root = TsId::new(twins.canonical(p).to_path_buf(), MODULE_ROOT_NAME, 0);
+                let target_ref = refer_declared(out, declared, root);
+                let sym =
+                    reexport_symbol(module, export_name, indirect.span_start, indirect.span_end);
+                let reexport_id = TsId::new(
+                    twins.canonical(&module.path).to_path_buf(),
+                    export_name.as_str(),
+                    0,
+                );
+                if out.is_declared(&reexport_id) {
+                    continue;
+                }
                 let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
             }
             continue;
@@ -1228,8 +1335,10 @@ fn emit_reexports(
             .as_ref()
             .map(|p| {
                 export_index.get(p.as_path()).map_or_else(
-                    || vec![TsId::new(p.clone(), target_name, 0)],
-                    |target_table| resolve_export_target(resolver, p, target_table, target_name),
+                    || vec![TsId::new(twins.canonical(p).to_path_buf(), target_name, 0)],
+                    |target_table| {
+                        resolve_export_target(resolver, p, target_table, target_name, twins)
+                    },
                 )
             })
             .unwrap_or_default();
@@ -1257,8 +1366,15 @@ fn emit_reexports(
         // consistent with how overloads are represented everywhere else in
         // this producer, not a special case invented for re-exports.
         for (discriminant, tid) in target_ids.into_iter().enumerate() {
-            let reexport_id = TsId::new(module.path.clone(), export_name, discriminant as u32);
-            let target_ref: Ref<Module> = refer_resolved(out, pending, tid);
+            let reexport_id = TsId::new(
+                twins.canonical(&module.path).to_path_buf(),
+                export_name,
+                discriminant as u32,
+            );
+            if out.is_declared(&reexport_id) {
+                continue;
+            }
+            let target_ref: Ref<Module> = refer_declared(out, declared, tid);
             let _: Ref<Module> =
                 out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
         }
@@ -1267,7 +1383,19 @@ fn emit_reexports(
     // Star re-exports: `export * from "m"`.
     for star in &module.exports.star {
         let target_path = resolve_module_path(resolver, &module.path, &star.module_request);
-        let Some(tp) = target_path else { continue };
+        let Some(tp) = target_path.as_ref() else {
+            emit_unexpanded_star(
+                module,
+                parent.clone(),
+                out,
+                star,
+                None,
+                &mut reexported,
+                declared,
+                twins,
+            );
+            continue;
+        };
 
         // Fan out to all names the target module exports. Each name is
         // resolved against the target's own export surface
@@ -1284,7 +1412,7 @@ fn emit_reexports(
                     continue;
                 }
                 let target_ids =
-                    resolve_export_target(resolver, tp.as_path(), target_table, export_name);
+                    resolve_export_target(resolver, tp.as_path(), target_table, export_name, twins);
                 if target_ids.is_empty() {
                     continue;
                 }
@@ -1315,34 +1443,33 @@ fn emit_reexports(
                         continue;
                     }
                     expanded = true;
-                    let reexport_id =
-                        TsId::new(module.path.clone(), export_name, discriminant as u32);
-                    let target_ref: Ref<Module> = refer_resolved(out, pending, target_id);
+                    let reexport_id = TsId::new(
+                        twins.canonical(&module.path).to_path_buf(),
+                        export_name,
+                        discriminant as u32,
+                    );
+                    if out.is_declared(&reexport_id) {
+                        continue;
+                    }
+                    let target_ref: Ref<Module> = refer_declared(out, declared, target_id);
                     let _: Ref<Module> =
                         out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
                 }
             }
         }
-        // A star that named nothing this package declared is one reference to
-        // the module root. The symbol is the file stem, never `"*"`.
+        // A star that named nothing is one reference to the module root.
+        // The symbol is the file stem, never `"*"`.
         if !expanded {
-            let root = TsId::new(tp.clone(), MODULE_ROOT_NAME, 0);
-            if !out.is_declared(&root) {
-                continue;
-            }
-            let stem = tp
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("module")
-                .trim_end_matches(".d")
-                .to_string();
-            if stem == "*" || !reexported.insert(stem.clone()) {
-                continue;
-            }
-            let sym = reexport_symbol(module, &stem, star.span_start, star.span_end);
-            let reexport_id = TsId::new(module.path.clone(), stem.as_str(), 0);
-            let target_ref = refer_resolved(out, pending, root);
-            let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
+            emit_unexpanded_star(
+                module,
+                parent.clone(),
+                out,
+                star,
+                Some(tp.as_path()),
+                &mut reexported,
+                declared,
+                twins,
+            );
         }
     }
 }
@@ -1362,24 +1489,94 @@ fn reexport_symbol(module: &ModuleFacts, name: &str, start: u32, end: u32) -> Sy
     }
 }
 
-/// Local `refer` when this package declared the id. Otherwise a foreign key.
+/// `refer` when this package will declare `id`. Otherwise `refer_import`.
 ///
-/// `refer` on a missing id inserts an empty slot, and `finish` then rejects
-/// the package. A star import, a `default` the other file never declared, or
-/// a name that lives in a dependency is a name, not a local declaration.
-fn refer_resolved(out: &mut Lowering<TsId>, pending: &HashSet<TsId>, id: TsId) -> Ref<Module> {
-    if out.is_declared(&id) || pending.contains(&id) {
+/// `refer` on an id that is not in the declare-set inserts an empty slot,
+/// and `finish` then rejects the package. A missing file, a dependency, or
+/// any other name this package will not declare is a foreign key.
+fn refer_declared(out: &mut Lowering<TsId>, declared: &DeclareSet, id: TsId) -> Ref<Module> {
+    if declared.contains(&id) {
         return out.refer(id);
     }
     let display: Box<str> = id.name.as_str().into();
-    let path: Box<str> =
-        format!("{}::{}#{}", id.module.display(), id.name, id.discriminant).into();
+    let path: Box<str> = format!("{}::{}#{}", id.module.display(), id.name, id.discriminant).into();
     out.refer_import(ForeignKey::in_namespace(
         EcosystemId::new("npm"),
         id.module.display().to_string(),
         path,
         display,
     ))
+}
+
+fn emit_unexpanded_star(
+    module: &ModuleFacts,
+    parent: Option<TsId>,
+    out: &mut Lowering<TsId>,
+    star: &crate::typescript::extract::StarExport,
+    target: Option<&Path>,
+    reexported: &mut HashSet<String>,
+    declared: &DeclareSet,
+    twins: &TwinPlan,
+) {
+    let stem = specifier_stem(&star.module_request);
+    if stem == "*" || !reexported.insert(stem.clone()) {
+        return;
+    }
+    let target_ref = if let Some(tp) = target {
+        let root = TsId::new(twins.canonical(tp).to_path_buf(), MODULE_ROOT_NAME, 0);
+        refer_declared(out, declared, root)
+    } else {
+        out.refer_import(ForeignKey::in_namespace(
+            EcosystemId::new("npm"),
+            star.module_request.clone(),
+            Box::<str>::from(format!("{}::$module", star.module_request)),
+            Box::<str>::from("$module"),
+        ))
+    };
+    let reexport_id = TsId::new(
+        twins.canonical(&module.path).to_path_buf(),
+        stem.as_str(),
+        0,
+    );
+    if out.is_declared(&reexport_id) {
+        return;
+    }
+    let sym = reexport_symbol(module, &stem, star.span_start, star.span_end);
+    let _: Ref<Module> = out.declare_ref(reexport_id, parent, sym, target_ref);
+}
+
+fn emit_default_alias(
+    module: &ModuleFacts,
+    parent: Option<TsId>,
+    out: &mut Lowering<TsId>,
+    declared: &DeclareSet,
+    twins: &TwinPlan,
+) {
+    use crate::typescript::extract::LocalExport;
+    let Some(LocalExport::Named {
+        local_name,
+        overload_count,
+    }) = module.exports.locals.get("default")
+    else {
+        return;
+    };
+    if local_name == "default" {
+        return;
+    }
+    let canonical = twins.canonical(&module.path).to_path_buf();
+    for disc in 0..*overload_count {
+        let target = TsId::new(canonical.clone(), local_name.clone(), disc);
+        let default_id = TsId::new(canonical.clone(), "default", disc);
+        if !declared.contains(&target) || !declared.contains(&default_id) {
+            continue;
+        }
+        if out.is_declared(&default_id) {
+            continue;
+        }
+        let sym = reexport_symbol(module, "default", 0, 0);
+        let target_ref: Ref<Module> = out.refer(target);
+        let _: Ref<Module> = out.declare_ref(default_id, parent.clone(), sym, target_ref);
+    }
 }
 
 fn emit_inline_reexport(
@@ -1389,19 +1586,28 @@ fn emit_inline_reexport(
     module_request: &str,
     import_name: &str,
     out: &mut Lowering<TsId>,
-    _module_index: &HashMap<&Path, &str>,
     resolver: &Resolver,
-    pending: &HashSet<TsId>,
+    declared: &DeclareSet,
+    twins: &TwinPlan,
 ) {
-    let target_path = resolve_module_path(resolver, &id.module, module_request);
+    if out.is_declared(&id) {
+        return;
+    }
+    // The id's module is already the canonical path. Resolve relative to the
+    // file that wrote the re-export, which is `sym.source`.
+    let target_path = resolve_module_path(resolver, &sym.source, module_request);
     if let Some(tp) = target_path {
         let target_name = if import_name == "*" {
             MODULE_ROOT_NAME
         } else {
             import_name
         };
-        let target_id = TsId::new(tp, target_name, 0);
-        let target_ref: Ref<Module> = refer_resolved(out, pending, target_id);
+        let target_id = TsId::new(twins.canonical(&tp).to_path_buf(), target_name, 0);
+        let target_ref: Ref<Module> = refer_declared(out, declared, target_id);
+        let _: Ref<Module> = out.declare_ref(id, parent, sym, target_ref);
+    } else if is_package_specifier(module_request) {
+        let target_ref: Ref<Module> =
+            out.refer_import(package_foreign_key(module_request, &sym.name));
         let _: Ref<Module> = out.declare_ref(id, parent, sym, target_ref);
     }
 }
@@ -1450,57 +1656,32 @@ fn resolve_module_path(resolver: &Resolver, current: &Path, specifier: &str) -> 
     }
 }
 
-// ── Type lowering: TypeOwned → IR Type ────────────────────────────────────────
+// ── One declare-set
+// ───────────────────────────────────────────────────────────
 
-/// Names this package will declare, keyed so a nominal can become a `Ref`
-/// before the declaration is emitted. `refer` leaves a slot; the later
-/// `declare` fills it. A name declared more than once is omitted: guessing
-/// the wrong id is worse than leaving it unresolved.
-pub(crate) struct NameIndex {
+/// Every id this package will `declare` or `declare_ref`, plus a name index
+/// for nominal lowering.
+///
+/// Built from `ModuleFacts` before any `refer`. A name declared more than
+/// once is omitted from the name index: guessing the wrong id is worse than
+/// leaving it unresolved. The id set still contains each distinct id.
+pub(crate) struct DeclareSet {
+    ids: HashSet<TsId>,
     by_file: HashMap<(PathBuf, String), TsId>,
     unique: HashMap<String, TsId>,
 }
 
-impl NameIndex {
+impl DeclareSet {
     fn empty() -> Self {
-        NameIndex {
+        DeclareSet {
+            ids: HashSet::new(),
             by_file: HashMap::new(),
             unique: HashMap::new(),
         }
     }
 
-    fn build(modules: &[ModuleFacts]) -> Self {
-        let mut by_file: HashMap<(PathBuf, String), TsId> = HashMap::new();
-        let mut file_clash: HashSet<(PathBuf, String)> = HashSet::new();
-        let mut unique: HashMap<String, TsId> = HashMap::new();
-        let mut clash: HashSet<String> = HashSet::new();
-        for module in modules {
-            let parent = module_ts_id(module);
-            for decl in &module.declarations {
-                if matches!(decl.body, DeclBody::Reexport { .. }) {
-                    continue;
-                }
-                let id = decl_ts_id(decl, Some(&parent));
-                let file_key = (module.path.clone(), decl.name.clone());
-                if by_file.contains_key(&file_key) {
-                    file_clash.insert(file_key);
-                } else {
-                    by_file.insert(file_key, id.clone());
-                }
-                if unique.contains_key(&decl.name) {
-                    clash.insert(decl.name.clone());
-                } else {
-                    unique.insert(decl.name.clone(), id);
-                }
-            }
-        }
-        for key in file_clash {
-            by_file.remove(&key);
-        }
-        for name in clash {
-            unique.remove(&name);
-        }
-        NameIndex { by_file, unique }
+    fn contains(&self, id: &TsId) -> bool {
+        self.ids.contains(id)
     }
 
     fn resolve(&self, module: &Path, name: &str) -> Option<TsId> {
@@ -1509,23 +1690,517 @@ impl NameIndex {
             .or_else(|| self.unique.get(name))
             .cloned()
     }
+
+    fn build(
+        modules: &[ModuleFacts],
+        twins: &TwinPlan,
+        export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
+        resolver: &Resolver,
+    ) -> Self {
+        let mut ids = HashSet::new();
+        let mut by_file: HashMap<(PathBuf, String), TsId> = HashMap::new();
+        let mut file_clash: HashSet<(PathBuf, String)> = HashSet::new();
+        let mut unique: HashMap<String, TsId> = HashMap::new();
+        let mut clash: HashSet<String> = HashSet::new();
+        let mut seen_module = HashSet::new();
+
+        for module in modules {
+            let parent = module_ts_id(module, twins);
+            if seen_module.insert(parent.clone()) {
+                ids.insert(parent.clone());
+            }
+            consider_owned(
+                &module.declarations,
+                Some(&parent),
+                twins,
+                &mut ids,
+                &mut by_file,
+                &mut file_clash,
+                &mut unique,
+                &mut clash,
+                true,
+            );
+        }
+        for key in file_clash {
+            by_file.remove(&key);
+        }
+        for name in clash {
+            unique.remove(&name);
+        }
+
+        for module in modules {
+            use crate::typescript::extract::LocalExport;
+            if let Some(LocalExport::Named {
+                local_name,
+                overload_count,
+            }) = module.exports.locals.get("default")
+            {
+                if local_name == "default" {
+                    continue;
+                }
+                let canonical = twins.canonical(&module.path).to_path_buf();
+                for disc in 0..*overload_count {
+                    let target = TsId::new(canonical.clone(), local_name.clone(), disc);
+                    if ids.contains(&target) {
+                        ids.insert(TsId::new(canonical.clone(), "default", disc));
+                    }
+                }
+            }
+        }
+
+        ids.extend(reexport_ids(modules, export_index, resolver, twins));
+
+        DeclareSet {
+            ids,
+            by_file,
+            unique,
+        }
+    }
+}
+
+fn consider_owned(
+    decls: &[DeclFact],
+    parent: Option<&TsId>,
+    twins: &TwinPlan,
+    ids: &mut HashSet<TsId>,
+    by_file: &mut HashMap<(PathBuf, String), TsId>,
+    file_clash: &mut HashSet<(PathBuf, String)>,
+    unique: &mut HashMap<String, TsId>,
+    clash: &mut HashSet<String>,
+    top_level: bool,
+) {
+    for decl in decls {
+        if matches!(decl.body, DeclBody::Reexport { .. }) {
+            continue;
+        }
+        if twins.is_skipped(decl, parent) {
+            if let DeclBody::Namespace(body) = &decl.body {
+                let id = decl_ts_id(decl, parent, twins);
+                consider_owned(
+                    &body.children,
+                    Some(&id),
+                    twins,
+                    ids,
+                    by_file,
+                    file_clash,
+                    unique,
+                    clash,
+                    false,
+                );
+            }
+            continue;
+        }
+        let id = decl_ts_id(decl, parent, twins);
+        ids.insert(id.clone());
+        if top_level {
+            let file_key = (id.module.clone(), decl.name.clone());
+            if by_file.contains_key(&file_key) {
+                file_clash.insert(file_key);
+            } else {
+                by_file.insert(file_key, id.clone());
+            }
+            if unique.contains_key(&decl.name) {
+                clash.insert(decl.name.clone());
+            } else {
+                unique.insert(decl.name.clone(), id.clone());
+            }
+        }
+        if let DeclBody::Namespace(body) = &decl.body {
+            consider_owned(
+                &body.children,
+                Some(&id),
+                twins,
+                ids,
+                by_file,
+                file_clash,
+                unique,
+                clash,
+                false,
+            );
+        }
+    }
+}
+
+// ── Twin publications
+// ─────────────────────────────────────────────────────────
+
+/// Two files are twins when they share a parent directory and the same stem
+/// after a whole-suffix strip (not `Path::extension`).
+struct KeptBody {
+    skeleton: String,
+    path: PathBuf,
+}
+
+struct TwinPlan {
+    canonical: HashMap<PathBuf, PathBuf>,
+    module_extra: HashMap<PathBuf, Vec<String>>,
+    extra_paths: HashMap<TsId, Vec<String>>,
+    skip: HashSet<(PathBuf, String, u32)>,
+    disc: HashMap<(PathBuf, String, u32), u32>,
+}
+
+impl TwinPlan {
+    fn build(modules: &[ModuleFacts]) -> Self {
+        let mut logical_first: HashMap<PathBuf, PathBuf> = HashMap::new();
+        let mut canonical = HashMap::new();
+        let mut module_extra: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        for module in modules {
+            let logical = logical_module_path(&module.path);
+            if let Some(first) = logical_first.get(&logical).cloned() {
+                canonical.insert(module.path.clone(), first.clone());
+                module_extra
+                    .entry(first)
+                    .or_default()
+                    .push(module.path.display().to_string());
+            } else {
+                logical_first.insert(logical, module.path.clone());
+                canonical.insert(module.path.clone(), module.path.clone());
+            }
+        }
+
+        let mut occupied: HashMap<(PathBuf, String, u32), KeptBody> = HashMap::new();
+        let mut skip = HashSet::new();
+        let mut disc = HashMap::new();
+        let mut extra_paths = HashMap::new();
+        for module in modules {
+            admit_decls(
+                &module.declarations,
+                None,
+                &canonical,
+                &mut occupied,
+                &mut skip,
+                &mut disc,
+                &mut extra_paths,
+            );
+        }
+
+        TwinPlan {
+            canonical,
+            module_extra,
+            extra_paths,
+            skip,
+            disc,
+        }
+    }
+
+    fn canonical<'a>(&'a self, path: &'a Path) -> &'a Path {
+        self.canonical
+            .get(path)
+            .map(PathBuf::as_path)
+            .unwrap_or(path)
+    }
+
+    fn is_secondary(&self, path: &Path) -> bool {
+        self.canonical
+            .get(path)
+            .is_some_and(|c| c.as_path() != path)
+    }
+
+    fn module_aliases(&self, path: &Path) -> Box<[String]> {
+        let canonical = self.canonical(path);
+        self.module_extra
+            .get(canonical)
+            .map(|paths| paths.clone().into_boxed_slice())
+            .unwrap_or_else(|| Box::new([]))
+    }
+
+    fn discriminant(&self, decl: &DeclFact, qualified: &str) -> u32 {
+        self.disc
+            .get(&(decl.module.clone(), qualified.to_string(), decl.decl_index))
+            .copied()
+            .unwrap_or(decl.decl_index)
+    }
+
+    fn is_skipped(&self, decl: &DeclFact, parent: Option<&TsId>) -> bool {
+        let name = qualified_decl_name(decl, parent);
+        self.skip
+            .contains(&(decl.module.clone(), name, decl.decl_index))
+    }
+}
+
+fn admit_decls(
+    decls: &[DeclFact],
+    parent_qual: Option<&str>,
+    canonical_of: &HashMap<PathBuf, PathBuf>,
+    occupied: &mut HashMap<(PathBuf, String, u32), KeptBody>,
+    skip: &mut HashSet<(PathBuf, String, u32)>,
+    disc: &mut HashMap<(PathBuf, String, u32), u32>,
+    extra_paths: &mut HashMap<TsId, Vec<String>>,
+) {
+    for decl in decls {
+        if matches!(decl.body, DeclBody::Reexport { .. }) {
+            continue;
+        }
+        let canonical = canonical_of
+            .get(&decl.module)
+            .cloned()
+            .unwrap_or_else(|| decl.module.clone());
+        let qual = match parent_qual {
+            Some(p) => format!("{p}::{}", decl.name),
+            None => decl.name.clone(),
+        };
+        let preferred = decl.decl_index;
+        let skel = body_skeleton(&decl.body);
+        let origin = (decl.module.clone(), qual.clone(), preferred);
+        let slot = (canonical.clone(), qual.clone(), preferred);
+        let existing = occupied
+            .get(&slot)
+            .map(|kept| (kept.skeleton.clone(), kept.path.clone()));
+        match existing {
+            Some((_, kept_path)) if kept_path == decl.module => {
+                // Same file. Never merge, and never retarget the discriminant
+                // to dodge a collision. A shared id fails `finish` as
+                // `Error::Duplicate`.
+            }
+            Some((kept_skel, _)) if kept_skel == skel => {
+                skip.insert(origin);
+                extra_paths
+                    .entry(TsId::new(canonical.clone(), qual.clone(), preferred))
+                    .or_default()
+                    .push(decl.module.display().to_string());
+            }
+            Some(_) => {
+                let fresh = fresh_discriminant(occupied, &canonical, &qual);
+                disc.insert(origin, fresh);
+                occupied.insert((canonical.clone(), qual.clone(), fresh), KeptBody {
+                    skeleton: skel,
+                    path: decl.module.clone(),
+                });
+            }
+            None => {
+                occupied.insert(slot, KeptBody {
+                    skeleton: skel,
+                    path: decl.module.clone(),
+                });
+            }
+        }
+        if let DeclBody::Namespace(body) = &decl.body {
+            admit_decls(
+                &body.children,
+                Some(&qual),
+                canonical_of,
+                occupied,
+                skip,
+                disc,
+                extra_paths,
+            );
+        }
+    }
+}
+
+fn fresh_discriminant(
+    occupied: &HashMap<(PathBuf, String, u32), KeptBody>,
+    canonical: &Path,
+    qual: &str,
+) -> u32 {
+    let mut disc = 0u32;
+    while occupied.contains_key(&(canonical.to_path_buf(), qual.to_string(), disc)) {
+        disc = disc.saturating_add(1);
+    }
+    disc
+}
+
+/// Whole suffixes, longest first. `Path::extension` of `kinds.d.ts` is `ts`.
+fn logical_stem(file_name: &str) -> String {
+    const SUFFIXES: &[&str] = &[
+        ".d.ts", ".d.mts", ".d.cts", ".mjs", ".cjs", ".mts", ".cts", ".js", ".ts",
+    ];
+    for suffix in SUFFIXES {
+        if file_name.len() > suffix.len() && file_name.ends_with(suffix) {
+            return file_name[..file_name.len() - suffix.len()].to_string();
+        }
+    }
+    file_name.to_string()
+}
+
+fn logical_module_path(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return path.to_path_buf();
+    };
+    path.with_file_name(logical_stem(name))
+}
+
+fn specifier_stem(specifier: &str) -> String {
+    let last = specifier.rsplit(['/', '\\']).next().unwrap_or(specifier);
+    let stem = logical_stem(last);
+    if stem.is_empty() || stem == "*" {
+        "module".to_string()
+    } else {
+        stem
+    }
+}
+
+fn is_package_specifier(specifier: &str) -> bool {
+    !specifier.is_empty() && !specifier.starts_with('.') && !specifier.starts_with('/')
+}
+
+fn npm_package_name(specifier: &str) -> String {
+    if let Some(rest) = specifier.strip_prefix('@') {
+        let mut parts = rest.splitn(3, '/');
+        let scope = parts.next().unwrap_or("");
+        let name = parts.next().unwrap_or("");
+        if name.is_empty() {
+            specifier.to_string()
+        } else {
+            format!("@{scope}/{name}")
+        }
+    } else {
+        specifier.split('/').next().unwrap_or(specifier).to_string()
+    }
+}
+
+fn package_foreign_key(specifier: &str, display: &str) -> ForeignKey {
+    ForeignKey::in_package(
+        PackageLineageId::new(
+            EcosystemId::new("npm"),
+            PackageName::new(npm_package_name(specifier)),
+        ),
+        Box::<str>::from(specifier),
+        Box::<str>::from(display),
+    )
+}
+
+fn body_skeleton(body: &DeclBody) -> String {
+    match body {
+        DeclBody::Enum(e) => {
+            let mut s = format!("enum:{}", e.is_const);
+            for variant in &e.variants {
+                s.push('|');
+                s.push_str(&variant.name);
+                s.push('=');
+                s.push_str(variant.discriminant.as_deref().unwrap_or(""));
+            }
+            s
+        }
+        DeclBody::Function(f) => {
+            let mut s = format!("fn:{}:{}:{}:", f.is_async, f.is_generator, f.has_body);
+            for param in &f.params {
+                s.push_str(&param.name);
+                s.push(':');
+                if let Some(ty) = &param.ty {
+                    s.push_str(&type_skeleton(ty));
+                }
+                s.push(',');
+            }
+            s.push_str("->");
+            if let Some(ty) = &f.return_type {
+                s.push_str(&type_skeleton(ty));
+            }
+            s
+        }
+        DeclBody::Class(c) => {
+            let mut s = format!("class:{}", c.is_abstract);
+            for ty in c.extends.iter().chain(c.implements.iter()) {
+                s.push('|');
+                s.push_str(&type_skeleton(ty));
+            }
+            s.push('#');
+            for member in &c.members {
+                s.push_str(&member.name);
+                s.push(';');
+            }
+            s
+        }
+        DeclBody::Interface(i) => {
+            let mut s = String::from("iface");
+            for ty in &i.extends {
+                s.push('|');
+                s.push_str(&type_skeleton(ty));
+            }
+            s.push('#');
+            for method in &i.methods {
+                s.push_str(&method.name);
+                s.push(';');
+            }
+            for prop in &i.properties {
+                s.push_str(&prop.name);
+                s.push(';');
+            }
+            s
+        }
+        DeclBody::TypeAlias(a) => format!("alias:{}", type_skeleton(&a.target)),
+        DeclBody::Const(c) => format!(
+            "const:{}:{}",
+            c.ty.as_ref().map(type_skeleton).unwrap_or_default(),
+            c.value.as_deref().unwrap_or("")
+        ),
+        DeclBody::Static(st) => format!(
+            "static:{}:{}:{}",
+            st.is_mutable,
+            st.ty.as_ref().map(type_skeleton).unwrap_or_default(),
+            st.value.as_deref().unwrap_or("")
+        ),
+        DeclBody::Namespace(n) => format!("ns:{}", n.is_ambient),
+        DeclBody::Reexport {
+            module_request,
+            import_name,
+        } => format!("reexport:{module_request}:{import_name}"),
+    }
+}
+
+fn type_seq(tag: &str, arms: &[TypeOwned]) -> String {
+    let mut s = format!("{tag}(");
+    for arm in arms {
+        s.push_str(&type_skeleton(arm));
+        s.push('|');
+    }
+    s.push(')');
+    s
+}
+
+fn type_skeleton(ty: &TypeOwned) -> String {
+    match ty {
+        TypeOwned::Nominal(n) => format!("N({n})"),
+        TypeOwned::TypeVar(n) => format!("V({n})"),
+        TypeOwned::Apply { base, args } => {
+            let mut s = format!("A({}", type_skeleton(base));
+            for arg in args {
+                s.push(',');
+                s.push_str(&type_skeleton(arg));
+            }
+            s.push(')');
+            s
+        }
+        TypeOwned::Union(arms) => type_seq("union", arms),
+        TypeOwned::Intersection(arms) => type_seq("inter", arms),
+        TypeOwned::Tuple(arms) => type_seq("tuple", arms),
+        TypeOwned::Array(inner) => format!("[{}]", type_skeleton(inner)),
+        TypeOwned::Function(f) => {
+            let mut s = String::from("F(");
+            for param in &f.params {
+                s.push_str(&param.name);
+                if let Some(ty) = &param.ty {
+                    s.push(':');
+                    s.push_str(&type_skeleton(ty));
+                }
+                s.push(',');
+            }
+            s.push_str(")->");
+            if let Some(ty) = &f.return_type {
+                s.push_str(&type_skeleton(ty));
+            }
+            s.push(')');
+            s
+        }
+        other => format!("{other:?}"),
+    }
 }
 
 pub(crate) fn lower_type(
     ty: &TypeOwned,
     out: &mut Lowering<TsId>,
-    names: &NameIndex,
+    names: &DeclareSet,
     module: &Path,
 ) -> Type {
     match ty {
         // TypeScript is the language that makes the `Any` / `Unknown` split
         // unarguable, because it ships both and they are *not* interchangeable:
         //
-        // - `unknown` is the genuine top type. Every value is assignable to it
-        //   and no member access or narrowing is permitted until you refine it.
-        // - `any` is the escape hatch. It is assignable in both directions and
-        //   disables checking entirely — `--noImplicitAny` exists precisely
-        //   because it is the thing you want to find and remove.
+        // - `unknown` is the genuine top type. Every value is assignable to it and no member access
+        //   or narrowing is permitted until you refine it.
+        // - `any` is the escape hatch. It is assignable in both directions and disables checking
+        //   entirely — `--noImplicitAny` exists precisely because it is the thing you want to find
+        //   and remove.
         //
         // Lowering both to `Type::Any` made a hardened `unknown` signature and
         // an unchecked `any` signature byte-identical in the IR.
@@ -1568,7 +2243,10 @@ pub(crate) fn lower_type(
         }
         TypeOwned::Apply { base, args } => {
             let base_ty = lower_type(base, out, names, module);
-            let arg_tys: Vec<Type> = args.iter().map(|t| lower_type(t, out, names, module)).collect();
+            let arg_tys: Vec<Type> = args
+                .iter()
+                .map(|t| lower_type(t, out, names, module))
+                .collect();
             Type::Apply {
                 base: Box::new(base_ty),
                 args: arg_tys.into_boxed_slice(),
@@ -1627,9 +2305,15 @@ pub(crate) fn lower_type(
                 // treats it as implicit-any, but the source did not write
                 // `any` — under `--noImplicitAny` this is an error, and the
                 // IR must be able to tell the two apart.
-                .map(|p| p.ty.as_ref().map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, module)))
+                .map(|p| {
+                    p.ty.as_ref()
+                        .map_or(Type::UNANNOTATED, |t| lower_type(t, out, names, module))
+                })
                 .collect();
-            let ret = body.return_type.as_ref().map(|r| Box::new(lower_type(r, out, names, module)));
+            let ret = body
+                .return_type
+                .as_ref()
+                .map(|r| Box::new(lower_type(r, out, names, module)));
             // TypeScript functions are always managed; no ABI.
             Type::FunctionPointer {
                 params: params.into_boxed_slice(),
@@ -1709,12 +2393,13 @@ fn lower_literal(lit: &LiteralOwned) -> Type {
     }
 }
 
-// ── Generic param lowering ─────────────────────────────────────────────────────
+// ── Generic param lowering
+// ─────────────────────────────────────────────────────
 
 fn lower_generics(
     params: &[GenericParamOwned],
     out: &mut Lowering<TsId>,
-    names: &NameIndex,
+    names: &DeclareSet,
     module: &Path,
 ) -> Vec<GenericParam> {
     params
@@ -1727,7 +2412,10 @@ fn lower_generics(
                 .map(|t| lower_type(t, out, names, module))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-            default: p.default.as_ref().map(|t| lower_type(t, out, names, module)),
+            default: p
+                .default
+                .as_ref()
+                .map(|t| lower_type(t, out, names, module)),
             // Wire TS 4.7+ `in`/`out` declaration-site variance annotations.
             // `None` when no modifier was present (the common case).
             variance: p.variance,
@@ -1735,7 +2423,8 @@ fn lower_generics(
         .collect()
 }
 
-// ── Symbol construction ────────────────────────────────────────────────────────
+// ── Symbol construction
+// ────────────────────────────────────────────────────────
 
 fn make_sym(decl: &DeclFact) -> Symbol {
     Symbol {
@@ -1753,7 +2442,8 @@ fn make_sym(decl: &DeclFact) -> Symbol {
     }
 }
 
-// ── Accessibility → Visibility ────────────────────────────────────────────────
+// ── Accessibility → Visibility
+// ────────────────────────────────────────────────
 
 fn accessibility_to_visibility(acc: Accessibility) -> Visibility {
     match acc {
@@ -1763,7 +2453,8 @@ fn accessibility_to_visibility(acc: Accessibility) -> Visibility {
     }
 }
 
-// ── FieldAttributes ───────────────────────────────────────────────────────────
+// ── FieldAttributes
+// ───────────────────────────────────────────────────────────
 
 fn field_attrs(m: &MemberModifiers) -> Vec<FieldAttribute> {
     let mut attrs = Vec::new();
@@ -1790,22 +2481,19 @@ mod cc2_tests {
     use std::path::Path;
 
     fn bare(ty: &TypeOwned) -> Type {
-        let mut out = Lowering::new(
-            nudox_ir::id::PackageId::path("t"),
-            Symbol {
-                name: "root".to_string(),
-                visibility: Visibility::Public,
-                documentation: String::new(),
-                source: Path::new("t.ts").to_path_buf(),
-                span: 0..0,
-                aliases: Box::new([]),
-                deprecation: None,
-                doc_links: Box::new([]),
-                attrs: Box::new([]),
-                cfg: None,
-            },
-        );
-        lower_type(ty, &mut out, &NameIndex::empty(), Path::new("t.ts"))
+        let mut out = Lowering::new(nudox_ir::id::PackageId::path("t"), Symbol {
+            name: "root".to_string(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: Path::new("t.ts").to_path_buf(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        });
+        lower_type(ty, &mut out, &DeclareSet::empty(), Path::new("t.ts"))
     }
 
     /// TypeScript ships both spellings, and they are not interchangeable.

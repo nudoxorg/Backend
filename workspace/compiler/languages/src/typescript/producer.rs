@@ -19,7 +19,8 @@ use crate::typescript::{
     graph::build_and_extract, id::TsId,
 };
 
-// ── Sealed trait (tsz seam) ───────────────────────────────────────────────────
+// ── Sealed trait (tsz seam)
+// ───────────────────────────────────────────────────
 
 // `pub(crate)` so the tsz oracle in `oracle::tsz` can implement `TsOracleSeal`
 // without the trait being implementable by external crates.
@@ -35,7 +36,8 @@ pub trait TsOracle: sealed::TsOracleSeal {
     fn modules(&self) -> &[ModuleFacts];
 }
 
-// ── OXC oracle ────────────────────────────────────────────────────────────────
+// ── OXC oracle
+// ────────────────────────────────────────────────────────────────
 
 /// The owned result of the OXC extraction pass.
 ///
@@ -63,12 +65,14 @@ impl TsOracle for OwnedOracle {
     }
 }
 
-// ── Producer ──────────────────────────────────────────────────────────────────
+// ── Producer
+// ──────────────────────────────────────────────────────────────────
 
 /// The TypeScript producer, parameterized over the oracle tier.
 ///
 /// Use `TypescriptProducer::new()` for the default OXC tier.
-/// A future tsz tier would be selected via `TypescriptProducer::<TszOracle>::new_tsz(...)`.
+/// A future tsz tier would be selected via
+/// `TypescriptProducer::<TszOracle>::new_tsz(...)`.
 pub struct TypescriptProducer<O = OwnedOracle> {
     _marker: std::marker::PhantomData<O>,
 }
@@ -232,7 +236,10 @@ mod tests {
             .expect("a star that names nothing must not reject the package");
 
         assert!(
-            produced.table.iter().all(|(_, entry)| entry.sym().name != "*"),
+            produced
+                .table
+                .iter()
+                .all(|(_, entry)| entry.sym().name != "*"),
             "no symbol may be named *"
         );
         assert!(
@@ -341,17 +348,213 @@ mod tests {
         let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
             .expect("same-file nominals must seal");
 
-        let nominal = produced.table.iter().any(|(_, entry)| {
-            entry.sym().name == "return" && type_is_nominal(entry.kind())
-        });
+        let nominal = produced
+            .table
+            .iter()
+            .any(|(_, entry)| entry.sym().name == "return" && type_is_nominal(entry.kind()));
         assert!(
             nominal,
             "f(): AxiosResponse must lower the return type to a nominal ref"
         );
-        let extends = produced.table.iter().any(|(_, entry)| {
-            entry.sym().name == "A" && type_is_nominal(entry.kind())
-        });
+        let extends = produced
+            .table
+            .iter()
+            .any(|(_, entry)| entry.sym().name == "A" && type_is_nominal(entry.kind()));
         assert!(extends, "class A extends B must record B as a nominal ref");
+    }
+
+    #[test]
+    fn exports_use_state_is_an_owned_function() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"react-hooks","version":"1.0.0","main":"index.js"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(
+            dir.path().join("index.js"),
+            "exports.useState = function (initialState) { return initialState; };\n",
+        )
+        .expect("write entry module");
+
+        let source = PackageSource::new(dir.path(), "react-hooks", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("react-hooks"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("an assigned function export must lower");
+
+        let function = produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "useState"
+                && entry.sym().source.ends_with("index.js")
+                && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+        });
+        assert!(
+            function,
+            "exports.useState = function (initialState) must be an owned Function in that file"
+        );
+        assert!(
+            produced
+                .table
+                .iter()
+                .any(|(_, entry)| entry.sym().name == "initialState"),
+            "the function parameter initialState must be observable"
+        );
+    }
+
+    #[test]
+    fn exports_router_require_is_a_package_reference() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"app","version":"1.0.0","main":"index.js"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(
+            dir.path().join("index.js"),
+            "var Router = require('router');\nexports.Router = Router;\n",
+        )
+        .expect("write entry module");
+
+        let source = PackageSource::new(dir.path(), "app", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("app"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a required package binding must lower");
+
+        let reference = produced
+            .table
+            .iter()
+            .find(|(_, entry)| entry.sym().name == "Router");
+        let Some((_, entry)) = reference else {
+            panic!("Router must be present");
+        };
+        match entry.kind() {
+            EntryInner::Reference(Ref::Foreign { key, .. }) => {
+                let lineage = key
+                    .origin
+                    .lineage()
+                    .expect("Router's target must name a package");
+                assert_eq!(lineage.name.as_str(), "router");
+            }
+            other => {
+                panic!("exports.Router = require('router') must be a Reference, got {other:?}")
+            }
+        }
+        assert!(
+            produced.table.iter().all(|(_, entry)| {
+                entry.sym().name != "Router"
+                    || !matches!(entry.kind(), EntryInner::Owned(Kind::Const(_)))
+            }),
+            "require('router') must not become a Const"
+        );
+        assert!(
+            produced.table.iter().all(|(_, entry)| {
+                entry.sym().name != "Router"
+                    || !matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            }),
+            "require('router') must not become an invented function"
+        );
+    }
+
+    #[test]
+    fn twin_kind_enums_seal_as_one_kind() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let language = dir.path().join("language");
+        std::fs::create_dir(&language).expect("create language dir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"kinds","version":"1.0.0","exports":{"./language/kinds.js":"./language/kinds.js","./language/kinds.mjs":"./language/kinds.mjs"}}"#,
+        )
+        .expect("write package manifest");
+        let source_text = "export enum Kind { A = \"A\" }\n";
+        std::fs::write(language.join("kinds.d.ts"), source_text).expect("write d.ts");
+        std::fs::write(language.join("kinds.d.mts"), source_text).expect("write d.mts");
+
+        let source = PackageSource::new(dir.path(), "kinds", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("kinds"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("twin declaration files with the same enum must seal");
+
+        let kinds: Vec<_> = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "Kind"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Enum(_)))
+            })
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            1,
+            "language/kinds.d.ts and language/kinds.d.mts must seal as one Kind, got {}",
+            kinds.len()
+        );
+    }
+
+    #[test]
+    fn same_file_uniform_functions_stay_distinct() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"three","version":"1.0.0","main":"index.js"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(
+            dir.path().join("index.js"),
+            "function Uniform(alpha) { return alpha; }\nfunction Uniform(beta, gamma) { return beta + gamma; }\n",
+        )
+        .expect("write entry module");
+
+        let source = PackageSource::new(dir.path(), "three", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("three"));
+        match produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked) {
+            Ok(produced) => {
+                let bodies: Vec<_> = produced
+                    .table
+                    .iter()
+                    .filter(|(_, entry)| {
+                        entry.sym().name == "Uniform"
+                            && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+                    })
+                    .collect();
+                assert!(
+                    bodies.len() >= 2,
+                    "both Uniform bodies must be observable when finish succeeds"
+                );
+                let spans: std::collections::HashSet<_> = bodies
+                    .iter()
+                    .map(|(_, entry)| entry.sym().span.clone())
+                    .collect();
+                assert!(
+                    spans.len() >= 2,
+                    "the two Uniform bodies must be different declarations"
+                );
+                assert!(
+                    produced
+                        .table
+                        .iter()
+                        .any(|(_, entry)| entry.sym().name == "alpha")
+                );
+                assert!(
+                    produced
+                        .table
+                        .iter()
+                        .any(|(_, entry)| entry.sym().name == "gamma")
+                );
+            }
+            Err(error) => {
+                let duplicate = matches!(
+                    &error,
+                    ProducerError::LoweringFailed { source, .. }
+                        if source
+                            .downcast_ref::<nudox_ir::lower::Error<TsId>>()
+                            .is_some_and(|err| matches!(err, nudox_ir::lower::Error::Duplicate(_)))
+                );
+                assert!(
+                    duplicate,
+                    "a shared Uniform id must surface as Error::Duplicate, got {error}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -377,8 +580,9 @@ mod tests {
 
 // Note: `From<OwnedOracle> for OwnedOracle` is NOT implemented here because
 // `impl<T> From<T> for T` already exists in core (the reflexive blanket impl).
-// The `where O: From<OwnedOracle>` bound on `Producer for TypescriptProducer<O>`
-// is satisfied for `O = OwnedOracle` by the core blanket impl.
+// The `where O: From<OwnedOracle>` bound on `Producer for
+// TypescriptProducer<O>` is satisfied for `O = OwnedOracle` by the core blanket
+// impl.
 
 #[cfg(feature = "tsz")]
 impl TypescriptProducer<crate::typescript::oracle::tsz::TszOracle> {
