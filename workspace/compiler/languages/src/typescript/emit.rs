@@ -1459,6 +1459,9 @@ fn emit_function(
             declare_nested_params(&id, &id, &param.name, ty, out, names);
         }
     }
+    if let Some(this_ty) = &body.this_ty {
+        declare_nested_params(&id, &id, "this", this_ty, out, names);
+    }
     if let Some(ret) = &body.return_type {
         declare_nested_params(&id, &id, "return", ret, out, names);
     }
