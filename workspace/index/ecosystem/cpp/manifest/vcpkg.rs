@@ -15,11 +15,12 @@ use crate::ecosystem::manifest::ExtractedFacts;
 /// Parse a `vcpkg.json` manifest.
 ///
 /// Extracts:
-/// - `description` — a string, or an array of strings joined with a single space.
+/// - `description` — a string, or an array of strings joined with a single
+///   space.
 /// - `license` — SPDX expression string.
 /// - `homepage` — stored in `facts.repository`.
-/// - `dependencies` — each entry is either a bare name string or an object
-///   with a `"name"` key; each becomes a [`DependencyRecord`] with mechanism
+/// - `dependencies` — each entry is either a bare name string or an object with
+///   a `"name"` key; each becomes a [`DependencyRecord`] with mechanism
 ///   [`DependencyMechanism::Recipe`].
 ///
 /// Any JSON parse error or missing field degrades gracefully: malformed input
@@ -213,7 +214,10 @@ mod tests {
         // facts.dependencies must mirror the dependency token list.
         let text = r#"{"dependencies": ["zlib", {"name": "libpng"}]}"#;
         let manifest = parse(text);
-        assert_eq!(manifest.facts.dependencies, vec!["zlib", "libpng"]);
+        assert_eq!(manifest.facts.dependency_names(), vec![
+            "zlib".to_owned(),
+            "libpng".to_owned()
+        ]);
         assert_eq!(manifest.dependencies.len(), 2);
     }
 

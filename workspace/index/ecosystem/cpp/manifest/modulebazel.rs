@@ -4,7 +4,8 @@
 //! eval. Recognises two call forms:
 //!
 //! - `module(name = "<n>", version = "<v>", ...)` — the module's own identity
-//!   (no description or license field in `MODULE.bazel`; facets remain default).
+//!   (no description or license field in `MODULE.bazel`; facets remain
+//!   default).
 //! - `bazel_dep(name = "<n>", version = "<v>", ...)` →
 //!   [`DependencyMechanism::BazelDep`]
 //!
@@ -15,7 +16,8 @@
 
 use super::{CppManifest, DependencyMechanism, DependencyRecord};
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Public entry point
+// ────────────────────────────────────────────────────────
 
 /// Parse a `MODULE.bazel` file and return the extracted manifest.
 ///
@@ -72,7 +74,8 @@ pub fn parse(text: &str) -> CppManifest {
     manifest
 }
 
-// ── Internal types ────────────────────────────────────────────────────────────
+// ── Internal types
+// ────────────────────────────────────────────────────────────
 
 /// The call keywords the scanner recognises in `MODULE.bazel`.
 #[derive(Debug, Clone, Copy)]
@@ -81,7 +84,8 @@ enum CallKeyword {
     Module,
 }
 
-// ── Scanner helpers ───────────────────────────────────────────────────────────
+// ── Scanner helpers
+// ───────────────────────────────────────────────────────────
 
 /// If the bytes starting at `position` begin one of the recognised call
 /// keywords immediately followed by `(`, return the keyword and the index of
@@ -317,7 +321,12 @@ bazel_dep(name = "abseil-cpp", version = "20230802.1")
     fn parse_facts_mirror_synced() {
         let text = "bazel_dep(name = \"zlib\", version = \"1.3\")\n";
         let manifest = parse(text);
-        assert!(manifest.facts.dependencies.contains(&"zlib".to_owned()));
+        assert!(
+            manifest
+                .facts
+                .dependency_names()
+                .contains(&"zlib".to_owned())
+        );
     }
 
     #[test]

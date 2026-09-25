@@ -1,7 +1,6 @@
 //! NuGet (nuget.org).
 
-use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::{Reader, events::Event};
 
 use crate::ecosystem::{
     EcosystemSpec, Language,
@@ -33,8 +32,9 @@ impl EcosystemSpec for CSharp {
 
     fn parse_name(raw: &str) -> Option<name::StructuredName> {
         // NuGet IDs: ASCII alphanumeric + `.`/`-`/`_`, starts and ends alphanumeric.
-        // Canonical: lowercase (nuget.org is case-insensitive by flat-container convention).
-        // Structure: dot-separated; leading segments → namespace, last → name.
+        // Canonical: lowercase (nuget.org is case-insensitive by flat-container
+        // convention). Structure: dot-separated; leading segments → namespace,
+        // last → name.
         if !raw.starts_with(|c: char| c.is_ascii_alphanumeric())
             || !raw.ends_with(|c: char| c.is_ascii_alphanumeric())
             || !raw
@@ -112,9 +112,10 @@ impl EcosystemSpec for CSharp {
     }
 
     /// Merge NuGet registration-index listing status into the primary version
-    /// list (M3). The registration index is an array of catalog pages; each page
-    /// has an `items` array of version entries with a `catalogEntry.listed`
-    /// boolean. Versions with `listed == false` are flipped to Withdrawn.
+    /// list (M3). The registration index is an array of catalog pages; each
+    /// page has an `items` array of version entries with a
+    /// `catalogEntry.listed` boolean. Versions with `listed == false` are
+    /// flipped to Withdrawn.
     fn merge_listing_status(
         mut versions: Vec<ListedVersion<Self::Version>>,
         status_body: &[u8],
@@ -147,7 +148,8 @@ impl EcosystemSpec for CSharp {
     }
 
     fn manifest_candidates() -> &'static [ManifestCandidate] {
-        // `.nuspec` matched as suffix — the file is named `<id>.nuspec` inside the package.
+        // `.nuspec` matched as suffix — the file is named `<id>.nuspec` inside the
+        // package.
         static CANDIDATES: &[ManifestCandidate] = &[ManifestCandidate::new(".nuspec")];
         CANDIDATES
     }
@@ -163,9 +165,10 @@ impl EcosystemSpec for CSharp {
     /// NuGet download counts via the NuGet Search Service (US North-Central).
     /// Template: `https://azuresearch-usnc.nuget.org/query?q=packageid:{name}`
     /// Response JSON: `{"data": [{"totalDownloads": N, ...}], ...}`.
-    /// Note: the `q=packageid:` query returns an exact-match hit for the package
-    /// so `data[0].totalDownloads` is the all-time count. For ranking we use
-    /// total-downloads as a proxy for monthly (no monthly endpoint available).
+    /// Note: the `q=packageid:` query returns an exact-match hit for the
+    /// package so `data[0].totalDownloads` is the all-time count. For
+    /// ranking we use total-downloads as a proxy for monthly (no monthly
+    /// endpoint available).
     fn download_source() -> Option<upstream::DownloadEndpoint> {
         Some(upstream::DownloadEndpoint {
             url: "https://azuresearch-usnc.nuget.org/query?q=packageid:{name}",
@@ -307,13 +310,15 @@ pub fn parse_nuspec(bytes: &[u8]) -> Option<ExtractedFacts> {
                         "projecturl" => {
                             if !text.is_empty() {
                                 documentation = true;
-                                // Use <projectUrl> as repository fallback if no <repository url="..."> seen.
+                                // Use <projectUrl> as repository fallback if no <repository
+                                // url="..."> seen.
                                 if project_url.is_none() {
                                     project_url = Some(text.clone());
                                 }
                             }
                         }
-                        // <licenseUrl> is deprecated — treat as has_license_file presence signal only.
+                        // <licenseUrl> is deprecated — treat as has_license_file presence signal
+                        // only.
                         "licenseurl" => {
                             if !text.is_empty() {
                                 has_license_file = true;
@@ -336,7 +341,8 @@ pub fn parse_nuspec(bytes: &[u8]) -> Option<ExtractedFacts> {
         buf.clear();
     }
 
-    // Fall back to <projectUrl> for repository when no <repository url="..."> found.
+    // Fall back to <projectUrl> for repository when no <repository url="...">
+    // found.
     let final_repository = repository.or(project_url);
 
     Some(ExtractedFacts {
@@ -348,7 +354,10 @@ pub fn parse_nuspec(bytes: &[u8]) -> Option<ExtractedFacts> {
         documentation,
         license,
         has_license_file,
-        dependencies,
+        dependencies: dependencies
+            .into_iter()
+            .map(crate::record::DepEdge::runtime)
+            .collect(),
     })
 }
 
@@ -399,8 +408,16 @@ mod tests {
             Some("https://github.com/JamesNK/Newtonsoft.Json"),
             "repository url attribute from <repository>"
         );
-        assert!(facts.dependencies.contains(&"Microsoft.CSharp".to_owned()));
-        assert!(facts.dependencies.contains(&"System.Text.Json".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"Microsoft.CSharp".to_owned())
+        );
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"System.Text.Json".to_owned())
+        );
     }
 
     #[test]

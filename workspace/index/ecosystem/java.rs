@@ -332,7 +332,10 @@ pub fn parse_pom_xml(bytes: &[u8]) -> Option<ExtractedFacts> {
         documentation,
         license,
         has_license_file: false,
-        dependencies,
+        dependencies: dependencies
+            .into_iter()
+            .map(crate::record::DepEdge::runtime)
+            .collect(),
     })
 }
 
@@ -497,12 +500,12 @@ mod tests {
         );
         assert!(
             facts
-                .dependencies
+                .dependency_names()
                 .contains(&"io.micrometer:micrometer-observation".to_owned())
         );
         assert!(
             facts
-                .dependencies
+                .dependency_names()
                 .contains(&"com.google.code.findbugs:jsr305".to_owned())
         );
     }

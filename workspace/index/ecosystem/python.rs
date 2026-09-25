@@ -348,7 +348,10 @@ pub fn parse_pyproject_toml(text: &str) -> ExtractedFacts {
         documentation,
         license,
         has_license_file: has_license_file || license_from_classifier,
-        dependencies,
+        dependencies: dependencies
+            .into_iter()
+            .map(crate::record::DepEdge::runtime)
+            .collect(),
     }
 }
 
@@ -563,7 +566,10 @@ pub fn parse_pkg_info(text: &str) -> ExtractedFacts {
         documentation,
         license: final_license,
         has_license_file,
-        dependencies,
+        dependencies: dependencies
+            .into_iter()
+            .map(crate::record::DepEdge::runtime)
+            .collect(),
     }
 }
 
@@ -712,7 +718,10 @@ pub fn parse_setup_cfg(text: &str) -> ExtractedFacts {
         documentation,
         license: final_license,
         has_license_file,
-        dependencies,
+        dependencies: dependencies
+            .into_iter()
+            .map(crate::record::DepEdge::runtime)
+            .collect(),
     }
 }
 
@@ -887,8 +896,8 @@ Documentation = "https://requests.readthedocs.io"
             "Repository URL from [project.urls]"
         );
         assert!(facts.documentation);
-        assert!(facts.dependencies.contains(&"urllib3".to_owned()));
-        assert!(facts.dependencies.contains(&"certifi".to_owned()));
+        assert!(facts.dependency_names().contains(&"urllib3".to_owned()));
+        assert!(facts.dependency_names().contains(&"certifi".to_owned()));
     }
 
     #[test]
@@ -906,7 +915,7 @@ Documentation = "https://requests.readthedocs.io"
             facts.repository.as_deref() == Some("https://github.com/psf/requests"),
             "Repository from Project-URL"
         );
-        assert!(facts.dependencies.contains(&"certifi".to_owned()));
+        assert!(facts.dependency_names().contains(&"certifi".to_owned()));
     }
 
     #[test]
@@ -920,7 +929,7 @@ Documentation = "https://requests.readthedocs.io"
             "setup.cfg license value"
         );
         assert!(!facts.has_license_file);
-        assert!(facts.dependencies.contains(&"requests".to_owned()));
+        assert!(facts.dependency_names().contains(&"requests".to_owned()));
     }
 
     #[test]

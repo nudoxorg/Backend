@@ -28,8 +28,8 @@ pub struct ExtractedFacts {
     /// Manifest-declared readme path, if any.
     pub readme_hint: Option<String>,
     /// Verbatim repository/SCM URL from the manifest when one is declared;
-    /// `None` when absent. Use [`crate::ecosystem::repo::normalize_repo_url`] to
-    /// obtain a cross-ecosystem comparable slug.
+    /// `None` when absent. Use [`crate::ecosystem::repo::normalize_repo_url`]
+    /// to obtain a cross-ecosystem comparable slug.
     pub repository: Option<String>,
     pub documentation: bool,
     /// Verbatim SPDX license expression or license name declared in the
@@ -41,15 +41,27 @@ pub struct ExtractedFacts {
     /// `true` when the manifest references a license file but carries no
     /// parseable license expression.
     pub has_license_file: bool,
-    /// Direct dependency names, for the `dep:` invisible-keyword feature.
-    pub dependencies: Vec<String>,
+    /// Direct dependency edges. Facet keywords use [`Self::dependency_names`].
+    pub dependencies: Vec<crate::record::DepEdge>,
+}
+
+impl ExtractedFacts {
+    /// Dependency names in manifest order.
+    #[must_use]
+    pub fn dependency_names(&self) -> Vec<String> {
+        self.dependencies
+            .iter()
+            .map(|edge| edge.name.to_string())
+            .collect()
+    }
 }
 
 impl ExtractedFacts {
     /// Fold `other` (parsed from a *lower-priority* manifest candidate) into
     /// `self` (the accumulator, seeded from higher-priority candidates so
     /// far). Called once per successfully-parsed candidate, in the
-    /// ecosystem's declared priority order (`EcosystemSpec::manifest_candidates`) —
+    /// ecosystem's declared priority order
+    /// (`EcosystemSpec::manifest_candidates`) —
     /// see `server::coordination::indexing::facets::extract_facets`, the only
     /// caller.
     ///
@@ -65,21 +77,21 @@ impl ExtractedFacts {
     ///   are *presence* signals ("a homepage/license was declared somewhere"),
     ///   `false` is "no evidence yet" rather than a claim of absence, so
     ///   evidence from any manifest should only ever turn a signal on, never
-    ///   off — order-independent by construction, which also keeps the
-    ///   result stable regardless of how many candidates are added later.
+    ///   off — order-independent by construction, which also keeps the result
+    ///   stable regardless of how many candidates are added later.
     /// - **Collections** (`keywords`, `categories`, `dependencies`): union,
     ///   deduped by exact string equality, higher-priority manifest's items
-    ///   first. Each of these lists is a set of independent facts (a keyword,
-    ///   a category, a dependency token) rather than one competing value, so
-    ///   dropping a lower-priority manifest's items (as first-non-empty
-    ///   would) would silently discard real search/dependency signal — e.g.
-    ///   `cpp`'s dependency records span 7 distinct declaration mechanisms
-    ///   (`find_package`, `pkg_config`, submodule, `FetchContent`, meson
-    ///   wrap, vcpkg/conan recipe, `bazel_dep`) precisely because a single
-    ///   package legitimately declares dependencies through more than one of
-    ///   its manifests at once. The dedup guards against the same token
-    ///   surfacing from two manifests (e.g. `zlib` as both a vcpkg recipe dep
-    ///   and a CMake `find_package` name).
+    ///   first. Each of these lists is a set of independent facts (a keyword, a
+    ///   category, a dependency token) rather than one competing value, so
+    ///   dropping a lower-priority manifest's items (as first-non-empty would)
+    ///   would silently discard real search/dependency signal — e.g. `cpp`'s
+    ///   dependency records span 7 distinct declaration mechanisms
+    ///   (`find_package`, `pkg_config`, submodule, `FetchContent`, meson wrap,
+    ///   vcpkg/conan recipe, `bazel_dep`) precisely because a single package
+    ///   legitimately declares dependencies through more than one of its
+    ///   manifests at once. The dedup guards against the same token surfacing
+    ///   from two manifests (e.g. `zlib` as both a vcpkg recipe dep and a CMake
+    ///   `find_package` name).
     pub fn merge(&mut self, other: ExtractedFacts) {
         if self.description.is_none() {
             self.description = other.description;
@@ -97,7 +109,17 @@ impl ExtractedFacts {
         self.has_license_file = self.has_license_file || other.has_license_file;
         merge_union(&mut self.keywords, other.keywords);
         merge_union(&mut self.categories, other.categories);
-        merge_union(&mut self.dependencies, other.dependencies);
+        merge_edges(&mut self.dependencies, other.dependencies);
+    }
+}
+
+/// Keep the first edge for a name. Later manifests only append new names.
+fn merge_edges(acc: &mut Vec<crate::record::DepEdge>, new: Vec<crate::record::DepEdge>) {
+    for edge in new {
+        if edge.name.is_empty() || acc.iter().any(|kept| kept.name == edge.name) {
+            continue;
+        }
+        acc.push(edge);
     }
 }
 
@@ -169,12 +191,20 @@ mod tests {
 
     #[test]
     fn merge_collections_union_with_dedup() {
-        let mut acc = facts(|f| f.dependencies = vec!["zlib".into(), "openssl".into()]);
+        let mut acc = facts(|f| {
+            f.dependencies = vec![
+                crate::record::DepEdge::runtime("zlib"),
+                crate::record::DepEdge::runtime("openssl"),
+            ];
+        });
         acc.merge(facts(|f| {
-            f.dependencies = vec!["zlib".into(), "libpng".into()];
+            f.dependencies = vec![
+                crate::record::DepEdge::runtime("zlib"),
+                crate::record::DepEdge::runtime("libpng"),
+            ];
         }));
         assert_eq!(
-            acc.dependencies,
+            acc.dependency_names(),
             vec!["zlib".to_owned(), "openssl".to_owned(), "libpng".to_owned()],
             "higher-priority items first, duplicates dropped, new items appended in order"
         );
@@ -186,17 +216,17 @@ mod tests {
         acc.merge(facts(|f| {
             f.keywords = vec!["http".into(), "networking".into()];
         }));
-        assert_eq!(
-            acc.keywords,
-            vec!["http".to_owned(), "networking".to_owned()]
-        );
+        assert_eq!(acc.keywords, vec![
+            "http".to_owned(),
+            "networking".to_owned()
+        ]);
 
         let mut acc = facts(|f| f.categories = vec!["net".into()]);
         acc.merge(facts(|f| f.categories = vec!["compression".into()]));
-        assert_eq!(
-            acc.categories,
-            vec!["net".to_owned(), "compression".to_owned()]
-        );
+        assert_eq!(acc.categories, vec![
+            "net".to_owned(),
+            "compression".to_owned()
+        ]);
     }
 
     #[test]

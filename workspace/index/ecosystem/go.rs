@@ -351,10 +351,7 @@ pub fn parse_go_mod(text: &str) -> ExtractedFacts {
             }
         }
     }
-    let dependencies = scan_requires(text)
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect();
+    let dependencies = require_edges(text);
 
     let repository = module_path.and_then(repo_from_module_path);
 
@@ -719,10 +716,14 @@ require (
         let facts = parse_go_mod(text);
         assert!(
             facts
-                .dependencies
+                .dependency_names()
                 .contains(&"github.com/gorilla/context".to_owned())
         );
-        assert!(facts.dependencies.contains(&"golang.org/x/net".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"golang.org/x/net".to_owned())
+        );
         assert!(facts.description.is_none(), "go.mod has no description");
         assert_eq!(
             facts.repository.as_deref(),
@@ -735,7 +736,11 @@ require (
     fn parse_go_mod_single_line_require() {
         let text = "module example.com/foo\n\nrequire golang.org/x/sync v0.1.0\n";
         let facts = parse_go_mod(text);
-        assert!(facts.dependencies.contains(&"golang.org/x/sync".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"golang.org/x/sync".to_owned())
+        );
     }
 
     #[test]
@@ -784,14 +789,22 @@ require (
             facts.repository.as_deref(),
             Some("https://github.com/example/foo")
         );
-        assert!(facts.dependencies.contains(&"golang.org/x/sync".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"golang.org/x/sync".to_owned())
+        );
     }
 
     #[test]
     fn parse_go_mod_unterminated_require_block_no_hang() {
         let text = "module example.com/foo\n\nrequire (\n    github.com/a/b v1.0.0\n";
         let facts = parse_go_mod(text);
-        assert!(facts.dependencies.contains(&"github.com/a/b".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"github.com/a/b".to_owned())
+        );
     }
 
     #[test]
@@ -799,7 +812,11 @@ require (
         let text =
             "module example.com/日本語モジュール\n\nrequire github.com/a/b v1.0.0\n\0garbage\0\n";
         let facts = parse_go_mod(text);
-        assert!(facts.dependencies.contains(&"github.com/a/b".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"github.com/a/b".to_owned())
+        );
     }
 
     #[test]
@@ -855,15 +872,19 @@ exclude github.com/bad/pkg v0.0.1
         );
         assert!(
             facts
-                .dependencies
+                .dependency_names()
                 .contains(&"github.com/stretchr/testify".to_owned())
         );
         assert!(
             facts
-                .dependencies
+                .dependency_names()
                 .contains(&"github.com/davecgh/go-spew".to_owned())
         );
-        assert!(facts.dependencies.contains(&"gopkg.in/yaml.v3".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"gopkg.in/yaml.v3".to_owned())
+        );
         assert!(facts.description.is_none());
         assert!(facts.license.is_none());
         assert!(!facts.has_license_file);

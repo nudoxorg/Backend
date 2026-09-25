@@ -7,8 +7,8 @@
 //!
 //! - If normalization succeeds, the resulting [`RepoSlug`] string becomes the
 //!   dependency token (highest-value edge — self-resolving).
-//! - If normalization returns `None`, the raw URL string is stored as the
-//!   token (EDB law RL-5: store what the extractor saw).
+//! - If normalization returns `None`, the raw URL string is stored as the token
+//!   (EDB law RL-5: store what the extractor saw).
 //!
 //! Comment characters: `#` and `;` (both are valid in git-config).
 //! Keys are indented with tabs or spaces (git-config convention).
@@ -16,7 +16,8 @@
 
 use super::{CppManifest, DependencyMechanism, DependencyRecord};
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Public entry point
+// ────────────────────────────────────────────────────────
 
 /// Parse a `.gitmodules` file and return the extracted manifest.
 ///
@@ -67,7 +68,8 @@ pub fn parse(text: &str) -> CppManifest {
     manifest
 }
 
-// ── Internal types ────────────────────────────────────────────────────────────
+// ── Internal types
+// ────────────────────────────────────────────────────────────
 
 /// The kind of git-config section header encountered.
 #[derive(Debug, Clone, Copy)]
@@ -84,7 +86,8 @@ struct KeyValue<'line> {
     value: &'line str,
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers
+// ───────────────────────────────────────────────────────────────────
 
 /// Emit a [`DependencyRecord`] for the completed submodule section, if a
 /// non-empty URL was found. A present-but-blank `url =` line (hostile or
@@ -234,7 +237,7 @@ mod tests {
         assert!(
             manifest
                 .facts
-                .dependencies
+                .dependency_names()
                 .contains(&"github.com/owner/lib".to_owned())
         );
     }

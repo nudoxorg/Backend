@@ -17,8 +17,10 @@
 //! across every matching candidate (`ExtractedFacts::merge`), so the license
 //! candidates below are finally reachable for those manifest shapes.
 
-use crate::ecosystem::license;
-use crate::ecosystem::manifest::{ExtractedFacts, ManifestCandidate, ManifestFacts};
+use crate::ecosystem::{
+    license,
+    manifest::{ExtractedFacts, ManifestCandidate, ManifestFacts},
+};
 
 pub mod cmake;
 pub mod conan;
@@ -38,7 +40,8 @@ mod tests;
 pub enum DependencyMechanism {
     /// CMake `find_package(<Name>)`.
     FindPackage,
-    /// pkg-config (`pkg_check_modules`, `.pc` `Requires:`, meson `dependency()`).
+    /// pkg-config (`pkg_check_modules`, `.pc` `Requires:`, meson
+    /// `dependency()`).
     PkgConfig,
     /// A git submodule (`.gitmodules`).
     Submodule,
@@ -103,7 +106,10 @@ impl CppManifest {
     /// A manifest carrying only typed dependency records (no facets).
     pub fn from_dependencies(dependencies: Vec<DependencyRecord>) -> Self {
         let facts = ExtractedFacts {
-            dependencies: dependencies.iter().map(|d| d.token.clone()).collect(),
+            dependencies: dependencies
+                .iter()
+                .map(|dep| crate::record::DepEdge::runtime(dep.token.clone()))
+                .collect(),
             ..ExtractedFacts::default()
         };
         Self {
@@ -115,7 +121,9 @@ impl CppManifest {
     /// Push a typed dependency record, keeping the erased `facts.dependencies`
     /// token mirror in sync.
     pub fn push_dependency(&mut self, record: DependencyRecord) {
-        self.facts.dependencies.push(record.token.clone());
+        self.facts
+            .dependencies
+            .push(crate::record::DepEdge::runtime(record.token.clone()));
         self.dependencies.push(record);
     }
 }

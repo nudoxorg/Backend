@@ -4,11 +4,10 @@
 //! call forms:
 //!
 //! - `project('<name>', ..., license: ..., license_files: ...)` — the project
-//!   name itself is unused (meson has no description field), but the
-//!   `license:` keyword argument (a single string or array of strings,
-//!   joined with `" AND "`) populates `facts.license`, and a non-empty
-//!   `license_files:` keyword argument (Meson 1.1.0+) sets
-//!   `facts.has_license_file`.
+//!   name itself is unused (meson has no description field), but the `license:`
+//!   keyword argument (a single string or array of strings, joined with `" AND
+//!   "`) populates `facts.license`, and a non-empty `license_files:` keyword
+//!   argument (Meson 1.1.0+) sets `facts.has_license_file`.
 //! - `dependency('<name>', ...)` → [`DependencyMechanism::PkgConfig`]
 //! - `subproject('<name>', ...)` → [`DependencyMechanism::Wrap`]
 //!
@@ -19,7 +18,8 @@
 
 use super::{CppManifest, DependencyMechanism, DependencyRecord};
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Public entry point
+// ────────────────────────────────────────────────────────
 
 /// Parse a `meson.build` file and return the extracted manifest.
 ///
@@ -112,7 +112,8 @@ pub fn parse(text: &str) -> CppManifest {
     manifest
 }
 
-// ── Internal types ────────────────────────────────────────────────────────────
+// ── Internal types
+// ────────────────────────────────────────────────────────────
 
 /// The call keywords the scanner recognises in `meson.build`.
 #[derive(Debug, Clone, Copy)]
@@ -122,7 +123,8 @@ enum CallKeyword {
     Project,
 }
 
-// ── Scanner helpers ───────────────────────────────────────────────────────────
+// ── Scanner helpers
+// ───────────────────────────────────────────────────────────
 
 /// If the bytes starting at `position` begin one of the call keywords
 /// immediately followed by `(`, return the keyword and the index of the `(`
@@ -493,8 +495,18 @@ subproject('googletest')
     fn parse_facts_dependencies_mirror_synced() {
         let text = "dependency('openssl')\nsubproject('catch2')\n";
         let manifest = parse(text);
-        assert!(manifest.facts.dependencies.contains(&"openssl".to_owned()));
-        assert!(manifest.facts.dependencies.contains(&"catch2".to_owned()));
+        assert!(
+            manifest
+                .facts
+                .dependency_names()
+                .contains(&"openssl".to_owned())
+        );
+        assert!(
+            manifest
+                .facts
+                .dependency_names()
+                .contains(&"catch2".to_owned())
+        );
     }
 
     // ── `license:` / `license_files:` (P6 gap fill) ──────────────────────────

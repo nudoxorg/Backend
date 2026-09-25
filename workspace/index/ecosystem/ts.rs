@@ -28,8 +28,8 @@ impl EcosystemSpec for TypeScript {
     type Version = version::SemverVersion;
 
     fn parse_name(raw: &str) -> Option<name::StructuredName> {
-        // npm: optional `@scope/name`; each segment is ASCII alphanumeric + `-`/`_`/`.`,
-        // not starting with `.`. Canonical: lowercase.
+        // npm: optional `@scope/name`; each segment is ASCII alphanumeric +
+        // `-`/`_`/`.`, not starting with `.`. Canonical: lowercase.
         let segment_ok = |s: &str| {
             !s.is_empty()
                 && !s.starts_with('.')
@@ -210,8 +210,9 @@ pub fn parse_package_json(bytes: &[u8]) -> Option<ExtractedFacts> {
 
     let documentation = pkg.homepage.as_deref().is_some_and(|s| !s.is_empty());
 
-    // Object-form license (`{"type":"MIT","url":"..."}`) existed in old npm packages —
-    // extract `type` when present; fall back to the whole object being a presence signal.
+    // Object-form license (`{"type":"MIT","url":"..."}`) existed in old npm
+    // packages — extract `type` when present; fall back to the whole object
+    // being a presence signal.
     let license: Option<String> = match &pkg.license {
         Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
         Some(serde_json::Value::Object(obj)) => obj
@@ -222,10 +223,13 @@ pub fn parse_package_json(bytes: &[u8]) -> Option<ExtractedFacts> {
         _ => None,
     };
 
-    let dependencies: Vec<String> = match pkg.dependencies {
-        Some(serde_json::Value::Object(obj)) => obj.keys().cloned().collect(),
-        _ => vec![],
-    };
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
+    if let Some(serde_json::Value::Object(obj)) = &pkg.dependencies {
+        for (name, value) in obj {
+            fold.observe(name, value.as_str(), false);
+        }
+    }
+    let dependencies = fold.finish();
 
     // Sanitize description: strip control chars.
     let description = pkg
@@ -274,7 +278,11 @@ mod tests {
         assert!(facts.documentation);
         assert_eq!(facts.license.as_deref(), Some("MIT"));
         assert!(!facts.has_license_file);
-        assert!(facts.dependencies.contains(&"follow-redirects".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"follow-redirects".to_owned())
+        );
     }
 
     #[test]
@@ -292,7 +300,11 @@ mod tests {
             Some("https://github.com/DefinitelyTyped/DefinitelyTyped"),
             "object-form repository URL must be extracted"
         );
-        assert!(facts.dependencies.contains(&"@types/globals".to_owned()));
+        assert!(
+            facts
+                .dependency_names()
+                .contains(&"@types/globals".to_owned())
+        );
     }
 
     #[test]

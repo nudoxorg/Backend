@@ -1,12 +1,18 @@
 //! Emit-time metadata: listing signals, download counts, and search facets.
 
-use crate::ecosystem::{DynSpec, LanguageExt};
 #[allow(unused_imports)]
 use crate::server::registry;
-use crate::server::registry::blob::{BlobManifest, FileEntry, creation::PendingSection};
-use crate::server::registry::identity::PackageCoordinates;
-use crate::server::registry::metadata::SearchFacets;
-use crate::server::registry::metadata::rich::{self, ExtractionInput};
+use crate::{
+    ecosystem::{DynSpec, LanguageExt},
+    server::registry::{
+        blob::{BlobManifest, FileEntry, creation::PendingSection},
+        identity::PackageCoordinates,
+        metadata::{
+            SearchFacets,
+            rich::{self, ExtractionInput},
+        },
+    },
+};
 
 /// Fetch the registry listing body and parse release/freshness signals.
 ///
@@ -16,8 +22,10 @@ pub(super) async fn fetch_listing_signals(
     coordinates: &PackageCoordinates,
     client: &registry::upstream::UpstreamClient,
 ) -> Option<(u32, u32, bool, Option<u32>)> {
-    use crate::ecosystem::LanguageExt;
-    use crate::server::registry::search::listing_signals::listing_signals_from_body;
+    use crate::{
+        ecosystem::LanguageExt,
+        server::registry::search::listing_signals::listing_signals_from_body,
+    };
 
     let spec = coordinates.ecosystem().spec();
     let name = coordinates.name.canonical();
@@ -85,8 +93,8 @@ pub(super) async fn fetch_listing_signals(
 }
 
 /// Fetch the download count for `coordinates` from the ecosystem's
-/// [`DownloadEndpoint`](crate::ecosystem::upstream::DownloadEndpoint) (if any) and
-/// store it in `facets.downloads`.
+/// [`DownloadEndpoint`](crate::ecosystem::upstream::DownloadEndpoint) (if any)
+/// and store it in `facets.downloads`.
 ///
 /// Ecosystems with a source today: TypeScript (npm downloads API), C# (NuGet
 /// search `totalDownloads`), Rust (crates.io listing `crate.recent_downloads`).
@@ -143,21 +151,22 @@ pub(super) async fn fetch_and_set_downloads(
 /// Ecosystem-generic: manifest discovery iterates `spec.manifest_candidates()`
 /// in priority order, case-insensitively matched against snapshot entries,
 /// preferring root or one-wrapper-dir paths. Parsing is delegated to
-/// `spec.extract_facts()`. README discovery is root-first across all ecosystems.
-/// `loc` is a cheap honest newline count of source-file sections. Category
-/// mapping (`spec.search_norms().map_category`) is applied inside
+/// `spec.extract_facts()`. README discovery is root-first across all
+/// ecosystems. `loc` is a cheap honest newline count of source-file sections.
+/// Category mapping (`spec.search_norms().map_category`) is applied inside
 /// `spec.extract_facts()` for ecosystems that do so at parse time (Python trove
 /// classifiers); for ecosystems whose native categories ARE the shared taxonomy
 /// (Rust), `extract_facts` passes them through via `map_internal_category`.
-/// Either way the facts arrive already mapped into `ExtractedFacts::categories`.
+/// Either way the facts arrive already mapped into
+/// `ExtractedFacts::categories`.
 ///
 /// Non-fatal by design: any missing/unparseable input degrades to a minimal
 /// name-only facet set (or `None`), so ingest never fails because search
 /// metadata could not be derived.
 ///
 /// `listing` is release/freshness signals observed from the registry listing
-/// body (or resolve): `(total, withdrawn, this_withdrawn, last_release_days_ago)`.
-/// Pass `None` when no listing fetch is available.
+/// body (or resolve): `(total, withdrawn, this_withdrawn,
+/// last_release_days_ago)`. Pass `None` when no listing fetch is available.
 pub(super) fn extract_facets(
     coordinates: &PackageCoordinates,
     manifest: &BlobManifest,
@@ -177,7 +186,8 @@ pub(super) fn extract_facets(
 
     // ── Manifest discovery ────────────────────────────────────────────────────
     // Bytes of a manifest file are fetched from `sections` by content hash — the
-    // same hash the `FileEntry` records — so no post-emit blob round-trip is needed.
+    // same hash the `FileEntry` records — so no post-emit blob round-trip is
+    // needed.
     let file_bytes = |entry: &FileEntry| -> Option<bytes::Bytes> {
         let section = sections.iter().find(|s| s.hash == entry.hash)?;
         Some(section.bytes.clone())
@@ -296,6 +306,7 @@ pub(super) fn extract_facets(
         None => (None, None, None),
     };
 
+    let dependency_names = facts.dependency_names();
     let input = ExtractionInput {
         name: &name,
         description: facts.description.as_deref(),
@@ -303,7 +314,7 @@ pub(super) fn extract_facets(
         manifest_categories: &facts.categories,
         readme: readme_text.as_deref(),
         identifiers,
-        dependencies: &facts.dependencies,
+        dependencies: &dependency_names,
         has_repository: facts.repository.is_some(),
         has_documentation: facts.documentation,
         has_license: facts.license.is_some() || facts.has_license_file,
@@ -345,7 +356,8 @@ pub(super) fn extract_facets(
     facets.verified_repo =
         crate::server::registry::search::gates::verified_repo(&name, facets.repo_slug.as_deref());
 
-    // Automatic squat / land-grab heuristic (quality-gated; never flags mature pkgs).
+    // Automatic squat / land-grab heuristic (quality-gated; never flags mature
+    // pkgs).
     facets.squat_suspect = crate::server::registry::search::squat::is_squat_suspect(
         crate::server::registry::search::squat::SquatInput {
             name: &name,
@@ -371,9 +383,13 @@ pub(super) fn extract_facets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ecosystem::PackageNameExt as _;
-    use crate::server::registry::blob::BlobBuilder;
-    use crate::server::registry::package::{Coordinates, PackageName};
+    use crate::{
+        ecosystem::PackageNameExt as _,
+        server::registry::{
+            blob::BlobBuilder,
+            package::{Coordinates, PackageName},
+        },
+    };
     use heart::{Language, PackageVersion, RegistryOrigin, Toolchain};
 
     /// Build a minimal, valid `(BlobManifest, Vec<PendingSection>)` from

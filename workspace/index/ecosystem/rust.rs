@@ -64,8 +64,8 @@ impl EcosystemSpec for Rust {
 
     /// Parse the crates.io `/api/v1/crates/{name}` JSON response.
     /// versions[].num → version string; versions[].yanked → Withdrawn.
-    /// All versions are included (yanked ones carry Withdrawn status rather than
-    /// being filtered, so exact-pin resolution can still find them).
+    /// All versions are included (yanked ones carry Withdrawn status rather
+    /// than being filtered, so exact-pin resolution can still find them).
     fn parse_version_listing(body: &[u8]) -> Vec<ListedVersion<Self::Version>> {
         use version::VersionGrammar;
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
@@ -121,8 +121,8 @@ impl EcosystemSpec for Rust {
     }
 
     /// Parse crates.io crate metadata: prefer `crate.recent_downloads`, fall
-    /// back to all-time `crate.downloads`. Malformed / missing → `None` (no panic).
-    /// Explicit `0` is valid (`Some(0)`).
+    /// back to all-time `crate.downloads`. Malformed / missing → `None` (no
+    /// panic). Explicit `0` is valid (`Some(0)`).
     fn parse_download_count(body: &[u8]) -> Option<u64> {
         let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
         let krate = &v["crate"];
@@ -189,12 +189,24 @@ pub fn parse_cargo_toml(text: &str) -> ExtractedFacts {
             .unwrap_or_default()
     };
 
-    // `[dependencies]` keys as dependency names.
-    let dependencies: Vec<String> = value
-        .get("dependencies")
-        .and_then(toml::Value::as_table)
-        .map(|t| t.keys().map(std::borrow::ToOwned::to_owned).collect())
-        .unwrap_or_default();
+    let mut fold = crate::record::RuntimeEdgeFold::keep_first();
+    if let Some(table) = value.get("dependencies").and_then(toml::Value::as_table) {
+        for (name, spec) in table {
+            let (requirement, optional) = match spec {
+                toml::Value::String(requirement) => (Some(requirement.as_str()), false),
+                toml::Value::Table(fields) => (
+                    fields.get("version").and_then(toml::Value::as_str),
+                    fields
+                        .get("optional")
+                        .and_then(toml::Value::as_bool)
+                        .unwrap_or(false),
+                ),
+                _ => (None, false),
+            };
+            fold.observe(name, requirement, optional);
+        }
+    }
+    let dependencies = fold.finish();
 
     let repository = string_field("repository").filter(|s| !s.is_empty());
     let license_expr = string_field("license").filter(|s| !s.is_empty());
@@ -232,10 +244,9 @@ mod tests {
         assert!(versions[0].status.is_listed());
         assert_eq!(versions[1].raw, "0.9.0");
         assert!(!versions[1].status.is_listed());
-        assert!(matches!(
-            versions[1].status,
-            ListingStatus::Withdrawn { reason: None }
-        ));
+        assert!(matches!(versions[1].status, ListingStatus::Withdrawn {
+            reason: None
+        }));
         assert!(versions[2].status.is_listed());
     }
 
@@ -277,8 +288,21 @@ serde = { version = "1.0", features = ["derive"] }
         assert_eq!(facts.license.as_deref(), Some("MIT"));
         assert!(!facts.has_license_file);
         assert!(!facts.documentation);
-        assert!(facts.dependencies.contains(&"tokio".to_owned()));
-        assert!(facts.dependencies.contains(&"serde".to_owned()));
+        assert!(facts.dependency_names().contains(&"tokio".to_owned()));
+        assert!(facts.dependency_names().contains(&"serde".to_owned()));
+        let tokio = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "tokio")
+            .expect("tokio");
+        assert_eq!(tokio.requirement.as_deref(), Some("1.0"));
+        let serde = facts
+            .dependencies
+            .iter()
+            .find(|edge| edge.name == "serde")
+            .expect("serde");
+        assert_eq!(serde.requirement.as_deref(), Some("1.0"));
+        assert!(!serde.optional);
     }
 
     #[test]
