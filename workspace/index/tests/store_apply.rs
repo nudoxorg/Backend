@@ -4,6 +4,7 @@
 mod common;
 
 use common::{gen_stamp, migrated_writer, stem_id, version_id};
+use proptest::prop_assert_eq;
 
 use heart::query::{AsOf, UnixMilliseconds};
 use index::{
@@ -533,4 +534,68 @@ fn an_optional_wire_lands_in_sql_and_on_the_ledger() {
     assert_eq!(tip.edges.len(), 1);
     assert!(tip.edges[0].optional);
     assert_eq!(tip.edges[0].requirement.as_deref(), Some("^1"));
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+
+    #[test]
+    fn random_edges_match_on_sql_and_the_ledger(
+        rows in proptest::collection::vec(
+            (0usize..16, proptest::bool::ANY, "[~^0-9]{0,6}"),
+            1..8,
+        )
+    ) {
+        use index::enums::TextEnum;
+        use index::engine::turso_vc::VersionedCatalog;
+
+        let kinds = EdgeKind::all_variants();
+        let wires: Vec<EdgeWire> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, (kind, optional, requirement))| EdgeWire {
+                dep_ecosystem: heart::Language::Rust,
+                dep_name_canonical: format!("d{index}"),
+                requirement: requirement.clone(),
+                kind: kinds[*kind % kinds.len()],
+                source: EdgeSource::Manifest,
+                resolved_stem: None,
+                optional: *optional,
+            })
+            .collect();
+        let mut version = upsert_version(1, 1);
+        if let CatalogOp::UpsertVersion { edges, .. } = &mut version {
+            *edges = index::protocol::EdgeSnapshot::carrying(wires.clone());
+        }
+        let ops = [upsert_package(1), version];
+        let writer = migrated_writer();
+        writer.apply_ops(&ops).expect("sql");
+        let mut sql = writer
+            .engine()
+            .query_rows(
+                "SELECT kind, dep_name_canonical, requirement, optional FROM edges ORDER BY kind, dep_name_canonical",
+                &[],
+                &mut |row| Ok((row.get_text(0)?, row.get_text(1)?, row.get_text(2)?, row.get_integer(3)?)),
+            )
+            .expect("sql rows");
+        let mut ledger = VersionedCatalog::open().expect("ledger");
+        for effect in index::edge_project::effects_from_ops(&ops, None) {
+            ledger.apply_effect(&effect).expect("ledger");
+        }
+        let tip = ledger.materialize("rust", "pkg1", "1.0.1").expect("read").expect("row");
+        let mut ledger_rows: Vec<_> = tip
+            .edges
+            .iter()
+            .map(|edge| (
+                edge.kind.as_token().to_owned(),
+                edge.name.to_string(),
+                edge.requirement.as_deref().unwrap_or("").to_owned(),
+                i64::from(edge.optional),
+            ))
+            .collect();
+        ledger_rows.sort();
+        sql.sort();
+        prop_assert_eq!(sql, ledger_rows);
+        prop_assert_eq!(ledger.dependents(), ledger.dependents_from_tips());
+    }
 }
