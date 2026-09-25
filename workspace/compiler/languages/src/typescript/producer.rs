@@ -1859,6 +1859,55 @@ mod tests {
     }
 
     #[test]
+    fn a_commonjs_object_export_keeps_arrow_and_class_properties() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"cjs-members","version":"1.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.js"),
+            "module.exports = {\n\
+               left: (s) => s,\n\
+               Baz: class { qux() { return 2; } },\n\
+             };\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "cjs-members", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("cjs-members"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("object members that are functions and classes must seal");
+        let left = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "left"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(left, 1, "an arrow property must be a function");
+        let baz = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "Baz" && matches!(entry.kind(), EntryInner::Owned(Kind::Record(_)))
+            })
+            .count();
+        assert_eq!(baz, 1, "a class property must be a class");
+        let qux = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "qux"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(qux, 1, "the class method must be declared");
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

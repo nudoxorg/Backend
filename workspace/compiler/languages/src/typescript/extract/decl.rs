@@ -656,6 +656,36 @@ fn push_commonjs_object_properties<'a>(
                 .push((export_name.clone(), export_name));
             continue;
         }
+        if let Expression::ArrowFunctionExpression(arrow) = &prop.value {
+            push_commonjs_function(
+                &export_name,
+                lower_arrow(arrow, source),
+                arrow.span(),
+                semantic,
+                path,
+                declarations,
+                name_counts,
+            );
+            cjs_exports
+                .named
+                .push((export_name.clone(), export_name));
+            continue;
+        }
+        if let Expression::ClassExpression(class) = &prop.value {
+            push_commonjs_class(
+                class,
+                &export_name,
+                source,
+                semantic,
+                path,
+                declarations,
+                name_counts,
+            );
+            cjs_exports
+                .named
+                .push((export_name.clone(), export_name));
+            continue;
+        }
         if let Some(specifier) = require_specifier(&prop.value) {
             if !is_package_specifier(&specifier) {
                 continue;
