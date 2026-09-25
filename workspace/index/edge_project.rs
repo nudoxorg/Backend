@@ -44,18 +44,34 @@ pub fn project_edges(ecosystem: Language, edges: &[DepEdge], source: EdgeSource)
     wires
 }
 
+/// One effect a catalog batch has on the versioned package ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LedgerEffect {
+    /// Write or revise this package and its edges.
+    Upsert(crate::record::PackageRecord),
+    /// Tombstone this package version and every edge it owns.
+    Remove {
+        /// Ecosystem of the removed package.
+        ecosystem: Language,
+        /// Canonical package name.
+        name: String,
+        /// Published version string.
+        version: String,
+    },
+}
+
 /// Package records for the versions in `ops`.
 ///
 /// A version is named by the [`CatalogOp::UpsertPackage`] in the same batch.
-/// A version whose stem is absent from the batch is skipped. Wire kinds fold
-/// back onto [`DepClass`]: runtime and recipe stay runtime, build stays build,
-/// and every other catalog mechanism is build.
+/// A version whose stem is absent from the batch is skipped. Removals are
+/// omitted; use [`effects_from_ops`] when the batch can delete a version.
 #[must_use]
 pub fn records_from_ops(ops: &[crate::protocol::CatalogOp]) -> Vec<crate::record::PackageRecord> {
     records_from_ops_named(ops, None)
 }
 
-/// Like [`records_from_ops`], and names a version whose stem is not in the batch.
+/// Like [`records_from_ops`], and names a version whose stem is not in the
+/// batch.
 ///
 /// Git polls emit [`VersionDelta`](crate::protocol::VersionDelta) after the
 /// package was registered on an earlier commit. `fallback` is that package.
@@ -64,10 +80,30 @@ pub fn records_from_ops_named(
     ops: &[crate::protocol::CatalogOp],
     fallback: Option<(Language, &str)>,
 ) -> Vec<crate::record::PackageRecord> {
+    effects_from_ops(ops, fallback)
+        .into_iter()
+        .filter_map(|effect| match effect {
+            LedgerEffect::Upsert(record) => Some(record),
+            LedgerEffect::Remove { .. } => None,
+        })
+        .collect()
+}
+
+/// Versioned-ledger effects for `ops`, in batch order.
+///
+/// Upserts and removals share one naming rule: the [`CatalogOp::UpsertPackage`]
+/// in the batch, or `fallback` when the package was registered earlier.
+#[must_use]
+pub fn effects_from_ops(
+    ops: &[crate::protocol::CatalogOp],
+    fallback: Option<(Language, &str)>,
+) -> Vec<LedgerEffect> {
     use std::collections::HashMap;
 
-    use crate::protocol::CatalogOp;
-    use crate::record::PackageRecord;
+    use crate::{
+        protocol::{CatalogOp, VersionDelta},
+        record::PackageRecord,
+    };
     use smol_str::SmolStr;
 
     let mut stems = HashMap::new();
@@ -76,42 +112,58 @@ pub fn records_from_ops_named(
             stems.insert(stem.stem_id, (stem.ecosystem, stem.name_canonical.clone()));
         }
     }
-    let mut records = Vec::new();
+    let name_of = |stem_id| match stems.get(&stem_id) {
+        Some((ecosystem, name)) => Some((*ecosystem, name.clone())),
+        None => fallback.map(|(ecosystem, name)| (ecosystem, name.to_owned())),
+    };
+    let mut effects = Vec::new();
     for op in ops {
-        let Some((stem_id, version, edges, license)) = version_view(op) else {
-            continue;
-        };
-        let (ecosystem, name) = match stems.get(&stem_id) {
-            Some((ecosystem, name)) => (*ecosystem, name.clone()),
-            None => match fallback {
-                Some((ecosystem, name)) => (ecosystem, name.to_owned()),
-                None => continue,
-            },
-        };
-        records.push(PackageRecord::from_parts(
-            ecosystem,
-            name,
-            version,
-            None,
-            license.map(SmolStr::new),
-            Vec::new(),
-            None,
-            None,
-            false,
-            edges.iter().map(edge_from_wire).collect(),
-        ));
+        match op {
+            CatalogOp::VersionDelta {
+                delta:
+                    VersionDelta::Removed {
+                        stem_id,
+                        version_canonical,
+                        ..
+                    },
+            } => {
+                let Some((ecosystem, name)) = name_of(*stem_id) else {
+                    continue;
+                };
+                effects.push(LedgerEffect::Remove {
+                    ecosystem,
+                    name,
+                    version: version_canonical.clone(),
+                });
+            }
+            _ => {
+                let Some((stem_id, version, edges, license)) = version_view(op) else {
+                    continue;
+                };
+                let Some((ecosystem, name)) = name_of(stem_id) else {
+                    continue;
+                };
+                effects.push(LedgerEffect::Upsert(PackageRecord::from_parts(
+                    ecosystem,
+                    name,
+                    version,
+                    None,
+                    license.map(SmolStr::new),
+                    Vec::new(),
+                    None,
+                    None,
+                    false,
+                    edges.iter().map(edge_from_wire).collect(),
+                )));
+            }
+        }
     }
-    records
+    effects
 }
 
 fn version_view(
     op: &crate::protocol::CatalogOp,
-) -> Option<(
-    crate::ids::PackageStemId,
-    &str,
-    &[EdgeWire],
-    Option<&str>,
-)> {
+) -> Option<(crate::ids::PackageStemId, &str, &[EdgeWire], Option<&str>)> {
     use crate::protocol::{CatalogOp, VersionDelta};
 
     match op {
@@ -261,6 +313,67 @@ mod tests {
         assert_eq!(tip.edges[0].name.as_str(), "libc");
         assert_eq!(tip.edges[0].requirement.as_deref(), Some("^1"));
         assert_eq!(tip.edges[1].class, DepClass::Build);
+    }
+
+    #[test]
+    fn a_removal_names_the_fallback_package_and_tombstones_its_row() {
+        use crate::{
+            engine::turso_vc::{FactWrite, VersionedCatalog},
+            ids::PackageStemId,
+            protocol::{CatalogOp, VersionDelta},
+        };
+        use heart::PackageId;
+
+        let stem_id = PackageStemId::from_uuid(uuid::Uuid::from_u128(7));
+        let version_id = PackageId::from_uuid(uuid::Uuid::from_u128(8));
+        let record = crate::record::PackageRecord::from_parts(
+            Language::Cpp,
+            "example.test/repo",
+            "v1.0.1",
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            vec![edge("openssl", DepClass::Runtime, Some("3"))],
+        );
+        let mut catalog = VersionedCatalog::open().expect("open");
+        assert!(matches!(
+            catalog.put_record(&record).expect("put"),
+            FactWrite::Revised(_)
+        ));
+        let ops = [CatalogOp::VersionDelta {
+            delta: VersionDelta::Removed {
+                stem_id,
+                version_id,
+                version_canonical: "v1.0.1".into(),
+            },
+        }];
+        let effects = effects_from_ops(&ops, Some((Language::Cpp, "example.test/repo")));
+        assert_eq!(effects.len(), 1);
+        let LedgerEffect::Remove {
+            ecosystem,
+            name,
+            version,
+        } = &effects[0]
+        else {
+            panic!("removal");
+        };
+        assert!(matches!(
+            catalog
+                .drop_version(ecosystem.as_token(), name, version)
+                .expect("drop"),
+            FactWrite::Revised(_)
+        ));
+        assert!(
+            catalog
+                .materialize("cpp", "example.test/repo", "v1.0.1")
+                .expect("tip")
+                .is_none()
+        );
+        assert!(catalog.scan_edges().is_empty());
+        assert!(effects_from_ops(&ops, None).is_empty());
     }
 
     fn edges_for_batch() -> [DepEdge; 3] {

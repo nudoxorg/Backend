@@ -198,6 +198,7 @@ pub fn retain_changed_versions(
             delta: crate::protocol::VersionDelta::Removed {
                 stem_id,
                 version_id: cpp_version_id(stem_id, canonical),
+                version_canonical: canonical.clone(),
             },
         });
     }

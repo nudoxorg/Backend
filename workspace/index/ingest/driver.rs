@@ -362,8 +362,16 @@ where
         let mut catalog = facts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for record in crate::edge_project::records_from_ops_named(ops, fallback) {
-            catalog.put_record(&record).map_err(|error| Error::Commit {
+        for effect in crate::edge_project::effects_from_ops(ops, fallback) {
+            let write = match effect {
+                crate::edge_project::LedgerEffect::Upsert(record) => catalog.put_record(&record),
+                crate::edge_project::LedgerEffect::Remove {
+                    ecosystem,
+                    name,
+                    version,
+                } => catalog.drop_version(ecosystem.as_token(), &name, &version),
+            };
+            write.map_err(|error| Error::Commit {
                 feed: feed.to_owned(),
                 message: error.to_string(),
             })?;

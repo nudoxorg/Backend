@@ -11,11 +11,13 @@ use smol_str::SmolStr;
 
 use heart::Language;
 
-use crate::enums::{
-    AliasConfidence, EdgeKind, EdgeSource, IrStatus, LineageEvidence, LineageRelation,
-    ListingStatus, SourceKind,
+use crate::{
+    enums::{
+        AliasConfidence, EdgeKind, EdgeSource, IrStatus, LineageEvidence, LineageRelation,
+        ListingStatus, SourceKind,
+    },
+    ids::{ChannelTip, GenerationStamp, ObjectPackHash, PackageId, PackageStemId},
 };
-use crate::ids::{ChannelTip, GenerationStamp, ObjectPackHash, PackageId, PackageStemId};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Wire sub-structures
@@ -133,11 +135,16 @@ pub enum VersionDelta {
     /// An existing version's payload changed upstream.
     Changed { version: VersionRecordWire },
     /// A previously observed version disappeared upstream.
+    ///
+    /// `version_id` addresses the SQL catalog. `version_canonical` addresses
+    /// the versioned package row, whose key is the published version string.
     Removed {
         /// The owning stem.
         stem_id: PackageStemId,
         /// The removed version identity.
         version_id: PackageId,
+        /// Published version string of the removed row.
+        version_canonical: String,
     },
 }
 

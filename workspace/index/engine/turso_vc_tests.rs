@@ -325,3 +325,56 @@ fn an_optional_flag_revises_one_edge_and_the_hash_matches_the_row() {
     assert_eq!(replay.unchanged, 1);
     assert_eq!(replay.commit, None);
 }
+
+#[test]
+fn dropping_a_version_tombstones_the_tip_and_keeps_the_prior_commit() {
+    use crate::record::{DepEdge, PackageRecord};
+    use heart::Language;
+
+    let record = PackageRecord::from_parts(
+        Language::Rust,
+        "memchr",
+        "2.8.3",
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        false,
+        vec![DepEdge::runtime("libc"), DepEdge {
+            name: "cc".into(),
+            requirement: None,
+            class: crate::record::DepClass::Build,
+            optional: false,
+        }],
+    );
+    let mut catalog = VersionedCatalog::open().expect("open");
+    let FactWrite::Revised(written) = catalog.put_record(&record).expect("put") else {
+        panic!("first write revises");
+    };
+    let FactWrite::Revised(dropped) = catalog
+        .drop_version("rust", "memchr", "2.8.3")
+        .expect("drop")
+    else {
+        panic!("a live row drops");
+    };
+    assert_ne!(written, dropped);
+    assert!(
+        catalog
+            .materialize("rust", "memchr", "2.8.3")
+            .expect("tip")
+            .is_none()
+    );
+    assert!(catalog.scan_edges().is_empty());
+    let prior = catalog
+        .materialize_at("rust", "memchr", "2.8.3", written)
+        .expect("history")
+        .expect("row existed");
+    assert_eq!(prior.edges.len(), 2);
+    assert_eq!(
+        catalog
+            .drop_version("rust", "memchr", "2.8.3")
+            .expect("again"),
+        FactWrite::Unchanged
+    );
+}

@@ -168,6 +168,48 @@ impl VersionedCatalog {
         Ok(FactWrite::Revised(self.upsert(&fact)?))
     }
 
+    /// Tombstone one package version and every edge the tip still owns.
+    ///
+    /// A second drop of the same key is [`FactWrite::Unchanged`]. The rows
+    /// remain readable at the commit that last wrote them.
+    pub fn drop_version(
+        &mut self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+    ) -> OrmResult<FactWrite> {
+        let key = PackageKey {
+            ecosystem: SmolStr::new(ecosystem),
+            package: SmolStr::new(name),
+            version: SmolStr::new(version),
+        };
+        let tips = self.edge_tips.remove(&key).unwrap_or_default();
+        let mut commit = None;
+        for tip in &tips {
+            commit = Some(self.db.table::<EdgeFact>().version_delete(
+                &edge_fact::edge_pk(
+                    ecosystem,
+                    name,
+                    version,
+                    tip.name.as_str(),
+                    tip.class.as_str(),
+                ),
+                "drop edge",
+            )?);
+        }
+        if self.get(ecosystem, name, version).is_some() {
+            commit = Some(
+                self.db
+                    .table::<PackageFact>()
+                    .version_delete(&pk(ecosystem, name, version), "drop package")?,
+            );
+        }
+        match commit {
+            Some(commit) => Ok(FactWrite::Revised(commit)),
+            None => Ok(FactWrite::Unchanged),
+        }
+    }
+
     /// Tip read.
     pub fn get(&mut self, ecosystem: &str, name: &str, version: &str) -> Option<PackageFact> {
         self.db.table().get(&pk(ecosystem, name, version))

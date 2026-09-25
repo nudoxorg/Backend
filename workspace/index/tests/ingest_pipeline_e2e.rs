@@ -553,11 +553,24 @@ fn git_driver_propagates_add_change_remove_deltas_without_full_rescan() {
         .expect("commit package");
 
     let watermarks = MemoryWatermarkStore::new();
-    let driver = FollowerDriver::new(&writer, &watermarks);
+    let facts = std::sync::Mutex::new(
+        index::engine::turso_vc::VersionedCatalog::open().expect("versioned catalog"),
+    );
+    let driver = FollowerDriver::new(&writer, &watermarks).with_facts(&facts);
     let monitor = GitMonitor::new(GritAdapter::default());
     driver
         .drive_git_once(&monitor, stem, SLUG, &url, 1_000, 20_250_101_000_000)
         .expect("initial poll");
+    {
+        let mut catalog = facts.lock().expect("facts");
+        assert!(
+            catalog
+                .materialize("cpp", SLUG, "v1.0.1")
+                .expect("join")
+                .is_some(),
+            "the tag that will disappear is versioned first"
+        );
+    }
     let cursor = writer
         .changed_since(CatalogCursor::default())
         .expect("read initial changes")
@@ -606,6 +619,30 @@ fn git_driver_propagates_add_change_remove_deltas_without_full_rescan() {
         "remove is a delete tombstone"
     );
     assert_eq!(committed_versions(&writer, stem).len(), 2);
+    let mut catalog = facts.lock().expect("facts");
+    assert!(
+        catalog
+            .materialize("cpp", SLUG, "v1.0.1")
+            .expect("removed tip")
+            .is_none(),
+        "the deleted tag leaves the versioned tip"
+    );
+    for canonical in ["v1.0.0", "v1.0.2"] {
+        assert!(
+            catalog
+                .materialize("cpp", SLUG, canonical)
+                .expect("surviving tip")
+                .is_some(),
+            "{canonical} stays versioned"
+        );
+    }
+    assert!(
+        catalog
+            .scan_edges()
+            .iter()
+            .all(|edge| edge.version != "v1.0.1"),
+        "the deleted tag owns no edge rows"
+    );
 }
 
 #[test]
