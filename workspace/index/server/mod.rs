@@ -667,6 +667,9 @@ impl<M: EmbeddingModel> Driver<M> {
                         crate::ecosystem::Language::Rust => {
                             Box::new(registry::upstream::CratesCatalogFollower::production())
                         }
+                        crate::ecosystem::Language::Typescript => {
+                            Box::new(registry::upstream::NpmChangesFollower::production())
+                        }
                         other => {
                             tracing::warn!(%other, "no catalog follower implemented for language; skipping");
                             continue;

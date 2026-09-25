@@ -53,7 +53,7 @@ impl CatalogCursor {
 }
 
 /// One registry event from a catalog page.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogEvent {
     /// A new version was published.
     Published {
