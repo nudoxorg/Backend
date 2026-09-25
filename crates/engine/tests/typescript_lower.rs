@@ -1305,11 +1305,11 @@ fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
         }
     }
 
-    // 64 is the un-folded boundary; 65/130 exercise one fold; 4097 exercises
-    // two folds (65 chunks of 64). A wrong fold would truncate, reorder, or
-    // produce a linear-depth chain on any of these.
+    // 255 is the un-folded type-child boundary; 256 exercises one fold;
+    // 4097 exercises a wide single level of 255-wide chunks. A wrong fold
+    // would truncate, reorder, or produce a deep chain on any of these.
     for operator in [" | ", " & "] {
-        for count in [64_usize, 65, 130, 4097] {
+        for count in [255_usize, 256, 4097] {
             let label = format!("operator={operator:?} count={count}");
             let source: &'static [u8] = Box::leak(build_source(operator, count).into_boxed_slice());
             let authority = report(source);
