@@ -64,6 +64,9 @@ let
       };
       inherit buildFeatures;
       RUSTC_BOOTSTRAP = "1";
+      # The image build host can advertise AVX-512 while this LLVM cannot
+      # select vpdpbusd. Pin a v3 target so crates do not emit that intrinsic.
+      RUSTFLAGS = "-C target-cpu=x86-64-v3";
       cargoBuildFlags = [
         "-p"
         cargoPackage
