@@ -145,7 +145,7 @@ fn journey(adapter: &QdrantBlockingAdapter) -> Result<(), JourneyError> {
     );
 
     let repeat = adapter.upsert(&segments)?;
-    assert_eq!(repeat.attempted, 2);
+    assert_eq!(repeat.attempted, 0);
     assert_eq!(repeat.verified, 2);
     let conflicting_coordinates = [2_i16, 0];
     let conflicting_points = [VectorPoint::new(EntityId::new(4), &conflicting_coordinates)];
