@@ -80,6 +80,8 @@ pub struct DependencyRecord {
     pub token: String,
     /// How the dependency was declared.
     pub mechanism: DependencyMechanism,
+    /// Version expression the manifest wrote beside the token.
+    pub requirement: Option<String>,
 }
 
 impl DependencyRecord {
@@ -88,6 +90,7 @@ impl DependencyRecord {
         Self {
             token: token.into(),
             mechanism,
+            requirement: None,
         }
     }
 }
@@ -137,6 +140,13 @@ fn edge_for(record: &DependencyRecord) -> crate::record::DepEdge {
     let mut edge = crate::record::DepEdge::runtime(record.token.clone());
     edge.kind = kind;
     edge.class = crate::engine::class_of_kind(kind);
+    if let Some(requirement) = record
+        .requirement
+        .as_deref()
+        .filter(|text| !text.is_empty())
+    {
+        edge.requirement = Some(requirement.into());
+    }
     edge
 }
 

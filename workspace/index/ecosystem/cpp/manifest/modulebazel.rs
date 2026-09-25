@@ -47,13 +47,13 @@ pub fn parse(text: &str) -> CppManifest {
         if let Some((keyword, paren_position)) = try_match_call_keyword(bytes, position) {
             match keyword {
                 CallKeyword::BazelDep => {
-                    if let Some((token, after_call)) =
-                        extract_name_keyword_arg(bytes, paren_position)
+                    if let Some((token, requirement, after_call)) =
+                        extract_bazel_dep(bytes, paren_position)
                     {
-                        manifest.push_dependency(DependencyRecord::new(
-                            token,
-                            DependencyMechanism::BazelDep,
-                        ));
+                        let mut record =
+                            DependencyRecord::new(token, DependencyMechanism::BazelDep);
+                        record.requirement = requirement;
+                        manifest.push_dependency(record);
                         position = after_call;
                     } else {
                         position = paren_position + 1;
@@ -154,37 +154,41 @@ fn advance_past_double_quoted_string(bytes: &[u8], position: usize) -> usize {
 ///
 /// Tracks nested parentheses and skips string contents so `name` that appears
 /// inside a string value is not mistaken for a keyword argument.
-fn extract_name_keyword_arg(bytes: &[u8], paren_position: usize) -> Option<(String, usize)> {
+fn extract_bazel_dep(
+    bytes: &[u8],
+    paren_position: usize,
+) -> Option<(String, Option<String>, usize)> {
     debug_assert_eq!(bytes.get(paren_position), Some(&b'('));
     let mut depth = 0i32;
     let mut index = paren_position;
-    // Where we last saw the identifier `name` as a keyword (not inside a string).
-    let mut name_keyword_position: Option<usize> = None;
+    let mut pending: Option<usize> = None;
+    let mut name = None;
+    let mut version = None;
 
     while index < bytes.len() {
         match bytes[index] {
             b'#' => {
-                // Comment — clears any pending `name` match.
-                name_keyword_position = None;
+                pending = None;
                 index = advance_past_line_end(bytes, index);
             }
             b'"' => {
-                // Skip string; also clears pending keyword match because the
-                // `name` identifier inside a string value is not a keyword arg.
                 let after = advance_past_double_quoted_string(bytes, index);
-                // If we were looking at a `name =` keyword assignment and this
-                // string immediately follows the `=`, it is the value.
-                if let Some(kw_pos) = name_keyword_position {
-                    // Verify that between the saved keyword position and `index`
-                    // we see only whitespace and exactly one `=`.
-                    if is_keyword_assignment(bytes, kw_pos + 4, index) {
-                        let value_start = index + 1;
-                        let value_end = after.saturating_sub(1).min(bytes.len());
-                        if let Ok(value) = std::str::from_utf8(&bytes[value_start..value_end]) {
-                            return Some((value.to_owned(), after));
+                if let Some(keyword) = pending.take() {
+                    let keyword_len = if bytes.get(keyword..keyword + 4) == Some(b"name") {
+                        4
+                    } else {
+                        7
+                    };
+                    if is_keyword_assignment(bytes, keyword + keyword_len, index)
+                        && let Ok(value) =
+                            std::str::from_utf8(&bytes[index + 1..after.saturating_sub(1)])
+                    {
+                        if bytes.get(keyword..keyword + 4) == Some(b"name") {
+                            name = Some(value.to_owned());
+                        } else {
+                            version = Some(value.to_owned());
                         }
                     }
-                    name_keyword_position = None;
                 }
                 index = after;
             }
@@ -195,31 +199,42 @@ fn extract_name_keyword_arg(bytes: &[u8], paren_position: usize) -> Option<(Stri
             b')' => {
                 depth -= 1;
                 if depth <= 0 {
-                    return None;
+                    return name
+                        .map(|name| (name, version.filter(|text| !text.is_empty()), index + 1));
                 }
                 index += 1;
             }
             _ => {
-                // Check for the identifier `name` as a keyword argument.
-                // Only look inside the call's argument list (depth > 0).
-                if depth > 0 && bytes.get(index..index + 4) == Some(b"name") {
-                    // Must be followed by optional whitespace then `=`, and
-                    // must not be part of a longer identifier.
-                    let preceding_ok = index == 0
-                        || !bytes[index - 1].is_ascii_alphanumeric() && bytes[index - 1] != b'_';
-                    let after_name = index + 4;
-                    let following_ok = bytes
-                        .get(after_name)
-                        .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_');
-                    if preceding_ok && following_ok {
-                        name_keyword_position = Some(index);
-                    }
+                if depth > 0
+                    && let Some(keyword) = keyword_at(bytes, index)
+                {
+                    pending = Some(keyword);
                 }
                 index += 1;
             }
         }
     }
     None
+}
+
+fn keyword_at(bytes: &[u8], index: usize) -> Option<usize> {
+    let word = if bytes.get(index..index + 7) == Some(b"version") {
+        7
+    } else if bytes.get(index..index + 4) == Some(b"name") {
+        4
+    } else {
+        return None;
+    };
+    let preceding_ok =
+        index == 0 || !bytes[index - 1].is_ascii_alphanumeric() && bytes[index - 1] != b'_';
+    let following_ok = bytes
+        .get(index + word)
+        .is_none_or(|&byte| !byte.is_ascii_alphanumeric() && byte != b'_');
+    if preceding_ok && following_ok {
+        Some(index)
+    } else {
+        None
+    }
 }
 
 /// Verify that the bytes in `bytes[from..to]` consist only of optional
@@ -274,6 +289,14 @@ bazel_dep(name = "abseil-cpp", version = "20230802.1")
             manifest.dependencies[0].mechanism,
             DependencyMechanism::BazelDep
         );
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some("0.0.9")
+        );
+        assert_eq!(
+            manifest.facts.dependencies[0].requirement.as_deref(),
+            Some("0.0.9")
+        );
     }
 
     #[test]
@@ -283,6 +306,10 @@ bazel_dep(name = "abseil-cpp", version = "20230802.1")
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "protobuf");
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some("1.2.3")
+        );
     }
 
     #[test]
