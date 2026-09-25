@@ -1684,6 +1684,36 @@ mod tests {
     }
 
     #[test]
+    fn a_destructured_export_declares_each_binding() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"destructure","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "declare const pair: { left: number; right: number; items: number[] };\n\
+             export const { left, right: renamed, ...rest } = pair;\n\
+             export const [first, second] = pair.items;\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "destructure", "1.0.0");
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("destructure"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a destructured export must seal");
+        for name in ["left", "renamed", "rest", "first", "second"] {
+            let count = produced
+                .table
+                .iter()
+                .filter(|(_, entry)| entry.sym().name == name)
+                .count();
+            assert_eq!(count, 1, "{name} must be its own declaration");
+        }
+    }
+
+    #[test]
     fn an_import_equals_require_of_a_missing_file_is_a_foreign_reference() {
         let dir = tempfile::tempdir().expect("create tempdir");
         std::fs::write(

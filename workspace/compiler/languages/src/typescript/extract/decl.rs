@@ -2212,9 +2212,10 @@ fn lower_variable<'a>(
     let is_const = matches!(v.kind, VariableDeclarationKind::Const);
     let mut out = Vec::new();
     for d in &v.declarations {
-        let Some(name) = binding_pattern_name(&d.id, source) else {
+        let names = binding_names(&d.id);
+        if names.is_empty() {
             continue;
-        };
+        }
 
         // `const X = require('./y');` — and the two wider CommonJS-import
         // shapes `is_commonjs_import_expr` also recognizes — are CommonJS's
@@ -2248,7 +2249,6 @@ fn lower_variable<'a>(
         if doc.ignore {
             continue;
         }
-        let discriminant = bump_count(&name, name_counts);
         let ty = d
             .type_annotation
             .as_ref()
@@ -2258,41 +2258,48 @@ fn lower_variable<'a>(
             .as_ref()
             .map(|e| format!("{:?}", e.span().source_text(source)));
 
-        let body = if is_const {
-            DeclBody::Const(ConstBody { ty, value })
-        } else {
-            DeclBody::Static(StaticBody {
-                ty,
-                value,
-                is_mutable: matches!(v.kind, VariableDeclarationKind::Let),
-            })
-        };
-
         // `force_exported` carries the statement-level `export` keyword
         // (`export const x = 1;` — every declarator in the statement is
         // exported, no per-name check needed or possible). Absent that,
-        // each declarator's own name is checked against `exported_names`
+        // each binding's own name is checked against `exported_names`
         // independently, because one `var`/`let`/`const` statement can bind
         // several names with different export status — see the call site
         // in `extract_statement` for why this cannot be decided once per
         // statement the way `FunctionDeclaration`/`ClassDeclaration` can.
-        let is_exported = force_exported || exported_names.contains(&name);
-        let visibility = if is_exported {
-            Visibility::Public
-        } else {
-            Visibility::Private
-        };
-        out.push(DeclFact {
-            name,
-            visibility,
-            doc,
-            body,
-            module: path.to_path_buf(),
-            span_start: span.start,
-            span_end: span.end,
-            is_default: false,
-            decl_index: discriminant,
-        });
+        // A pattern (`{ left, right: renamed }`, `[first, second]`) declares
+        // each binding, not one symbol whose name is the pattern text.
+        for name in names {
+            let discriminant = bump_count(&name, name_counts);
+            let body = if is_const {
+                DeclBody::Const(ConstBody {
+                    ty: ty.clone(),
+                    value: value.clone(),
+                })
+            } else {
+                DeclBody::Static(StaticBody {
+                    ty: ty.clone(),
+                    value: value.clone(),
+                    is_mutable: matches!(v.kind, VariableDeclarationKind::Let),
+                })
+            };
+            let is_exported = force_exported || exported_names.contains(&name);
+            let visibility = if is_exported {
+                Visibility::Public
+            } else {
+                Visibility::Private
+            };
+            out.push(DeclFact {
+                name,
+                visibility,
+                doc: doc.clone(),
+                body,
+                module: path.to_path_buf(),
+                span_start: span.start,
+                span_end: span.end,
+                is_default: false,
+                decl_index: discriminant,
+            });
+        }
     }
     out
 }
@@ -2703,6 +2710,38 @@ fn signature_doc(doc: &super::DocFacts) -> Option<String> {
         text.push_str("~ignore");
     }
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// Every identifier a pattern binds. `{ left, right: renamed, ...rest }`
+/// yields `left`, `renamed`, and `rest`. A hole (`[, second]`) contributes
+/// nothing.
+fn binding_names(pat: &BindingPattern<'_>) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_binding_names(pat, &mut names);
+    names
+}
+
+fn collect_binding_names(pat: &BindingPattern<'_>, names: &mut Vec<String>) {
+    match pat {
+        BindingPattern::BindingIdentifier(id) => names.push(id.name.to_string()),
+        BindingPattern::AssignmentPattern(ap) => collect_binding_names(&ap.left, names),
+        BindingPattern::ObjectPattern(pat) => {
+            for prop in &pat.properties {
+                collect_binding_names(&prop.value, names);
+            }
+            if let Some(rest) = &pat.rest {
+                collect_binding_names(&rest.argument, names);
+            }
+        }
+        BindingPattern::ArrayPattern(pat) => {
+            for elem in pat.elements.iter().flatten() {
+                collect_binding_names(elem, names);
+            }
+            if let Some(rest) = &pat.rest {
+                collect_binding_names(&rest.argument, names);
+            }
+        }
+    }
 }
 
 fn binding_pattern_name(pat: &BindingPattern<'_>, source: &str) -> Option<String> {
