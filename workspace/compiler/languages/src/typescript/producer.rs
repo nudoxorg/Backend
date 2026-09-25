@@ -1315,6 +1315,38 @@ mod tests {
     }
 
     #[test]
+    fn a_construct_signature_and_namespace_overload_both_survive() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"ctor-ns","version":"1.0.0","types":"index.d.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("index.d.ts"),
+            "export interface I { new (): object; new (value: number): object; }\n\
+             export namespace I {\n\
+               export function new_1(): void;\n\
+               export function new_1(value: string): void;\n\
+             }\n",
+        )
+        .unwrap();
+        let source = PackageSource::new(dir.path(), "ctor-ns", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("ctor-ns"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a construct signature and a namespace overload must both seal");
+        let ctors = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == "new_1"
+                    && matches!(entry.kind(), EntryInner::Owned(Kind::Function(_)))
+            })
+            .count();
+        assert_eq!(ctors, 3, "the construct signature and both namespace overloads survive");
+    }
+
+    #[test]
     fn an_interface_property_does_not_take_a_method_discriminant() {
         // Interface methods use `index * 1000`. Properties use `2_000_000 + index`.
         // Method 2000 and property 0 are the same number.

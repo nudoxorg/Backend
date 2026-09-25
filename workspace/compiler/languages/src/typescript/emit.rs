@@ -2155,6 +2155,22 @@ fn reserve_enum_variants(
                             interface_index_disc(body, idx_num),
                         );
                     }
+                    // Construct signature N is `new_N` at that disc. A later
+                    // namespace overload of the same name would take it.
+                    for (cs_num, _) in body.construct_signatures.iter().enumerate() {
+                        let name = if cs_num == 0 {
+                            "new".to_string()
+                        } else {
+                            format!("new_{cs_num}")
+                        };
+                        reserve_member(
+                            canonical,
+                            reserved,
+                            &qual,
+                            &name,
+                            interface_construct_disc(body, cs_num),
+                        );
+                    }
                 }
                 _ => {}
             }
