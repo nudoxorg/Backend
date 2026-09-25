@@ -18,9 +18,12 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
+use backend_frontend_python::legacy::{
+    CheckerReport, Inference, InferenceSite, InferredType, Span, extract,
+};
 use backend_semantic::ir::{
     ConcreteType, DecodedTypeFact, EntityKind, FragmentView, Ir, ItemKind, PrimitiveShape,
-    SemanticTypeTag, TypeExpr,
+    SemanticTypeTag, TypeExpr, TypeReason,
 };
 use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, PythonVersion, Stage,
@@ -51,6 +54,10 @@ const SIXTY_FOUR_PARAMETERS: &[u8] = b"def k64(
 ): ...\n";
 /// Sixty-five parameters fit the fact-child lane. The lane rejects only
 /// past 255 children.
+/// Short fixture: an annotated anchor so `anchor()` exists, then an
+/// unannotated `values` binding for synthetic checker authority.
+const VALUES_FIXTURE: &[u8] = b"anchor: int = 0\nvalues = 0\n";
+
 const SIXTY_FIVE_PARAMETERS: &[u8] = b"def k65(
     a01, a02, a03, a04, a05, a06, a07, a08, a09, a10,
     a11, a12, a13, a14, a15, a16, a17, a18, a19, a20,
@@ -251,6 +258,126 @@ fn attempt_fragment(
         source,
     })?;
     Ok(outcome)
+}
+
+/// Pads [`VALUES_FIXTURE`] to at least ~160 bytes so a 256-wide inferred
+/// compound fits the Python [`ResourcePlan::for_source`] anonymous pools.
+fn padded_values_fixture(target_bytes: usize) -> &'static [u8] {
+    static PADDED: std::sync::OnceLock<Box<[u8]>> = std::sync::OnceLock::new();
+    PADDED.get_or_init(|| {
+        let mut source = VALUES_FIXTURE.to_vec();
+        if source.len() < target_bytes {
+            source.push(b'#');
+            source.push(b' ');
+            let pad = target_bytes - source.len() - 1;
+            source.extend(std::iter::repeat_n(b'x', pad));
+            source.push(b'\n');
+        }
+        source.into_boxed_slice()
+    })
+}
+
+/// Exact extractor span of the unannotated `values` binding.
+fn values_name_span(source: &[u8]) -> Result<Span, TestError> {
+    let facts = extract(source, PythonVersion::Python314)
+        .map_err(|_| TestError::Falsified("values fixture failed to extract"))?;
+    facts
+        .declarations
+        .iter()
+        .find(|declaration| declaration.name == "values")
+        .map(|declaration| declaration.name_span)
+        .ok_or(TestError::Falsified("values binding absent"))
+}
+
+fn repeated_integers(count: usize) -> Box<[InferredType]> {
+    (0..count)
+        .map(|_| InferredType::Integer)
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+fn report_with_inference(site: Span, observed: InferredType) -> CheckerReport {
+    CheckerReport {
+        inferences: Box::from([Inference {
+            site,
+            kind: InferenceSite::ModuleBinding,
+            observed,
+        }]),
+        imports: Box::from([]),
+        symbols: Box::from([]),
+    }
+}
+
+/// Compiles one fixture with a hand-built checker report.
+fn attempt_fragment_with_report(
+    source: &'static [u8],
+    report: &CheckerReport,
+    label: &'static str,
+) -> Result<Result<Vec<u8>, ProjectionAdmissionFault>, TestError> {
+    let toolchain = python_toolchain()?;
+    let work = scratch_dir(label)?;
+    let cancelled = AtomicBool::new(false);
+    let outcome = with_deep_stack(|| {
+        let mut diagnostic = [0_u8; 4096];
+        let mut output = vec![0_u8; 8 * 1024 * 1024];
+        match compile(
+            CompileRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source,
+                declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+                toolchain: ToolchainSelection::ResolvedNative(toolchain),
+                authority: SemanticAuthorityInput::Python { report },
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    cancelled: &cancelled,
+                },
+            },
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: &work,
+            },
+            CompileOutput {
+                fragment_output: &mut output,
+            },
+        ) {
+            Ok(compiled) => Ok(Ok(compiled.fragment.as_ref().to_vec())),
+            Err(CompileFailure::LoweringUnsupported {
+                cause: LoweringUnsupported::FactRejected { cause, .. },
+                ..
+            }) => Ok(Err(cause)),
+            Err(failure) => Err(TestError::Compile(failure_label(&failure))),
+        }
+    })?;
+    fs::remove_dir_all(&work).map_err(|source| TestError::Io {
+        operation: "remove scratch",
+        source,
+    })?;
+    Ok(outcome)
+}
+
+/// Flattens same-tag tuple or union rows into their ordered integer leaves.
+fn flatten_same_tag_integer_leaves(
+    lane: &Lane<'_>,
+    row_index: usize,
+    tag: SemanticTypeTag,
+) -> Result<Vec<u32>, TestError> {
+    let fact = &lane.types[row_index];
+    if fact.record.tag == SemanticTypeTag::Primitive {
+        let ordinal = u32::try_from(row_index).map_err(|_| TestError::Coordinate)?;
+        expect_primitive(lane, ordinal, PrimitiveShape::ArbitraryInteger, None)?;
+        return Ok(vec![ordinal]);
+    }
+    if fact.record.tag != tag {
+        return Err(TestError::Falsified("unexpected tag while flattening"));
+    }
+    let children = type_child_targets(lane, row_index)?;
+    let mut leaves = Vec::new();
+    for child in children {
+        let child_index = usize::try_from(child).map_err(|_| TestError::Coordinate)?;
+        leaves.extend(flatten_same_tag_integer_leaves(lane, child_index, tag)?);
+    }
+    Ok(leaves)
 }
 
 /// Compiles one fixture and runs `then` against the semantic image inside
@@ -759,13 +886,177 @@ fn same_name_result_slot_reuses_the_identical_parameter_row() -> Result<(), Test
     })
 }
 
-/// A checker-inferred tuple wider than the bounded fact child lane keeps the
-/// module compiling: the variable takes the honest oracle gap instead of
-/// truncating a proven shape or rejecting the fact. Pre-fix this source died
-/// `LoweringUnsupported { cause: FactRejected(TypeChildCapacity) }`. The
-/// checker is optional, so an unprovisioned host proves the admission
-/// baseline only.
+/// A seventy-element tuple literal for the optional pyrefly authority path.
+/// Synthetic falsifiers beside this test prove the fold geometry without
+/// requiring an installed checker.
 const WIDE_INFERRED_TUPLE: &[u8] = b"anchor: int = 0\nvalues = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70)\n";
+
+/// A checker-inferred seventy-element tuple of integers admits every leaf on
+/// one Tuple row without folding or an oracle gap.
+#[test]
+fn seventy_element_inferred_tuple_carries_seventy_integer_children() -> Result<(), TestError> {
+    let site = values_name_span(VALUES_FIXTURE)?;
+    let report = report_with_inference(
+        site,
+        InferredType::Tuple(repeated_integers(70)),
+    );
+    let bytes =
+        attempt_fragment_with_report(VALUES_FIXTURE, &report, "seventy-tuple")?
+            .map_err(TestError::Rejected)?;
+    let lane = lane_of(&bytes)?;
+    let value = entity_ordinal(&lane, b"values", EntityKind::Static)?;
+    let row = owned_row(&lane, value)?;
+    let fact = &lane.types[row];
+    if fact.record.tag != SemanticTypeTag::Tuple {
+        return Err(TestError::Falsified("values is not a Tuple"));
+    }
+    if fact.record.children.length != 70 {
+        return Err(TestError::Falsified(
+            "seventy-element tuple does not own exactly 70 children",
+        ));
+    }
+    let children = type_child_targets(&lane, row)?;
+    if children.len() != 70 {
+        return Err(TestError::Falsified(
+            "seventy-element tuple child lane is truncated",
+        ));
+    }
+    for child in children {
+        expect_primitive(&lane, child, PrimitiveShape::ArbitraryInteger, None)?;
+    }
+    Ok(())
+}
+
+/// A checker-inferred 256-element tuple folds into same-tag chunks: the root
+/// owns two direct children and flattening recovers every integer leaf.
+#[test]
+fn two_hundred_fifty_six_element_inferred_tuple_folds_into_chunks() -> Result<(), TestError> {
+    const PADDED_BYTES: usize = 160;
+    let source = padded_values_fixture(PADDED_BYTES);
+    let site = values_name_span(source)?;
+    let report = report_with_inference(
+        site,
+        InferredType::Tuple(repeated_integers(256)),
+    );
+    let bytes = attempt_fragment_with_report(source, &report, "wide-tuple")?
+        .map_err(TestError::Rejected)?;
+    let lane = lane_of(&bytes)?;
+    let value = entity_ordinal(&lane, b"values", EntityKind::Static)?;
+    let row = owned_row(&lane, value)?;
+    let fact = &lane.types[row];
+    if fact.record.tag != SemanticTypeTag::Tuple {
+        return Err(TestError::Falsified("values is not a Tuple"));
+    }
+    if fact.record.children.length != 2 {
+        return Err(TestError::Falsified(
+            "folded tuple root does not own exactly 2 chunk children",
+        ));
+    }
+    if fact.record.children.length > 255 {
+        return Err(TestError::Falsified(
+            "folded tuple root exceeds the type-child lane",
+        ));
+    }
+    let leaves = flatten_same_tag_integer_leaves(&lane, row, SemanticTypeTag::Tuple)?;
+    if leaves.len() != 256 {
+        return Err(TestError::Falsified(
+            "folded tuple did not recover all 256 integer leaves",
+        ));
+    }
+    let first = leaves.first().copied().ok_or(TestError::Falsified(
+        "folded tuple has no first integer leaf",
+    ))?;
+    let last = leaves.last().copied().ok_or(TestError::Falsified(
+        "folded tuple has no last integer leaf",
+    ))?;
+    expect_primitive(&lane, first, PrimitiveShape::ArbitraryInteger, None)?;
+    expect_primitive(&lane, last, PrimitiveShape::ArbitraryInteger, None)?;
+    Ok(())
+}
+
+/// A checker-inferred 256-member integer union folds like a wide tuple.
+#[test]
+fn two_hundred_fifty_six_element_inferred_union_folds_into_chunks() -> Result<(), TestError> {
+    const PADDED_BYTES: usize = 160;
+    let source = padded_values_fixture(PADDED_BYTES);
+    let site = values_name_span(source)?;
+    let report = report_with_inference(
+        site,
+        InferredType::Union(repeated_integers(256)),
+    );
+    let bytes = attempt_fragment_with_report(source, &report, "wide-union")?
+        .map_err(TestError::Rejected)?;
+    let lane = lane_of(&bytes)?;
+    let value = entity_ordinal(&lane, b"values", EntityKind::Static)?;
+    let row = owned_row(&lane, value)?;
+    let fact = &lane.types[row];
+    if fact.record.tag != SemanticTypeTag::Union {
+        return Err(TestError::Falsified("values is not a Union"));
+    }
+    if fact.record.children.length != 2 {
+        return Err(TestError::Falsified(
+            "folded union root does not own exactly 2 chunk children",
+        ));
+    }
+    if fact.record.children.length > 255 {
+        return Err(TestError::Falsified(
+            "folded union root exceeds the type-child lane",
+        ));
+    }
+    let leaves = flatten_same_tag_integer_leaves(&lane, row, SemanticTypeTag::Union)?;
+    if leaves.len() != 256 {
+        return Err(TestError::Falsified(
+            "folded union did not recover all 256 integer leaves",
+        ));
+    }
+    let first = leaves.first().copied().ok_or(TestError::Falsified(
+        "folded union has no first integer leaf",
+    ))?;
+    let last = leaves.last().copied().ok_or(TestError::Falsified(
+        "folded union has no last integer leaf",
+    ))?;
+    expect_primitive(&lane, first, PrimitiveShape::ArbitraryInteger, None)?;
+    expect_primitive(&lane, last, PrimitiveShape::ArbitraryInteger, None)?;
+    Ok(())
+}
+
+/// A checker-inferred callable wider than the type-child lane lowers as an
+/// oracle gap without minting a FunctionPointer row.
+#[test]
+fn two_hundred_fifty_six_parameter_inferred_callable_admits_as_oracle_gap() -> Result<(), TestError> {
+    const PADDED_BYTES: usize = 160;
+    let source = padded_values_fixture(PADDED_BYTES);
+    let site = values_name_span(source)?;
+    let report = report_with_inference(
+        site,
+        InferredType::Callable {
+            params: repeated_integers(256),
+            result: None,
+        },
+    );
+    let bytes = attempt_fragment_with_report(source, &report, "wide-callable")?
+        .map_err(TestError::Rejected)?;
+    let lane = lane_of(&bytes)?;
+    let value = entity_ordinal(&lane, b"values", EntityKind::Static)?;
+    let row = owned_row(&lane, value)?;
+    let fact = &lane.types[row];
+    if fact.record.tag != SemanticTypeTag::Unknown {
+        return Err(TestError::Falsified("wide callable is not Unknown"));
+    }
+    if fact.record.payload0 != u32::from(TypeReason::OracleGap) {
+        return Err(TestError::Falsified(
+            "wide callable did not carry the oracle-gap reason",
+        ));
+    }
+    for typed in &lane.types {
+        if typed.record.tag == SemanticTypeTag::FunctionPointer {
+            return Err(TestError::Falsified(
+                "wide callable minted a FunctionPointer row",
+            ));
+        }
+    }
+    Ok(())
+}
 
 #[test]
 fn wide_inferred_tuple_admits_as_the_honest_gap() -> Result<(), TestError> {
@@ -773,18 +1064,15 @@ fn wide_inferred_tuple_admits_as_the_honest_gap() -> Result<(), TestError> {
     if !checker.is_available() {
         return Ok(());
     }
-    let facts = backend_frontend_python::legacy::extract(
-        WIDE_INFERRED_TUPLE,
-        PythonVersion::Python314,
-    )
-    .map_err(|_| TestError::Falsified("wide tuple fixture failed to extract"))?;
+    let facts = extract(WIDE_INFERRED_TUPLE, PythonVersion::Python314)
+        .map_err(|_| TestError::Falsified("wide tuple fixture failed to extract"))?;
     let report = checker
         .analyze(WIDE_INFERRED_TUPLE, PythonVersion::Python314, &facts)
         .map_err(|_| TestError::Falsified("wide tuple checker transaction failed"))?;
     let toolchain = python_toolchain()?;
     let work = scratch_dir("wide-inferred-tuple")?;
     let cancelled = AtomicBool::new(false);
-    let outcome = with_deep_stack(|| {
+    with_deep_stack(|| {
         let mut diagnostic = [0_u8; 4096];
         compile_ir(
             CompileRequest {

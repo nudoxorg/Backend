@@ -1273,8 +1273,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
         });
         match base_name {
             Some("tuple") | Some("typing.Tuple") => {
-                let children = self.row_children(args, tables, anchor)?;
-                let Some(children) = children else {
+                let Some(children) = self.member_rows(args, tables, anchor)? else {
+                    return Ok(None);
+                };
+                let Some(children) =
+                    self.admit_flat_children(tuple_record(), children, anchor)?
+                else {
                     return Ok(None);
                 };
                 Ok(Some((tuple_record(), children)))
@@ -1357,7 +1361,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-    /// Lowers every member of one written union to its row coordinate.
+    /// Lowers every member of one written compound to its row coordinate.
+    /// A run wider than one type-child row stays `None`. Tuple and union
+    /// callers use [`Self::member_rows`] and fold the same tag instead.
     fn row_children(
         &mut self,
         members: &[Annotation],
@@ -1367,6 +1373,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
         if members.len() > MAX_TYPE_CHILDREN {
             return Ok(None);
         }
+        self.member_rows(members, tables, anchor)
+    }
+
+    /// Lowers every member without the per-row width gate. The caller folds
+    /// a tuple or union, or rejects a tag that cannot be nested honestly.
+    fn member_rows(
+        &mut self,
+        members: &[Annotation],
+        tables: &TypeTables<'source>,
+        anchor: u32,
+    ) -> Result<Option<Vec<u32>>, PythonCollectError> {
         let mut rows = Vec::with_capacity(members.len());
         for member in members {
             match self.type_row(member, None, tables, anchor)? {
@@ -1445,6 +1462,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 None => return Ok(None),
                             }
                         }
+                        let Some(children) =
+                            self.admit_flat_children(union_record(), children, anchor)?
+                        else {
+                            return Ok(None);
+                        };
                         self.parent_row(union_record(), &children, anchor)
                     }
                 }
@@ -1455,6 +1477,47 @@ impl<'a, 'source> Emitter<'a, 'source> {
             },
             Annotation::StringLiteral(_) | Annotation::Unknown(_) => Ok(None),
         }
+    }
+
+    /// Keeps every member of a tuple or union inside the type-child lane.
+    ///
+    /// A run that already fits is returned unchanged. A wider run becomes a
+    /// tree of anonymous rows of the same tag, each at most
+    /// [`MAX_TYPE_CHILDREN`] wide, and the returned coordinates are those
+    /// chunk rows. Flattening same-tag nesting recovers the member order.
+    /// A callable is not folded: nesting function pointers would claim a
+    /// different type. Pool overflow stays `None`, the same fallback a
+    /// single unhostable row already uses.
+    fn admit_flat_children(
+        &mut self,
+        record: SemanticTypeRecord<'source>,
+        mut children: Vec<u32>,
+        anchor: u32,
+    ) -> Result<Option<Vec<u32>>, PythonCollectError> {
+        let folds = record.tag == SemanticTypeTag::Tuple || record.tag == SemanticTypeTag::Union;
+        if !folds {
+            if children.len() > MAX_TYPE_CHILDREN {
+                return Ok(None);
+            }
+            return Ok(Some(children));
+        }
+        while children.len() > MAX_TYPE_CHILDREN {
+            let mut folded = Vec::new();
+            let mut start = 0;
+            while start < children.len() {
+                let end = start.saturating_add(MAX_TYPE_CHILDREN).min(children.len());
+                let Some(chunk) = children.get(start..end) else {
+                    return Ok(None);
+                };
+                match self.parent_row(record, chunk, anchor)? {
+                    Some(row) => folded.push(row),
+                    None => return Ok(None),
+                }
+                start = end;
+            }
+            children = folded;
+        }
+        Ok(Some(children))
     }
 
     /// Appends already-lowered children and interns one parent row.
@@ -1559,6 +1622,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 None => return self.unrepresentable(spelling),
             }
         }
+        let Some(children) = self.admit_flat_children(union_record(), children, anchor)? else {
+            return self.unrepresentable(spelling);
+        };
         Ok(LoweredType {
             record: union_record(),
             children,
@@ -1677,14 +1743,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let Some(anchor) = self.anchor() else {
             return self.unrepresentable(spelling);
         };
-        match self.row_children(members, tables, anchor)? {
-            Some(children) => Ok(LoweredType {
-                record: union_record(),
-                children,
-                resolved: true,
-            }),
-            None => self.unrepresentable(spelling),
-        }
+        let Some(children) = self.member_rows(members, tables, anchor)? else {
+            return self.unrepresentable(spelling);
+        };
+        let Some(children) = self.admit_flat_children(union_record(), children, anchor)? else {
+            return self.unrepresentable(spelling);
+        };
+        Ok(LoweredType {
+            record: union_record(),
+            children,
+            resolved: true,
+        })
     }
 
     /// The exact written annotation bytes, or the empty cell when the
@@ -1894,10 +1963,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// the owning fact; nested compounds consume pooled anonymous rows.
     /// A `Named` spelling that resolves to a module class becomes that
     /// class's nominal row; any other named spelling has no borrowed bytes
-    /// to own, so the honest gap names the oracle. A member run wider than
-    /// the bounded fact child lane cannot be hosted either, so it answers
-    /// `None` — the caller's honest oracle gap — instead of truncating a
-    /// proven shape.
+    /// to own, so the honest gap names the oracle. A tuple or union wider
+    /// than one type-child row is folded into same-tag chunks so every
+    /// member stays reachable. A callable wider than that lane answers
+    /// `None` — nesting function pointers would invent a different type.
     fn inferred_root(
         &mut self,
         inferred: &InferredType,
@@ -1957,9 +2026,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 let Some(anchor) = anchor else {
                     return Ok(None);
                 };
-                if elements.len() > MAX_TYPE_CHILDREN {
-                    return Ok(None);
-                }
                 let mut children = Vec::new();
                 for element in elements.as_ref() {
                     match self.inferred_row(element, tables, anchor)? {
@@ -1967,15 +2033,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         None => return Ok(None),
                     }
                 }
+                let Some(children) =
+                    self.admit_flat_children(tuple_record(), children, anchor)?
+                else {
+                    return Ok(None);
+                };
                 Ok(Some((tuple_record(), children)))
             }
             InferredType::Union(members) => {
                 let Some(anchor) = anchor else {
                     return Ok(None);
                 };
-                if members.len() > MAX_TYPE_CHILDREN {
-                    return Ok(None);
-                }
                 let mut children = Vec::new();
                 for member in members.as_ref() {
                     match self.inferred_row(member, tables, anchor)? {
@@ -1983,6 +2051,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         None => return Ok(None),
                     }
                 }
+                let Some(children) =
+                    self.admit_flat_children(union_record(), children, anchor)?
+                else {
+                    return Ok(None);
+                };
                 Ok(Some((union_record(), children)))
             }
             InferredType::Callable { params, result } => {
