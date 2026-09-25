@@ -536,6 +536,87 @@ fn an_optional_wire_lands_in_sql_and_on_the_ledger() {
     assert_eq!(tip.edges[0].requirement.as_deref(), Some("^1"));
 }
 
+/// Every C++ mechanism, with its version, lands the same way in SQL and on
+/// the ledger. A recipe counts. The other mechanisms do not.
+#[test]
+fn every_cpp_mechanism_matches_on_sql_and_the_ledger() {
+    use index::ecosystem::cpp::{CppManifest, DependencyMechanism, DependencyRecord};
+    use index::edge_project::feed_edges;
+    use index::engine::turso_vc::VersionedCatalog;
+    use index::enums::TextEnum;
+
+    let mechanisms = [
+        DependencyMechanism::FindPackage,
+        DependencyMechanism::PkgConfig,
+        DependencyMechanism::Submodule,
+        DependencyMechanism::FetchContent,
+        DependencyMechanism::Wrap,
+        DependencyMechanism::Recipe,
+        DependencyMechanism::BazelDep,
+    ];
+    let mut manifest = CppManifest::default();
+    for (index, mechanism) in mechanisms.iter().enumerate() {
+        let mut record = DependencyRecord::new(format!("dep{index}"), *mechanism);
+        record.requirement = Some(format!("^{index}"));
+        manifest.push_dependency(record);
+    }
+    let observed = feed_edges(
+        heart::Language::Rust,
+        "pkg1",
+        "1.0.1",
+        &manifest.facts.dependencies,
+    )
+    .expect("edges");
+
+    let writer = migrated_writer();
+    let mut version = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { edges, .. } = &mut version {
+        *edges = observed.snapshot;
+    }
+    let ops = [upsert_package(1), version];
+    writer.apply_ops(&ops).expect("sql");
+    let mut sql = writer
+        .engine()
+        .query_rows(
+            "SELECT kind, dep_name_canonical, requirement FROM edges ORDER BY kind, dep_name_canonical",
+            &[],
+            &mut |row| Ok((row.get_text(0)?, row.get_text(1)?, row.get_text(2)?)),
+        )
+        .expect("sql rows");
+
+    let mut ledger = VersionedCatalog::open().expect("ledger");
+    for effect in index::edge_project::effects_from_ops(&ops, None) {
+        ledger.apply_effect(&effect).expect("ledger");
+    }
+    let tip = ledger
+        .materialize("rust", "pkg1", "1.0.1")
+        .expect("read")
+        .expect("row");
+    let mut ledger_rows: Vec<_> = tip
+        .edges
+        .iter()
+        .map(|edge| {
+            (
+                edge.kind.as_token().to_owned(),
+                edge.name.to_string(),
+                edge.requirement.as_deref().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    ledger_rows.sort();
+    sql.sort();
+    assert_eq!(sql, ledger_rows);
+    assert_eq!(sql.len(), mechanisms.len());
+    assert_eq!(ledger.dependents(), ledger.dependents_from_tips());
+    assert_eq!(
+        ledger
+            .dependents()
+            .get(&(heart::Language::Rust, "dep5".into())),
+        Some(&1),
+        "the recipe edge is the only dependent"
+    );
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(24))]
 
