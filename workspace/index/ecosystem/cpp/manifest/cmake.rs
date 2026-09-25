@@ -88,10 +88,16 @@ pub fn parse(text: &str) -> CppManifest {
             }
         } else if command.eq_ignore_ascii_case("find_package") {
             if let Some(name) = arguments.first().filter(|s| !s.is_empty()) {
-                manifest.push_dependency(DependencyRecord::new(
-                    name.clone(),
-                    DependencyMechanism::FindPackage,
-                ));
+                let mut record =
+                    DependencyRecord::new(name.clone(), DependencyMechanism::FindPackage);
+                if let Some(version) = arguments.get(1).filter(|text| {
+                    text.chars()
+                        .next()
+                        .is_some_and(|char| char.is_ascii_digit())
+                }) {
+                    record.requirement = Some(version.clone());
+                }
+                manifest.push_dependency(record);
             }
         } else if command.eq_ignore_ascii_case("pkg_check_modules")
             || command.eq_ignore_ascii_case("pkg_search_module")
@@ -345,6 +351,8 @@ mod tests {
             DependencyMechanism::FindPackage
         );
         assert_eq!(manifest.dependencies[1].token, "OpenSSL");
+        assert_eq!(manifest.dependencies[1].requirement.as_deref(), Some("1.1"));
+        assert!(manifest.dependencies[0].requirement.is_none());
     }
 
     #[test]

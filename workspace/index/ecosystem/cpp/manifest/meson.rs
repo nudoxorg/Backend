@@ -50,17 +50,15 @@ pub fn parse(text: &str) -> CppManifest {
         if let Some((keyword, rest_position)) = try_match_call_keyword(bytes, position) {
             match keyword {
                 CallKeyword::Dependency => {
-                    if let Some((token, after_call)) =
-                        extract_first_string_arg(bytes, rest_position)
-                    {
-                        manifest.push_dependency(DependencyRecord::new(
-                            token,
-                            DependencyMechanism::PkgConfig,
-                        ));
-                        position = after_call;
-                        continue;
+                    let (span, after_call) = extract_call_raw_span(bytes, rest_position);
+                    if let Some((token, _)) = extract_first_string_arg(bytes, rest_position) {
+                        let mut record =
+                            DependencyRecord::new(token, DependencyMechanism::PkgConfig);
+                        record.requirement = extract_meson_kwarg_strings(&span, "version")
+                            .and_then(|values| values.into_iter().find(|value| !value.is_empty()));
+                        manifest.push_dependency(record);
                     }
-                    position = rest_position;
+                    position = after_call;
                     continue;
                 }
                 CallKeyword::Subproject => {
@@ -443,6 +441,10 @@ subproject('googletest')
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "openssl");
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some(">= 1.1")
+        );
     }
 
     #[test]
@@ -451,6 +453,10 @@ subproject('googletest')
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "glib-2.0");
+        assert_eq!(
+            manifest.dependencies[0].requirement.as_deref(),
+            Some(">= 2.56")
+        );
     }
 
     #[test]
