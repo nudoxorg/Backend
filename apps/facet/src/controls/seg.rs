@@ -16,7 +16,7 @@
 
 use super::button::sunk;
 use super::kbd::key_badge_at;
-use super::state::{Look, Touch, hover_zone, set_hot_item, set_key_pressed, set_pressed, track, track_n};
+use super::state::{Look, Touch, hover_zone, key_press, set_hot_item, set_key_pressed, set_pressed, track, track_n};
 use super::text;
 use crate::Set;
 use crate::icons::{Icon, IconSize, ui};
@@ -578,7 +578,7 @@ impl RenderOnce for Seg {
                         _ => None,
                     };
                     if let Some(next) = next {
-                        set_key_pressed(&entity, true, cx);
+                        key_press(&entity, window, cx);
                         if next != selected
                             && let Some(select) = &select
                         {

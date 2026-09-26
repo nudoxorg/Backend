@@ -17,7 +17,7 @@
 use super::glyph::{Glyph, glyph};
 use super::kbd::key_badge;
 use super::state::{
-    Look, Touch, hover_zone, set_key_pressed, set_pressed, track, track_n,
+    Look, Touch, hover_zone, key_press, set_key_pressed, set_pressed, sweep_done, track, track_n,
 };
 use super::sweep::sweep;
 use super::{muted, with_alpha};
@@ -345,7 +345,7 @@ where
         move |event: &KeyDownEvent, window: &mut Window, cx: &mut App| {
             let key = event.keystroke.key.as_str();
             if (key == "space" || key == "enter") && !event.keystroke.modifiers.modified() {
-                set_key_pressed(&entity, true, cx);
+                key_press(&entity, window, cx);
                 if key == "enter"
                     && !event.is_held
                     && let Some(activate) = &activate
@@ -422,20 +422,28 @@ impl RenderOnce for Button {
             cx,
         );
 
-        // The sweep: one crossing per hover-enter, keyed by the enter count
-        // so a re-enter starts a fresh crossing and a leave lets the current
-        // one finish instead of reversing.
-        let sweep_t = if touch.enters > 0 && tones.light > 0.0 && active {
-            motion.replay(track_n(&id, "sweep", touch.enters.wrapping_sub(1) as usize));
-            motion.animate_from(
-                track_n(&id, "sweep", touch.enters as usize),
+        // The sweep: one crossing per hover-enter, numbered so each starts
+        // fresh; a leave lets it finish instead of reversing, and an enter
+        // mid-crossing lets it finish instead of cutting it off. The one
+        // before it has ended, so forgetting it loses nothing.
+        let sweep_t = if touch.sweeps > 0 && tones.light > 0.0 && active {
+            motion.replay(track_n(&id, "sweep", touch.sweeps.wrapping_sub(1) as usize));
+            let t = motion.animate_from(
+                track_n(&id, "sweep", touch.sweeps as usize),
                 0.0,
                 1.0,
                 Spec::tween(EMPH, EASE),
                 window,
                 cx,
-            )
+            );
+            if t >= 1.0 && touch.sweeping {
+                sweep_done(&touch.entity, window, cx);
+            }
+            t
         } else {
+            if touch.sweeping {
+                sweep_done(&touch.entity, window, cx);
+            }
             1.0
         };
 

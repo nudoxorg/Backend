@@ -13,10 +13,11 @@
 //! storm from leaving a control stuck lit.
 
 use crate::motion::Motion;
+use crate::probe::{self, Target};
 use gpui::{
-    AnyElement, App, Bounds, DispatchPhase, Element, ElementId, Entity, FocusHandle,
+    AnyElement, App, Bounds, DispatchPhase, Element, ElementId, Entity, FocusHandle, Global,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
-    MouseMoveEvent, Pixels, Point, Window,
+    MouseExitEvent, MouseMoveEvent, Pixels, Point, Window, WindowId,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -68,10 +69,19 @@ pub(crate) struct Interact {
     pub focus: FocusHandle,
     pub hovered: bool,
     pub pressed: bool,
-    /// Held by Enter/Space: pressed until the key comes up.
+    /// Armed by Enter/Space until the key comes up (Space activates on
+    /// its release).
     pub key_pressed: bool,
-    /// How many times the pointer has entered (drives the one-shot sweep).
-    pub enters: u32,
+    /// The keyboard press as shown: a beat that the key's release ends early
+    /// and that ends by itself if the release never comes (focus moved, the
+    /// window lost the key), so a key can never leave a control sunk.
+    pub key_beat: bool,
+    key_beats: u64,
+    /// How many facet sweeps have started: one per hover-enter that finds
+    /// no crossing in flight (an enter mid-crossing lets it finish).
+    pub sweeps: u32,
+    /// A crossing is in flight (the control's render clears it at the end).
+    pub sweeping: bool,
     /// The hovered sub-item (segment, tick, stone), if any.
     pub hot_item: Option<usize>,
     /// Where the control was laid out last frame (window px): menus anchor
@@ -88,20 +98,26 @@ pub(crate) fn interact(id: &ElementId, window: &mut Window, cx: &mut App) -> Ent
         hovered: false,
         pressed: false,
         key_pressed: false,
-        enters: 0,
+        key_beat: false,
+        key_beats: 0,
+        sweeps: 0,
+        sweeping: false,
         hot_item: None,
         frame: Rc::new(Cell::new(Bounds::default())),
     })
 }
 
-/// Sets `hovered`, counting enters, notifying only on change. Leaving also
-/// forgets the hovered sub-item.
+/// Sets `hovered`, notifying only on change. Entering starts a sweep
+/// unless one is still crossing; leaving forgets the hovered sub-item.
 pub(crate) fn set_hovered(entity: &Entity<Interact>, value: bool, cx: &mut App) {
     entity.update(cx, |state, cx| {
         if state.hovered != value {
             state.hovered = value;
             if value {
-                state.enters = state.enters.wrapping_add(1);
+                if !state.sweeping {
+                    state.sweeps = state.sweeps.wrapping_add(1);
+                    state.sweeping = true;
+                }
             } else {
                 state.hot_item = None;
             }
@@ -120,13 +136,58 @@ pub(crate) fn set_pressed(entity: &Entity<Interact>, value: bool, cx: &mut App) 
     });
 }
 
-/// Sets the keyboard press, notifying only on change.
+/// Sets the keyboard press, notifying only on change. Releasing also ends
+/// the shown beat; pressing goes through [`key_press`].
 pub(crate) fn set_key_pressed(entity: &Entity<Interact>, value: bool, cx: &mut App) {
     entity.update(cx, |state, cx| {
-        if state.key_pressed != value {
+        if state.key_pressed != value || (!value && state.key_beat) {
             state.key_pressed = value;
+            if !value {
+                state.key_beat = false;
+            }
             cx.notify();
         }
+    });
+}
+
+/// The longest a keyboard press shows without its release: past the
+/// platform's key-repeat delay, so a held key reads as held.
+const KEY_BEAT: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// Enter/Space went down on the control: armed, and shown pressed for a
+/// beat (the release ends it sooner; a repeat re-arms it).
+pub(crate) fn key_press(entity: &Entity<Interact>, window: &mut Window, cx: &mut App) {
+    let beat = entity.update(cx, |state, cx| {
+        state.key_pressed = true;
+        state.key_beat = true;
+        state.key_beats = state.key_beats.wrapping_add(1);
+        cx.notify();
+        state.key_beats
+    });
+    let timer = cx.background_executor().timer(KEY_BEAT);
+    let entity = entity.downgrade();
+    window
+        .spawn(cx, async move |cx| {
+            timer.await;
+            let _ = cx.update(|_window, cx| {
+                if let Some(entity) = entity.upgrade() {
+                    entity.update(cx, |state, cx| {
+                        if state.key_beats == beat && state.key_beat {
+                            state.key_beat = false;
+                            cx.notify();
+                        }
+                    });
+                }
+            });
+        })
+        .detach();
+}
+
+/// The render saw the current sweep reach its end.
+pub(crate) fn sweep_done(entity: &Entity<Interact>, window: &mut Window, cx: &mut App) {
+    let entity = entity.clone();
+    window.defer(cx, move |_window, cx| {
+        entity.update(cx, |state, _| state.sweeping = false);
     });
 }
 
@@ -155,13 +216,18 @@ pub(crate) struct Touch {
     pub hovered: bool,
     pub pressed: bool,
     pub focused: bool,
-    pub enters: u32,
+    /// The current sweep's number (0: none yet) and whether it is crossing.
+    pub sweeps: u32,
+    pub sweeping: bool,
     pub hot_item: Option<usize>,
     /// Where the control's plate was laid out last frame (window px).
     pub frame: Rc<Cell<Bounds<Pixels>>>,
     /// The raw (unpinned) hover, which [`HoverZone`] reconciles.
     pub live_hover: bool,
     pub motion: Motion,
+    /// What the control shows, for the probe: only a live control (no
+    /// pinned [`Look`]) claims its hover, press and focus are real.
+    pub claim: Option<(ElementId, Target)>,
 }
 
 impl Touch {
@@ -179,17 +245,37 @@ impl Touch {
         let focus = state.focus.clone();
         let live_hover = state.hovered;
         let focused = active && (look.focus || focus_visible(&focus, window));
+        let hovered = active && (look.hover || state.hovered);
+        // A keyboard press shows only on the control that holds focus.
+        let key_beat = state.key_beat && focus.is_focused(window);
+        let pressed = active && (look.press || state.pressed || key_beat);
+        let claim = (look == Look::LIVE).then(|| {
+            (
+                id.clone(),
+                Target {
+                    hovered,
+                    // The probe's press is the pointer's (the storm checks
+                    // it against the buttons); a key press ends by itself.
+                    pressed: active && state.pressed,
+                    focused,
+                    focusable: active,
+                    clickable: active,
+                },
+            )
+        });
         Self {
-            hovered: active && (look.hover || state.hovered),
-            pressed: active && (look.press || state.pressed || state.key_pressed),
+            hovered,
+            pressed,
             focused,
-            enters: state.enters,
+            sweeps: state.sweeps,
+            sweeping: state.sweeping,
             hot_item: if active { state.hot_item } else { None },
             frame: state.frame.clone(),
             live_hover,
             focus,
             motion,
             entity,
+            claim,
         }
     }
 }
@@ -208,6 +294,40 @@ pub(crate) fn track_n(id: &ElementId, channel: &'static str, index: usize) -> El
     )
 }
 
+/// Windows the pointer has left. GPUI keeps the last position (and its hit
+/// test) after the pointer exits, so without this whatever sat under the
+/// exit point would stay lit until the pointer came back.
+#[derive(Default)]
+struct PointerAway(Vec<WindowId>);
+
+impl Global for PointerAway {}
+
+/// Whether the pointer has left `window`.
+pub(crate) fn pointer_away(window: &Window, cx: &App) -> bool {
+    let id = window.window_handle().window_id();
+    cx.try_global::<PointerAway>().is_some_and(|away| away.0.contains(&id))
+}
+
+/// Keeps [`pointer_away`] true to the pointer (every live control's paint
+/// calls it; the capture phase runs before any control's own listener).
+pub(crate) fn watch_pointer(window: &mut Window) {
+    window.on_mouse_event(|_: &MouseExitEvent, phase, window, cx| {
+        if phase == DispatchPhase::Capture {
+            let id = window.window_handle().window_id();
+            let away = cx.default_global::<PointerAway>();
+            if !away.0.contains(&id) {
+                away.0.push(id);
+            }
+        }
+    });
+    window.on_mouse_event(|_: &MouseMoveEvent, phase, window, cx| {
+        if phase == DispatchPhase::Capture && pointer_away(window, cx) {
+            let id = window.window_handle().window_id();
+            cx.default_global::<PointerAway>().0.retain(|away| *away != id);
+        }
+    });
+}
+
 /// Wraps a control's plate and keeps its hover flag true to the pointer:
 /// the zone is the laid-out box (not the lifted plate, so a hover lift never
 /// flickers the hover away), cut to the chamfer, and reconciled every frame.
@@ -218,6 +338,7 @@ pub(crate) struct HoverZone {
     chamfer: f32,
     stored: bool,
     active: bool,
+    claim: Option<(ElementId, Target)>,
 }
 
 /// A hover zone around `child` for the control whose state is `touch`.
@@ -234,6 +355,7 @@ pub(crate) fn hover_zone(
         chamfer,
         stored: touch.live_hover,
         active,
+        claim: touch.claim.clone(),
     }
 }
 
@@ -281,6 +403,9 @@ impl Element for HoverZone {
         cx: &mut App,
     ) -> Option<Hitbox> {
         self.frame.set(bounds);
+        if let Some((key, target)) = &self.claim {
+            probe::record_target(cx, key, bounds, *target);
+        }
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         self.child.prepaint(window, cx);
         Some(hitbox)
@@ -301,7 +426,9 @@ impl Element for HoverZone {
             return;
         };
         let chamfer = self.chamfer;
+        watch_pointer(window);
         let truth = self.active
+            && !pointer_away(window, cx)
             && hitbox.is_hovered(window)
             && inside(bounds, chamfer, window.mouse_position());
         if truth != self.stored {
@@ -312,7 +439,16 @@ impl Element for HoverZone {
         }
         let entity = self.entity.clone();
         let active = self.active;
-        let painted = Cell::new(truth);
+        let painted = Rc::new(Cell::new(truth));
+        {
+            let entity = entity.clone();
+            let painted = painted.clone();
+            window.on_mouse_event(move |_: &MouseExitEvent, phase, _window, cx| {
+                if phase == DispatchPhase::Bubble && painted.replace(false) {
+                    set_hovered(&entity, false, cx);
+                }
+            });
+        }
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;

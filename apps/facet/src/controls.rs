@@ -31,8 +31,8 @@ pub mod toggle;
 pub mod gallery;
 
 pub use button::{Button, Intent, button};
-pub use comb::{Release, ReleaseId, Step, VersionComb, VersionSelected, version_comb};
-pub use field::{Field, Select, field, select, sync_text_engine};
+pub use comb::{Release, ReleaseId, ReleaseStep, Step, VersionComb, VersionSelected, step_release, version_comb};
+pub use field::{Field, Select, field, select, select_menu_key, sync_text_engine};
 pub use glyph::{Glyph, glyph};
 pub use icon_button::{IconButton, IconButtonSize, icon_button};
 pub use kbd::{Kbd, KbdSize, KbdVoice, KeyRise, kbd, keys};
