@@ -1399,6 +1399,28 @@ impl<'x, 'source> Projector<'x, 'source> {
         Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
     }
 
+    /// Resolves one package-level variable spelling to a local fact.
+    /// Variables whose declaration positively lives in a sibling file
+    /// (version-6 `name_span` without the digest-bound flag) stay unresolved
+    /// here so the occurrence keeps the package import-path key the join
+    /// layer matches.
+    fn local_var_target(
+        &self,
+        package: &[u8],
+        name: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let ordinal = self.lookup(package, name)?;
+        let cross_file = self
+            .names
+            .iter()
+            .find(|key| key.ordinal == ordinal)
+            .is_some_and(|key| key.cross_file);
+        if cross_file {
+            return None;
+        }
+        Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
+    }
+
     /// True when a version-6 declaration positively lives in a sibling file
     /// of the digest-bound compile source. Version-5 rows carry no `name_span`
     /// and must not be treated as cross-file.
@@ -1985,7 +2007,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
         if !is_unbound_name(declaration.name) {
-            if kind == EntityKind::Constant {
+            if kind == EntityKind::Constant || kind == EntityKind::Static {
                 self.record_name_with_cross_file(
                     declaration.package,
                     declaration.name,
@@ -2188,6 +2210,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                     self.local_type_target(owner_package, row.target)
                 } else if row.target_class == ReferenceTargetClass::Const {
                     self.local_const_target(owner_package, row.target)
+                } else if row.target_class == ReferenceTargetClass::Var {
+                    self.local_var_target(owner_package, row.target)
                 } else {
                     self.lookup(owner_package, row.target)
                         .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
