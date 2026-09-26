@@ -3,4 +3,5 @@
 
 fn main() {
     backend_local_service::builtin::measure_search_corpus();
+    backend_local_service::builtin::measure_search_source_page();
 }

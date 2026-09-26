@@ -414,4 +414,13 @@ impl WorkspaceHead {
             store: None,
         }
     }
+
+    /// Creates a snapshot that reads this head's relation nodes from `store`.
+    ///
+    /// [`Self::snapshot`] carries no store, so opening a relation on it fails.
+    /// `store` must already contain the nodes named by this head.
+    #[must_use]
+    pub fn snapshot_in(&self, store: Arc<FileStore>) -> WorkspaceSnapshot {
+        self.snapshot().with_store(store)
+    }
 }

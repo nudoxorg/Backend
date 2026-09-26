@@ -227,6 +227,61 @@ fn shared_corpus_builds_once_and_survives_a_failed_rebuild() {
 }
 
 #[test]
+fn admit_corpus_retries_after_a_failed_build_and_skips_prepare_once_resident() {
+    let (workspace, view) = selected_view();
+    let evidence = semantic_evidence(workspace, &view);
+    let mut owner = SearchSnapshotOwner::default();
+    let mut prepares = 0u32;
+    let Err("prepare failed") = owner.admit_corpus(
+        workspace,
+        || Err::<(), _>("prepare failed"),
+        |_| Ok(evidence.clone()),
+    ) else {
+        panic!("a failed prepare must surface");
+    };
+    assert_eq!(prepares, 0);
+    assert_eq!(owner.corpus_builds(), 0);
+
+    let Err("build failed") = owner.admit_corpus(
+        workspace,
+        || {
+            prepares += 1;
+            Ok(())
+        },
+        |_| Err("build failed"),
+    ) else {
+        panic!("a failed build must surface");
+    };
+    assert_eq!(prepares, 1);
+    assert_eq!(owner.corpus_builds(), 0);
+
+    let admitted = owner
+        .admit_corpus(
+            workspace,
+            || {
+                prepares += 1;
+                Ok::<(), &str>(())
+            },
+            |_| Ok::<_, &str>(evidence.clone()),
+        )
+        .expect("admit");
+    assert_eq!(prepares, 2);
+    assert_eq!(owner.corpus_builds(), 1);
+
+    let reused = owner
+        .admit_corpus(
+            workspace,
+            || Err::<(), &str>("must not page sources for a resident corpus"),
+            |_| Err("must not rebuild a resident corpus"),
+        )
+        .expect("reuse");
+    assert_eq!(prepares, 2);
+    assert_eq!(owner.corpus_builds(), 1);
+    assert_eq!(reused.evidence_digest(), admitted.evidence_digest());
+    assert_eq!(reused.facts().len(), evidence.facts().len());
+}
+
+#[test]
 fn semantic_candidate_identity_is_scoped_to_the_immutable_view() {
     let (workspace, _) = selected_view();
     let row = RowId::Symbol(backend_engine::symbol_key("same-declaration"));

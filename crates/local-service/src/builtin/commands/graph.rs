@@ -36,11 +36,11 @@ fn execute_graph_query(
         .map(|(name, value)| graph_value_to_trustfall(value).map(|value| (name.clone(), value)))
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let sources = super::super::read_indexed_sources(&snapshot)?;
-    let workspace = snapshot.root();
-    let corpus = snapshots.shared_corpus(workspace, || {
-        super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources)
-    })?;
+    let corpus = snapshots.admit_corpus(
+        snapshot.root(),
+        || super::super::read_indexed_sources(&snapshot),
+        |sources| super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources),
+    )?;
     let (cancellation, control) = backend_extension_trustfall::SemanticQueryCancellation::new();
     let query = backend_extension_trustfall::SemanticQueryRequest::admit_page(
         corpus,
@@ -213,11 +213,11 @@ pub(super) fn execute_search(
 ) -> Result<CommandReply, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let coverage = super::super::admitted_coverage()?;
-    let sources = super::super::read_indexed_sources(&snapshot)?;
-    let workspace = snapshot.root();
-    let semantic_evidence = snapshots.shared_corpus(workspace, || {
-        super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources)
-    })?;
+    let semantic_evidence = snapshots.admit_corpus(
+        snapshot.root(),
+        || super::super::read_indexed_sources(&snapshot),
+        |sources| super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources),
+    )?;
     let coordinator = snapshots
         .select(
             snapshot.root(),
