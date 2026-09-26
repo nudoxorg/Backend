@@ -11,6 +11,8 @@ mod call_join;
 mod go_field_join;
 #[cfg(test)]
 mod go_type_mention_join;
+#[cfg(test)]
+mod py_static_field_join;
 mod identity;
 mod query;
 mod semantic;

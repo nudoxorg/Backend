@@ -745,6 +745,50 @@ pub(crate) fn join_project_mention(
     Ok(identity.filter(|candidate| published.contains(candidate)))
 }
 
+pub(crate) fn foreign_package_field_static_constant_retarget(
+    image: &SemanticImageView<'_>,
+    external: ExternalId,
+    caller_path: &str,
+    project_paths: &BTreeSet<String>,
+    index: &ProjectCallableIndex,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(None);
+    };
+    let ForeignTargetOrigin::Package { package, .. } = foreign.origin else {
+        return Ok(None);
+    };
+    if foreign.kind != Some(ItemKind::Field) {
+        return Ok(None);
+    }
+    let package_atom = image
+        .atom(package)
+        .ok_or_else(|| BuiltinModelError("semantic graph package atom is missing".to_owned()))?;
+    let path_atom = image
+        .atom(foreign.path)
+        .ok_or_else(|| BuiltinModelError("semantic graph path atom is missing".to_owned()))?;
+    let display_atom = image
+        .atom(foreign.display)
+        .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
+    let package = std::str::from_utf8(package_atom).map_err(|_| {
+        BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
+    })?;
+    let path = std::str::from_utf8(path_atom).map_err(|_| {
+        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
+    })?;
+    let display = std::str::from_utf8(display_atom).map_err(|_| {
+        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
+    })?;
+    let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
+    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    let static_match = index.resolve_mention(&resolved_paths, display, ItemKind::Static);
+    let constant_match = index.resolve_mention(&resolved_paths, display, ItemKind::Constant);
+    match (static_match, constant_match) {
+        (Some(identity), None) | (None, Some(identity)) => Ok(Some(identity)),
+        _ => Ok(None),
+    }
+}
+
 pub(crate) fn foreign_package_field_retarget(
     image: &SemanticImageView<'_>,
     external: ExternalId,
@@ -797,6 +841,14 @@ pub(crate) fn join_project_field(
         return Ok(None);
     }
     let identity = if let Some(identity) = foreign_package_field_retarget(
+        image,
+        external,
+        caller_path,
+        project_paths,
+        index,
+    )? {
+        Some(identity)
+    } else if let Some(identity) = foreign_package_field_static_constant_retarget(
         image,
         external,
         caller_path,
