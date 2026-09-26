@@ -4966,7 +4966,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Resolves one `this.property` site through the enclosing class when
     /// exactly one same-name member of the expected kind lives there, then
     /// through at most [`MAX_INHERITANCE_DEPTH`] `extends` hops when the
-    /// enclosing class declares no such member.
+    /// enclosing class declares no such member. Field reads consult fields
+    /// first and only walk methods when both local and inherited fields are
+    /// absent; ambiguous fields never fall through to methods.
     fn this_property_target(
         &self,
         property_span: Span,
@@ -4979,11 +4981,44 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             start: property_span.start,
             end: property_span.end,
         })?;
-        let expected_kind = match kind {
-            ReferenceKind::FunctionCall => EntityKind::Function,
-            ReferenceKind::FieldAccess => EntityKind::Field,
-            _ => return self.syntactic_property_target(property_span),
-        };
+        match kind {
+            ReferenceKind::FunctionCall => {
+                self.this_member_target(class, name, EntityKind::Function, property_span)
+            }
+            ReferenceKind::FieldAccess => match self.class_member_of_owner(class, name, EntityKind::Field) {
+                ClassMemberMatch::Unique(fact) => Ok((
+                    OccurrenceTarget::Local(EntityId::new(fact)),
+                    OccurrenceConfidence::Index,
+                )),
+                ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                ClassMemberMatch::Absent => match self.inherited_class_member(class, name, EntityKind::Field) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                    ClassMemberMatch::Absent => self.this_member_target(
+                        class,
+                        name,
+                        EntityKind::Function,
+                        property_span,
+                    ),
+                },
+            },
+            _ => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Resolves one `this.property` member through the enclosing class, then
+    /// through inherited bases, using [`class_member_of_owner`] and
+    /// [`inherited_class_member`].
+    fn this_member_target(
+        &self,
+        class: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+        property_span: Span,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
         match self.class_member_of_owner(class, name, expected_kind) {
             ClassMemberMatch::Unique(fact) => Ok((
                 OccurrenceTarget::Local(EntityId::new(fact)),
