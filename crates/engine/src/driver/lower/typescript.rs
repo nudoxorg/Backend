@@ -4452,7 +4452,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(module) = resolved.module else {
             return Ok(None);
         };
-        if let Some(key) = self.checker_foreign_key(span, module, resolved.name, false)? {
+        if let Some(key) = self.checker_foreign_key(span, module, resolved.name, None)? {
             return Ok(Some((
                 OccurrenceTarget::Foreign(key),
                 OccurrenceConfidence::Oracle,
@@ -4483,7 +4483,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         span: Span,
         module: &str,
         name: Option<&str>,
-        field: bool,
+        member_kind: Option<EntityKind>,
     ) -> Result<Option<ForeignKey<'source>>, TypeScriptCollectError> {
         let spelled_module = self.spelled_in_source(module.as_bytes());
         let site = self.text_span(span).ok_or(TypeScriptCollectError::Span {
@@ -4493,22 +4493,25 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if site.is_empty() {
             return Ok(None);
         }
-        let (path, display, kind) = if field {
-            let Some(name) = name else {
-                return Ok(None);
-            };
-            let Some(path) = self
-                .spelled_in_source(name.as_bytes())
-                .filter(|path| !path.is_empty())
-            else {
-                return Ok(None);
-            };
-            (path, path, Some(EntityKind::Field))
-        } else {
-            let display = name
-                .and_then(|name| self.spelled_in_source(name.as_bytes()))
-                .unwrap_or(site);
-            (site, display, None)
+        let (path, display, kind) = match member_kind {
+            Some(member_kind) => {
+                let Some(name) = name else {
+                    return Ok(None);
+                };
+                let Some(path) = self
+                    .spelled_in_source(name.as_bytes())
+                    .filter(|path| !path.is_empty())
+                else {
+                    return Ok(None);
+                };
+                (path, path, Some(member_kind))
+            }
+            None => {
+                let display = name
+                    .and_then(|name| self.spelled_in_source(name.as_bytes()))
+                    .unwrap_or(site);
+                (site, display, None)
+            }
         };
         let origin = match spelled_module {
             Some(module) => ForeignOrigin::Package(
@@ -4542,6 +4545,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if self.occurrence_covers(reference.span)? {
                 continue;
             }
+            let span = Span::new(reference.span.start, reference.span.end);
+            if reference.is_enum_member
+                && reference.overload_index.is_none()
+                && !self.is_member_call_position(span)
+            {
+                continue;
+            }
             let Some(mut owner) = self.owning_fact(reference.span.start) else {
                 continue;
             };
@@ -4561,7 +4571,6 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     owner = function;
                 }
             }
-            let span = Span::new(reference.span.start, reference.span.end);
             self.commit_occurrence(owner, span, kind, target, confidence)?;
         }
         Ok(())
@@ -4595,27 +4604,111 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             else {
                 continue;
             };
-            let Some(enum_fact) = self.enum_fact_for_identifier_span(identifier_span) else {
-                continue;
-            };
             let property_bytes = self
                 .slice_span(property_span)
                 .ok_or(TypeScriptCollectError::Span {
                     start: property_span.start,
                     end: property_span.end,
                 })?;
-            let Some(variant) = self.variant_in_enum(enum_fact, property_bytes) else {
+            if let Some(enum_fact) = self.enum_fact_for_identifier_span(identifier_span) {
+                let Some(variant) = self.variant_in_enum(enum_fact, property_bytes) else {
+                    continue;
+                };
+                self.commit_occurrence(
+                    owner,
+                    property_span,
+                    ReferenceKind::FieldAccess,
+                    OccurrenceTarget::Local(EntityId::new(variant)),
+                    OccurrenceConfidence::Index,
+                )?;
                 continue;
-            };
-            self.commit_occurrence(
-                owner,
+            }
+            if let Some(target) = self.cross_file_enum_member_target(
+                identifier_span,
                 property_span,
-                ReferenceKind::FieldAccess,
-                OccurrenceTarget::Local(EntityId::new(variant)),
-                OccurrenceConfidence::Index,
-            )?;
+                property_bytes,
+            )? {
+                self.commit_occurrence(
+                    owner,
+                    property_span,
+                    ReferenceKind::FieldAccess,
+                    target,
+                    OccurrenceConfidence::Oracle,
+                )?;
+            }
         }
         Ok(())
+    }
+
+    /// Resolves one imported-enum `Enum.Member` site to an oracle package key
+    /// naming the member declaration in the spelled import module.
+    fn cross_file_enum_member_target(
+        &self,
+        object_identifier_span: Span,
+        property_span: Span,
+        property_bytes: &[u8],
+    ) -> Result<Option<OccurrenceTarget<'source>>, TypeScriptCollectError> {
+        if !self.is_import_binding_span(object_identifier_span) {
+            return Ok(None);
+        }
+        let Some(checker) = self.checker.as_ref() else {
+            return Ok(None);
+        };
+        let resolved = checker.reference_at(Utf8Span {
+            start: property_span.start,
+            end: property_span.end,
+        });
+        let Some(resolved) = resolved else {
+            return Ok(None);
+        };
+        if !resolved.is_enum_member || resolved.target.is_some() {
+            return Ok(None);
+        }
+        let Some(module) = resolved.module else {
+            return Ok(None);
+        };
+        let Some(name) = resolved.name else {
+            return Ok(None);
+        };
+        if name.as_bytes() != property_bytes {
+            return Ok(None);
+        }
+        let object_resolved = checker.reference_at(Utf8Span {
+            start: object_identifier_span.start,
+            end: object_identifier_span.end,
+        });
+        if !object_resolved.is_some_and(|object| object.module == Some(module)) {
+            return Ok(None);
+        }
+        self.checker_foreign_key(
+            property_span,
+            module,
+            Some(name),
+            Some(EntityKind::Variant),
+        )
+        .map(|key| key.map(OccurrenceTarget::Foreign))
+    }
+
+    /// Reports whether one identifier use resolves to an import binding.
+    fn is_import_binding_span(&self, identifier_span: Span) -> bool {
+        let scoping = self.semantic.scoping();
+        let nodes = self.semantic.nodes();
+        for symbol in scoping.symbol_ids() {
+            if !scoping
+                .symbol_flags(symbol)
+                .intersects(SymbolFlags::Import | SymbolFlags::TypeImport)
+            {
+                continue;
+            }
+            for reference_id in scoping.get_resolved_reference_ids(symbol) {
+                let reference = scoping.get_reference(*reference_id);
+                let span = nodes.get_node(reference.node_id()).kind().span();
+                if span.start == identifier_span.start && span.end == identifier_span.end {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Peels one or more parenthesized wrappers and returns the span of the
@@ -4760,11 +4853,16 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             )));
         }
         if let Some(module) = reference.module {
-            let field = reference.is_field && !call;
-            if let Some(key) = self.checker_foreign_key(span, module, reference.name, field)? {
+            let member_kind = if reference.is_field && !call {
+                Some(EntityKind::Field)
+            } else {
+                None
+            };
+            if let Some(key) = self.checker_foreign_key(span, module, reference.name, member_kind)?
+            {
                 let kind = if call {
                     ReferenceKind::FunctionCall
-                } else if field {
+                } else if member_kind == Some(EntityKind::Field) {
                     ReferenceKind::FieldAccess
                 } else {
                     ReferenceKind::VariableUse
@@ -6076,6 +6174,7 @@ mod lane_tests {
                 name: Some("Context".to_owned()),
                 overload_index: None,
                 is_field: false,
+                is_enum_member: false,
             }],
         )
     }

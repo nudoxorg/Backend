@@ -1123,6 +1123,7 @@ fn checker_resolved_property_access_is_not_duplicated() {
         name: None,
         overload_index: None,
         is_field: false,
+        is_enum_member: false,
     }]);
     let v = view(SOURCE, Some(&authority));
     let (score_field, _) = named(&v, b"score");
@@ -1164,6 +1165,7 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
             name: Some("setNote".into()),
             overload_index: None,
             is_field: false,
+            is_enum_member: false,
         },
         Reference {
             start: 192,
@@ -1174,6 +1176,7 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
             name: Some("setNote".into()),
             overload_index: None,
             is_field: false,
+            is_enum_member: false,
         },
     ]);
     let v = view(SOURCE, Some(&r));

@@ -156,6 +156,11 @@ function isFieldOrigin(origin) {
   return ts.isPropertyDeclaration(origin) || ts.isPropertySignature(origin);
 }
 
+/** Reports whether one foreign declaration is an enum member. */
+function isEnumMemberOrigin(origin) {
+  return ts.isEnumMember(origin);
+}
+
 const MAX_TREE_DEPTH = 16;
 
 /** Builds one structured tree for the checker's exact type. */
@@ -561,6 +566,9 @@ function emitReference(node) {
   }
   if (origin && isFieldOrigin(origin) && parent && ts.isPropertyAccessExpression(parent) && parent.name === node) {
     entry.isField = true;
+  }
+  if (origin && isEnumMemberOrigin(origin) && parent && ts.isPropertyAccessExpression(parent) && parent.name === node) {
+    entry.isEnumMember = true;
   }
   references.push(entry);
 }
