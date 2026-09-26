@@ -59,6 +59,27 @@ pub struct Timing {
     /// The slowest measured frame: its time, the acts delivered before it,
     /// and the scene's note on its work.
     pub worst: Option<Worst>,
+    /// All script-dispatch batches, including cold inputs; separate from draw.
+    pub input: InputTiming,
+}
+
+/// Wall time spent dispatching script acts and immediate foreground tasks.
+#[derive(Clone,Debug,PartialEq)]
+pub struct InputTiming {
+    /// Frames carrying input.
+    pub batches: usize,
+    /// Script acts (a `type` act can dispatch several physical keystrokes).
+    pub acts: usize,
+    /// Median batch dispatch time.
+    pub p50: Duration,
+    ///95th percentile batch dispatch time.
+    pub p95: Duration,
+    /// Maximum batch dispatch time.
+    pub max: Duration,
+    /// Maximum single-act dispatch time.
+    pub max_event: Duration,
+    /// The largest batch and its concrete acts.
+    pub worst: Option<Worst>,
 }
 
 /// The slowest frame of a run, attributed.
@@ -156,8 +177,23 @@ pub fn measure(
     let mut first = None;
     let mut requested = 0;
     let mut worst: Option<(Duration, Worst)> = None;
+    let mut input = Vec::new();
+    let mut input_acts=0;
+    let mut input_max_event=Duration::ZERO;
+    let mut input_worst: Option<(Duration,Worst)>=None;
     run(scene, &shot, &mut |tick, _, _| {
         first.get_or_insert(tick.drawn.cpu);
+        if tick.drawn.input_events>0 {
+            input.push(tick.drawn.input_cpu);
+            input_acts+=tick.drawn.input_events;
+            input_max_event=input_max_event.max(tick.drawn.input_max);
+            if input_worst.as_ref().is_none_or(|(cpu,_)|tick.drawn.input_cpu>*cpu) {
+                input_worst=Some((tick.drawn.input_cpu,Worst {
+                    at_ms:tick.drawn.at_ms, acts:tick.events.iter().map(|event|event.act.to_string()).collect(),
+                    invalidations:tick.drawn.invalidations,note:tick.note.clone(),
+                }));
+            }
+        }
         if tick.drawn.at_ms >= 100 {
             all.push(tick.drawn.cpu);
             if tick.drawn.requested() {
@@ -168,7 +204,11 @@ pub fn measure(
                     tick.drawn.cpu,
                     Worst {
                         at_ms: tick.drawn.at_ms,
-                        acts: tick.events.iter().map(|event| event.act.to_string()).collect(),
+                        acts: tick
+                            .events
+                            .iter()
+                            .map(|event| event.act.to_string())
+                            .collect(),
                         invalidations: tick.drawn.invalidations,
                         note: tick.note.clone(),
                     },
@@ -178,6 +218,7 @@ pub fn measure(
         Ok(())
     })?;
     all.sort_unstable();
+    input.sort_unstable();
     let budget = BUDGETS
         .iter()
         .find(|budget| budget.size == size)
@@ -194,13 +235,15 @@ pub fn measure(
         budget,
         release: !cfg!(debug_assertions),
         worst: worst.map(|(_, worst)| worst),
+        input: InputTiming { batches:input.len(),acts:input_acts,p50:percentile(&input,0.5),p95:percentile(&input,0.95),
+            max:input.last().copied().unwrap_or_default(),max_event:input_max_event,worst:input_worst.map(|(_,worst)|worst) },
     })
 }
 
 /// The worst frame, in words.
 #[must_use]
 pub fn attribution(timing: &Timing) -> String {
-    timing.worst.as_ref().map_or_else(String::new, |worst| {
+    let draw = timing.worst.as_ref().map_or_else(String::new, |worst| {
         format!(
             "worst frame {:.2} ms at {} ms: {} invalidations{}{}",
             timing.max.as_secs_f64() * 1000.0,
@@ -216,7 +259,11 @@ pub fn attribution(timing: &Timing) -> String {
                 .as_ref()
                 .map_or_else(String::new, |note| format!(", {note}"))
         )
-    })
+    });
+    let input=&timing.input;
+    format!("{draw}; input dispatch {} acts in {} batches: p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms (single-act max {:.2} ms){}",
+        input.acts,input.batches,input.p50.as_secs_f64()*1000.0,input.p95.as_secs_f64()*1000.0,input.max.as_secs_f64()*1000.0,input.max_event.as_secs_f64()*1000.0,
+        input.worst.as_ref().map_or_else(String::new,|worst|format!(" at {} ms after {}",worst.at_ms,worst.acts.join("; "))))
 }
 
 /// A timing as one report line.

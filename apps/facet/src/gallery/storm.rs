@@ -20,8 +20,8 @@
 use super::align::{self, Observed, Tolerance};
 use super::{GalleryError, RootFocus, Scene, Shot};
 use crate::probe::StackPhase;
-use backend_gui_harness::storm::{self, Vocabulary};
 use backend_gui_harness::Script;
+use backend_gui_harness::storm::{self, Vocabulary};
 use gpui::{App, Global, Window};
 use image::RgbaImage;
 use std::cell::RefCell;
@@ -257,7 +257,10 @@ fn frame_checks(
         let b = &target.bounds;
         if target.state.hovered {
             let inside = tick.pointer.is_some_and(|(x, y)| {
-                x >= b.x - 1.0 && x <= b.x + b.width + 1.0 && y >= b.y - 1.0 && y <= b.y + b.height + 1.0
+                x >= b.x - 1.0
+                    && x <= b.x + b.width + 1.0
+                    && y >= b.y - 1.0
+                    && y <= b.y + b.height + 1.0
             });
             if !inside {
                 push(
@@ -407,6 +410,7 @@ fn play(scene: &Scene, base: &Shot, script: &Script, config: &StormConfig) -> Pl
                 drawn: tick.drawn,
                 ledger: tick.ledger.clone(),
                 events: tick.events.len(),
+                state: tick.state.clone(),
             });
             if let Some(image) = tick.image {
                 *settled.borrow_mut() = Some(image.clone());
@@ -462,7 +466,10 @@ fn check(scene: &Scene, base: &Shot, storm: &Script, config: &StormConfig) -> St
     let mut violations = played.violations;
     // A slow frame counts only if the same frame is slow again on a replay
     // of the same script (the machine is shared; one spike is noise).
-    if violations.iter().any(|violation| violation.check == "budget") {
+    if violations
+        .iter()
+        .any(|violation| violation.check == "budget")
+    {
         let again = play(scene, base, &script, config);
         violations.retain(|violation| {
             violation.check != "budget"
@@ -472,18 +479,24 @@ fn check(scene: &Scene, base: &Shot, storm: &Script, config: &StormConfig) -> St
                     .any(|other| other.check == "budget" && other.at_ms == violation.at_ms)
         });
     }
-    let panicked = violations.iter().any(|violation| violation.check == "panic");
+    let panicked = violations
+        .iter()
+        .any(|violation| violation.check == "panic");
     if !panicked {
         let alignment = align::analyze(&played.observed, Tolerance::default());
         let allowed = played.allowed.clone();
-        violations.extend(alignment.findings.iter().filter(|finding| {
-            !allowed.iter().any(|allow| *allow == finding.check.name())
-        }).map(|finding| Violation {
-            check: finding.check.name(),
-            at_ms: finding.at_ms,
-            key: finding.key.clone(),
-            detail: finding.detail.clone(),
-        }));
+        violations.extend(
+            alignment
+                .findings
+                .iter()
+                .filter(|finding| !allowed.iter().any(|allow| *allow == finding.check.name()))
+                .map(|finding| Violation {
+                    check: finding.check.name(),
+                    at_ms: finding.at_ms,
+                    key: finding.key.clone(),
+                    detail: finding.detail.clone(),
+                }),
+        );
         // The end state: only pinned floats remain, nothing still leaving.
         if let Some(last) = played.observed.last() {
             for stack in &last.ledger.stacks {
@@ -570,9 +583,7 @@ pub fn difference(a: &RgbaImage, b: &RgbaImage) -> Option<String> {
         }
     }
     (count > 0).then(|| {
-        format!(
-            "{count} px differ inside ({left}, {top})-({right}, {bottom}) physical px"
-        )
+        format!("{count} px differ inside ({left}, {top})-({right}, {bottom}) physical px")
     })
 }
 

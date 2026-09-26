@@ -10,9 +10,9 @@
 
 use super::lint::{self, Linted};
 use super::{GalleryError, Scene, Shot, capture, compose};
+use crate::Density;
 use crate::probe::TrackKind;
 use crate::tokens::Appearance;
-use crate::Density;
 use backend_gui_harness::Script;
 use image::RgbaImage;
 
@@ -156,7 +156,14 @@ pub fn shoot(
     scene: &Scene,
     cell: Cell,
     scale: u8,
-) -> Result<(RgbaImage, crate::probe::Ledger, backend_gui_harness::Viewport), GalleryError> {
+) -> Result<
+    (
+        RgbaImage,
+        crate::probe::Ledger,
+        backend_gui_harness::Viewport,
+    ),
+    GalleryError,
+> {
     let mut shot = Shot::new(scene);
     shot.size = (cell.width, scene.size.1);
     shot.scale = scale;
@@ -325,7 +332,10 @@ pub fn one_sheet(
         .collect::<Vec<_>>();
     let theme = axes.themes.first().copied().unwrap_or(Appearance::Abyss);
     let labels = compose::labels(&lines, (tile_width / 2).max(200), 2, theme)?;
-    let tiles = results.iter().map(|result| &result.image).collect::<Vec<_>>();
+    let tiles = results
+        .iter()
+        .map(|result| &result.image)
+        .collect::<Vec<_>>();
     Ok((
         format!("{}-matrix", scene.id),
         compose::sheet(

@@ -197,7 +197,9 @@ impl Bench {
     }
 
     fn focused_plate(&self, window: &Window) -> Option<usize> {
-        self.plates.iter().position(|handle| handle.is_focused(window))
+        self.plates
+            .iter()
+            .position(|handle| handle.is_focused(window))
     }
 
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -306,9 +308,13 @@ impl Render for Bench {
                 let hovered = self.hovered == Some(index);
                 let pressed = self.pressed == Some(index);
                 let key = ("bench.lift", index);
-                let mut lift =
-                    self.motion
-                        .animate(key, if hovered { -4.0 } else { 0.0 }, spec::LIFT, window, cx);
+                let mut lift = self.motion.animate(
+                    key,
+                    if hovered { -4.0 } else { 0.0 },
+                    spec::LIFT,
+                    window,
+                    cx,
+                );
                 if self.defect == Defect::Jump && hovered && lift < -2.0 && !self.jumped {
                     self.jumped = true;
                     self.motion.set(key, 0.0);
@@ -334,8 +340,7 @@ impl Render for Bench {
                         // Start the second half of the pair 20 ms late.
                         let now = crate::motion::now(cx);
                         let since = *self.hover_since.get_or_insert(now);
-                        now.saturating_duration_since(since)
-                            >= std::time::Duration::from_millis(20)
+                        now.saturating_duration_since(since) >= std::time::Duration::from_millis(20)
                     } else {
                         true
                     };
@@ -360,7 +365,11 @@ impl Render for Bench {
                 } else {
                     palette.line2.hsla()
                 };
-                let fill = if press > 0.5 { palette.plate3 } else { palette.plate2 };
+                let fill = if press > 0.5 {
+                    palette.plate3
+                } else {
+                    palette.plate2
+                };
                 // The painted face lifts; the hit area (hover, press, focus)
                 // stays in its slot, so a pointer near an edge does not fall
                 // off a plate that moved away from under it.
@@ -399,9 +408,7 @@ impl Render for Bench {
                         }
                         if *hovered {
                             this.hovered = Some(index);
-                        } else if this.hovered == Some(index)
-                            && this.defect != Defect::StuckHover
-                        {
+                        } else if this.hovered == Some(index) && this.defect != Defect::StuckHover {
                             this.hovered = None;
                             this.hover_since = None;
                         }
@@ -434,17 +441,20 @@ impl Render for Bench {
                         }),
                     )
                     .child(offset(face).y(px(lift)))
-                    .when_live(self.marks[index].is_some() || self.leftover[index], |this| {
-                        this.child(
-                            div()
-                                .absolute()
-                                .bottom(px(0.0))
-                                .left(px(0.0))
-                                .w(px(PLATE_W))
-                                .h(px(2.0))
-                                .bg(palette.peri.base),
-                        )
-                    });
+                    .when_live(
+                        self.marks[index].is_some() || self.leftover[index],
+                        |this| {
+                            this.child(
+                                div()
+                                    .absolute()
+                                    .bottom(px(0.0))
+                                    .left(px(0.0))
+                                    .w(px(PLATE_W))
+                                    .h(px(2.0))
+                                    .bg(palette.peri.base),
+                            )
+                        },
+                    );
                 let state = Target {
                     hovered,
                     pressed,
@@ -452,11 +462,11 @@ impl Render for Bench {
                     focusable: true,
                     clickable: true,
                 };
-                let mut column = div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(probe::target(format!("bench.plate-{index}"), state, plate));
+                let mut column = div().flex().flex_col().gap(px(6.0)).child(probe::target(
+                    format!("bench.plate-{index}"),
+                    state,
+                    plate,
+                ));
                 if facet.reveal.keys {
                     let cap = format!("{}", index + 1);
                     column = column.child(probe::text(
@@ -506,7 +516,11 @@ impl Render for Bench {
             );
             // The card rises 8 px into its laid-out place (layout motion:
             // it must settle exactly on its slot).
-            let rest = if self.defect == Defect::OffSlot { 3.0 } else { 0.0 };
+            let rest = if self.defect == Defect::OffSlot {
+                3.0
+            } else {
+                0.0
+            };
             let rise = self.motion.animate_from(
                 ("bench.rise", popup.id),
                 8.0,
@@ -523,51 +537,53 @@ impl Render for Bench {
             let id = popup.id;
             let depth_f = depth as f32;
             let leaving = popup.leaving;
-            let card = probe::region(format!("popup-{id}"), || div()
-                .id(("bench.card", id))
-                .absolute()
-                .left(px(40.0 + 170.0 * depth_f))
-                .top(px(250.0 + 12.0 * depth_f))
-                .w(px(220.0))
-                .p(px(12.0))
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .bg(palette.plate3)
-                .border_1()
-                .border_color(palette.line2.hsla())
-                .opacity(opacity.clamp(0.0, 1.0))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(probe::text(
-                    ("bench.card.title", id),
-                    "a popup",
-                    ty::ROW,
-                    scale,
-                    TextOverflow::Wrap,
-                    div().typeset(ty::ROW, &facet).child("a popup"),
-                ))
-                .child(
-                    div()
-                        .id(("bench.more", id))
-                        .h(px(28.0))
-                        .flex()
-                        .items_center()
-                        .text_color(palette.peri.base.hsla())
-                        .when_live(!leaving, |this| {
-                            this.on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_popup(Some(id));
-                                cx.notify();
-                            }))
-                        })
-                        .child(probe::text(
-                            ("bench.more.label", id),
-                            "more…",
-                            ty::ROW,
-                            scale,
-                            TextOverflow::Wrap,
-                            div().typeset(ty::ROW, &facet).child("more…"),
-                        )),
-                ));
+            let card = probe::region(format!("popup-{id}"), || {
+                div()
+                    .id(("bench.card", id))
+                    .absolute()
+                    .left(px(40.0 + 170.0 * depth_f))
+                    .top(px(250.0 + 12.0 * depth_f))
+                    .w(px(220.0))
+                    .p(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .bg(palette.plate3)
+                    .border_1()
+                    .border_color(palette.line2.hsla())
+                    .opacity(opacity.clamp(0.0, 1.0))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(probe::text(
+                        ("bench.card.title", id),
+                        "a popup",
+                        ty::ROW,
+                        scale,
+                        TextOverflow::Wrap,
+                        div().typeset(ty::ROW, &facet).child("a popup"),
+                    ))
+                    .child(
+                        div()
+                            .id(("bench.more", id))
+                            .h(px(28.0))
+                            .flex()
+                            .items_center()
+                            .text_color(palette.peri.base.hsla())
+                            .when_live(!leaving, |this| {
+                                this.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_popup(Some(id));
+                                    cx.notify();
+                                }))
+                            })
+                            .child(probe::text(
+                                ("bench.more.label", id),
+                                "more…",
+                                ty::ROW,
+                                scale,
+                                TextOverflow::Wrap,
+                                div().typeset(ty::ROW, &facet).child("more…"),
+                            )),
+                    )
+            });
             cards.push(probe::measure(
                 format!("slot:bench.card-{id}"),
                 offset(probe::measure(format!("paint:bench.card-{id}"), card)).y(px(rise)),
@@ -675,11 +691,13 @@ impl Render for Bench {
                 .saturating_duration_since(crate::motion::epoch(cx))
                 .as_secs_f32();
             let drift = (seconds * 40.0).min(120.0);
-            extras = extras.child(offset(probe::measure(
-                "bench.drift",
-                div().w(px(24.0)).h(px(24.0)).bg(palette.amber.base),
-            ))
-            .x(px(drift)));
+            extras = extras.child(
+                offset(probe::measure(
+                    "bench.drift",
+                    div().w(px(24.0)).h(px(24.0)).bg(palette.amber.base),
+                ))
+                .x(px(drift)),
+            );
             probe::record_track(cx, || probe::TrackSample {
                 key: "bench.drift".to_owned(),
                 kind: probe::TrackKind::Tween,
@@ -691,6 +709,7 @@ impl Render for Bench {
                 at_ms: f64::from(seconds) * 1000.0,
                 live: drift < 120.0,
                 overshoot_ratio: 0.0,
+                overshoot_absolute: 0.0,
                 group: None,
             });
         }

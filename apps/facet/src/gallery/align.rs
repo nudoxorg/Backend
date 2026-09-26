@@ -4,7 +4,7 @@
 //! | Check | Holds when |
 //! |---|---|
 //! | continuity | no track moves further between two frames than its velocity allows (a retarget starts where the old motion was) |
-//! | overshoot | a segment stays within `[from, target]` widened by its own curve's or spring's `overshoot_ratio` |
+//! | overshoot | a segment stays within `[from, target]` widened by its own trajectory's relative and absolute bounds |
 //! | settle | a segment stops being live within its budget (plus one frame) |
 //! | slot | once nothing moves, every `paint:K` bounds equal their `slot:K` bounds (the settled value is the laid-out position) |
 //! | lockstep | tracks tagged with one [`crate::probe::grouped`] group are at the same normalised progress in every frame |
@@ -29,6 +29,8 @@ pub struct Observed {
     pub ledger: Ledger,
     /// How many acts were delivered at this instant.
     pub events: usize,
+    /// Report-only state from the scene's declared sampler.
+    pub state: Option<Json>,
 }
 
 /// A motion check.
@@ -326,9 +328,8 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
             let scale = (a.sample.target - a.sample.value)
                 .abs()
                 .max((b.sample.target - a.sample.value).abs());
-            let allowed = tolerance.slack * speed * dt
-                + tolerance.relative * scale
-                + tolerance.absolute;
+            let allowed =
+                tolerance.slack * speed * dt + tolerance.relative * scale + tolerance.absolute;
             let step = (b.sample.value - a.sample.value).abs();
             summary.max_step = summary.max_step.max(step);
             out.stats
@@ -390,6 +391,20 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
             // Overshoot.
             match from_of(sequence, index) {
                 Some(from) if first.overshoot_ratio < f32::MAX / 2.0 => {
+                    if !first.overshoot_absolute.is_finite()
+                        || first.overshoot_absolute < 0.0
+                        || first.overshoot_ratio < 0.0
+                    {
+                        findings.push(Finding {
+                            check: Check::Overshoot,
+                            key: (*key).to_owned(),
+                            at_ms: segment[0].at_ms,
+                            detail: format!(
+                                "invalid trajectory envelope: relative {} absolute {}",
+                                first.overshoot_ratio, first.overshoot_absolute
+                            ),
+                        });
+                    }
                     let momentum = first.kind == TrackKind::Spring
                         && first.velocity.abs() > tolerance.absolute;
                     if momentum {
@@ -400,12 +415,12 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
                         let target = first.target;
                         let span = (target - from).abs();
                         let (low, high) = (from.min(target), from.max(target));
-                        let allowed = first.overshoot_ratio * span * (1.0 + tolerance.relative)
+                        let allowed = (first.overshoot_ratio * span + first.overshoot_absolute)
+                            * (1.0 + tolerance.relative)
                             + tolerance.absolute;
                         for at in segment {
-                            let excess = (low - at.sample.value)
-                                .max(at.sample.value - high)
-                                .max(0.0);
+                            let excess =
+                                (low - at.sample.value).max(at.sample.value - high).max(0.0);
                             out.stats.entry(Check::Overshoot).or_default().see(
                                 excess / allowed,
                                 key,
@@ -417,14 +432,15 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
                                     key: (*key).to_owned(),
                                     at_ms: at.at_ms,
                                     detail: format!(
-                                        "{:.3} is {:.3} past [{:.3}, {:.3}]; its curve allows {:.3} ({:.1} % of {:.3})",
+                                        "{:.3} is {:.3} past [{:.3}, {:.3}]; its curve allows {:.3} ({:.1} % of {:.3} + {:.3} absolute)",
                                         at.sample.value,
                                         excess,
                                         low,
                                         high,
                                         allowed,
                                         first.overshoot_ratio * 100.0,
-                                        span
+                                        span,
+                                        first.overshoot_absolute
                                     ),
                                 });
                             }
@@ -439,11 +455,7 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
             let settled = segment
                 .iter()
                 .find(|at| !at.sample.live)
-                .or_else(|| {
-                    sequence
-                        .get(end)
-                        .filter(|next| at_rest(next.sample))
-                });
+                .or_else(|| sequence.get(end).filter(|next| at_rest(next.sample)));
             let frame_gap = |at: &At<'_>| {
                 at.frame
                     .checked_sub(1)
@@ -537,10 +549,11 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
             (acc.0.min(*p), acc.1.max(*p))
         });
         let spread = high - low;
-        out.stats
-            .entry(Check::Lockstep)
-            .or_default()
-            .see(spread / tolerance.lockstep, group, at_ms);
+        out.stats.entry(Check::Lockstep).or_default().see(
+            spread / tolerance.lockstep,
+            group,
+            at_ms,
+        );
         if spread > tolerance.lockstep {
             findings.push(Finding {
                 check: Check::Lockstep,
@@ -685,14 +698,14 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
             check: Check::Idle,
             key: "window".to_owned(),
             at_ms: out.span_ms.1,
-            detail: "never went idle before the run ended (a track stayed live or input kept arriving)"
-                .to_owned(),
+            detail:
+                "never went idle before the run ended (a track stayed live or input kept arriving)"
+                    .to_owned(),
         });
-        out.stats.entry(Check::Idle).or_default().see(
-            f32::INFINITY,
-            "window",
-            out.span_ms.1,
-        );
+        out.stats
+            .entry(Check::Idle)
+            .or_default()
+            .see(f32::INFINITY, "window", out.span_ms.1);
     }
 
     // Unrequested motion: a frame nobody asked for must look like the last.
@@ -733,11 +746,7 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
         if !moved.is_empty() {
             findings.push(Finding {
                 check: Check::Unrequested,
-                key: moved[0]
-                    .split(' ')
-                    .next()
-                    .unwrap_or("window")
-                    .to_owned(),
+                key: moved[0].split(' ').next().unwrap_or("window").to_owned(),
                 at_ms: b.drawn.at_ms,
                 detail: format!(
                     "changed in a frame nobody requested (a real window shows the old frame): {}",
@@ -785,9 +794,12 @@ pub fn text(scene: &str, alignment: &Alignment, limit: usize) -> String {
         } else {
             "ok  "
         };
-        let worst = stat.worst_at.as_ref().map_or_else(String::new, |(key, at)| {
-            format!("  worst {:.2} of allowed ({key} @ {at} ms)", stat.worst)
-        });
+        let worst = stat
+            .worst_at
+            .as_ref()
+            .map_or_else(String::new, |(key, at)| {
+                format!("  worst {:.2} of allowed ({key} @ {at} ms)", stat.worst)
+            });
         let skipped = if stat.skipped > 0 {
             format!("  {} skipped", stat.skipped)
         } else {
@@ -909,14 +921,112 @@ pub fn json(scene: &str, alignment: &Alignment) -> Json {
                             ("final_value", Json::num(f64::from(track.final_value))),
                             ("final_target", Json::num(f64::from(track.final_target))),
                             ("live_at_end", Json::Bool(track.live_at_end)),
-                            (
-                                "group",
-                                track.group.clone().map_or(Json::Null, Json::Str),
-                            ),
+                            ("group", track.group.clone().map_or(Json::Null, Json::Str)),
                         ])
                     })
                     .collect(),
             ),
         ),
     ])
+}
+
+#[cfg(test)]
+mod envelope_canaries {
+    use super::{Check, Observed, Tolerance, analyze};
+    use crate::probe::{Ledger, TrackKind, TrackSample};
+    use backend_gui_harness::{Drawn, Viewport};
+    use std::time::Duration;
+
+    // An independently specified equal-endpoint trajectory. A renderer may
+    // bend up to 2 channel units; a 3-unit bend is a defect even though both
+    // endpoints are 10. Velocity is deliberately generous so this isolates
+    // the envelope check rather than triggering continuity too.
+    fn trajectory(peak: f32) -> Vec<Observed> {
+        [(0, 10.0), (16, 10.0), (32, peak), (48, 10.0), (64, 10.0)]
+            .into_iter()
+            .map(|(at_ms, value)| {
+                let live = at_ms == 16 || at_ms == 32;
+                let active = (16..=48).contains(&at_ms);
+                Observed {
+                    drawn: Drawn {
+                        at_ms,
+                        invalidations: u64::from(at_ms < 64),
+                        callbacks: 0,
+                        cpu: Duration::ZERO,
+                        input_cpu: Duration::ZERO,
+                        input_events: 0,
+                        input_max: Duration::ZERO,
+                        viewport: Viewport {
+                            width: 100,
+                            height: 100,
+                            scale: 1,
+                        },
+                        captured: false,
+                    },
+                    ledger: Ledger {
+                        tracks: vec![TrackSample {
+                            key: "equal-endpoint-flight".into(),
+                            kind: TrackKind::Tween,
+                            value,
+                            target: 10.0,
+                            velocity: if live { 600.0 } else { 0.0 },
+                            started_ms: if active { 16.0 } else { at_ms as f64 },
+                            budget_ms: if active { 32.0 } else { 0.0 },
+                            at_ms: at_ms as f64,
+                            live,
+                            overshoot_ratio: 0.0,
+                            overshoot_absolute: if active { 2.0 } else { 0.0 },
+                            group: None,
+                        }],
+                        ..Ledger::default()
+                    },
+                    events: usize::from(at_ms == 0),
+                    state: None,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn finite_absolute_envelope_accepts_legitimate_bulge_rejects_deformation() {
+        let healthy = analyze(&trajectory(11.5), Tolerance::default());
+        assert!(
+            healthy.passed(),
+            "healthy equal-endpoint path: {:?}",
+            healthy.findings
+        );
+        assert!(
+            healthy.stats[&Check::Overshoot].evaluated >= 3,
+            "equal-endpoint path escaped verification"
+        );
+        let broken = analyze(&trajectory(13.0), Tolerance::default());
+        assert!(
+            broken.of(Check::Overshoot).any(|f| f.at_ms == 32),
+            "out-of-envelope path was accepted: {:?}",
+            broken.findings
+        );
+        assert_eq!(
+            broken.findings.len(),
+            1,
+            "canary must isolate envelope checking: {:?}",
+            broken.findings
+        );
+    }
+    #[test]
+    fn an_infinite_absolute_envelope_cannot_turn_a_deformation_into_pass() {
+        let mut frames = trajectory(13.0);
+        for frame in &mut frames {
+            if frame.ledger.tracks[0].budget_ms > 0.0 {
+                frame.ledger.tracks[0].overshoot_absolute = f32::INFINITY;
+            }
+        }
+        let broken = analyze(&frames, Tolerance::default());
+        assert!(
+            broken
+                .of(Check::Overshoot)
+                .any(|f| f.detail.contains("invalid trajectory envelope")),
+            "nonfinite envelopes must fail, not suppress verification: {:?}",
+            broken.findings
+        );
+    }
 }

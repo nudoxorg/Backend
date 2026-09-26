@@ -120,7 +120,10 @@ mod tests {
     fn prints_compact_valid_json() {
         let value = Json::obj([
             ("a", Json::num(1.5)),
-            ("b", Json::Arr(vec![Json::Null, Json::Bool(true), Json::num(2.0)])),
+            (
+                "b",
+                Json::Arr(vec![Json::Null, Json::Bool(true), Json::num(2.0)]),
+            ),
             ("c", Json::str("q\"\\\n")),
             ("d", Json::num(f64::NAN)),
         ]);
