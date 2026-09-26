@@ -15,11 +15,12 @@ use backend_engine::driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{
-    DecodedOccurrence, DecodedTypeFact, DocFragmentInput, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
-    OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
+    DecodedOccurrence, DecodedTypeFact, DocFragmentInput, EntityKind, ForeignOrigin, FragmentView,
+    ItemKind, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag,
+    TypeReason, TypeWidth,
 };
 use backend_frontend_typescript::legacy::{
-    Checker, MappedModifier as CheckerMappedModifier, Report, TypeTree,
+    Checker, MappedModifier as CheckerMappedModifier, Reference, Report, TypeTree,
 };
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -779,6 +780,67 @@ fn checker_only_property_call_targets_the_exact_member() {
             .iter()
             .any(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
     );
+}
+#[test]
+fn cross_file_method_call_is_an_oracle_package_call() {
+    const SOURCE: &[u8] = b"import { WorkoutService } from \"./workout.service\";
+export function sync(service: WorkoutService) { service.setNote(); }
+export function group(service: WorkoutService) { const bound = service.setNote; }
+";
+    let mut r = report(SOURCE);
+    r.references = Box::new([
+        Reference {
+            start: 108,
+            end: 115,
+            target_start: None,
+            target_end: None,
+            module: Some("./workout.service".into()),
+            name: Some("setNote".into()),
+            overload_index: None,
+        },
+        Reference {
+            start: 192,
+            end: 199,
+            target_start: None,
+            target_end: None,
+            module: Some("./workout.service".into()),
+            name: Some("setNote".into()),
+            overload_index: None,
+        },
+    ]);
+    let v = view(SOURCE, Some(&r));
+    let occs = occurrences(&v);
+    let call_occ = occs
+        .iter()
+        .find(|o| o.occurrence.span.start == 49 && o.occurrence.span.end == 56)
+        .expect("call occurrence");
+    assert_eq!(call_occ.occurrence.kind, ReferenceKind::FunctionCall);
+    assert_eq!(call_occ.occurrence.confidence, OccurrenceConfidence::Oracle);
+    let OccurrenceTarget::Foreign(key) = call_occ.occurrence.target else {
+        panic!("expected foreign call target");
+    };
+    let ForeignOrigin::Package(lineage) = key.origin else {
+        panic!("expected package origin");
+    };
+    assert_eq!(lineage.name, "./workout.service");
+    assert_eq!(key.path, "setNote");
+    assert_eq!(key.display, "setNote");
+
+    let value_occ = occs
+        .iter()
+        .find(|o| o.occurrence.span.start == 16 && o.occurrence.span.end == 23)
+        .expect("value occurrence");
+    assert_eq!(value_occ.occurrence.kind, ReferenceKind::VariableUse);
+    assert_eq!(value_occ.occurrence.confidence, OccurrenceConfidence::Oracle);
+    let OccurrenceTarget::Foreign(key) = value_occ.occurrence.target else {
+        panic!("expected foreign value target");
+    };
+    let ForeignOrigin::Package(lineage) = key.origin else {
+        panic!("expected package origin");
+    };
+    assert_eq!(lineage.name, "./workout.service");
+    assert_eq!(key.path, "setNote");
+    assert_eq!(key.display, "setNote");
 }
 #[test]
 fn genuinely_unresolvable_names_stay_honestly_external() {
