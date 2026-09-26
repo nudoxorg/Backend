@@ -594,16 +594,9 @@ impl<M: InputModeKind> InputBaseState<M> {
         let _subscriptions = vec![
             // Observe the blink cursor to repaint the view when it changes.
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            // Blink the cursor when the window is active, pause when it's not.
+            // The cursor clock belongs to an active window's focused input.
             cx.observe_window_activation(window, |input, window, cx| {
-                if window.is_window_active() {
-                    let focus_handle = input.focus_handle.clone();
-                    if focus_handle.is_focused(window) {
-                        input.blink_cursor.update(cx, |blink_cursor, cx| {
-                            blink_cursor.start(cx);
-                        });
-                    }
-                }
+                input.sync_blink_cursor(window, cx);
             }),
             cx.on_focus(&focus_handle, window, Self::on_focus),
             cx.on_blur(&focus_handle, window, Self::on_blur),
@@ -1183,8 +1176,18 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Focus the input field.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
+        self.sync_blink_cursor(window, cx);
+    }
+
+    fn sync_blink_cursor(&self, window: &Window, cx: &mut Context<Self>) {
+        // NUDOX: programmatic focus in an inactive window must stay timer-free.
+        let active = window.is_window_active() && self.focus_handle.is_focused(window);
         self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
+            if active {
+                cursor.start(cx);
+            } else {
+                cursor.stop(cx);
+            }
         });
     }
 
@@ -2364,10 +2367,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             && window.is_window_active()
     }
 
-    fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
-        });
+    fn on_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_blink_cursor(window, cx);
         cx.emit(InputEvent::Focus);
     }
 
@@ -3273,6 +3274,47 @@ mod tests {
                 f(crate::input::InputState::new(window, cx))
             })
         }
+    }
+
+    #[gpui::test]
+    fn inactive_window_releases_the_cursor_clock(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc, time::Duration};
+
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        let notifications = Rc::new(Cell::new(0));
+        let count = notifications.clone();
+        let cursor = cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.blink_cursor.clone()
+            })
+        });
+        let _subscription =
+            cx.update(|_, cx| cx.observe(&cursor, move |_, _| count.set(count.get() + 1)));
+        cx.run_until_parked();
+        cx.deactivate_window();
+        let stopped = notifications.get();
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.pause_blink_cursor(cx);
+            });
+        });
+        cx.executor().advance_clock(Duration::from_millis(2000));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), stopped);
+        cx.update(|_, cx| assert!(!cursor.read(cx).visible()));
+
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|_, cx| assert!(cursor.read(cx).visible()));
+        let restarted = notifications.get();
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), restarted + 1);
+        cx.update(|_, cx| assert!(!cursor.read(cx).visible()));
     }
 
     #[gpui::test]
