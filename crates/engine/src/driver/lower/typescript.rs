@@ -4886,8 +4886,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(None)
     }
 
-    /// Pass seven: static member property tokens OXC never binds. Each site
-    /// names only the property identifier span; checker-resolved sites are
+    /// Pass seven: static and string-literal computed member property tokens
+    /// OXC never binds. Static sites name the property identifier span;
+    /// computed sites name the inner span of a string-literal key whose source
+    /// bytes strictly equal its unescaped value. Checker-resolved sites are
     /// left untouched when [`occurrence_covers`] already owns that span.
     fn pass_property_accesses(&mut self) -> Result<(), TypeScriptCollectError> {
         let nodes = self.semantic.nodes();
@@ -4924,7 +4926,82 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             };
             self.commit_occurrence(owner, property_span, kind, target, confidence)?;
         }
+        for node in nodes.iter() {
+            let Some(member) = node.kind().as_computed_member_expression() else {
+                continue;
+            };
+            let key_kind = AstKind::from_expression(&member.expression);
+            let Some(literal) = key_kind.as_string_literal() else {
+                continue;
+            };
+            let Some(property_span) = self.string_literal_inner_property_span(
+                literal.span,
+                literal.value.as_str(),
+                literal.lone_surrogates,
+            ) else {
+                continue;
+            };
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let parent = nodes.get_node(nodes.parent_id(node.id())).kind();
+            let kind = if parent
+                .as_call_expression()
+                .is_some_and(|call| call.callee.span() == member.span)
+            {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::FieldAccess
+            };
+            let object_kind = AstKind::from_expression(&member.object);
+            let (target, confidence) = if Self::is_this_receiver(object_kind) {
+                self.this_property_target(property_span, kind)?
+            } else if Self::is_super_receiver(object_kind) {
+                self.super_property_target(property_span, kind)?
+            } else {
+                self.syntactic_property_target(property_span)?
+            };
+            self.commit_occurrence(owner, property_span, kind, target, confidence)?;
+        }
         Ok(())
+    }
+
+    /// Returns the inner span of one string-literal computed-member key when
+    /// the source bytes strictly inside the quotes equal the unescaped value.
+    fn string_literal_inner_property_span(
+        &self,
+        full: Span,
+        value: &str,
+        lone_surrogates: bool,
+    ) -> Option<Span> {
+        if lone_surrogates {
+            return None;
+        }
+        if value.is_empty() {
+            return None;
+        }
+        let inner_start = full.start.checked_add(1)?;
+        let inner_end = full.end.checked_sub(1)?;
+        if inner_end <= inner_start {
+            return None;
+        }
+        let bytes = self.source.as_bytes();
+        let open = *bytes.get(full.start as usize)?;
+        let close = *bytes.get((full.end - 1) as usize)?;
+        if (open != b'"' && open != b'\'') || open != close {
+            return None;
+        }
+        let inner = bytes.get(inner_start as usize..inner_end as usize)?;
+        if inner != value.as_bytes() {
+            return None;
+        }
+        Some(Span::new(inner_start, inner_end))
     }
 
     /// Reports whether one expression is `this`, peeling one parenthesized
