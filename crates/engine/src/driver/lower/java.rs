@@ -1852,13 +1852,15 @@ fn java_facts<'source>(
     })
 }
 
-/// Pushes one resolved method invocation: an in-image target folds to a local
-/// ordinal, every other javac-resolved target to a maven-namespaced foreign
-/// key, both at oracle confidence. javac's UTF-16 source coordinates are
-/// projected onto the bound source's byte domain and stored relative to the
-/// owner executable's captured declaration extent, so the lane's containment
-/// law holds for every occurrence whose owner carries a span; an owner with
-/// no captured extent carries the explicit zero-width span instead.
+/// Pushes one resolved method invocation or invoke-mode method reference: an
+/// in-image target folds to a local ordinal, every other javac-resolved target
+/// to a maven-namespaced foreign key, both at oracle confidence. javac's
+/// UTF-16 source coordinates are projected onto the bound source's byte domain
+/// and stored relative to the owner executable's captured declaration extent,
+/// so the lane's containment law holds for every occurrence whose owner
+/// carries a span; an owner with no captured extent carries the explicit
+/// zero-width span instead. Constructor references (`::new`) stay on the use
+/// plane and lower as constructor calls.
 fn push_occurrence<'source>(
     facts: &mut FactSet<'source>,
     image: JavaImage<'source>,
@@ -1911,9 +1913,10 @@ fn push_occurrence<'source>(
             owner,
             Occurrence {
                 target,
-                // Every row in the invocation plane is a resolved
-                // `MethodInvocationTree`, and Java has no free functions:
-                // an invocation is a method call through a receiver.
+                // Every row in the invocation plane is a resolved method
+                // invocation or invoke-mode method reference (`::name`); Java
+                // has no free functions. Constructor references stay on the
+                // use plane.
                 kind: ReferenceKind::MethodCall,
                 confidence: OccurrenceConfidence::Oracle,
                 span,

@@ -1,5 +1,7 @@
 //! Guards the shipping Java image writer against lexical occurrence recovery.
 //! Calls must arise from `JavacTask` tree paths resolved through `Trees.getElement`.
+//! Member-reference name spans may read the compilation unit characters, and a
+//! failed trim emits no row.
 //! The JDK integration test independently proves the resulting overload facts.
 
 const IMAGE: &str = include_str!("../src/legacy/doclet/AuthorityImage.java");
@@ -34,6 +36,7 @@ fn shipping_image_calls_are_walked_and_resolved_by_javac_trees() -> Result<(), A
     for operation in [
         "TreePathScanner",
         "visitMethodInvocation",
+        "visitMemberReference",
         "trees.getElement(",
         "trees.getSourcePositions()",
     ] {
@@ -45,7 +48,6 @@ fn shipping_image_calls_are_walked_and_resolved_by_javac_trees() -> Result<(), A
         "Matcher",
         "matchingBrace",
         "Files.readString",
-        "getCharContent(true)",
     ] {
         forbidden(operation)?;
     }
