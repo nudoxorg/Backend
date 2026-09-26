@@ -567,6 +567,27 @@ impl<'analysis> RustAuthority<'analysis> {
         self.cross_file_package_path_from_syntax(source.value.syntax())
     }
 
+    /// Rust module path of one resolved const, static, or enum variant when it
+    /// lives in another project-local file.
+    #[must_use]
+    pub fn cross_file_value_package_path(&self, definition: ModuleDef) -> Option<String> {
+        match definition {
+            ModuleDef::Const(const_) => {
+                let source = self.semantics.source(const_)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            ModuleDef::Static(static_) => {
+                let source = self.semantics.source(static_)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            ModuleDef::EnumVariant(variant) => {
+                let source = self.semantics.source(variant)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            _ => None,
+        }
+    }
+
     /// Rust module path of one resolved type or module definition when it lives
     /// in another project-local file. Structs, unions, enums, traits, type
     /// aliases, and modules share the same `src/...` path rules as functions.

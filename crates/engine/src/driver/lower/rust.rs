@@ -3371,6 +3371,40 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     .map_err(|_| admission())?;
                 continue;
             }
+            if kind == ReferenceKind::VariableUse
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(definition) = resolution
+                && self.ordinal_of_definition(definition).is_none()
+                && let Some(entity_kind) = value_package_entity_kind(*definition)
+                && let Some(package_path) = authority
+                    .cross_file_type_package_path(*definition)
+                    .or_else(|| authority.cross_file_value_package_path(*definition))
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(entity_kind),
+                        ReferenceKind::VariableUse,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
             self.emit_one_occurrence(
                 span,
                 kind,
@@ -4038,6 +4072,17 @@ fn is_call_position(path: &ast::Path) -> bool {
 const fn path_definition(resolution: &ra_ap_hir::PathResolution) -> Option<ra_ap_hir::ModuleDef> {
     match resolution {
         ra_ap_hir::PathResolution::Def(module_def) => Some(*module_def),
+        _ => None,
+    }
+}
+
+/// Maps one cross-file package-retargetable const, static, or enum variant
+/// onto the entity lattice.
+const fn value_package_entity_kind(definition: ra_ap_hir::ModuleDef) -> Option<EntityKind> {
+    match definition {
+        ra_ap_hir::ModuleDef::Const(_) => Some(EntityKind::Constant),
+        ra_ap_hir::ModuleDef::Static(_) => Some(EntityKind::Static),
+        ra_ap_hir::ModuleDef::EnumVariant(_) => Some(EntityKind::Variant),
         _ => None,
     }
 }
