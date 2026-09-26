@@ -126,6 +126,17 @@ pub fn label(world: &World, entry: &Entry) -> SharedString {
 /// its output): the page's prism drops them.
 pub const PAGE_SHOWS: [Word; 3] = [Word::MadeOf, Word::Takes, Word::Gives];
 
+/// What a page's anatomy (and, on a type page, Getting one) already shows:
+/// the page's prism drops these groups.
+#[must_use]
+pub fn page_shows(kind: Kind) -> Vec<Word> {
+    let mut shown = PAGE_SHOWS.to_vec();
+    if matches!(kind, Kind::Struct | Kind::Enum | Kind::Union | Kind::Type) {
+        shown.push(Word::MadeBy);
+    }
+    shown
+}
+
 /// `groups` without the capability line and without any group whose word a
 /// view already shows, so each thing is said once per view.
 #[must_use]

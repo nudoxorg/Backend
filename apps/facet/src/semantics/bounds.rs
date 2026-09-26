@@ -42,12 +42,12 @@ pub fn generics(lists: &[&str], where_clause: &str) -> Vec<Generic> {
         };
         let (name, bound) = match part.find(':') {
             Some(colon) => (part[..colon].trim(), Some(part[colon + 1..].trim())),
-            None => (part.split('=').next().unwrap_or(part).trim(), None),
+            None => (without_default(part), None),
         };
         if !is_ident(name) {
             continue;
         }
-        let bound = bound.map(|b| b.split('=').next().unwrap_or(b).trim().to_owned());
+        let bound = bound.map(|b| without_default(b).to_owned());
         put(
             Generic {
                 name: name.to_owned(),
@@ -70,6 +70,21 @@ pub fn generics(lists: &[&str], where_clause: &str) -> Vec<Generic> {
         }
     }
     out
+}
+
+/// `Bound = Default` without its default: the first `=` outside `<>`, `()`
+/// and `[]` (an `Item = T` binding inside the bound stays).
+fn without_default(s: &str) -> &str {
+    let mut depth = 0_i32;
+    for (k, c) in s.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            '=' if depth == 0 => return s[..k].trim(),
+            _ => {}
+        }
+    }
+    s.trim()
 }
 
 fn is_ident(s: &str) -> bool {

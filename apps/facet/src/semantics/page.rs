@@ -39,20 +39,24 @@ pub struct Page {
     pub does: Does,
 }
 
-/// The prism rows per group on the page.
-pub const PAGE_PRISM_ROWS: usize = 5;
+/// The prism rows per group on the page: five, or three when four or more
+/// groups share the prism.
+#[must_use]
+pub const fn page_prism_rows(groups: usize) -> usize {
+    if groups >= 4 { 3 } else { 5 }
+}
 
 /// Builds the page for `i`.
 #[must_use]
 pub fn page(world: &World, names: &Names, i: NodeId) -> Page {
     let resolver = InWorld { world, names, from: i };
-    let groups = super::relations::except(super::relations::relations_of(world, i), &super::relations::PAGE_SHOWS);
+    let groups = super::relations::except(super::relations::relations_of(world, i), &super::relations::page_shows(world.node(i).kind));
     Page {
         node: i,
         facts: facts(world, i),
         shape: shape(world, names, i),
         caps: caps_of(world, i),
-        prism: super::relations::prism(world, i, &groups, PAGE_PRISM_ROWS),
+        prism: super::relations::prism(world, i, &groups, page_prism_rows(groups.len())),
         does: does(world, &resolver, i),
     }
 }
@@ -193,8 +197,13 @@ fn pipe(world: &World, names: &Names, i: NodeId) -> Pipe {
         Some(ret) => {
             let expr = parse(ret);
             match sc.fallible(&expr) {
+                // ⌥ spells the whole result as written beside the output.
                 Some((ok, err)) => (
-                    (ok != TypeExpr::Tuple(Vec::new())).then(|| sc.spell(&ok)),
+                    (ok != TypeExpr::Tuple(Vec::new())).then(|| {
+                        let mut out = sc.spell(&ok);
+                        out.source = SharedString::from(ret.trim().to_owned());
+                        out
+                    }),
                     Some(err.map(|e| sc.spell(&e))),
                 ),
                 None => (Some(sc.spell_text(ret)), None),

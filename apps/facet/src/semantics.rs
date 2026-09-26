@@ -16,6 +16,8 @@
 //! - [`relations`]: the one rule for relations (left: comes from, right:
 //!   goes into, `is`: the capability line) and the prism's columns.
 //! - [`names`]: written type names resolved to symbols in the world.
+//! - [`recipes`]: Getting one / Calling it — the producer table, the
+//!   least-cost derivation, routes and their code.
 //! - [`page`]: the page model each anatomy element renders ([`model`] holds
 //!   its data types, free of the world).
 //!
@@ -28,10 +30,13 @@ pub mod members;
 pub mod types;
 pub mod usage;
 
+pub mod fails;
 pub mod model;
 pub mod names;
 pub mod page;
+pub mod recipes;
 pub mod relations;
+pub mod tour;
 
 pub use bounds::Generic;
 pub use caps::{Arrives, Cap};

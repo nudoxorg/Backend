@@ -3,7 +3,6 @@
 //! without the world and a test can write one by hand. The builders live in
 //! `relations` and `page`.
 
-use super::caps::Cap;
 use super::members::Receiver;
 use super::types::{NodeId, Piece, Spelled};
 use super::usage::Excerpt;
@@ -414,3 +413,49 @@ pub struct Use {
     pub excerpt: Excerpt,
 }
 
+
+/// Getting one / Calling it, ready to draw (built by
+/// `recipes::Section::view`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipeView {
+    /// `Getting one` or `Calling it`.
+    pub heading: &'static str,
+    /// The rails, best first.
+    pub rails: Vec<RailView>,
+    /// The foot (`4 ways in this world make one · ⌥ for code`).
+    pub foot: Option<SharedString>,
+    /// The one sentence when there is no rail.
+    pub sentence: Option<SharedString>,
+}
+
+/// One route as a rail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RailView {
+    /// Where it starts (`from text what`); empty when it starts at a step.
+    pub lead: Vec<Piece>,
+    /// The steps.
+    pub steps: Vec<StepView>,
+    /// `also from yes or no, text … and 2 more`; empty when none.
+    pub also: Vec<Piece>,
+    /// The code, for ⌥.
+    pub code: SharedString,
+    /// Rooted at a callable (the end is hollow).
+    pub call: bool,
+}
+
+/// One step of a rail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepView {
+    /// Its words (a boxed link).
+    pub verb: SharedString,
+    /// Where the verb leads.
+    pub target: super::types::Target,
+    /// May fail (`?`).
+    pub fails: bool,
+    /// May give nothing (a quieter `?`).
+    pub maybe: bool,
+    /// Inputs riding along, each `+ a DeclarationKind kind`.
+    pub riders: Vec<Vec<Piece>>,
+    /// The station after it (the type it makes), when a step follows.
+    pub station: Option<Vec<Piece>>,
+}
