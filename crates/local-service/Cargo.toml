@@ -68,5 +68,10 @@ name = "semantic_image_batch"
 path = "benches/semantic_image_batch.rs"
 harness = false
 
+[[bench]]
+name = "semantic_query_walk"
+path = "benches/semantic_query_walk.rs"
+harness = false
+
 [lints]
 workspace = true

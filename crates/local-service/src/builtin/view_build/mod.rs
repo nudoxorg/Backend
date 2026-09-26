@@ -76,6 +76,11 @@ pub(super) fn measure_semantic_image_batch() {
     image_rows::measure_semantic_image_batch();
 }
 
+/// Times one query-image validation against the three the corpus used to pay.
+pub(super) fn measure_semantic_query_walk() {
+    query::measure_semantic_query_walk();
+}
+
 /// Projected semantic rows reused across publications of the same image.
 pub(in crate::builtin) use image_rows::ImageRowResidence;
 

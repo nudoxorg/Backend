@@ -4,23 +4,23 @@ use super::super::{
 };
 use super::MAX_SEMANTIC_DOCUMENT_BYTES;
 use super::MAX_SEMANTIC_QUERY_ROWS;
-use super::identity::{
-    declaration_kind, external_semantic_symbol, fragment_text, query_external_id, query_package_id,
-    query_semantic_id, semantic_coordinate, semantic_symbol,
-};
 use super::call_join::{
     ProjectCallableIndex, foreign_display_name, join_project_call, join_project_field,
     join_project_mention, join_project_value, project_paths_for_package,
 };
 use super::compiled_source_path;
+use super::identity::{
+    declaration_kind, external_semantic_symbol, fragment_text, query_external_id, query_package_id,
+    query_semantic_id, semantic_coordinate, semantic_symbol,
+};
 use super::semantic::semantic_row_content;
 use super::structural::{StructuralParent, StructuralProjectionPlan};
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::ProductSemanticPublicationRecord;
 use backend_engine::{Fragment, RowId};
 use backend_semantic::ir::{
-    DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget,
-    SemanticCoreReader as _, SemanticImageView, SemanticReader as _,
+    DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
+    SemanticImageView, SemanticReader as _,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -133,77 +133,43 @@ fn append_compiler_query_facts(
         after = Some(next);
     }
 
-    let mut package_bytes = BTreeMap::<backend_engine::PackageKey, Vec<&[u8]>>::new();
+    let opened = open_query_publications(&pending)?;
     let mut package_published =
         BTreeMap::<backend_engine::PackageKey, BTreeSet<DeclarationIdentity>>::new();
     let mut package_paths = BTreeMap::<backend_engine::PackageKey, BTreeSet<String>>::new();
-    for pending_publication in &pending {
+    let mut package_views =
+        BTreeMap::<backend_engine::PackageKey, Vec<&SemanticImageView<'_>>>::new();
+    for publication in &opened {
         package_paths
-            .entry(pending_publication.package)
-            .or_insert_with(|| project_paths_for_package(sources, pending_publication.package));
-        let published = package_published
-            .entry(pending_publication.package)
-            .or_default();
-        for image_bytes in pending_publication.activated.images() {
-            let bytes = image_bytes.as_ref();
-            package_bytes
-                .entry(pending_publication.package)
-                .or_default()
-                .push(bytes);
-            let image = SemanticImageView::reopen(bytes).map_err(|error| {
-                BuiltinModelError(format!("reopen semantic query image: {error}"))
-            })?;
-            let session = DocumentationSession::new(&image);
-            for entity in session.canonical_entities() {
-                let entity = entity.map_err(|error| {
-                    BuiltinModelError(format!("read semantic query declaration: {error}"))
-                })?;
-                published.insert(entity.entity.version.identity());
-            }
+            .entry(publication.package)
+            .or_insert_with(|| project_paths_for_package(sources, publication.package));
+        let published = package_published.entry(publication.package).or_default();
+        let views = package_views.entry(publication.package).or_default();
+        for image in &publication.images {
+            published.extend(image.identities.iter().copied());
+            views.push(&image.view);
         }
     }
     let mut package_indexes = BTreeMap::<backend_engine::PackageKey, ProjectCallableIndex>::new();
-    for (package, bytes) in &package_bytes {
-        package_indexes.insert(*package, ProjectCallableIndex::build_from_bytes(bytes)?);
+    for (package, views) in &package_views {
+        package_indexes.insert(*package, ProjectCallableIndex::build_from_views(views)?);
     }
 
     let mut ids = BTreeSet::new();
-    for pending_publication in pending {
-        let PendingQueryPublication {
-            package,
-            label,
-            coordinate,
-            profile,
-            activated,
-        } = pending_publication;
-        let project_paths = package_paths
-            .get(&package)
-            .cloned()
-            .unwrap_or_default();
-        let published = package_published
-            .get(&package)
-            .cloned()
-            .unwrap_or_default();
+    for publication in &opened {
+        let package = publication.package;
+        let label = publication.label;
+        let coordinate = publication.coordinate;
+        let profile = publication.profile;
+        let project_paths = package_paths.get(&package).cloned().unwrap_or_default();
+        let published = package_published.get(&package).cloned().unwrap_or_default();
         let callable_index = package_indexes.get(&package);
-        for image_bytes in activated.images() {
-            let image = SemanticImageView::reopen(image_bytes.as_ref()).map_err(|error| {
-                BuiltinModelError(format!("reopen semantic query image: {error}"))
-            })?;
-            let caller_path = compiled_source_path(&image)?;
-            let session = DocumentationSession::new(&image);
-            let identities = session
-                .canonical_entities()
-                .map(|entity| {
-                    entity
-                        .map(|entity| entity.entity.version.identity())
-                        .map_err(|error| {
-                            BuiltinModelError(format!(
-                                "read semantic query declaration: {error}"
-                            ))
-                        })
-                })
-                .collect::<Result<BTreeSet<_>, _>>()?;
-            let image_digest = *blake3::hash(image_bytes.as_ref()).as_bytes();
+        for opened_image in &publication.images {
+            let image = &opened_image.view;
+            let caller_path = &opened_image.path;
+            let session = DocumentationSession::new(image);
+            let identities = &opened_image.identities;
+            let image_digest = opened_image.digest;
             let mut external_targets =
                 BTreeMap::<String, (ExternalTargetIdentity, ExternalId)>::new();
             for entity in session.canonical_entities() {
@@ -220,18 +186,10 @@ fn append_compiler_query_facts(
                 }
                 let name = std::str::from_utf8(entity.name)
                     .map_err(|_| {
-                        BuiltinModelError(
-                            "semantic query declaration name is not UTF-8".to_owned(),
-                        )
+                        BuiltinModelError("semantic query declaration name is not UTF-8".to_owned())
                     })?
                     .to_owned();
-                let content = semantic_row_content(
-                    profile,
-                    &image,
-                    &entity,
-                    package,
-                    image_digest,
-                )?;
+                let content = semantic_row_content(profile, image, &entity, package, image_digest)?;
                 let parent = entity
                     .entity
                     .parent
@@ -268,7 +226,7 @@ fn append_compiler_query_facts(
                         LinkTarget::External(external) => {
                             if let Some(callable_index) = callable_index {
                                 if let Some(joined) = join_project_call(
-                                    &image,
+                                    image,
                                     link.kind,
                                     external,
                                     &caller_path,
@@ -280,7 +238,7 @@ fn append_compiler_query_facts(
                                     continue;
                                 }
                                 if let Some(joined) = join_project_mention(
-                                    &image,
+                                    image,
                                     link.kind,
                                     external,
                                     &caller_path,
@@ -292,7 +250,7 @@ fn append_compiler_query_facts(
                                     continue;
                                 }
                                 if let Some(joined) = join_project_field(
-                                    &image,
+                                    image,
                                     link.kind,
                                     external,
                                     &caller_path,
@@ -304,7 +262,7 @@ fn append_compiler_query_facts(
                                     continue;
                                 }
                                 if let Some(joined) = join_project_value(
-                                    &image,
+                                    image,
                                     link.kind,
                                     external,
                                     &caller_path,
@@ -316,7 +274,7 @@ fn append_compiler_query_facts(
                                     continue;
                                 }
                             }
-                            let identity = ExternalTargetIdentity::capture(&image, external)
+                            let identity = ExternalTargetIdentity::capture(image, external)
                                 .map_err(|error| {
                                     BuiltinModelError(format!(
                                         "identify semantic query external target: {error}"
@@ -364,7 +322,7 @@ fn append_compiler_query_facts(
                             .to_owned(),
                     ));
                 }
-                let name = match foreign_display_name(&image, external)? {
+                let name = match foreign_display_name(image, external)? {
                     Some(display) => display,
                     None => "external semantic target".to_owned(),
                 };
@@ -398,6 +356,61 @@ fn append_compiler_query_facts(
     Ok(complete)
 }
 
+struct OpenedQueryImage<'a> {
+    view: SemanticImageView<'a>,
+    path: String,
+    digest: [u8; 32],
+    identities: BTreeSet<DeclarationIdentity>,
+}
+
+struct OpenedQueryPublication<'a> {
+    package: backend_engine::PackageKey,
+    label: &'a str,
+    coordinate: &'a backend_semantic::vocabulary::PackageUrl,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    images: Vec<OpenedQueryImage<'a>>,
+}
+
+fn open_query_publications<'a>(
+    pending: &'a [PendingQueryPublication],
+) -> Result<Vec<OpenedQueryPublication<'a>>, BuiltinModelError> {
+    let mut opened = Vec::with_capacity(pending.len());
+    for publication in pending {
+        let mut images = Vec::new();
+        let mut rest = publication.activated.images();
+        while let Some((bytes, next)) = rest.split_first() {
+            let view = SemanticImageView::reopen(bytes.as_ref()).map_err(|error| {
+                BuiltinModelError(format!("reopen semantic query image: {error}"))
+            })?;
+            let path = compiled_source_path(&view)?;
+            let digest = *blake3::hash(bytes.as_ref()).as_bytes();
+            let mut identities = BTreeSet::new();
+            let session = DocumentationSession::new(&view);
+            for entity in session.canonical_entities() {
+                let entity = entity.map_err(|error| {
+                    BuiltinModelError(format!("read semantic query declaration: {error}"))
+                })?;
+                identities.insert(entity.entity.version.identity());
+            }
+            images.push(OpenedQueryImage {
+                view,
+                path,
+                digest,
+                identities,
+            });
+            rest = next;
+        }
+        opened.push(OpenedQueryPublication {
+            package: publication.package,
+            label: publication.label.as_str(),
+            coordinate: &publication.coordinate,
+            profile: publication.profile,
+            images,
+        });
+    }
+    Ok(opened)
+}
+
 struct PendingQueryPublication {
     package: backend_engine::PackageKey,
     label: String,
@@ -405,7 +418,6 @@ struct PendingQueryPublication {
     profile: backend_semantic::vocabulary::LanguageProfile,
     activated: super::super::ActivatedProductSemantics,
 }
-
 
 pub(super) fn append_structural_query_facts(
     sources: &IndexedSources,
@@ -482,4 +494,181 @@ pub(super) fn append_structural_query_facts(
         }
     }
     Ok(())
+}
+
+/// Times one query-image validation and index build against the three
+/// validations the corpus used to pay before emitting facts.
+///
+/// Images are built before the timer. `once` validates each image, records
+/// its declarations, and indexes the open views. `triple` repeats the old
+/// prefix: an identity validation, an index validation, and the validation
+/// the fact pass used to perform. Fact construction sits outside both timers.
+#[allow(clippy::expect_used, clippy::print_stdout)]
+pub(super) fn measure_semantic_query_walk() {
+    const IMAGES: usize = 32;
+    const SAMPLES: usize = 32;
+    const WARMUPS: usize = 4;
+    let images = (0..IMAGES)
+        .map(|index| {
+            let path = format!("src/file{index}.rs");
+            let salt = u8::try_from(index).expect("image index");
+            super::image_reopen::fixture_semantic_image_salted(&path, salt).expect("fixture")
+        })
+        .collect::<Vec<_>>();
+    let once_proof = index_open_views(&images).expect("once");
+    let triple_proof = index_reopened_views(&images).expect("triple");
+    (once_proof == IMAGES * 4 && triple_proof == once_proof)
+        .then_some(())
+        .expect("query walk dropped a declaration");
+    let once = sample(WARMUPS, SAMPLES, || {
+        index_open_views(&images).expect("once")
+    });
+    let triple = sample(WARMUPS, SAMPLES, || {
+        index_reopened_views(&images).expect("triple")
+    });
+    let (once_median, once_p95) = percentiles(&once);
+    let (triple_median, triple_p95) = percentiles(&triple);
+    println!(
+        "semantic_query_walk images={IMAGES} declarations={once_proof} once_median_ns={once_median} once_p95_ns={once_p95} triple_median_ns={triple_median} triple_p95_ns={triple_p95}"
+    );
+}
+
+fn index_open_views(images: &[Vec<u8>]) -> Result<usize, BuiltinModelError> {
+    let mut opened = Vec::with_capacity(images.len());
+    let mut declarations = 0;
+    for bytes in images {
+        let view = SemanticImageView::reopen(bytes)
+            .map_err(|error| BuiltinModelError(format!("reopen semantic query image: {error}")))?;
+        let path = compiled_source_path(&view)?;
+        let digest = *blake3::hash(bytes).as_bytes();
+        let session = DocumentationSession::new(&view);
+        for entity in session.canonical_entities() {
+            let entity = entity.map_err(|error| {
+                BuiltinModelError(format!("read semantic query declaration: {error}"))
+            })?;
+            std::hint::black_box(entity.entity.version.identity());
+            declarations += 1;
+        }
+        std::hint::black_box((path, digest));
+        opened.push(view);
+    }
+    let views = opened.iter().collect::<Vec<_>>();
+    let _ = ProjectCallableIndex::build_from_views(&views)?;
+    Ok(declarations)
+}
+
+fn index_reopened_views(images: &[Vec<u8>]) -> Result<usize, BuiltinModelError> {
+    let mut declarations = 0;
+    let mut borrowed = Vec::with_capacity(images.len());
+    for bytes in images {
+        let view = SemanticImageView::reopen(bytes)
+            .map_err(|error| BuiltinModelError(format!("reopen semantic query image: {error}")))?;
+        let session = DocumentationSession::new(&view);
+        for entity in session.canonical_entities() {
+            let entity = entity.map_err(|error| {
+                BuiltinModelError(format!("read semantic query declaration: {error}"))
+            })?;
+            std::hint::black_box(entity.entity.version.identity());
+            declarations += 1;
+        }
+        borrowed.push(bytes.as_slice());
+    }
+    let _ = ProjectCallableIndex::build_from_bytes(&borrowed)?;
+    for bytes in images {
+        let view = SemanticImageView::reopen(bytes)
+            .map_err(|error| BuiltinModelError(format!("reopen semantic query image: {error}")))?;
+        let path = compiled_source_path(&view)?;
+        let digest = *blake3::hash(bytes).as_bytes();
+        let session = DocumentationSession::new(&view);
+        for entity in session.canonical_entities() {
+            let entity = entity.map_err(|error| {
+                BuiltinModelError(format!("read semantic query declaration: {error}"))
+            })?;
+            std::hint::black_box(entity.entity.version.identity());
+        }
+        std::hint::black_box((path, digest));
+    }
+    Ok(declarations)
+}
+
+fn sample<T>(warmups: usize, samples: usize, mut body: impl FnMut() -> T) -> Vec<u128> {
+    for _ in 0..warmups {
+        let _ = body();
+    }
+    let mut samples_ns = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let started = std::time::Instant::now();
+        let _ = body();
+        samples_ns.push(started.elapsed().as_nanos());
+    }
+    samples_ns
+}
+
+#[allow(clippy::indexing_slicing)]
+fn percentiles(samples: &[u128]) -> (u128, u128) {
+    let mut ordered = samples.to_vec();
+    ordered.sort_unstable();
+    let median = ordered[ordered.len() / 2];
+    let p95 = ordered[ordered.len() * 95 / 100];
+    (median, p95)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::ProjectCallableIndex;
+    use backend_semantic::ir::{ItemKind, SemanticImageView};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn an_open_view_indexes_the_same_declaration_as_its_bytes() {
+        let bytes =
+            super::super::image_reopen::fixture_semantic_image("src/worker.rs").expect("fixture");
+        let from_bytes = ProjectCallableIndex::build_from_bytes(&[&bytes]).expect("bytes");
+        let view = SemanticImageView::reopen(&bytes).expect("reopen");
+        let from_view = ProjectCallableIndex::build_from_views(&[&view]).expect("view");
+        let paths = BTreeSet::from(["src/worker.rs".to_owned()]);
+        let byte_worker = from_bytes
+            .resolve_mention(&paths, "Worker", ItemKind::Record)
+            .expect("byte worker");
+        let view_worker = from_view
+            .resolve_mention(&paths, "Worker", ItemKind::Record)
+            .expect("view worker");
+        assert_eq!(byte_worker, view_worker);
+        let byte_field = from_bytes
+            .resolve_mention(&paths, "name", ItemKind::Field)
+            .expect("byte field");
+        let view_field = from_view
+            .resolve_mention(&paths, "name", ItemKind::Field)
+            .expect("view field");
+        assert_eq!(byte_field, view_field);
+    }
+
+    #[test]
+    fn two_open_files_keep_distinct_workers() {
+        let first = super::super::image_reopen::fixture_semantic_image_salted("src/a.rs", 0)
+            .expect("first");
+        let second = super::super::image_reopen::fixture_semantic_image_salted("src/b.rs", 1)
+            .expect("second");
+        let first_view = SemanticImageView::reopen(&first).expect("first view");
+        let second_view = SemanticImageView::reopen(&second).expect("second view");
+        let index =
+            ProjectCallableIndex::build_from_views(&[&first_view, &second_view]).expect("index");
+        let first_paths = BTreeSet::from(["src/a.rs".to_owned()]);
+        let second_paths = BTreeSet::from(["src/b.rs".to_owned()]);
+        let first_worker = index
+            .resolve_mention(&first_paths, "Worker", ItemKind::Record)
+            .expect("first worker");
+        let second_worker = index
+            .resolve_mention(&second_paths, "Worker", ItemKind::Record)
+            .expect("second worker");
+        assert_ne!(first_worker, second_worker);
+        let both = BTreeSet::from(["src/a.rs".to_owned(), "src/b.rs".to_owned()]);
+        assert!(
+            index
+                .resolve_mention(&both, "Worker", ItemKind::Record)
+                .is_none()
+        );
+    }
 }

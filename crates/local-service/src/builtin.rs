@@ -1239,6 +1239,12 @@ pub fn measure_semantic_image_batch() {
     view_build::measure_semantic_image_batch();
 }
 
+/// Times one semantic-query image validation against the three validations
+/// the corpus used to perform before emitting facts.
+pub fn measure_semantic_query_walk() {
+    view_build::measure_semantic_query_walk();
+}
+
 /// Starts the compiled locald profile. It does all startup work before the
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]
