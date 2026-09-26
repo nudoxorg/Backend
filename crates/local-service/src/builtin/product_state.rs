@@ -634,7 +634,7 @@ fn owner_page(
             .ok_or_else(|| format!("declaration row {} has no owning project", row.label))?;
         let source_root =
             super::local_manifest::indexed_package_source_root(project_root, workspace)?;
-        let package_record = super::local_manifest::cargo_registry_record(&source_root)?;
+        let package_record = super::local_manifest::local_registry_record(&source_root)?;
         if !seen.insert(package_record.coordinate.as_str().to_owned()) {
             continue;
         }
@@ -910,27 +910,31 @@ pub(crate) fn indexed_semantic_versions(
         } else {
             continue;
         };
-        let record = super::local_manifest::cargo_registry_record(&project_root)?;
-        if !package_matches(package, &record) {
+        let Some(manifest) = super::local_manifest::read_local_manifest(&project_root)? else {
+            return Err(format!(
+                "indexed package {} has no supported manifest",
+                project_root.display()
+            ));
+        };
+        if !package_matches(package, &manifest.record) {
             continue;
         }
-        let PackageReference::Purl(coordinate) = record.coordinate.clone() else {
+        let PackageReference::Purl(coordinate) = manifest.record.coordinate.clone() else {
             continue;
         };
-        let profile = SemanticLanguageProfile::new(
-            super::local_manifest::cargo_language_profile(&project_root)?,
-        );
-        let generation = SemanticGenerationId::new(record.facts_version);
+        let profile = SemanticLanguageProfile::new(manifest.profile);
+        let facts_version = manifest.record.facts_version;
+        let bytes = manifest.record.bytes;
         versions.push(SemanticVersionRecord {
-            package: record.coordinate.clone(),
+            package: manifest.record.coordinate,
             coordinate,
             profile,
-            generation,
-            generation_root: record.facts_version,
-            dependency_set: record.facts_version,
-            manifest: record.facts_version,
+            generation: SemanticGenerationId::new(facts_version),
+            generation_root: facts_version,
+            dependency_set: facts_version,
+            manifest: facts_version,
             artifacts: 1,
-            semantic_bytes: u32::try_from(record.bytes)
+            semantic_bytes: u32::try_from(bytes)
                 .map_err(|_| "indexed manifest byte count overflow".to_owned())?,
             complete: false,
             selected: true,
@@ -951,9 +955,9 @@ fn indexed_package_records(
         }
         if Path::new(&row.label).is_dir() {
             let project_root = Path::new(&row.label);
-            let (_, _, manifest) = super::local_manifest::cargo_package_identity(project_root)?;
-            if package_matches(package, &stub_registry_record(manifest)) {
-                records.push(super::local_manifest::cargo_registry_record(project_root)?);
+            let manifest = super::local_manifest::require_local_manifest(project_root)?;
+            if package_matches(package, &manifest.record) {
+                records.push(manifest.record);
             }
             continue;
         }
@@ -965,7 +969,7 @@ fn indexed_package_records(
             continue;
         }
         let root = registry_project_root(view, &row.label, workspace)?;
-        records.push(super::local_manifest::cargo_registry_record(&root)?);
+        records.push(super::local_manifest::local_registry_record(&root)?);
     }
     Ok(records)
 }
@@ -984,9 +988,8 @@ fn registry_project_root(
         if let Some(location) = row.source.captured() {
             let mut dir = Path::new(location.path());
             while let Some(parent) = dir.parent() {
-                if dir.join("Cargo.toml").is_file() {
-                    let (_, _, manifest) = super::local_manifest::cargo_package_identity(dir)?;
-                    if package_matches(&expected, &stub_registry_record(manifest)) {
+                if let Some(manifest) = super::local_manifest::read_local_manifest(dir)? {
+                    if package_matches(&expected, &manifest.record) {
                         return Ok(dir.to_path_buf());
                     }
                 }
@@ -1006,6 +1009,10 @@ fn registry_staging_root(
     workspace: &Path,
     package: &PackageReference,
 ) -> Result<PathBuf, String> {
+    let version = match package {
+        PackageReference::Purl(coordinate) => coordinate.version(),
+        PackageReference::Local(_) => "",
+    };
     let staging = workspace.join("registry-staging");
     if !staging.is_dir() {
         return Err(format!(
@@ -1027,14 +1034,10 @@ fn registry_staging_root(
         {
             continue;
         }
-        for root in [path.clone(), path.join("package")] {
-            if !root.join("Cargo.toml").is_file() {
-                continue;
-            }
-            let (_, _, manifest) = super::local_manifest::cargo_package_identity(&root)?;
-            if package_matches(package, &stub_registry_record(manifest)) {
-                return Ok(root);
-            }
+        if let Some(root) =
+            super::local_manifest::staged_manifest_root(&path, version, package.as_str())?
+        {
+            return Ok(root);
         }
     }
     Err(format!(
@@ -1145,8 +1148,8 @@ fn member_manifest_name(
                     label.as_str()
                 ));
             }
-            let (name, _, _) = super::local_manifest::cargo_package_identity(project_root)?;
-            Ok(name)
+            let manifest = super::local_manifest::require_local_manifest(project_root)?;
+            Ok(manifest.record.name)
         }
         PackageReference::Purl(_) => {
             let records = indexed_package_records(view, member, workspace)?;
@@ -1180,10 +1183,10 @@ fn package_page(
     }
     if let PackageReference::Local(label) = package {
         let project_root = Path::new(label.as_str());
-        if project_root.is_dir() && project_root.join("Cargo.toml").is_file() {
-            return Ok(Box::new([super::local_manifest::cargo_registry_record(
-                project_root,
-            )?]));
+        if project_root.is_dir()
+            && let Some(manifest) = super::local_manifest::read_local_manifest(project_root)?
+        {
+            return Ok(Box::new([manifest.record]));
         }
     }
     let PackageReference::Purl(_) = package else {
@@ -1197,14 +1200,14 @@ fn package_page(
             continue;
         }
         let project_root = Path::new(&row.label);
-        if !project_root.is_dir() || !project_root.join("Cargo.toml").is_file() {
+        if !project_root.is_dir() {
             continue;
         }
-        let (_, _, manifest) = super::local_manifest::cargo_package_identity(project_root)?;
-        if &manifest == package {
-            return Ok(Box::new([super::local_manifest::cargo_registry_record(
-                project_root,
-            )?]));
+        let Some(manifest) = super::local_manifest::read_local_manifest(project_root)? else {
+            continue;
+        };
+        if &manifest.record.coordinate == package {
+            return Ok(Box::new([manifest.record]));
         }
     }
     Err(format!(
@@ -1236,8 +1239,8 @@ fn indexed_package_coordinates(
         }
         let source_root =
             super::local_manifest::indexed_package_source_root(&row.label, workspace)?;
-        let (_, _, manifest) = super::local_manifest::cargo_package_identity(&source_root)?;
-        coordinates.insert(manifest.as_str().to_owned());
+        let manifest = super::local_manifest::require_local_manifest(&source_root)?;
+        coordinates.insert(manifest.record.coordinate.as_str().to_owned());
     }
     Ok(coordinates)
 }
