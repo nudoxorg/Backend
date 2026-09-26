@@ -35,13 +35,24 @@ pub(super) struct IndexSnapshot {
     pub(super) source_version: [u8; 32],
     pub(super) files: Vec<([u8; 32], ProductSourceRecord)>,
     pub(super) compiler_sources: Vec<CompilerSource>,
+    pub(super) reused_compiler_files: Vec<ReusedCompilerFile>,
 }
 
 /// UTF-8 source admitted for one exact semantic authority slot.
+#[derive(Clone)]
 pub(super) struct CompilerSource {
     pub(super) relative_path: String,
     pub(super) profile: LanguageProfile,
     pub(super) source: String,
+}
+
+/// A file whose prior analysis is still exact, so the scan keeps its content
+/// hash and drops the compiler text until a sibling change forces a compile.
+#[derive(Clone)]
+pub(super) struct ReusedCompilerFile {
+    pub(super) relative_path: String,
+    pub(super) profile: LanguageProfile,
+    pub(super) content: [u8; 32],
 }
 
 struct ScannedFile {
@@ -54,6 +65,7 @@ struct ScannedFile {
     /// extension: the file is still a project row, it simply carries nothing
     /// a compiler could be asked to analyse.
     compiler_source: Option<CompilerSource>,
+    reused_compiler: Option<ReusedCompilerFile>,
 }
 
 /// An opened project directory capability. Source reads resolve every path
@@ -559,11 +571,13 @@ pub(super) fn scan_project_with_policy(
     source.update(b"backend.project-snapshot.v2\0");
     let mut files = Vec::with_capacity(scanned.len());
     let mut compiler_sources = Vec::with_capacity(scanned.len());
+    let mut reused_compiler_files = Vec::with_capacity(scanned.len());
     for scanned in scanned {
         let ScannedFile {
             key,
             record,
             compiler_source,
+            reused_compiler,
             ..
         } = scanned;
         let file = record
@@ -574,12 +588,14 @@ pub(super) fn scan_project_with_policy(
         source.update(&file.analysis_version);
         files.push((key, record));
         compiler_sources.extend(compiler_source);
+        reused_compiler_files.extend(reused_compiler);
     }
     files.sort_by_key(|(key, _)| *key);
     Ok(IndexSnapshot {
         source_version: *source.finalize().as_bytes(),
         files,
         compiler_sources,
+        reused_compiler_files,
     })
 }
 
@@ -700,6 +716,7 @@ fn unavailable_file(
         // semantic lane must retain partial coverage until a later scan can
         // read the real bytes.
         compiler_source: None,
+        reused_compiler: None,
         relative,
         key,
         record,
@@ -731,9 +748,6 @@ fn scan_one(
     let relative = relative_path
         .to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/");
-    let source = std::str::from_utf8(&bytes)
-        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::NotText))?
-        .to_owned();
     let frontend = frontends
         .for_path(path)
         .ok_or_else(|| SourceFault::Fatal("unsupported source language".to_owned()))?;
@@ -748,13 +762,23 @@ fn scan_one(
                 && fields.path == relative
                 && fields.language == frontend.language()
                 && fields.content_version == content
+                // An unavailable row stores a zero content version because its
+                // bytes were never admitted. A real digest is never that value,
+                // and this fence keeps such a row from becoming compiler input.
+                && fields.content_version != [0; 32]
                 && fields.analysis_version == analysis
         })
     {
-        return scanned_file(relative, key, record.clone(), source, bytes.len(), path, profile)
+        // The bytes already hashed to the admitted text. Drop them here; a
+        // later package compile re-reads through the project root and refuses
+        // the compile if that second read no longer matches `content`.
+        return reused_scanned_file(relative, key, record.clone(), bytes.len(), content, profile)
             .map_err(SourceFault::Fatal);
     }
 
+    let source = std::str::from_utf8(&bytes)
+        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::NotText))?
+        .to_owned();
     // Structural parsing is an explicit baseline projection for local browsing.
     // Package semantics are compiled and published by the engine application module.
     let analyzed = frontend
@@ -798,6 +822,54 @@ fn scanned_file(
     path: &Path,
     profile: LanguageProfile,
 ) -> Result<ScannedFile, String> {
+    finish_scanned_file(
+        relative.clone(),
+        key,
+        record,
+        source_bytes,
+        path,
+        Some(CompilerSource {
+            profile,
+            relative_path: relative,
+            source,
+        }),
+        None,
+    )
+}
+
+fn reused_scanned_file(
+    relative: String,
+    key: [u8; 32],
+    record: ProductSourceRecord,
+    source_bytes: usize,
+    content: [u8; 32],
+    profile: LanguageProfile,
+) -> Result<ScannedFile, String> {
+    let path = PathBuf::from(&relative);
+    finish_scanned_file(
+        relative.clone(),
+        key,
+        record,
+        source_bytes,
+        &path,
+        None,
+        Some(ReusedCompilerFile {
+            profile,
+            relative_path: relative,
+            content,
+        }),
+    )
+}
+
+fn finish_scanned_file(
+    relative: String,
+    key: [u8; 32],
+    record: ProductSourceRecord,
+    source_bytes: usize,
+    path: &Path,
+    compiler_source: Option<CompilerSource>,
+    reused_compiler: Option<ReusedCompilerFile>,
+) -> Result<ScannedFile, String> {
     let mut encoded = Vec::new();
     ProductSourceRelation::encode_value(&record, &mut encoded);
     let encoded_record_bytes = encoded.len();
@@ -809,17 +881,93 @@ fn scanned_file(
         ));
     }
     Ok(ScannedFile {
-        compiler_source: Some(CompilerSource {
-            profile,
-            relative_path: relative.clone(),
-            source,
-        }),
+        compiler_source,
+        reused_compiler,
         relative,
         key,
         record,
         source_bytes,
         encoded_record_bytes,
     })
+}
+
+/// Merges freshly analyzed compiler text with files whose text was dropped.
+///
+/// Reused files are read again through [`ProjectRoot`], which follows no
+/// symlink. The compile is refused when that read hashes to anything other
+/// than the content version the scan admitted. Fresh files keep the text from
+/// the scan that built their relation row.
+pub(super) fn admit_compiler_sources(
+    root: &Path,
+    fresh: Vec<CompilerSource>,
+    reused: Vec<ReusedCompilerFile>,
+) -> Result<Vec<CompilerSource>, String> {
+    let canonical = root
+        .canonicalize()
+        .map_err(|error| format!("open project {}: {error}", root.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!("project {} is not a directory", canonical.display()));
+    }
+    let capability = ProjectRoot::open(&canonical)?;
+    enum Pending {
+        Fresh(CompilerSource),
+        Reused(ReusedCompilerFile),
+    }
+    let mut pending = BTreeMap::<String, Pending>::new();
+    for source in fresh {
+        let path = source.relative_path.clone();
+        if pending.insert(path.clone(), Pending::Fresh(source)).is_some() {
+            return Err(format!("compiler source {path} was admitted twice"));
+        }
+    }
+    for source in reused {
+        let path = source.relative_path.clone();
+        if pending
+            .insert(path.clone(), Pending::Reused(source))
+            .is_some()
+        {
+            return Err(format!("compiler source {path} was admitted twice"));
+        }
+    }
+    let mut admitted = Vec::with_capacity(pending.len());
+    for (path, source) in pending {
+        match source {
+            Pending::Fresh(source) => admitted.push(source),
+            Pending::Reused(reused) => {
+                let bytes = capability
+                    .read(Path::new(&path))
+                    .map_err(|error| reread_fault(&path, error))?;
+                let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
+                if content != reused.content {
+                    return Err(format!(
+                        "source {path} changed after its content hash was admitted"
+                    ));
+                }
+                let source = std::str::from_utf8(&bytes)
+                    .map_err(|_| format!("source {path} is no longer UTF-8"))?
+                    .to_owned();
+                admitted.push(CompilerSource {
+                    relative_path: path,
+                    profile: reused.profile,
+                    source,
+                });
+            }
+        }
+    }
+    Ok(admitted)
+}
+
+fn reread_fault(path: &str, fault: SourceFault) -> String {
+    match fault {
+        SourceFault::Vanished => {
+            format!("source {path} vanished after its content hash was admitted")
+        }
+        SourceFault::Unavailable(reason) => format!(
+            "source {path} became unavailable ({}) after its content hash was admitted",
+            reason.name()
+        ),
+        SourceFault::Fatal(message) => format!("reread source {path}: {message}"),
+    }
 }
 
 /// Derives one file's semantic profile from the frontend that claimed it.
@@ -1119,6 +1267,261 @@ mod tests {
             .declarations;
         assert_eq!(first.source_version, second.source_version);
         assert!(Arc::ptr_eq(first_declarations, second_declarations));
+        assert!(
+            second.compiler_sources.is_empty(),
+            "an unchanged scan must drop compiler text"
+        );
+        assert_eq!(second.reused_compiler_files.len(), 1);
+        Ok(())
+    }
+
+    fn retained_compiler_bytes(scan: &IndexSnapshot) -> usize {
+        scan.compiler_sources
+            .iter()
+            .map(|source| source.source.len())
+            .sum()
+    }
+
+    fn declarations_for<'a>(
+        scan: &'a IndexSnapshot,
+        path: &str,
+    ) -> Result<&'a Arc<[backend_engine::SourceDeclaration]>, String> {
+        scan.files
+            .iter()
+            .find_map(|(_, record)| {
+                let fields = record.file_fields()?;
+                (fields.path == path).then_some(fields.declarations)
+            })
+            .ok_or_else(|| format!("missing source file {path}"))
+    }
+
+    #[test]
+    fn reused_scan_drops_compiler_text_until_a_sibling_edit() -> Result<(), String> {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let unique = format!(
+            "backend-ingest-delta-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let scratch = Scratch(std::env::temp_dir().join(unique));
+        fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
+        let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
+        let kept = "pub fn kept() {}";
+        let edited_v1 = "pub fn edited() {}";
+        let edited_v2 = "pub fn edited() { let _ = 1; }";
+        let edited_v3 = "pub fn edited() { let _ = 3; }";
+        let kept_v4 = "pub fn kept() { let _ = 4; }";
+        fs::write(scratch.0.join("kept.rs"), kept).map_err(|error| error.to_string())?;
+        fs::write(scratch.0.join("edited.rs"), edited_v1).map_err(|error| error.to_string())?;
+        let project = [11; 32];
+
+        let cold = scan_project(root, project, &BTreeMap::new())?;
+        assert_eq!(
+            cold.compiler_sources
+                .iter()
+                .map(|source| source.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["edited.rs", "kept.rs"]
+        );
+        assert!(cold.reused_compiler_files.is_empty());
+        let cold_retained = retained_compiler_bytes(&cold);
+        assert_eq!(cold_retained, edited_v1.len() + kept.len());
+
+        let reusable = cold.files.iter().cloned().collect::<BTreeMap<_, _>>();
+        let warm = scan_project(root, project, &reusable)?;
+        let warm_retained = retained_compiler_bytes(&warm);
+        assert_eq!(warm_retained, 0);
+        assert_eq!(warm.reused_compiler_files.len(), 2);
+        assert_eq!(cold.source_version, warm.source_version);
+        assert!(Arc::ptr_eq(
+            declarations_for(&cold, "kept.rs")?,
+            declarations_for(&warm, "kept.rs")?,
+        ));
+        assert!(Arc::ptr_eq(
+            declarations_for(&cold, "edited.rs")?,
+            declarations_for(&warm, "edited.rs")?,
+        ));
+
+        fs::write(scratch.0.join("edited.rs"), edited_v2).map_err(|error| error.to_string())?;
+        let delta = scan_project(root, project, &reusable)?;
+        assert_eq!(delta.compiler_sources.len(), 1);
+        assert_eq!(delta.compiler_sources[0].relative_path, "edited.rs");
+        assert_eq!(delta.compiler_sources[0].source, edited_v2);
+        assert_eq!(delta.reused_compiler_files.len(), 1);
+        assert_eq!(delta.reused_compiler_files[0].relative_path, "kept.rs");
+        assert_eq!(
+            delta.reused_compiler_files[0].content,
+            typed_of::<InputContentSchema>(kept.as_bytes()).to_bytes()
+        );
+        assert!(Arc::ptr_eq(
+            declarations_for(&warm, "kept.rs")?,
+            declarations_for(&delta, "kept.rs")?,
+        ));
+        assert!(!Arc::ptr_eq(
+            declarations_for(&warm, "edited.rs")?,
+            declarations_for(&delta, "edited.rs")?,
+        ));
+
+        // A fresh file keeps the scanned text when the disk changes afterwards.
+        // Re-reading it would compile bytes the relation row does not name.
+        fs::write(scratch.0.join("edited.rs"), edited_v3).map_err(|error| error.to_string())?;
+        let admitted = admit_compiler_sources(
+            scratch.0.as_path(),
+            delta.compiler_sources.clone(),
+            delta.reused_compiler_files.clone(),
+        )?;
+        assert_eq!(
+            admitted
+                .iter()
+                .map(|source| (source.relative_path.as_str(), source.source.as_str()))
+                .collect::<Vec<_>>(),
+            [("edited.rs", edited_v2), ("kept.rs", kept)]
+        );
+
+        let delta_fresh_bytes = retained_compiler_bytes(&delta);
+        fs::write(scratch.0.join("kept.rs"), kept_v4).map_err(|error| error.to_string())?;
+        let Err(error) = admit_compiler_sources(
+            scratch.0.as_path(),
+            delta.compiler_sources,
+            delta.reused_compiler_files,
+        ) else {
+            return Err("a changed reused file was compiled".to_owned());
+        };
+        assert!(
+            error.contains("kept.rs") && error.contains("changed after its content hash"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("let _ = 4"),
+            "the refusal must not echo the torn bytes: {error}"
+        );
+        eprintln!(
+            "ingest_delta files=2 cold_retained_bytes={cold_retained} warm_retained_bytes={warm_retained} delta_fresh_bytes={delta_fresh_bytes} delta_reused=1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_bytes_are_not_reused_as_compiler_input() -> Result<(), String> {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let unique = format!(
+            "backend-ingest-unavailable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let scratch = Scratch(std::env::temp_dir().join(unique));
+        fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
+        fs::write(scratch.0.join("lib.rs"), [0xff, 0xfe, b'n', b'o'])
+            .map_err(|error| error.to_string())?;
+        let root = scratch.0.to_str().ok_or("non-UTF-8 scratch path")?;
+        let project = [12; 32];
+        let first = scan_project(root, project, &BTreeMap::new())?;
+        assert!(first.compiler_sources.is_empty());
+        assert!(first.reused_compiler_files.is_empty());
+        assert_eq!(first.files.len(), 1);
+        let reusable = first.files.iter().cloned().collect::<BTreeMap<_, _>>();
+        let second = scan_project(root, project, &reusable)?;
+        assert!(second.compiler_sources.is_empty());
+        assert!(second.reused_compiler_files.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn admit_rejects_a_path_present_in_both_lists() -> Result<(), String> {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let unique = format!(
+            "backend-ingest-duplicate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let scratch = Scratch(std::env::temp_dir().join(unique));
+        fs::create_dir_all(&scratch.0).map_err(|error| error.to_string())?;
+        let profile = LanguageProfile::Rust(RustEdition::Rust2024);
+        let Err(error) = admit_compiler_sources(
+            scratch.0.as_path(),
+            vec![CompilerSource {
+                relative_path: "a.rs".to_owned(),
+                profile,
+                source: "pub fn a() {}".to_owned(),
+            }],
+            vec![ReusedCompilerFile {
+                relative_path: "a.rs".to_owned(),
+                profile,
+                content: [9; 32],
+            }],
+        ) else {
+            return Err("one path was admitted as both fresh and reused".to_owned());
+        };
+        assert!(error.contains("a.rs") && error.contains("admitted twice"), "{error}");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admit_refuses_a_reused_file_replaced_by_a_symlink() -> Result<(), String> {
+        use std::os::unix::fs::symlink;
+
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let unique = format!(
+            "backend-ingest-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let scratch = Scratch(std::env::temp_dir().join(unique));
+        let project = scratch.0.join("project");
+        fs::create_dir_all(&project).map_err(|error| error.to_string())?;
+        let outside = scratch.0.join("outside.rs");
+        fs::write(&outside, b"pub fn secret() {}").map_err(|error| error.to_string())?;
+        fs::write(project.join("kept.rs"), b"pub fn kept() {}").map_err(|error| error.to_string())?;
+        let root = project.to_str().ok_or("non-UTF-8 scratch path")?;
+        let key = [13; 32];
+        let cold = scan_project(root, key, &BTreeMap::new())?;
+        let reusable = cold.files.iter().cloned().collect::<BTreeMap<_, _>>();
+        let warm = scan_project(root, key, &reusable)?;
+        assert_eq!(warm.reused_compiler_files.len(), 1);
+        fs::remove_file(project.join("kept.rs")).map_err(|error| error.to_string())?;
+        symlink(&outside, project.join("kept.rs")).map_err(|error| error.to_string())?;
+        let Err(error) = admit_compiler_sources(
+            project.as_path(),
+            Vec::new(),
+            warm.reused_compiler_files,
+        ) else {
+            return Err("a symlinked reused file was admitted".to_owned());
+        };
+        assert!(error.contains("kept.rs"), "{error}");
+        assert!(!error.contains("secret"), "{error}");
         Ok(())
     }
 }
