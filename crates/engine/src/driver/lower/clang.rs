@@ -2515,20 +2515,39 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let Some(span) = owner_relative_span(owner_span, reference.span) else {
                 continue;
             };
-            if reference.kind == ReferenceKind::Call {
+            if matches!(
+                reference.kind,
+                ReferenceKind::Call | ReferenceKind::Type | ReferenceKind::Template
+            ) {
                 if let ReferenceTarget::Foreign {
                     path: Some(slot), ..
                 } = reference.target
                 {
                     if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
                         if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
-                            let call_span = member_call_callee_span(self.source, reference.span)
-                                .unwrap_or(reference.span);
-                            let Some(span) = owner_relative_span(owner_span, call_span) else {
+                            let (name_bytes, site_span) = match reference.kind {
+                                ReferenceKind::Call => (
+                                    member_call_callee_name(self.source, reference.span)
+                                        .unwrap_or(written),
+                                    member_call_callee_span(self.source, reference.span)
+                                        .unwrap_or(reference.span),
+                                ),
+                                ReferenceKind::Type | ReferenceKind::Template => (
+                                    type_reference_name_bytes(written).unwrap_or(written),
+                                    type_reference_name_span(self.source, reference.span, written),
+                                ),
+                                _ => unreachable!(),
+                            };
+                            let Some(span) = owner_relative_span(owner_span, site_span) else {
                                 continue;
                             };
-                            let name_bytes = member_call_callee_name(self.source, reference.span)
-                                .unwrap_or(written);
+                            let entity_kind = match reference.kind {
+                                ReferenceKind::Call => Some(EntityKind::Function),
+                                ReferenceKind::Type | ReferenceKind::Template => {
+                                    Some(EntityKind::Record)
+                                }
+                                _ => unreachable!(),
+                            };
                             if let Ok(name) = core::str::from_utf8(name_bytes) {
                                 self.facts
                                     .push_owned_package_occurrence(
@@ -2537,7 +2556,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                         package_path.as_ref(),
                                         name,
                                         name,
-                                        Some(EntityKind::Function),
+                                        entity_kind,
                                         lane_reference_kind(reference.kind),
                                         OccurrenceConfidence::Oracle,
                                         span,
@@ -2871,6 +2890,58 @@ fn include_spelling_span<'source>(
             end: include.span.start + (open_at as u32 + 1 + relative as u32),
         },
     ))
+}
+
+/// Borrows the type-name identifier when a type-reference span still carries
+/// a specifier prefix such as `struct Name`. When the span is already one
+/// identifier token, returns it unchanged.
+fn type_reference_name_bytes<'source>(written: &'source [u8]) -> Option<&'source [u8]> {
+    if written.is_empty() {
+        return None;
+    }
+    if written
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Some(written);
+    }
+    for prefix in [
+        b"struct".as_slice(),
+        b"class",
+        b"enum",
+        b"union",
+        b"typename",
+    ] {
+        if written.len() <= prefix.len() || !written.starts_with(prefix) {
+            continue;
+        }
+        let rest = written.get(prefix.len()..)?;
+        let skip = rest.iter().take_while(|byte| byte.is_ascii_whitespace()).count();
+        let ident = rest.get(skip..)?;
+        let name_len = ident
+            .iter()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+            .count();
+        if name_len > 0 {
+            return ident.get(..name_len);
+        }
+    }
+    None
+}
+
+/// Narrows one type-reference span to the identifier token inside it.
+fn type_reference_name_span(source: &[u8], span: SourceSpan, written: &[u8]) -> SourceSpan {
+    let Some(name) = type_reference_name_bytes(written) else {
+        return span;
+    };
+    let offset = name.as_ptr() as usize - source.as_ptr() as usize;
+    match (
+        u32::try_from(offset),
+        u32::try_from(offset + name.len()),
+    ) {
+        (Ok(start), Ok(end)) if start >= span.start && end <= span.end => SourceSpan { start, end },
+        _ => span,
+    }
 }
 
 /// When libclang maps a C++ member call to `CallExpr` but leaves the reference
