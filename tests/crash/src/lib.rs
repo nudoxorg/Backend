@@ -351,8 +351,13 @@ fn hex(bytes: &[u8; 32]) -> String {
     output
 }
 
+/// Upper bound on a child process reaching a readiness point or exiting. It
+/// is not a latency budget: 15s was exceeded on the loaded Linux PR worker
+/// while the stale owner was still starting (builds 2397 and 2486).
+const PROCESS_READY_BOUND: Duration = Duration::from_secs(60);
+
 fn wait_for_file(path: &Path, label: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + PROCESS_READY_BOUND;
     while !path.exists() {
         assert!(
             Instant::now() < deadline,
@@ -364,7 +369,7 @@ fn wait_for_file(path: &Path, label: &str) {
 }
 
 fn wait_for_any_file(paths: &[PathBuf], label: &str) -> usize {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + PROCESS_READY_BOUND;
     loop {
         if let Some(index) = paths.iter().position(|path| path.exists()) {
             return index;
@@ -375,7 +380,7 @@ fn wait_for_any_file(paths: &[PathBuf], label: &str) -> usize {
 }
 
 fn wait_child(mut child: Child, label: &str) -> ExitStatus {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + PROCESS_READY_BOUND;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status,
