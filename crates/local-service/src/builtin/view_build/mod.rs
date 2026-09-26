@@ -6,11 +6,18 @@
 //! coverage fall back to the tree-sitter baseline, and a stale publication
 //! answers semantic and typed stale rather than being silently replaced.
 
+mod call_join;
 mod identity;
 mod query;
 mod semantic;
 mod structural;
 
+pub(crate) use call_join::{
+    ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
+    foreign_package_call_retarget, join_project_call, project_paths_for_package,
+};
+
+pub(crate) use identity::query_semantic_id;
 pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(crate) use identity::semantic_coordinate;
 pub(super) use query::semantic_query_corpus;

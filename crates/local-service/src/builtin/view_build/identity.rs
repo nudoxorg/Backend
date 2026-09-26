@@ -130,7 +130,7 @@ pub(super) fn query_package_id(package: backend_engine::PackageKey) -> String {
     RowId::Package(package).stable_key()
 }
 
-pub(super) fn query_semantic_id(
+pub(crate) fn query_semantic_id(
     package: backend_engine::PackageKey,
     identity: DeclarationIdentity,
 ) -> String {

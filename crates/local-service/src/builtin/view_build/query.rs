@@ -8,14 +8,18 @@ use super::identity::{
     declaration_kind, external_semantic_symbol, fragment_text, query_external_id, query_package_id,
     query_semantic_id, semantic_coordinate, semantic_symbol,
 };
+use super::call_join::{
+    ProjectCallableIndex, foreign_display_name, join_project_call, project_paths_for_package,
+};
+use super::compiled_source_path;
 use super::semantic::semantic_row_content;
 use super::structural::{StructuralParent, StructuralProjectionPlan};
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::ProductSemanticPublicationRecord;
 use backend_engine::{Fragment, RowId};
 use backend_semantic::ir::{
-    DeclarationIdentity, ExternalTargetIdentity, LinkTarget, SemanticCoreReader as _,
-    SemanticImageView, SemanticReader as _,
+    DeclarationIdentity, ExternalId, ExternalTargetIdentity, LinkTarget,
+    SemanticCoreReader as _, SemanticImageView, SemanticReader as _,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -83,7 +87,7 @@ fn append_compiler_query_facts(
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic query relation: {error}")))?;
     let mut complete = BTreeSet::new();
-    let mut ids = BTreeSet::new();
+    let mut pending = Vec::new();
     let mut after = None;
     loop {
         let page = relation
@@ -110,166 +114,13 @@ fn append_compiler_query_facts(
                     )
                 })?;
             let activated = activate_semantic_publication(compiler, key, *claim)?;
-            for image_bytes in activated.images() {
-                let image = SemanticImageView::reopen(image_bytes.as_ref()).map_err(|error| {
-                    BuiltinModelError(format!("reopen semantic query image: {error}"))
-                })?;
-                let session = DocumentationSession::new(&image);
-                let identities = session
-                    .canonical_entities()
-                    .map(|entity| {
-                        entity
-                            .map(|entity| entity.entity.version.identity())
-                            .map_err(|error| {
-                                BuiltinModelError(format!(
-                                    "read semantic query declaration: {error}"
-                                ))
-                            })
-                    })
-                    .collect::<Result<BTreeSet<_>, _>>()?;
-                let image_digest = *blake3::hash(image_bytes.as_ref()).as_bytes();
-                let mut external_targets = BTreeMap::<String, ExternalTargetIdentity>::new();
-                for entity in session.canonical_entities() {
-                    let entity = entity.map_err(|error| {
-                        BuiltinModelError(format!("read semantic query declaration: {error}"))
-                    })?;
-                    let identity = entity.entity.version.identity();
-                    let id = query_semantic_id(project.package, identity);
-                    if !ids.insert(id.clone()) {
-                        return Err(BuiltinModelError(
-                            "semantic query publication contains a duplicate declaration identity"
-                                .to_owned(),
-                        ));
-                    }
-                    let name = std::str::from_utf8(entity.name)
-                        .map_err(|_| {
-                            BuiltinModelError(
-                                "semantic query declaration name is not UTF-8".to_owned(),
-                            )
-                        })?
-                        .to_owned();
-                    let content = semantic_row_content(
-                        key.profile(),
-                        &image,
-                        &entity,
-                        project.package,
-                        image_digest,
-                    )?;
-                    let parent = entity
-                        .entity
-                        .parent
-                        .map(|parent| {
-                            let parent = session.entity(parent).map_err(|error| {
-                                BuiltinModelError(format!(
-                                    "read semantic query parent declaration: {error}"
-                                ))
-                            })?;
-                            let parent_identity = parent.entity.version.identity();
-                            if !identities.contains(&parent_identity) {
-                                return Err(BuiltinModelError(
-                                    "semantic query parent is outside the canonical entity closure"
-                                        .to_owned(),
-                                ));
-                            }
-                            Ok(query_semantic_id(project.package, parent_identity))
-                        })
-                        .transpose()?;
-                    let mut related = Vec::new();
-                    for (_, link) in image.links_from(entity.entity.id) {
-                        match link.target {
-                            LinkTarget::Local(target) => {
-                                let Some(target) = image.entity(target) else {
-                                    return Err(BuiltinModelError(
-                                        "semantic query local target is absent".to_owned(),
-                                    ));
-                                };
-                                let target = target.version.identity();
-                                if identities.contains(&target) {
-                                    related.push(query_semantic_id(project.package, target));
-                                }
-                            }
-                            LinkTarget::External(target) => {
-                                // A stable ref names a fragment plus a declaration
-                                // identity. The identity does not include the
-                                // fragment, and a graph edge may not leave its
-                                // package, so the ref stays an external node in
-                                // this package instead of being attached to
-                                // another publication.
-                                let identity = ExternalTargetIdentity::capture(&image, target)
-                                    .map_err(|error| {
-                                        BuiltinModelError(format!(
-                                            "identify semantic query external target: {error}"
-                                        ))
-                                    })?;
-                                let target_id =
-                                    query_external_id(project.package, image_digest, identity);
-                                external_targets
-                                    .entry(target_id.clone())
-                                    .or_insert(identity);
-                                related.push(target_id);
-                            }
-                        }
-                    }
-                    related.sort_unstable();
-                    related.dedup();
-                    facts.push(backend_extension_trustfall::SemanticQueryFact::new(
-                        backend_extension_trustfall::SemanticQueryEvidence::Compiler(
-                            backend_extension_trustfall::CompilerSemanticEvidence::new(
-                                project.package,
-                                key.coordinate().clone(),
-                                key.profile(),
-                                identity,
-                                image_digest,
-                                image.image_facts(),
-                            ),
-                        ),
-                        backend_extension_trustfall::SemanticQueryPresentation {
-                            id,
-                            kind: declaration_kind(entity.entity.kind).name().to_owned(),
-                            coordinate: semantic_coordinate(&project.label, identity, &name),
-                            name,
-                            signature: content.signature,
-                            documentation: fragment_text(&content.document),
-                            score: None,
-                            project: Some(query_package_id(project.package)),
-                            parent,
-                            related: related.into_boxed_slice(),
-                        },
-                    ));
-                }
-                for (id, target) in external_targets {
-                    if !ids.insert(id.clone()) {
-                        return Err(BuiltinModelError(
-                            "semantic query publication contains a duplicate external target identity"
-                                .to_owned(),
-                        ));
-                    }
-                    facts.push(backend_extension_trustfall::SemanticQueryFact::new(
-                        backend_extension_trustfall::SemanticQueryEvidence::CompilerExternalTarget(
-                            backend_extension_trustfall::CompilerExternalTargetEvidence::new(
-                                project.package,
-                                key.coordinate().clone(),
-                                key.profile(),
-                                target,
-                                image_digest,
-                                image.image_facts(),
-                            ),
-                        ),
-                        backend_extension_trustfall::SemanticQueryPresentation {
-                            coordinate: format!("{}::external::{id}", project.label),
-                            id,
-                            kind: "external".to_owned(),
-                            name: "external semantic target".to_owned(),
-                            signature: None,
-                            documentation: String::new(),
-                            score: None,
-                            project: Some(query_package_id(project.package)),
-                            parent: None,
-                            related: Box::new([]),
-                        },
-                    ));
-                }
-            }
+            pending.push(PendingQueryPublication {
+                package: project.package,
+                label: project.label.clone(),
+                coordinate: key.coordinate().clone(),
+                profile: key.profile(),
+                activated,
+            });
             complete.insert((
                 project.package.to_bytes(),
                 super::super::ingest::lane_profile(key.profile()),
@@ -280,8 +131,244 @@ fn append_compiler_query_facts(
         };
         after = Some(next);
     }
+
+    let mut package_bytes = BTreeMap::<backend_engine::PackageKey, Vec<&[u8]>>::new();
+    let mut package_published =
+        BTreeMap::<backend_engine::PackageKey, BTreeSet<DeclarationIdentity>>::new();
+    let mut package_paths = BTreeMap::<backend_engine::PackageKey, BTreeSet<String>>::new();
+    for pending_publication in &pending {
+        package_paths
+            .entry(pending_publication.package)
+            .or_insert_with(|| project_paths_for_package(sources, pending_publication.package));
+        let published = package_published
+            .entry(pending_publication.package)
+            .or_default();
+        for image_bytes in pending_publication.activated.images() {
+            let bytes = image_bytes.as_ref();
+            package_bytes
+                .entry(pending_publication.package)
+                .or_default()
+                .push(bytes);
+            let image = SemanticImageView::reopen(bytes).map_err(|error| {
+                BuiltinModelError(format!("reopen semantic query image: {error}"))
+            })?;
+            let session = DocumentationSession::new(&image);
+            for entity in session.canonical_entities() {
+                let entity = entity.map_err(|error| {
+                    BuiltinModelError(format!("read semantic query declaration: {error}"))
+                })?;
+                published.insert(entity.entity.version.identity());
+            }
+        }
+    }
+    let mut package_indexes = BTreeMap::<backend_engine::PackageKey, ProjectCallableIndex>::new();
+    for (package, bytes) in &package_bytes {
+        package_indexes.insert(*package, ProjectCallableIndex::build_from_bytes(bytes)?);
+    }
+
+    let mut ids = BTreeSet::new();
+    for pending_publication in pending {
+        let PendingQueryPublication {
+            package,
+            label,
+            coordinate,
+            profile,
+            activated,
+        } = pending_publication;
+        let project_paths = package_paths
+            .get(&package)
+            .cloned()
+            .unwrap_or_default();
+        let published = package_published
+            .get(&package)
+            .cloned()
+            .unwrap_or_default();
+        let callable_index = package_indexes.get(&package);
+        for image_bytes in activated.images() {
+            let image = SemanticImageView::reopen(image_bytes.as_ref()).map_err(|error| {
+                BuiltinModelError(format!("reopen semantic query image: {error}"))
+            })?;
+            let caller_path = compiled_source_path(&image)?;
+            let session = DocumentationSession::new(&image);
+            let identities = session
+                .canonical_entities()
+                .map(|entity| {
+                    entity
+                        .map(|entity| entity.entity.version.identity())
+                        .map_err(|error| {
+                            BuiltinModelError(format!(
+                                "read semantic query declaration: {error}"
+                            ))
+                        })
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            let image_digest = *blake3::hash(image_bytes.as_ref()).as_bytes();
+            let mut external_targets =
+                BTreeMap::<String, (ExternalTargetIdentity, ExternalId)>::new();
+            for entity in session.canonical_entities() {
+                let entity = entity.map_err(|error| {
+                    BuiltinModelError(format!("read semantic query declaration: {error}"))
+                })?;
+                let identity = entity.entity.version.identity();
+                let id = query_semantic_id(package, identity);
+                if !ids.insert(id.clone()) {
+                    return Err(BuiltinModelError(
+                        "semantic query publication contains a duplicate declaration identity"
+                            .to_owned(),
+                    ));
+                }
+                let name = std::str::from_utf8(entity.name)
+                    .map_err(|_| {
+                        BuiltinModelError(
+                            "semantic query declaration name is not UTF-8".to_owned(),
+                        )
+                    })?
+                    .to_owned();
+                let content = semantic_row_content(
+                    profile,
+                    &image,
+                    &entity,
+                    package,
+                    image_digest,
+                )?;
+                let parent = entity
+                    .entity
+                    .parent
+                    .map(|parent| {
+                        let parent = session.entity(parent).map_err(|error| {
+                            BuiltinModelError(format!(
+                                "read semantic query parent declaration: {error}"
+                            ))
+                        })?;
+                        let parent_identity = parent.entity.version.identity();
+                        if !identities.contains(&parent_identity) {
+                            return Err(BuiltinModelError(
+                                "semantic query parent is outside the canonical entity closure"
+                                    .to_owned(),
+                            ));
+                        }
+                        Ok(query_semantic_id(package, parent_identity))
+                    })
+                    .transpose()?;
+                let mut related = Vec::new();
+                for (_, link) in image.links_from(entity.entity.id) {
+                    match link.target {
+                        LinkTarget::Local(target) => {
+                            let Some(target) = image.entity(target) else {
+                                return Err(BuiltinModelError(
+                                    "semantic query local target is absent".to_owned(),
+                                ));
+                            };
+                            let target = target.version.identity();
+                            if identities.contains(&target) {
+                                related.push(query_semantic_id(package, target));
+                            }
+                        }
+                        LinkTarget::External(external) => {
+                            if let Some(callable_index) = callable_index
+                                && let Some(joined) = join_project_call(
+                                    &image,
+                                    link.kind,
+                                    external,
+                                    &caller_path,
+                                    &project_paths,
+                                    callable_index,
+                                    &published,
+                                )?
+                            {
+                                related.push(query_semantic_id(package, joined));
+                                continue;
+                            }
+                            let identity = ExternalTargetIdentity::capture(&image, external)
+                                .map_err(|error| {
+                                    BuiltinModelError(format!(
+                                        "identify semantic query external target: {error}"
+                                    ))
+                                })?;
+                            let target_id = query_external_id(package, image_digest, identity);
+                            external_targets
+                                .entry(target_id.clone())
+                                .or_insert((identity, external));
+                            related.push(target_id);
+                        }
+                    }
+                }
+                related.sort_unstable();
+                related.dedup();
+                facts.push(backend_extension_trustfall::SemanticQueryFact::new(
+                    backend_extension_trustfall::SemanticQueryEvidence::Compiler(
+                        backend_extension_trustfall::CompilerSemanticEvidence::new(
+                            package,
+                            coordinate.clone(),
+                            profile,
+                            identity,
+                            image_digest,
+                            image.image_facts(),
+                        ),
+                    ),
+                    backend_extension_trustfall::SemanticQueryPresentation {
+                        id,
+                        kind: declaration_kind(entity.entity.kind).name().to_owned(),
+                        coordinate: semantic_coordinate(&label, identity, &name),
+                        name,
+                        signature: content.signature,
+                        documentation: fragment_text(&content.document),
+                        score: None,
+                        project: Some(query_package_id(package)),
+                        parent,
+                        related: related.into_boxed_slice(),
+                    },
+                ));
+            }
+            for (id, (target, external)) in external_targets {
+                if !ids.insert(id.clone()) {
+                    return Err(BuiltinModelError(
+                        "semantic query publication contains a duplicate external target identity"
+                            .to_owned(),
+                    ));
+                }
+                let name = match foreign_display_name(&image, external)? {
+                    Some(display) => display,
+                    None => "external semantic target".to_owned(),
+                };
+                facts.push(backend_extension_trustfall::SemanticQueryFact::new(
+                    backend_extension_trustfall::SemanticQueryEvidence::CompilerExternalTarget(
+                        backend_extension_trustfall::CompilerExternalTargetEvidence::new(
+                            package,
+                            coordinate.clone(),
+                            profile,
+                            target,
+                            image_digest,
+                            image.image_facts(),
+                        ),
+                    ),
+                    backend_extension_trustfall::SemanticQueryPresentation {
+                        coordinate: format!("{label}::external::{id}"),
+                        id,
+                        kind: "external".to_owned(),
+                        name,
+                        signature: None,
+                        documentation: String::new(),
+                        score: None,
+                        project: Some(query_package_id(package)),
+                        parent: None,
+                        related: Box::new([]),
+                    },
+                ));
+            }
+        }
+    }
     Ok(complete)
 }
+
+struct PendingQueryPublication {
+    package: backend_engine::PackageKey,
+    label: String,
+    coordinate: backend_semantic::vocabulary::PackageUrl,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    activated: super::super::ActivatedProductSemantics,
+}
+
 
 pub(super) fn append_structural_query_facts(
     sources: &IndexedSources,
