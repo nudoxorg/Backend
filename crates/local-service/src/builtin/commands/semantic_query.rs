@@ -3258,6 +3258,487 @@ mod project_call_tests {
         Ok(())
     }
 
+    fn go_workout_set_note_service_image(
+        path: &str,
+        source_identity_byte: u8,
+        workout_version_byte: u8,
+        set_note_version_byte: u8,
+    ) -> Result<Vec<u8>, String> {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[source_identity_byte]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, path)
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let workout_version = fixture_version(workout_version_byte);
+        let set_note_version = fixture_version(set_note_version_byte);
+        let items = [
+            TreeItemInput {
+                name: b"Workout",
+                kind: ItemKind::Record,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"SetNote",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Bound(workout_version.identity())),
+                parent: Some(TreeEntityId::new(0)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[workout_version, set_note_version],
+                items: &items,
+                links: &[],
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn go_workout_and_session_set_note_service_image(
+        path: &str,
+        source_identity_byte: u8,
+        workout_version_byte: u8,
+        workout_set_note_version_byte: u8,
+        session_version_byte: u8,
+        session_set_note_version_byte: u8,
+    ) -> Result<Vec<u8>, String> {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[source_identity_byte]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, path)
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let workout_version = fixture_version(workout_version_byte);
+        let workout_set_note_version = fixture_version(workout_set_note_version_byte);
+        let session_version = fixture_version(session_version_byte);
+        let session_set_note_version = fixture_version(session_set_note_version_byte);
+        let items = [
+            TreeItemInput {
+                name: b"Workout",
+                kind: ItemKind::Record,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"SetNote",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Bound(workout_version.identity())),
+                parent: Some(TreeEntityId::new(0)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"Session",
+                kind: ItemKind::Record,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"SetNote",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Bound(session_version.identity())),
+                parent: Some(TreeEntityId::new(2)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[
+                    workout_version,
+                    workout_set_note_version,
+                    session_version,
+                    session_set_note_version,
+                ],
+                items: &items,
+                links: &[],
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn go_drive_namespace_method_call_image(
+        path: &str,
+        source_identity_byte: u8,
+        drive_version_byte: u8,
+        foreign_key: u8,
+    ) -> Result<Vec<u8>, String> {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[source_identity_byte]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, path)
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let drive_version = fixture_version(drive_version_byte);
+        let items = [TreeItemInput {
+            name: b"Drive",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: authority(ParentageAuthority::Root),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        }];
+        let ecosystem = builder.intern_atom(b"go").map_err(|e| e.to_string())?;
+        let namespace_atom = builder.intern_atom(b"Workout").map_err(|e| e.to_string())?;
+        let display = builder.intern_atom(b"SetNote").map_err(|e| e.to_string())?;
+        let path_atom = builder.intern_atom(b"SetNote").map_err(|e| e.to_string())?;
+        let external = builder
+            .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
+                identity: ExternalDeclarationIdentity {
+                    foreign: ForeignDeclarationId::from_raw([foreign_key; 16]),
+                    variant: VariantAvailability::Unavailable,
+                },
+                origin: ForeignTargetOrigin::Namespace {
+                    ecosystem,
+                    namespace: namespace_atom,
+                },
+                path: path_atom,
+                display,
+                kind: Some(ItemKind::Function),
+            }))
+            .map_err(|e| e.to_string())?;
+        let links = [TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::External(external),
+            kind: LinkKind::MethodCall,
+            confidence: backend_semantic::ir::Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Unavailable,
+            },
+            source: None,
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[drive_version],
+                items: &items,
+                links: &links,
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn go_set_note_drive_fixture(
+        foreign_key: u8,
+    ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
+        let service_bytes = go_workout_set_note_service_image("demo/service.go", 140, 141, 142)?;
+        let caller_bytes =
+            go_drive_namespace_method_call_image("demo/lib.go", 143, 144, foreign_key)?;
+        Ok((
+            service_bytes,
+            caller_bytes,
+            fixture_version(142).identity(),
+            fixture_version(144).identity(),
+        ))
+    }
+
+    #[test]
+    fn join_project_call_go_method_retargets_set_note() -> Result<(), String> {
+        let (service_bytes, caller_bytes, set_note_identity, _) = go_set_note_drive_fixture(145)?;
+        let paths = project_paths(&["demo/service.go", "demo/lib.go"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, fixture_version(144).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::MethodCall)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_call(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(set_note_identity) {
+            return Err(format!(
+                "join_project_call should retarget to SetNote, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_call_go_method_query_corpus_referenced_by_names_drive() -> Result<(), String> {
+        let package = package_key("fixture");
+        let (service_bytes, caller_bytes, set_note_identity, drive_identity) =
+            go_set_note_drive_fixture(146)?;
+        let paths = project_paths(&["demo/service.go", "demo/lib.go"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, drive_identity]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::MethodCall)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_call(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "join_project_call returned None".to_owned())?;
+        let set_note_id = query_semantic_id(package, joined);
+        let (set_note_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &service_bytes,
+            set_note_identity,
+            "SetNote",
+            Box::new([]),
+        )?;
+        let (drive_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &caller_bytes,
+            drive_identity,
+            "Drive",
+            vec![set_note_id.clone()].into_boxed_slice(),
+        )?;
+        let workspace = super::super::super::genesis().map_err(|error| error.to_string())?;
+        let corpus = SemanticQueryCorpus::admit(
+            workspace.root(),
+            vec![
+                SemanticQueryFact::new(
+                    SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+                    SemanticQueryPresentation {
+                        id: RowId::Package(package).stable_key(),
+                        kind: "project".to_owned(),
+                        coordinate: "fixture".to_owned(),
+                        name: "fixture".to_owned(),
+                        signature: None,
+                        documentation: String::new(),
+                        score: None,
+                        project: None,
+                        parent: None,
+                        related: Box::new([]),
+                    },
+                ),
+                set_note_fact,
+                drive_fact,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let (cancellation, _) = SemanticQueryCancellation::new();
+        let request = SemanticQueryRequest::admit_page(
+            corpus,
+            "{ Declaration { name @filter(op: \"=\", value: [\"$name\"]) referencedBy @optional { name @output } } }",
+            BTreeMap::from([("name".to_owned(), "SetNote".into())]),
+            0,
+            8,
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
+        let events = futures_executor::block_on(
+            execute_semantic_query(request)
+                .map_err(|error| error.to_string())?
+                .collect::<Vec<_>>(),
+        );
+        let callers = events
+            .iter()
+            .filter_map(|event| match event {
+                SemanticQueryEvent::Row(row) => row.row().get("name").cloned(),
+                SemanticQueryEvent::Terminal(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if callers != ["Drive".into()] {
+            return Err(format!(
+                "referencedBy on SetNote should name only Drive, got {callers:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_call_go_method_session_set_note_not_chosen() -> Result<(), String> {
+        let service_bytes = go_workout_and_session_set_note_service_image(
+            "demo/service.go",
+            147,
+            148,
+            149,
+            150,
+            151,
+        )?;
+        let caller_bytes =
+            go_drive_namespace_method_call_image("demo/lib.go", 152, 153, 147)?;
+        let workout_set_note_identity = fixture_version(149).identity();
+        let session_set_note_identity = fixture_version(151).identity();
+        let paths = project_paths(&["demo/service.go", "demo/lib.go"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            workout_set_note_identity,
+            session_set_note_identity,
+            fixture_version(153).identity(),
+        ]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::MethodCall)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_call(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(workout_set_note_identity) {
+            return Err(format!(
+                "Workout namespace key must join Workout SetNote, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_call_go_method_ambiguous_set_note_returns_none() -> Result<(), String> {
+        let first_service =
+            go_workout_set_note_service_image("demo/service_a.go", 154, 155, 156)?;
+        let second_service =
+            go_workout_set_note_service_image("demo/service_b.go", 157, 158, 159)?;
+        let caller_bytes =
+            go_drive_namespace_method_call_image("demo/lib.go", 160, 161, 154)?;
+        let paths = project_paths(&["demo/service_a.go", "demo/service_b.go", "demo/lib.go"]);
+        let images = [&first_service[..], &second_service[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(156).identity(),
+            fixture_version(159).identity(),
+            fixture_version(161).identity(),
+        ]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::MethodCall)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_call(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != None {
+            return Err(format!(
+                "ambiguous Workout SetNote methods must not join, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
     #[test]
     fn join_project_call_extra_path_stays_unjoined_and_foreign_display_names_call() -> Result<(), String> {
         let service_bytes = project_call_image(
