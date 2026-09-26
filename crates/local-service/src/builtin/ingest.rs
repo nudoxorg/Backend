@@ -957,6 +957,46 @@ pub(super) fn admit_compiler_sources(
     Ok(admitted)
 }
 
+/// Profiles that still have compiler input in this scan.
+///
+/// The set is taken from every fresh and reused file, before unchanged
+/// profiles are dropped from the compile. A selected publication whose
+/// profile is absent from this set no longer has source.
+pub(super) fn live_compiler_profiles(
+    source_root: &Path,
+    fresh: &[CompilerSource],
+    reused: &[ReusedCompilerFile],
+) -> BTreeSet<LanguageProfile> {
+    let mut live = BTreeSet::new();
+    for source in fresh {
+        live.insert(compilation_profile(
+            source_root,
+            &source.relative_path,
+            source.profile,
+        ));
+    }
+    for source in reused {
+        live.insert(compilation_profile(
+            source_root,
+            &source.relative_path,
+            source.profile,
+        ));
+    }
+    live
+}
+
+/// Selected profiles that this scan no longer contains.
+pub(super) fn retired_selected_profiles(
+    selected: &[LanguageProfile],
+    live: &BTreeSet<LanguageProfile>,
+) -> BTreeSet<LanguageProfile> {
+    selected
+        .iter()
+        .copied()
+        .filter(|profile| !live.contains(profile))
+        .collect()
+}
+
 /// The paths whose compiler text is still part of this scan.
 pub(super) fn present_compiler_paths(
     fresh: &[CompilerSource],
@@ -1776,6 +1816,80 @@ mod tests {
             LanguageProfile::Rust(RustEdition::Rust2021)
         );
         eprintln!("edition_delta crates=2 selected_files=1 skipped_crate=2021");
+        let _ = fs::remove_dir_all(&scratch);
+        Ok(())
+    }
+
+    #[test]
+    fn a_deleted_crate_retires_its_edition_after_the_manifest_is_gone() -> Result<(), String> {
+        let scratch = scratch_dir("retire-edition")?;
+        let root = scratch.to_str().ok_or("non-UTF-8 scratch path")?;
+        fs::create_dir_all(scratch.join("old/src")).map_err(|error| error.to_string())?;
+        fs::create_dir_all(scratch.join("new/src")).map_err(|error| error.to_string())?;
+        fs::write(
+            scratch.join("old/Cargo.toml"),
+            "[package]\nname = \"old\"\nedition = \"2018\"\n",
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(
+            scratch.join("new/Cargo.toml"),
+            "[package]\nname = \"new\"\nedition = \"2021\"\n",
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(scratch.join("old/src/lib.rs"), b"pub fn old_crate() {}")
+            .map_err(|error| error.to_string())?;
+        fs::write(scratch.join("new/src/lib.rs"), b"pub fn new_crate() {}")
+            .map_err(|error| error.to_string())?;
+        fs::write(scratch.join("app.py"), b"def monty():\n    pass\n")
+            .map_err(|error| error.to_string())?;
+        let project = [17; 32];
+        let cold = scan_project(root, project, &BTreeMap::new())?;
+        let cold_live = live_compiler_profiles(
+            scratch.as_path(),
+            &cold.compiler_sources,
+            &cold.reused_compiler_files,
+        );
+        let rust_2018 = LanguageProfile::Rust(RustEdition::Rust2018);
+        let rust_2021 = LanguageProfile::Rust(RustEdition::Rust2021);
+        assert!(cold_live.contains(&rust_2018));
+        assert!(cold_live.contains(&rust_2021));
+        let python = *cold_live
+            .iter()
+            .find(|profile| matches!(profile, LanguageProfile::Python(_)))
+            .ok_or("python profile missing from the cold scan")?;
+        let reusable = cold.files.iter().cloned().collect::<BTreeMap<_, _>>();
+        fs::remove_dir_all(scratch.join("old")).map_err(|error| error.to_string())?;
+        let delta = scan_project(root, project, &reusable)?;
+        let live = live_compiler_profiles(
+            scratch.as_path(),
+            &delta.compiler_sources,
+            &delta.reused_compiler_files,
+        );
+        assert!(!live.contains(&rust_2018));
+        assert!(live.contains(&rust_2021));
+        assert!(live.contains(&python));
+        let selected = [rust_2018, rust_2021, python];
+        let retired = retired_selected_profiles(&selected, &live);
+        assert_eq!(
+            retired.into_iter().collect::<Vec<_>>(),
+            vec![rust_2018]
+        );
+        let present = present_compiler_paths(&delta.compiler_sources, &delta.reused_compiler_files);
+        let lost = lost_compiler_profiles(scratch.as_path(), &reusable, &present)?;
+        let (fresh, reused) = select_compiler_inputs(
+            scratch.as_path(),
+            delta.compiler_sources,
+            delta.reused_compiler_files,
+            &lost,
+        );
+        let compiled = live_compiler_profiles(scratch.as_path(), &fresh, &reused);
+        assert!(compiled.is_subset(&live));
+        assert!(!compiled.contains(&rust_2018));
+        eprintln!(
+            "retire_edition live={} retired=1 compiled={}",
+            live.len(),
+            compiled.len()
+        );
         let _ = fs::remove_dir_all(&scratch);
         Ok(())
     }

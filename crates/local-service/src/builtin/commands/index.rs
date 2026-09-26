@@ -126,6 +126,11 @@ pub(super) fn index_project_intent_at(
             request_id,
             compiler,
         )?;
+        let live = ingest::live_compiler_profiles(
+            source_root,
+            &scan.compiler_sources,
+            &scan.reused_compiler_files,
+        );
         let present = ingest::present_compiler_paths(
             &scan.compiler_sources,
             &scan.reused_compiler_files,
@@ -140,7 +145,7 @@ pub(super) fn index_project_intent_at(
         );
         let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
             .map_err(BuiltinModelError)?;
-        compile_semantic_publications(daemon, &semantic_context, sources)?
+        compile_semantic_publications(daemon, &semantic_context, sources, &live)?
     };
     if changes.is_empty() && semantic_changes.is_empty() {
         return Ok(None);
@@ -190,6 +195,7 @@ fn compile_semantic_publications(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     context: &SemanticCompilationContext<'_>,
     sources: Vec<ingest::CompilerSource>,
+    live: &BTreeSet<LanguageProfile>,
 ) -> Result<Vec<BuiltinSemanticChange>, BuiltinModelError> {
     let mut by_profile = BTreeMap::<LanguageProfile, Vec<OwnedPackageSource>>::new();
     for source in sources {
@@ -280,6 +286,30 @@ fn compile_semantic_publications(
                 after: Some(value),
             });
         }
+    }
+    // The stored selected key is the one product surfaces project. History
+    // generations stay. A profile is retired only when this scan has no
+    // compiler file for it, so a compile above cannot target the same key.
+    let mut after = None;
+    loop {
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|error| BuiltinModelError(format!("page semantic publications: {error}")))?;
+        for (key, _) in page.entries() {
+            if key.package() == &context.package_reference
+                && key.is_selected()
+                && !live.contains(&key.profile())
+            {
+                changes.push(BuiltinSemanticChange {
+                    key: key.clone(),
+                    after: None,
+                });
+            }
+        }
+        let Some(next) = page.next().cloned() else {
+            break;
+        };
+        after = Some(next);
     }
     Ok(changes)
 }
