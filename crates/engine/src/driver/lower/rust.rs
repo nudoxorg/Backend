@@ -3403,6 +3403,40 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             }
             if kind == ReferenceKind::VariableUse
                 && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(function)) =
+                    resolution
+                && self
+                    .ordinal_of_definition(&ra_ap_hir::ModuleDef::Function(*function))
+                    .is_none()
+                && let Some(package_path) = authority.cross_file_method_package_path(*function)
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(EntityKind::Function),
+                        ReferenceKind::VariableUse,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
+            if kind == ReferenceKind::VariableUse
+                && let Some(resolution) = &resolved
                 && let ra_ap_hir::PathResolution::Def(definition) = resolution
                 && self.ordinal_of_definition(definition).is_none()
                 && let Some(entity_kind) = value_package_entity_kind(*definition)

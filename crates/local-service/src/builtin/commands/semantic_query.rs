@@ -2660,6 +2660,17 @@ mod project_call_tests {
         }
     }
 
+    fn rust_function_value_read_foreign_fixture(foreign_key: u8) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"src/service",
+            path_specifier: None,
+            display: b"set_note",
+            foreign_key,
+            entity_kind: ItemKind::Function,
+            link_kind: LinkKind::Reads,
+        }
+    }
+
     fn rust_limit_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
@@ -2678,6 +2689,32 @@ mod project_call_tests {
             TreeEntityId::new(0),
             ItemKind::Function,
             Some(rust_value_read_foreign_fixture(foreign_key)),
+        )?;
+        Ok((
+            service_bytes,
+            caller_bytes,
+            fixture_version(1).identity(),
+            fixture_version(2).identity(),
+        ))
+    }
+
+    fn rust_set_note_value_drive_fixture(
+        foreign_key: u8,
+    ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
+        let service_bytes = project_call_image(
+            "src/service.rs",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_item_image(
+            "src/lib.rs",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(rust_function_value_read_foreign_fixture(foreign_key)),
         )?;
         Ok((
             service_bytes,
@@ -4883,6 +4920,279 @@ mod project_call_tests {
         .is_some()
         {
             return Err("Field kind must not join through join_project_value".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_rust_function_value_retargets_set_note() -> Result<(), String> {
+        let (service_bytes, caller_bytes, set_note_identity, _) =
+            rust_set_note_value_drive_fixture(103)?;
+        let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
+        let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(set_note_identity) {
+            return Err(format!(
+                "join_project_value should retarget to set_note, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_query_corpus_function_value_referenced_by_names_drive() -> Result<(), String> {
+        let package = package_key("fixture");
+        let (service_bytes, caller_bytes, set_note_identity, drive_identity) =
+            rust_set_note_value_drive_fixture(104)?;
+        let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, drive_identity]);
+        let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "join_project_value returned None".to_owned())?;
+        let set_note_id = query_semantic_id(package, joined);
+        let (set_note_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &service_bytes,
+            set_note_identity,
+            "set_note",
+            Box::new([]),
+        )?;
+        let (drive_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &caller_bytes,
+            drive_identity,
+            "drive",
+            vec![set_note_id.clone()].into_boxed_slice(),
+        )?;
+        let workspace = super::super::super::genesis().map_err(|error| error.to_string())?;
+        let corpus = SemanticQueryCorpus::admit(
+            workspace.root(),
+            vec![
+                SemanticQueryFact::new(
+                    SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+                    SemanticQueryPresentation {
+                        id: RowId::Package(package).stable_key(),
+                        kind: "project".to_owned(),
+                        coordinate: "fixture".to_owned(),
+                        name: "fixture".to_owned(),
+                        signature: None,
+                        documentation: String::new(),
+                        score: None,
+                        project: None,
+                        parent: None,
+                        related: Box::new([]),
+                    },
+                ),
+                set_note_fact,
+                drive_fact,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let (cancellation, _) = SemanticQueryCancellation::new();
+        let request = SemanticQueryRequest::admit_page(
+            corpus,
+            "{ Declaration { name @filter(op: \"=\", value: [\"$name\"]) referencedBy @optional { name @output } } }",
+            BTreeMap::from([("name".to_owned(), "set_note".into())]),
+            0,
+            8,
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
+        let events = futures_executor::block_on(
+            execute_semantic_query(request)
+                .map_err(|error| error.to_string())?
+                .collect::<Vec<_>>(),
+        );
+        let callers = events
+            .iter()
+            .filter_map(|event| match event {
+                SemanticQueryEvent::Row(row) => row.row().get("name").cloned(),
+                SemanticQueryEvent::Terminal(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if callers != ["drive".into()] {
+            return Err(format!(
+                "referencedBy on set_note should name only drive, got {callers:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_ambiguous_rust_function_paths_returns_none() -> Result<(), String> {
+        let service_bytes = project_call_image(
+            "src/service.rs",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let duplicate_service_bytes = project_call_image(
+            "src/service/mod.rs",
+            3,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_item_image(
+            "src/lib.rs",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(rust_function_value_read_foreign_fixture(105)),
+        )?;
+        let paths = project_paths(&["src/service.rs", "src/service/mod.rs", "src/lib.rs"]);
+        let images = [
+            &service_bytes[..],
+            &duplicate_service_bytes[..],
+            &caller_bytes[..],
+        ];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(1).identity(),
+            fixture_version(3).identity(),
+            fixture_version(2).identity(),
+        ]);
+        let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        if join_project_value(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("ambiguous src/service set_note matches must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_constant_stays_const_not_function_arm() -> Result<(), String> {
+        let (service_bytes, caller_bytes, limit_identity, _) = rust_limit_drive_fixture(106)?;
+        let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([limit_identity, fixture_version(2).identity()]);
+        let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(limit_identity) {
+            return Err(format!(
+                "join_project_value should retarget LIMIT as const, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_call_still_joins_function_call_not_value_arm() -> Result<(), String> {
+        let (service_bytes, caller_bytes, set_note_identity, _) =
+            rust_set_note_drive_fixture(107)?;
+        let paths = project_paths(&["src/service.rs", "src/lib.rs"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
+        let (external, link_kind, caller_path) = foreign_call_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_call(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(set_note_identity) {
+            return Err(format!(
+                "join_project_call should retarget to set_note, got {joined:?}"
+            ));
+        }
+        let (value_service_bytes, value_caller_bytes, value_set_note_identity, _) =
+            rust_set_note_value_drive_fixture(108)?;
+        let value_images = [&value_service_bytes[..], &value_caller_bytes[..]];
+        let value_index =
+            ProjectCallableIndex::build_from_bytes(&value_images).map_err(|error| error.to_string())?;
+        let (value_external, value_link_kind, value_caller_path) =
+            foreign_value_read_from_caller(&value_caller_bytes)?;
+        let value_caller_image =
+            SemanticImageView::reopen(&value_caller_bytes).map_err(|error| error.to_string())?;
+        if join_project_call(
+            &value_caller_image,
+            value_link_kind,
+            value_external,
+            &value_caller_path,
+            &paths,
+            &value_index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("function value read must not join through join_project_call".to_owned());
+        }
+        if join_project_value(
+            &value_caller_image,
+            value_link_kind,
+            value_external,
+            &value_caller_path,
+            &paths,
+            &value_index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        != Some(value_set_note_identity)
+        {
+            return Err("function value read must join through join_project_value".to_owned());
         }
         Ok(())
     }
