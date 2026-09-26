@@ -8,6 +8,7 @@
 //!                       [--contrast normal|high] [--reduced-motion] [--scale 1|2]
 //!                       [--input SCRIPT | --input-file FILE | --no-script]
 //!                       [--frame-ms MS] --out DIR
+//! facet-gallery sequence --scene ID --times 0,32,64 [--frame-ms 16] [...] --out DIR
 //! facet-gallery film --scene ID --times 0,40,80 [--onion] [--frames] [--columns N] [...] --out DIR
 //! facet-gallery sheet --scenes a,b,c --out FILE [--time MS] [--tile-width PX] [--columns N] [...]
 //! facet-gallery motion-report --scene ID [--input …] [--times 0,40,80] [--until MS] [--out FILE.json] [...]
@@ -16,10 +17,11 @@
 //! facet-gallery matrix --scene ID|all [--full] [--widths ..] [--text-scales ..] [--themes ..]
 //!                      [--densities ..] [--motion on,off] [--scale 1|2] [--tile-width PX] [--one-sheet] --out DIR
 //! facet-gallery perf --scene ID|all [--sizes 1440x900,2560x1440] [--input …]
+//! facet-gallery soak --scene ID --input-file FILE [--until MS] [shot options] --out FILE.json
 //! facet-gallery verify [--scenes all|a,b] [--seeds N] [--matrix gate|full|quick|none] [--quick]
 //!                      [--no-canaries] --out DIR
 //! facet-gallery lint --scene ID|all [--input …] [--time MS] [shot options]
-//! facet-gallery window --scene ID [--theme …] [--text-scale PCT] [--reduced-motion]
+//! facet-gallery window --scene ID [--theme …] [--text-scale PCT] [--reduced-motion] [--native-trace FILE.jsonl]
 //! ```
 //!
 //! Every capture prints the SHA-256 of its raw RGBA pixels, so determinism is
@@ -33,15 +35,15 @@
 //! plays nothing). Artifacts of a scripted capture carry `-in<8 hex>`, the
 //! script's digest.
 
-use super::{Frame, GalleryError, Scene, Shot, compose};
-use crate::gallery;
-use crate::{Contrast, Density};
-use backend_gui_harness::Script;
-use crate::motion::pulse;
-use super::{align, lint, matrix, perf, storm, verify};
 use super::json::Json;
+use super::{Frame, GalleryError, Scene, Shot, compose};
+use super::{align, lint, matrix, perf, storm, verify};
+use crate::gallery;
+use crate::motion::pulse;
 use crate::probe::Ledger;
 use crate::tokens::Appearance;
+use crate::{Contrast, Density};
+use backend_gui_harness::Script;
 use gpui::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -244,16 +246,16 @@ fn scene(id: &str) -> Result<Scene> {
         .chain(super::bench::CANARIES.iter().copied())
         .find(|scene| scene.id == id)
         .map_or_else(
-        || {
-            let known = all_scenes()
-                .iter()
-                .map(|scene| scene.id)
-                .collect::<Vec<_>>()
-                .join(", ");
-            fail(format!("no scene `{id}` (known: {known})"))
-        },
-        Ok,
-    )
+            || {
+                let known = all_scenes()
+                    .iter()
+                    .map(|scene| scene.id)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                fail(format!("no scene `{id}` (known: {known})"))
+            },
+            Ok,
+        )
 }
 
 fn run(args: &[String]) -> Result<()> {
@@ -273,12 +275,14 @@ fn run(args: &[String]) -> Result<()> {
         }
         "capture" => capture(&options),
         "film" => film(&options),
+        "sequence" => sequence(&options),
         "sheet" => sheet(&options),
         "motion-report" => motion_report(&options),
         "storm" => storm(&options),
         "lint" => lint(&options),
         "matrix" => matrix(&options),
         "perf" => perf(&options),
+        "soak" => soak(&options),
         "verify" => verify(&options),
         "window" => window(&options),
         other => fail(format!("unknown command `{other}`")),
@@ -290,6 +294,26 @@ fn theme_name(appearance: Appearance) -> &'static str {
         Appearance::Abyss => "abyss",
         Appearance::Glacier => "glacier",
     }
+}
+
+/// Stream a long native script, discarding each frame's observations.
+fn soak(options: &Options) -> Result<()> {
+    let scene = scene(options.require("scene")?)?;
+    let mut shot = options.shot(&scene)?;
+    if shot.frame_ms == 0 {
+        return fail("soak needs --frame-ms > 0 so events exercise frame lifetimes");
+    }
+    resolve_script(&scene, &mut shot)?;
+    let script_end = shot.script.as_ref().map_or(0, Script::end_ms);
+    shot.until_ms = options.number::<u64>("until")?.unwrap_or(script_end + 2_000);
+    let report = super::soak::measure(&scene, &shot)?;
+    let path = PathBuf::from(options.require("out")?);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(GalleryError::from_display)?;
+    }
+    std::fs::write(&path, format!("{report}\n")).map_err(GalleryError::from_display)?;
+    println!("{report}");
+    Ok(())
 }
 
 /// The first 8 hex digits of the script's canonical form (empty script: none).
@@ -350,9 +374,22 @@ fn digest(image: &image::RgbaImage) -> String {
 }
 
 fn save(image: &image::RgbaImage, path: &Path) -> Result<()> {
-    image
-        .save(path)
-        .map_err(|error| GalleryError(format!("{}: {error}", path.display())))?;
+    if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
+        // Large film sheets are evidence, so prefer quick lossless encoding to
+        // expensive filtering that can dwarf the actual native rendering.
+        use image::ImageEncoder as _;
+        let file = std::fs::File::create(path).map_err(GalleryError::from_display)?;
+        let mut writer = std::io::BufWriter::new(file);
+        image::codecs::png::PngEncoder::new_with_quality(
+            &mut writer,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::NoFilter,
+        ).write_image(image.as_raw(),image.width(),image.height(),image::ColorType::Rgba8.into())
+            .map_err(|error| GalleryError(format!("{}: {error}",path.display())))?;
+        std::io::Write::flush(&mut writer).map_err(GalleryError::from_display)?;
+    } else {
+        image.save(path).map_err(|error| GalleryError(format!("{}: {error}", path.display())))?;
+    }
     println!(
         "{}  {}x{}  rgba-sha256 {}",
         path.display(),
@@ -385,6 +422,45 @@ fn capture(options: &Options) -> Result<()> {
     Ok(())
 }
 
+/// Export genuine native frames without retaining the sequence's RGBA images.
+fn sequence(options: &Options) -> Result<()> {
+    let scene=scene(options.require("scene")?)?;
+    let mut shot=options.shot(&scene)?;
+    shot.times=options.times("times")?.ok_or_else(||GalleryError("sequence requires --times".to_owned()))?;
+    if shot.times.is_empty() || shot.frame_ms==0 { return fail("sequence needs capture times and a real simulated frame loop"); }
+    shot.probe=true;
+    shot.until_ms=options.number::<u64>("until")?.unwrap_or(0);
+    resolve_script(&scene,&mut shot)?;
+    let directory=out_dir(options)?;
+    let mut exported=0;
+    let script=gallery::run(&scene,&shot,&mut |tick,_,_| {
+        if let Some(image)=tick.image {
+            let path=directory.join(format!("{}-{}.png",scene.id,suffix(&shot,tick.drawn.at_ms)));
+            save(image,&path)?;
+            let state=Json::obj([
+                ("scene",Json::str(scene.id)),("time_ms",Json::num(tick.drawn.at_ms as f64)),
+                ("image",Json::str(path.to_string_lossy())),("rgba_sha256",Json::str(digest(image))),
+                ("state",tick.state.clone().unwrap_or(Json::Null)),
+                ("cpu_ms",Json::num(tick.drawn.cpu.as_secs_f64()*1000.0)),
+                ("input_cpu_ms",Json::num(tick.drawn.input_cpu.as_secs_f64()*1000.0)),
+                ("requested",Json::Bool(tick.drawn.requested())),
+            ]);
+            std::fs::write(path.with_extension("json"),format!("{state}\n")).map_err(GalleryError::from_display)?;
+            exported+=1;
+        }
+        Ok(())
+    })?;
+    if exported==0 { return fail("sequence captured no native frames"); }
+    let manifest=Json::obj([
+        ("scene",Json::str(scene.id)),("frames",Json::num(exported)),
+        ("frame_ms",Json::num(shot.frame_ms as f64)),("input",Json::str(script.to_string())),
+        ("capture_times",Json::Arr(shot.times.iter().map(|&at|Json::num(at as f64)).collect())),
+        ("notes",Json::str("Each image is a genuine GPUI draw. Images are written and released per frame. No interpolation; CPU times are diagnostic and include probes, excluding PNG export.")),
+    ]);
+    std::fs::write(directory.join("SEQUENCE.json"),format!("{manifest}\n")).map_err(GalleryError::from_display)?;
+    Ok(())
+}
+
 fn film(options: &Options) -> Result<()> {
     let dir = out_dir(options)?;
     let scene = scene(options.require("scene")?)?;
@@ -394,6 +470,14 @@ fn film(options: &Options) -> Result<()> {
         .times("times")?
         .unwrap_or_else(|| (0..=15).map(|i| i * 40).collect());
     let frames = gallery::capture(&scene, &shot)?;
+    if options.flag("frames") {
+        for frame in &frames {
+            save(
+                &frame.image,
+                &dir.join(format!("{}-{}.png", scene.id, suffix(&shot, frame.time_ms))),
+            )?;
+        }
+    }
     let images = frames.iter().map(|frame| &frame.image).collect::<Vec<_>>();
     let script = shot.script.clone().unwrap_or_default();
     let lines = frames
@@ -438,14 +522,6 @@ fn film(options: &Options) -> Result<()> {
             &compose::onion(&images),
             &dir.join(format!("{stem}-onion.png")),
         )?;
-    }
-    if options.flag("frames") {
-        for frame in &frames {
-            save(
-                &frame.image,
-                &dir.join(format!("{}-{}.png", scene.id, suffix(&shot, frame.time_ms))),
-            )?;
-        }
     }
     Ok(())
 }
@@ -497,15 +573,49 @@ fn sheet(options: &Options) -> Result<()> {
     )
 }
 
-
-
-
 fn frame_json(frame: &Frame) -> Json {
     let ledger: &Ledger = &frame.ledger;
+    let bounds = |b: &crate::probe::BoundsSample| Json::obj([
+        ("x",Json::num(b.x)),("y",Json::num(b.y)),("width",Json::num(b.width)),("height",Json::num(b.height)),
+    ]);
     Json::obj([
         ("time_ms", Json::num(frame.time_ms as f64)),
-        ("frames_requested", Json::num(ledger.frames_requested as f64)),
+        (
+            "frames_requested",
+            Json::num(ledger.frames_requested as f64),
+        ),
         ("live", Json::Bool(ledger.any_live())),
+        ("state", frame.state.clone().unwrap_or(Json::Null)),
+        ("scrolls",Json::Arr(ledger.scrolls.iter().map(|scroll|Json::obj([
+            ("key",Json::str(scroll.key.clone())),("viewport",bounds(&scroll.viewport)),("content",bounds(&scroll.content)),
+        ])).collect())),
+        ("stacks", Json::Arr(ledger.stacks.iter().map(|stack| Json::obj([
+            ("layer", Json::str(stack.layer.clone())),
+            ("entries", Json::Arr(stack.entries.iter().map(|entry| Json::obj([
+                ("key", Json::str(entry.key.clone())), ("kind", Json::str(entry.kind.clone())),
+                ("phase", Json::str(entry.phase.name())), ("parent", entry.parent.clone().map_or(Json::Null, Json::str)),
+                ("pinned", Json::Bool(entry.pinned)),
+            ])).collect())),
+        ])).collect())),
+        (
+            "texts",
+            Json::Arr(
+                ledger
+                    .texts
+                    .iter()
+                    .map(|text| {
+                        Json::obj([
+                            ("key", Json::str(text.key.clone())),
+                            ("content", Json::str(text.content.clone())),
+                            ("x", Json::num(f64::from(text.bounds.x))),
+                            ("y", Json::num(f64::from(text.bounds.y))),
+                            ("width", Json::num(f64::from(text.bounds.width))),
+                            ("height", Json::num(f64::from(text.bounds.height))),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
         (
             "tracks",
             Json::Arr(
@@ -523,7 +633,14 @@ fn frame_json(frame: &Frame) -> Json {
                             ("budget_ms", Json::num(track.budget_ms)),
                             ("at_ms", Json::num(track.at_ms)),
                             ("live", Json::Bool(track.live)),
-                            ("overshoot_ratio", Json::num(f64::from(track.overshoot_ratio))),
+                            (
+                                "overshoot_ratio",
+                                Json::num(f64::from(track.overshoot_ratio)),
+                            ),
+                            (
+                                "overshoot_absolute",
+                                Json::num(f64::from(track.overshoot_absolute)),
+                            ),
                             ("group", track.group.clone().map_or(Json::Null, Json::Str)),
                         ])
                     })
@@ -607,6 +724,45 @@ fn motion_report(options: &Options) -> Result<()> {
             ("shot", Json::str(suffix(&shot, 0))),
             ("script", Json::str(script.to_string())),
             ("alignment", align::json(scene.id, &alignment)),
+            (
+                "input_events",
+                Json::Arr(
+                    script
+                        .events
+                        .iter()
+                        .map(|event| {
+                            Json::obj([
+                                ("at_ms", Json::num(event.at_ms as f64)),
+                                ("act", Json::str(event.act.to_string())),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            // Preserve every draw, including cold and quiet frames. Consumers
+            // can audit event/requested subsets without diluting their tails.
+            (
+                "frames",
+                Json::Arr(
+                    observed
+                        .iter()
+                        .map(|frame| {
+                            Json::obj([
+                                ("at_ms", Json::num(frame.drawn.at_ms as f64)),
+                                ("cpu_ms", Json::num(frame.drawn.cpu.as_secs_f64() * 1000.0)),
+                                ("requested", Json::Bool(frame.drawn.requested())),
+                                ("invalidations", Json::num(frame.drawn.invalidations as f64)),
+                                ("callbacks", Json::num(frame.drawn.callbacks as f64)),
+                                ("events", Json::num(frame.events as f64)),
+                                ("state", frame.state.clone().unwrap_or(Json::Null)),
+                                ("input_cpu_ms",Json::num(frame.drawn.input_cpu.as_secs_f64()*1000.0)),
+                                ("input_events",Json::num(frame.drawn.input_events as f64)),
+                                ("input_max_ms",Json::num(frame.drawn.input_max.as_secs_f64()*1000.0)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
             (
                 "captures",
                 Json::Arr(frames.iter().map(frame_json).collect()),
@@ -704,14 +860,22 @@ fn matrix(options: &Options) -> Result<()> {
         let total = results.len();
         let failing = results
             .iter()
-            .filter(|result| !result.linted.lints.is_empty() || result.equals_reduced == Some(false))
+            .filter(|result| {
+                !result.linted.lints.is_empty() || result.equals_reduced == Some(false)
+            })
             .collect::<Vec<_>>();
         let compared = results
             .iter()
             .filter(|result| result.cell.motion && result.equals_reduced.is_some())
             .count();
-        let texts: usize = results.iter().map(|result| result.linted.coverage.texts).sum();
-        let targets: usize = results.iter().map(|result| result.linted.coverage.targets).sum();
+        let texts: usize = results
+            .iter()
+            .map(|result| result.linted.coverage.texts)
+            .sum();
+        let targets: usize = results
+            .iter()
+            .map(|result| result.linted.coverage.targets)
+            .sum();
         let covered = texts + targets > 0 || compared > 0;
         if !covered {
             uncovered += 1;
@@ -742,7 +906,11 @@ fn matrix(options: &Options) -> Result<()> {
             if result.equals_reduced == Some(false) {
                 reasons.push("settled frame differs from a reduced-motion boot".to_owned());
             }
-            println!("    {:<34} {}", result.cell.label(), reasons.first().cloned().unwrap_or_default());
+            println!(
+                "    {:<34} {}",
+                result.cell.label(),
+                reasons.first().cloned().unwrap_or_default()
+            );
             for reason in reasons.iter().skip(1).take(2) {
                 println!("    {:<34} {reason}", "");
             }
@@ -764,7 +932,9 @@ fn matrix(options: &Options) -> Result<()> {
     if failed_cells > 0 {
         fail(format!("{failed_cells} matrix cell(s) failed"))
     } else if uncovered > 0 {
-        fail(format!("{uncovered} scene(s) not covered: sheets written, nothing checked"))
+        fail(format!(
+            "{uncovered} scene(s) not covered: sheets written, nothing checked"
+        ))
     } else {
         Ok(())
     }
@@ -822,7 +992,11 @@ fn verify(options: &Options) -> Result<()> {
             ..matrix::Axes::gate()
         }),
         "none" => None,
-        other => return fail(format!("--matrix `{other}`: expected gate, full, quick or none")),
+        other => {
+            return fail(format!(
+                "--matrix `{other}`: expected gate, full, quick or none"
+            ));
+        }
     };
     let sheets = dir.join("sheets");
     let repros = dir.join("repros");
@@ -840,12 +1014,16 @@ fn verify(options: &Options) -> Result<()> {
             report
                 .stages
                 .iter()
-                .map(|stage| format!("{} {}", stage.name, match stage.outcome {
-                    verify::Outcome::Pass => "ok",
-                    verify::Outcome::Fail => "FAIL",
-                    verify::Outcome::NotRun => "-",
-                    verify::Outcome::NotCovered => "n/c",
-                }))
+                .map(|stage| format!(
+                    "{} {}",
+                    stage.name,
+                    match stage.outcome {
+                        verify::Outcome::Pass => "ok",
+                        verify::Outcome::Fail => "FAIL",
+                        verify::Outcome::NotRun => "-",
+                        verify::Outcome::NotCovered => "n/c",
+                    }
+                ))
                 .collect::<Vec<_>>()
                 .join("  "),
             started.elapsed().as_secs_f64()
@@ -923,7 +1101,9 @@ fn lint(options: &Options) -> Result<()> {
             linted
                 .lowest_contrast
                 .as_ref()
-                .map_or_else(String::new, |(key, ratio)| format!(", lowest {ratio:.2}:1 ({key})"))
+                .map_or_else(String::new, |(key, ratio)| format!(
+                    ", lowest {ratio:.2}:1 ({key})"
+                ))
         );
         for item in &linted.lints {
             println!("    {:<9} {}: {}", item.rule.name(), item.key, item.detail);
@@ -1082,17 +1262,30 @@ fn storm(options: &Options) -> Result<()> {
 }
 
 fn window(options: &Options) -> Result<()> {
+    let trace_path=options.get("native-trace").map(PathBuf::from);
     let scene = scene(options.require("scene")?)?;
     let shot = options.shot(&scene)?;
     let facet = shot.facet();
     let (width, height) = shot.size;
     #[allow(clippy::cast_precision_loss)]
     let window_size = size(px(width as f32), px(height as f32));
-    gpui::Application::with_platform(gpui_platform::current_platform(false)).run(move |cx| {
+    let failure=std::rc::Rc::new(std::cell::RefCell::new(None));
+    let boot_failure=std::rc::Rc::clone(&failure);
+    gpui::Application::with_platform(gpui_platform::current_platform(false))
+        .with_assets(crate::icons::Assets)
+        .run(move |cx| {
         if let Err(error) = gallery::bootstrap(facet, false, cx) {
             eprintln!("facet-gallery: {error}");
+            *boot_failure.borrow_mut()=Some(error);
             cx.quit();
             return;
+        }
+        if let Some(path)=&trace_path {
+            if let Err(error)=super::native_trace::start(path,cx) {
+                eprintln!("facet-gallery: native trace: {error}");
+                *boot_failure.borrow_mut()=Some(GalleryError::from_display(error));
+                cx.quit();return;
+            }
         }
         pulse::thaw(cx);
         let bounds = Bounds::centered(None, window_size, cx);
@@ -1108,11 +1301,32 @@ fn window(options: &Options) -> Result<()> {
             gallery::mount(&scene, window, cx)
         }) {
             eprintln!("facet-gallery: open window: {error}");
+            *boot_failure.borrow_mut()=Some(GalleryError::from_display(error));
             cx.quit();
             return;
         }
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
+    if let Some(error)=failure.borrow_mut().take() { return Err(error); }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod png_export {
+    #[test]
+    fn exported_native_evidence_preserves_every_rgba_channel() {
+        let image = image::RgbaImage::from_fn(67,53,|x,y| image::Rgba([
+            ((x*29+y*7)%256) as u8, ((x*3+y*41)%256) as u8,
+            ((x*19+y*13)%256) as u8, ((x*17+y*23)%256) as u8,
+        ]));
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let path = std::env::temp_dir().join(format!("facet-evidence-{}-{nonce}.png",std::process::id()));
+        super::save(&image,&path).unwrap_or_else(|error| panic!("{error}"));
+        let decoded = image::open(&path).unwrap_or_else(|error| panic!("{error}")).to_rgba8();
+        std::fs::remove_file(&path).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(decoded,image,"PNG evidence changed colors or transparency");
+        assert_eq!(super::digest(&decoded),super::digest(&image));
+    }
 }

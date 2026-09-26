@@ -161,8 +161,14 @@ fn determinism(scene: &Scene, script: &Script) -> Stage {
         .collect::<Result<Vec<_>, _>>();
     match runs {
         Ok(runs) => {
-            let a = runs[0].iter().map(|frame| digest(&frame.image)).collect::<Vec<_>>();
-            let b = runs[1].iter().map(|frame| digest(&frame.image)).collect::<Vec<_>>();
+            let a = runs[0]
+                .iter()
+                .map(|frame| digest(&frame.image))
+                .collect::<Vec<_>>();
+            let b = runs[1]
+                .iter()
+                .map(|frame| digest(&frame.image))
+                .collect::<Vec<_>>();
             for (index, (x, y)) in a.iter().zip(&b).enumerate() {
                 if x != y {
                     stage.fail(
@@ -228,7 +234,11 @@ fn motion(scene: &Scene, script: &Script) -> Stage {
                 );
             }
             for finding in alignment.findings.iter().skip(12) {
-                if !stage.failed_checks.iter().any(|c| c == finding.check.name()) {
+                if !stage
+                    .failed_checks
+                    .iter()
+                    .any(|c| c == finding.check.name())
+                {
                     stage.failed_checks.push(finding.check.name().to_owned());
                 }
             }
@@ -314,8 +324,7 @@ fn lints(scene: &Scene) -> Stage {
                         format!("{} {}: {}", item.rule.name(), item.key, item.detail),
                     );
                 }
-                if false
-                    && linted.coverage.texts == 0
+                if linted.coverage.texts == 0
                     && linted.coverage.targets == 0
                     && stage.outcome == Outcome::Pass
                 {
@@ -364,7 +373,13 @@ fn matrix_stage(scene: &Scene, axes: Option<&Axes>, out: &Path) -> Stage {
                 for item in &result.linted.lints {
                     stage.fail(
                         item.rule.name(),
-                        format!("{}: {} {}: {}", result.cell.label(), item.rule.name(), item.key, item.detail),
+                        format!(
+                            "{}: {} {}: {}",
+                            result.cell.label(),
+                            item.rule.name(),
+                            item.key,
+                            item.detail
+                        ),
                     );
                 }
                 if result.equals_reduced == Some(false) && !result.ambient {
@@ -418,12 +433,7 @@ fn perf_stage(scene: &Scene) -> Stage {
 
 /// Runs every stage for one scene.
 #[must_use]
-pub fn scene_report(
-    scene: &Scene,
-    seeds: u64,
-    axes: Option<&Axes>,
-    out: &Path,
-) -> SceneReport {
+pub fn scene_report(scene: &Scene, seeds: u64, axes: Option<&Axes>, out: &Path) -> SceneReport {
     let mut stages = Vec::new();
     match drive(scene) {
         Ok(script) => {
@@ -501,7 +511,11 @@ pub fn canaries(out: &Path) -> Vec<CanaryReport> {
 
 /// The verdict of a whole run.
 #[must_use]
-pub fn verdict(scenes: &[SceneReport], canaries: &[CanaryReport], ran_canaries: bool) -> &'static str {
+pub fn verdict(
+    scenes: &[SceneReport],
+    canaries: &[CanaryReport],
+    ran_canaries: bool,
+) -> &'static str {
     let failed = scenes
         .iter()
         .flat_map(|scene| &scene.stages)
@@ -556,7 +570,12 @@ pub fn table(scenes: &[SceneReport], canaries: &[CanaryReport], ran_canaries: bo
         let missed = canaries
             .iter()
             .filter(|canary| !canary.caught)
-            .map(|canary| format!("{} ({}/{})", canary.scene, canary.expected.0, canary.expected.1))
+            .map(|canary| {
+                format!(
+                    "{} ({}/{})",
+                    canary.scene, canary.expected.0, canary.expected.1
+                )
+            })
             .collect::<Vec<_>>();
         let _ = writeln!(
             out,
@@ -576,7 +595,11 @@ pub fn table(scenes: &[SceneReport], canaries: &[CanaryReport], ran_canaries: bo
         out,
         "verdict: {} ({} build)",
         verdict(scenes, canaries, ran_canaries),
-        if cfg!(debug_assertions) { "debug" } else { "release" }
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
     );
     out
 }
@@ -605,7 +628,10 @@ pub fn text(scenes: &[SceneReport], canaries: &[CanaryReport], ran_canaries: boo
         }
     }
     if ran_canaries {
-        let _ = writeln!(out, "\ncanaries (each must be caught by the named stage/check)");
+        let _ = writeln!(
+            out,
+            "\ncanaries (each must be caught by the named stage/check)"
+        );
         for canary in canaries {
             let _ = writeln!(
                 out,
@@ -624,10 +650,17 @@ pub fn text(scenes: &[SceneReport], canaries: &[CanaryReport], ran_canaries: boo
 #[must_use]
 pub fn json(scenes: &[SceneReport], canaries: &[CanaryReport], ran_canaries: bool) -> Json {
     Json::obj([
-        ("verdict", Json::str(verdict(scenes, canaries, ran_canaries))),
+        (
+            "verdict",
+            Json::str(verdict(scenes, canaries, ran_canaries)),
+        ),
         (
             "build",
-            Json::str(if cfg!(debug_assertions) { "debug" } else { "release" }),
+            Json::str(if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }),
         ),
         (
             "scenes",

@@ -17,11 +17,13 @@
 pub mod align;
 pub mod bench;
 pub mod cli;
+pub(crate) mod native_trace;
 pub mod compose;
 pub mod json;
 pub mod lint;
 pub mod matrix;
 pub mod perf;
+pub mod soak;
 pub mod storm;
 pub mod verify;
 
@@ -68,6 +70,8 @@ pub fn all() -> Vec<Scene> {
         crate::overlay::gallery_overlays::SCENES,
         crate::controls::gallery::SCENES,
         crate::chrome::gallery::SCENES,
+        crate::graph::gallery::SCENES,
+        crate::anatomy::gallery::SCENES,
         bench::SCENES,
     ];
     groups
@@ -181,6 +185,8 @@ pub struct Frame {
     pub ledger: probe::Ledger,
     /// What the frame carried (invalidations, draw time, viewport).
     pub drawn: Drawn,
+    /// Exact declared scene state at this capture (probe-enabled runs only).
+    pub state: Option<json::Json>,
 }
 
 /// One drawn frame of a [`run`], captured or not.
@@ -199,10 +205,22 @@ pub struct Tick<'a> {
     pub pressed: bool,
     /// The scene's description of this frame's work, if it declared one.
     pub note: Option<String>,
+    /// Exact declared scene state at this draw (probe-enabled runs only).
+    pub state: Option<json::Json>,
 }
 
 /// How a scene applies script acts that have no platform event (settings,
 /// `route`), see [`declare_adapter`].
+/// Samples actual scene state after a probed draw. Never invoked by perf.
+pub type StateSampler = fn(&mut App, &probe::Ledger) -> json::Json;
+#[derive(Default)]
+struct DeclaredState(Option<StateSampler>);
+impl Global for DeclaredState {}
+/// Declares a report-only scene state sampler from the build function.
+pub fn declare_state(sample: StateSampler, cx: &mut App) {
+    cx.set_global(DeclaredState(Some(sample)));
+}
+
 pub type Adapter = fn(&Act, &mut Window, &mut App);
 
 #[derive(Default)]
@@ -279,6 +297,7 @@ pub fn declared_script(cx: &App) -> Result<Script, GalleryError> {
 /// # Errors
 /// A font that fails verification or registration.
 pub fn bootstrap(facet: Facet, record: bool, cx: &mut App) -> Result<(), GalleryError> {
+    verify_assets(cx.asset_source(), &cx.svg_renderer())?;
     gpui_component::init(cx);
     fonts::install(cx).map_err(GalleryError::from_display)?;
     set_facet(facet, cx);
@@ -398,6 +417,25 @@ pub fn run(
     shot: &Shot,
     observe: &mut dyn FnMut(&Tick<'_>, &mut Window, &mut App) -> Result<(), GalleryError>,
 ) -> Result<Script, GalleryError> {
+    run_with_timing_history(scene, shot, true, observe)
+}
+
+/// A memory-only run consumes GPUI trace samples without retaining their
+/// global ring. Observations still carry actual invalidations and CPU time.
+pub(crate) fn run_without_timing_history(
+    scene: &Scene,
+    shot: &Shot,
+    observe: &mut dyn FnMut(&Tick<'_>, &mut Window, &mut App) -> Result<(), GalleryError>,
+) -> Result<Script, GalleryError> {
+    run_with_timing_history(scene, shot, false, observe)
+}
+
+fn run_with_timing_history(
+    scene: &Scene,
+    shot: &Shot,
+    retain_frame_timings: bool,
+    observe: &mut dyn FnMut(&Tick<'_>, &mut Window, &mut App) -> Result<(), GalleryError>,
+) -> Result<Script, GalleryError> {
     fonts::verify().map_err(GalleryError::from_display)?;
     let viewport =
         Viewport::new(shot.size.0, shot.size.1, shot.scale).map_err(GalleryError::from_display)?;
@@ -423,6 +461,7 @@ pub fn run(
         },
     )
     .map_err(GalleryError::from_display)?;
+    session.set_frame_timing_retention(retain_frame_timings);
     if let Some(error) = failure.borrow_mut().take() {
         return Err(error);
     }
@@ -451,7 +490,10 @@ pub fn run(
     let timeline = Timeline::new(&shot.times, shot.until_ms);
     let observer_error = RefCell::new(None);
     let adapter = session
-        .update(|_, cx| cx.try_global::<DeclaredAdapter>().and_then(|declared| declared.0))
+        .update(|_, cx| {
+            cx.try_global::<DeclaredAdapter>()
+                .and_then(|declared| declared.0)
+        })
         .map_err(GalleryError::from_display)?
         .unwrap_or(adapt);
     let played = play(
@@ -465,6 +507,13 @@ pub fn run(
                 .try_global::<DeclaredAnnotator>()
                 .and_then(|declared| declared.0)
                 .map(|annotate| annotate(cx));
+            let state = if record {
+                cx.try_global::<DeclaredState>()
+                    .and_then(|declared| declared.0)
+                    .map(|sample| sample(cx, &ledger))
+            } else {
+                None
+            };
             let tick = Tick {
                 drawn: frame.drawn,
                 image: frame.image,
@@ -473,6 +522,7 @@ pub fn run(
                 pointer: frame.pointer,
                 pressed: frame.pressed.is_some(),
                 note,
+                state,
             };
             observe(&tick, window, cx).map_err(|error| {
                 let message = error.0.clone();
@@ -504,6 +554,7 @@ pub fn observe(
             drawn: tick.drawn,
             ledger: tick.ledger.clone(),
             events: tick.events.len(),
+            state: tick.state.clone(),
         });
         if let Some(image) = tick.image {
             frames.push(Frame {
@@ -511,6 +562,7 @@ pub fn observe(
                 image: image.clone(),
                 ledger: tick.ledger.clone(),
                 drawn: tick.drawn,
+                state: tick.state.clone(),
             });
         }
         Ok(())
@@ -532,9 +584,46 @@ pub fn capture(scene: &Scene, shot: &Shot) -> Result<Vec<Frame>, GalleryError> {
                 image: image.clone(),
                 ledger: tick.ledger.clone(),
                 drawn: tick.drawn,
+                state: tick.state.clone(),
             });
         }
         Ok(())
     })?;
     Ok(frames)
+}
+
+
+// Validate the application's actual source, so a native launch cannot silently
+// omit icons while the headless renderer remains correct.
+fn verify_assets(source: &std::sync::Arc<dyn gpui::AssetSource>, renderer: &gpui::SvgRenderer) -> Result<(), GalleryError> {
+    for path in [crate::icons::Icon::Search.path(), crate::icons::Kind::Struct.path(), "brand/logo.svg"] {
+        let bytes = source.load(path).map_err(GalleryError::from_display)?
+            .ok_or_else(|| GalleryError::from_display(format!("gallery asset source missing {path}")))?;
+        let image = renderer.render_single_frame(&bytes,1.0).map_err(GalleryError::from_display)?;
+        if !image.as_bytes(0).is_some_and(|pixels| pixels.chunks_exact(4).any(|pixel| pixel[3] != 0)) {
+            return Err(GalleryError::from_display(format!("gallery asset {path} rendered no visible pixels")));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod bootstrap_assets {
+    use super::verify_assets;
+    use std::sync::Arc;
+
+    #[test]
+    fn real_gallery_assets_render_search_kind_and_brand() {
+        let source: Arc<dyn gpui::AssetSource> = Arc::new(crate::icons::Assets);
+        let renderer = gpui::SvgRenderer::new(Arc::clone(&source));
+        verify_assets(&source,&renderer).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn omitted_application_assets_are_rejected_before_native_window_opens() {
+        let source: Arc<dyn gpui::AssetSource> = Arc::new(());
+        let renderer = gpui::SvgRenderer::new(Arc::clone(&source));
+        let error = verify_assets(&source,&renderer).expect_err("empty native asset source must not appear visually healthy");
+        assert!(error.to_string().contains("icons/ui/search.svg"));
+    }
 }

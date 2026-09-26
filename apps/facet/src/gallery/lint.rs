@@ -132,7 +132,9 @@ pub fn ink_contrast(
             *counts.entry([r, g, b]).or_default() += 1;
         }
     }
-    let (ground, _) = counts.iter().max_by_key(|(colour, count)| (**count, **colour))?;
+    let (ground, _) = counts
+        .iter()
+        .max_by_key(|(colour, count)| (**count, **colour))?;
     let ground = *ground;
     let (ink, ratio) = counts
         .keys()
@@ -238,12 +240,14 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
     for target in &ledger.targets {
         out.coverage.targets += 1;
         let b = &target.bounds;
-        if target.state.focusable && !b.within(width + 0.5, height + 0.5) {
+        let reachable_by_scroll = ledger.scrolls.iter().any(|scroll| scroll.reaches(b));
+        if target.state.focusable && !b.within(width + 0.5, height + 0.5) && !reachable_by_scroll {
             out.lints.push(Lint {
                 rule: Rule::Offscreen,
                 key: target.key.clone(),
                 detail: format!(
-                    "focusable at ({:.1}, {:.1}) {:.1}x{:.1} is not inside the {width:.0}x{height:.0} viewport",
+                    "focusable at ({:.1}, {:.1}) {:.1}x{:.1} is not inside the {width:.0}x{height:.0} \
+                     viewport, and no scroll container's content reaches it",
                     b.x, b.y, b.width, b.height
                 ),
             });
@@ -312,8 +316,117 @@ pub fn json(linted: &Linted) -> Json {
 
 #[cfg(test)]
 mod tests {
-    use super::ink_contrast;
+    use super::{ink_contrast, lint};
+    use crate::probe::{BoundsSample, Ledger, ScrollSample, Target, TargetSample};
+    use backend_gui_harness::Viewport;
     use image::{Rgba, RgbaImage};
+
+    fn blank(width: u32, height: u32) -> RgbaImage {
+        RgbaImage::from_pixel(width, height, Rgba([10, 14, 24, 255]))
+    }
+
+    fn viewport() -> Viewport {
+        Viewport {
+            width: 400,
+            height: 300,
+            scale: 1,
+        }
+    }
+
+    fn bounds(x: f32, y: f32, width: f32, height: f32) -> BoundsSample {
+        BoundsSample {
+            key: "b".to_owned(),
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn focusable_at(key: &str, bounds_sample: BoundsSample) -> TargetSample {
+        TargetSample {
+            key: key.to_owned(),
+            bounds: bounds_sample,
+            state: Target {
+                focusable: true,
+                ..Target::default()
+            },
+        }
+    }
+
+    /// A row 40 px below a 300 px viewport is offscreen when nothing
+    /// declares a scroll container over it: the coordinator's "fixed row
+    /// pushed below the window" canary. Guards against a regression that
+    /// exempts everything (dropping the scroll check entirely would make
+    /// this canary wrongly pass — see the mutation-proof command in
+    /// CHECKPOINT-3).
+    #[test]
+    fn a_focusable_below_the_viewport_with_no_scroll_container_is_offscreen() {
+        let ledger = Ledger {
+            targets: vec![focusable_at("row", bounds(10.0, 340.0, 100.0, 24.0))],
+            ..Ledger::default()
+        };
+        let linted = lint(&blank(400, 300), &ledger, viewport());
+        assert!(
+            linted
+                .lints
+                .iter()
+                .any(|item| item.rule.name() == "offscreen"),
+            "a fixed row below the window with no scroll container must still lint offscreen: {:?}",
+            linted.lints
+        );
+    }
+
+    /// The same row, but now a scroll container whose content extends down
+    /// to cover it (viewport 400x300, content 400x500) declares it reachable:
+    /// the coordinator's "long scrolling list" canary must pass.
+    #[test]
+    fn a_focusable_below_the_viewport_inside_a_scroll_containers_content_is_not_offscreen() {
+        let ledger = Ledger {
+            targets: vec![focusable_at("row", bounds(10.0, 340.0, 100.0, 24.0))],
+            scrolls: vec![ScrollSample {
+                key: "list".to_owned(),
+                viewport: bounds(0.0, 0.0, 400.0, 300.0),
+                content: bounds(0.0, 0.0, 400.0, 500.0),
+            }],
+            ..Ledger::default()
+        };
+        let linted = lint(&blank(400, 300), &ledger, viewport());
+        assert!(
+            !linted
+                .lints
+                .iter()
+                .any(|item| item.rule.name() == "offscreen"),
+            "a row inside a scroll container's content extent is reachable, not offscreen: {:?}",
+            linted.lints
+        );
+    }
+
+    /// A scroll container whose content does not actually exceed its
+    /// viewport on either axis scrolls nothing, so it cannot make an
+    /// otherwise-offscreen row reachable — the seam only exempts real
+    /// overflow, not any nearby `ScrollSample`.
+    #[test]
+    fn a_scroll_sample_that_does_not_actually_overflow_exempts_nothing() {
+        let ledger = Ledger {
+            targets: vec![focusable_at("row", bounds(10.0, 340.0, 100.0, 24.0))],
+            scrolls: vec![ScrollSample {
+                key: "list".to_owned(),
+                viewport: bounds(0.0, 0.0, 400.0, 300.0),
+                content: bounds(0.0, 0.0, 400.0, 300.0),
+            }],
+            ..Ledger::default()
+        };
+        let linted = lint(&blank(400, 300), &ledger, viewport());
+        assert!(
+            linted
+                .lints
+                .iter()
+                .any(|item| item.rule.name() == "offscreen"),
+            "a container whose content matches its viewport does not scroll: {:?}",
+            linted.lints
+        );
+    }
 
     #[test]
     fn contrast_comes_from_the_painted_ink_not_the_declared_colour() {

@@ -57,6 +57,51 @@ fn repeated_captures_are_byte_identical() {
     assert!(!same(&first[1].image, &first[2].image));
 }
 
+/// Same scene, same times, played twice, well past the "several hundred ms"
+/// virtual span where the coordinator's report (`wave2/float/CHECKPOINT-2.md`
+/// `float-edges`) found a run-to-run divergence in a float scene before it
+/// was worked around by splitting the scene. `flow-graph` is named in that
+/// report as a candidate; this pins both its rasterised frames (all captures
+/// use the same fixed 2x test-platform scale, so a hash difference cannot be
+/// a scale artefact) and, at the deepest time, motion's own probe clock
+/// (`facet::motion::epoch`) read back through a real view — if a wall clock
+/// ever leaked into the virtual frame loop, the epoch would drift between
+/// the two runs even on ticks where the rasterised pixels still happened to
+/// match.
+///
+/// Reverting `facet::motion::now` from `cx.background_executor().now()`
+/// (the `TestClock`, driven only by the harness's own virtual advances) to
+/// `std::time::Instant::now()` (real wall time) fails this test:
+///
+/// ```text
+/// thread '...' panicked at apps/facet/tests/gallery.rs:...:
+/// t=1830 differs between runs
+/// ```
+#[test]
+fn repeated_captures_stay_byte_identical_past_a_long_virtual_span() {
+    let _platform = platform();
+    let times = [0, 220, 640, 1140, 1830];
+    let first = capture("flow-graph", &times, |_| {});
+    let second = capture("flow-graph", &times, |_| {});
+    assert_eq!(first.len(), times.len());
+    for (a, b) in first.iter().zip(&second) {
+        assert_eq!(a.time_ms, b.time_ms);
+        assert!(
+            same(&a.image, &b.image),
+            "t={} differs between runs",
+            a.time_ms
+        );
+    }
+    // The scene really is still moving somewhere in this span (otherwise a
+    // frozen scene would trivially "pass" this test with no clock driving
+    // it at all).
+    assert!(
+        !same(&first[0].image, &first[4].image),
+        "flow-graph render did not change between t=0 and t=1830; this test would not \
+         catch a frozen virtual clock"
+    );
+}
+
 #[test]
 fn a_settled_scene_equals_a_fresh_reduced_motion_boot() {
     let _platform = platform();
