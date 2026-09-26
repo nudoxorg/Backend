@@ -5,6 +5,12 @@
 
 use super::super::StoreError;
 use super::io_error;
+#[cfg(test)]
+use super::FileStore;
+#[cfg(test)]
+use std::fs;
+#[cfg(test)]
+use sweep::GcPaths;
 
 pub(super) const GC_DIR: &str = "gc";
 pub(super) const GC_STATE: &str = "state";
