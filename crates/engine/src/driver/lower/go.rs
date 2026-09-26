@@ -1377,6 +1377,28 @@ impl<'x, 'source> Projector<'x, 'source> {
         Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
     }
 
+    /// Resolves one package-level constant spelling to a local fact.
+    /// Constants whose declaration positively lives in a sibling file
+    /// (version-6 `name_span` without the digest-bound flag) stay unresolved
+    /// here so the occurrence keeps the package import-path key the join
+    /// layer matches.
+    fn local_const_target(
+        &self,
+        package: &[u8],
+        name: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let ordinal = self.lookup(package, name)?;
+        let cross_file = self
+            .names
+            .iter()
+            .find(|key| key.ordinal == ordinal)
+            .is_some_and(|key| key.cross_file);
+        if cross_file {
+            return None;
+        }
+        Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
+    }
+
     /// True when a version-6 declaration positively lives in a sibling file
     /// of the digest-bound compile source. Version-5 rows carry no `name_span`
     /// and must not be treated as cross-file.
@@ -1963,7 +1985,16 @@ impl<'x, 'source> Projector<'x, 'source> {
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
         if !is_unbound_name(declaration.name) {
-            self.record_name(declaration.package, declaration.name, ordinal);
+            if kind == EntityKind::Constant {
+                self.record_name_with_cross_file(
+                    declaration.package,
+                    declaration.name,
+                    ordinal,
+                    Self::cross_file_type(declaration),
+                );
+            } else {
+                self.record_name(declaration.package, declaration.name, ordinal);
+            }
         }
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
@@ -2155,6 +2186,8 @@ impl<'x, 'source> Projector<'x, 'source> {
             } else if row.target_package.is_empty() {
                 let local = if row.target_class == ReferenceTargetClass::Type {
                     self.local_type_target(owner_package, row.target)
+                } else if row.target_class == ReferenceTargetClass::Const {
+                    self.local_const_target(owner_package, row.target)
                 } else {
                     self.lookup(owner_package, row.target)
                         .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
