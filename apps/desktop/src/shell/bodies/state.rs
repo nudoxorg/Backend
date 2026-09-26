@@ -14,7 +14,7 @@ use crate::shell::reader::Reader;
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{Set as _, Space};
-use gpui::{Context, IntoElement, ParentElement, SharedString, Styled, div, px};
+use gpui::{Context, ParentElement, SharedString, Styled, div, px};
 
 /// What a resource can show right now.
 pub(crate) enum Shown<'a, T> {

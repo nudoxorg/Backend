@@ -31,8 +31,9 @@ pub(super) fn body(
     hover: &mut HoverIntent,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
-    let Some(symbol) = crate::runtime::store::route_symbol(place) else {
-        return vec![Leaf::new(quiet("This page's address is not a declaration.", &ctx.measure, ctx.palette))];
+    let symbol = match crate::runtime::store::route_declaration(place) {
+        Ok(symbol) => symbol,
+        Err(unread) => return ctx.unread(&unread),
     };
     let resource = store.symbol(&symbol);
     let name = symbol.identity().name().to_owned();
@@ -41,7 +42,7 @@ pub(super) fn body(
         other => return not_ready(&other, &PageKey::Symbol(symbol), &name, ctx, cx),
     };
     let package = route.package.as_str().to_owned();
-    let mut leaves = vec![hero(&page, ctx, cx), lens_bar(&page, ctx, cx)];
+    let mut leaves = vec![hero(&page, ctx, cx), lens_bar(ctx, cx)];
     match ctx.lens {
         Lens::Reference => {
             if let Some(code) = declaration(&page, ctx, cx) {
@@ -100,7 +101,11 @@ fn hero(page: &SymbolPage, ctx: &mut Ctx<'_>, cx: &gpui::App) -> Leaf {
     let gem = div()
         .id(shared_id(&page.identity.coordinate))
         .debug_selector(move || key)
-        .child(facet::paint::gem(kind).size(gem_size));
+        .child(if ctx.active {
+            facet::motion::shared::shared(shared_id(&page.identity.coordinate),
+                facet::paint::gem(kind).size(gem_size))
+                .timing(std::time::Duration::from_millis(460), facet::tokens::motion::GLIDE).into_any_element()
+        } else { facet::paint::gem(kind).size(gem_size).into_any_element() });
     let top = if stacked {
         div().flex().flex_col().gap(measure.space(Space::Roomy)).child(gem).child(words)
     } else {
@@ -115,26 +120,37 @@ fn hero(page: &SymbolPage, ctx: &mut Ctx<'_>, cx: &gpui::App) -> Leaf {
     if let (Some(path), Some(line)) = (&page.identity.path, page.identity.line) {
         facts.push(format!("{path}:{line}"));
     }
-    let uses = page.references.known().map(|sites| sites.len());
+    // Uses speak only when there are some (said once, never "0 uses").
+    let uses = page.references.known().map(|sites| sites.len()).filter(|uses| *uses > 0);
     let mut line = div()
         .flex()
         .flex_wrap()
         .items_center()
         .gap(measure.space(Space::Base))
         .set_text(ty::SMALL, &measure, palette.ink3);
+    // A separator travels with the fact after it, so a wrapped line never
+    // ends on a dot.
     for (index, fact) in facts.into_iter().enumerate() {
-        if index > 0 {
-            line = line.child(dot(palette));
-        }
         let fact = ctx.say(fact);
-        line = line.child(fact);
+        line = line.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(measure.space(Space::Base))
+                .whitespace_nowrap()
+                .children((index > 0).then(|| dot(palette)))
+                .child(fact),
+        );
     }
     if let Some(uses) = uses {
         let said = ctx.say(format!("{uses} uses"));
-        line = line.child(dot(palette)).child(
+        line = line.child(
             div()
                 .flex()
+                .items_center()
                 .gap(px(4.0))
+                .whitespace_nowrap()
+                .child(dot(palette))
                 .child(div().text_color(palette.mint.base.hsla()).child(uses.to_string()))
                 .child(said.replace(&format!("{uses} "), "")),
         );
@@ -172,11 +188,12 @@ impl<E: Styled> SetText for E {
     }
 }
 
-fn lens_bar(page: &SymbolPage, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
+fn lens_bar(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let mut bar = div()
         .flex()
+        .flex_wrap()
         .items_end()
         .gap(measure.space(Space::Wide))
         .border_b_1()
@@ -509,6 +526,7 @@ fn relation_link(relation: &Relation, package: &str, ctx: &mut Ctx<'_>, _cx: &mu
                 .id(id)
                 .flex()
                 .items_center()
+                .min_h(px(24.0 * measure.scale()))
                 .gap(px(5.0 * measure.scale()))
                 .child(crate::shell::kit::kind_mark(kind_of(relation.decl.kind), KindSize::Sm, &measure, palette))
                 .child(text(ty::MONO_ROW, &measure, palette.ink1).hover(|style| style.text_color(palette.ink0.hsla())).child(name))

@@ -10,7 +10,7 @@ use crate::navigation::{Intent, Route};
 use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{HoverIntent, gap_words, kind_of, quiet, symbol_route, text};
 use crate::shell::reader::Reader;
-use facet::icons::{self, Kind, KindSize};
+use facet::icons::{Kind, KindSize};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
@@ -146,7 +146,7 @@ fn node_row(node: &OutlineNode, package: &PackageRef, ctx: &mut Ctx<'_>, cx: &mu
         .hover(|style| style.bg(palette.tint))
         .child(crate::shell::kit::kind_mark(kind_of(node.decl.kind), KindSize::Sm, &measure, palette))
         .child(text(ty::MONO_ROW, &measure, palette.ink1).child(name))
-        .children((count > 0).then(|| text(ty::SMALL, &measure, palette.ink4).child(count.to_string())))
+        .children((count > 0).then(|| text(ty::SMALL, &measure, palette.ink3).child(count.to_string())))
         .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
         .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx)));
     ctx.targets.track(id, row).into_any_element()
@@ -174,7 +174,7 @@ fn dependencies(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Option<Leaf> {
                 .child(text(ty::MONO_ROW, &measure, palette.ink1).child(name))
                 .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(dependency.requirement.to_string()))
                 .children((dependency.scope != crate::model::pages::DependencyScope::Runtime).then(|| {
-                    text(ty::SMALL, &measure, palette.ink4).child(dependency.scope.name())
+                    text(ty::SMALL, &measure, palette.ink3).child(dependency.scope.name())
                 })),
         );
     }

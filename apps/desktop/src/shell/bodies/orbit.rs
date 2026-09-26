@@ -10,7 +10,7 @@ use crate::navigation::{Intent, Route};
 use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{HoverIntent, package_route, pending, quiet, text};
 use crate::shell::reader::Reader;
-use facet::icons::{self, Kind, KindSize};
+use facet::icons::{Kind, KindSize};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{

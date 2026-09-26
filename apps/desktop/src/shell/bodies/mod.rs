@@ -8,7 +8,7 @@
 //! The reader sets notes beside their block when its room is wide and folds
 //! each under its block otherwise.
 
-mod graph;
+pub(crate) mod graph;
 mod inbox;
 mod orbit;
 mod package;
@@ -17,7 +17,6 @@ mod source;
 mod state;
 mod symbol;
 
-pub(crate) use state::{Shown, shown};
 
 use super::focus::Targets;
 use super::kit::HoverIntent;
@@ -58,6 +57,8 @@ impl Leaf {
 
 /// Everything a body builds with.
 pub(crate) struct Ctx<'a> {
+    /// Only the current page publishes shared motion endpoints.
+    pub active: bool,
     /// The folio's measure.
     pub measure: Measure,
     /// The margin's measure (the folio's when notes fold under).
@@ -80,6 +81,19 @@ pub(crate) struct Ctx<'a> {
 
 impl Ctx<'_> {
     /// Records a string the body puts on screen.
+    /// The one line a page says when its route reads no declaration.
+    pub(crate) fn unread(&mut self, unread: &crate::runtime::store::Unread) -> Vec<Leaf> {
+        let words = match unread {
+            crate::runtime::store::Unread::NotADeclaration => "This page's address is not a declaration.".to_owned(),
+            crate::runtime::store::Unread::ReleaseNotHere(at) => format!(
+                "Release {} is not in this index; only your working copy is. Esc returns to it.",
+                at.as_str()
+            ),
+        };
+        let words = self.say(words);
+        vec![Leaf::new(super::kit::quiet(words, &self.measure, self.palette))]
+    }
+
     pub(crate) fn say(&mut self, text: impl Into<SharedString>) -> SharedString {
         let text = text.into();
         self.said.push(text.clone());

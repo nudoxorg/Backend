@@ -11,8 +11,8 @@ use crate::shell::reader::Reader;
 use facet::tokens::ty;
 use facet::Space;
 use gpui::{
-    ClickEvent, Context, HighlightStyle, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, StyledText, div,
+    ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, div,
 };
 
 /// Lines shown before and after the declaration.
@@ -26,8 +26,9 @@ pub(super) fn body(
     ctx: &mut Ctx<'_>,
     cx: &mut Context<Reader>,
 ) -> Vec<Leaf> {
-    let Some(symbol) = crate::runtime::store::route_symbol(place) else {
-        return vec![Leaf::new(quiet("This page's address is not a declaration.", &ctx.measure, ctx.palette))];
+    let symbol = match crate::runtime::store::route_declaration(place) {
+        Ok(symbol) => symbol,
+        Err(unread) => return ctx.unread(&unread),
     };
     let resource = store.source(&symbol);
     let view = match shown(&resource) {
@@ -127,7 +128,7 @@ fn code(
                 .flex()
                 .gap(gap)
                 .child(
-                    text(ty::CODE, &measure, if lit { palette.mint.base } else { palette.ink4 })
+                    text(ty::CODE, &measure, if lit { palette.mint.base } else { palette.ink3 })
                         .flex_none()
                         .w(number_width)
                         .flex()

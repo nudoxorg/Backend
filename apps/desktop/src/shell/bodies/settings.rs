@@ -9,17 +9,11 @@ use crate::model::{
 };
 use facet::controls::Swatch;
 use crate::navigation::{Intent, SettingsPage};
-use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{quiet, text};
 use crate::shell::reader::Reader;
-use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
-use gpui::{
-    AnyElement, ClickEvent, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, px,
-};
-use std::rc::Rc;
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div};
 
 pub(super) fn body(
     page: SettingsPage,
