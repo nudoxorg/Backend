@@ -32,12 +32,6 @@ const LOCAL_LIB: &str = r#"pub const LIMIT: u8 = 1;
 pub fn local() { let _n = LIMIT; }
 "#;
 
-const PATH_VALUE_LIB: &str = r#"mod service;
-pub fn drive() {
-    let _f = service::set_note;
-}
-"#;
-
 const VARIANT_SERVICE: &str = r#"pub enum Color { Red }
 "#;
 
@@ -365,8 +359,22 @@ fn same_file_const_read_stays_local() -> Result<(), String> {
     Ok(())
 }
 
+const PATH_VALUE_SERVICE: &str = r#"pub fn set_note() {}
+"#;
+
+const PATH_VALUE_CALL_LIB: &str = r#"mod service;
+pub fn drive() {
+    let _f = service::set_note;
+    service::set_note();
+}
+"#;
+
+const PATH_VALUE_LOCAL_LIB: &str = r#"pub fn set_note() {}
+pub fn local() { let _f = set_note; }
+"#;
+
 #[test]
-fn function_value_use_does_not_retarget_to_package_constant() -> Result<(), String> {
+fn cross_file_function_value_read_retargets_to_defining_module_path() -> Result<(), String> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
@@ -382,29 +390,138 @@ fn function_value_use_does_not_retarget_to_package_constant() -> Result<(), Stri
         "[package]\nname=\"function_value_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
     )
     .map_err(|error| error.to_string())?;
-    fs::write(root.join("src/service.rs"), "pub fn set_note() {}\n")
-        .map_err(|error| error.to_string())?;
-    fs::write(root.join("src/lib.rs"), PATH_VALUE_LIB).map_err(|error| error.to_string())?;
-    let bytes = compile_source(&root, "src/lib.rs", PATH_VALUE_LIB)?;
+    fs::write(root.join("src/service.rs"), PATH_VALUE_SERVICE).map_err(|error| error.to_string())?;
+    fs::write(root.join("src/lib.rs"), PATH_VALUE_CALL_LIB).map_err(|error| error.to_string())?;
+    let bytes = compile_source(&root, "src/lib.rs", PATH_VALUE_CALL_LIB)?;
     let _ = fs::remove_dir_all(&root);
     let lane = lane(&bytes)?;
-    if package_value_reads(&lane)
+
+    let value_reads = package_value_reads(&lane)
         .into_iter()
-        .any(|occurrence| {
+        .filter(|occurrence| {
             let OccurrenceTarget::Foreign(key) = occurrence.target else {
                 return false;
             };
             let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
                 return false;
             };
-            lineage.name == "src/service"
+            lineage.ecosystem == "cargo"
+                && lineage.name == "src/service"
+                && key.path == "set_note"
+                && key.display == "set_note"
+                && key.kind == Some(EntityKind::Function)
+        })
+        .collect::<Vec<_>>();
+    if value_reads.len() != 1 {
+        return Err(format!(
+            "expected exactly one retargeted set_note function value read, got {}",
+            value_reads.len()
+        ));
+    }
+
+    let calls = lane
+        .occurrences
+        .iter()
+        .map(|row| &row.occurrence)
+        .filter(|occurrence| {
+            occurrence.confidence == OccurrenceConfidence::Oracle
+                && occurrence.kind == ReferenceKind::FunctionCall
                 && matches!(
-                    key.kind,
-                    Some(EntityKind::Constant) | Some(EntityKind::Static) | Some(EntityKind::Variant)
+                    occurrence.target,
+                    OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+                        origin: backend_semantic::ir::ForeignOrigin::Package(_),
+                        ..
+                    })
                 )
         })
-    {
-        return Err("function value use must not retarget to a package constant key".to_owned());
+        .filter(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.ecosystem == "cargo"
+                && lineage.name == "src/service"
+                && key.path == "set_note"
+                && key.display == "set_note"
+                && key.kind == Some(EntityKind::Function)
+        })
+        .collect::<Vec<_>>();
+    if calls.len() != 1 {
+        return Err(format!(
+            "expected exactly one retargeted set_note function call, got {}",
+            calls.len()
+        ));
+    }
+
+    let mention = value_reads[0];
+    if mention.kind != ReferenceKind::VariableUse {
+        return Err("retargeted occurrence must be a variable use".to_owned());
+    }
+    let OccurrenceTarget::Foreign(key) = mention.target else {
+        return Err("retargeted function value read must be foreign".to_owned());
+    };
+    if key.path.contains("::") || key.display.contains("::") {
+        return Err("package key must use the name token set_note, not service::set_note".to_owned());
+    }
+    Ok(())
+}
+
+#[test]
+fn same_file_function_value_read_stays_local() -> Result<(), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-same-file-function-value-{nonce}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"same_file_function_value_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/lib.rs"), PATH_VALUE_LOCAL_LIB).map_err(|error| error.to_string())?;
+    let bytes = compile_source(&root, "src/lib.rs", PATH_VALUE_LOCAL_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+
+    let package_set_note_keys = lane
+        .occurrences
+        .iter()
+        .filter(|row| {
+            let OccurrenceTarget::Foreign(key) = row.occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(_) = key.origin else {
+                return false;
+            };
+            key.path == "set_note" || key.display == "set_note"
+        })
+        .count();
+    if package_set_note_keys != 0 {
+        return Err(format!(
+            "expected zero package set_note keys for same-file function value, got {package_set_note_keys}"
+        ));
+    }
+
+    let local_reads = lane
+        .occurrences
+        .iter()
+        .filter(|row| {
+            row.occurrence.confidence == OccurrenceConfidence::Oracle
+                && row.occurrence.kind == ReferenceKind::VariableUse
+                && matches!(row.occurrence.target, OccurrenceTarget::Local(_))
+        })
+        .count();
+    if local_reads != 1 {
+        return Err(format!(
+            "expected exactly one oracle local function value read, got {local_reads}"
+        ));
     }
     Ok(())
 }

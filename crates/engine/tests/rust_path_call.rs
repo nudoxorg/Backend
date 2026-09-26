@@ -217,17 +217,39 @@ fn cross_file_path_call_retargets_to_defining_module_path() -> Result<(), String
         return Err("vanish call must stay syntactic".to_owned());
     }
 
-    let value_use = lane
+    let value_reads = lane
         .occurrences
         .iter()
         .map(|row| &row.occurrence)
-        .find(|occurrence| occurrence.kind == ReferenceKind::VariableUse)
-        .ok_or("value use absent")?;
-    let OccurrenceTarget::Foreign(key) = value_use.target else {
-        return Err("value use must stay foreign".to_owned());
-    };
-    if matches!(key.origin, backend_semantic::ir::ForeignOrigin::Package(_)) {
-        return Err("value use must not retarget to src/service".to_owned());
+        .filter(|occurrence| {
+            occurrence.confidence == OccurrenceConfidence::Oracle
+                && occurrence.kind == ReferenceKind::VariableUse
+                && matches!(
+                    occurrence.target,
+                    OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+                        origin: backend_semantic::ir::ForeignOrigin::Package(_),
+                        ..
+                    })
+                )
+        })
+        .filter(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.ecosystem == "cargo"
+                && lineage.name == "src/service"
+                && key.path == "set_note"
+                && key.display == "set_note"
+        })
+        .collect::<Vec<_>>();
+    if value_reads.len() != 1 {
+        return Err(format!(
+            "expected exactly one retargeted function value read, got {}",
+            value_reads.len()
+        ));
     }
 
     let std_drop = function_calls(&lane)
