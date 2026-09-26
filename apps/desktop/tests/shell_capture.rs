@@ -224,7 +224,7 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
             asset_source: std::sync::Arc::new(facet::icons::Assets),
             ..GpuiCaptureOptions::default()
         },
-        move |frame: &AnimationFrame, _window: &mut Window, cx: &mut App| -> Result<(), CaptureError> {
+        move |frame: &AnimationFrame, window: &mut Window, cx: &mut App| -> Result<(), CaptureError> {
             let slot = hook_slot.borrow();
             let (graph, shell) = slot.as_ref().expect("built");
             let index = frames_index(&frame.label);
@@ -243,7 +243,7 @@ fn capture(shot: &Shot, endpoint: &Path, snapshot_key: VersionedRoot, out: &Path
                 (Script::HoldOption, 1) => shell.update(cx, |shell, cx| {
                     shell.modifiers(Modifiers { alt: true, ..Modifiers::default() }, cx);
                 }),
-                (Script::Walk, index) if index > 0 => shell.update(cx, |shell, cx| shell.walk(1, cx)),
+                (Script::Walk, index) if index > 0 => shell.update(cx, |shell, cx| shell.walk(1, window, cx)),
                 _ => {}
             }
             land(&graph.store, cx);
