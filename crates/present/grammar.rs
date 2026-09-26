@@ -92,7 +92,15 @@ impl ArgumentKind {
         match self {
             Self::SubjectKind => &["package", "declaration", "explore", "search", "owner"],
             Self::LanguageProfile => &[
-                "rust", "typescript", "tsx", "python", "go", "java", "csharp", "c", "cpp",
+                "rust",
+                "typescript",
+                "tsx",
+                "python",
+                "go",
+                "java",
+                "csharp",
+                "c",
+                "cpp",
             ],
             _ => &[],
         }
@@ -270,7 +278,7 @@ impl CommandGrammar {
             | CommandId::Search
             | CommandId::Graph
             | CommandId::GraphQuery
-            |             CommandId::Source
+            | CommandId::Source
             | CommandId::Related
             | CommandId::References
             | CommandId::Read
@@ -349,7 +357,10 @@ pub fn grammar_for(name: &str) -> Option<CommandGrammar> {
 /// Finds the grammar one MCP tool name reaches.
 #[must_use]
 pub fn grammar_for_tool(tool: &str) -> Option<CommandGrammar> {
-    GRAMMARS.iter().copied().find(|grammar| grammar.tool() == tool)
+    GRAMMARS
+        .iter()
+        .copied()
+        .find(|grammar| grammar.tool() == tool)
 }
 
 /// Returns every grammar whose registry row serves one domain.
@@ -410,10 +421,26 @@ pub const GRAMMARS: [CommandGrammar; 40] = [
             "A pinned purl or an exact local package label.",
         )],
         options: &[
-            ArgumentSpec::optional("override-actor", ArgumentKind::Text, "Auditable actor identity for an exceptional allow."),
-            ArgumentSpec::optional("override-reason", ArgumentKind::Text, "Why the blocked release is being reviewed."),
-            ArgumentSpec::optional("override-policy-version", ArgumentKind::Text, "Positive policy version that granted the override."),
-            ArgumentSpec::optional("override-expires-at", ArgumentKind::Text, "Optional Unix timestamp at which the override expires."),
+            ArgumentSpec::optional(
+                "override-actor",
+                ArgumentKind::Text,
+                "Auditable actor identity for an exceptional allow.",
+            ),
+            ArgumentSpec::optional(
+                "override-reason",
+                ArgumentKind::Text,
+                "Why the blocked release is being reviewed.",
+            ),
+            ArgumentSpec::optional(
+                "override-policy-version",
+                ArgumentKind::Text,
+                "Positive policy version that granted the override.",
+            ),
+            ArgumentSpec::optional(
+                "override-expires-at",
+                ArgumentKind::Text,
+                "Optional Unix timestamp at which the override expires.",
+            ),
         ],
         when: "Use before adding a package to inspect source IDs, aliases, affected and fixed ranges, freshness, coverage, and the typed acquisition decision.",
     },
@@ -432,10 +459,10 @@ pub const GRAMMARS: [CommandGrammar; 40] = [
         positional: &[ArgumentSpec::optional(
             "path",
             ArgumentKind::ProjectPath,
-            "Project directory; defaults to the active project.",
+            "Absolute project directory to add to the shelf.",
         )],
         options: &[],
-        when: "Use when packages does not list the project you need, or when its source changed since the last revision.",
+        when: "Pass the absolute project directory. This adds that package to the shelf. Call it when packages does not list the project, or when its source changed.",
     },
     CommandGrammar {
         name: "remove",

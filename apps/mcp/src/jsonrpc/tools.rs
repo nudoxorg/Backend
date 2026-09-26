@@ -1,26 +1,18 @@
-//! The tool table, generated from the shared command registry.
+//! The tool table an MCP client should see.
 //!
-//! There is no hand-written tool list here and no hand-written `inputSchema`.
-//! [`backend_present::GRAMMARS`] already says what every one of the thirty-five
-//! registry rows takes and when to reach for it; this module projects that into
-//! MCP's vocabulary. The previous generation kept thirteen tools written out by
-//! hand, so twenty-two product commands were reachable only through a JSON
-//! escape hatch an agent had to be told about — and the thirteen drifted from
-//! the registry the moment anyone touched it. A generated table cannot drift:
-//! the crate's tests iterate `COMMANDS` and demand a tool for every row.
-//!
-//! Tools are emitted grouped by [`backend_library::CommandDomain`], in the same
-//! order the CLI's `--help` prints them, and each carries its domain in `_meta`
-//! so a client can group them the same way. Two tools are not registry rows and
-//! say so: `backend.query`, the typed Trustfall lane, and `backend.surface`,
-//! the escape hatch that still takes a tagged `SurfaceCommand` verbatim.
+//! The command registry stays complete for the CLI. This list is the session
+//! an agent needs to add a project and read it: shelf, index, search, and the
+//! coordinate tools. Schemas still come from [`backend_present::GRAMMARS`], so
+//! the advertised operands cannot drift from the registry row. Registry rows
+//! that are not in this list stay callable by name for existing probes; they
+//! are not advertised, and neither are the Trustfall or surface escape hatches.
 
 use super::codec::empty_cursor;
 use super::{RpcError, default_detail};
 use backend_library::CommandDomain;
 use backend_present::{
     ArgumentKind, ArgumentSpec, CommandGrammar, DEFAULT_LIMIT, DEFAULT_RESPONSE_BUDGET_BYTES,
-    Detail, GRAMMARS, domain_name, domains, encode_serializable, grammars_in, oversized_fault,
+    Detail, domain_name, encode_serializable, grammar_for_tool, oversized_fault,
 };
 use serde_json::{Map, Value, json};
 
@@ -30,7 +22,25 @@ pub(super) const SURFACE_TOOL: &str = "backend.surface";
 /// The typed Trustfall lane, which is a capability rather than a registry row.
 pub(super) const QUERY_TOOL: &str = "backend.query";
 
-/// Lists every registry row as one tool, grouped by domain.
+/// Tools advertised to an MCP client, in the order the instructions use them.
+const SESSION_TOOLS: &[&str] = &[
+    "backend.packages",
+    "backend.index",
+    "backend.remove",
+    "backend.status",
+    "backend.outline",
+    "backend.search",
+    "backend.resolve",
+    "backend.document",
+    "backend.source",
+    "backend.read",
+    "backend.references",
+    "backend.graph",
+];
+
+/// Lists the session tools. `backend.index` requires `path` here even though
+/// the CLI grammar treats it as optional, so a client cannot accidentally
+/// index the process working directory.
 pub(super) fn list_tools(params: &Value) -> Result<Value, RpcError> {
     empty_cursor(params)?;
     bounded_tools()
@@ -51,14 +61,16 @@ fn bounded_tools() -> Result<Value, RpcError> {
 }
 
 fn tools_value() -> Value {
-    let mut tools = Vec::with_capacity(GRAMMARS.len().saturating_add(2));
-    for domain in domains() {
-        for grammar in grammars_in(domain) {
-            tools.push(registry_tool(grammar, domain));
-        }
+    let mut tools = Vec::with_capacity(SESSION_TOOLS.len());
+    for name in SESSION_TOOLS {
+        let grammar = grammar_for_tool(name)
+            .unwrap_or_else(|| panic!("session tool {name} is not a registry row"));
+        let domain = grammar
+            .spec()
+            .map(|spec| spec.domain)
+            .unwrap_or(CommandDomain::Library);
+        tools.push(registry_tool(grammar, domain));
     }
-    tools.push(query_tool());
-    tools.push(surface_tool());
     json!({ "tools": tools })
 }
 
@@ -75,7 +87,7 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     let mut required = Vec::new();
     for spec in grammar.positional() {
         properties.insert(spec.name().to_owned(), property(*spec));
-        if spec.is_required() {
+        if spec.is_required() || (grammar.tool() == "backend.index" && spec.name() == "path") {
             required.push(Value::String(spec.name().to_owned()));
         }
     }
@@ -184,82 +196,5 @@ fn answer_schema() -> Value {
         },
         "required": ["answer"],
         "additionalProperties": true
-    })
-}
-
-fn query_tool() -> Value {
-    json!({
-        "name": QUERY_TOOL,
-        "title": "Query the code graph",
-        "description": "Run a typed Trustfall query over the indexed semantic graph. \
-    After backend.index, `related` walks outward and `referencedBy` walks back, both inside one package. \
-    A question such as where error handling lives starts as a filter on `name` or `documentation`. \
-    Read `backend://schema/query` first for the edges and worked queries.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "Trustfall query text." },
-                "variables": {
-                    "type": "object",
-                    "description": "Scalar or list query variables.",
-                    "additionalProperties": true
-                },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 25 },
-                "cursor": { "type": "string", "description": "Opaque continuation returned by the preceding page." },
-                "detail": detail_property(QUERY_TOOL)
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        },
-        "outputSchema": { "type": "object", "additionalProperties": true },
-        "annotations": {
-            "title": "Query the code graph",
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-        },
-        "_meta": { "backend/domain": "library" }
-    })
-}
-
-fn surface_tool() -> Value {
-    let operations = backend_library::COMMANDS
-        .iter()
-        .filter_map(|spec| spec.is_surface().then_some(spec.name))
-        .collect::<Vec<_>>();
-    json!({
-        "name": SURFACE_TOOL,
-        "title": "Product surface",
-        "description": "Execute any daemon-owned typed product operation as a tagged \
-    SurfaceCommand object. Every operation here also has its own named tool, which validates operands \
-    and renders a readable answer; reach for this only when a client must pass a command through \
-    verbatim.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "object",
-                    "description": "A tagged SurfaceCommand object with an operation field and its typed operands.",
-                    "properties": {
-                        "operation": { "type": "string", "enum": operations }
-                    },
-                    "required": ["operation"],
-                    "additionalProperties": true
-                },
-                "detail": detail_property(SURFACE_TOOL)
-            },
-            "required": ["command"],
-            "additionalProperties": false
-        },
-        "outputSchema": { "type": "object", "additionalProperties": true },
-        "annotations": {
-            "title": "Product surface",
-            "readOnlyHint": false,
-            "destructiveHint": true,
-            "idempotentHint": false,
-            "openWorldHint": false
-        },
-        "_meta": { "backend/domain": "system" }
     })
 }
