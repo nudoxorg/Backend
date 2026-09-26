@@ -43,6 +43,7 @@ pub(crate) struct RevealHold {
 
 impl RevealHold {
     /// The reveal currently shown.
+    #[cfg(test)]
     pub(crate) const fn reveal(&self) -> Reveal {
         self.reveal
     }

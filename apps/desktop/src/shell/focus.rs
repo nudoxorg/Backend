@@ -17,7 +17,7 @@ use gpui::{
     AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
     LayoutId, Pixels, SharedString, Style, Window, point, px, size,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -61,14 +61,29 @@ pub(crate) struct Target {
 /// A region's targets, rebuilt every render, and its focused one.
 #[derive(Clone, Default)]
 pub(crate) struct Targets {
+    /// The region's name: its bevel's tracks are `{name}.glow-x` and so on,
+    /// one continuous track per region.
+    name: &'static str,
     list: Rc<RefCell<Vec<Target>>>,
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     focused: Option<SharedString>,
     /// The zone is the active one: the glow shows only there.
     active: bool,
+    /// Where the bevel was last heading, kept while it comes to rest unseen.
+    heading: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The bevel's own motion store: its liveness is the bevel's alone.
+    motion: Motion,
 }
 
 impl Targets {
+    /// The targets of the region called `name`.
+    pub(crate) fn named(name: &'static str) -> Self {
+        Self {
+            name,
+            ..Self::default()
+        }
+    }
+
     /// Starts a render: forgets last frame's list (bounds are kept until the
     /// same ids record again, so a reused prepaint keeps them valid).
     pub(crate) fn begin(&self) {
@@ -80,10 +95,14 @@ impl Targets {
         self.list.borrow_mut().push(target);
     }
 
-    /// Wraps `child` so its bounds are recorded under `id` at prepaint.
+    /// Wraps `child` so its bounds are recorded under `id` at prepaint (and
+    /// published to the probe ledger as a clickable, focusable target).
     pub(crate) fn track(&self, id: impl Into<SharedString>, child: impl IntoElement) -> Tracked {
+        let id = id.into();
+        let focused = self.is_focused(&id);
         Tracked {
-            id: id.into(),
+            id,
+            focused,
             bounds: Rc::clone(&self.bounds),
             child: child.into_any_element(),
         }
@@ -106,10 +125,6 @@ impl Targets {
         changed
     }
 
-    /// Whether this zone is the active one.
-    pub(crate) const fn is_active(&self) -> bool {
-        self.active
-    }
 
     /// Forgets the focused target (a new page starts unfocused).
     pub(crate) fn clear_focus(&mut self) {
@@ -170,11 +185,13 @@ impl Targets {
 
     /// The travelling focus bevel for this region: add it as the region's
     /// last child.
-    pub(crate) fn glow(&self, motion: &Motion, measure: &Measure) -> FocusGlow {
+    pub(crate) fn glow(&self, measure: &Measure) -> FocusGlow {
         FocusGlow {
+            keys: ["x", "y", "w", "h"].map(|axis| ElementId::Name(format!("{}.glow-{axis}", self.name).into())),
             bounds: Rc::clone(&self.bounds),
             focused: self.focused.clone().filter(|_| self.active),
-            motion: motion.clone(),
+            heading: Rc::clone(&self.heading),
+            motion: self.motion.clone(),
             chamfer: f32::from(measure.space(facet::Space::Base)).max(4.0),
         }
     }
@@ -183,6 +200,7 @@ impl Targets {
 /// See [`Targets::track`].
 pub(crate) struct Tracked {
     id: SharedString,
+    focused: bool,
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     child: AnyElement,
 }
@@ -227,6 +245,18 @@ impl Element for Tracked {
         cx: &mut App,
     ) {
         self.bounds.borrow_mut().insert(self.id.clone(), bounds);
+        facet::probe::record_target(
+            cx,
+            &ElementId::Name(self.id.clone()),
+            bounds,
+            facet::probe::Target {
+                hovered: false,
+                pressed: false,
+                focused: self.focused,
+                focusable: true,
+                clickable: true,
+            },
+        );
         self.child.prepaint(window, cx);
     }
 
@@ -247,9 +277,15 @@ impl Element for Tracked {
 /// The focus bevel. It fills its parent absolutely, reads the focused
 /// target's bounds recorded earlier in the same prepaint, springs its rect
 /// towards them, and paints one doubled periwinkle bevel with no fill.
+///
+/// When its zone loses focus (Esc, Tab away) it stops painting at once but
+/// keeps moving, unseen, to where it was heading until it rests: a track is
+/// never left mid-flight, and focus returning springs on from there.
 pub(crate) struct FocusGlow {
+    keys: [ElementId; 4],
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     focused: Option<SharedString>,
+    heading: Rc<Cell<Option<Bounds<Pixels>>>>,
     motion: Motion,
     chamfer: f32,
 }
@@ -299,16 +335,32 @@ impl Element for FocusGlow {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Bounds<Pixels>> {
-        let target = self
+        let shown = self
             .focused
             .as_ref()
             .and_then(|id| self.bounds.borrow().get(id).copied());
-        let target = target?;
-        let x = self.motion.animate("glow-x", f32::from(target.origin.x), spec::FOLLOW, window, cx);
-        let y = self.motion.animate("glow-y", f32::from(target.origin.y), spec::FOLLOW, window, cx);
-        let w = self.motion.animate("glow-w", f32::from(target.size.width), spec::FOLLOW, window, cx);
-        let h = self.motion.animate("glow-h", f32::from(target.size.height), spec::FOLLOW, window, cx);
-        Some(Bounds::new(point(px(x), px(y)), size(px(w.max(0.0)), px(h.max(0.0)))))
+        let target = match shown {
+            Some(target) => {
+                self.heading.set(Some(target));
+                target
+            }
+            None => self.heading.get()?,
+        };
+        let [kx, ky, kw, kh] = self.keys.clone();
+        let x = self.motion.animate(kx, f32::from(target.origin.x), spec::FOLLOW, window, cx);
+        let y = self.motion.animate(ky, f32::from(target.origin.y), spec::FOLLOW, window, cx);
+        let w = self.motion.animate(kw, f32::from(target.size.width), spec::FOLLOW, window, cx);
+        let h = self.motion.animate(kh, f32::from(target.size.height), spec::FOLLOW, window, cx);
+        let rect = Bounds::new(point(px(x), px(y)), size(px(w.max(0.0)), px(h.max(0.0))));
+        if shown.is_none() {
+            // Unseen: once the spring itself is at rest (not merely drawn at
+            // its target) there is nothing left to sample until focus returns.
+            if !self.motion.is_live(cx) {
+                self.heading.set(None);
+            }
+            return None;
+        }
+        Some(rect)
     }
 
     fn paint(

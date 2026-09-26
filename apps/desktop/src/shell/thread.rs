@@ -4,7 +4,7 @@
 use super::kit::kind_of;
 use crate::model::pages::{PackageRef, PageKey, SymbolRef};
 use crate::model::{AppSnapshot, SessionState};
-use crate::navigation::{OrbitRoute, Overlay, Route, RouteDepth, SettingsPage};
+use crate::navigation::{OrbitRoute, Overlay, Route, SettingsPage};
 use crate::runtime::store::DataStore;
 use facet::icons::Kind;
 use gpui::SharedString;
@@ -120,22 +120,42 @@ pub(crate) fn here(snapshot: &AppSnapshot, store: &DataStore) -> Here {
         },
         _ => {
             let mut here = route_here(snapshot.route(), store);
-            // Viewing another release: the capsule says which, and which you pin.
+            // Viewing another release: the capsule says which, and which you
+            // pin, in the comb's words.
             if let Some(at) = snapshot.route().at() {
-                let pinned = match snapshot.route() {
-                    Route::Package(route) => PackageRef::parse(route.package.as_str()).ok(),
-                    Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok(),
-                    Route::Orbit(_) | Route::World => None,
-                };
-                let pinned = pinned
-                    .as_ref()
-                    .and_then(PackageRef::version)
-                    .map_or_else(|| "your checkout".to_owned(), ToOwned::to_owned);
-                here.path = format!("viewing {} · you pin {pinned}", at.as_str()).into();
+                let pinned = pinned_release(snapshot.route(), store);
+                here.path = viewing(at.as_str(), pinned.as_deref()).into();
             }
             here
         }
     }
+}
+
+/// "viewing 0.3.0 · you pin 0.4.2", or, for a workspace crate read from
+/// its checkout, "viewing 0.3.0 · yours is the working copy".
+fn viewing(at: &str, pinned: Option<&str>) -> String {
+    match pinned {
+        Some(pinned) => format!("viewing {at} · you pin {pinned}"),
+        None => format!("viewing {at} · yours is the working copy"),
+    }
+}
+
+/// The release you pin for the route's package: the one its release list
+/// marks current (what the comb marks mint), else the purl's own version;
+/// `None` for a crate read from its working copy.
+fn pinned_release(route: &Route, store: &DataStore) -> Option<String> {
+    let package = match route {
+        Route::Package(route) => PackageRef::parse(route.package.as_str()).ok()?,
+        Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok()?,
+        Route::Orbit(_) | Route::World => return None,
+    };
+    let current = store.package(&package).loaded_value().and_then(|dossier| {
+        dossier
+            .versions
+            .known()
+            .and_then(|versions| versions.iter().find(|entry| entry.current).map(|entry| entry.version.to_string()))
+    });
+    current.or_else(|| package.version().map(ToOwned::to_owned))
 }
 
 /// A settings page's name.
@@ -237,84 +257,108 @@ fn crumbs(identity: &backend_present::Identity) -> Vec<String> {
     parts
 }
 
-/// The mono address in the status bar: `nudox://present/glyph/RelationLabel`.
-pub(crate) fn address(snapshot: &AppSnapshot) -> SharedString {
+/// The mono address in the status bar (`nudox://present/glyph/RelationLabel`),
+/// split where it may give way: the path (which can be cut from the left)
+/// and the name with its view and release (which never is).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Address {
+    /// Path segments after the scheme, outermost first.
+    pub path: Vec<String>,
+    /// The place's own name, then its view and release (`RelationLabel/code@0.3.0`).
+    pub name: String,
+}
+
+impl Address {
+    /// The whole address.
+    pub(crate) fn full(&self) -> String {
+        let mut full = "nudox://".to_owned();
+        for segment in &self.path {
+            full.push_str(segment);
+            full.push('/');
+        }
+        full.push_str(&self.name);
+        full
+    }
+
+    /// The address with all but the last `keep` path segments cut from the
+    /// left (`…/glyph/RelationLabel`).
+    pub(crate) fn keeping(&self, keep: usize) -> String {
+        let keep = keep.min(self.path.len());
+        let mut cut = "…/".to_owned();
+        for segment in &self.path[self.path.len() - keep..] {
+            cut.push_str(segment);
+            cut.push('/');
+        }
+        cut.push_str(&self.name);
+        cut
+    }
+}
+
+/// The current place's [`Address`].
+pub(crate) fn address_parts(snapshot: &AppSnapshot) -> Address {
+    let place = |path: &[&str], name: String| Address {
+        path: path.iter().map(|segment| (*segment).to_owned()).collect(),
+        name,
+    };
     if let Some(Overlay::Settings(page)) = snapshot.overlay() {
-        return format!("nudox://settings/{}", page.as_str()).into();
+        return place(&["settings"], page.as_str().to_owned());
     }
     if snapshot.overlay() == Some(Overlay::Inbox) {
-        return "nudox://inbox".into();
+        return place(&[], "inbox".to_owned());
     }
     match snapshot.route() {
-        Route::Orbit(_) => "nudox://orbit".into(),
-        Route::World => "nudox://graph".into(),
-        Route::Package(route) => {
-            let name = PackageRef::parse(route.package.as_str())
-                .map_or_else(|_| route.package.as_str().to_owned(), |package| package.display_name().to_owned());
-            format!("nudox://{name}").into()
-        }
+        Route::Orbit(_) => place(&[], "orbit".to_owned()),
+        Route::World => place(&[], "graph".to_owned()),
+        Route::Package(route) => place(
+            &[],
+            PackageRef::parse(route.package.as_str())
+                .map_or_else(|_| route.package.as_str().to_owned(), |package| package.display_name().to_owned()),
+        ),
         Route::Symbol(route) => {
-            let mut address = symbol_address(route.id.as_str(), None).to_string();
+            let mut address = symbol_parts(route.id.as_str());
             match route.view {
                 crate::navigation::View::Page => {}
                 crate::navigation::View::Code => {
-                    address.push_str("/code");
+                    address.name.push_str("/code");
                     if let Some(line) = route.line {
-                        address.push_str(&format!("#L{line}"));
+                        address.name.push_str(&format!("#L{line}"));
                     }
                 }
-                crate::navigation::View::Graph => address.push_str("/graph"),
+                crate::navigation::View::Graph => address.name.push_str("/graph"),
             }
             if let Some(at) = &route.at {
-                address.push_str(&format!("@{}", at.as_str()));
+                address.name.push_str(&format!("@{}", at.as_str()));
             }
-            address.into()
+            address
         }
     }
 }
 
-fn symbol_address(coordinate: &str, line: Option<u32>) -> SharedString {
+fn symbol_parts(coordinate: &str) -> Address {
     let identity = backend_present::Identity::parse(coordinate);
-    let mut parts = crumbs(&identity);
-    parts.push(identity.name().to_owned());
-    let mut address = format!("nudox://{}", parts.join("/"));
-    if let Some(line) = line {
-        address.push_str(&format!(":{line}"));
-    }
-    address.into()
-}
-
-/// The depth a place shows on the altimeter.
-pub(crate) fn depth(snapshot: &AppSnapshot) -> RouteDepth {
-    snapshot.route().depth().unwrap_or(RouteDepth::Orbit)
-}
-
-/// A depth's name.
-pub(crate) const fn depth_name(depth: RouteDepth) -> &'static str {
-    match depth {
-        RouteDepth::Orbit => "Orbit",
-        RouteDepth::Package => "Package",
-        RouteDepth::Page => "Page",
-        RouteDepth::Source => "Source",
+    Address {
+        path: crumbs(&identity),
+        name: identity.name().to_owned(),
     }
 }
 
-/// Every depth, shallowest first.
-pub(crate) const DEPTHS: [RouteDepth; 4] = [
-    RouteDepth::Orbit,
-    RouteDepth::Package,
-    RouteDepth::Page,
-    RouteDepth::Source,
-];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn viewing_another_release_names_the_one_you_pin_as_the_comb_does() {
+        assert_eq!(viewing("0.3.0", Some("0.4.2")), "viewing 0.3.0 · you pin 0.4.2");
+        assert_eq!(viewing("0.3.0", None), "viewing 0.3.0 · yours is the working copy");
+    }
+
+    #[test]
     fn a_declaration_reads_as_package_module_name() {
-        let address = symbol_address("/repo/crates/present::glyph.rs:138::RelationLabel", None);
-        assert_eq!(address.as_ref(), "nudox://present/glyph/RelationLabel");
+        let address = symbol_parts("/repo/crates/present::glyph.rs:138::RelationLabel");
+        assert_eq!(address.full(), "nudox://present/glyph/RelationLabel");
+        assert_eq!(address.keeping(1), "…/glyph/RelationLabel");
+        assert_eq!(address.keeping(0), "…/RelationLabel");
         let identity = backend_present::Identity::parse("/repo/crates/present::glyph.rs:138::RelationLabel");
         assert_eq!(crumbs(&identity).join(" › "), "present › glyph");
     }

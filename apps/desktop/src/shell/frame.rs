@@ -11,25 +11,25 @@
 use facet::Room;
 
 /// Resting shelf width at 100 % text.
-pub const SHELF: f32 = 264.0;
+pub(crate) const SHELF: f32 = 264.0;
 /// Narrowest resizable shelf.
-pub const SHELF_MIN: f32 = 200.0;
+pub(crate) const SHELF_MIN: f32 = 200.0;
 /// Widest resizable shelf.
-pub const SHELF_MAX: f32 = 420.0;
+pub(crate) const SHELF_MAX: f32 = 420.0;
 /// The collapsed shelf.
-pub const KSPINE: f32 = 42.0;
+pub(crate) const KSPINE: f32 = 42.0;
 /// The third column of pinned peeks.
-pub const PINS: f32 = 320.0;
+pub(crate) const PINS: f32 = 320.0;
 /// Titlebar height at 100 % text.
-pub const TITLEBAR: f32 = 50.0;
+pub(crate) const TITLEBAR: f32 = 50.0;
 /// Status bar height at 100 % text.
-pub const STATUS: f32 = 26.0;
+pub(crate) const STATUS: f32 = 26.0;
 /// Below this effective width the shelf is a spine.
-pub const SHELF_SPINE: f32 = 900.0;
+pub(crate) const SHELF_SPINE: f32 = 900.0;
 /// Below this effective width even the spine is on request only.
-pub const SPINE_OVERLAY: f32 = 640.0;
+pub(crate) const SPINE_OVERLAY: f32 = 640.0;
 /// From this effective width a pinned peek gets its own column.
-pub const PINS_FROM: f32 = 1900.0;
+pub(crate) const PINS_FROM: f32 = 1900.0;
 
 /// What sits in the shelf column.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

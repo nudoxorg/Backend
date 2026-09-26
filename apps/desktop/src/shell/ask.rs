@@ -19,7 +19,7 @@ use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, InteractiveElement,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Task, Window, div, px,
 };
@@ -35,7 +35,7 @@ struct Choice {
     name: SharedString,
     place: SharedString,
     reason: SharedString,
-    kind: facet::icons::Kind,
+    kind: icons::Kind,
     route: Option<Route>,
 }
 
@@ -98,12 +98,6 @@ impl Ask {
             input.focus(window, cx);
         });
         cx.notify();
-    }
-
-    /// Types `text` into the field (the harness and tests drive this).
-    pub(crate) fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
-        self.typed(text.to_owned(), cx);
     }
 
     fn typed(&mut self, text: String, cx: &mut Context<Self>) {
@@ -183,7 +177,7 @@ impl Ask {
                     name: name.into(),
                     place: place.into(),
                     reason: "a trail you walked".into(),
-                    kind: facet::icons::Kind::Unknown,
+                    kind: icons::Kind::Unknown,
                     route: Some(route),
                 })
             })

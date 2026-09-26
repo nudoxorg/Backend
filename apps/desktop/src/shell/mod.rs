@@ -26,12 +26,12 @@
 mod ask;
 mod bodies;
 mod facet_sync;
-mod float;
 mod focus;
 mod frame;
 mod hints;
 mod keys;
 mod kit;
+mod peeks;
 mod pins;
 mod reader;
 mod region;
@@ -48,5 +48,6 @@ mod titlebar;
 pub(crate) mod tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};
+pub use reader::Way;
 pub use keys::bindings as key_bindings;
 pub use root::{RenderCounts, Shell, open_shell};

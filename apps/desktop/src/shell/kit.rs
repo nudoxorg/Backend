@@ -6,9 +6,9 @@
 //! (buttons, key caps, cut plates, marks) comes from `facet`.
 
 use super::region::Links;
-use crate::model::pages::{Gap, GapReason, KindFamily, PageKey};
+use crate::model::pages::{Gap, GapReason, PageKey};
 use backend_library::DeclarationKind;
-use facet::icons::{Kind, Lang};
+use facet::icons::Kind;
 use facet::tokens::TypeRole;
 use facet::{Measure, Palette, Set as _};
 use gpui::{
@@ -20,9 +20,106 @@ use std::time::Duration;
 /// How long the pointer rests on a link before its page is prefetched.
 pub(crate) const PREFETCH_DELAY: Duration = Duration::from_millis(120);
 
-/// A text run in `role` for the container `measure` describes.
-pub(crate) fn text(role: TypeRole, measure: &Measure, color: impl Into<Hsla>) -> Div {
-    div().set(role, measure).text_color(color.into())
+/// A text run in `role` for the container `measure` describes. Every string
+/// it is given is published to the probe ledger with its box and overflow
+/// mode (wrap, ellipsis or clip, read from its own style), so the harness
+/// can lint what the shell actually set.
+pub(crate) fn text(role: TypeRole, measure: &Measure, color: impl Into<Hsla>) -> Said {
+    Said {
+        div: div().set(role, measure).text_color(color.into()),
+        role: measure.role(role),
+        content: String::new(),
+        key: None,
+    }
+}
+
+/// See [`text`]: a styled text box that knows its words.
+pub(crate) struct Said {
+    div: Div,
+    role: TypeRole,
+    content: String,
+    key: Option<gpui::ElementId>,
+}
+
+/// A child a [`Said`] can hold, and the words it contributes.
+pub(crate) trait SaidChild: IntoElement {
+    /// The words this child puts on screen, when it knows them.
+    fn words(&self) -> Option<&str>;
+}
+
+impl SaidChild for &'static str {
+    fn words(&self) -> Option<&str> {
+        Some(self)
+    }
+}
+
+impl SaidChild for String {
+    fn words(&self) -> Option<&str> {
+        Some(self)
+    }
+}
+
+impl SaidChild for SharedString {
+    fn words(&self) -> Option<&str> {
+        Some(self)
+    }
+}
+
+impl SaidChild for gpui::StyledText {
+    fn words(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl SaidChild for gpui::InteractiveText {
+    fn words(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl Said {
+    /// Adds a child; strings are also recorded as the box's words.
+    pub(crate) fn child(mut self, child: impl SaidChild) -> Self {
+        if let Some(words) = child.words() {
+            self.content.push_str(words);
+        }
+        self.div = self.div.child(child);
+        self
+    }
+}
+
+impl Styled for Said {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        self.div.style()
+    }
+}
+
+impl gpui::InteractiveElement for Said {
+    fn interactivity(&mut self) -> &mut gpui::Interactivity {
+        self.div.interactivity()
+    }
+}
+
+impl IntoElement for Said {
+    type Element = gpui::AnyElement;
+
+    fn into_element(mut self) -> gpui::AnyElement {
+        if self.content.is_empty() {
+            return self.div.into_any_element();
+        }
+        let style = &self.div.style().text;
+        let overflow = if style.text_overflow.is_some() {
+            facet::probe::TextOverflow::Ellipsis
+        } else if style.white_space == Some(gpui::WhiteSpace::Nowrap) {
+            facet::probe::TextOverflow::Clip
+        } else {
+            facet::probe::TextOverflow::Wrap
+        };
+        let key = self
+            .key
+            .unwrap_or_else(|| gpui::ElementId::Name(SharedString::from(format!("text:{}", self.content))));
+        facet::probe::text(key, self.content, self.role, 1.0, overflow, self.div).into_any_element()
+    }
 }
 
 /// The facet kind mark for an engine declaration kind.
@@ -47,45 +144,6 @@ pub(crate) const fn kind_of(kind: Option<DeclarationKind>) -> Kind {
         Some(DeclarationKind::Variable) => Kind::Variable,
         Some(DeclarationKind::Variant) => Kind::Variant,
         Some(DeclarationKind::Unknown) | None => Kind::Unknown,
-    }
-}
-
-/// The family hue of a kind family.
-pub(crate) fn family_hue(family: KindFamily, palette: &Palette) -> Hsla {
-    match family {
-        KindFamily::Namespace => palette.f_ns.hue.into(),
-        KindFamily::Type => palette.f_type.hue.into(),
-        KindFamily::Contract => palette.f_con.hue.into(),
-        KindFamily::Callable => palette.f_call.hue.into(),
-        KindFamily::Value => palette.f_val.hue.into(),
-    }
-}
-
-/// The language mark for a source language, when facet has one.
-pub(crate) const fn lang_of(language: backend_present::Language) -> Option<Lang> {
-    match language {
-        backend_present::Language::Rust => Some(Lang::Rust),
-        backend_present::Language::TypeScript => Some(Lang::Typescript),
-        backend_present::Language::Python => Some(Lang::Python),
-        backend_present::Language::Go => Some(Lang::Go),
-        backend_present::Language::Java => Some(Lang::Java),
-        backend_present::Language::CSharp => Some(Lang::Csharp),
-        backend_present::Language::C | backend_present::Language::Cxx => Some(Lang::Cpp),
-        backend_present::Language::Unknown => None,
-    }
-}
-
-/// The ecosystem's language mark from a registry spelling.
-pub(crate) fn lang_of_ecosystem(ecosystem: &str) -> Option<Lang> {
-    match ecosystem.to_ascii_lowercase().as_str() {
-        "cargo" | "crates" | "crates.io" | "rust" => Some(Lang::Rust),
-        "npm" | "typescript" | "javascript" => Some(Lang::Typescript),
-        "pypi" | "python" => Some(Lang::Python),
-        "go" | "golang" => Some(Lang::Go),
-        "maven" | "java" => Some(Lang::Java),
-        "nuget" | "csharp" | "dotnet" => Some(Lang::Csharp),
-        "conan" | "cpp" | "c++" => Some(Lang::Cpp),
-        _ => None,
     }
 }
 
@@ -116,7 +174,7 @@ pub(crate) fn gap_words(gap: &Gap) -> SharedString {
 }
 
 /// One quiet italic line: a gap, a caption, a margin note's body.
-pub(crate) fn quiet(words: impl Into<SharedString>, measure: &Measure, palette: &Palette) -> Div {
+pub(crate) fn quiet(words: impl Into<SharedString>, measure: &Measure, palette: &Palette) -> Said {
     text(facet::tokens::ty::CAPTION, measure, palette.ink3).child(words.into())
 }
 
@@ -179,6 +237,29 @@ impl HoverIntent {
     }
 }
 
+/// Publishes a scroll container's viewport and full content extent to the
+/// probe ledger, so the harness's `offscreen` lint can tell rows reachable by
+/// scrolling from rows clipped away. Add it right after the container, as
+/// its sibling: the container has settled its scroll bounds by then.
+pub(crate) fn scroll_probe(key: &'static str, handle: gpui::ScrollHandle) -> impl IntoElement {
+    canvas(
+        move |_, _, cx| {
+            if facet::probe::enabled(cx) {
+                let viewport = handle.bounds();
+                let reach = handle.max_offset();
+                let content = Bounds::new(
+                    viewport.origin,
+                    size(viewport.size.width + reach.x, viewport.size.height + reach.y),
+                );
+                facet::probe::record_scroll(cx, &gpui::ElementId::Name(SharedString::new_static(key)), viewport, content);
+            }
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .size_0()
+}
+
 /// A key cap that shows over a shell-drawn control while ⌘ is held (facet
 /// controls rise their own through `.key(…)`).
 pub(crate) fn keycap(shown: bool, label: &'static str, measure: &Measure) -> Option<gpui::AnyElement> {
@@ -226,11 +307,6 @@ pub(crate) fn package_route(package: &crate::model::pages::PackageRef) -> Option
     }))
 }
 
-/// The code route for a declaration at its line.
-pub(crate) fn source_route(package: &str, symbol: &crate::model::pages::SymbolRef, line: u32) -> Option<crate::navigation::Route> {
-    symbol_view_route(package, symbol, crate::navigation::View::Code, Some(line))
-}
-
 /// The element id a declaration's mark carries on every view that shows it
 /// (the page's hero gem, the graph's node, a row's mark), so W-Flow's
 /// shared-element transition matches them across a view switch.
@@ -251,7 +327,7 @@ pub(crate) fn package_of(symbol: &crate::model::pages::SymbolRef) -> Option<Stri
 
 /// A kind mark at the size its text is set at: the three board sizes, picked
 /// by the text scale so a mark beside 200 % text is not a 100 % speck.
-pub(crate) fn kind_mark(kind: facet::icons::Kind, base: facet::icons::KindSize, measure: &Measure, palette: &Palette) -> gpui::AnyElement {
+pub(crate) fn kind_mark(kind: Kind, base: facet::icons::KindSize, measure: &Measure, palette: &Palette) -> gpui::AnyElement {
     use facet::icons::KindSize;
     let (boxed, _, _) = base.metrics();
     let wanted = boxed * measure.scale();

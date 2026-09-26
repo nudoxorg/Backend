@@ -99,6 +99,12 @@ pub(crate) fn fit_name(name: &str, base: TypeRole, measure: &Measure, width: Pix
     }
 }
 
+/// `text` in lines no wider than `width`, broken at identifier boundaries
+/// (between characters only when one segment is wider than a line).
+pub(crate) fn wrap_identifier(text: &str, role: &TypeRole, width: Pixels, cx: &App) -> Vec<String> {
+    pack(&identifier_segments(text), role, width * 0.98, true, cx)
+}
+
 /// Greedy line packing; at the floor a segment wider than the line breaks
 /// between characters (the last resort — still never a clip).
 fn pack(segments: &[&str], role: &TypeRole, width: Pixels, split: bool, cx: &App) -> Vec<String> {
@@ -135,11 +141,16 @@ fn pack(segments: &[&str], role: &TypeRole, width: Pixels, split: bool, cx: &App
 pub(crate) fn name_lines(lines: &[String], role: TypeRole, color: impl Into<gpui::Hsla>) -> gpui::Div {
     use gpui::{ParentElement as _, Styled as _};
     let color = color.into();
-    gpui::div().flex().flex_col().children(
-        lines
-            .iter()
-            .map(|line| gpui::div().whitespace_nowrap().typeset_at(role, 1.0).text_color(color).child(line.clone())),
-    )
+    gpui::div().flex().flex_col().children(lines.iter().enumerate().map(|(index, line)| {
+        facet::probe::text(
+            gpui::ElementId::Name(SharedString::from(format!("name:{index}:{line}"))),
+            SharedString::from(line.clone()),
+            role,
+            1.0,
+            facet::probe::TextOverflow::Clip,
+            gpui::div().whitespace_nowrap().typeset_at(role, 1.0).text_color(color).child(line.clone()),
+        )
+    }))
 }
 
 /// One visual line of wrapped code.

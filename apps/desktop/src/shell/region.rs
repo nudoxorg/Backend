@@ -175,8 +175,10 @@ impl<R: Region> IntoElement for Measured<R> {
 }
 
 impl<R: Region> Element for Measured<R> {
-    type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    /// The cached view, on the product path.
+    type RequestLayoutState = Option<AnyElement>;
+    /// The region rendered at its bounds, while the probe records.
+    type PrepaintState = Option<AnyElement>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -192,14 +194,20 @@ impl<R: Region> Element for Measured<R> {
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (LayoutId, AnyElement) {
-        let mut inner = self
-            .entity
-            .clone()
-            .cached(self.style.clone())
-            .into_any_element();
-        let layout = inner.request_layout(window, cx);
-        (layout, inner)
+    ) -> (LayoutId, Option<AnyElement>) {
+        // While the probe records (the harness), every region renders every
+        // frame so its texts and targets are in every frame's ledger; the
+        // product path reuses a region's frame until its slice moves. Both
+        // render in prepaint, after the width below is recorded, so no frame
+        // is ever laid out for the width before.
+        if facet::probe::enabled(cx) {
+            let mut style = gpui::Style::default();
+            gpui::Refineable::refine(&mut style, &self.style);
+            (window.request_layout(style, None, cx), None)
+        } else {
+            let mut inner = self.entity.clone().cached(self.style.clone()).into_any_element();
+            (inner.request_layout(window, cx), Some(inner))
+        }
     }
 
     fn prepaint(
@@ -207,13 +215,19 @@ impl<R: Region> Element for Measured<R> {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        inner: &mut AnyElement,
+        inner: &mut Option<AnyElement>,
         window: &mut Window,
         cx: &mut App,
-    ) {
-        let width = bounds.size.width;
-        self.entity.update(cx, |region, _| region.core().width = width);
-        inner.prepaint(window, cx);
+    ) -> Option<AnyElement> {
+        self.entity.update(cx, |region, _| region.core().width = bounds.size.width);
+        if let Some(inner) = inner {
+            inner.prepaint(window, cx);
+            return None;
+        }
+        let mut region = self.entity.clone().into_any_element();
+        region.layout_as_root(bounds.size.into(), window, cx);
+        region.prepaint_at(bounds.origin, window, cx);
+        Some(region)
     }
 
     fn paint(
@@ -221,12 +235,14 @@ impl<R: Region> Element for Measured<R> {
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
-        inner: &mut AnyElement,
-        _prepaint: &mut (),
+        inner: &mut Option<AnyElement>,
+        probing: &mut Option<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        inner.paint(window, cx);
+        if let Some(element) = inner.as_mut().or(probing.as_mut()) {
+            element.paint(window, cx);
+        }
     }
 }
 

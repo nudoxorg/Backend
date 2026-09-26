@@ -16,7 +16,6 @@ use crate::model::pages::{OutlineNode, PackageRef, PageKey, SymbolRef};
 use crate::navigation::{Intent, Overlay, Route, SettingsPage};
 use crate::runtime::store::{Branch, DataStore};
 use facet::icons::{self, Icon, IconSize, Kind, KindSize};
-use facet::motion::Motion;
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
@@ -75,7 +74,6 @@ pub(crate) struct Shelf {
     core: RegionCore,
     links: Links,
     pub(crate) targets: Targets,
-    motion: Motion,
     hover: HoverIntent,
     /// Groups the user opened or closed by hand.
     toggled: BTreeSet<SymbolRef>,
@@ -88,12 +86,12 @@ pub(crate) struct Shelf {
 }
 
 impl Shelf {
-    pub(crate) fn new(links: Links, store: &DataStore) -> Self {
+    /// A shelf called `name` (`shelf`, or `shelf-over` for the overlay one).
+    pub(crate) fn new(name: &'static str, links: Links, store: &DataStore) -> Self {
         Self {
             core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Workspace]),
             links,
-            targets: Targets::default(),
-            motion: Motion::new(),
+            targets: Targets::named(name),
             hover: HoverIntent::default(),
             toggled: BTreeSet::new(),
             rest: px(264.0),
@@ -217,7 +215,7 @@ impl Render for Shelf {
             );
         }
         let _ = window;
-        root.child(self.targets.glow(&self.motion, &measure))
+        root.child(self.targets.glow(&measure))
     }
 }
 
@@ -504,8 +502,8 @@ impl Shelf {
                             .flex()
                             .items_center()
                             .gap(measure.space(Space::Snug))
-                            .child(icons::ui(Icon::Filter, IconSize::S12, palette.ink4).size(measure.icon(12.0)))
-                            .child(text(ty::SMALL, measure, palette.ink4).child("Filter")),
+                            .child(icons::ui(Icon::Filter, IconSize::S12, palette.ink3).size(measure.icon(12.0)))
+                            .child(text(ty::SMALL, measure, palette.ink3).child("Filter")),
                     )
                     .on_click(move |_: &ClickEvent, _, cx| links.shell(cx, |shell, cx| shell.open_ask(false, cx)))
                     .children(keycap(keys, "⌘K", measure)),
@@ -525,6 +523,7 @@ impl Shelf {
                 .flex_1()
                 .track_scroll(&self.scroll),
             )
+            .child(super::kit::scroll_probe("shelf-rows", self.scroll.0.borrow().base_handle.clone()))
             .into_any_element()
     }
 
