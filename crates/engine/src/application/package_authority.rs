@@ -8,9 +8,10 @@
 
 use std::path::Path;
 
-use crate::driver::{
-    CompileControl, SemanticAuthorityInput, ToolchainSelection,
-};
+use crate::driver::{CompileControl, SemanticAuthorityInput, ToolchainSelection};
+
+#[cfg(test)]
+use crate::driver::ResolvedToolchain;
 use backend_frontend_csharp::legacy::{
     CSharpAuthorityConfiguration, CSharpAuthorityError, CSharpOracle,
 };
