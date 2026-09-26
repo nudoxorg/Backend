@@ -1361,6 +1361,45 @@ mod project_call_tests {
         item_kind: ItemKind,
         foreign_call: Option<ForeignCallFixture>,
     ) -> Result<Vec<u8>, String> {
+        project_item_image_inner(
+            path,
+            source_identity_byte,
+            item_name,
+            entity_id,
+            item_kind,
+            foreign_call,
+            false,
+        )
+    }
+
+    fn project_item_image_without_foreign_kind(
+        path: &str,
+        source_identity_byte: u8,
+        item_name: &[u8],
+        entity_id: TreeEntityId,
+        item_kind: ItemKind,
+        foreign_call: ForeignCallFixture,
+    ) -> Result<Vec<u8>, String> {
+        project_item_image_inner(
+            path,
+            source_identity_byte,
+            item_name,
+            entity_id,
+            item_kind,
+            Some(foreign_call),
+            true,
+        )
+    }
+
+    fn project_item_image_inner(
+        path: &str,
+        source_identity_byte: u8,
+        item_name: &[u8],
+        entity_id: TreeEntityId,
+        item_kind: ItemKind,
+        foreign_call: Option<ForeignCallFixture>,
+        omit_foreign_kind: bool,
+    ) -> Result<Vec<u8>, String> {
         let source = SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[source_identity_byte]),
             byte_len: 12,
@@ -1420,7 +1459,11 @@ mod project_call_tests {
                     },
                     path: path_atom,
                     display,
-                    kind: Some(foreign_call.entity_kind),
+                    kind: if omit_foreign_kind {
+                        None
+                    } else {
+                        Some(foreign_call.entity_kind)
+                    },
                 }))
                 .map_err(|e| e.to_string())?;
             links.push(TreeLinkInput {
@@ -2669,6 +2712,43 @@ mod project_call_tests {
             entity_kind: ItemKind::Function,
             link_kind: LinkKind::Reads,
         }
+    }
+
+    fn ts_method_value_read_foreign_fixture(foreign_key: u8) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"./workout.service",
+            path_specifier: None,
+            display: b"setNote",
+            foreign_key,
+            entity_kind: ItemKind::Function,
+            link_kind: LinkKind::Reads,
+        }
+    }
+
+    fn ts_set_note_value_group_fixture(
+        foreign_key: u8,
+    ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
+        let service_bytes = project_call_image(
+            "workout.service.ts",
+            1,
+            b"setNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_item_image(
+            "weeks.ts",
+            2,
+            b"group",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(ts_method_value_read_foreign_fixture(foreign_key)),
+        )?;
+        Ok((
+            service_bytes,
+            caller_bytes,
+            fixture_version(1).identity(),
+            fixture_version(2).identity(),
+        ))
     }
 
     fn rust_limit_drive_fixture(
@@ -5099,6 +5179,228 @@ mod project_call_tests {
         .is_some()
         {
             return Err("ambiguous src/service set_note matches must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_ts_method_value_retargets_set_note() -> Result<(), String> {
+        let (service_bytes, caller_bytes, set_note_identity, _) =
+            ts_set_note_value_group_fixture(110)?;
+        let paths = project_paths(&["workout.service.ts", "weeks.ts"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, fixture_version(2).identity()]);
+        let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(set_note_identity) {
+            return Err(format!(
+                "join_project_value should retarget to setNote, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_ts_method_value_none_kind_returns_none() -> Result<(), String> {
+        let service_bytes = project_call_image(
+            "workout.service.ts",
+            1,
+            b"setNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_item_image_without_foreign_kind(
+            "weeks.ts",
+            2,
+            b"group",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            ts_method_value_read_foreign_fixture(111),
+        )?;
+        let paths = project_paths(&["workout.service.ts", "weeks.ts"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([fixture_version(1).identity(), fixture_version(2).identity()]);
+        let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != None {
+            return Err(format!(
+                "join_project_value with kind None must not retarget, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_ts_method_value_referenced_by_names_group() -> Result<(), String> {
+        let package = package_key("fixture");
+        let (service_bytes, caller_bytes, set_note_identity, group_identity) =
+            ts_set_note_value_group_fixture(112)?;
+        let paths = project_paths(&["workout.service.ts", "weeks.ts"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, group_identity]);
+        let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "join_project_value returned None".to_owned())?;
+        let set_note_id = query_semantic_id(package, joined);
+        let (set_note_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &service_bytes,
+            set_note_identity,
+            "setNote",
+            Box::new([]),
+        )?;
+        let (group_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &caller_bytes,
+            group_identity,
+            "group",
+            vec![set_note_id.clone()].into_boxed_slice(),
+        )?;
+        let workspace = super::super::super::genesis().map_err(|error| error.to_string())?;
+        let corpus = SemanticQueryCorpus::admit(
+            workspace.root(),
+            vec![
+                SemanticQueryFact::new(
+                    SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+                    SemanticQueryPresentation {
+                        id: RowId::Package(package).stable_key(),
+                        kind: "project".to_owned(),
+                        coordinate: "fixture".to_owned(),
+                        name: "fixture".to_owned(),
+                        signature: None,
+                        documentation: String::new(),
+                        score: None,
+                        project: None,
+                        parent: None,
+                        related: Box::new([]),
+                    },
+                ),
+                set_note_fact,
+                group_fact,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let (cancellation, _) = SemanticQueryCancellation::new();
+        let request = SemanticQueryRequest::admit_page(
+            corpus,
+            "{ Declaration { name @filter(op: \"=\", value: [\"$name\"]) referencedBy @optional { name @output } } }",
+            BTreeMap::from([("name".to_owned(), "setNote".into())]),
+            0,
+            8,
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
+        let events = futures_executor::block_on(
+            execute_semantic_query(request)
+                .map_err(|error| error.to_string())?
+                .collect::<Vec<_>>(),
+        );
+        let callers = events
+            .iter()
+            .filter_map(|event| match event {
+                SemanticQueryEvent::Row(row) => row.row().get("name").cloned(),
+                SemanticQueryEvent::Terminal(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if callers != ["group".into()] {
+            return Err(format!(
+                "referencedBy on setNote should name only group, got {callers:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_ts_method_value_ambiguous_paths_returns_none() -> Result<(), String> {
+        let service_bytes = project_call_image(
+            "workout.service.ts",
+            1,
+            b"setNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let duplicate_service_bytes = project_call_image(
+            "workout.service/index.ts",
+            3,
+            b"setNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_item_image(
+            "weeks.ts",
+            2,
+            b"group",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(ts_method_value_read_foreign_fixture(113)),
+        )?;
+        let paths = project_paths(&["workout.service.ts", "workout.service/index.ts", "weeks.ts"]);
+        let images = [
+            &service_bytes[..],
+            &duplicate_service_bytes[..],
+            &caller_bytes[..],
+        ];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(1).identity(),
+            fixture_version(3).identity(),
+            fixture_version(2).identity(),
+        ]);
+        let (external, link_kind, caller_path) = foreign_value_read_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != None {
+            return Err(format!(
+                "ambiguous workout.service setNote matches must not retarget, got {joined:?}"
+            ));
         }
         Ok(())
     }

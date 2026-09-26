@@ -4858,8 +4858,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             } else {
                 None
             };
-            if let Some(key) = self.checker_foreign_key(span, module, reference.name, member_kind)?
+            if let Some(mut key) =
+                self.checker_foreign_key(span, module, reference.name, member_kind)?
             {
+                if !call && !reference.is_field && !reference.is_enum_member {
+                    key.kind = Some(EntityKind::Function);
+                }
                 let kind = if call {
                     ReferenceKind::FunctionCall
                 } else if member_kind == Some(EntityKind::Field) {

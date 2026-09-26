@@ -1181,10 +1181,24 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
     ]);
     let v = view(SOURCE, Some(&r));
     let occs = occurrences(&v);
-    let call_occ = occs
+    let call_rows: Vec<_> = occs
         .iter()
-        .find(|o| o.occurrence.span.start == 49 && o.occurrence.span.end == 56)
-        .expect("call occurrence");
+        .filter(|o| {
+            o.occurrence.kind == ReferenceKind::FunctionCall
+                && o.occurrence.confidence == OccurrenceConfidence::Oracle
+                && matches!(
+                    o.occurrence.target,
+                    OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+                        origin: ForeignOrigin::Package(_),
+                        path: "setNote",
+                        display: "setNote",
+                        kind: None,
+                    })
+                )
+        })
+        .collect();
+    assert_eq!(call_rows.len(), 1, "expected one oracle package method call");
+    let call_occ = call_rows[0];
     assert_eq!(call_occ.occurrence.kind, ReferenceKind::FunctionCall);
     assert_eq!(call_occ.occurrence.confidence, OccurrenceConfidence::Oracle);
     let OccurrenceTarget::Foreign(key) = call_occ.occurrence.target else {
@@ -1193,25 +1207,98 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
     let ForeignOrigin::Package(lineage) = key.origin else {
         panic!("expected package origin");
     };
+    assert_eq!(lineage.ecosystem, "npm");
     assert_eq!(lineage.name, "./workout.service");
     assert_eq!(key.path, "setNote");
     assert_eq!(key.display, "setNote");
+    assert_eq!(key.kind, None);
 
-    let value_occ = occs
+    let value_rows: Vec<_> = occs
         .iter()
-        .find(|o| o.occurrence.span.start == 16 && o.occurrence.span.end == 23)
-        .expect("value occurrence");
-    assert_eq!(value_occ.occurrence.kind, ReferenceKind::VariableUse);
-    assert_eq!(value_occ.occurrence.confidence, OccurrenceConfidence::Oracle);
+        .filter(|o| {
+            o.occurrence.kind == ReferenceKind::VariableUse
+                && o.occurrence.confidence == OccurrenceConfidence::Oracle
+                && matches!(
+                    o.occurrence.target,
+                    OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+                        origin: ForeignOrigin::Package(_),
+                        path: "setNote",
+                        display: "setNote",
+                        kind: Some(EntityKind::Function),
+                    })
+                )
+        })
+        .collect();
+    assert_eq!(value_rows.len(), 1, "expected one oracle method value read");
+    let value_occ = value_rows[0];
     let OccurrenceTarget::Foreign(key) = value_occ.occurrence.target else {
         panic!("expected foreign value target");
     };
     let ForeignOrigin::Package(lineage) = key.origin else {
         panic!("expected package origin");
     };
+    assert_eq!(lineage.ecosystem, "npm");
     assert_eq!(lineage.name, "./workout.service");
     assert_eq!(key.path, "setNote");
     assert_eq!(key.display, "setNote");
+    assert_eq!(key.kind, Some(EntityKind::Function));
+}
+
+#[test]
+fn checker_foreign_method_value_stays_when_checker_name_unspelled_in_source() {
+    const SOURCE: &[u8] = b"import { WorkoutService } from \"./workout.service\";
+export function group(service: WorkoutService) { const bound = service.pick; }
+";
+    let pick_start = SOURCE
+        .windows(b"pick".len())
+        .position(|window| window == b"pick")
+        .expect("pick token");
+    let pick_end = pick_start + b"pick".len();
+    let mut authority = report(SOURCE);
+    authority.references = Box::new([Reference {
+        start: u32::try_from(pick_start).expect("pick start"),
+        end: u32::try_from(pick_end).expect("pick end"),
+        target_start: None,
+        target_end: None,
+        module: Some("./workout.service".into()),
+        name: Some("setNote".into()),
+        overload_index: None,
+        is_field: false,
+        is_enum_member: false,
+    }]);
+    let view = view(SOURCE, Some(&authority));
+    let rows: Vec<_> = occurrences(&view)
+        .into_iter()
+        .filter(|row| {
+            row.occurrence.kind == ReferenceKind::VariableUse
+                && row.occurrence.confidence == OccurrenceConfidence::Oracle
+                && matches!(
+                    row.occurrence.target,
+                    OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+                        origin: ForeignOrigin::Package(_),
+                        path: "pick",
+                        display: "pick",
+                        kind: Some(EntityKind::Function),
+                    })
+                )
+        })
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "checker name absent from source must still emit one method value occurrence: {rows:?}"
+    );
+    let OccurrenceTarget::Foreign(key) = rows[0].occurrence.target else {
+        panic!("expected foreign value target");
+    };
+    let ForeignOrigin::Package(lineage) = key.origin else {
+        panic!("expected package origin");
+    };
+    assert_eq!(lineage.ecosystem, "npm");
+    assert_eq!(lineage.name, "./workout.service");
+    assert_eq!(key.path, "pick");
+    assert_eq!(key.display, "pick");
+    assert_eq!(key.kind, Some(EntityKind::Function));
 }
 #[test]
 fn genuinely_unresolvable_names_stay_honestly_external() {
