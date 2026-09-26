@@ -23,6 +23,9 @@ use super::{
     AliasGraph, AliasGraphError, FreshnessState, MalwareCoverage, PackageIdentity,
 };
 
+#[cfg(test)]
+use super::{FeedFreshness, SyncMode};
+
 mod feed;
 
 pub use feed::{AuthorityFeed, AuthorityParseError};
