@@ -5,9 +5,11 @@
 //! Settings arrive as the product's own intents (text size as `ZoomTo` on
 //! the window's display).
 //!
-//! Determinism. The fixture owner indexes `crates/present` and
-//! `frontends/rust/fixtures/rich_project` once into
-//! `.local/harness/desktop/` and every later boot reuses that index. Page
+//! Determinism. The fixture owner indexes `crates/present`,
+//! `frontends/rust/fixtures/rich_project`, `crates/runtime`,
+//! `frontends/rust/fixtures/toml_pin` and toml 0.8.23's source from the local
+//! cargo registry cache once into `.local/harness/desktop/` and every later
+//! boot reuses that index. Page
 //! reads are real I/O on real threads, so each boot declares a quiescence
 //! predicate: after the first frame and after every input instant the run
 //! waits in real time (virtual time stands still) until the read pool is
@@ -38,12 +40,17 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub mod journey;
+
 /// The window root the adapter mounts: the one line to change when the
 /// shell's constructor moves.
 const ROOT: fn(&UiEntityGraph, &mut Window, &mut App) -> gpui::Entity<crate::shell::Shell> =
     crate::shell::open_shell;
 
 const INDEX_DEADLINE: Duration = Duration::from_mins(15);
+
+/// How long to wait for another process's owner to answer.
+const OWNER_DEADLINE: Duration = Duration::from_mins(1);
 
 /// The fixture owner: a local index of fixed crates, shared by every boot in
 /// this process.
@@ -70,8 +77,57 @@ thread_local! {
     static FIXTURE: RefCell<Option<&'static Fixture>> = const { RefCell::new(None) };
 }
 
+static STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Keeps this process's fixture index in `dir` instead of
+/// `.local/harness/desktop` (same roots, its own owner), so a long run such
+/// as a journey never contends with scene runs for the index's lock. Call
+/// it before the first [`fixture`]; later calls are ignored.
+pub fn keep_index_in(dir: PathBuf) {
+    let _ = STATE.set(dir);
+}
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// A crate's unpacked source in the local cargo registry cache
+/// (`$CARGO_HOME/registry/src/<index>/<name-version>`): indexed offline,
+/// never fetched.
+fn registry_source(release: &str) -> Result<PathBuf, String> {
+    let home = std::env::var_os("CARGO_HOME").map_or_else(
+        || std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")),
+        |home| Some(PathBuf::from(home)),
+    );
+    let src = home
+        .ok_or_else(|| "neither CARGO_HOME nor HOME is set".to_owned())?
+        .join("registry/src");
+    let mut found = std::fs::read_dir(&src)
+        .map_err(|error| format!("{}: {error}", src.display()))?
+        .filter_map(|index| Some(index.ok()?.path().join(release)))
+        .filter(|path| path.join("Cargo.toml").is_file())
+        .collect::<Vec<_>>();
+    found.sort();
+    found.pop().map_or_else(
+        || Err(format!("{release} is not in the cargo registry cache under {}; fetch it once with cargo", src.display())),
+        |path| path.canonicalize().map_err(|error| format!("{}: {error}", path.display())),
+    )
+}
+
+/// The owner's endpoint for the index in `data`: one per data directory,
+/// not per process. Ownership is one lock on `data`, so a second process
+/// cannot own it; with the same endpoint it reaches the running owner
+/// (`DesktopHost::start_with_paths` attaches to a live one) instead of
+/// dialling a socket nobody listens on. Under `/tmp`: a socket path under
+/// the repository exceeds `sockaddr_un`.
+fn endpoint_for(data: &Path) -> Result<PathBuf, String> {
+    use sha2::Digest as _;
+    let data = data
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", data.display()))?;
+    let digest = sha2::Sha256::digest(data.as_os_str().as_encoded_bytes());
+    let hex = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect::<String>();
+    Ok(PathBuf::from(format!("/tmp/nx-harness-{hex}.sock")))
 }
 
 fn utf8(path: &Path) -> Result<&str, String> {
@@ -81,6 +137,14 @@ fn utf8(path: &Path) -> Result<&str, String> {
 
 /// Starts (or reuses) the fixture owner and waits until every fixture crate
 /// is indexed and the row count is stable.
+///
+/// When another process already owns the index, this one attaches to that
+/// owner (the endpoint is per data directory). It still asks for every root
+/// it knows and waits for each to be Ready: an owner started by an older
+/// binary with fewer roots indexes the missing ones (the other process then
+/// sees them too), and nothing is served until they are ready or the
+/// deadline passes. The attached process depends on the owner's process: if
+/// that exits mid-run, this one's reads fail.
 ///
 /// # Errors
 /// The owner cannot start, or indexing does not settle in 15 minutes.
@@ -94,18 +158,38 @@ pub fn fixture() -> Result<&'static Fixture, String> {
     let projects = vec![
         repo.join("crates/present"),
         repo.join("frontends/rust/fixtures/rich_project"),
+        // The journeys' subjects (gui-plan §3 item 10, "Data"): J5 reads
+        // `crates/runtime`; "your project" pins toml 0.8.23, whose source is
+        // indexed offline from the local cargo registry cache.
+        repo.join("crates/runtime"),
+        repo.join("frontends/rust/fixtures/toml_pin"),
+        registry_source("toml-0.8.23")?,
     ];
-    let state = repo.join(".local/harness/desktop");
+    let state = STATE
+        .get()
+        .cloned()
+        .unwrap_or_else(|| repo.join(".local/harness/desktop"));
     std::fs::create_dir_all(state.join("data")).map_err(|error| format!("{}: {error}", state.display()))?;
-    // `/tmp`: a socket path under the repository exceeds `sockaddr_un`.
-    let endpoint = PathBuf::from(format!("/tmp/nx-harness-{}.sock", std::process::id()));
+    let endpoint = endpoint_for(&state.join("data"))?;
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(projects[0].clone()),
         Some(state.join("data")),
         Some(endpoint.clone()),
     )
     .map_err(|error| format!("workspace paths: {error}"))?;
-    let host = crate::DesktopHost::start_with_paths(paths).map_err(|error| format!("fixture owner: {error}"))?;
+    // Another process may hold the index lock and still be opening it (the
+    // host waits 2 s for its endpoint; a debug owner can take longer): keep
+    // asking until it answers or the lock frees, for up to a minute.
+    let attaching = Instant::now();
+    let host = loop {
+        match crate::DesktopHost::start_with_paths(paths.clone()) {
+            Ok(host) => break host,
+            Err(crate::HostError::Contended { .. }) if attaching.elapsed() < OWNER_DEADLINE => {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(error) => return Err(format!("fixture owner: {error}")),
+        }
+    };
     let mut session = Session::connect(&endpoint).map_err(|error| format!("session: {error}"))?;
     for project in &projects {
         session
@@ -414,6 +498,7 @@ pub fn boot(start: &str, window: &mut Window, cx: &mut App) -> Result<AnyView, S
     gallery::declare_quiet(quiet, cx);
     gallery::declare_adapter(adapt, cx);
     gallery::declare_annotator(annotate, cx);
+    gallery::declare_state(sample_state, cx);
     let shell = ROOT(&graph, window, cx);
     // Text size is a per-display zoom: set this window's display to the
     // shot's percent through the product's own intent.
@@ -455,14 +540,49 @@ fn annotate(cx: &mut App) -> String {
     .map(|(name, now, then)| format!("{name} x{}", now - then))
     .collect::<Vec<_>>();
     format!(
-        "re-rendered [{}]{}",
+        "re-rendered [{}]{}; graph {}",
         regions.join(", "),
         if landed > landed_before {
             format!(", {} read(s) landed", landed - landed_before)
         } else {
             String::new()
-        }
+        },
+        booted.shell.read(cx).graph_report(cx)
     )
+}
+
+/// Samples the mounted product route and retained map after every probed draw.
+fn sample_state(cx: &mut App, _: &facet::probe::Ledger) -> gallery::json::Json {
+    use facet::gallery::json::Json;
+    fn route_state(route: &crate::navigation::Route) -> Json {
+        use crate::navigation::{OrbitRoute, Route};
+        match route {
+            Route::World => Json::obj([("kind", Json::str("world"))]),
+            Route::Orbit(route) => Json::obj([
+                ("kind", Json::str("orbit")),
+                ("project", match route { OrbitRoute::Home => Json::Null, OrbitRoute::Project(project) => Json::num(project.get().get() as f64) }),
+            ]),
+            Route::Package(route) => Json::obj([
+                ("kind", Json::str("package")), ("package", Json::str(route.package.as_str())),
+                ("lane", Json::str(format!("{:?}", route.lane))),
+                ("release", route.at.as_ref().map_or(Json::Null, |at| Json::str(at.as_str()))),
+            ]),
+            Route::Symbol(route) => Json::obj([
+                ("kind", Json::str("symbol")), ("package", Json::str(route.package.as_str())),
+                ("symbol", Json::str(route.id.as_str())), ("view", Json::str(route.view.as_str())),
+                ("release", route.at.as_ref().map_or(Json::Null, |at| Json::str(at.as_str()))),
+                ("line", Json::opt(route.line)),
+            ]),
+        }
+    }
+    let Some(booted) = cx.try_global::<Booted>() else { return Json::Null };
+    let snapshot = booted.graph.store.read(cx).snapshot();
+    Json::obj([
+        ("route", route_state(snapshot.route())),
+        ("root", Json::str(format!("{:?}", snapshot.key()))),
+        ("back", Json::num(snapshot.session().back.len() as f64)),
+        ("graph", booted.shell.read(cx).graph_state(cx)),
+    ])
 }
 
 fn settings_intents(facet: &facet::Facet) -> Vec<Intent> {
@@ -494,12 +614,12 @@ fn quiet(cx: &mut App) -> bool {
     let Some(booted) = cx.try_global::<Booted>() else {
         return true;
     };
-    let (store, root) = (booted.graph.store.clone(), booted.graph.root.clone());
+    let (store, root, shell) = (booted.graph.store.clone(), booted.graph.root.clone(), booted.shell.clone());
     store.update(cx, |store, cx| {
         store.drain(cx);
     });
     let idle_pool = store.read(cx).pool_load() == (0, 0);
-    idle_pool && !root.read(cx).has_pending_work()
+    idle_pool && !root.read(cx).has_pending_work() && shell.read(cx).graph_ready(cx)
 }
 
 /// Script acts without a platform event, through the product: settings

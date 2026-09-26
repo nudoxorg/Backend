@@ -3,9 +3,15 @@
 //! over the real desktop shell on the fixture index
 //! (`backend_desktop::harness`). `backend-desktop-gui-harness list` names
 //! the scenes; scripts may use `route symbol present::glyph::RelationLabel`.
+//! `journey NAME` runs one end-to-end journey through the real shell
+//! (`backend_desktop::harness::journey`, gui-plan §3 item 10).
 
 #[cfg(feature = "visual-harness")]
 fn main() -> std::process::ExitCode {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("journey") {
+        return backend_desktop::harness::journey::main(&args[1..]);
+    }
     facet::gallery::cli::main(facet::gallery::cli::Registry {
         name: "backend-desktop-gui-harness",
         all: backend_desktop::harness::scenes,
