@@ -3089,6 +3089,15 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
             self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
         }
+        for (span, target) in self.record_literal_field_accesses()? {
+            if emitted_field_spans.contains(&span) {
+                continue;
+            }
+            emitted_field_spans.push(span);
+            let confidence = occurrence_confidence(target.is_some());
+            let target = target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
+            self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
+        }
         for (span, target) in self.macro_field_accesses()? {
             if emitted_field_spans.contains(&span) {
                 continue;
@@ -3171,10 +3180,35 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         Ok(())
     }
 
+    /// Streams every written record-literal field name with the named field
+    /// rust-analyzer resolved it to, when it resolved one.
+    fn record_literal_field_accesses(
+        &self,
+    ) -> Result<Vec<(ByteSpan, Option<ra_ap_hir::Field>)>, RustAuthorityError> {
+        let authority = self.authority;
+        let mut accesses = Vec::new();
+        for syntax in authority.root.syntax().descendants() {
+            let Some(field) = ast::RecordExprField::cast(syntax) else {
+                continue;
+            };
+            let Some(name) = field.field_name() else {
+                continue;
+            };
+            let span = authority.span(name.syntax())?;
+            let target = authority
+                .semantics
+                .resolve_record_field(&field)
+                .map(|(field, _, _)| field);
+            accesses.push((span, target));
+        }
+        Ok(accesses)
+    }
+
     /// Streams field accesses discovered through macro expansion. A macro
     /// argument is a token tree in the source file; descending each token
-    /// reaches the expanded `FieldExpr` rust-analyzer inferred and projects
-    /// the written field identifier back onto this source buffer.
+    /// reaches the expanded `FieldExpr` or record-literal field
+    /// rust-analyzer inferred and projects the written field identifier back
+    /// onto this source buffer.
     fn macro_field_accesses(
         &self,
     ) -> Result<Vec<(ByteSpan, Option<ra_ap_hir::Field>)>, RustAuthorityError> {
@@ -3190,25 +3224,50 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 .filter_map(|element| element.into_token())
             {
                 for descended in authority.semantics.descend_into_macros_no_opaque(token, false) {
-                    let Some(syntax) = descended
-                        .value
-                        .parent()
-                        .and_then(|node| node.ancestors().find_map(ast::FieldExpr::cast))
-                    else {
-                        continue;
-                    };
-                    let Some(name) = syntax.name_ref() else {
-                        continue;
-                    };
-                    let Ok(Some(projected_span)) = authority.projected_span(name.syntax()) else {
-                        continue;
-                    };
-                    let target = authority.resolve_field_target(&syntax);
-                    accesses.push((projected_span, target));
+                    if let Some((projected_span, target)) =
+                        Self::projected_macro_field_access(authority, &descended)
+                    {
+                        accesses.push((projected_span, target));
+                    }
                 }
             }
         }
         Ok(accesses)
+    }
+
+    /// Projects one macro-descended token onto a field-access site when it
+    /// names a `FieldExpr` or record-literal field in the expansion.
+    fn projected_macro_field_access(
+        authority: &RustAuthority<'_>,
+        descended: &ra_ap_hir::InFile<ra_ap_syntax::SyntaxToken>,
+    ) -> Option<(ByteSpan, Option<ra_ap_hir::Field>)> {
+        let parent = descended.value.parent()?;
+        for node in parent.ancestors() {
+            if let Some(syntax) = ast::FieldExpr::cast(node.clone()) {
+                let Some(name) = syntax.name_ref() else {
+                    continue;
+                };
+                let Ok(Some(projected_span)) = authority.projected_span(name.syntax()) else {
+                    continue;
+                };
+                let target = authority.resolve_field_target(&syntax);
+                return Some((projected_span, target));
+            }
+            if let Some(field) = ast::RecordExprField::cast(node.clone()) {
+                let Some(name) = field.field_name() else {
+                    continue;
+                };
+                let Ok(Some(projected_span)) = authority.projected_span(name.syntax()) else {
+                    continue;
+                };
+                let target = authority
+                    .semantics
+                    .resolve_record_field(&field)
+                    .map(|(field, _, _)| field);
+                return Some((projected_span, target));
+            }
+        }
+        None
     }
 
     /// Streams function calls discovered through macro expansion. A macro
@@ -4374,6 +4433,65 @@ mod tests {
             .collect()
     }
 
+    /// Returns the absolute byte offset of `field_name` inside `surrounding`
+    /// within `source`.
+    fn field_name_offset_in_source(
+        source: &str,
+        surrounding: &str,
+        field_name: &str,
+    ) -> Result<usize, TestError> {
+        let anchor = source
+            .find(surrounding)
+            .ok_or(TestError::Missing("fixture snippet in source"))?;
+        let offset = surrounding
+            .find(field_name)
+            .ok_or(TestError::Missing("field name in fixture snippet"))?;
+        Ok(anchor + offset)
+    }
+
+    /// Projects one emitted `FieldAccess` occurrence onto its absolute source
+    /// span through the owning declaration's provenance span.
+    fn field_access_absolute_span(
+        source: &str,
+        owner: u32,
+        occurrence: &Occurrence<'_>,
+    ) -> Result<(usize, usize), TestError> {
+        let ir = owned_ir(source)?;
+        let owner_span = ir
+            .item(backend_semantic::ir::EntityId::new(owner))
+            .and_then(|entity| entity.source())
+            .ok_or(TestError::Missing("owner provenance span"))?;
+        let base = usize::try_from(owner_span.start())?;
+        let start = base + usize::try_from(occurrence.span.start)?;
+        let end = base + usize::try_from(occurrence.span.end)?;
+        Ok((start, end))
+    }
+
+    /// Proves the emitted `FieldAccess` occurrence site is exactly the written
+    /// field name. A sibling `VariableUse` on the same identifier does not
+    /// satisfy this check.
+    fn assert_field_access_site_is_field_name(
+        source: &str,
+        owner: u32,
+        occurrence: &Occurrence<'_>,
+        field_name: &[u8],
+        expected_name_at: Option<usize>,
+    ) -> Result<(usize, usize), TestError> {
+        if occurrence.kind != ReferenceKind::FieldAccess {
+            return Err(TestError::Missing("FieldAccess occurrence"));
+        }
+        let (start, end) = field_access_absolute_span(source, owner, occurrence)?;
+        if source.as_bytes().get(start..end) != Some(field_name) {
+            return Err(TestError::Missing("FieldAccess site is the field name"));
+        }
+        if let Some(expected) = expected_name_at {
+            if start != expected {
+                return Err(TestError::Missing("FieldAccess at expected field-name offset"));
+            }
+        }
+        Ok((start, end))
+    }
+
     /// The committed type rows of one fixture, shared by the cell assertions.
     fn integer_cells() -> Result<(), TestError> {
         let view = lower(
@@ -5125,6 +5243,260 @@ mod tests {
         {
             return Err(TestError::Missing(
                 "oracle-local function target for macro-receiver call",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A record-literal field name is a field occurrence even though it is not
+    /// a `FieldExpr`; the written `score` in `Point { score: 1 }` resolves to
+    /// the local field at oracle confidence, owned by `build`.
+    #[test]
+    fn struct_literal_field_emits_oracle_local_field_access() -> Result<(), TestError> {
+        let source = "pub struct Point {\n    pub score: u8,\n}\n\npub fn build() -> Point {\n    Point { score: 1 }\n}\n";
+        let literal = "Point { score: 1 }";
+        let name_at = field_name_offset_in_source(source, literal, "score")?;
+        let view = lower(source)?;
+        let build = fact_of(&view, b"build", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing("exactly one struct literal field access"));
+        }
+        let (owner, access) = field_accesses[0];
+        if owner != build {
+            return Err(TestError::Missing("field access owned by build"));
+        }
+        if access.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for struct literal field",
+            ));
+        }
+        assert_field_access_site_is_field_name(source, owner, &access, b"score", Some(name_at))?;
+        Ok(())
+    }
+
+    /// Field-init shorthand still emits exactly one field access for the
+    /// written field name; a variable use of the same name may remain.
+    #[test]
+    fn struct_literal_field_shorthand_emits_exactly_one_field_access() -> Result<(), TestError> {
+        let source = "pub struct Point {\n    pub score: u8,\n}\n\npub fn build(score: u8) -> Point {\n    Point { score }\n}\n";
+        let literal = "Point { score }";
+        let name_at = field_name_offset_in_source(source, literal, "score")?;
+        let view = lower(source)?;
+        let build = fact_of(&view, b"build", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing(
+                "exactly one struct literal shorthand field access",
+            ));
+        }
+        let (owner, access) = field_accesses[0];
+        if owner != build {
+            return Err(TestError::Missing("field access owned by build"));
+        }
+        if access.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for shorthand struct literal field",
+            ));
+        }
+        let (site_start, site_end) =
+            assert_field_access_site_is_field_name(source, owner, &access, b"score", Some(name_at))?;
+        let type_at = source
+            .find(literal)
+            .ok_or(TestError::Missing("literal in fixture source"))?;
+        if site_start == type_at || source.as_bytes().get(site_start..site_end) == Some(b"Point") {
+            return Err(TestError::Missing(
+                "FieldAccess is the field name, not the record type path",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A record literal only inside a macro argument is authority-proven
+    /// through macro descent with the invocation-site field spelling.
+    #[test]
+    fn struct_literal_field_inside_macro_emits_once() -> Result<(), TestError> {
+        let source = "macro_rules! build {\n    ($e:expr) => { $e };\n}\n\npub struct Point {\n    pub score: u8,\n}\n\npub fn build() -> Point {\n    build!(Point { score: 1 })\n}\n";
+        let invocation = "build!(Point { score: 1 })";
+        let name_at = field_name_offset_in_source(source, invocation, "score")?;
+        let view = lower(source)?;
+        let build = fact_of(&view, b"build", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing(
+                "exactly one macro struct literal field access",
+            ));
+        }
+        let (owner, access) = field_accesses[0];
+        if owner != build {
+            return Err(TestError::Missing("field access owned by build"));
+        }
+        if access.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for macro struct literal field",
+            ));
+        }
+        assert_field_access_site_is_field_name(source, owner, &access, b"score", Some(name_at))?;
+        Ok(())
+    }
+
+    /// A struct literal wrapped entirely by a macro is authority-proven only
+    /// through macro descent at the invocation-site field spelling.
+    #[test]
+    fn struct_literal_field_macro_only_emits_once() -> Result<(), TestError> {
+        let source = "macro_rules! identity {\n    ($e:expr) => { $e };\n}\n\npub struct Point {\n    pub score: u8,\n}\n\npub fn build() -> Point {\n    identity!(Point { score: 1 })\n}\n";
+        let invocation = "identity!(Point { score: 1 })";
+        let name_at = field_name_offset_in_source(source, invocation, "score")?;
+        let view = lower(source)?;
+        let build = fact_of(&view, b"build", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing(
+                "exactly one macro-only struct literal field access",
+            ));
+        }
+        let (owner, access) = field_accesses[0];
+        if owner != build {
+            return Err(TestError::Missing("field access owned by build"));
+        }
+        if access.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for macro-only struct literal field",
+            ));
+        }
+        assert_field_access_site_is_field_name(source, owner, &access, b"score", Some(name_at))?;
+        Ok(())
+    }
+
+    /// A source record literal whose field value contains a macro is walked
+    /// directly and reached by macro descent; the shared `emitted_field_spans`
+    /// list must commit exactly one field access at the field-name span.
+    #[test]
+    fn struct_literal_field_macro_descent_shares_emitted_field_spans() -> Result<(), TestError> {
+        let source = "macro_rules! identity {\n    ($e:expr) => { $e };\n}\n\npub struct Point {\n    pub score: u8,\n}\n\npub fn build() -> Point {\n    Point { score: identity!(1) }\n}\n";
+        let literal = "Point { score: identity!(1) }";
+        let name_at = field_name_offset_in_source(source, literal, "score")?;
+        let view = lower(source)?;
+        let build = fact_of(&view, b"build", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing(
+                "exactly one struct literal field access with macro in value",
+            ));
+        }
+        let (owner, access) = field_accesses[0];
+        if owner != build {
+            return Err(TestError::Missing("field access owned by build"));
+        }
+        if access.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for source literal with macro value",
+            ));
+        }
+        assert_field_access_site_is_field_name(source, owner, &access, b"score", Some(name_at))?;
+        Ok(())
+    }
+
+    /// An unresolved record-literal field name stays a foreign spelling at
+    /// syntactic confidence instead of fabricating a local field target.
+    #[test]
+    fn struct_literal_field_unresolved_stays_foreign() -> Result<(), TestError> {
+        let source = "pub struct Point {\n    pub score: u8,\n}\n\npub fn build() -> Point {\n    Point { missing: 1 }\n}\n";
+        let literal = "Point { missing: 1 }";
+        let name_at = field_name_offset_in_source(source, literal, "missing")?;
+        let view = lower(source)?;
+        let build = fact_of(&view, b"build", EntityKind::Function)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing(
+                "exactly one unresolved struct literal field access",
+            ));
+        }
+        let (owner, access) = field_accesses[0];
+        if owner != build {
+            return Err(TestError::Missing("field access owned by build"));
+        }
+        if access.confidence != OccurrenceConfidence::Syntactic {
+            return Err(TestError::Missing(
+                "syntactic confidence for unresolved struct literal field",
+            ));
+        }
+        let OccurrenceTarget::Foreign(key) = access.target else {
+            return Err(TestError::Missing(
+                "foreign target for unresolved struct literal field",
+            ));
+        };
+        if key.path != "missing" || key.display != "missing" {
+            return Err(TestError::Missing(
+                "missing written spelling as the foreign key",
+            ));
+        }
+        assert_field_access_site_is_field_name(source, owner, &access, b"missing", Some(name_at))?;
+        Ok(())
+    }
+
+    /// The record type path in a struct literal is not a field access.
+    #[test]
+    fn struct_literal_field_does_not_emit_type_path() -> Result<(), TestError> {
+        let source = "pub struct Point {\n    pub score: u8,\n}\n\npub fn build() -> Point {\n    Point { score: 1 }\n}\n";
+        let literal = "Point { score: 1 }";
+        let type_at = source
+            .find(literal)
+            .ok_or(TestError::Missing("literal in fixture source"))?;
+        let view = lower(source)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing("only the field name is a field access"));
+        }
+        let (owner, access) = field_accesses[0];
+        if access.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score)) {
+            return Err(TestError::Missing("field access targets score, not Point"));
+        }
+        let (site_start, site_end) =
+            assert_field_access_site_is_field_name(source, owner, &access, b"score", None)?;
+        if source.as_bytes().get(site_start..site_end) != Some(b"score") {
+            return Err(TestError::Missing("FieldAccess site is score"));
+        }
+        if site_start == type_at || source.as_bytes().get(site_start..site_end) == Some(b"Point") {
+            return Err(TestError::Missing(
+                "FieldAccess site is the field name, not the record type path",
             ));
         }
         Ok(())
