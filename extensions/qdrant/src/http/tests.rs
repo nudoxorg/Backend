@@ -373,44 +373,69 @@ fn serve_delta(script: DeltaScript) -> (String, thread::JoinHandle<Vec<(&'static
             let (mut stream, _) = listener.accept().expect("connection");
             let (header, body) = read_http(&mut stream);
             let first = header.lines().next().expect("request line");
-            let (kind, put_points, response) = if first.starts_with("POST ") {
-                let request: serde_json::Value =
-                    serde_json::from_slice(&body).expect("retrieve JSON");
-                let points = request["ids"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|id| id.as_str())
-                    .filter_map(|id| stored.get(id).cloned())
-                    .collect::<Vec<_>>();
-                (
-                    "retrieve",
-                    0,
-                    serde_json::json!({"result": points}).to_string(),
-                )
-            } else if first.starts_with("PUT ") {
-                let request: serde_json::Value =
-                    serde_json::from_slice(&body).expect("upsert JSON");
-                let points = request["points"].as_array().cloned().unwrap_or_default();
-                let count = points.len();
-                for mut point in points {
-                    let Some(id) = point["id"].as_str().map(str::to_owned) else {
-                        continue;
-                    };
-                    if script.corrupt_after_put {
-                        point["payload"]["coordinate_key"] =
-                            serde_json::json!("rewritten-coordinate");
+            let (kind, put_points, response) =
+                if first.starts_with("POST ") && first.contains("/points/batch") {
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body).expect("payload JSON");
+                    let mut count = 0_usize;
+                    for operation in request["operations"].as_array().into_iter().flatten() {
+                        let payload = operation["set_payload"]["payload"].clone();
+                        for id in operation["set_payload"]["points"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|id| id.as_str())
+                        {
+                            let Some(point) = stored.get_mut(id) else {
+                                continue;
+                            };
+                            point["payload"] = payload.clone();
+                            count += 1;
+                        }
                     }
-                    stored.insert(id, point);
-                }
-                (
-                    "put",
-                    count,
-                    r#"{"result":{"status":"completed"}}"#.to_owned(),
-                )
-            } else {
-                panic!("unexpected Qdrant request: {first}");
-            };
+                    (
+                        "payload",
+                        count,
+                        r#"{"result":{"status":"completed"}}"#.to_owned(),
+                    )
+                } else if first.starts_with("POST ") {
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body).expect("retrieve JSON");
+                    let points = request["ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|id| id.as_str())
+                        .filter_map(|id| stored.get(id).cloned())
+                        .collect::<Vec<_>>();
+                    (
+                        "retrieve",
+                        0,
+                        serde_json::json!({"result": points}).to_string(),
+                    )
+                } else if first.starts_with("PUT ") {
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body).expect("upsert JSON");
+                    let points = request["points"].as_array().cloned().unwrap_or_default();
+                    let count = points.len();
+                    for mut point in points {
+                        let Some(id) = point["id"].as_str().map(str::to_owned) else {
+                            continue;
+                        };
+                        if script.corrupt_after_put {
+                            point["payload"]["coordinate_key"] =
+                                serde_json::json!("rewritten-coordinate");
+                        }
+                        stored.insert(id, point);
+                    }
+                    (
+                        "put",
+                        count,
+                        r#"{"result":{"status":"completed"}}"#.to_owned(),
+                    )
+                } else {
+                    panic!("unexpected Qdrant request: {first}");
+                };
             transcript.push((kind, put_points));
             write!(
                 stream,
@@ -518,5 +543,269 @@ fn upsert_writes_only_the_point_missing_from_retrieve() {
     assert_eq!(
         transcript,
         [("retrieve", 0), ("put", 1), ("retrieve", 0), ("put", 1)]
+    );
+}
+
+#[test]
+fn residence_identity_survives_a_frontier_move_and_changes_with_the_row() {
+    use crate::Frontier;
+
+    let binding = upsert_binding();
+    let residence =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let mut moved = binding;
+    moved.frontier = Frontier::from_value(&[9; 32]);
+    let stable = PhysicalPointId::for_residence(binding.workspace, binding.recipe, residence);
+    assert_eq!(
+        stable,
+        PhysicalPointId::for_residence(moved.workspace, moved.recipe, residence)
+    );
+    let other =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:beta").expect("other");
+    assert_ne!(
+        stable,
+        PhysicalPointId::for_residence(binding.workspace, binding.recipe, other)
+    );
+    let other_recipe = crate::Recipe::from_value(&[9; 32]);
+    assert_ne!(
+        stable,
+        PhysicalPointId::for_residence(binding.workspace, other_recipe, residence)
+    );
+    assert!(PointResidence::for_row(binding.workspace, binding.recipe, "").is_err());
+}
+
+#[test]
+fn resident_upsert_rejects_a_duplicated_row_before_network_io() {
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let residence =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("document");
+    let resident = ResidentDocument {
+        residence,
+        write: CoordinateWrite::Hold,
+        document: &document,
+    };
+    let client = QdrantHttpClient::new(test_config("http://127.0.0.1:1".to_owned()), recipe)
+        .expect("client");
+    let error = client
+        .upsert_resident(binding, &[resident, resident])
+        .expect_err("duplicate residence");
+    assert!(matches!(error, HttpProviderError::BindingMismatch));
+}
+
+#[test]
+fn resident_frontier_rebind_writes_payload_and_keeps_the_vector() {
+    use crate::Frontier;
+
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let residence =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("document");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 4,
+        corrupt_after_put: false,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    let cold = client
+        .upsert_resident(
+            binding,
+            &[ResidentDocument {
+                residence,
+                write: CoordinateWrite::Replace,
+                document: &document,
+            }],
+        )
+        .expect("cold upsert");
+    assert_eq!(
+        cold,
+        ResidentMutationReceipt {
+            vectors: 1,
+            payloads: 0,
+            unchanged: 0,
+            batches: 1,
+        }
+    );
+    let mut moved = binding;
+    moved.frontier = Frontier::from_value(&[9; 32]);
+    let reminted = DocumentVector::new(
+        recipe,
+        CandidateId::new(99).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("reminted");
+    let warm = client
+        .upsert_resident(
+            moved,
+            &[ResidentDocument {
+                residence,
+                write: CoordinateWrite::Hold,
+                document: &reminted,
+            }],
+        )
+        .expect("payload rebind");
+    assert_eq!(
+        warm,
+        ResidentMutationReceipt {
+            vectors: 0,
+            payloads: 1,
+            unchanged: 0,
+            batches: 1,
+        }
+    );
+    let transcript = server.join().expect("server");
+    assert_eq!(
+        transcript,
+        [("retrieve", 0), ("put", 1), ("retrieve", 0), ("payload", 1)]
+    );
+}
+
+#[test]
+fn resident_hold_rejects_a_rewritten_coordinate_before_any_write() {
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let residence =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("document");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 3,
+        corrupt_after_put: true,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    client
+        .upsert_resident(
+            binding,
+            &[ResidentDocument {
+                residence,
+                write: CoordinateWrite::Hold,
+                document: &document,
+            }],
+        )
+        .expect("cold upsert");
+    let error = client
+        .upsert_resident(
+            binding,
+            &[ResidentDocument {
+                residence,
+                write: CoordinateWrite::Hold,
+                document: &document,
+            }],
+        )
+        .expect_err("rewritten coordinate");
+    assert!(matches!(error, HttpProviderError::ImmutableVector));
+    let transcript = server.join().expect("server");
+    assert_eq!(transcript, [("retrieve", 0), ("put", 1), ("retrieve", 0)]);
+}
+
+#[test]
+fn resident_replace_rewrites_one_vector_and_rebinds_the_sibling() {
+    use crate::Frontier;
+
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let alpha =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("alpha");
+    let beta =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:beta").expect("beta");
+    let alpha_document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("alpha");
+    let beta_document = DocumentVector::new(
+        recipe,
+        CandidateId::new(8).expect("candidate"),
+        vec![0.5, 0.25],
+    )
+    .expect("beta");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 5,
+        corrupt_after_put: false,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    client
+        .upsert_resident(
+            binding,
+            &[
+                ResidentDocument {
+                    residence: alpha,
+                    write: CoordinateWrite::Replace,
+                    document: &alpha_document,
+                },
+                ResidentDocument {
+                    residence: beta,
+                    write: CoordinateWrite::Replace,
+                    document: &beta_document,
+                },
+            ],
+        )
+        .expect("cold upsert");
+    let mut moved = binding;
+    moved.frontier = Frontier::from_value(&[9; 32]);
+    let revised = DocumentVector::new(
+        recipe,
+        CandidateId::new(70).expect("candidate"),
+        vec![0.75, -0.25],
+    )
+    .expect("revised");
+    let sibling = DocumentVector::new(
+        recipe,
+        CandidateId::new(80).expect("candidate"),
+        vec![0.5, 0.25],
+    )
+    .expect("sibling");
+    let delta = client
+        .upsert_resident(
+            moved,
+            &[
+                ResidentDocument {
+                    residence: alpha,
+                    write: CoordinateWrite::Replace,
+                    document: &revised,
+                },
+                ResidentDocument {
+                    residence: beta,
+                    write: CoordinateWrite::Hold,
+                    document: &sibling,
+                },
+            ],
+        )
+        .expect("mixed revision");
+    assert_eq!(
+        delta,
+        ResidentMutationReceipt {
+            vectors: 1,
+            payloads: 1,
+            unchanged: 0,
+            batches: 2,
+        }
+    );
+    let transcript = server.join().expect("server");
+    assert_eq!(
+        transcript,
+        [
+            ("retrieve", 0),
+            ("put", 2),
+            ("retrieve", 0),
+            ("put", 1),
+            ("payload", 1)
+        ]
     );
 }
