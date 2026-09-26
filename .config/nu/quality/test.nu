@@ -223,7 +223,6 @@ def "main test pr" []: nothing -> record {
         "--package" "backend-worker"
         "--package" "backend-desktop"
     ] | ignore
-    let invocation = (nextest-invocation "pr")
     # The PR lane proves the product works: every shipped binary builds, and
     # unit, MCP, CLI, locald, desktop, journey, storage, and crash tests pass.
     # Deep engine-accuracy suites (real-package corpora, pinned reference and
@@ -232,30 +231,63 @@ def "main test pr" []: nothing -> record {
     # gate a PR.
     let deep_accuracy = "binary_id(/^backend-engine::.*(corpus|repro|snapshot|terminals|golden|fleet|lane|render|image|lifecycle|packaging|identity_regressions)/) or binary_id(/^backend-flow::(compiler|system)_corpus$/) or binary_id(/^backend-semantic::render_snapshot_corpus$/) or package(backend-performance-tests)"
     let filter = $"not \(($deep_accuracy)\) and not test\(real_package_inventory_keeps_source_provenance_and_closed_terminals\) and not test\(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render\) and not test\(twenty_real_crates_compile_with_decoded_lanes\)"
+    # Contention proofs (dozens of writers, thousands of keys) starve the
+    # timing-sensitive tests beside them (build 2397), and the nextest group
+    # that once throttled them never started any of them on Linux (builds
+    # 2321-2390). Run them in their own pass, two at a time, after the rest;
+    # both passes always run so one red run reports every failure.
+    let contention = "test(/loom|contention|concurrent/)"
+    let passes = [
+        {
+            filter: $"($filter) and not ($contention)"
+            threads: null
+        }
+        {
+            filter: $"($filter) and ($contention)"
+            threads: "2"
+        }
+    ]
+    let results = $passes | each {|pass| run-pr-pass $cargo $pass.filter $pass.threads }
+    let failures = $results | where failure != null
+    if not ($failures | is-empty) {
+        error make {
+            msg: ($failures | get failure.msg | str join "; ")
+        }
+    }
+    {
+        level: "pr"
+        owner: (active-role)
+        run: ($results | get invocation.id)
+        evidence: ($results | get invocation.evidence)
+    }
+}
+
+# Runs one nextest pass of the PR lane with its own JUnit evidence, and names
+# any listed test that never finished when the pass fails.
+def run-pr-pass [cargo: string, filter: string, threads]: nothing -> record {
+    let invocation = (nextest-invocation "pr")
+    let thread_arguments = if $threads == null { [] } else { ["--test-threads" $threads] }
     let failure = (
         try {
-            process-require $cargo [
-                "nextest"
-                "run"
-                "--locked"
-                "--no-tests=fail"
-                "--workspace"
-                "--no-fail-fast"
-                "--config-file" $invocation.config
-                "--profile" "pr"
-                "-E" $filter
-            ] | ignore
+            process-require $cargo (
+                [
+                    "nextest"
+                    "run"
+                    "--locked"
+                    "--no-tests=fail"
+                    "--workspace"
+                    "--no-fail-fast"
+                    "--config-file" $invocation.config
+                    "--profile" "pr"
+                ]
+                | append $thread_arguments
+                | append ["-E" $filter]
+            ) | ignore
             null
         } catch {|error| $error }
     )
     if $failure != null {
         report-unfinished-tests $cargo $filter $invocation
-        error make {msg: $failure.msg}
     }
-    {
-        level: "pr"
-        owner: (active-role)
-        run: $invocation.id
-        evidence: $invocation.evidence
-    }
+    {invocation: $invocation, failure: $failure}
 }
