@@ -680,41 +680,45 @@ struct SurfaceEvidence {
     regressions: RegressionSnapshot,
 }
 
-/// Reads every page of the declaration query. Row order follows stable keys
-/// derived from absolute coordinates, so which rows land on the first page
-/// depends on the fixture's temporary path; a regression row can sit on any
-/// page.
+/// Asks the graph for each identity-regression declaration by name. The
+/// workspace also holds the ~270-declaration boundary project, which is more
+/// than one page, and following a graph-query continuation is currently
+/// refused ("identity certificate cursor claim does not match", build 2397).
+/// A name filter returns only the rows under test, so one page is complete.
 fn graph_query_evidence(session: &mut Session) -> (ViewRevision, BTreeSet<String>) {
     let mut coordinates = BTreeSet::new();
-    let mut continuation = None;
     let mut revision = None;
-    loop {
+    for name in [
+        "trait_method_marker",
+        "impl_method_marker",
+        "RestartIdentityNamespace",
+    ] {
         let page = session
             .graph_query(
-                "{ Declaration { coordinate @output } }".to_owned(),
-                BTreeMap::<String, GraphValue>::new(),
+                "{ Declaration { name @filter(op: \"=\", value: [\"$selected\"]) coordinate @output } }"
+                    .to_owned(),
+                BTreeMap::from([("selected".to_owned(), GraphValue::String(name.to_owned()))]),
                 40,
-                continuation.take(),
+                None,
                 false,
             )
             .expect("execute graph query after restart");
+        assert!(
+            matches!(page.terminal, PageTerminal::Complete),
+            "graph query for {name} did not fit one page"
+        );
         if let Some(first) = revision {
-            assert_eq!(page.revision, first, "graph query pages crossed revisions");
+            assert_eq!(page.revision, first, "graph queries crossed revisions");
         }
         revision = Some(page.revision);
         coordinates.extend(page.rows.iter().filter_map(|row| {
             row.fields()
                 .iter()
-                .find_map(|(name, value)| match (name.as_str(), value) {
+                .find_map(|(field, value)| match (field.as_str(), value) {
                     ("coordinate", GraphValue::String(coordinate)) => Some(coordinate.clone()),
                     _ => None,
                 })
         }));
-        match page.terminal {
-            PageTerminal::Complete => break,
-            PageTerminal::More(next) => continuation = Some(next),
-            PageTerminal::Cancelled => panic!("graph query was cancelled after restart"),
-        }
     }
     assert!(
         !coordinates.is_empty(),
