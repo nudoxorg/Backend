@@ -141,6 +141,7 @@ struct Collector<'unit, 'scratch> {
     includes: usize,
     overrides: usize,
     parameters: Vec<StashedParameter>,
+    project_paths: Vec<Box<str>>,
     cancellation: Option<&'unit AtomicBool>,
     failure: Option<CollectError>,
 }
@@ -163,6 +164,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             includes: 0,
             overrides: 0,
             parameters: Vec::new(),
+            project_paths: Vec::new(),
             cancellation,
             failure: None,
         }
@@ -588,7 +590,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
     }
 
     /// Resolves one referenced cursor into a local, foreign, or exact unresolved fact.
-    fn reference_target(&self, cursor: CXCursor) -> Result<ReferenceTarget, CollectError> {
+    fn reference_target(&mut self, cursor: CXCursor) -> Result<ReferenceTarget, CollectError> {
         if TranslationUnit::is_null_cursor(cursor) {
             return Ok(ReferenceTarget::Unresolved);
         }
@@ -598,9 +600,19 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         if self.unit.is_local(cursor)? {
             Ok(ReferenceTarget::Local(identity))
         } else {
+            let path = self
+                .unit
+                .cursor_relative_path(cursor)
+                .and_then(|relative| {
+                    backend_semantic::ir::PackageLineage::new("c", &relative).ok()?;
+                    let slot = u32::try_from(self.project_paths.len()).ok()?;
+                    self.project_paths.push(relative.into_boxed_str());
+                    Some(slot)
+                });
             Ok(ReferenceTarget::Foreign {
                 identity,
                 file: self.unit.cursor_file_identity(cursor),
+                path,
             })
         }
     }
@@ -767,6 +779,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 self.overrides,
                 ScratchLane::Overrides,
             )?,
+            project_paths: self.project_paths,
         })
     }
 }

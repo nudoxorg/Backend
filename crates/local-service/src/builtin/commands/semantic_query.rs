@@ -3101,6 +3101,264 @@ mod project_call_tests {
         Ok(())
     }
 
+    fn c_header_foreign_call_fixture(foreign_key: u8) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"include/decl.h",
+            path_specifier: Some(b"declared_in_header"),
+            display: b"declared_in_header",
+            foreign_key,
+            link_kind: LinkKind::Calls,
+        }
+    }
+
+    #[test]
+    fn project_call_c_header_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let header_bytes = project_call_image(
+            "include/decl.h",
+            1,
+            b"declared_in_header",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/main.c",
+            2,
+            b"use",
+            TreeEntityId::new(0),
+            Some(c_header_foreign_call_fixture(90)),
+        )?;
+        let callee_identity = fixture_version(1).identity();
+        let caller_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("include/decl.h", 1, "declared_in_header", fixture_version(1)),
+                ("src/main.c", 2, "use", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let caller_id = RowId::Symbol(semantic_symbol(package, caller_identity));
+        let callee_id = RowId::Symbol(semantic_symbol(package, callee_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&header_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, caller_identity),
+            caller_id,
+            false,
+            &project_paths(&["include/decl.h", "src/main.c"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, caller_id);
+        if targets != vec![callee_id] {
+            return Err(format!(
+                "expected use to call declared_in_header semantic row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_c_header_src_include_suffix_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let header_bytes = project_call_image(
+            "src/include/decl.h",
+            1,
+            b"declared_in_header",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/main.c",
+            2,
+            b"use",
+            TreeEntityId::new(0),
+            Some(c_header_foreign_call_fixture(91)),
+        )?;
+        let callee_identity = fixture_version(1).identity();
+        let caller_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/include/decl.h", 1, "declared_in_header", fixture_version(1)),
+                ("src/main.c", 2, "use", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let caller_id = RowId::Symbol(semantic_symbol(package, caller_identity));
+        let callee_id = RowId::Symbol(semantic_symbol(package, callee_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&header_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, caller_identity),
+            caller_id,
+            false,
+            &project_paths(&["src/include/decl.h", "src/main.c"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, caller_id);
+        if targets != vec![callee_id] {
+            return Err(format!(
+                "expected use to call src/include/decl.h declared_in_header row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_c_header_extra_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let header_bytes = project_call_image(
+            "include/decl_extra.h",
+            1,
+            b"declared_in_header",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/main.c",
+            2,
+            b"use",
+            TreeEntityId::new(0),
+            Some(c_header_foreign_call_fixture(92)),
+        )?;
+        let caller_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("include/decl_extra.h", 1, "declared_in_header", fixture_version(1)),
+                ("src/main.c", 2, "use", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let caller_id = RowId::Symbol(semantic_symbol(package, caller_identity));
+        let callee_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&header_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, caller_identity),
+            caller_id,
+            false,
+            &project_paths(&["include/decl_extra.h", "src/main.c"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, caller_id).contains(&callee_id) {
+            return Err("include/decl_extra.h must not satisfy include/decl.h".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_c_header_ambiguous_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let root_header_bytes = project_call_image(
+            "include/decl.h",
+            1,
+            b"declared_in_header",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let app_header_bytes = project_call_image(
+            "app/include/decl.h",
+            3,
+            b"declared_in_header",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/main.c",
+            2,
+            b"use",
+            TreeEntityId::new(0),
+            Some(c_header_foreign_call_fixture(93)),
+        )?;
+        let caller_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("include/decl.h", 1, "declared_in_header", fixture_version(1)),
+                ("src/main.c", 2, "use", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let caller_id = RowId::Symbol(semantic_symbol(package, caller_identity));
+        let callee_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&root_header_bytes, &app_header_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, caller_identity),
+            caller_id,
+            false,
+            &project_paths(&["include/decl.h", "app/include/decl.h", "src/main.c"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, caller_id).contains(&callee_id) {
+            return Err("ambiguous include/decl.h path must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_c_header_retarget_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let header_bytes = project_call_image(
+            "include/decl.h",
+            1,
+            b"declared_in_header",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/main.c",
+            2,
+            b"use",
+            TreeEntityId::new(0),
+            Some(c_header_foreign_call_fixture(94)),
+        )?;
+        let callee_identity = fixture_version(1).identity();
+        let caller_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("include/decl.h", 1, "declared_in_header", fixture_version(1)),
+                ("src/main.c", 2, "use", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&header_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, callee_identity),
+            &project_paths(&["include/decl.h", "src/main.c"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        let fact = &facts[0];
+        if fact.site != semantic_symbol(package, caller_identity) {
+            return Err("c header retarget site is not use".to_owned());
+        }
+        if fact.relation != backend_engine::SemanticLinkKind::Calls {
+            return Err(format!("c header retarget relation is {:?}", fact.relation));
+        }
+        let expected_target = semantic_declaration_identity(callee_identity);
+        if !matches!(
+            &fact.target,
+            backend_engine::SemanticLinkTarget::Local { declaration }
+                if *declaration == expected_target
+        ) {
+            return Err("c header retarget target is not declared_in_header".to_owned());
+        }
+        Ok(())
+    }
+
     fn analyze_source(path: &str, source: &str) -> Result<Arc<[backend_compile::SourceDeclaration]>, String> {
         Ok(
             backend_frontend_typescript::syntax_frontend()

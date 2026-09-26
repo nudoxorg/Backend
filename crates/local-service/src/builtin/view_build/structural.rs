@@ -1018,6 +1018,7 @@ pub(crate) fn resolve_specifier_paths(
     push_dotted_module_paths(specifier, project_paths, &mut resolved);
     push_go_import_paths(specifier, project_paths, &mut resolved);
     push_rust_module_paths(specifier, project_paths, &mut resolved);
+    push_c_family_paths(specifier, project_paths, &mut resolved);
     resolved
 }
 
@@ -1044,6 +1045,34 @@ fn push_rust_module_paths(
             resolved.insert(path.clone());
         }
         if path == &mod_rs || path.ends_with(&format!("/{mod_rs}")) {
+            resolved.insert(path.clone());
+        }
+    }
+}
+
+fn is_c_family_path_specifier(specifier: &str) -> bool {
+    if specifier.is_empty()
+        || specifier.starts_with('.')
+        || !specifier.contains('/')
+        || specifier.contains("::")
+        || specifier.split('/').any(str::is_empty)
+    {
+        return false;
+    }
+    const SUFFIXES: [&str; 8] = [".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx"];
+    SUFFIXES.iter().any(|suffix| specifier.ends_with(suffix))
+}
+
+fn push_c_family_paths(
+    specifier: &str,
+    project_paths: &BTreeSet<String>,
+    resolved: &mut BTreeSet<String>,
+) {
+    if !is_c_family_path_specifier(specifier) {
+        return;
+    }
+    for path in project_paths {
+        if path == specifier || path.ends_with(&format!("/{specifier}")) {
             resolved.insert(path.clone());
         }
     }
