@@ -49,7 +49,11 @@ impl HasWindowHandle for TestWindow {
     fn window_handle(
         &self,
     ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
-        unimplemented!("Test Windows are not backed by a real platform window")
+        // Test windows have no native view. Reporting "unsupported" instead
+        // of panicking lets call sites that gracefully degrade without a
+        // raw handle (for example the macOS text-content-type sync) keep
+        // working under headless test platforms.
+        Err(raw_window_handle::HandleError::NotSupported)
     }
 }
 
@@ -57,7 +61,7 @@ impl HasDisplayHandle for TestWindow {
     fn display_handle(
         &self,
     ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
-        unimplemented!("Test Windows are not backed by a real platform window")
+        Err(raw_window_handle::HandleError::NotSupported)
     }
 }
 
@@ -234,7 +238,19 @@ impl PlatformWindow for TestWindow {
     }
 
     fn is_active(&self) -> bool {
-        false
+        // A real OS window reports active whenever it is the foreground
+        // window. The headless platform has no foreground, so with no
+        // explicit activation the sole open window is implicitly active;
+        // this keeps focus-path publication (blur/focus observers) working
+        // without firing activation callbacks that shift frame timing.
+        let state = self.0.lock();
+        let Some(platform) = state.platform.upgrade() else {
+            return false;
+        };
+        match platform.active_window.borrow().as_ref() {
+            Some(active) => Rc::ptr_eq(&active.0, &self.0),
+            None => true,
+        }
     }
 
     fn is_hovered(&self) -> bool {
