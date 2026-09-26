@@ -674,3 +674,185 @@ fn python_inherited_field_read_ambiguous_local_stays_universe() -> Result<(), Te
     universe_field_access(&rows, read, "note")?;
     Ok(())
 }
+
+#[test]
+fn python_enclosing_class_method_value_same_class() -> Result<(), TestError> {
+    let source = b"class Item:\n    def note(self):\n        pass\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let item_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, item_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_method_value_inherited() -> Result<(), TestError> {
+    let source = b"class Base:\n    def note(self):\n        pass\n\nclass Child(Base):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_method_value_two_level_chain() -> Result<(), TestError> {
+    let source = b"class Grand:\n    def note(self):\n        pass\n\nclass Base(Grand):\n    pass\n\nclass Child(Base):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let grand_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Grand", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, grand_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_method_value_child_shadows_base() -> Result<(), TestError> {
+    let source = b"class Base:\n    def note(self):\n        pass\n\nclass Child(Base):\n    def note(self):\n        pass\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let child_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    if base_note == child_note {
+        return Err(TestError::Falsified("Base.note and Child.note are one method"));
+    }
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, child_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_field_wins_over_method_on_class() -> Result<(), TestError> {
+    let source = b"class Child:\n    note: str\n    def note(self):\n        pass\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let child_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    let child_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    if child_field == child_method {
+        return Err(TestError::Falsified("Child field and method share one ordinal"));
+    }
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, child_field)?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_inherited_field_wins_over_inherited_method() -> Result<(), TestError> {
+    let source = b"class Base:\n    note: str\n    def note(self):\n        pass\n\nclass Child(Base):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let base_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if base_field == base_method {
+        return Err(TestError::Falsified("Base field and method share one ordinal"));
+    }
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, base_field)?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_ambiguous_local_methods_stays_universe() -> Result<(), TestError> {
+    let source = b"class Child:\n    class Helper:\n        def note(self):\n            pass\n    def note(self):\n        pass\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let class_span = class_span(&module, b"Child")?;
+    let mut method_indexes: Vec<usize> = Vec::new();
+    for (index, declaration) in module.declarations.iter().enumerate() {
+        if declaration.kind == DeclarationKind::Function
+            && declaration.name.as_bytes() == b"note"
+            && declaration.span.start >= class_span.start
+            && declaration.span.end <= class_span.end
+        {
+            method_indexes.push(index);
+        }
+    }
+    if method_indexes.len() != 2 {
+        return Err(TestError::Falsified("Child does not declare two note methods"));
+    }
+    let helper_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Helper", b"note")?;
+    let named_methods: Vec<EntityId> = decoded
+        .entities()
+        .filter(|entity| {
+            entity.kind == EntityKind::Function
+                && atoms.get(entity.name.raw as usize).copied() == Some(b"note")
+        })
+        .map(|entity| entity.entity)
+        .collect();
+    if named_methods.len() < 2 {
+        return Err(TestError::Falsified("two note method entities absent"));
+    }
+    if named_methods.iter().all(|ordinal| *ordinal == helper_note) {
+        return Err(TestError::Falsified("only one distinct note method entity"));
+    }
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    universe_field_access(&rows, read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_ambiguous_inherited_methods_stays_universe() -> Result<(), TestError> {
+    let source = b"class Left:\n    def note(self):\n        pass\n\nclass Right:\n    def note(self):\n        pass\n\nclass Child(Left, Right):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let left_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
+    let right_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if left_note == right_note {
+        return Err(TestError::Falsified("Left.note and Right.note are one method"));
+    }
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    universe_field_access(&rows, read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_ambiguous_inherited_fields_do_not_fall_through_to_method(
+) -> Result<(), TestError> {
+    let source = b"class Left:\n    note: str\n\nclass Right:\n    note: str\n    def note(self):\n        pass\n\nclass Child(Left, Right):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
+    let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if left_note == right_note {
+        return Err(TestError::Falsified("Left.note and Right.note are one field"));
+    }
+    let right_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if right_note == right_method {
+        return Err(TestError::Falsified("Right field and method share one ordinal"));
+    }
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    universe_field_access(&rows, read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn python_enclosing_class_imported_only_base_stays_universe() -> Result<(), TestError> {
+    let source = b"from workout.service import WorkoutService\n\nclass Child(WorkoutService):\n    def read(self):\n        return self.note\n";
+    let (fragment, _module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    universe_field_access(&rows, read, "note")?;
+    Ok(())
+}

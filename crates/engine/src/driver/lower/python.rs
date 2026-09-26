@@ -234,6 +234,16 @@ enum BindingResolution {
     External,
 }
 
+/// Outcome of walking same-file bases for one member spelling.
+enum InheritedMemberStatus {
+    /// Exactly one distinct ordinal across all branches.
+    Unique(u32),
+    /// Two or more distinct ordinals, or a base declares more than one.
+    Ambiguous,
+    /// No base in the walk declares the member.
+    Absent,
+}
+
 impl BindingResolution {
     fn nominal_ordinal(&self) -> Option<u32> {
         match self {
@@ -1803,9 +1813,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// earliest pushed row with the same name. Import bindings become
     /// foreign `pypi` package keys, since the referenced declaration lives
     /// outside this fragment; the checker's resolution decides the tier.
-    /// Widened attribute rows key by receiver: a `self`/`cls` use resolves
-    /// to the member its enclosing class declares, or to the unique member
-    /// of that spelling on a same-file base when the class declares none.
+    /// Widened attribute rows key by receiver: a `self`/`cls` read resolves
+    /// to the unique field its enclosing class or a same-file base declares,
+    /// or to the unique method of that spelling when no field exists. A
+    /// `self`/`cls` call resolves to the method its enclosing class declares,
+    /// or to the unique method of that spelling on a same-file base when the
+    /// class declares none.
     /// Every other receiver stays honestly foreign (an imported module
     /// receiver still resolves through its own package key) — never a
     /// fabricated local.
@@ -1864,7 +1877,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             }
             OccurrenceReceiver::EnclosingClass { class } => {
                 if occurrence.kind == OccurrenceKind::AttributeRead {
-                    match self.enclosing_field(occurrence, class) {
+                    match self.enclosing_attribute_read(occurrence, class) {
                         Some(ordinal) => {
                             let confidence = match checked {
                                 Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
@@ -1875,8 +1888,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 confidence,
                             )))
                         }
-                        // No unique field on the enclosing class or its same-file
-                        // bases: an honest typed foreign field key.
+                        // No unique field or method on the enclosing class or its
+                        // same-file bases: an honest typed foreign field key.
                         None => Ok(Some((
                             foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
                             OccurrenceConfidence::Index,
@@ -2090,17 +2103,41 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-    fn enclosing_field(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
+    /// Resolves one widened `self`/`cls` attribute read to a field or method
+    /// ordinal. Fields are decided first: a unique local or inherited field
+    /// wins without consulting methods; ambiguous fields stay unresolved.
+    /// Methods are considered only when no field exists anywhere on the class
+    /// or its same-file bases.
+    fn enclosing_attribute_read(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
         let class_span = self.enclosing_class_span(occurrence, class)?;
         let attribute_bytes = occurrence.target.as_bytes();
-        let local = self.member_ordinals_in_class(class_span, DeclarationKind::Field, attribute_bytes);
-        match local.len() {
-            1 => Some(local[0]),
-            n if n > 1 => None,
-            _ => {
-                let class_index = self.class_index_for_span(class_span)?;
-                self.inherited_member_ordinal(class_index, DeclarationKind::Field, attribute_bytes)
-            }
+        let local_fields =
+            self.member_ordinals_in_class(class_span, DeclarationKind::Field, attribute_bytes);
+        match local_fields.len() {
+            1 => return Some(local_fields[0]),
+            n if n > 1 => return None,
+            _ => {}
+        }
+        let class_index = self.class_index_for_span(class_span)?;
+        match self.inherited_member_status(class_index, DeclarationKind::Field, attribute_bytes) {
+            InheritedMemberStatus::Unique(ordinal) => return Some(ordinal),
+            InheritedMemberStatus::Ambiguous => return None,
+            InheritedMemberStatus::Absent => {}
+        }
+        let local_methods = self.member_ordinals_in_class(
+            class_span,
+            DeclarationKind::Function,
+            attribute_bytes,
+        );
+        match local_methods.len() {
+            1 => return Some(local_methods[0]),
+            n if n > 1 => return None,
+            _ => {}
+        }
+        match self.inherited_member_status(class_index, DeclarationKind::Function, attribute_bytes)
+        {
+            InheritedMemberStatus::Unique(ordinal) => Some(ordinal),
+            InheritedMemberStatus::Ambiguous | InheritedMemberStatus::Absent => None,
         }
     }
 
@@ -2145,15 +2182,32 @@ impl<'a, 'source> Emitter<'a, 'source> {
         member_kind: DeclarationKind,
         spelling: &[u8],
     ) -> Option<u32> {
+        match self.inherited_member_status(class_index, member_kind, spelling) {
+            InheritedMemberStatus::Unique(ordinal) => Some(ordinal),
+            InheritedMemberStatus::Ambiguous | InheritedMemberStatus::Absent => None,
+        }
+    }
+
+    /// Distinguishes a unique inherited member from an ambiguous walk and
+    /// from a walk that found nothing.
+    fn inherited_member_status(
+        &self,
+        class_index: usize,
+        member_kind: DeclarationKind,
+        spelling: &[u8],
+    ) -> InheritedMemberStatus {
         let mut visited = HashSet::new();
         let mut found: Option<u32> = None;
         if self
             .walk_inherited_member(class_index, member_kind, spelling, 0, &mut visited, &mut found)
             .is_none()
         {
-            return None;
+            return InheritedMemberStatus::Ambiguous;
         }
-        found
+        match found {
+            Some(ordinal) => InheritedMemberStatus::Unique(ordinal),
+            None => InheritedMemberStatus::Absent,
+        }
     }
 
     /// Walks same-file bases for one member spelling. `found` accumulates the
