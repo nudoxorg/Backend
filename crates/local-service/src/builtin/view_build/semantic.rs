@@ -49,12 +49,22 @@ pub(crate) struct ProjectedRows {
 /// Current paths per (project, profile) whose published image is stale.
 pub(super) type ProfileStalePaths =
     BTreeMap<([u8; 32], backend_semantic::vocabulary::LanguageProfile), BTreeSet<String>>;
+/// How a semantic publication for a package outside `sources` is treated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ForeignPublication {
+    /// A complete publication whose package frontier is absent is corrupt.
+    Reject,
+    /// Package-scoped publication leaves every other package's image closed.
+    Skip,
+}
+
 pub(crate) fn rows_for_indexed_sources(
     initial: &ViewRoot,
     sources: &IndexedSources,
     snapshot: &WorkspaceSnapshot,
     compiler: &LocalCompilerClient,
     workspace: &std::path::Path,
+    foreign: ForeignPublication,
 ) -> Result<ProjectedRows, BuiltinModelError> {
     if sources.projects.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -73,6 +83,7 @@ pub(crate) fn rows_for_indexed_sources(
         &sites,
         initial,
         MAX_REBUILD_PACKAGES - sources.projects.len(),
+        foreign,
     )?;
     let source_capacity = projected_source_capacity(sources, &semantics.complete)?;
     let total_capacity = source_capacity
@@ -352,6 +363,7 @@ fn semantic_rows(
     sites: &StructuralSites<'_>,
     initial: &ViewRoot,
     row_capacity: usize,
+    foreign: ForeignPublication,
 ) -> Result<SemanticRows, BuiltinModelError> {
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -375,6 +387,11 @@ fn semantic_rows(
             })?;
         for (key, record) in page.entries() {
             if !key.is_selected() {
+                continue;
+            }
+            if !projects.contains_key(key.package_key().as_bytes())
+                && matches!(foreign, ForeignPublication::Skip)
+            {
                 continue;
             }
             let target = (
