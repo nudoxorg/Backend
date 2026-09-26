@@ -3100,7 +3100,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Runs the ordered projection: the self-nominal declaration pass, the
     /// alias/member/signature/variable pass, the checker computed pass, the
     /// narrowing pass, the reference pass, the checker-only reference pass,
-    /// then the documentation pass.
+    /// the static property-access pass, then the documentation pass.
     fn run(&mut self) -> Result<(), TypeScriptCollectError> {
         self.pass_declarations()?;
         self.pass_members()?;
@@ -3108,6 +3108,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.pass_narrowings()?;
         self.pass_references()?;
         self.pass_checker_references()?;
+        self.pass_property_accesses()?;
         self.pass_docs()?;
         self.pass_parentage()?;
         Ok(())
@@ -4425,6 +4426,161 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             )));
         }
         Ok(None)
+    }
+
+    /// Pass seven: static member property tokens OXC never binds. Each site
+    /// names only the property identifier span; checker-resolved sites are
+    /// left untouched when [`occurrence_covers`] already owns that span.
+    fn pass_property_accesses(&mut self) -> Result<(), TypeScriptCollectError> {
+        let nodes = self.semantic.nodes();
+        for node in nodes.iter() {
+            let Some(member) = node.kind().as_static_member_expression() else {
+                continue;
+            };
+            let property_span = member.property.span;
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let parent = nodes.get_node(nodes.parent_id(node.id())).kind();
+            let kind = if parent
+                .as_call_expression()
+                .is_some_and(|call| call.callee.span() == member.span)
+            {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::FieldAccess
+            };
+            let (target, confidence) = if Self::is_this_receiver(AstKind::from_expression(
+                &member.object,
+            )) {
+                self.this_property_target(property_span, kind)?
+            } else {
+                self.syntactic_property_target(property_span)?
+            };
+            self.commit_occurrence(owner, property_span, kind, target, confidence)?;
+        }
+        Ok(())
+    }
+
+    /// Reports whether one expression is `this`, peeling one parenthesized
+    /// wrapper when the source wrote `(this)`.
+    fn is_this_receiver(kind: AstKind<'_>) -> bool {
+        if kind.as_this_expression().is_some() {
+            return true;
+        }
+        kind.as_parenthesized_expression()
+            .and_then(|wrapped| {
+                AstKind::from_expression(&wrapped.expression)
+                    .as_this_expression()
+            })
+            .is_some()
+    }
+
+    /// Resolves the innermost pushed class record whose declaring span
+    /// contains `position`.
+    fn enclosing_record(&self, position: u32) -> Option<u32> {
+        let length = self.facts.len;
+        let mut best: Option<(u32, u32)> = None;
+        for index in 0..length {
+            let ordinal = coordinate(index).ok()?;
+            if self.fact_kinds.get(index).copied() != Some(EntityKind::Record) {
+                continue;
+            }
+            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if start != UNSET
+                && end != UNSET
+                && start <= position
+                && position < end
+                && best.is_none_or(|(known, _)| start >= known)
+            {
+                best = Some((start, ordinal));
+            }
+        }
+        best.map(|(_, ordinal)| ordinal)
+    }
+
+    /// Resolves one `this.property` site through the enclosing class when
+    /// exactly one same-name member of the expected kind lives there.
+    fn this_property_target(
+        &self,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let Some(class) = self.enclosing_record(property_span.start) else {
+            return self.syntactic_property_target(property_span);
+        };
+        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        let expected_kind = match kind {
+            ReferenceKind::FunctionCall => EntityKind::Function,
+            ReferenceKind::FieldAccess => EntityKind::Field,
+            _ => return self.syntactic_property_target(property_span),
+        };
+        let candidates = self
+            .facts_by_name
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        let mut matched = None;
+        for ordinal in candidates {
+            let Some(index) = usize::try_from(ordinal).ok() else {
+                continue;
+            };
+            if self.fact_kinds.get(index).copied() != Some(expected_kind) {
+                continue;
+            }
+            let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            if decl_start == UNSET
+                || self.enclosing_registered_owner(decl_start, Some(ordinal)) != Some(class)
+            {
+                continue;
+            }
+            if matched.is_some() {
+                return self.syntactic_property_target(property_span);
+            }
+            matched = Some(ordinal);
+        }
+        match matched {
+            Some(fact) => Ok((
+                OccurrenceTarget::Local(EntityId::new(fact)),
+                OccurrenceConfidence::Index,
+            )),
+            None => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Builds the honest npm-universe foreign key for one unresolved property
+    /// token, borrowing the exact source spelling as path and display.
+    fn syntactic_property_target(
+        &self,
+        span: Span,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let name = self.text_span(span).ok_or(TypeScriptCollectError::Span {
+            start: span.start,
+            end: span.end,
+        })?;
+        let key = ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: NPM_ECOSYSTEM,
+            },
+            name,
+            name,
+            None,
+        )
+        .map_err(|cause| foreign_fault(cause, span))?;
+        Ok((
+            OccurrenceTarget::Foreign(key),
+            OccurrenceConfidence::Syntactic,
+        ))
     }
 
     /// Resolves one type-reference name through the checker's report when
