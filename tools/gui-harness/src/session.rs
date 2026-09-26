@@ -59,6 +59,13 @@ pub struct Drawn {
     pub callbacks: usize,
     /// Wall time of `Window::draw` (render + layout + prepaint + paint).
     pub cpu: Duration,
+    /// Wall time dispatching script acts since the previous draw, including
+    /// their immediate foreground tasks. Background quiescence and draw are separate.
+    pub input_cpu: Duration,
+    /// Script acts dispatched since the previous draw (not physical key count).
+    pub input_events: usize,
+    /// The slowest single script-act dispatch in this batch.
+    pub input_max: Duration,
     /// The logical viewport the frame was drawn at.
     pub viewport: Viewport,
     /// Whether the pixels were read back.
@@ -86,7 +93,11 @@ pub struct Session {
     pressed: Option<Button>,
     pointer: Option<Point<Pixels>>,
     timings: FrameTimingCollector,
+    retain_frame_timings: bool,
     quiet: Option<Quiet>,
+    input_cpu: Duration,
+    input_events: usize,
+    input_max: Duration,
 }
 
 /// A product's "nothing in flight" predicate (it may land finished work
@@ -170,12 +181,37 @@ impl Session {
             pressed: None,
             pointer: None,
             timings,
+            retain_frame_timings: true,
             quiet: None,
+            input_cpu: Duration::ZERO,
+            input_events: 0,
+            input_max: Duration::ZERO,
         };
         session.settle_tasks();
         // Draws made while opening belong to no frame of the timeline.
         let _ = session.timings.collect_unseen();
         Ok(session)
+    }
+
+    /// Whether to retain GPUI's bounded global trace history after consuming
+    /// this session's invalidations. Memory experiments disable retention so
+    /// trace-buffer growth cannot be mistaken for application retention.
+    /// Timing and invalidation samples remain available for every draw.
+    pub fn set_frame_timing_retention(&mut self, retain: bool) {
+        self.retain_frame_timings = retain;
+        if !retain {
+            self.clear_frame_timing_history();
+        }
+    }
+
+    fn clear_frame_timing_history(&mut self) {
+        // The existing off transition clears and releases the global ring.
+        // Reset the collector's cursor when total_pushed is reset to zero.
+        // This policy belongs to a memory-only session; ordinary perf runs
+        // retain their trace history and do not pay this allocation overhead.
+        gpui::set_frame_trace_enabled(false);
+        gpui::set_frame_trace_enabled(true);
+        self.timings = FrameTimingCollector::new();
     }
 
     /// The simulated frame period (0 = no frame loop).
@@ -398,10 +434,18 @@ impl Session {
         act: &Act,
         adapter: &mut dyn FnMut(&Act, &mut Window, &mut App),
     ) -> Result<(), CaptureError> {
-        self.dispatch_act(act)?;
-        self.update(|window, cx| adapter(act, window, cx))?;
-        self.settle_tasks();
-        Ok(())
+        let started = Instant::now();
+        let result = (|| {
+            self.dispatch_act(act)?;
+            self.update(|window, cx| adapter(act, window, cx))?;
+            self.settle_tasks();
+            Ok(())
+        })();
+        let elapsed = started.elapsed();
+        self.input_cpu += elapsed;
+        self.input_events += 1;
+        self.input_max = self.input_max.max(elapsed);
+        result
     }
 
     fn dispatch_act(&mut self, act: &Act) -> Result<(), CaptureError> {
@@ -493,6 +537,9 @@ impl Session {
         &mut self,
         capture: bool,
     ) -> Result<(Drawn, Option<image::RgbaImage>), CaptureError> {
+        let input_cpu = std::mem::take(&mut self.input_cpu);
+        let input_events = std::mem::take(&mut self.input_events);
+        let input_max = std::mem::take(&mut self.input_max);
         let (callbacks, cpu) = self.update(|window, cx| {
             let callbacks = window.simulate_next_frame(cx);
             let started = Instant::now();
@@ -509,6 +556,9 @@ impl Session {
             .filter(|timing| timing.window_id == window_id)
             .map(|timing| timing.invalidations)
             .sum();
+        if !self.retain_frame_timings {
+            self.clear_frame_timing_history();
+        }
         let image = if capture {
             let image = self
                 .update(|window, _| window.render_to_image())?
@@ -527,6 +577,9 @@ impl Session {
                 invalidations,
                 callbacks,
                 cpu,
+                input_cpu,
+                input_events,
+                input_max,
                 viewport: self.viewport,
                 captured: capture,
             },
