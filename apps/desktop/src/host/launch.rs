@@ -84,6 +84,15 @@ fn run(opened: Opened) {
                 cx.quit();
                 return;
             }
+            // Closing the last window quits on Linux and Windows. macOS apps
+            // conventionally keep running without a window.
+            #[cfg(not(target_os = "macos"))]
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
             cx.activate(true);
         });
     drop(host);
