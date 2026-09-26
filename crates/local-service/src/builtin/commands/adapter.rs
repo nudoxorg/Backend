@@ -29,6 +29,7 @@ pub(in crate::builtin) struct CommandAdapter {
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     remote_semantic: super::super::query::RemoteSemantic,
+    published: Option<super::super::view_publish::PublishedRoots>,
 }
 
 impl CommandAdapter {
@@ -39,6 +40,7 @@ impl CommandAdapter {
         compiler: LocalCompilerClient,
         search_snapshots: super::super::query::SearchSnapshotOwner,
         remote_semantic: super::super::query::RemoteSemantic,
+        published: Option<super::super::view_publish::PublishedRoots>,
     ) -> Self {
         Self {
             sql_projection,
@@ -47,6 +49,7 @@ impl CommandAdapter {
             compiler,
             search_snapshots,
             remote_semantic,
+            published,
         }
     }
 
@@ -116,12 +119,15 @@ impl CommandAdapter {
         } else {
             Some(BuiltinIntent::add(package, label.clone())?)
         };
-        if let Some(intent) = intent {
+        let committed = if let Some(intent) = intent {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                 BuiltinModelError(format!("commit product source intent: {error}"))
             })?;
-        }
-        self.publish_view(daemon)?;
+            Some(intent)
+        } else {
+            None
+        };
+        self.publish_view(daemon, committed.as_ref())?;
         let intent_id = backend_engine::intent_id("request_package", requested_package.as_bytes());
         let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
             id: backend_engine::encode_id(intent_id.as_bytes()),
@@ -238,12 +244,15 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
-        if let Some(intent) = remove_project_intent(daemon, package, &label)? {
+        let committed = if let Some(intent) = remove_project_intent(daemon, package, &label)? {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                 BuiltinModelError(format!("commit product source intent: {error}"))
             })?;
-        }
-        self.publish_view(daemon)?;
+            Some(intent)
+        } else {
+            None
+        };
+        self.publish_view(daemon, committed.as_ref())?;
         let intent_id = backend_engine::intent_id("remove_package", requested_package.as_bytes());
         let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
             id: backend_engine::encode_id(intent_id.as_bytes()),
@@ -253,17 +262,31 @@ impl CommandAdapter {
         Ok((CommandReply::Removed(intent_id), Some(certificate)))
     }
 
-    fn publish_view(&mut self, daemon: &mut ProductDaemon) -> Result<(), BuiltinModelError> {
+    fn publish_view(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        edit: Option<&BuiltinIntent>,
+    ) -> Result<(), BuiltinModelError> {
         // Reconcile even after a no-op source intent so a retry heals a crash
         // between the durable source commit and its derived view publication.
+        // A missing witness, or an edit that is not the transition adjacent to
+        // it, still hydrates the selected relations.
         let deployment = super::super::SemanticDeployment::from_remote(&self.remote_semantic);
         let filesystem_workspace = self
             .product_state
             .workspace_path()
             .map_err(BuiltinModelError)?;
-        let deltas = publish_builtin_view(daemon, &self.compiler, deployment, filesystem_workspace)
-            .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
-        project_view_deltas(&mut self.sql_projection, daemon, &deltas)
+        let outcome = publish_builtin_view(
+            daemon,
+            &self.compiler,
+            deployment,
+            filesystem_workspace,
+            self.published.as_ref(),
+            edit,
+        )
+        .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
+        self.published = Some(outcome.roots);
+        project_view_deltas(&mut self.sql_projection, daemon, &outcome.deltas)
     }
 
     fn search(
@@ -529,7 +552,7 @@ impl CommandAdapter {
                 let before = relation.lookup(&selected_key).map_err(|error| {
                     BuiltinModelError(format!("read selected semantic generation: {error}"))
                 })?;
-                if before != Some(record.clone()) {
+                let committed = if before != Some(record.clone()) {
                     let intent = BuiltinIntent::select_semantic_generation(
                         package_key,
                         package.as_str(),
@@ -541,8 +564,11 @@ impl CommandAdapter {
                     commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                         BuiltinModelError(format!("commit semantic generation selection: {error}"))
                     })?;
-                }
-                self.publish_view(daemon)?;
+                    Some(intent)
+                } else {
+                    None
+                };
+                self.publish_view(daemon, committed.as_ref())?;
                 return Ok(semantic_version_record(
                     &selected_key,
                     coverage,

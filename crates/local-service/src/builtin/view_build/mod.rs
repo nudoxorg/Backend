@@ -27,7 +27,9 @@ pub(crate) use identity::query_semantic_id;
 pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(crate) use identity::semantic_coordinate;
 pub(super) use query::semantic_query_corpus;
-pub(super) use semantic::{ProjectedRows, StructuralSites, rows_for_indexed_sources};
+pub(super) use semantic::{
+    ForeignPublication, ProjectedRows, StructuralSites, rows_for_indexed_sources,
+};
 pub(crate) use semantic::compiled_source_path;
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
@@ -38,6 +40,13 @@ pub(crate) use structural::{
 use query::append_structural_query_facts;
 use semantic::{ProfileStalePaths, SourceRowProjection};
 use structural::{StructuralParent, StructuralProjectionPlan};
+
+/// Builds the structural declaration plan and drops it. Benchmarks time this.
+pub(super) fn project_structural_plan(
+    sources: &super::IndexedSources,
+) -> Result<(), super::BuiltinModelError> {
+    StructuralProjectionPlan::of(sources, &std::collections::BTreeSet::new()).map(|_| ())
+}
 
 const MAX_SEMANTIC_TYPE_DEPTH: usize = 256;
 const MAX_SEMANTIC_SIGNATURE_BYTES: usize = 16 * 1024;
