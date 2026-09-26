@@ -56,7 +56,10 @@ mod unix_journeys {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    const DEADLINE: Duration = Duration::from_secs(12);
+    // An upper bound on waiting for a daemon socket or a bounded CLI call,
+    // never a latency budget. 12s was exceeded on the loaded Linux PR worker
+    // (build 2402: socket readiness at 12.2s, `index` at 13.6s).
+    const DEADLINE: Duration = Duration::from_secs(60);
     const LEGACY_SCOPE_ONE: NonZeroU64 = NonZeroU64::MIN;
     const RECIPE_BYTES: &[u8] = b"backend.worker.builtin.echo.v1";
     const READ_BYTES: &[u8] = b"backend.worker.builtin.echo.reads.v1";
