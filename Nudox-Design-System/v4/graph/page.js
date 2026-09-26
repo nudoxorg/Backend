@@ -235,6 +235,43 @@
     return html + `</section>`;
   }
 
+  // ------------------------------------------------------------------ in use: real call sites from the callers' own source
+  async function inUse(i, gen) {
+    const n = G.N[i]; const name = n.n;
+    const refs = new Set(G.inEdges(i, G.B.calls | G.B.takes | G.B.gives | G.B.uses | G.B.type | G.B.has));
+    for (const m of (G.kids[i] || [])) for (const j of G.inEdges(m, G.B.calls)) refs.add(j);
+    const own = new Set([i, ...(G.kids[i] || [])]);
+    const list = [...refs].filter((j) => !own.has(j) && G.N[G.topOf[j]].f && !G.N[j].orphan)
+      .sort((a, b) => (G.yours(b) - G.yours(a)) || ((G.N[b].p !== n.p) - (G.N[a].p !== n.p)) || G.IMP[b] - G.IMP[a]);
+    // callables first (their bodies show real use); type declarations only hold it, and the prism already says "held by"
+    const pick = list.filter((j) => !["field", "variant", "struct", "enum", "union", "type", "trait"].includes(G.N[j].k)).slice(0, 12);
+    const needle = n.k === "method" && n.u >= 0 ? new RegExp(`(\\.|::)${name}\\b`) : new RegExp(`\\b${name}\\b`);
+    const out = [];
+    const perPk = new Map();
+    for (const j of pick) {
+      if (out.length >= 3) break;
+      const t = G.N[G.topOf[j]]; const pk = G.PK[t.p];
+      if ((perPk.get(t.p) || 0) >= 2 && pick.some((q) => G.N[q].p !== t.p)) continue;
+      const url = (pk.external ? "graph/registry/" : "graph/repo/") + t.f;
+      let text = srcCache.get(url);
+      if (text === undefined) { try { const r = await fetch(url); text = r.ok ? await r.text() : null; } catch { text = null; } srcCache.set(url, text); }
+      if (!text || gen !== renderGen) continue;
+      const lines = text.split("\n"); const a = (G.N[j].l || t.l) - 1, b = Math.min(lines.length, (G.N[j].e || t.e || t.l));
+      // search the body only: skip the signature, which ends at the first line that opens a brace
+      let body = a; while (body < b - 1 && !/\{\s*$/.test(lines[body])) body++;
+      let at = -1; for (let k = body + 1; k < b; k++) { const ln = lines[k]; if (needle.test(ln) && !/^\s*(\/\/|#\[|pub fn|fn |impl )/.test(ln)) { at = k; break; } }
+      if (at < 0) continue;
+      // the statement that uses it: from the hit line until the statement closes (at most 3 lines)
+      const from = at; let to = at; while (to < Math.min(b - 1, at + 2) && !/[;{},]\s*$/.test(lines[to])) to++;
+      const ind = Math.min(...lines.slice(from, to + 1).filter((l) => l.trim()).map((l) => l.match(/^\s*/)[0].length));
+      const code = lines.slice(from, to + 1).map((l, q) => { const e = esc(l.slice(ind)); return from + q === at ? `<span class="hot">${e.replace(needle, (m) => `<b>${m}</b>`)}</span>` : e; }).join("\n");
+      perPk.set(t.p, (perPk.get(t.p) || 0) + 1);
+      out.push(`<figure class="use"><figcaption>${linkName(j)}<span class="uw">${esc(pk.name.replace(/^backend-/, ""))} · ${esc(t.f.split("/").pop())}:${at + 1}</span></figcaption><pre>${code}</pre></figure>`);
+    }
+    return out.length ? `<section class="csec inuse"><h2>In use</h2>${out.join("")}</section>` : "";
+  }
+  let renderGen = 0;
+
   // ------------------------------------------------------------------ the page
   function hero(i) {
     const n = G.N[i];
@@ -271,13 +308,14 @@
       + `<div class="cfilter"><span>Filter</span></div><div class="crows"><div class="crow open"><span class="k ns sm"><svg viewBox="0 0 24 24">${(window.KINDS || {}).module || ""}</svg></span><span class="n">${esc(mp || "(root)")}</span></div>${rows}</div>`;
   }
   function render(i) {
-    cur = i; const n = G.N[i];
+    cur = i; const n = G.N[i]; G.visit(i);
     const reader = $("preader"); const rw = reader.clientWidth || (G.view.clientWidth - 264); const w = Math.min(900, rw - 64);
     if (view === "code") { renderCode(i); return; }
     const capsHTML = G.capsLine(i);
     reader.innerHTML = `<div class="cfol pfol">${hero(i)}${anatomy(i)}`
       + (capsHTML ? `<section class="pcaps"><div class="ah">can</div>${capsHTML}</section>` : "")
-      + `<div class="pslot" id="pslot"></div>` + members(i) + `</div>`;
+      + `<div class="pslot" id="pslot"></div>` + members(i) + `<div id="puse"></div></div>`;
+    const gen = ++renderGen; inUse(i, gen).then((h) => { if (gen === renderGen && $("puse")) $("puse").outerHTML = h; });
     const slot = $("pslot"); slot.outerHTML = prism(i, Math.max(300, slot.clientWidth || w)) || "";
     $("pshelf").innerHTML = shelf(i);
     setTitle(i);
@@ -340,7 +378,7 @@
     el.style.transition = "opacity 220ms ease, transform 260ms ease"; el.style.opacity = 0; el.style.transform = "translateY(-8px)";
     setTimeout(() => { el.classList.remove("on"); el.style.transition = ""; el.style.transform = ""; }, 240);
     history.replaceState(null, "", `?focus=${encodeURIComponent(G.qual(i) + "::" + G.N[i].n)}`);
-    G.setFocus(i, true);
+    G.enterGraph(i);
   }
   function setView(v) {
     if (v === "graph") { if (G && G.pageOpen) close(G); else if (G) G.wake(); return; }
@@ -363,6 +401,18 @@
     else if (e.key === "." && e.metaKey && (G.pageOpen || G.focus >= 0)) { setView(view === "code" && G.pageOpen ? "page" : "code"); e.preventDefault(); e.stopImmediatePropagation(); }
     else if (e.altKey && G.pageOpen) document.body.classList.add("xray");
   }, true);
+  let peekT = 0;
+  document.addEventListener("mouseover", (e) => {
+    const a = e.target.closest("#gpage a.gtl"); const pk = $("gpeek");
+    clearTimeout(peekT);
+    if (!a) { peekT = setTimeout(() => pk.classList.remove("on"), 120); return; }
+    peekT = setTimeout(() => {
+      pk.innerHTML = G.peekHTML(+a.dataset.i); pk.classList.add("on"); pk.style.zIndex = 20;
+      const r = a.getBoundingClientRect(), v = G.view.getBoundingClientRect();
+      let x = r.left - v.left, y = r.bottom - v.top + 8; if (x + 350 > v.width) x = v.width - 356; if (y + pk.offsetHeight > v.height - 8) y = r.top - v.top - pk.offsetHeight - 8;
+      pk.style.transform = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
+    }, 260);
+  });
   window.addEventListener("keyup", (e) => { if (!e.altKey) document.body.classList.remove("xray"); });
   function init(api) { G = api; if (!nameIndex) buildIndex(); }
   window.GRAPH_PAGE = { init, open, close, render, setView };

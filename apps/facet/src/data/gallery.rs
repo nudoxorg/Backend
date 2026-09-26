@@ -85,6 +85,18 @@ pub(crate) const SCENES: &[Scene] = &[
         build: |_, cx| stage::scripted(&[], &films::RUNG_STEPS, false, films::rung_scene, cx),
     },
     Scene {
+        id: "data-dense-bare",
+        title: "Storm target: the dense comb and mosaic with no doors (nothing floats; the marks' own state alone)",
+        size: (1440, 900),
+        build: |_, cx| stage::stage(None, &[], dense_bare, cx),
+    },
+    Scene {
+        id: "data-20k-map-bare",
+        title: "Storm target: the 20 000-stone map with no doors",
+        size: (1440, 900),
+        build: |_, cx| stage::stage(None, &[], dense_map_bare, cx),
+    },
+    Scene {
         id: "data-20k-mosaic",
         title: "Perf: a 20 000-stone mosaic of which the window shows about a tenth (culled to the visible rows)",
         size: (1440, 900),
@@ -462,7 +474,15 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
 }
 
 /// The perf scene: the densest marks, full width.
-fn dense(width: f32, _window: &mut Window, cx: &mut App) -> AnyElement {
+fn dense(width: f32, window: &mut Window, cx: &mut App) -> AnyElement {
+    dense_with(true, width, window, cx)
+}
+
+fn dense_bare(width: f32, window: &mut Window, cx: &mut App) -> AnyElement {
+    dense_with(false, width, window, cx)
+}
+
+fn dense_with(doors: bool, width: f32, _window: &mut Window, cx: &mut App) -> AnyElement {
     let facet = cx.facet();
     let w = (width - 80.0).max(200.0);
     let m = facet.measure(px(w));
@@ -483,14 +503,20 @@ fn dense(width: f32, _window: &mut Window, cx: &mut App) -> AnyElement {
         })
         .collect();
     let tip = Door::tip(|_, _, _, _| div().into_any_element());
+    let mut c = comb("dense-comb", ticks, &m).thickness(60.0).rung(Rung::Row);
+    let mut mo = mosaic("dense-mosaic", stones(2000, 5), &m);
+    if doors {
+        c = c.door(tip.clone());
+        mo = mo.door(tip);
+    }
     div()
         .size_full()
         .flex()
         .flex_col()
         .gap(px(24.0))
         .p(px(40.0))
-        .child(comb("dense-comb", ticks, &m).thickness(60.0).rung(Rung::Row).door(tip.clone()))
-        .child(mosaic("dense-mosaic", stones(2000, 5), &m).door(tip))
+        .child(c)
+        .child(mo)
         .into_any_element()
 }
 
@@ -509,7 +535,15 @@ fn dense_mosaic(_width: f32, _window: &mut Window, cx: &mut App) -> AnyElement {
 }
 
 /// 400 modules, 20 000 stones, on a canvas three windows wide and tall.
-fn dense_map(_width: f32, _window: &mut Window, cx: &mut App) -> AnyElement {
+fn dense_map(width: f32, window: &mut Window, cx: &mut App) -> AnyElement {
+    dense_map_with(true, width, window, cx)
+}
+
+fn dense_map_bare(width: f32, window: &mut Window, cx: &mut App) -> AnyElement {
+    dense_map_with(false, width, window, cx)
+}
+
+fn dense_map_with(doors: bool, _width: f32, _window: &mut Window, cx: &mut App) -> AnyElement {
     let facet = cx.facet();
     let regions: Vec<super::Region> = (0..400_usize)
         .map(|i| {
@@ -523,12 +557,9 @@ fn dense_map(_width: f32, _window: &mut Window, cx: &mut App) -> AnyElement {
     if let Some(last) = regions.last_mut() {
         last.items += 20_000_usize.saturating_sub(total);
     }
-    div()
-        .size_full()
-        .child(
-            super::territory("map-20k", regions, &facet.measure(px(4400.0)))
-                .canvas(3000.0)
-                .region_door(Door::tip(|_, _, _, _| div().into_any_element())),
-        )
-        .into_any_element()
+    let mut map = super::territory("map-20k", regions, &facet.measure(px(4400.0))).canvas(3000.0);
+    if doors {
+        map = map.region_door(Door::tip(|_, _, _, _| div().into_any_element()));
+    }
+    div().size_full().child(map).into_any_element()
 }

@@ -14,6 +14,7 @@
 use super::float::{self, FloatKind, FloatRequest, Side};
 use super::peek::{self, ExcerptLine, LocationPeek, PackagePeek, Peek, SymbolPeek, VersionPeek};
 use super::text::{Link, Role, Sig};
+use super::tooltip;
 use crate::data::{Directions, FileUses};
 use crate::gallery::Scene;
 use crate::icons::{Kind, Lang};
@@ -23,7 +24,7 @@ use crate::theme::{ActiveFacet, Facet};
 use crate::tokens::{Face, TypeRole};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, IntoElement, ParentElement,
-    Pixels, Render, SharedString, Styled, Window, div, px,
+    Pixels, Render, SharedString, Styled, Window, div, point, px, size,
 };
 use std::time::Duration;
 
@@ -45,6 +46,12 @@ pub(crate) const SCENES: &[Scene] = &[
         title: "Float layer: pins, a chain with a child, a tip",
         size: (1440, 900),
         build: lab_still,
+    },
+    Scene {
+        id: "float-edges",
+        title: "Peeks above/below/beside four anchors pinned to the window's edges: centred, clamped inside, a hairline to the anchor. A tip on a fifth anchor draws no connector.",
+        size: (700, 460),
+        build: float_edges,
     },
     Scene {
         id: "float-rise",
@@ -611,6 +618,86 @@ fn lab_still(window: &mut Window, cx: &mut App) -> AnyView {
     ));
     steps.push((9, settle()));
     stage(false, true, steps, window, cx)
+}
+
+/// A blank stage with five small anchor marks pinned to the window's edges
+/// (top, bottom, left, right, and a fifth in the top-right corner for the
+/// tip): proof that above/below peeks centre on the anchor and clamp inside
+/// the viewport, that a peek draws a hairline connector, and that a tip
+/// does not.
+struct Edges;
+
+impl Render for Edges {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.facet().palette();
+        let mark = |x: f32, y: f32| {
+            div()
+                .absolute()
+                .left(px(x))
+                .top(px(y))
+                .w(px(40.0))
+                .h(px(14.0))
+                .bg(palette.peri.base.hsla())
+        };
+        div()
+            .relative()
+            .size_full()
+            .bg(palette.g0.hsla())
+            .child(ground())
+            .child(mark(330.0, 6.0))
+            .child(mark(330.0, 440.0))
+            .child(mark(6.0, 220.0))
+            .child(mark(654.0, 220.0))
+            .child(mark(650.0, 6.0))
+            .child(float::layer(window, cx))
+    }
+}
+
+fn edge_peek(name: &'static str) -> Peek {
+    Peek::Symbol(SymbolPeek {
+        kind: Some(Kind::Enum),
+        name: name.into(),
+        place: "enum in `present::relation`".into(),
+        path: "present::relation".into(),
+        sentence: Some("Placement proof near a window edge.".into()),
+        uses: Some(3),
+        ..SymbolPeek::default()
+    })
+}
+
+fn open_peek_at(name: &'static str, bounds: Bounds<Pixels>, side: Side) -> Step {
+    Box::new(move |window, cx| {
+        float::open(peek::request(key(name), bounds, edge_peek(name)).side(side), window, cx);
+    })
+}
+
+fn open_tip_at(name: &'static str, bounds: Bounds<Pixels>, side: Side) -> Step {
+    Box::new(move |window, cx| {
+        let content = tooltip::content(tooltip::TipText {
+            title: None,
+            body: "No connector on a tip.".into(),
+            chord: vec![],
+        });
+        float::open(FloatRequest::new(key(name), bounds, FloatKind::Tip, content).side(side), window, cx);
+    })
+}
+
+fn float_edges(window: &mut Window, cx: &mut App) -> AnyView {
+    let view = cx.new(|_| Edges);
+    let b = |x: f32, y: f32| Bounds::new(point(px(x), px(y)), size(px(40.0), px(14.0)));
+    script(
+        vec![
+            (1, open_peek_at("edge-top", b(330.0, 6.0), Side::Above)),
+            (1, open_peek_at("edge-bottom", b(330.0, 440.0), Side::Below)),
+            (1, open_peek_at("edge-left", b(6.0, 220.0), Side::Below)),
+            (1, open_peek_at("edge-right", b(654.0, 220.0), Side::Below)),
+            (1, open_tip_at("edge-tip", b(650.0, 6.0), Side::Below)),
+            (2, settle()),
+        ],
+        window,
+        cx,
+    );
+    view.into()
 }
 
 fn film_rise(window: &mut Window, cx: &mut App) -> AnyView {

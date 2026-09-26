@@ -9,6 +9,7 @@
 )]
 
 use facet::gallery::{self, Frame, Scene, Shot};
+use gpui::{AnyView, App, AppContext as _, Context, IntoElement, ParentElement, Render, Styled, Window, div};
 use image::RgbaImage;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -311,4 +312,80 @@ fn every_fast_check_catches_its_canary_and_passes_the_healthy_bench() {
         );
     }
     assert!(missed.is_empty(), "blind checks: {missed:#?}");
+}
+
+/// A view that paints plain GPUI text and a plain clickable box, wrapped in
+/// neither `facet::probe::text` nor `probe::target` — exactly what an
+/// unwired product shell renders today (see `desktop-symbol`).
+struct Blank;
+
+impl Render for Blank {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child("plain text, never wrapped in probe::text")
+    }
+}
+
+fn build_blank(_window: &mut Window, cx: &mut App) -> AnyView {
+    cx.new(|_| Blank).into()
+}
+
+const BLANK: Scene = Scene {
+    id: "test-fixture-blank",
+    title: "test fixture: publishes no probe text or targets (never registered in `all`)",
+    size: (200, 120),
+    build: build_blank,
+};
+
+/// A scene that publishes nothing to the probe must report NOT COVERED from
+/// every check that depends on it — never PASS. A zero-work PASS is
+/// indistinguishable from a healthy scene on the one-screen verify table,
+/// which is exactly the defect class this harness exists to catch (see
+/// `desktop-symbol`, which is genuinely uninstrumented today).
+#[test]
+fn a_scene_with_zero_probe_coverage_reports_not_covered_never_pass() {
+    use facet::Density;
+    use facet::gallery::matrix::Axes;
+    use facet::gallery::verify::{self, Outcome};
+    use facet::tokens::Appearance;
+
+    let _platform = platform();
+    let out = std::env::temp_dir().join("facet-not-covered-test");
+    std::fs::create_dir_all(&out).expect("scratch dir");
+
+    let lint_stage = verify::stage(&BLANK, "lint", &out).expect("lint stage runs");
+    assert_eq!(
+        lint_stage.outcome,
+        Outcome::NotCovered,
+        "a scene with no probe text or targets must report NOT COVERED from lint, not {:?}: {}",
+        lint_stage.outcome,
+        lint_stage.summary
+    );
+
+    // `verify::stage`'s own gate always compares a motion-on cell with its
+    // reduced-motion twin, which is itself real coverage; to exercise the
+    // matrix stage's zero-work path (nothing linted *and* no comparison) a
+    // single-motion axes has to go through `scene_report` directly.
+    let single_cell = Axes {
+        widths: vec![200],
+        text_scales: vec![100],
+        themes: vec![Appearance::Abyss],
+        densities: vec![Density::Comfortable],
+        motion: vec![true],
+    };
+    let report = verify::scene_report(&BLANK, 0, Some(&single_cell), &out);
+    let matrix_stage = report
+        .stages
+        .iter()
+        .find(|stage| stage.name == "matrix")
+        .expect("matrix stage ran");
+    assert_eq!(
+        matrix_stage.outcome,
+        Outcome::NotCovered,
+        "a matrix cell with nothing linted and no settled==reduced comparison must report NOT \
+         COVERED, not {:?}: {}",
+        matrix_stage.outcome,
+        matrix_stage.summary
+    );
 }

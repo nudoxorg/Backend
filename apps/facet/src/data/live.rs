@@ -49,7 +49,7 @@ pub struct Live {
     pub wave_gen: u64,
     /// Earlier waves still settling: `(generation, target)`. They are
     /// sampled until they come to rest, so no track is abandoned mid-flight.
-    waves_settling: Vec<(u64, (f32, f32))>,
+    waves_settling: Vec<(u64, (f32, f32), std::time::Instant)>,
     anchor: Option<Anchor>,
     count: usize,
     wiring: Option<Wiring>,
@@ -121,11 +121,11 @@ pub(crate) fn wave(
         window,
         cx,
     );
-    let (target, generation, settling) = live.update(cx, |state, _| {
+    let (target, generation, settling) = live.update(cx, |state, cx| {
         if let Some(at) = active {
             let far = (state.wave_at.0 - at.0).abs() + (state.wave_at.1 - at.1).abs() > 0.5;
             if strength < 0.02 && far {
-                state.waves_settling.push((state.wave_gen, state.wave_at));
+                state.waves_settling.push((state.wave_gen, state.wave_at, crate::motion::now(cx)));
                 state.wave_gen += 1;
             }
             state.wave_at = at;
@@ -138,14 +138,16 @@ pub(crate) fn wave(
     let follow = crate::motion::spec::REVEAL;
     let x = motion.animate(key_n(mark, "wave-x", generation), target.0, follow, window, cx);
     let y = motion.animate(key_n(mark, "wave-y", generation), target.1, follow, window, cx);
+    // An earlier wave keeps being sampled until its glide has surely
+    // ended (its whole budget, plus a frame's slack): its last sample is
+    // then an at-rest one, and the track can go.
+    let now = crate::motion::now(cx);
+    let done_after = crate::tokens::motion::QUICK + std::time::Duration::from_millis(40);
     let mut rested = Vec::new();
-    for (g, t) in settling {
-        let vx = motion.animate(key_n(mark, "wave-x", g), t.0, follow, window, cx);
-        let vy = motion.animate(key_n(mark, "wave-y", g), t.1, follow, window, cx);
-        // A finished glide returns its target exactly; anything else is
-        // still moving (however close) and must keep being sampled.
-        #[allow(clippy::float_cmp)]
-        if vx == t.0 && vy == t.1 {
+    for (g, t, since) in settling {
+        motion.animate(key_n(mark, "wave-x", g), t.0, follow, window, cx);
+        motion.animate(key_n(mark, "wave-y", g), t.1, follow, window, cx);
+        if now.saturating_duration_since(since) > done_after {
             rested.push(g);
         }
     }
@@ -155,7 +157,7 @@ pub(crate) fn wave(
             .flat_map(|g| [key_n(mark, "wave-x", *g), key_n(mark, "wave-y", *g)])
             .collect();
         motion.retain(|k| !keys.contains(k));
-        live.update(cx, |state, _| state.waves_settling.retain(|(g, _)| !rested.contains(g)));
+        live.update(cx, |state, _| state.waves_settling.retain(|(g, _, _)| !rested.contains(g)));
     }
     (x, y, strength)
 }

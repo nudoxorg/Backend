@@ -448,14 +448,22 @@ fn layer_timing() {
     struct Bench {
         case: Case,
         frame: u32,
-        flow: crate::motion::Flow,
+        flow: Flow,
     }
 
     impl Render for Bench {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            // Every frame animates: ask for the next one before borrowing cx.
+            request_frame(window, cx);
             let phase = self.frame as f32 / 30.0;
-            let palette = cx.palette();
-            let root = div().size_full().bg(palette.g1).p(px(20.0)).flex().flex_wrap().gap(px(12.0));
+            let facet = cx.facet();
+            let root = div()
+                .size_full()
+                .bg(facet.palette().g1)
+                .p(px(20.0))
+                .flex()
+                .flex_wrap()
+                .gap(px(12.0));
             if self.case == Case::Flip200 {
                 // A reorder every 20 frames keeps 200 rows flowing.
                 self.flow.epoch(self.frame / 20);
@@ -465,14 +473,13 @@ fn layer_timing() {
                     self.flow.item(
                         ElementId::Integer(key as u64),
                         cut().chamfer(Chamfer::Sm).w(px(260.0)).h(px(24.0)).px(px(8.0))
-                            .typeset(ty::MONO_SMALL, cx.facet())
+                            .typeset(ty::MONO_SMALL, &facet)
                             .child(format!("row {key}")),
                     )
                 });
-                request_frame(window, cx);
                 return root.children(rows).into_any_element();
             }
-            let cards = (0..20).map(|i| {
+            let cards: Vec<_> = (0..20).map(|i| {
                 let card = card(1.0, cx);
                 let animated = match self.case {
                     Case::Bare => false,
@@ -489,8 +496,7 @@ fn layer_timing() {
                 } else {
                     card
                 }
-            });
-            request_frame(window, cx);
+            }).collect();
             root.children(cards).into_any_element()
         }
     }

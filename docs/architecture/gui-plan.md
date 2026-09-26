@@ -389,6 +389,100 @@ and annotated with what still differs. Filmstrips for every motion. Storms for
 everything with state. No tautological tests: a test must be able to fail for
 a real defect in the code under test.
 
+## 8. The graph view and the symbol page (binding for wave 3)
+
+The live prototype is the target: `Nudox-Design-System/v4/Graph.html` over the real
+workspace (`graph/extract.mjs` → `graph/layout.mjs` → `graph/app.js` + `graph/page.js`),
+with stills in `v4/shots/graph/` (TARGETS.md). Where this section and the prototype
+disagree, the prototype's behaviour wins and this text gets fixed. The rose is retired.
+
+### 8.1 One rule for relations, every language
+Left is what a symbol **comes from**; right is what it **goes into**. Group words say how:
+- type: `made of`, `made by`, `implemented by` ← T → `taken by`, `held by`, `calls it`, `used by`;
+- callable: `takes`, `called from` ← f → `gives`, `calls`, `used by`.
+
+`is` is not a direction: it is the capability line (§8.3). One function computes the
+groups (`relationsOf`), used by the graph's prism, the focus card and the page. A view
+drops any group its own anatomy already shows, so each thing is said once per view.
+
+### 8.2 The world graph (`facet::graph`)
+- **Layout is nested and deterministic.** world → packages → modules → symbols → members.
+  - Each level is a small force simulation (links + exact collision + gravity), seeded on a phyllotaxis spiral by importance (PageRank over rolled-up symbol edges). No level exceeds ~250 bodies.
+  - Members sit on **shells** around their type: parts (variants, fields) on the inner shells, methods on the outer. Spacing is even, so a shell reads as a cut polygon.
+  - Territories are the faceted convex hulls of their contents.
+  - The whole 54 k-symbol workspace lays out in ~6 s in JS. In Rust it runs off the UI thread, is cached per (package, version), and gives the same positions for the same input.
+- **Semantic zoom by on-screen size, never by zoom step.**
+  - Package hulls always.
+  - Module hulls and labels once the package is ≥ 160 px.
+  - Symbols as 1 px stars, becoming kind shapes past ~1.6 px core: ◆ types, ◇ traits, ■ callables.
+  - Member shells once the item is ≥ 12 px.
+  - Labels by importance through an occupancy grid, with a budget of 40–160 per frame.
+- **Colour.** Monochrome at rest. Mint marks your code *and every dependency symbol your code reaches* (the footprint; dependency packages say "you use N"). Periwinkle marks focus. Direction is motion: dashes flow source → target on lit edges.
+- **Paint cost follows what is visible.**
+  - Modules are culled by box.
+  - Shapes are batched per (shape, tone, brightness), so ~20 fills draw 15 k symbols.
+  - A uniform grid serves picking.
+  - Hover edges are bundled through module and package centres (β = 0.72).
+  - Budget: 120 Hz at 1440×900@2x during flights (the prototype measures p50 8.3 ms, p99 16.7 ms).
+- **Camera.** `(cx, cy, w)`.
+  - Wheel zooms about the pointer, with a 70 ms exponential ease in log-width. Drag pans with inertia.
+  - Every jump is a **van Wijk–Nuij flight** (`motion::flight`, W-Flow), ρ = √2, duration `clamp(210·S + 260, 320, 1500)` ms, sine ease, re-planned from the current camera when interrupted.
+- **Focus gathers the prism.**
+  - Click (or ↵ on a search result): the camera flies to the symbol at reading scale, centred in the space the focus card leaves. The symbol's relations then fly out of their home positions into two named columns beside it (left: comes from, right: goes into), 22 px rows, at most 6 per group plus "and N more".
+  - Faint dashed tethers run back home. Names from another package carry the package name, and duplicate names carry their module.
+  - ↑↓←→ walk the proxies, ↵ goes to the selected proxy (a flight), Esc releases the prism, then backs out.
+  - Below 720 px of free width the prism becomes one column.
+- **Hover** raises the peek (W-Float) anchored to a moving node; the anchor is re-read every frame.
+- **Find:** `/` or ⌘K; ↵ flies there.
+- **Where:** a quiet line bottom-left names the package › module under the camera and the altitude.
+- **Trail:** the symbols you visited are joined by a faint mint line. This is the titlebar's thread, drawn on the map.
+
+### 8.3 The symbol page: anatomy instead of a code block
+- **Hero:** gem, name, lede, then one facts line (`kind in path · used in N places · N in your code`).
+  - The name wraps at identifier boundaries (humps, `_`, `::`) and is **never** cut to "…".
+  - Below 560 px the gem sits above the name at 40 px.
+- **Anatomy, one visual grammar for all languages:**
+  - **fork** (enum / union / sum type): "one of", a rail with a branch per variant.
+  - **holds** (struct / record / class fields): a bracket; notes how many fields are private.
+  - **pipe** (function / method): inputs stacked on the left → the output, with "or fails with E" as its own exit, and generic bounds as sentences ("T is any Deserialize").
+  - **contract** (trait / interface): "you write" (required, dashed bracket) and "you get" (provided).
+- **Types in plain words:**
+  - `maybe X`, `list of X`, `set of X`, `map K → V`, `X or fails with E`, `shared X`, `locked X`, `text`, `path`;
+  - `its Value` for associated types;
+  - generics as italic variables, never links.
+
+  ⌥ spells the exact source type beside each one. Every named type is a link.
+- **`can`:** capabilities in words, marked `derived` (hollow), `written` (solid) or `via Display` (dashed).
+  - Implied derives drop out: Copy covers Clone, Eq covers PartialEq, Ord covers PartialOrd and Eq.
+  - Example: `copies freely · sorts · hashes · debug-prints · prints · to text`.
+- **The prism** (static): the same groups as the graph, minus those the anatomy already shows. Its gem opens the graph (G).
+- **Does:** members grouped by what they do to it (`reads it`, `changes it`, `uses it up`, `makes one`).
+  - A by-value receiver on a Copy type is `reads it`.
+  - **Look-alikes fold:** ≥ 4 members that share a name prefix and a result become one row ("visit_… (one of bool, i8, … and 16 more) → its Value or fails with E · 22 of them").
+  - Trait-provided methods group under "through its traits". Names starting `__` are hidden.
+- **In use:** up to three real statements that use the symbol, mined from the bodies of the callables that refer to it.
+  - Callables only; type declarations only "hold" it, and the prism already says so.
+  - Your code first, then other packages, then importance, at most two per package.
+  - The search skips the caller's signature, takes the statement until it closes (at most three lines), and underlines the symbol in periwinkle.
+  - Each is captioned with its caller (a link) and `package · file:line`.
+- **Every link peeks on hover:** the same peek card as the graph, through the float layer.
+- **Code** is one keystroke away (⌘. or the view switch): the real source, soft-wrapped at token boundaries with the item's lines marked. It never clips.
+
+### 8.4 Moving between them
+- The titlebar's altimeter slot is the view switch: **Graph · Page · Code**, with only the active view named. See `Route::Symbol { id, at, view }` in W-Shell; switching views replaces the history entry.
+- **Graph → page (↵ / double-click):** the focus gem flies (FLIP) into the hero gem while the page rises in (460 ms).
+- **Page → graph (G):** the page lifts away, the camera flies from wherever you last left the map (or from the package's altitude the first time) to the symbol, and the prism gathers on arrival.
+- The version comb in the shelf header (`VersionComb.png`) re-scopes page and graph to a release. In the graph, symbols absent at that release fade and ones added since your pin glow once.
+
+### 8.5 Data the index must provide
+- Per package closure: symbols (kind, name, parent, visibility, file:line span, doc first sentence).
+- Members with receiver kind, required/provided, and trait-via.
+- Derives, and resolved impls (trait id + member names).
+- Generics and where-clauses as text.
+- Typed relations with kinds (has, takes, gives, is, derives, impl, calls, uses, type), at member granularity. Rolled-up symbol edges are derived in the view model.
+
+The prototype's extractor is a stand-in with name-based resolution; the product reads the index. The graph and page lanes use `graph/world.json` as their fixture until the query exists.
+
 ## 5. Lane rules
 
 - Only `git add <new file>`, `git status`, `git diff`, `git log` are allowed.

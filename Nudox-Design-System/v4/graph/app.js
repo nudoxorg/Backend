@@ -57,6 +57,7 @@
   const MB = WD.mod.hull.map(bbox), PB = WD.pkg.hull.map(bbox);
   const WB = PB.reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])]);
   const pkgSize = PK.map((_, p) => pkgMods[p].reduce((s, m) => s + modItems[m].length, 0));
+  const reachPkg = PK.map((_, p) => pkgMods[p].reduce((s, m) => s + modItems[m].filter((i) => YIN[i] > 0).length, 0));
 
   // spatial grid over items and members (points), for picking
   const GC = 3; const GX0 = WB[0], GY0 = WB[1]; const GW = Math.ceil((WB[2] - WB[0]) / GC) + 1, GH = Math.ceil((WB[3] - WB[1]) / GC) + 1;
@@ -309,6 +310,8 @@
       }
     }
 
+    drawTrail();
+
     // ---- the prism: the focused symbol's relations gathered beside it
     const P2 = prism ? layoutPrism(prism) : null;
     if (P2) for (const sl of P2.slots) if (sl.lab) occTry(...sl.lab);
@@ -325,7 +328,7 @@
       let x = sx(PX[p]) - w / 2, y = px > 260 ? sy(b[1]) + 18 : sy(PY[p]);
       if (!occTry(x - 4, y - size / 2 - 3, x + w + 4, y + size / 2 + 3)) continue;
       cx.font = font; cx.fillStyle = rgba(yoursPkg[p] ? MINT : INK, (yoursPkg[p] ? 0.9 : 0.75) * a); cx.fillText(name, x, y); stats.labels++;
-      if (px > 60 && px < 500) { const sub = pkgSize[p].toLocaleString() + " symbols"; cx.font = F.sub; cx.fillStyle = rgba(INK, 0.32 * a); cx.fillText(sub, sx(PX[p]) - tw(sub, F.sub) / 2, y + size * 0.5 + 9); occTry(x, y, x + w, y + size); }
+      if (px > 60 && px < 500) { const sub = pkgSize[p].toLocaleString() + " symbols" + (!yoursPkg[p] && reachPkg[p] ? ` · you use ${reachPkg[p]}` : ""); cx.font = F.sub; cx.fillStyle = rgba(INK, 0.32 * a); cx.fillText(sub, sx(PX[p]) - tw(sub, F.sub) / 2, y + size * 0.5 + 9); occTry(x, y, x + w, y + size); }
     }
     const modLabelA = (m) => smooth(MR[m] * k, 40, 80) * (1 - smooth(MR[m] * k, 900, 1500));
     for (const m of visM.slice().sort((a, b) => MR[b] - MR[a])) {
@@ -495,7 +498,7 @@
     return [X[i], Y[i], Math.min(Math.max(w, half), worldW() * 0.7)];
   }
   function setFocus(i, fly = true) {
-    focus = i; nbCache.i = -2; showFocus(i); peekEl.classList.remove("on"); peekFor = -1; prismSel = -1;
+    focus = i; nbCache.i = -2; showFocus(i); peekEl.classList.remove("on"); peekFor = -1; prismSel = -1; visit(i);
     if (i >= 0) {
       if (prism && prism.g > 0.05) prism.target = 0; // release the old one, gather the new one after the flight
       const gather = () => { prism = buildPrism(i); prism.g = 0; prism.target = 1; wake(); };
@@ -603,6 +606,22 @@
   // sends them back. The page shows the same prism at rest, so page ⇄ graph is
   // one gesture: the prism releasing into the map.
   let prism = null, prismSel = -1;
+  // the trail: symbols you visited, joined on the map (the titlebar's thread, drawn in place)
+  const trail = []; let graphSeen = !Q.has("page");
+  function visit(i) { if (i < 0) return; const t = topOf[i]; if (trail[trail.length - 1] !== t) { trail.push(t); if (trail.length > 24) trail.shift(); } }
+  function drawTrail() {
+    if (trail.length < 2) return;
+    cx.save(); cx.lineWidth = 1.2; cx.strokeStyle = rgba(MINT, 0.32); cx.setLineDash([]);
+    cx.beginPath(); trail.forEach((j, q) => (q ? cx.lineTo(sx(X[j]), sy(Y[j])) : cx.moveTo(sx(X[j]), sy(Y[j])))); cx.stroke();
+    for (let q = 0; q < trail.length; q++) { const j = trail[q]; const x = sx(X[j]), y = sy(Y[j]); const s = q === trail.length - 1 ? 0 : 3;
+      if (!s) continue; cx.beginPath(); cx.moveTo(x, y - s); cx.lineTo(x + s, y); cx.lineTo(x, y + s); cx.lineTo(x - s, y); cx.closePath(); cx.fillStyle = rgba(MINT, 0.55); cx.fill(); }
+    cx.restore();
+  }
+  // page → graph: from wherever the map was left; the first time, from the package's altitude
+  function enterGraph(i) {
+    if (!graphSeen) { const b = PB[N[i].p]; Object.assign(cam, { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, w: fitW(...b, 1.25) }); Object.assign(tgt, cam); graphSeen = true; }
+    setFocus(i, true);
+  }
   const LEFT = new Set(["made by", "taken by", "used by", "called by"]);
   function buildPrism(i) {
     const groups = relationsOf(i);
@@ -844,7 +863,7 @@
   }
 
   // ------------------------------------------------------------------ boot
-  const api = { KFAM, relationsOf, caps, capsLine, nameOf, inEdges, outEdges, openPage, closePage, focusCam, buildPrism, get prism() { return prism; }, set prism(v) { prism = v; }, planFlight, worldCam, get pageOpen() { return pageOpen; }, set pageOpen(v) { pageOpen = v; }, draw: () => draw(performance.now()), N, X, Y, R, PK, MD, kids, nb, qual, sigOf, axes, yours, reached, kindSpan, esc, IMP, B, isItem, topOf, yoursUses, setFocus, flyTo, frameOf, sx, sy, K, cam, view, get focus() { return focus; }, wake, OUT, IN, IOUT, IIN };
+  const api = { peekHTML, KFAM, visit, enterGraph, relationsOf, caps, capsLine, nameOf, inEdges, outEdges, openPage, closePage, focusCam, buildPrism, get prism() { return prism; }, set prism(v) { prism = v; }, planFlight, worldCam, get pageOpen() { return pageOpen; }, set pageOpen(v) { pageOpen = v; }, draw: () => draw(performance.now()), N, X, Y, R, PK, MD, kids, nb, qual, sigOf, axes, yours, reached, kindSpan, esc, IMP, B, isItem, topOf, yoursUses, setFocus, flyTo, frameOf, sx, sy, K, cam, view, get focus() { return focus; }, wake, OUT, IN, IOUT, IIN };
   window.GRAPH = api; if (window.GRAPH_PAGE) window.GRAPH_PAGE.init(api);
   const byQuery = (q) => { if (!q) return -1; if (/^\d+$/.test(q)) return +q; const r = find(q); return r.length ? r[0] : -1; };
   new ResizeObserver(() => { resize(); if (STILL) draw(performance.now()); else wake(); }).observe(view);

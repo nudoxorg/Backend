@@ -1,0 +1,157 @@
+21727|RelationLabel|is|0|53839~written,Copy · Debug · Hash · Ord~derived~53844,ToString~via Display~-1
+21727|RelationLabel|made of|-1|17986,21724
+21727|RelationLabel|made by|-1|21733,21956
+21727|RelationLabel|taken by|1|21955
+21727|RelationLabel|held by|1|21953
+21727|RelationLabel|end
+21952|RelationGroup|is|0|Clone · Debug · Eq~derived~53844
+21952|RelationGroup|made of|-1|21727,21946
+21952|RelationGroup|made by|-1|21231,22005
+21952|RelationGroup|taken by|1|22110,22177,21997
+21952|RelationGroup|held by|1|21989
+21952|RelationGroup|calls it|1|21540
+21952|RelationGroup|end
+52350|from_str|called from|-1|53390,53392,53394,42060,41320,52913,52914,21372,9692,37862,53822
+52350|from_str|gives|1|52353
+52350|from_str|calls|1|52347,53055
+52350|from_str|end
+51609|Visitor|implemented by|-1|52930,53514,51425,51444,51477,51532,16440,51497,51361,51367,51380,51386,51387,51403,51409,51415,51434,51463,51469,16447,40476,51509,51521,16454,52924,40469,51342
+51609|Visitor|calls it|1|51727
+51609|Visitor|used by|1|53390,52772,52920,52875,51442,51443,51488,51489,51528,51529,52921,52880,51496,51508,51520,52877,52923
+51609|Visitor|end
+0|AuthorityFeed|is|0|Clone · Debug · Eq~derived~53844
+0|AuthorityFeed|made of|-1|213,125,85,82
+0|AuthorityFeed|taken by|1|47
+0|AuthorityFeed|calls it|1|269
+0|AuthorityFeed|end
+997|dimensions|end
+1994|output_exceeds_limit|called from|-1|1984
+1994|output_exceeds_limit|end
+2991|next_fragment|end
+3988|inventory_authority|takes|-1|32025,4140,4108
+3988|inventory_authority|gives|1|14653
+3988|inventory_authority|calls|1|14652,14648
+3988|inventory_authority|end
+4985|decode_published_with_cursor|takes|-1|4990
+4985|decode_published_with_cursor|called from|-1|4977
+4985|decode_published_with_cursor|gives|1|5231,5245
+4985|decode_published_with_cursor|calls|1|4987
+4985|decode_published_with_cursor|end
+5982|target|end
+6979|Types|used by|1|7024,7026
+6979|Types|end
+7976|version|end
+8973|Io|called from|-1|8975,8974
+8973|Io|end
+9970|valid_coordinate|called from|-1|9971,9973
+9970|valid_coordinate|end
+10967|authority_class|end
+11964|recipe|end
+12961|eq|takes|-1|12954
+12961|eq|end
+13958|Batch|used by|1|13956,13965
+13958|Batch|end
+14955|as_document_query|takes|-1|14575,14934
+14955|as_document_query|gives|1|14871
+14955|as_document_query|calls|1|14829,14939,14940,14864
+14955|as_document_query|end
+15952|removed|end
+16949|TypeNameRequired|end
+17946|Diff|used by|1|45294,50679,21381,17972,498,19520,19658
+17946|Diff|end
+18943|certificate|takes|-1|18937
+18943|certificate|gives|1|18629
+18943|certificate|end
+19940|insert|takes|-1|1423,12974,5394,19931
+19940|insert|calls|1|19939,19946
+19940|insert|end
+20937|OBJECT_CACHE_CAPACITY|used by|1|20984
+20937|OBJECT_CACHE_CAPACITY|end
+21934|new|takes|-1|2013,21853,22165,22250
+21934|new|called from|-1|21230
+21934|new|gives|1|21929
+21934|new|end
+22931|digest|end
+23928|ClosurePageRequest|called from|-1|51315,51316,51338,50897,50898,23953,23954,22426,22427
+23928|ClosurePageRequest|end
+24925|Literal|used by|1|24927
+24925|Literal|end
+25922|LexicalHit|is|0|Copy · Debug · Eq~derived~53844
+25922|LexicalHit|made of|-1|25812,25883
+25922|LexicalHit|taken by|1|25965,25961
+25922|LexicalHit|end
+26919|Map|used by|1|26925
+26919|Map|end
+27916|NONE|used by|1|27917,27918
+27916|NONE|end
+28913|append_clang|takes|-1|9782,29813,27812,28975
+28913|append_clang|gives|1|29039
+28913|append_clang|calls|1|26472,28926,28923,28933,28916,29683,29681
+28913|append_clang|used by|1|28900
+28913|append_clang|end
+29910|encoded_len|end
+30907|Tag|used by|1|5613,30884
+30907|Tag|end
+31904|max_probes|end
+32901|LanguageProfile|is|0|Copy · Debug · Hash · Ord~derived~53844,TryFrom~written~-1,TryFrom~written~-1
+32901|LanguageProfile|made of|-1|32858,32863,32866,32877,32886,32872,32896,32892
+32901|LanguageProfile|made by|-1|19618,19616,19620,16230,19619,20176,19494,19617,16270,3840,42953,17920,42917,42932,42945,3295,3203
+32901|LanguageProfile|taken by|1|32914,6055,7036,32783,16229,7347,30066,3931,6056,14652,19158,20120,5674,7091,30064,3307,3312,20095,20163,30051,42988,43088,3205,3206,3208,5609,5676,7346,19495,19615,20119,20162,5608,30052,30062,30063,30162,32915,3832,28171,38334,7261,3390,17919,3306,30155,42915,7421,42930,42943,6826,20080,20116,26496,30159,30161,30157
+32901|LanguageProfile|held by|1|28140,30010,30011,27820,32779,7540,7541,3219,3220,3221,3222,3223,3225,3226,3823,15726,14598,14599,19562,30131,30132,7303,5594,30023,30024,3432,3847,15328,16279,42911,7457,42926,42940,3289,3423,15889,16284,20129,30026,3419,7465,3195,3197,3198,3199,3200,3201,26494,3999,20098,20123,20125,38321,3190,7263,16624
+32901|LanguageProfile|calls it|1|7105,3922,28847,7226,9177,19151,28848,3204,19739,28729,30646,3898
+32901|LanguageProfile|end
+33898|read_record|called from|-1|33900
+33898|read_record|gives|1|34633,33852
+33898|read_record|calls|1|33593,33892
+33898|read_record|end
+34895|verify|takes|-1|34892
+34895|verify|gives|1|34822
+34895|verify|calls|1|36636
+34895|verify|end
+35892|arena_bytes|end
+36889|only|takes|-1|36877
+36889|only|called from|-1|35809,35810,34122,35808,35811,36890,36891
+36889|only|gives|1|36885
+36889|only|end
+37886|fmt|takes|-1|37878
+37886|fmt|end
+38883|format|end
+39880|UseTag|is|0|Copy · Debug · Eq~derived~53844
+39880|UseTag|taken by|1|6236
+39880|UseTag|held by|1|39890
+39880|UseTag|calls it|1|39992
+39880|UseTag|end
+40877|Truncated|used by|1|40889
+40877|Truncated|end
+41874|RejectedCollectionName|is|0|53839~written,Debug · Eq~derived~53845,ToString~via Display~-1
+41874|RejectedCollectionName|held by|1|41882
+41874|RejectedCollectionName|used by|1|41758
+41874|RejectedCollectionName|end
+42871|next|end
+43868|LanguageProgress|is|0|Clone · Debug · Eq~derived~53844
+43868|LanguageProgress|held by|1|43880
+43868|LanguageProgress|used by|1|45217
+43868|LanguageProgress|end
+44865|package|end
+45862|renders|end
+46859|paint|takes|-1|47902,46835,46850
+46859|paint|calls|1|48041,48425,48333,50219,47268,47269,47252,46849,46747
+46859|paint|end
+47856|when_live|takes|-1|47855
+47856|when_live|called from|-1|47854
+47856|when_live|end
+48853|Horizontal|used by|1|46251,48975,48976
+48853|Horizontal|end
+49850|anchor|end
+50847|framed_reply|takes|-1|3462,446
+50847|framed_reply|calls|1|50586,50581
+50847|framed_reply|end
+51844|into_deserializer|takes|-1|51838
+51844|into_deserializer|end
+52841|IntoValues|is|0|Debug~derived~-1
+52841|IntoValues|made of|-1|52844
+52841|IntoValues|made by|-1|52759
+52841|IntoValues|end
+53838|collect_str|takes|-1|53799
+53838|collect_str|gives|1|52353,53801
+53838|collect_str|end

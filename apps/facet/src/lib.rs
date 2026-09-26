@@ -23,6 +23,10 @@ pub mod data;
 pub mod overlay;
 pub mod probe;
 pub mod code;
+pub mod graph;
+pub mod semantics;
+#[cfg(feature = "anatomy-wip")]
+pub mod anatomy;
 
 #[cfg(feature = "gallery")]
 pub mod gallery;

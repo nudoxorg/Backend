@@ -890,6 +890,7 @@ fn lint(options: &Options) -> Result<()> {
         id => vec![scene(id)?],
     };
     let mut failed = 0;
+    let mut uncovered = 0;
     for scene in &scenes {
         let mut shot = options.shot(scene)?;
         if shot.script.is_none() {
@@ -903,11 +904,18 @@ fn lint(options: &Options) -> Result<()> {
             .next()
             .map_or_else(|| fail(format!("{}: no frame", scene.id)), Ok)?;
         let linted = lint::lint(&frame.image, &frame.ledger, frame.drawn.viewport);
+        let covered = linted.coverage.texts > 0 || linted.coverage.targets > 0;
         println!(
             "{} {}: {}  {} texts, {} targets, contrast measured on {} ({} not){}",
             scene.id,
             suffix(&shot, frame.time_ms),
-            if linted.lints.is_empty() { "PASS" } else { "FAIL" },
+            if !covered {
+                "NOT COVERED"
+            } else if linted.lints.is_empty() {
+                "PASS"
+            } else {
+                "FAIL"
+            },
             linted.coverage.texts,
             linted.coverage.targets,
             linted.coverage.contrast,
@@ -920,14 +928,21 @@ fn lint(options: &Options) -> Result<()> {
         for item in &linted.lints {
             println!("    {:<9} {}: {}", item.rule.name(), item.key, item.detail);
         }
-        if !linted.lints.is_empty() {
+        if !covered {
+            uncovered += 1;
+        } else if !linted.lints.is_empty() {
             failed += 1;
         }
     }
-    if failed == 0 {
-        Ok(())
-    } else {
+    if failed > 0 {
         fail(format!("{failed} scene(s) failed lints"))
+    } else if uncovered > 0 {
+        fail(format!(
+            "{uncovered} scene(s) not covered: nothing published to lint (wrap text in probe::text \
+             and interactive elements in probe::target)"
+        ))
+    } else {
+        Ok(())
     }
 }
 

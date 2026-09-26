@@ -58,6 +58,16 @@ enum RowMark {
 struct Head {
     crumb: Option<(SharedString, Route)>,
     book: Option<(SharedString, SharedString)>,
+    /// The book's releases for the version comb (oldest first), the one you
+    /// pin, and the one being read.
+    releases: Option<Releases>,
+}
+
+#[derive(Clone)]
+struct Releases {
+    list: Rc<[facet::controls::Release]>,
+    pinned: Option<usize>,
+    viewing: Option<usize>,
 }
 
 /// The shelf region.
@@ -218,6 +228,7 @@ impl Shelf {
                 Head {
                     crumb: Some(("Nudox".into(), snapshot.route().clone())),
                     book: None,
+                    releases: None,
                 },
                 self.settings_rows(current),
             );
@@ -299,7 +310,14 @@ impl Shelf {
                 if count == 1 { "" } else { "s" }
             )),
         );
-        (Head { crumb: None, book: Some(book) }, rows)
+        (
+            Head {
+                crumb: None,
+                book: Some(book),
+                releases: None,
+            },
+            rows,
+        )
     }
 
     fn book_rows(&self, route: &Route, snapshot: &AppSnapshot, cx: &mut Context<Self>) -> (Head, Vec<Row>) {
@@ -325,9 +343,31 @@ impl Shelf {
             .and_then(|dossier| dossier.record.known())
             .and_then(|record| record.version.known().map(ToString::to_string))
             .unwrap_or_default();
+        // The version comb: a registry package's releases, oldest first. A
+        // local project has one state, so its header has no comb.
+        let releases = dossier.and_then(|dossier| dossier.versions.known()).map(|versions| {
+            let mut list = versions.iter().collect::<Vec<_>>();
+            list.reverse();
+            let viewing = route.at().and_then(|at| list.iter().position(|entry| entry.version.as_ref() == at.as_str()));
+            let pinned = list.iter().position(|entry| entry.current);
+            Releases {
+                list: list
+                    .iter()
+                    .map(|entry| facet::controls::Release {
+                        id: facet::controls::ReleaseId(entry.version.to_string().into()),
+                        version: entry.version.to_string().into(),
+                        step: facet::controls::Step::of(&entry.version),
+                        age: SharedString::default(),
+                    })
+                    .collect(),
+                pinned,
+                viewing,
+            }
+        });
         let head = Head {
             crumb,
             book: Some((package.display_name().to_owned().into(), version.into())),
+            releases,
         };
         let Some(tree) = dossier.and_then(|dossier| dossier.outline.known()) else {
             return (head, Vec::new());
@@ -425,6 +465,28 @@ impl Shelf {
                             .child(text(ty::MONO_SMALL, measure, palette.ink3).child(detail.clone())),
                     ),
             );
+            // The comb's slot under the name (W-Controls' `version_comb`):
+            // choosing a release re-scopes the route in place.
+            if let Some(releases) = &head.releases
+                && !releases.list.is_empty()
+            {
+                let links = self.links.clone();
+                let pinned = releases.pinned.map(|index| releases.list[index].id.clone());
+                let mut comb = facet::controls::version_comb("shelf-versions", Rc::clone(&releases.list), &measure.inset(gutter))
+                    .on_select(move |selected, _, cx| {
+                        let at = (Some(&selected.0) != pinned.as_ref())
+                            .then(|| crate::navigation::ReleaseId::new(&selected.0 .0).ok())
+                            .flatten();
+                        links.dispatch(Intent::SetRelease(at), cx);
+                    });
+                if let Some(index) = releases.pinned {
+                    comb = comb.pinned(index);
+                }
+                if let Some(index) = releases.viewing {
+                    comb = comb.selected(index);
+                }
+                column = column.child(div().px(gutter).pb(measure.space(Space::Roomy)).child(comb));
+            }
         }
         let links = self.links.clone();
         column = column.child(

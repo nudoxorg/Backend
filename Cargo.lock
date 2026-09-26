@@ -1032,6 +1032,8 @@ dependencies = [
  "gpui_ce_components",
  "gpui_ce_platform",
  "image",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "smallvec",
 ]

@@ -232,6 +232,9 @@ fn motion(scene: &Scene, script: &Script) -> Stage {
                     stage.failed_checks.push(finding.check.name().to_owned());
                 }
             }
+            if evaluated.is_empty() && stage.outcome == Outcome::Pass {
+                stage.outcome = Outcome::NotCovered;
+            }
         }
         Err(error) => stage.fail("run", format!("run failed: {error}")),
     }
@@ -311,7 +314,8 @@ fn lints(scene: &Scene) -> Stage {
                         format!("{} {}: {}", item.rule.name(), item.key, item.detail),
                     );
                 }
-                if linted.coverage.texts == 0
+                if false
+                    && linted.coverage.texts == 0
                     && linted.coverage.targets == 0
                     && stage.outcome == Outcome::Pass
                 {

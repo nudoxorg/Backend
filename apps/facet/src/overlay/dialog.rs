@@ -305,3 +305,150 @@ pub fn element(measure: &Measure, window: &mut Window, cx: &mut App) -> Option<A
         );
     Some(scrim.into_any_element())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Dialog, DialogButton, close, is_open, open};
+    use crate::overlay::float;
+    use gpui::{
+        Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Styled,
+        TestAppContext, VisualTestContext, Window, div, px, size,
+    };
+
+    struct Page {
+        trigger: FocusHandle,
+    }
+
+    impl Render for Page {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .id("trigger")
+                        .track_focus(&self.trigger)
+                        .child("Open"),
+                )
+                .child(float::layer(window, cx))
+        }
+    }
+
+    /// One platform frame, so a just-opened dialog's key handler is mounted.
+    fn frame(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    fn page(cx: &mut TestAppContext) -> (FocusHandle, &mut VisualTestContext) {
+        let (view, cx) = cx.add_window_view(|_, cx| Page {
+            trigger: cx.focus_handle(),
+        });
+        cx.simulate_resize(size(px(900.0), px(700.0)));
+        let trigger = view.read_with(cx, |page, _| page.trigger.clone());
+        cx.update(|window, cx| window.focus(&trigger, cx));
+        frame(cx);
+        (trigger, cx)
+    }
+
+    fn a_dialog(dismissible: bool) -> Dialog {
+        Dialog {
+            title: "Remove serde from the shelf?".into(),
+            body: "Its pages stay in the index.".into(),
+            buttons: vec![DialogButton::new("Keep", |_, _| {}), DialogButton::new("Remove", |_, _| {}).primary()],
+            dismissible,
+        }
+    }
+
+    #[gpui::test]
+    fn opening_moves_focus_in_and_closing_returns_it_to_the_trigger(cx: &mut TestAppContext) {
+        let (trigger, cx) = page(cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(trigger.clone()),
+            "the trigger should hold focus before the dialog opens"
+        );
+        cx.update(|window, cx| open(a_dialog(true), window, cx));
+        frame(cx);
+        assert!(
+            cx.update(|window, cx| window.focused(cx)) != Some(trigger.clone()),
+            "focus should have moved off the trigger into the dialog"
+        );
+        assert!(cx.update(|window, cx| is_open(window, cx)), "the dialog should report open");
+
+        cx.update(|window, cx| close(window, cx));
+        frame(cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(trigger),
+            "focus must return to the trigger once the dialog closes"
+        );
+        assert!(!cx.update(|window, cx| is_open(window, cx)), "closing must flip is_open to false at once");
+    }
+
+    #[gpui::test]
+    fn a_second_close_while_already_closing_is_a_no_op(cx: &mut TestAppContext) {
+        let (trigger, cx) = page(cx);
+        cx.update(|window, cx| open(a_dialog(true), window, cx));
+        frame(cx);
+        cx.update(|window, cx| close(window, cx));
+        frame(cx);
+        assert_eq!(cx.update(|window, cx| window.focused(cx)), Some(trigger.clone()));
+        // The user moved focus elsewhere (simulated by blurring); a second,
+        // stray close() must not touch it.
+        cx.update(|window, _| window.blur());
+        cx.update(|window, cx| close(window, cx));
+        frame(cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            None,
+            "a no-op close must not refocus anything"
+        );
+    }
+
+    #[gpui::test]
+    fn replacing_an_open_dialog_keeps_the_original_restore_target(cx: &mut TestAppContext) {
+        let (trigger, cx) = page(cx);
+        cx.update(|window, cx| open(a_dialog(true), window, cx));
+        frame(cx);
+        // Open again while the first is still up (e.g. its content changes):
+        // the restore target must stay the original trigger, not whatever
+        // had focus at the moment of the second `open`.
+        cx.update(|window, cx| open(a_dialog(false), window, cx));
+        frame(cx);
+        cx.update(|window, cx| close(window, cx));
+        frame(cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(trigger),
+            "replacing the dialog must not lose the original restore target"
+        );
+    }
+
+    #[gpui::test]
+    fn esc_closes_a_dismissible_dialog_and_restores_focus(cx: &mut TestAppContext) {
+        let (trigger, cx) = page(cx);
+        cx.update(|window, cx| open(a_dialog(true), window, cx));
+        frame(cx);
+        cx.simulate_keystrokes("escape");
+        frame(cx);
+        assert!(!cx.update(|window, cx| is_open(window, cx)), "Esc must close a dismissible dialog");
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(trigger),
+            "Esc-close must restore focus like any other close"
+        );
+    }
+
+    #[gpui::test]
+    fn esc_does_nothing_on_a_dialog_that_is_not_dismissible(cx: &mut TestAppContext) {
+        let (_trigger, cx) = page(cx);
+        cx.update(|window, cx| open(a_dialog(false), window, cx));
+        frame(cx);
+        cx.simulate_keystrokes("escape");
+        frame(cx);
+        assert!(cx.update(|window, cx| is_open(window, cx)), "a non-dismissible dialog must ignore Esc");
+    }
+}
