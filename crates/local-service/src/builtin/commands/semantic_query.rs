@@ -311,11 +311,13 @@ fn semantic_callable(kind: backend_semantic::ir::ItemKind) -> bool {
 
 struct ProjectCallableIndex {
     by_path_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
+    by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
 }
 
 impl ProjectCallableIndex {
     fn build_from_bytes(images: &[&[u8]]) -> Result<Self, BuiltinModelError> {
         let mut by_path_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
+        let mut by_owner_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
         for bytes in images {
             let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
                 BuiltinModelError(format!("reopen semantic graph image: {error}"))
@@ -332,13 +334,31 @@ impl ProjectCallableIndex {
                 let name = std::str::from_utf8(entity.name).map_err(|_| {
                     BuiltinModelError("semantic graph callable name is not UTF-8".to_owned())
                 })?;
+                let identity = entity.entity.version.identity();
                 by_path_name
                     .entry((path.clone(), name.to_owned()))
                     .or_default()
-                    .push(entity.entity.version.identity());
+                    .push(identity);
+                if let Some((immediate, chain)) =
+                    owner_chain_keys(&session, &image, entity.entity.id)?
+                {
+                    by_owner_name
+                        .entry((immediate.clone(), name.to_owned()))
+                        .or_default()
+                        .push(identity);
+                    if chain != immediate {
+                        by_owner_name
+                            .entry((chain, name.to_owned()))
+                            .or_default()
+                            .push(identity);
+                    }
+                }
             }
         }
-        Ok(Self { by_path_name })
+        Ok(Self {
+            by_path_name,
+            by_owner_name,
+        })
     }
 
     fn resolve(
@@ -360,6 +380,125 @@ impl ProjectCallableIndex {
             None
         }
     }
+
+    fn resolve_owner(&self, namespace: &str, display: &str) -> Option<DeclarationIdentity> {
+        if namespace.is_empty() || display.is_empty() {
+            return None;
+        }
+        match self.owner_matches(namespace, display) {
+            Some(matches) if matches.len() == 1 => matches.into_iter().next(),
+            Some(_) => None,
+            None => {
+                let stripped = strip_type_arguments(namespace)?;
+                if stripped == namespace {
+                    None
+                } else {
+                    match self.owner_matches(&stripped, display) {
+                        Some(matches) if matches.len() == 1 => matches.into_iter().next(),
+                        _ => None,
+                    }
+                }
+            }
+        }
+    }
+
+    fn owner_matches(
+        &self,
+        namespace: &str,
+        display: &str,
+    ) -> Option<Vec<DeclarationIdentity>> {
+        let mut matches = self
+            .by_owner_name
+            .get(&(namespace.to_owned(), display.to_owned()))?
+            .clone();
+        matches.sort();
+        matches.dedup();
+        if matches.is_empty() {
+            None
+        } else {
+            Some(matches)
+        }
+    }
+}
+
+fn owner_chain_keys(
+    session: &DocumentationSession<'_, backend_semantic::ir::SemanticImageView<'_>>,
+    image: &backend_semantic::ir::SemanticImageView<'_>,
+    function: backend_semantic::ir::EntityId,
+) -> Result<Option<(String, String)>, BuiltinModelError> {
+    let mut names = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut current = session
+        .entity(function)
+        .map_err(|error| BuiltinModelError(format!("read semantic graph callable parent: {error}")))?
+        .entity
+        .parent;
+    let mut steps = 0usize;
+    while let Some(parent_id) = current {
+        if steps >= 16 {
+            return Ok(None);
+        }
+        if !seen.insert(parent_id) {
+            return Ok(None);
+        }
+        let parent = session
+            .entity(parent_id)
+            .map_err(|error| {
+                BuiltinModelError(format!("read semantic graph callable ancestor: {error}"))
+            })?;
+        let name_atom = image
+            .atom(parent.entity.name)
+            .ok_or_else(|| {
+                BuiltinModelError("semantic graph ancestor name atom is missing".to_owned())
+            })?;
+        let name = std::str::from_utf8(name_atom).map_err(|_| {
+            BuiltinModelError("semantic graph ancestor name is not UTF-8".to_owned())
+        })?;
+        if name.is_empty() {
+            return Ok(None);
+        }
+        names.push(name.to_owned());
+        current = parent.entity.parent;
+        steps += 1;
+    }
+    if names.is_empty() {
+        return Ok(None);
+    }
+    names.reverse();
+    let immediate = names.last().cloned().ok_or_else(|| {
+        BuiltinModelError("semantic graph owner chain is unexpectedly empty".to_owned())
+    })?;
+    let chain = names.join(".");
+    Ok(Some((immediate, chain)))
+}
+
+fn strip_type_arguments(namespace: &str) -> Option<String> {
+    let mut out = String::new();
+    let bytes = namespace.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'<' {
+            let mut depth = 1usize;
+            index += 1;
+            while index < bytes.len() && depth > 0 {
+                match bytes[index] {
+                    b'<' => depth += 1,
+                    b'>' => depth -= 1,
+                    _ => {}
+                }
+                index += 1;
+            }
+            if depth != 0 {
+                return None;
+            }
+        } else if bytes[index] == b'>' {
+            return None;
+        } else {
+            out.push(bytes[index] as char);
+            index += 1;
+        }
+    }
+    Some(out)
 }
 
 fn foreign_package_call_retarget(
@@ -392,6 +531,32 @@ fn foreign_package_call_retarget(
     Ok(callable_index.resolve(&resolved_paths, display))
 }
 
+fn foreign_namespace_call_retarget(
+    image: &backend_semantic::ir::SemanticImageView<'_>,
+    external: backend_semantic::ir::ExternalId,
+    callable_index: &ProjectCallableIndex,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(None);
+    };
+    let ForeignTargetOrigin::Namespace { namespace, .. } = foreign.origin else {
+        return Ok(None);
+    };
+    let namespace_atom = image
+        .atom(namespace)
+        .ok_or_else(|| BuiltinModelError("semantic graph namespace atom is missing".to_owned()))?;
+    let display_atom = image
+        .atom(foreign.display)
+        .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
+    let namespace = std::str::from_utf8(namespace_atom).map_err(|_| {
+        BuiltinModelError("semantic graph namespace is not UTF-8".to_owned())
+    })?;
+    let display = std::str::from_utf8(display_atom).map_err(|_| {
+        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
+    })?;
+    Ok(callable_index.resolve_owner(namespace, display))
+}
+
 fn semantic_link_row_id(
     view: &backend_engine::ViewRoot,
     image: &backend_semantic::ir::SemanticImageView<'_>,
@@ -416,13 +581,18 @@ fn semantic_link_row_id(
         }
         LinkTarget::External(external) => {
             if matches!(link_kind, LinkKind::Calls | LinkKind::MethodCall) {
-                if let Some(identity) = foreign_package_call_retarget(
+                let identity = if let Some(identity) = foreign_package_call_retarget(
                     image,
                     external,
                     caller_path,
                     project_paths,
                     callable_index,
                 )? {
+                    Some(identity)
+                } else {
+                    foreign_namespace_call_retarget(image, external, callable_index)?
+                };
+                if let Some(identity) = identity {
                     return Ok(view
                         .row(backend_engine::RowId::Symbol(
                             super::super::view_build::semantic_symbol(package, identity),
@@ -627,14 +797,18 @@ fn project_reference_facts_from_bytes(
                 let LinkTarget::External(external) = link.target else {
                     continue;
                 };
-                let Some(identity) = foreign_package_call_retarget(
+                let identity = if let Some(identity) = foreign_package_call_retarget(
                     &image,
                     external,
                     &caller_path,
                     project_paths,
                     &callable_index,
-                )?
-                else {
+                )? {
+                    Some(identity)
+                } else {
+                    foreign_namespace_call_retarget(&image, external, &callable_index)?
+                };
+                let Some(identity) = identity else {
                     continue;
                 };
                 let retargeted_symbol =
@@ -1031,12 +1205,174 @@ mod project_call_tests {
         link_kind: LinkKind,
     }
 
+    struct NamespaceCallFixture {
+        ecosystem: &'static [u8],
+        namespace: &'static [u8],
+        display: &'static [u8],
+        foreign_key: u8,
+        link_kind: LinkKind,
+    }
+
+    struct AncestorFixture {
+        name: &'static [u8],
+        version_byte: u8,
+        entity_id: TreeEntityId,
+        parent_id: Option<TreeEntityId>,
+        parent_version_byte: Option<u8>,
+        kind: ItemKind,
+    }
+
     fn fixture_version(identity: u8) -> EntityVersion {
         EntityVersion {
             family: DeclarationFamilyId::from_raw([identity; 16]),
             variant: VariantFingerprint::from_raw([identity; 16]),
             core_payload: CorePayloadHash::from_raw([identity; 16]),
         }
+    }
+
+    fn project_namespace_call_image(
+        path: &str,
+        source_identity_byte: u8,
+        ancestors: &[AncestorFixture],
+        callee_name: &'static [u8],
+        callee_version_byte: u8,
+        _callee_id: TreeEntityId,
+        caller_name: &'static [u8],
+        caller_version_byte: u8,
+        caller_id: TreeEntityId,
+        foreign_call: NamespaceCallFixture,
+    ) -> Result<Vec<u8>, String> {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[source_identity_byte]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, path)
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let mut versions = Vec::new();
+        let mut items = Vec::new();
+        for ancestor in ancestors {
+            let version = fixture_version(ancestor.version_byte);
+            versions.push(version);
+            let parentage = match ancestor.parent_version_byte {
+                None => ParentageAuthority::Root,
+                Some(parent_version_byte) => {
+                    ParentageAuthority::Bound(fixture_version(parent_version_byte).identity())
+                }
+            };
+            items.push(TreeItemInput {
+                name: ancestor.name,
+                kind: ancestor.kind,
+                visibility: Visibility::Public,
+                authority: authority(parentage),
+                parent: ancestor.parent_id,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            });
+        }
+        let callee_version = fixture_version(callee_version_byte);
+        versions.push(callee_version);
+        let callee_parent = ancestors.last().map(|ancestor| ancestor.entity_id);
+        let callee_parentage = ancestors
+            .last()
+            .and_then(|ancestor| Some(fixture_version(ancestor.version_byte).identity()))
+            .map(ParentageAuthority::Bound)
+            .unwrap_or(ParentageAuthority::Root);
+        items.push(TreeItemInput {
+            name: callee_name,
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: authority(callee_parentage),
+            parent: callee_parent,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        });
+        let caller_version = fixture_version(caller_version_byte);
+        versions.push(caller_version);
+        items.push(TreeItemInput {
+            name: caller_name,
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: authority(ParentageAuthority::Root),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        });
+        let ecosystem = builder
+            .intern_atom(foreign_call.ecosystem)
+            .map_err(|e| e.to_string())?;
+        let namespace_atom = builder
+            .intern_atom(foreign_call.namespace)
+            .map_err(|e| e.to_string())?;
+        let display = builder
+            .intern_atom(foreign_call.display)
+            .map_err(|e| e.to_string())?;
+        let path_atom = builder
+            .intern_atom(foreign_call.display)
+            .map_err(|e| e.to_string())?;
+        let external = builder
+            .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
+                identity: ExternalDeclarationIdentity {
+                    foreign: ForeignDeclarationId::from_raw([foreign_call.foreign_key; 16]),
+                    variant: VariantAvailability::Unavailable,
+                },
+                origin: ForeignTargetOrigin::Namespace {
+                    ecosystem,
+                    namespace: namespace_atom,
+                },
+                path: path_atom,
+                display,
+                kind: Some(ItemKind::Function),
+            }))
+            .map_err(|e| e.to_string())?;
+        let links = [TreeLinkInput {
+            from: caller_id,
+            target: TreeLinkTarget::External(external),
+            kind: foreign_call.link_kind,
+            confidence: backend_semantic::ir::Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Unavailable,
+            },
+            source: None,
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &links,
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
     }
 
     fn project_call_image(
@@ -2026,6 +2362,861 @@ mod project_call_tests {
             .ok_or("semantic occurrence lost its captured span")?;
         if (span.start, span.end) != (12, 24) {
             return Err(format!("span is {}..{}", span.start, span.end));
+        }
+        Ok(())
+    }
+
+    fn csharp_owner_chain() -> [AncestorFixture; 2] {
+        [
+            AncestorFixture {
+                name: b"Demo",
+                version_byte: 10,
+                entity_id: TreeEntityId::new(0),
+                parent_id: None,
+                parent_version_byte: None,
+                kind: ItemKind::Module,
+            },
+            AncestorFixture {
+                name: b"WorkoutService",
+                version_byte: 11,
+                entity_id: TreeEntityId::new(1),
+                parent_id: Some(TreeEntityId::new(0)),
+                parent_version_byte: Some(10),
+                kind: ItemKind::Record,
+            },
+        ]
+    }
+
+    fn java_owner_chain() -> [AncestorFixture; 1] {
+        [AncestorFixture {
+            name: b"demo.WorkoutService",
+            version_byte: 20,
+            entity_id: TreeEntityId::new(0),
+            parent_id: None,
+            parent_version_byte: None,
+            kind: ItemKind::Record,
+        }]
+    }
+
+    #[test]
+    fn project_call_namespace_csharp_chain_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            1,
+            &csharp_owner_chain(),
+            b"SetNote",
+            12,
+            TreeEntityId::new(2),
+            b"Sync",
+            13,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 21,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let set_note_identity = fixture_version(12).identity();
+        let sync_identity = fixture_version(13).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.cs", 1, "SetNote", fixture_version(12)),
+                ("Weeks.cs", 2, "Sync", fixture_version(13)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["WorkoutService.cs", "Weeks.cs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, sync_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected Sync to call SetNote semantic row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_namespace_java_chain_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.java",
+            1,
+            &java_owner_chain(),
+            b"setNote",
+            22,
+            TreeEntityId::new(1),
+            b"sync",
+            23,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.WorkoutService",
+                display: b"setNote",
+                foreign_key: 22,
+                link_kind: LinkKind::Calls,
+            },
+        )?;
+        let set_note_identity = fixture_version(22).identity();
+        let sync_identity = fixture_version(23).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.java", 1, "setNote", fixture_version(22)),
+                ("Weeks.java", 2, "sync", fixture_version(23)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["WorkoutService.java", "Weeks.java"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, sync_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected sync to call setNote semantic row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_namespace_retarget_incoming_from_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            1,
+            &csharp_owner_chain(),
+            b"SetNote",
+            12,
+            TreeEntityId::new(2),
+            b"Sync",
+            13,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 21,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let set_note_identity = fixture_version(12).identity();
+        let sync_identity = fixture_version(13).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.cs", 1, "SetNote", fixture_version(12)),
+                ("Weeks.cs", 2, "Sync", fixture_version(13)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            set_note_id,
+            true,
+            &project_paths(&["WorkoutService.cs", "Weeks.cs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if !relations
+            .iter()
+            .any(|relation| relation.from == sync_id && relation.to == set_note_id)
+        {
+            return Err(format!(
+                "expected incoming edge from Sync, got {relations:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_namespace_ambiguous_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let first_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            1,
+            &csharp_owner_chain(),
+            b"SetNote",
+            12,
+            TreeEntityId::new(2),
+            b"Sync",
+            13,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 21,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let duplicate_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            4,
+            &csharp_owner_chain(),
+            b"SetNote",
+            14,
+            TreeEntityId::new(2),
+            b"Sync",
+            15,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 24,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let sync_identity = fixture_version(13).identity();
+        let set_note_identity = fixture_version(12).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.cs", 1, "SetNote", fixture_version(12)),
+                ("Weeks.cs", 2, "Sync", fixture_version(13)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&first_bytes, &duplicate_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["WorkoutService.cs", "Weeks.cs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("ambiguous namespace target must not retarget to SetNote".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_namespace_wrong_namespace_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            1,
+            &csharp_owner_chain(),
+            b"SetNote",
+            12,
+            TreeEntityId::new(2),
+            b"Sync",
+            13,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Other.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 21,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let sync_identity = fixture_version(13).identity();
+        let set_note_identity = fixture_version(12).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.cs", 1, "SetNote", fixture_version(12)),
+                ("Weeks.cs", 2, "Sync", fixture_version(13)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["WorkoutService.cs", "Weeks.cs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("wrong namespace must not retarget to SetNote".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_namespace_reads_stay_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            1,
+            &csharp_owner_chain(),
+            b"SetNote",
+            12,
+            TreeEntityId::new(2),
+            b"Sync",
+            13,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 21,
+                link_kind: LinkKind::Reads,
+            },
+        )?;
+        let sync_identity = fixture_version(13).identity();
+        let set_note_identity = fixture_version(12).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.cs", 1, "SetNote", fixture_version(12)),
+                ("Weeks.cs", 2, "Sync", fixture_version(13)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["WorkoutService.cs", "Weeks.cs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("Reads namespace link must not retarget to SetNote".to_owned());
+        }
+        Ok(())
+    }
+
+    fn callee_only_image(path: &str, identity_byte: u8) -> Result<Vec<u8>, String> {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[identity_byte]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, path)
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let versions = [
+            fixture_version(10),
+            fixture_version(11),
+            fixture_version(12),
+        ];
+        let items = [
+            TreeItemInput {
+                name: b"Demo",
+                kind: ItemKind::Module,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"WorkoutService",
+                kind: ItemKind::Record,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Bound(versions[0].identity())),
+                parent: Some(TreeEntityId::new(0)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"SetNote",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Bound(versions[1].identity())),
+                parent: Some(TreeEntityId::new(1)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items: &items,
+                links: &[],
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    #[test]
+    fn project_call_namespace_universe_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let callee_bytes = callee_only_image("WorkoutService.cs", 1)?;
+        let mut builder = IrBuilder::new();
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[30]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, "Weeks.cs")
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [TreeItemInput {
+            name: b"Sync",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: authority(ParentageAuthority::Root),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        }];
+        let ecosystem = builder.intern_atom(b"nuget").map_err(|e| e.to_string())?;
+        let spelling = builder
+            .intern_atom(b"this.service.SetNote")
+            .map_err(|e| e.to_string())?;
+        let external = builder
+            .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
+                identity: ExternalDeclarationIdentity {
+                    foreign: ForeignDeclarationId::from_raw([30; 16]),
+                    variant: VariantAvailability::Unavailable,
+                },
+                origin: ForeignTargetOrigin::Universe { ecosystem },
+                path: spelling,
+                display: spelling,
+                kind: Some(ItemKind::Function),
+            }))
+            .map_err(|e| e.to_string())?;
+        let links = [TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::External(external),
+            kind: LinkKind::MethodCall,
+            confidence: backend_semantic::ir::Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Unavailable,
+            },
+            source: None,
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[fixture_version(13)],
+                items: &items,
+                links: &links,
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut universe_bytes =
+            vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut universe_bytes)
+            .map_err(|error| error.to_string())?;
+        let sync_identity = fixture_version(13).identity();
+        let set_note_identity = fixture_version(12).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.cs", 1, "SetNote", fixture_version(12)),
+                ("Weeks.cs", 2, "Sync", fixture_version(13)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&callee_bytes, &universe_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["WorkoutService.cs", "Weeks.cs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("Universe foreign call must not retarget to SetNote".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_namespace_generic_fallback_retargets() -> Result<(), String> {
+        let package = package_key("fixture");
+        let chain = [
+            AncestorFixture {
+                name: b"Demo",
+                version_byte: 40,
+                entity_id: TreeEntityId::new(0),
+                parent_id: None,
+                parent_version_byte: None,
+                kind: ItemKind::Module,
+            },
+            AncestorFixture {
+                name: b"Box",
+                version_byte: 41,
+                entity_id: TreeEntityId::new(1),
+                parent_id: Some(TreeEntityId::new(0)),
+                parent_version_byte: Some(40),
+                kind: ItemKind::Record,
+            },
+        ];
+        let service_bytes = project_namespace_call_image(
+            "Box.cs",
+            1,
+            &chain,
+            b"SetNote",
+            42,
+            TreeEntityId::new(2),
+            b"Sync",
+            43,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.Box<T>",
+                display: b"SetNote",
+                foreign_key: 42,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let set_note_identity = fixture_version(42).identity();
+        let sync_identity = fixture_version(43).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[("Box.cs", 1, "SetNote", fixture_version(42)), ("Weeks.cs", 2, "Sync", fixture_version(43))],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["Box.cs", "Weeks.cs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, sync_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected generic namespace fallback onto SetNote, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_namespace_unbalanced_generic_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let chain = [
+            AncestorFixture {
+                name: b"Demo",
+                version_byte: 50,
+                entity_id: TreeEntityId::new(0),
+                parent_id: None,
+                parent_version_byte: None,
+                kind: ItemKind::Module,
+            },
+            AncestorFixture {
+                name: b"Box",
+                version_byte: 51,
+                entity_id: TreeEntityId::new(1),
+                parent_id: Some(TreeEntityId::new(0)),
+                parent_version_byte: Some(50),
+                kind: ItemKind::Record,
+            },
+        ];
+        let service_bytes = project_namespace_call_image(
+            "Box.cs",
+            1,
+            &chain,
+            b"SetNote",
+            52,
+            TreeEntityId::new(2),
+            b"Sync",
+            53,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.Box<T",
+                display: b"SetNote",
+                foreign_key: 52,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let sync_identity = fixture_version(53).identity();
+        let set_note_identity = fixture_version(52).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[("Box.cs", 1, "SetNote", fixture_version(52)), ("Weeks.cs", 2, "Sync", fixture_version(53))],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["Box.cs", "Weeks.cs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("unbalanced generic namespace must stay external".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_namespace_csharp_chain_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            1,
+            &csharp_owner_chain(),
+            b"SetNote",
+            12,
+            TreeEntityId::new(2),
+            b"Sync",
+            13,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 21,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let set_note_identity = fixture_version(12).identity();
+        let sync_identity = fixture_version(13).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.cs", 1, "SetNote", fixture_version(12)),
+                ("Weeks.cs", 2, "Sync", fixture_version(13)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["WorkoutService.cs", "Weeks.cs"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        let fact = &facts[0];
+        if fact.site != semantic_symbol(package, sync_identity) {
+            return Err("namespace retarget site is not Sync".to_owned());
+        }
+        if fact.relation != backend_engine::SemanticLinkKind::MethodCall {
+            return Err(format!("namespace retarget relation is {:?}", fact.relation));
+        }
+        let expected_target = semantic_declaration_identity(set_note_identity);
+        if !matches!(
+            &fact.target,
+            backend_engine::SemanticLinkTarget::Local { declaration }
+                if *declaration == expected_target
+        ) {
+            return Err("namespace retarget target is not SetNote".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_namespace_java_chain_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.java",
+            1,
+            &java_owner_chain(),
+            b"setNote",
+            22,
+            TreeEntityId::new(1),
+            b"sync",
+            23,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.WorkoutService",
+                display: b"setNote",
+                foreign_key: 22,
+                link_kind: LinkKind::Calls,
+            },
+        )?;
+        let set_note_identity = fixture_version(22).identity();
+        let sync_identity = fixture_version(23).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.java", 1, "setNote", fixture_version(22)),
+                ("Weeks.java", 2, "sync", fixture_version(23)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&service_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["WorkoutService.java", "Weeks.java"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        let fact = &facts[0];
+        if fact.site != semantic_symbol(package, sync_identity) {
+            return Err("namespace retarget site is not sync".to_owned());
+        }
+        if fact.relation != backend_engine::SemanticLinkKind::Calls {
+            return Err(format!("namespace retarget relation is {:?}", fact.relation));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_namespace_ambiguous_emits_nothing() -> Result<(), String> {
+        let package = package_key("fixture");
+        let first_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            1,
+            &csharp_owner_chain(),
+            b"SetNote",
+            12,
+            TreeEntityId::new(2),
+            b"Sync",
+            13,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 21,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let duplicate_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            4,
+            &csharp_owner_chain(),
+            b"SetNote",
+            14,
+            TreeEntityId::new(2),
+            b"Sync",
+            15,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"SetNote",
+                foreign_key: 24,
+                link_kind: LinkKind::MethodCall,
+            },
+        )?;
+        let sync_identity = fixture_version(13).identity();
+        let set_note_identity = fixture_version(12).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("WorkoutService.cs", 1, "SetNote", fixture_version(12)),
+                ("Weeks.cs", 2, "Sync", fixture_version(13)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&first_bytes, &duplicate_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["WorkoutService.cs", "Weeks.cs"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        let sync_symbol = semantic_symbol(package, sync_identity);
+        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
+        if sync_site_facts != 0 {
+            return Err(format!(
+                "ambiguous namespace target produced {sync_site_facts} sync-site facts"
+            ));
         }
         Ok(())
     }

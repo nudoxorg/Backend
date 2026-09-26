@@ -2141,22 +2141,27 @@ fn push_occurrence<'source>(
         None => {
             // Image atoms are UTF-8-validated at open, so the spelling has a
             // string domain; the key keeps the written spelling as both path
-            // and display.
+            // and display unless a compiler-resolved invocation names its
+            // declaring type as `namespace.method`.
             let spelling =
                 str::from_utf8(reference.spelling.bytes).map_err(|_| ProjectionFault::Foreign {
                     reference: reference_index,
                 })?;
-            let key = ForeignKey::new(
-                ForeignOrigin::Universe {
-                    ecosystem: ECOSYSTEM_STR,
-                },
-                spelling,
-                spelling,
-                foreign_kind(reference.kind),
-            )
-            .map_err(|_| ProjectionFault::Foreign {
-                reference: reference_index,
-            })?;
+            let key = if reference.kind == ReferenceTag::Invocation {
+                typed_invocation_foreign_key(spelling, reference_index)?
+            } else {
+                ForeignKey::new(
+                    ForeignOrigin::Universe {
+                        ecosystem: ECOSYSTEM_STR,
+                    },
+                    spelling,
+                    spelling,
+                    foreign_kind(reference.kind),
+                )
+                .map_err(|_| ProjectionFault::Foreign {
+                    reference: reference_index,
+                })?
+            };
             OccurrenceTarget::Foreign(key)
         }
     };
@@ -2198,6 +2203,49 @@ const fn reference_kind(kind: ReferenceTag) -> ReferenceKind {
         ReferenceTag::UsingDirective => ReferenceKind::Import,
         ReferenceTag::FieldRead => ReferenceKind::VariableUse,
         ReferenceTag::FieldWrite => ReferenceKind::FieldAccess,
+    }
+}
+
+fn typed_invocation_foreign_key(
+    spelling: &str,
+    reference_index: u32,
+) -> Result<ForeignKey<'_>, ProjectionFault> {
+    let (prefix, suffix) = spelling
+        .rsplit_once('.')
+        .filter(|(prefix, suffix)| {
+            !prefix.is_empty()
+                && !suffix.is_empty()
+                && !prefix.contains('\n')
+                && !prefix.contains('\r')
+                && !suffix.contains('\n')
+                && !suffix.contains('\r')
+        })
+        .unwrap_or((spelling, spelling));
+    if prefix != spelling {
+        ForeignKey::new(
+            ForeignOrigin::Namespace {
+                ecosystem: ECOSYSTEM_STR,
+                namespace: prefix,
+            },
+            suffix,
+            suffix,
+            Some(EntityKind::Function),
+        )
+        .map_err(|_| ProjectionFault::Foreign {
+            reference: reference_index,
+        })
+    } else {
+        ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: ECOSYSTEM_STR,
+            },
+            spelling,
+            spelling,
+            foreign_kind(ReferenceTag::Invocation),
+        )
+        .map_err(|_| ProjectionFault::Foreign {
+            reference: reference_index,
+        })
     }
 }
 
@@ -3599,13 +3647,18 @@ mod tests {
         let OccurrenceTarget::Foreign(key) = occurrence.occurrence.target else {
             return Err(TestError::Missing("foreign target"));
         };
-        if key.path != "System.Console.Beep" {
+        if key.path != "Beep" || key.display != "Beep" {
             return Err(TestError::Missing("foreign path"));
         }
-        let ForeignOrigin::Universe { ecosystem } = key.origin else {
-            return Err(TestError::Missing("universe origin"));
+        let ForeignOrigin::Namespace {
+            ecosystem,
+            namespace,
+        } = key.origin
+        else {
+            return Err(TestError::Missing("namespace origin"));
         };
         if ecosystem != "nuget"
+            || namespace != "System.Console"
             || occurrence.occurrence.confidence
                 != backend_semantic::ir::OccurrenceConfidence::Oracle
             || occurrence.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall

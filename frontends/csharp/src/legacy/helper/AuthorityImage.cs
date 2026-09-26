@@ -405,7 +405,43 @@ internal static class AuthorityImage
             var ownerNode = node.Ancestors().FirstOrDefault(syntaxMap.ContainsKey);
             if (ownerNode is null || !syntaxMap.TryGetValue(ownerNode, out var ownerRow)) return;
             var target = ResolveTarget(model.GetSymbolInfo(node).Symbol);
-            var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spellingNode.ToString())); Put(row, 12, TreeFileAtom()); var s = Span(spellingNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+            var spanNode = spellingNode;
+            var spelling = spellingNode.ToString();
+            if (tag == 1 && target == Absent
+                && model.GetSymbolInfo(node).Symbol is IMethodSymbol method
+                && method.ContainingType is not null)
+            {
+                var methodName = method.Name;
+                if (!string.IsNullOrEmpty(methodName))
+                {
+                    var typeDisplay = method.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                    if (typeDisplay.StartsWith("global::", StringComparison.Ordinal))
+                        typeDisplay = typeDisplay["global::".Length..];
+                    typeDisplay = typeDisplay.Replace('+', '.');
+                    if (!string.IsNullOrEmpty(typeDisplay))
+                    {
+                        spelling = typeDisplay + "." + methodName;
+                        spanNode = InvocationMethodNameNode(node) ?? spellingNode;
+                    }
+                }
+            }
+            var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spelling)); Put(row, 12, TreeFileAtom()); var s = Span(spanNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+        }
+
+        private static SyntaxNode InvocationMethodNameNode(SyntaxNode node)
+        {
+            if (node is not InvocationExpressionSyntax invocation)
+                return node;
+            var expression = invocation.Expression;
+            while (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            return expression switch
+            {
+                MemberAccessExpressionSyntax memberAccess => memberAccess.Name,
+                MemberBindingExpressionSyntax memberBinding => memberBinding.Name,
+                IdentifierNameSyntax identifier => identifier,
+                _ => expression,
+            };
         }
 
         private uint ResolveTarget(ISymbol? symbol)
