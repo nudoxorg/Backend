@@ -1424,3 +1424,71 @@ fn constructor_assignments_declare_nested_function_bindings() {
     assert_eq!(parameter_count(&view, b"caught"), 1);
     assert_eq!(parameter_count(&view, b"mid"), 1);
 }
+
+#[test]
+fn enum_member_value_use_targets_that_enum() {
+    const SOURCE: &[u8] = b"export enum Color { Red = 1 }\nexport enum Other { Red = 2 }\nexport function pick(c: Color): boolean { return c === Color.Red; }\n";
+    let view = view(SOURCE, None);
+    let (color_id, color_kind) = named(&view, b"Color");
+    let (other_id, other_kind) = named(&view, b"Other");
+    let (pick_id, pick_kind) = named(&view, b"pick");
+    assert_eq!(color_kind, EntityKind::Enum);
+    assert_eq!(other_kind, EntityKind::Enum);
+    assert_eq!(pick_kind, EntityKind::Function);
+    let field_accesses: Vec<_> = occurrences(&view)
+        .into_iter()
+        .filter(|row| row.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_accesses.len(), 1);
+    let row = &field_accesses[0];
+    assert_eq!(row.owner.raw, pick_id);
+    assert_eq!(row.occurrence.confidence, OccurrenceConfidence::Index);
+    let OccurrenceTarget::Local(variant_id) = row.occurrence.target else {
+        panic!("enum member use must target a local variant");
+    };
+    let variant_row = entities(&view)
+        .into_iter()
+        .find(|(id, _, _)| *id == variant_id.raw)
+        .expect("variant entity");
+    assert_eq!(variant_row.1, b"Red");
+    assert_eq!(variant_row.2, EntityKind::Variant);
+    assert_eq!(
+        fact(&view, variant_id.raw).record.nominal,
+        Some(backend_semantic::ir::NominalRef::Local(
+            backend_semantic::ir::EntityId::new(color_id)
+        ))
+    );
+    assert_ne!(
+        fact(&view, variant_id.raw).record.nominal,
+        Some(backend_semantic::ir::NominalRef::Local(
+            backend_semantic::ir::EntityId::new(other_id)
+        ))
+    );
+}
+
+#[test]
+fn enum_member_missing_name_stays_absent() {
+    const SOURCE: &[u8] = b"export enum Color { Red = 1 }\nexport function pick(): void { Color.missing; }\n";
+    let view = view(SOURCE, None);
+    assert!(
+        occurrences(&view)
+            .iter()
+            .all(|row| row.occurrence.kind != ReferenceKind::FieldAccess)
+    );
+    assert!(
+        !entities(&view)
+            .iter()
+            .any(|(_, name, _)| name == b"missing")
+    );
+}
+
+#[test]
+fn enum_member_non_enum_receiver_stays_absent() {
+    const SOURCE: &[u8] = b"export function pick(box: { tick: number }): number { return box.tick; }\n";
+    let view = view(SOURCE, None);
+    assert!(
+        occurrences(&view)
+            .iter()
+            .all(|row| row.occurrence.kind != ReferenceKind::FieldAccess)
+    );
+}

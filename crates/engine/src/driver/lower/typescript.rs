@@ -3108,6 +3108,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.pass_narrowings()?;
         self.pass_references()?;
         self.pass_checker_references()?;
+        self.pass_enum_member_accesses()?;
         self.pass_docs()?;
         self.pass_parentage()?;
         Ok(())
@@ -4344,6 +4345,136 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             self.commit_occurrence(owner, span, kind, target, confidence)?;
         }
         Ok(())
+    }
+
+    /// Pass six-and-a-half: every `Enum.Member` value use whose object is a
+    /// resolved enum binding becomes one `FieldAccess` occurrence on the
+    /// member token, targeting the variant declared inside that enum.
+    /// Checker-only and OXC reference rows that already name the member span
+    /// are left alone; every other static member site stays absent.
+    fn pass_enum_member_accesses(&mut self) -> Result<(), TypeScriptCollectError> {
+        let nodes = self.semantic.nodes();
+        for node in nodes.iter() {
+            let kind = node.kind();
+            let Some(member) = kind.as_static_member_expression() else {
+                continue;
+            };
+            let property_span = member.property.span();
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let object_span = member.object.span();
+            let Some(identifier_span) =
+                self.peel_object_identifier_span(object_span.start, object_span.end)
+            else {
+                continue;
+            };
+            let Some(enum_fact) = self.enum_fact_for_identifier_span(identifier_span) else {
+                continue;
+            };
+            let property_bytes = self
+                .slice_span(property_span)
+                .ok_or(TypeScriptCollectError::Span {
+                    start: property_span.start,
+                    end: property_span.end,
+                })?;
+            let Some(variant) = self.variant_in_enum(enum_fact, property_bytes) else {
+                continue;
+            };
+            self.commit_occurrence(
+                owner,
+                property_span,
+                ReferenceKind::FieldAccess,
+                OccurrenceTarget::Local(EntityId::new(variant)),
+                OccurrenceConfidence::Index,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Peels one or more parenthesized wrappers and returns the span of the
+    /// innermost identifier reference, if any.
+    fn peel_object_identifier_span(&self, start: u32, end: u32) -> Option<Span> {
+        let mut span = Span::new(start, end);
+        loop {
+            let Some(kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
+                return None;
+            };
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                span = parenthesized.expression.span();
+                continue;
+            }
+            if kind.as_identifier_reference().is_some() {
+                return Some(span);
+            }
+            return None;
+        }
+    }
+
+    /// Resolves one identifier use through OXC's resolved references to the
+    /// published enum fact of its binding, when that binding is an enum.
+    fn enum_fact_for_identifier_span(&self, identifier_span: Span) -> Option<u32> {
+        let scoping = self.semantic.scoping();
+        let nodes = self.semantic.nodes();
+        for symbol in scoping.symbol_ids() {
+            for reference_id in scoping.get_resolved_reference_ids(symbol) {
+                let reference = scoping.get_reference(*reference_id);
+                let span = nodes.get_node(reference.node_id()).kind().span();
+                if span.start != identifier_span.start || span.end != identifier_span.end {
+                    continue;
+                }
+                let binding_start = scoping.symbol_span(symbol).start;
+                let Some(fact) = self.fact_at_name_start(binding_start) else {
+                    return None;
+                };
+                let index = usize::try_from(fact).ok()?;
+                if self.fact_kinds.get(index) == Some(&EntityKind::Enum) {
+                    return Some(fact);
+                }
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Resolves the single variant with `name` declared inside `enum_fact`,
+    /// or `None` when zero or more than one such variant is published.
+    fn variant_in_enum(&self, enum_fact: u32, name: &[u8]) -> Option<u32> {
+        let enum_index = usize::try_from(enum_fact).ok()?;
+        let enum_start = *self.decl_starts.get(enum_index)?;
+        let enum_end = *self.decl_ends.get(enum_index)?;
+        if enum_start == UNSET || enum_end == UNSET {
+            return None;
+        }
+        let Some(candidates) = self.facts_by_name.get(name) else {
+            return None;
+        };
+        let mut matched: Option<u32> = None;
+        for &candidate in candidates {
+            let index = usize::try_from(candidate).ok()?;
+            if self.fact_kinds.get(index) != Some(&EntityKind::Variant) {
+                continue;
+            }
+            let decl_start = *self.decl_starts.get(index)?;
+            let decl_end = *self.decl_ends.get(index)?;
+            if decl_start == UNSET || decl_end == UNSET {
+                continue;
+            }
+            if decl_start < enum_start || decl_end > enum_end {
+                continue;
+            }
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(candidate);
+        }
+        matched
     }
 
     /// Reports whether a committed occurrence already names the exact
