@@ -175,7 +175,7 @@ impl ActivatedProductSemantics {
     }
 }
 
-pub(super) fn activate_semantic_publication(
+fn load_semantic_publication(
     compiler: &backend_engine::application::LocalCompilerClient,
     key: &backend_engine::builtin::ProductSemanticPublicationKey,
     claim: backend_engine::builtin::SemanticPublicationClaim,
@@ -183,7 +183,16 @@ pub(super) fn activate_semantic_publication(
     let publication = compiler
         .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
         .map_err(|error| BuiltinModelError(format!("activate semantic publication: {error}")))?;
-    for image in &publication.images {
+    Ok(ActivatedProductSemantics { publication })
+}
+
+pub(super) fn activate_semantic_publication(
+    compiler: &backend_engine::application::LocalCompilerClient,
+    key: &backend_engine::builtin::ProductSemanticPublicationKey,
+    claim: backend_engine::builtin::SemanticPublicationClaim,
+) -> Result<ActivatedProductSemantics, BuiltinModelError> {
+    let activated = load_semantic_publication(compiler, key, claim)?;
+    for image in activated.images() {
         let view =
             backend_semantic::ir::SemanticImageView::reopen(image.as_ref()).map_err(|error| {
                 BuiltinModelError(format!("reopen activated semantic publication: {error}"))
@@ -192,7 +201,7 @@ pub(super) fn activate_semantic_publication(
             BuiltinModelError(format!("bind semantic publication to product key: {error}"))
         })?;
     }
-    Ok(ActivatedProductSemantics { publication })
+    Ok(activated)
 }
 
 fn workspace_relation(
@@ -1181,6 +1190,12 @@ pub fn measure_search_corpus() {
 /// measurement for the source page a warm search used to read and discard.
 pub fn measure_search_source_page() {
     search_source_page::measure_search_source_page();
+}
+
+/// Times one semantic-image validation against the three validations view
+/// publication used to perform, and against projecting that image's rows.
+pub fn measure_semantic_image_reopen() {
+    view_build::measure_semantic_image_reopen();
 }
 
 /// Starts the compiled locald profile. It does all startup work before the

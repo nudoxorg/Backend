@@ -15,6 +15,7 @@ mod identity;
 mod query;
 mod semantic;
 mod structural;
+mod image_reopen;
 
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
@@ -56,6 +57,12 @@ pub(super) fn project_structural_files(
     only: &std::collections::BTreeSet<[u8; 32]>,
 ) -> Result<(), super::BuiltinModelError> {
     StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only).map(|_| ())
+}
+
+/// Times one semantic-image validation against three validations and against
+/// projecting that image's rows.
+pub(super) fn measure_semantic_image_reopen() {
+    image_reopen::measure_semantic_image_reopen();
 }
 
 /// Projects structural rows for `only` these files.

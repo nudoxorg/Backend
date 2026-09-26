@@ -1,7 +1,7 @@
 use super::super::{
     BuiltinModelError, BuiltinSemanticRelation, FileLane, IndexedProject, IndexedSources,
     MAX_REBUILD_BYTES, MAX_REBUILD_PACKAGES, ProjectionLedger, SemanticFreshness, StructuralCause,
-    WorkspaceSnapshot, activate_semantic_publication,
+    WorkspaceSnapshot,
 };
 use super::identity::{
     declaration_coordinate, declaration_family, declaration_kind, external_semantic_symbol,
@@ -527,27 +527,43 @@ fn semantic_rows(
                     "semantic publication refers to a missing package frontier".to_owned(),
                 )
             })?;
-            let activated = activate_semantic_publication(compiler, key, *claim)?;
-            let decision = {
-                let compiled_sources = compiled_source_identities(&activated)?;
-                let empty = BTreeSet::new();
-                freshness_decision(
-                    &compiled_sources,
-                    current_paths.get(&target).unwrap_or(&empty),
-                    current_identities.get(&target),
-                )
-            };
-            for image in activated.images() {
+            let activated = super::super::load_semantic_publication(compiler, key, *claim)?;
+            // One reopen admits the image, records its source identity, and
+            // projects its rows. Activation used to validate the bytes, then
+            // identity collection validated them again, then projection
+            // validated them a third time.
+            let mut opened = Vec::new();
+            let mut pending = activated.images();
+            while let Some((image, rest)) = pending.split_first() {
                 let view = SemanticImageView::reopen(image.as_ref()).map_err(|error| {
                     BuiltinModelError(format!("reopen activated semantic image: {error}"))
                 })?;
-                let path = compiled_source_path(&view)?;
+                key.admit_image(&view).map_err(|error| {
+                    BuiltinModelError(format!(
+                        "bind semantic publication to product key: {error}"
+                    ))
+                })?;
+                let (path, identity) = compiled_source(&view)?;
+                opened.push((path, identity, view));
+                pending = rest;
+            }
+            let mut compiled_sources = BTreeMap::new();
+            for (path, identity, _) in &opened {
+                compiled_sources.insert(path.clone(), *identity);
+            }
+            let empty = BTreeSet::new();
+            let decision = freshness_decision(
+                &compiled_sources,
+                current_paths.get(&target).unwrap_or(&empty),
+                current_identities.get(&target),
+            );
+            for (path, _, view) in &opened {
                 // Staleness is per image: this image is stale exactly when the
                 // current file compiled from its path no longer hashes to the
                 // image's own source identity. A legacy scan without persisted
                 // identities falls back to the coarse path-set comparison.
-                let stale = match decision.compiled.get(&path) {
-                    Some(identity) => decision.image_stale(&path, *identity),
+                let stale = match decision.compiled.get(path) {
+                    Some(identity) => decision.image_stale(path, *identity),
                     None => decision.path_sets_differ,
                 };
                 // A stale image was compiled from other bytes than the
@@ -556,7 +572,7 @@ fn semantic_rows(
                 let site_declarations = if stale {
                     &[][..]
                 } else {
-                    sites.declarations(key.package_key().as_bytes(), &path)
+                    sites.declarations(key.package_key().as_bytes(), path)
                 };
                 let mut sink = SemanticRowSink {
                     initial,
@@ -565,10 +581,10 @@ fn semantic_rows(
                     capacity: row_capacity,
                     remaining_bytes: &mut remaining_bytes,
                     stale,
-                    path: &path,
+                    path,
                     site_declarations,
                 };
-                append_image_rows(&view, project, key.profile(), &mut sink)?;
+                append_image_rows(view, project, key.profile(), &mut sink)?;
             }
             complete.insert((
                 project.package.to_bytes(),
@@ -704,26 +720,6 @@ pub(super) fn freshness_decision(
         identity_decisive,
         path_sets_differ,
     }
-}
-
-/// Returns the relative source path and semantic content identity of every
-/// activated image.
-///
-/// The publication binding already proves each image carries captured
-/// provenance, so a missing path atom or identity is a broken invariant, not
-/// a display gap.
-fn compiled_source_identities(
-    activated: &super::super::ActivatedProductSemantics,
-) -> Result<CompiledSources, BuiltinModelError> {
-    let mut compiled = BTreeMap::new();
-    for image in activated.images() {
-        let view = SemanticImageView::reopen(image.as_ref()).map_err(|error| {
-            BuiltinModelError(format!("reopen activated semantic image: {error}"))
-        })?;
-        let (path, identity) = compiled_source(&view)?;
-        compiled.insert(path, identity);
-    }
-    Ok(compiled)
 }
 
 /// Returns one image's relative source path and its source content identity.

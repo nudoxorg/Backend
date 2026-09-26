@@ -53,5 +53,10 @@ name = "search_corpus"
 path = "benches/search_corpus.rs"
 harness = false
 
+[[bench]]
+name = "semantic_image_reopen"
+path = "benches/semantic_image_reopen.rs"
+harness = false
+
 [lints]
 workspace = true
