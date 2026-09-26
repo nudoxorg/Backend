@@ -2149,6 +2149,11 @@ fn push_occurrence<'source>(
                 })?;
             let key = if reference.kind == ReferenceTag::Invocation {
                 typed_invocation_foreign_key(spelling, reference_index)?
+            } else if matches!(
+                reference.kind,
+                ReferenceTag::MemberAccess | ReferenceTag::FieldRead | ReferenceTag::FieldWrite
+            ) {
+                typed_member_foreign_key(spelling, reference.kind, reference_index)?
             } else {
                 ForeignKey::new(
                     ForeignOrigin::Universe {
@@ -2203,6 +2208,50 @@ const fn reference_kind(kind: ReferenceTag) -> ReferenceKind {
         ReferenceTag::UsingDirective => ReferenceKind::Import,
         ReferenceTag::FieldRead => ReferenceKind::VariableUse,
         ReferenceTag::FieldWrite => ReferenceKind::FieldAccess,
+    }
+}
+
+fn typed_member_foreign_key(
+    spelling: &str,
+    kind: ReferenceTag,
+    reference_index: u32,
+) -> Result<ForeignKey<'_>, ProjectionFault> {
+    let (prefix, suffix) = spelling
+        .rsplit_once('.')
+        .filter(|(prefix, suffix)| {
+            !prefix.is_empty()
+                && !suffix.is_empty()
+                && !prefix.contains('\n')
+                && !prefix.contains('\r')
+                && !suffix.contains('\n')
+                && !suffix.contains('\r')
+        })
+        .unwrap_or((spelling, spelling));
+    if prefix != spelling {
+        ForeignKey::new(
+            ForeignOrigin::Namespace {
+                ecosystem: ECOSYSTEM_STR,
+                namespace: prefix,
+            },
+            suffix,
+            suffix,
+            foreign_kind(kind),
+        )
+        .map_err(|_| ProjectionFault::Foreign {
+            reference: reference_index,
+        })
+    } else {
+        ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: ECOSYSTEM_STR,
+            },
+            spelling,
+            spelling,
+            foreign_kind(kind),
+        )
+        .map_err(|_| ProjectionFault::Foreign {
+            reference: reference_index,
+        })
     }
 }
 
@@ -3671,6 +3720,110 @@ mod tests {
             || occurrence.occurrence.span.end != end - 6
         {
             return Err(TestError::Missing("owner relative span"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("single occurrence"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_namespace_field_key_splits_qualified_member_spelling() -> Result<(), TestError> {
+        let source = b"class Drive { void Run() { var x = service.Note; } }";
+        let mut fix = Fixture::default();
+        let drive = fix.class(b"demo.Drive", source);
+        let qualified = fix.atom(b"Demo.WorkoutService.Note");
+        let note = fix.atom(b"Note");
+        let file = fix.atom(b"Drive.cs");
+        let (start, end) = Fixture::span_of(source, b"Note");
+        fix.references.push(RefRow {
+            owner: drive,
+            target: None,
+            spelling: qualified,
+            file,
+            start,
+            end,
+            kind: 3,
+        });
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let occurrence = occurrences
+            .next()
+            .ok_or(TestError::Missing("occurrence"))?
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        let OccurrenceTarget::Foreign(key) = occurrence.occurrence.target else {
+            return Err(TestError::Missing("foreign target"));
+        };
+        if key.path != "Note"
+            || key.display != "Note"
+            || key.kind != Some(EntityKind::Field)
+            || occurrence.occurrence.kind != backend_semantic::ir::ReferenceKind::FieldAccess
+        {
+            return Err(TestError::Missing("namespace field key"));
+        }
+        let ForeignOrigin::Namespace {
+            ecosystem,
+            namespace,
+        } = key.origin
+        else {
+            return Err(TestError::Missing("namespace origin"));
+        };
+        if ecosystem != "nuget" || namespace != "Demo.WorkoutService" {
+            return Err(TestError::Missing("declaring type namespace"));
+        }
+        if occurrence.occurrence.span.start != start - 6
+            || occurrence.occurrence.span.end != end - 6
+        {
+            return Err(TestError::Missing("name token span"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("single occurrence"));
+        }
+        let _ = note;
+        Ok(())
+    }
+
+    #[test]
+    fn undotted_absent_field_reference_stays_universe() -> Result<(), TestError> {
+        let source = b"class Drive { void Run() { var x = Note; } }";
+        let mut fix = Fixture::default();
+        let drive = fix.class(b"demo.Drive", source);
+        let note = fix.atom(b"Note");
+        let file = fix.atom(b"Drive.cs");
+        let (start, end) = Fixture::span_of(source, b"Note");
+        fix.references.push(RefRow {
+            owner: drive,
+            target: None,
+            spelling: note,
+            file,
+            start,
+            end,
+            kind: 6,
+        });
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let occurrence = occurrences
+            .next()
+            .ok_or(TestError::Missing("occurrence"))?
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        let OccurrenceTarget::Foreign(key) = occurrence.occurrence.target else {
+            return Err(TestError::Missing("foreign target"));
+        };
+        let ForeignOrigin::Universe { ecosystem } = key.origin else {
+            return Err(TestError::Missing("universe origin"));
+        };
+        if ecosystem != "nuget"
+            || key.path != "Note"
+            || key.display != "Note"
+            || key.kind != Some(EntityKind::Field)
+        {
+            return Err(TestError::Missing("universe field key"));
         }
         if occurrences.next().is_some() {
             return Err(TestError::Missing("single occurrence"));

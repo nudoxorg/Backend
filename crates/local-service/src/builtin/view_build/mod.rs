@@ -77,6 +77,9 @@ fn semantic_profile_is_complete(
 }
 
 #[cfg(test)]
+mod csharp_field_namespace_join;
+
+#[cfg(test)]
 mod tests {
     use super::super::initial_view;
     use super::super::{FileLane, IndexedProject, SemanticFreshness, StructuralCause};
