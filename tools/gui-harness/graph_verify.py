@@ -17,6 +17,7 @@ LIVE = ['graph-world', 'graph-present', 'graph-engine', 'graph-glyph',
         'graph-flight-a', 'graph-flight-b', 'graph-check-live-hover', 'graph-live-dense-focus', 'graph-check-hover-phases']
 CONTROLS = ['graph-world-naive','graph-world-paths','graph-check-live-hover-naive','graph-check-live-hover-paths']
 TIMES = '0,400,800,1600,2000,2100,2400,4000,6000,7600'
+CHAIN_TIMES = '0,240,256,400,600,608,800,1200,1600,2000,2100,2400,2800,4000,6000,7600'
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
@@ -82,8 +83,18 @@ def state_findings(report, scene):
             node=state.get(key)
             if node and (not isinstance(node.get('id'),int) or not 0<=node['id']<state['world_nodes']):
                 failures.append(f'invalid {key} ID at {f["at_ms"]}ms')
+        for label, strength in [('hover',state.get('hover_strength',0)),('fading hover',(state.get('fading_hover') or {}).get('strength',0))]:
+            if not isinstance(strength,(float,int)) or not math.isfinite(strength) or not 0<=strength<=1:
+                failures.append(f'invalid {label} opacity at {f["at_ms"]}ms')
+        fade=state.get('fading_hover')
+        if fade and (not isinstance((fade.get('node') or {}).get('id'),int) or not 0<=fade['node']['id']<state['world_nodes']):
+            failures.append(f'invalid fading hover ID at {f["at_ms"]}ms')
+        for key,value in state.get('drawn',{}).items():
+            if key in ('hover_relations','hover_routes','hover_candidates','fading_hover_relations','fading_hover_routes','fading_hover_candidates') and (not isinstance(value,int) or value<0):
+                failures.append(f'invalid {key} cardinality at {f["at_ms"]}ms')
         if state['find_open'] and state['exploration']!='free': failures.append('find coexists with exploration')
         viewport=state.get('viewport')
+        if state.get('find_open') and state.get('visible_prism'): failures.append(f'find displays cached prism at {f["at_ms"]}ms')
         for scroll in state.get('scrolls',[]):
             if not viewport or not inside(scroll['viewport'],viewport): failures.append(f'actual scroll viewport escapes graph at {f["at_ms"]}ms')
             if scroll['key'] in ('graph-focus-scroll','graph-chain-scroll','graph-tour-scroll'):
@@ -94,7 +105,7 @@ def state_findings(report, scene):
             if box and (not viewport or not inside(box,viewport)): failures.append(f'{key} escapes actual viewport at {f["at_ms"]}ms')
         if state.get('pointer') and state.get('prism') and state['prism']['gathered']>=.999:
             if state.get('hover_slot') != state.get('pointer_prism_pick'): failures.append(f'parked pointer uses stale prism pick at {f["at_ms"]}ms')
-        if not state.get('moving') and state.get('focused'):
+        if not state.get('moving') and state.get('focused') and not state.get('find_open'):
             gem=state.get('focus_bounds'); card=state.get('measured_card_bounds')
             if not gem: failures.append('actual settled focused glyph bounds absent')
             elif not viewport or not inside(gem,viewport): failures.append(f'settled focus escapes viewport at {f["at_ms"]}ms')
@@ -150,8 +161,18 @@ def state_findings(report, scene):
                     failures.append(f'actual hover handoff target {want} absent in {lower}..{upper}ms')
             if any(st.get('focused') for st in states): failures.append('hover/drag film accidentally focused a subject')
             if not any(2032<=f['at_ms']<2300 and f['state'].get('moving') for f in frames): failures.append('native drag onset was never observed')
-            if not any(900<=f['at_ms']<1200 and f['state'].get('fading_hover') for f in frames): failures.append('actual leave fading packet absent')
+            fading=[(f['at_ms'],f['state']['fading_hover']['strength']) for f in frames if 900<=f['at_ms']<1200 and f['state'].get('fading_hover')]
+            if not fading: failures.append('actual leave fading packet absent')
+            elif any(b>a+1e-6 for (_,a),(_,b) in zip(fading,fading[1:])) or not any(a<fading[0][1]-.01 for _,a in fading[1:]): failures.append('actual outgoing hover opacity did not decrease')
+            if any(f['state'].get('fading_hover') for f in frames if 1200<=f['at_ms']<1400): failures.append('outgoing leave packet exceeded its finite exit')
             if any(st.get('fading_hover') or st.get('hovered') for f,st in zip(frames,states) if f['at_ms']>=7600): failures.append('hover phase tail did not close')
+            before=next((f for f in reversed(frames) if f['at_ms']<4300),None)
+            coalesced=next((f for f in frames if f['at_ms']>=4300 and f.get('events',0)>=3),None)
+            if not before or not coalesced: failures.append('coalesced native down/move/up did not dispatch in one frame')
+            else:
+                old=before['state']['camera'];new=coalesced['state']['camera'];width=before['state']['viewport']['width']
+                if abs(new['x']-(old['x']-80*old['w']/width))>1e-4 or abs(new['y']-(old['y']-40*old['w']/width))>1e-4 or abs(new['w']-old['w'])>1e-4:
+                    failures.append('coalesced actual native gesture lost world-anchor displacement')
     if scene=='graph-check-parked':
         hovered=[st for st in states if st.get('hovered') and st['hovered']['id']==4]
         if not hovered: failures.append('parked pointer never picked actual unrelated render proxy node4')
@@ -170,7 +191,9 @@ def state_findings(report, scene):
         if not intended: failures.append('live qualified dense target absent; fallback is not coverage')
         elif not any(st.get('focused',{}).get('id')==intended[0] and st.get('prism',{}).get('gathered',0)>=.999 for st in states if st.get('focused') and st.get('prism')):
             failures.append('actual live dense target never focused and gathered')
-    if scene=='graph-check-chain' and not any(st.get('held_chain')==[10,12,13] for st in states): failures.append('two-call chain was never actually held')
+    if scene=='graph-check-chain':
+        if not any(st.get('held_chain')==[10,12,13] for st in states): failures.append('two-call chain was never actually held')
+        failures.extend(road_findings(report))
     if scene=='graph-check-weather':
         widths={st.get('viewport',{}).get('width') for st in states if st.get('viewport')}
         if not {480,640}<=widths: failures.append('weather never resized actual graph through480 and640 widths')
@@ -193,18 +216,57 @@ def state_findings(report, scene):
             failures.append('tail did not settle to zero requests, pending tracks and search')
     return sorted(set(failures))
 
+def road_findings(report):
+    """Read the real native road ledger, including held-clock restart/quiet."""
+    failures=[];samples=[]
+    for capture in report.get('captures',[]):
+        tracks=[track for track in capture.get('tracks',[]) if track.get('key')=='graph-chain-road']
+        if len(tracks)>1: failures.append('road published more than one progress track in a frame')
+        if capture['time_ms']>=7600 and tracks: failures.append('closed road retained a terminal track')
+        for track in tracks:
+            if any(not isinstance(track.get(key),(int,float)) or not math.isfinite(track[key]) for key in ('value','target','started_ms','budget_ms','at_ms')):
+                failures.append('road progress or timing is not finite');continue
+            if not 0<=track['value']<=1 or track['target']!=1: failures.append('road progress escaped its carried-value range')
+            # The pinned chain folds Invocation/Grammar into two type stops:
+            # one arc, whose public choreography contract is 260+380ms.
+            if abs(track['budget_ms']-640)>.01: failures.append('pinned two-stop road changed its finite budget')
+            if track['live'] and (track['value']>=1 or track['at_ms']>track['started_ms']+track['budget_ms']+.01): failures.append('road remained live beyond its finite arrival')
+            if capture.get('state',{}).get('reduced_motion') and (track['live'] or track['value']!=1): failures.append('reduced road animated instead of settling')
+            samples.append((capture,track))
+    held=[(capture,track) for capture,track in samples if capture.get('state',{}).get('held_chain')==[10,12,13]]
+    if not held: failures.append('actual held road progress was never observed');return sorted(set(failures))
+    reduced=all(capture.get('state',{}).get('reduced_motion') for capture,_ in held)
+    if not reduced:
+        if not any(track['live'] and track['value']<=.04 and abs(track['started_ms']-600)<=16 for _,track in held): failures.append('held road start/restart was not observed')
+        if not any(track['live'] and .05<track['value']<.95 for _,track in held): failures.append('held road middle was not observed')
+        if not any(not track['live'] and track['value']==1 for _,track in held): failures.append('held road terminal arrival was not observed')
+    clocks={}
+    for _,track in samples:
+        previous=clocks.get(track['started_ms'])
+        if previous is not None and track['value']<previous-1e-6: failures.append('stable road selection moved progress backwards')
+        clocks[track['started_ms']]=track['value']
+    return sorted(set(failures))
+
+
 def live_hover_topology_findings(report, degree):
-    failures=[]
-    actual=[f['state'] for f in report.get('frames',[]) if f.get('state',{}).get('hovered') and not f['state'].get('focused') and f['state'].get('hover_strength',1)>.001]
-    for state in actual:
-        node=state['hovered']['id'];drawn=state['drawn']
-        if node not in degree: failures.append('actual hovered node is not a top-level fixture item')
-        elif drawn.get('hover_relations') != degree[node]: failures.append(f'hover relation count {drawn.get("hover_relations")} does not preserve fixture neighbourhood {degree[node]} for actual node {node}')
-        if drawn.get('hover_routes',0)>drawn.get('hover_relations',0):
-            failures.append('actual hover routes exceed retained relations')
-    for node in {state['hovered']['id'] for state in actual}:
-        if degree.get(node,0)>0 and not any(state['hovered']['id']==node and state['drawn'].get('hover_routes',0)>0 for state in actual):
-            failures.append('actual hover semantic routes were never visibly submitted')
+    failures=[];visible={'hover':[],'fading_hover':[]}
+    for frame in report.get('frames',[]):
+        state=frame.get('state',{});drawn=state.get('drawn',{})
+        for kind in visible:
+            if kind=='hover':
+                node=state.get('hovered');strength=state.get('hover_strength',1);prefix='hover'
+                eligible=node and not state.get('focused')
+            else:
+                fade=state.get('fading_hover') or {};node=fade.get('node');strength=fade.get('strength',0);prefix='fading_hover'
+                eligible=node and (state.get('hovered') or {}).get('id')!=node['id']
+            if not eligible or not isinstance(strength,(int,float)) or not math.isfinite(strength) or strength<=.001: continue
+            node=node['id'];visible[kind].append((node,drawn.get(prefix+'_routes',0)))
+            if node not in degree: failures.append(f'actual {kind} node is not a top-level fixture item')
+            elif drawn.get(prefix+'_relations') != degree[node]: failures.append(f'{kind} relation count {drawn.get(prefix+"_relations")} does not preserve fixture neighbourhood {degree[node]} for actual node {node}')
+            if drawn.get(prefix+'_routes',0)>drawn.get(prefix+'_relations',0): failures.append(f'actual {kind} routes exceed retained relations')
+    for kind,records in visible.items():
+        for node in {node for node,_ in records}:
+            if degree.get(node,0)>0 and not any(subject==node and routes>0 for subject,routes in records): failures.append(f'actual {kind} semantic routes were never visibly submitted')
     return sorted(set(failures))
 
 def complete_png(path):
@@ -360,7 +422,8 @@ def main():
                 art=run_dir/label; art.mkdir(exist_ok=True)
                 report_path=art/'motion.json'
                 common=['--scene',scene,*options,'--scale',str(args.scale)]
-                proc=command(run_dir,label+'-motion',['motion-report',*common,'--times',TIMES,'--until','8000','--out',str(report_path)])
+                capture_times=CHAIN_TIMES if scene=='graph-check-chain' else TIMES
+                proc=command(run_dir,label+'-motion',['motion-report',*common,'--times',capture_times,'--until','8000','--out',str(report_path)])
                 if report_path.is_file():
                     report=json.loads(report_path.read_text())
                     alignment=report['alignment']
@@ -391,7 +454,7 @@ def main():
                 if proc.returncode == 124:
                     entries.append({'label':label,'watchdog_timeout':True,'captures_unavailable':True})
                     continue
-                proc=command(run_dir,label+'-film',['film',*common,'--times',TIMES,'--frames','--onion','--columns','4','--out',str(art)])
+                proc=command(run_dir,label+'-film',['film',*common,'--times',capture_times,'--frames','--onion','--columns','4','--out',str(art)])
                 hashes=re.findall(r'rgba-sha256 ([0-9a-f]{64})',proc.stdout)
                 if not hashes: manifest['failures'].append(label+': film emitted no frame digests')
                 if run==2 and previous.get(label+'-hashes')!=hashes: manifest['failures'].append(label+': film pixels differ')

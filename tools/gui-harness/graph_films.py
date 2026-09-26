@@ -4,12 +4,71 @@
 No interpolation. Capture cadence is 32ms; the native harness draws at 16ms.
 Requires a separately built facet-gallery and ffmpeg. Never builds the project.
 """
-import argparse, hashlib, json, pathlib, shutil, subprocess, time
+import argparse, hashlib, importlib.util, json, pathlib, shutil, subprocess, time
 
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_SCENES=('graph-journey','graph-flight-a','graph-flight-b','graph-check-interrupt','graph-check-hover-phases')
 
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def contact_sheet(frames, path, capture_ms, duration):
+    from PIL import Image, ImageDraw, ImageFont
+    marks=list(range(0,duration+1,1000))
+    scene=frames[0].get('scene')
+    phase=scene=='graph-check-hover-phases'
+    if scene in ('graph-flight-a','graph-flight-b'): marks += [200,264,328,392,456,520,584,648,712,800]
+    if scene=='graph-check-interrupt': marks += [2000,2080,2160,2200,2280,2400,2520,2600,2720,2816,2880,3200]
+    if scene=='graph-journey': marks += [200,400,650,1400,1500,1600,1700,3300,3360,3500,3800,4500,4600,4800]
+    if phase: marks += [880,900,920,944,976,1008,1040,1080,1120,1400,1600,1952,2000,2032,2064,2096,2130,2160,3000,3040,3080,3120,3180,3260,3360,3600,3680,4300,4320]
+    selected=sorted({min(range(len(frames)),key=lambda i:abs(frames[i]['time_ms']-mark)) for mark in marks}|{len(frames)-1})
+    columns=min(4,len(selected));rows=(len(selected)+columns-1)//columns
+    width=360
+    with Image.open(frames[0]['image']) as first:image_height=round(first.height*width/first.width)
+    label_height=48 if phase else 32;canvas=Image.new('RGB',(columns*width,rows*(image_height+label_height)),(20,24,33))
+    font=ImageFont.truetype(str(ROOT/'tools/gui-harness/assets/fonts/GeistMono[wght].ttf'),13)
+    draw=ImageDraw.Draw(canvas);records=[]
+    for ordinal,index in enumerate(selected):
+        frame=frames[index];x=(ordinal%columns)*width;y=(ordinal//columns)*(image_height+label_height)
+        with Image.open(frame['image']) as source:canvas.paste(source.convert('RGB').resize((width,image_height),Image.Resampling.LANCZOS),(x,y))
+        state=frame['state'];focus=(state.get('focused') or {}).get('name','—')
+        label=f"{frame['time_ms']} ms · {state['exploration']} · {focus}"
+        draw.text((x+8,y+image_height+8),label,fill=(216,222,234),font=font)
+        if phase:
+            hover=(state.get('hovered') or {}).get('name','—');fade=state.get('fading_hover') or {}
+            fading=(fade.get('node') or {}).get('name','—')
+            draw.text((x+8,y+image_height+26),f"hover {hover} {state.get('hover_strength',0):.2f} · fade {fading} {fade.get('strength',0):.2f}",fill=(174,186,207),font=font)
+        records.append({'time_ms':frame['time_ms'],'image':frame['image'],'state':state,'label':label})
+    canvas.save(path,compress_level=1)
+    metadata={'columns':columns,'rows':rows,'selection':'nearest actual captures to full seconds and scene transition marks, plus exact final capture','requested_marks_ms':sorted(set(marks)), 'frames':records}
+    path.with_suffix('.json').write_text(json.dumps(metadata,indent=2)+'\n')
+    return metadata
+
+def film_state_findings(report, scene):
+    """Do not accept a movie whose native inputs silently missed their state."""
+    spec=importlib.util.spec_from_file_location('graph_verify',pathlib.Path(__file__).with_name('graph_verify.py'))
+    verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
+    failures=verifier.state_findings(report,scene)
+    frames=report.get('frames',[])
+    if not frames:return failures
+    states=[frame['state'] for frame in frames];last=states[-1]
+    if scene in ('graph-flight-a','graph-flight-b'):
+        name='RelationLabel' if scene=='graph-flight-a' else 'from_str'
+        if (last.get('focused') or {}).get('name')!=name or (last.get('prism') or {}).get('gathered',0)<.999:
+            failures.append('flight did not arrive at its actual intended symbol/prism')
+        if last.get('moving') or last.get('pending_motion') or frames[-1]['requested']:
+            failures.append('flight final state still requests motion')
+    if scene=='graph-journey':
+        initial=states[0]['camera']
+        for lower,upper in ((650,1400),(3400,4500)):
+            if not any(lower<=frame['at_ms']<upper and not frame['state'].get('focused') and frame['state']['camera']['w']<initial['w']*.9 for frame in frames):
+                failures.append(f'journey package view absent in {lower}..{upper}ms')
+        if not any((state.get('focused') or {}).get('name')=='RelationLabel' and (state.get('prism') or {}).get('gathered',0)>=.999 for state in states):
+            failures.append('journey never visibly gathered its intended RelationLabel prism')
+        if last.get('focused') or any(abs(last['camera'][key]-initial[key])>1e-4 for key in ('x','y','w')):
+            failures.append('journey never returned to its actual initial world camera')
+        if last.get('moving') or last.get('pending_motion') or frames[-1]['requested']:
+            failures.append('journey world tail still requests motion')
+    return sorted(set(failures))
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -35,11 +94,13 @@ def main():
     def save(): (args.out/'FILMS.json').write_text(json.dumps(manifest,indent=2)+'\n')
     def run(label,command,timeout=180):
         started=time.monotonic()
+        manifest['active_command']={'label':label,'argv':command,'timeout_s':timeout};save()
         try: result=subprocess.run(command,cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             output=exc.stdout or b'';output=output.decode(errors='replace') if isinstance(output,bytes) else output
             result=subprocess.CompletedProcess(command,124,output+'\nWATCHDOG timeout\n')
         log=args.out/(label+'.log');log.write_text(result.stdout)
+        manifest.pop('active_command',None)
         manifest['commands'].append({'argv':command,'exit':result.returncode,'timeout_s':timeout,'elapsed_s':time.monotonic()-started,'log':str(log)})
         if result.returncode: manifest['failures'].append(f'{label}: exit {result.returncode}')
         save();return result.returncode==0
@@ -64,13 +125,16 @@ def main():
         movie=directory/(scene+'.mp4');sheet=directory/(scene+'-contact.png')
         movie_ok=run(scene+'-mp4',[args.ffmpeg,'-hide_banner','-nostdin','-y','-framerate',str(1000/args.capture_ms),
                 '-i',str(links/'frame-%06d.png'),'-c:v','libx264','-preset','medium','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(movie)])
-        run(scene+'-contact',[args.ffmpeg,'-hide_banner','-nostdin','-y','-i',str(movie),'-vf',
-            'fps=1,scale=360:-1,tile=4x3','-frames:v','1',str(sheet)])
+        try:contact=contact_sheet(frames,sheet,args.capture_ms,args.duration)
+        except Exception as exc:
+            contact=None;manifest['failures'].append(scene+': contact sheet '+str(exc));save()
         report=directory/'motion.json'
         run(scene+'-motion',[str(binary),'motion-report','--scene',scene,'--size',args.size,'--scale','1','--frame-ms',str(args.frame_ms),
             '--times','0,200,400,800,1600,2400,4000,6000,7600','--until',str(args.duration),'--out',str(report)])
-        manifest['films'].append({'scene':scene,'frames':len(frames),'times_ms':times,'sidecars':str(directory),
-            'mp4':str(movie) if movie_ok else None,'contact_sheet':str(sheet) if sheet.exists() else None,
+        state_failures=film_state_findings(json.loads(report.read_text()),scene) if report.is_file() else ['native motion state report absent']
+        manifest['failures'].extend(scene+': '+failure for failure in state_failures)
+        manifest['films'].append({'scene':scene,'state_findings':state_failures,'frames':len(frames),'times_ms':times,'sidecars':str(directory),
+            'mp4':str(movie) if movie_ok else None,'contact_sheet':str(sheet) if sheet.exists() else None,'contact_metadata':contact,
             'motion_report':str(report),'first_state':frames[0]['state'],'last_state':frames[-1]['state'],
             'mp4_sha256':sha(movie) if movie_ok else None})
         save()

@@ -3,6 +3,8 @@ import copy, importlib.util, pathlib, re, unittest
 
 spec=importlib.util.spec_from_file_location('graph_verify',pathlib.Path(__file__).with_name('graph_verify.py'))
 verify=importlib.util.module_from_spec(spec);spec.loader.exec_module(verify)
+film_spec=importlib.util.spec_from_file_location('graph_films',pathlib.Path(__file__).with_name('graph_films.py'))
+films=importlib.util.module_from_spec(film_spec);film_spec.loader.exec_module(films)
 
 def state(**changes):
     value={'camera':{'x':0.,'y':0.,'w':100.},'world_nodes':3,'find_open':False,'searching':False,
@@ -65,6 +67,46 @@ class EvidenceRules(unittest.TestCase):
         report['frames'][0]['state']['drawn']['hover_relations']=8
         report['frames'][0]['state']['drawn']['hover_routes']=0
         self.assertTrue(verify.live_hover_topology_findings(report,{1:8}))
+
+    def test_outgoing_hover_requires_finite_opacity_and_exact_topology(self):
+        report={'frames':[frame(900,fading_hover={'node':{'id':1},'strength':.5},drawn={'fading_hover_relations':8,'fading_hover_routes':2})]}
+        self.assertFalse(verify.live_hover_topology_findings(report,{1:8}))
+        report['frames'][0]['state']['drawn']['fading_hover_relations']=7
+        self.assertTrue(verify.live_hover_topology_findings(report,{1:8}))
+        report['frames'][0]['state']['fading_hover']['strength']=float('nan')
+        self.assertTrue(any('opacity' in reason for reason in verify.state_findings(report,'graph-pinned-world')))
+
+    def test_real_road_requires_start_middle_arrival_and_finite_budget(self):
+        def capture(at,progress,live,reduced=False):
+            return {'time_ms':at,'state':{'held_chain':[10,12,13],'reduced_motion':reduced},'tracks':[{
+                'key':'graph-chain-road','value':progress,'target':1,'started_ms':600,
+                'budget_ms':640,'at_ms':at,'live':live}]}
+        report={'captures':[capture(600,0,True),capture(800,.3,True),capture(1600,1,False)]}
+        self.assertFalse(verify.road_findings(report))
+        broken=copy.deepcopy(report);broken['captures'][2]['tracks'][0].update(value=.8,live=True)
+        self.assertTrue(any('finite arrival' in reason for reason in verify.road_findings(broken)))
+        self.assertTrue(verify.road_findings({'captures':report['captures'][1:]}),'missing start cannot be coverage')
+        reduced={'captures':[capture(600,1,False,True),capture(800,1,False,True)]}
+        self.assertFalse(verify.road_findings(reduced))
+        reduced['captures'][0]['tracks'][0].update(value=0,live=True)
+        self.assertTrue(any('reduced road' in reason for reason in verify.road_findings(reduced)))
+
+    def test_film_requires_intended_arrival_and_quiet_tail(self):
+        report={'frames':[frame(0),frame(7600,focused={'id':1,'name':'RelationLabel'},prism={'gathered':1},focus_bounds={'x':130,'y':100,'width':20,'height':20})]}
+        self.assertFalse(films.film_state_findings(report,'graph-flight-a'))
+        report['frames'][-1]['state']['focused']['name']='wrong symbol'
+        self.assertTrue(films.film_state_findings(report,'graph-flight-a'))
+        self.assertTrue(films.film_state_findings({'frames':[]},'graph-flight-a'))
+
+    def test_journey_movie_requires_package_stages_and_exact_world_return(self):
+        report={'frames':[frame(0),frame(800,camera={'x':0.,'y':0.,'w':60.}),
+            frame(2000,focused={'id':1,'name':'RelationLabel'},prism={'gathered':1},focus_bounds={'x':130,'y':100,'width':20,'height':20}),
+            frame(3800,camera={'x':0.,'y':0.,'w':60.}),frame(7600)]}
+        self.assertFalse(films.film_state_findings(report,'graph-journey'))
+        report['frames'][3]['state']['camera']['w']=100.
+        self.assertTrue(any('package view absent' in reason for reason in films.film_state_findings(report,'graph-journey')))
+        report['frames'][3]['state']['camera']['w']=60.;report['frames'][-1]['state']['camera']['w']=99.
+        self.assertTrue(any('initial world camera' in reason for reason in films.film_state_findings(report,'graph-journey')))
 
     def test_generated_sweep_is_chronological_and_covers_both_phases(self):
         times=[int(at) for at in re.findall(r'@(\d+)',verify.sweep(480,400))]
