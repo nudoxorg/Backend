@@ -48,6 +48,31 @@ pub(super) fn project_structural_plan(
     StructuralProjectionPlan::of(sources, &std::collections::BTreeSet::new()).map(|_| ())
 }
 
+/// Plans structural rows for `only` these files and drops the plan.
+///
+/// The type index still walks every file in `sources`.
+pub(super) fn project_structural_files(
+    sources: &super::IndexedSources,
+    only: &std::collections::BTreeSet<[u8; 32]>,
+) -> Result<(), super::BuiltinModelError> {
+    StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only).map(|_| ())
+}
+
+/// Projects structural rows for `only` these files.
+///
+/// A parent coordinate planned in this call wins. Otherwise `resident_labels`
+/// supplies the symbol already published for that coordinate.
+pub(super) fn rows_for_structural_files(
+    initial: &backend_engine::ViewRoot,
+    sources: &super::IndexedSources,
+    only: &std::collections::BTreeSet<[u8; 32]>,
+    resident_labels: &std::collections::BTreeMap<String, backend_engine::SymbolKey>,
+) -> Result<Vec<backend_engine::Row>, super::BuiltinModelError> {
+    let plan =
+        StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only)?;
+    semantic::rows_for_changed_structural_files(initial, sources, &plan, resident_labels)
+}
+
 const MAX_SEMANTIC_TYPE_DEPTH: usize = 256;
 const MAX_SEMANTIC_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAX_SEMANTIC_DOCUMENT_BYTES: usize = 256 * 1024;

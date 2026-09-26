@@ -250,8 +250,15 @@ impl<'a> SourceRowProjection<'a> {
         }
         for (index, declaration) in declarations.iter().enumerate() {
             let prepared = self.structural_plan.declaration(file_key, index)?;
-            let row =
-                self.declaration_row(declaration, path, file_key, package, language, prepared)?;
+            let row = self.declaration_row(
+                declaration,
+                path,
+                file_key,
+                project_key,
+                package,
+                language,
+                prepared,
+            )?;
             self.rows.push(row);
         }
         Ok(())
@@ -263,42 +270,23 @@ impl<'a> SourceRowProjection<'a> {
         declaration: &backend_compile::SourceDeclaration,
         path: &str,
         file_key: [u8; 32],
+        project: [u8; 32],
         package: backend_engine::PackageKey,
         language: backend_engine::SourceLanguage,
         prepared: &StructuralDeclaration,
     ) -> Result<Row, BuiltinModelError> {
-        let coordinate = &prepared.coordinate;
-        let symbol = prepared.id;
-        let prose = if prepared.is_file_module {
-            format!("{} source · {path}", language.name())
-        } else if declaration.documentation().is_empty() {
-            format!(
-                "{} in {path}:{}",
-                declaration.kind_name(),
-                declaration.line()
-            )
-        } else {
-            declaration.documentation().to_owned()
-        };
-        let row = Row::in_package(symbol, self.initial.basis(), package, coordinate.as_str())
-            .with_document(vec![Fragment::Text(prose)])
-            .with_signature(declaration.signature())
-            .with_kind(declaration.kind())
-            .with_source(declaration.location().clone())
-            .with_excerpt(declaration.source_excerpt().clone());
-        let row = match prepared.identity_preimage.clone() {
-            Some(preimage) => row.with_identity_preimage(preimage),
-            None => row,
-        };
-        Ok(match prepared.parent.as_deref() {
-            Some(parent) => match self.structural_plan.parent_id(file_key, parent)? {
-                StructuralParent::Symbol(RowId::Symbol(parent)) => row.with_parent(parent),
-                StructuralParent::Symbol(RowId::Package(_))
-                | StructuralParent::Symbol(RowId::Object(_))
-                | StructuralParent::Package(_) => row,
-            },
-            None => row,
-        })
+        structural_declaration_row(
+            self.initial,
+            self.structural_plan,
+            None,
+            declaration,
+            path,
+            file_key,
+            project,
+            package,
+            language,
+            prepared,
+        )
     }
 
     pub(super) fn finish(mut self, semantic_rows: Vec<Row>) -> Result<Vec<Row>, BuiltinModelError> {
@@ -316,6 +304,132 @@ impl<'a> SourceRowProjection<'a> {
         Ok(self.rows)
     }
 }
+
+/// Projects structural rows for files the plan retained.
+///
+/// `resident_labels` maps a coordinate to the symbol already published for
+/// this package. A parent planned in this call wins. Otherwise the resident
+/// symbol is kept, so a method edited in one file stays attached to a type
+/// declared in a file this call did not replan.
+pub(super) fn rows_for_changed_structural_files(
+    initial: &ViewRoot,
+    sources: &IndexedSources,
+    plan: &StructuralProjectionPlan,
+    resident_labels: &BTreeMap<String, backend_engine::SymbolKey>,
+) -> Result<Vec<Row>, BuiltinModelError> {
+    let mut rows = Vec::new();
+    for (file_key, record) in &sources.files {
+        if plan.file(*file_key).is_none() {
+            continue;
+        }
+        let file = record.file_fields().ok_or_else(|| {
+            BuiltinModelError("structural file splice received a non-file record".to_owned())
+        })?;
+        let project = sources.projects.get(&file.project).ok_or_else(|| {
+            BuiltinModelError("structural source refers to a missing project".to_owned())
+        })?;
+        if product_source_file_key(file.project, file.path) != *file_key
+            || project.files.binary_search(file_key).is_err()
+        {
+            return Err(BuiltinModelError(
+                "source file is outside its project's canonical frontier".to_owned(),
+            ));
+        }
+        for (index, declaration) in file.declarations.iter().enumerate() {
+            let prepared = plan.declaration(*file_key, index)?;
+            rows.push(structural_declaration_row(
+                initial,
+                plan,
+                Some(resident_labels),
+                declaration,
+                file.path,
+                *file_key,
+                file.project,
+                project.package,
+                file.language,
+                prepared,
+            )?);
+        }
+    }
+    Ok(rows)
+}
+
+fn structural_declaration_row(
+    initial: &ViewRoot,
+    plan: &StructuralProjectionPlan,
+    resident_labels: Option<&BTreeMap<String, backend_engine::SymbolKey>>,
+    declaration: &backend_compile::SourceDeclaration,
+    path: &str,
+    file_key: [u8; 32],
+    project: [u8; 32],
+    package: backend_engine::PackageKey,
+    language: backend_engine::SourceLanguage,
+    prepared: &StructuralDeclaration,
+) -> Result<Row, BuiltinModelError> {
+        let coordinate = &prepared.coordinate;
+        let symbol = prepared.id;
+        let prose = if prepared.is_file_module {
+            format!("{} source · {path}", language.name())
+        } else if declaration.documentation().is_empty() {
+            format!(
+                "{} in {path}:{}",
+                declaration.kind_name(),
+                declaration.line()
+            )
+        } else {
+            declaration.documentation().to_owned()
+        };
+        let row = Row::in_package(symbol, initial.basis(), package, coordinate.as_str())
+            .with_document(vec![Fragment::Text(prose)])
+            .with_signature(declaration.signature())
+            .with_kind(declaration.kind())
+            .with_source(declaration.location().clone())
+            .with_excerpt(declaration.source_excerpt().clone());
+        let row = match prepared.identity_preimage.clone() {
+            Some(preimage) => row.with_identity_preimage(preimage),
+            None => row,
+        };
+        Ok(match prepared.parent.as_deref() {
+            Some(parent) => match structural_parent_symbol(
+                plan,
+                file_key,
+                project,
+                parent,
+                resident_labels,
+            )? {
+                Some(parent) => row.with_parent(parent),
+                None => row,
+            },
+            None => row,
+        })
+}
+
+fn structural_parent_symbol(
+    plan: &StructuralProjectionPlan,
+    file_key: [u8; 32],
+    project: [u8; 32],
+    parent: &str,
+    resident_labels: Option<&BTreeMap<String, backend_engine::SymbolKey>>,
+) -> Result<Option<backend_engine::SymbolKey>, BuiltinModelError> {
+    if let Some(id) = plan.symbol_for_coordinate(project, parent) {
+        return Ok(match id {
+            RowId::Symbol(symbol) => Some(symbol),
+            RowId::Package(_) | RowId::Object(_) => None,
+        });
+    }
+    if let Some(labels) = resident_labels
+        && let Some(symbol) = labels.get(parent)
+    {
+        return Ok(Some(*symbol));
+    }
+    Ok(match plan.parent_id(file_key, parent)? {
+        StructuralParent::Symbol(RowId::Symbol(parent)) => Some(parent),
+        StructuralParent::Symbol(RowId::Package(_))
+        | StructuralParent::Symbol(RowId::Object(_))
+        |         StructuralParent::Package(_) => None,
+    })
+}
+
 fn targets_unavailable_cause(
     targets: &SemanticTargets,
     package: backend_engine::PackageKey,

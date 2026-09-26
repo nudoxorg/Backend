@@ -702,6 +702,7 @@ fn publish_builtin_view(
             filesystem_workspace,
             prior,
             package,
+            edit,
             source_target,
             semantic_target,
         )?
@@ -730,6 +731,7 @@ fn publish_package_view(
     filesystem_workspace: &std::path::Path,
     prior: Option<&view_publish::PublishedRoots>,
     package: backend_engine::PackageKey,
+    edit: Option<&BuiltinIntent>,
     source_target: [u8; 32],
     semantic_target: [u8; 32],
 ) -> Result<Option<view_publish::PublicationOutcome>, BuiltinModelError> {
@@ -741,8 +743,40 @@ fn publish_package_view(
     if sources.projects.is_empty() {
         return Ok(None);
     }
-    let files = sources.files.len();
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
+    let current = daemon.engine().daemon().library().view().clone();
+    if let Some(edit) = edit
+        && prior.activated.iter().all(|(key, _)| *key != package)
+        && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
+        && let Some(resident) = view_publish::resident_symbols(current.rows(), package)
+    {
+        let replacement = view_build::rows_for_structural_files(
+            &initial,
+            &sources,
+            &changed,
+            &resident,
+        )?;
+        let paths = view_publish::paths_for_files(&sources, &changed)?;
+        match view_publish::rows_replacing_paths(current.rows(), package, &paths, replacement) {
+            Ok(merged) => {
+                return admit_spliced_package(
+                    daemon,
+                    &snapshot,
+                    &initial,
+                    deployment,
+                    current,
+                    merged,
+                    prior.activated.clone(),
+                    source_target,
+                    semantic_target,
+                    changed.len(),
+                )
+                .map(Some);
+            }
+            Err(view_publish::RowSpliceError::Collision) => return Ok(None),
+        }
+    }
+    let files = sources.files.len();
     let projected = rows_for_indexed_sources(
         &initial,
         &sources,
@@ -754,13 +788,39 @@ fn publish_package_view(
     let mut activated = prior.activated.clone();
     activated.retain(|(key, _)| *key != package);
     activated.extend(projected.activated);
-    let coverage = view_coverage(&snapshot, &activated, deployment)?;
-    let current = daemon.engine().daemon().library().view().clone();
     let merged = match view_publish::rows_replacing_package(current.rows(), package, projected.rows)
     {
         Ok(rows) => rows,
         Err(view_publish::RowSpliceError::Collision) => return Ok(None),
     };
+    admit_spliced_package(
+        daemon,
+        &snapshot,
+        &initial,
+        deployment,
+        current,
+        merged,
+        activated,
+        source_target,
+        semantic_target,
+        files,
+    )
+    .map(Some)
+}
+
+fn admit_spliced_package(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &WorkspaceSnapshot,
+    initial: &ViewRoot,
+    deployment: SemanticDeployment,
+    current: ViewRoot,
+    merged: Vec<Row>,
+    activated: coverage::ActivatedProfiles,
+    source_target: [u8; 32],
+    semantic_target: [u8; 32],
+    files: usize,
+) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
+    let coverage = view_coverage(snapshot, &activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&merged)?;
     let target = ViewRoot::new_checked(
         initial.recipe(),
@@ -768,11 +828,11 @@ fn publish_package_view(
         initial.frontier(),
         merged,
         coverage,
-        builtin_view_capability_for_workspace(&snapshot)?,
+        builtin_view_capability_for_workspace(snapshot)?,
     )
     .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
     let deltas = commit_published_target(daemon, current, target)?;
-    Ok(Some(view_publish::PublicationOutcome {
+    Ok(view_publish::PublicationOutcome {
         deltas,
         roots: view_publish::PublishedRoots {
             source: source_target,
@@ -780,7 +840,7 @@ fn publish_package_view(
             activated,
         },
         path: view_publish::PublicationPath::Package { files },
-    }))
+    })
 }
 
 fn commit_published_target(
