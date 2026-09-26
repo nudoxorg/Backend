@@ -130,6 +130,8 @@ const CARGO_ECOSYSTEM: &str = "cargo";
 const SELF_NAME: &[u8] = b"self";
 /// Fallback binding name for a parameter whose pattern spells no identifier.
 const PARAM_FALLBACK_NAME: &[u8] = b"param";
+/// Synthetic owner of module-level `use` items in a crate-root source file.
+const CRATE_FILE_OWNER_NAME: &[u8] = b"crate";
 
 /// Exact direct-authority rejection while rust-analyzer HIR is borrowed.
 ///
@@ -335,6 +337,11 @@ struct Row<'source> {
     span: ByteSpan,
     /// The row's Rust extension facts as pushed, before macros attach.
     extension: RustFacts,
+    /// True for the synthetic crate-root file owner pushed only to host
+    /// orphan module-level imports. Parentage ignores these rows so every
+    /// real declaration stays a root when nothing else strictly contains it;
+    /// occurrence ownership still treats them as the fallback file owner.
+    file_owner: bool,
 }
 
 /// One macro invocation site with its written spelling and call span.
@@ -501,6 +508,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.emit_type_roots(&declarations)?;
         self.emit_members(&declarations)?;
         self.emit_reexports()?;
+        self.rebuild_owner_order();
+        self.emit_crate_file_owner()?;
         self.rebuild_owner_order();
         self.emit_parentage()?;
         self.attach_macros()?;
@@ -2115,6 +2124,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             name: self.name_of(declaration)?,
             span: declaration.span,
             extension,
+            file_owner: false,
         });
         match &declaration.definition {
             RustDefinition::Field(field) => self.fields.push((*field, ordinal)),
@@ -2202,10 +2212,111 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.owner_order[..low].iter().rev().find_map(|index| {
             let row = &self.rows[*index];
             (row.ordinal != ordinal
+                && !row.file_owner
                 && span.end <= row.span.end
                 && (row.span.start < span.start || span.end < row.span.end))
                 .then_some(row.ordinal)
         })
+    }
+
+    /// True when this authority's selected source file is the crate root module.
+    fn is_source_crate_root(&self) -> bool {
+        self.authority
+            .semantics
+            .hir_file_to_module_def(self.authority.source_file)
+            .is_some_and(|module| module.is_crate_root(self.database))
+    }
+
+    /// True when at least one top-level import path has no owning declaration
+    /// row yet — the module-level `use` gap the synthetic file owner closes.
+    fn has_orphan_module_import(&self) -> bool {
+        let authority = self.authority;
+        for path in authority.top_level_paths() {
+            let span = match path
+                .segments()
+                .last()
+                .and_then(|segment| segment.name_ref())
+                .and_then(|name| authority.span(name.syntax()).ok())
+            {
+                Some(span) => span,
+                None => continue,
+            };
+            let kind = match authority.resolve_path(&path) {
+                Some((resolution, _)) => reference_kind(&path, &resolution),
+                None => unresolved_reference_kind(&path),
+            };
+            if kind == ReferenceKind::Import && self.owner_of(span).is_none() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Pushes one synthetic crate-root module row spanning the whole source
+    /// buffer when orphan module-level imports need an owner. Parentage
+    /// ignores the row; occurrence ownership does not.
+    fn emit_crate_file_owner(&mut self) -> Result<(), RustAuthorityError> {
+        if !self.is_source_crate_root() {
+            return Ok(());
+        }
+        // `scoped_names` keys use `SemanticKind`, not `EntityKind`.
+        if self
+            .scoped_names
+            .contains(&(None, SemanticKind::Module as u8, CRATE_FILE_OWNER_NAME.to_vec()))
+        {
+            return Ok(());
+        }
+        if !self.has_orphan_module_import() {
+            return Ok(());
+        }
+        let end = u32::try_from(self.source.len()).map_err(|_| admission())?;
+        let span = ByteSpan { start: 0, end };
+        let extension = self.empty_extension(RustOwnership::Value)?;
+        let fact = SemanticFact::new(
+            EntityKind::Module,
+            CRATE_FILE_OWNER_NAME,
+            SemanticProductConstructor::PRODUCT,
+        )
+        .with_visibility(backend_semantic::ir::Visibility::Private)
+        .with_extension(EmissionExtension::Rust(extension));
+        let ordinal = coordinate(push(self.facts, fact)?)?;
+        let staged = StagedSourceSpan::new(span.start, span.end).ok_or_else(admission)?;
+        self.facts
+            .attach_source_span(ordinal, staged)
+            .map_err(|fault| parentage_fault(ordinal, CRATE_FILE_OWNER_NAME.len(), fault))?;
+        let range = self
+            .facts
+            .type_parameter_range(extension.where_clauses.raw)
+            .map_err(|_| admission())?;
+        let free_range = self
+            .facts
+            .free_predicate_range(extension.free_predicates.raw)
+            .map_err(|_| admission())?;
+        let slot = usize::try_from(ordinal).map_err(|_| admission())?;
+        self.facts
+            .attach_extension_with_type_parameters(
+                slot,
+                EmissionExtension::Rust(extension),
+                range,
+            )
+            .map_err(|_| admission())?;
+        self.facts
+            .set_free_predicate_range(slot, &EmissionExtension::Rust(extension), free_range)
+            .map_err(|_| admission())?;
+        // `scoped_names` keys use `SemanticKind`, not `EntityKind`.
+        self.scoped_names.insert((
+            None,
+            SemanticKind::Module as u8,
+            CRATE_FILE_OWNER_NAME.to_vec(),
+        ));
+        self.rows.push(Row {
+            ordinal,
+            name: CRATE_FILE_OWNER_NAME,
+            span,
+            extension,
+            file_owner: true,
+        });
+        Ok(())
     }
 
     /// Binds lexical parentage from declaration spans after every row
@@ -3469,6 +3580,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 name,
                 span: self.authority.span(reexport.item.syntax())?,
                 extension,
+                file_owner: false,
             });
         }
         Ok(())
