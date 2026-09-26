@@ -2,11 +2,12 @@
 
 # Homebrew formula for the loopback MCP service.
 #
-# Blank-state install (does not reuse a developer target directory).
-# The GitHub default branch is canonical and carries this formula:
+# The default install pours the published v0.2.0 release binaries (macOS
+# arm64). `brew install --HEAD` still compiles from a blank-state clone of
+# the GitHub default branch (canonical), which carries this formula:
 #
 #   brew tap nudoxorg/backend https://github.com/nudoxorg/Backend.git
-#   brew install --HEAD nudoxorg/backend/backend-mcp
+#   brew install nudoxorg/backend/backend-mcp
 #   mkdir -p "$(brew --prefix)/etc"
 #   printf '%s\n' /absolute/path/to/project > "$(brew --prefix)/etc/backend-mcp.project"
 #   brew services start backend-mcp
@@ -22,21 +23,31 @@ class BackendMcp < Formula
   homepage "https://github.com/nudoxorg/backend"
   license "MIT OR Apache-2.0"
 
+  # Prebuilt service binaries from the v0.2.0 GitHub release.
+  url "https://github.com/nudoxorg/Backend/releases/download/v0.2.0/backend-mcp-macos-arm64.tar.gz"
+  version "0.2.0"
+  sha256 "d5ebce0c45533daebc68b83b1f4ddc69d84febbdb0584be8fdcd5deac6978f4d"
+
   # The GitHub default branch (canonical) carries the formula. `brew install
   # --HEAD` clones it into a fresh Homebrew build cell, so the compile does
   # not see a developer checkout or its Cargo target directory.
   head "https://github.com/nudoxorg/backend.git"
 
-  depends_on "git" => :build
-  depends_on "rust" => :build
+  depends_on "git" => :build if build.head?
+  depends_on "rust" => :build if build.head?
 
   def install
-    # Thin LTO of the rust-analyzer closure (codegen-units = 1) is the
-    # workspace release profile. Keep it, but do not fan out rustc jobs: a
-    # blank machine with a small memory budget dies in LLVM before linking.
-    ENV["CARGO_BUILD_JOBS"] = "1"
-    system "cargo", "install", "--locked", "--root", prefix, "--path", "apps/locald"
-    system "cargo", "install", "--locked", "--root", prefix, "--path", "apps/mcp"
+    if build.head?
+      # Thin LTO of the rust-analyzer closure (codegen-units = 1) is the
+      # workspace release profile. Keep it, but do not fan out rustc jobs: a
+      # blank machine with a small memory budget dies in LLVM before linking.
+      ENV["CARGO_BUILD_JOBS"] = "1"
+      system "cargo", "install", "--locked", "--root", prefix, "--path", "apps/locald"
+      system "cargo", "install", "--locked", "--root", prefix, "--path", "apps/mcp"
+    else
+      bin.install "bin/backend-mcp"
+      bin.install "bin/backend-locald"
+    end
     (bin/"backend-mcp-service").write service_script
     chmod 0555, bin/"backend-mcp-service"
   end
