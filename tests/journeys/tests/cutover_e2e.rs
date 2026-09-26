@@ -1662,7 +1662,7 @@ mod unix_journeys {
                 .into_owned(),
         )
         .unwrap_or_else(|error| panic!("admit semantic package reference: {error:?}"));
-        let first_records = client_semantic_versions(&endpoint, package.clone());
+        let first_records = client_semantic_versions(&endpoint, package.clone(), &locald);
         assert_eq!(
             first_records.len(),
             1,
@@ -1683,7 +1683,7 @@ mod unix_journeys {
         )
         .unwrap_or_else(|error| panic!("write second semantic source: {error}"));
         index_project(&endpoint, &project);
-        let second_records = client_semantic_versions(&endpoint, package.clone());
+        let second_records = client_semantic_versions(&endpoint, package.clone(), &locald);
         assert_eq!(
             second_records.len(),
             2,
@@ -1763,7 +1763,7 @@ mod unix_journeys {
             .unwrap_or_else(|error| panic!("valid rollback selection failed: {error}"));
         assert!(selected_first.selected);
         assert_eq!(selected_first.generation, first.generation);
-        let rolled_back = client_semantic_versions(&endpoint, package.clone());
+        let rolled_back = client_semantic_versions(&endpoint, package.clone(), &locald);
         assert_eq!(
             rolled_back
                 .iter()
@@ -1825,7 +1825,7 @@ mod unix_journeys {
         drop(locald);
         let mut restarted = ChildGuard::spawn("backend-locald", &args, &[]);
         wait_for_socket(&endpoint, &mut restarted);
-        let reopened = client_semantic_versions(&endpoint, package.clone());
+        let reopened = client_semantic_versions(&endpoint, package.clone(), &restarted);
         assert_eq!(reopened.len(), 2);
         assert_eq!(
             reopened
@@ -2730,12 +2730,19 @@ mod unix_journeys {
     fn client_semantic_versions(
         endpoint: &Path,
         package: backend_library::PackageReference,
+        locald: &ChildGuard,
     ) -> Box<[backend_library::SemanticVersionRecord]> {
         let mut session = backend_mcp::Session::connect(endpoint)
             .unwrap_or_else(|error| panic!("connect semantic history client: {error}"));
-        session
-            .semantic_versions(package)
-            .unwrap_or_else(|error| panic!("read semantic history through client: {error}"))
+        session.semantic_versions(package).unwrap_or_else(|error| {
+            // "rejected" covers every compiler runtime terminal that is not a
+            // missing toolchain or a cancellation; the daemon's own stderr
+            // names the terminal.
+            panic!(
+                "read semantic history through client: {error}\nlocald stderr:\n{}",
+                locald.stderr_snapshot()
+            )
+        })
     }
 
     #[test]

@@ -234,9 +234,11 @@ def "main test pr" []: nothing -> record {
     # Contention proofs (dozens of writers, thousands of keys) starve the
     # timing-sensitive tests beside them (build 2397), and the nextest group
     # that once throttled them never started any of them on Linux (builds
-    # 2321-2390). Run them in their own pass, two at a time, after the rest;
-    # both passes always run so one red run reports every failure.
-    let contention = "test(/loom|contention|concurrent/)"
+    # 2321-2390). The semantic-history journey drives a real rust-analyzer
+    # whose compile likely ran out of budget in the busy shared pool ("rejected", build
+    # 2411). Run these in their own pass, two at a time, after the rest; both
+    # passes always run so one red run reports every failure.
+    let contention = "test(/loom|contention|concurrent/) or test(semantic_version_selection_is_exact_and_durable_across_restart)"
     let passes = [
         {
             filter: $"($filter) and not ($contention)"
