@@ -89,7 +89,8 @@ fn project_rows(bytes: &[u8]) -> Vec<backend_engine::Row> {
     rows
 }
 
-fn fixture_semantic_image(path: &str) -> Result<Vec<u8>, String> {
+/// Builds one small Rust semantic image rooted at `path`.
+pub(super) fn fixture_semantic_image(path: &str) -> Result<Vec<u8>, String> {
     let source = SourceIdentity {
         identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"fixture-source"),
         byte_len: 14,

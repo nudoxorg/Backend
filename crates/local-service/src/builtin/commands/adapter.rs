@@ -31,6 +31,7 @@ pub(in crate::builtin) struct CommandAdapter {
     remote_semantic: super::super::query::RemoteSemantic,
     published: Option<super::super::view_publish::PublishedRoots>,
     manifests: super::super::local_manifest::LocalManifestResidence,
+    image_rows: super::super::view_build::ImageRowResidence,
     dependencies: Option<ResidentDependencies>,
 }
 
@@ -53,6 +54,7 @@ impl CommandAdapter {
         search_snapshots: super::super::query::SearchSnapshotOwner,
         remote_semantic: super::super::query::RemoteSemantic,
         published: Option<super::super::view_publish::PublishedRoots>,
+        image_rows: super::super::view_build::ImageRowResidence,
     ) -> Self {
         Self {
             sql_projection,
@@ -63,6 +65,7 @@ impl CommandAdapter {
             remote_semantic,
             published,
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
+            image_rows,
             dependencies: None,
         }
     }
@@ -303,6 +306,7 @@ impl CommandAdapter {
             filesystem_workspace,
             self.published.as_ref(),
             edit,
+            &mut self.image_rows,
         )
         .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
         self.published = Some(outcome.roots);

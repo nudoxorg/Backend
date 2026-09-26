@@ -13,6 +13,7 @@ use super::structural::{
     duplicate_declaration_coordinates, is_file_module, profile_source_identities,
     profile_source_paths, projected_source_capacity,
 };
+use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
     semantic_profile_is_complete,
@@ -65,6 +66,7 @@ pub(crate) fn rows_for_indexed_sources(
     compiler: &LocalCompilerClient,
     workspace: &std::path::Path,
     foreign: ForeignPublication,
+    residence: &mut super::image_rows::ImageRowResidence,
 ) -> Result<ProjectedRows, BuiltinModelError> {
     if sources.projects.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -84,6 +86,7 @@ pub(crate) fn rows_for_indexed_sources(
         initial,
         MAX_REBUILD_PACKAGES - sources.projects.len(),
         foreign,
+        residence,
     )?;
     let source_capacity = projected_source_capacity(sources, &semantics.complete)?;
     let total_capacity = source_capacity
@@ -478,6 +481,7 @@ fn semantic_rows(
     initial: &ViewRoot,
     row_capacity: usize,
     foreign: ForeignPublication,
+    residence: &mut super::image_rows::ImageRowResidence,
 ) -> Result<SemanticRows, BuiltinModelError> {
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -528,10 +532,9 @@ fn semantic_rows(
                 )
             })?;
             let activated = super::super::load_semantic_publication(compiler, key, *claim)?;
-            // One reopen admits the image, records its source identity, and
-            // projects its rows. Activation used to validate the bytes, then
-            // identity collection validated them again, then projection
-            // validated them a third time.
+            // One reopen admits the image and records its source identity.
+            // Row projection is reused when this image and its freshness
+            // overlay are already resident.
             let mut opened = Vec::new();
             let mut pending = activated.images();
             while let Some((image, rest)) = pending.split_first() {
@@ -584,7 +587,13 @@ fn semantic_rows(
                     path,
                     site_declarations,
                 };
-                append_image_rows(view, project, key.profile(), &mut sink)?;
+                super::image_rows::append_resident_image_rows(
+                    view,
+                    project,
+                    key.profile(),
+                    &mut sink,
+                    residence,
+                )?;
             }
             complete.insert((
                 project.package.to_bytes(),
@@ -871,15 +880,19 @@ pub(super) struct SemanticRowContent {
     encoded_bytes: usize,
 }
 
-pub(super) fn append_image_rows(
+/// Projects one semantic image into rows whose basis is stamped on admission.
+pub(super) fn project_image_rows(
     image: &SemanticImageView<'_>,
+    image_identity: [u8; 32],
     project: &IndexedProject,
     profile: backend_semantic::vocabulary::LanguageProfile,
-    sink: &mut SemanticRowSink<'_>,
-) -> Result<(), BuiltinModelError> {
+    basis: backend_engine::Basis,
+    stale: bool,
+    path: &str,
+    site_declarations: &[&backend_compile::SourceDeclaration],
+) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
-    let image_identity = *blake3::hash(image.as_ref()).as_bytes();
-    let sites = semantic_sites(&session, sink.site_declarations)?;
+    let sites = semantic_sites(&session, site_declarations)?;
     let canonical_identities = session
         .canonical_entities()
         .map(|entity| {
@@ -890,12 +903,8 @@ pub(super) fn append_image_rows(
                 })
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
+    let mut projected = Vec::new();
     for entity in session.canonical_entities() {
-        if sink.rows.len() == sink.capacity {
-            return Err(BuiltinModelError(
-                "workspace semantic declarations exceed the rebuild row bound".to_owned(),
-            ));
-        }
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
         let name = std::str::from_utf8(entity.name)
@@ -903,11 +912,6 @@ pub(super) fn append_image_rows(
         let identity = entity.entity.version.identity();
         let coordinate = semantic_coordinate(&project.label, identity, name);
         let symbol = semantic_symbol(project.package, identity);
-        if !sink.symbols.insert(RowId::Symbol(symbol)) {
-            return Err(BuiltinModelError(
-                "semantic publication contains a duplicate declaration identity".to_owned(),
-            ));
-        }
         let content =
             semantic_row_content(profile, image, &entity, project.package, image_identity)?;
         let row_bytes = coordinate
@@ -916,26 +920,15 @@ pub(super) fn append_image_rows(
             .ok_or_else(|| {
                 BuiltinModelError("project semantic row byte count overflow".to_owned())
             })?;
-        *sink.remaining_bytes = sink.remaining_bytes.checked_sub(row_bytes).ok_or_else(|| {
-            BuiltinModelError(
-                "workspace semantic declarations exceed the rebuild byte bound".to_owned(),
-            )
-        })?;
+        let mut charges = vec![Charge::Sub(row_bytes)];
         let mut document = content.document;
-        if sink.stale {
-            *sink.remaining_bytes = sink
-                .remaining_bytes
-                .checked_add(STALE_NOTE.len())
-                .ok_or_else(|| {
-                    BuiltinModelError(
-                        "workspace semantic declarations exceed the rebuild byte bound".to_owned(),
-                    )
-                })?;
+        if stale {
+            charges.push(Charge::Add(STALE_NOTE.len()));
             document.push(Fragment::Text(STALE_NOTE.to_owned()));
         }
         let mut row = Row::in_package(
             RowId::Symbol(symbol),
-            sink.initial.basis(),
+            basis,
             project.package,
             coordinate,
         )
@@ -945,19 +938,10 @@ pub(super) fn append_image_rows(
         .with_document(document);
         if let Some(site) = sites.get(&identity) {
             let excerpt_bytes = site.source_excerpt().text().map_or(0, str::len);
-            *sink.remaining_bytes =
-                sink.remaining_bytes
-                    .checked_sub(excerpt_bytes)
-                    .ok_or_else(|| {
-                        BuiltinModelError(
-                            "workspace semantic declarations exceed the rebuild byte bound"
-                                .to_owned(),
-                        )
-                    })?;
-            let location =
-                backend_compile::SourceLocation::new(sink.path, site.line()).map_err(|error| {
-                    BuiltinModelError(format!("semantic declaration source site: {error}"))
-                })?;
+            charges.push(Charge::Sub(excerpt_bytes));
+            let location = backend_compile::SourceLocation::new(path, site.line()).map_err(|error| {
+                BuiltinModelError(format!("semantic declaration source site: {error}"))
+            })?;
             row = row
                 .with_source(location)
                 .with_excerpt(site.source_excerpt().clone());
@@ -987,7 +971,11 @@ pub(super) fn append_image_rows(
             }
             row = row.with_parent(semantic_symbol(project.package, parent_identity));
         }
-        sink.rows.push(row);
+        projected.push(ProjectedRow {
+            row,
+            duplicate: DuplicatePolicy::Error,
+            charges,
+        });
         for (_, link) in image.links_from(entity.entity.id) {
             let LinkTarget::External(target) = link.target else {
                 continue;
@@ -998,39 +986,45 @@ pub(super) fn append_image_rows(
                 ))
             })?;
             let symbol = external_semantic_symbol(project.package, image_identity, identity);
-            if !sink.symbols.insert(RowId::Symbol(symbol)) {
-                continue;
-            }
-            if sink.rows.len() == sink.capacity {
-                return Err(BuiltinModelError(
-                    "workspace semantic declarations exceed the rebuild row bound".to_owned(),
-                ));
-            }
             let label = "external semantic target";
-            *sink.remaining_bytes =
-                sink.remaining_bytes
-                    .checked_sub(label.len())
-                    .ok_or_else(|| {
-                        BuiltinModelError(
-                            "workspace semantic declarations exceed the rebuild byte bound"
-                                .to_owned(),
-                        )
-                    })?;
             let preimage = backend_engine::encode_id(
                 identity
                     .in_scope(project.package.to_bytes(), image_identity)
                     .as_bytes(),
             );
-            sink.rows.push(
-                Row::new(RowId::Symbol(symbol), sink.initial.basis(), label)
+            projected.push(ProjectedRow {
+                row: Row::new(RowId::Symbol(symbol), basis, label)
                     .try_with_identity_preimage(&preimage)
                     .map_err(|error| {
                         BuiltinModelError(format!("external row identity preimage: {error}"))
                     })?,
-            );
+                duplicate: DuplicatePolicy::Skip,
+                charges: vec![Charge::Sub(label.len())],
+            });
         }
     }
-    Ok(())
+    Ok(ProjectedImage { rows: projected })
+}
+
+/// Projects one image and admits those rows into `sink`.
+pub(super) fn append_image_rows(
+    image: &SemanticImageView<'_>,
+    project: &IndexedProject,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    sink: &mut SemanticRowSink<'_>,
+) -> Result<(), BuiltinModelError> {
+    let image_identity = *blake3::hash(image.as_ref()).as_bytes();
+    let projected = project_image_rows(
+        image,
+        image_identity,
+        project,
+        profile,
+        sink.initial.basis(),
+        sink.stale,
+        sink.path,
+        sink.site_declarations,
+    )?;
+    super::image_rows::apply_projected_image(&projected, sink)
 }
 
 fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(

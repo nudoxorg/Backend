@@ -58,5 +58,10 @@ name = "semantic_image_reopen"
 path = "benches/semantic_image_reopen.rs"
 harness = false
 
+[[bench]]
+name = "semantic_image_rows"
+path = "benches/semantic_image_rows.rs"
+harness = false
+
 [lints]
 workspace = true

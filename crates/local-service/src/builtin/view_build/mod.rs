@@ -16,6 +16,7 @@ mod query;
 mod semantic;
 mod structural;
 mod image_reopen;
+mod image_rows;
 
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
@@ -64,6 +65,14 @@ pub(super) fn project_structural_files(
 pub(super) fn measure_semantic_image_reopen() {
     image_reopen::measure_semantic_image_reopen();
 }
+
+/// Times projecting one semantic image against reusing the resident rows.
+pub(super) fn measure_semantic_image_rows() {
+    image_rows::measure_semantic_image_rows();
+}
+
+/// Projected semantic rows reused across publications of the same image.
+pub(in crate::builtin) use image_rows::ImageRowResidence;
 
 /// Projects structural rows for `only` these files.
 ///

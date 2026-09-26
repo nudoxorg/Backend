@@ -641,6 +641,7 @@ fn view_for_workspace(
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
     filesystem_workspace: &std::path::Path,
+    image_rows: &mut view_build::ImageRowResidence,
 ) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_indexed_sources(&snapshot)?;
@@ -653,6 +654,7 @@ fn view_for_workspace(
         compiler,
         filesystem_workspace,
         view_build::ForeignPublication::Reject,
+        image_rows,
     )?;
     let coverage = view_coverage(&snapshot, &projected.activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
@@ -675,6 +677,7 @@ fn publish_builtin_view(
     filesystem_workspace: &std::path::Path,
     prior: Option<&view_publish::PublishedRoots>,
     edit: Option<&BuiltinIntent>,
+    image_rows: &mut view_build::ImageRowResidence,
 ) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let source_target = view_publish::source_root(&snapshot)?;
@@ -721,13 +724,19 @@ fn publish_builtin_view(
             edit,
             source_target,
             semantic_target,
+            image_rows,
         )?
     {
         return Ok(outcome);
     }
     let current = daemon.engine().daemon().library().view().clone();
-    let (target, activated, files) =
-        view_for_workspace(daemon, compiler, deployment, filesystem_workspace)?;
+    let (target, activated, files) = view_for_workspace(
+        daemon,
+        compiler,
+        deployment,
+        filesystem_workspace,
+        image_rows,
+    )?;
     let deltas = commit_published_target(daemon, current, target)?;
     Ok(view_publish::PublicationOutcome {
         deltas,
@@ -750,6 +759,7 @@ fn publish_package_view(
     edit: Option<&BuiltinIntent>,
     source_target: [u8; 32],
     semantic_target: [u8; 32],
+    image_rows: &mut view_build::ImageRowResidence,
 ) -> Result<Option<view_publish::PublicationOutcome>, BuiltinModelError> {
     let Some(prior) = prior else {
         return Ok(None);
@@ -800,6 +810,7 @@ fn publish_package_view(
         compiler,
         filesystem_workspace,
         view_build::ForeignPublication::Skip,
+        image_rows,
     )?;
     let mut activated = prior.activated.clone();
     activated.retain(|(key, _)| *key != package);
@@ -1048,6 +1059,7 @@ pub(crate) fn compose_owner(
         .engine_mut()
         .daemon_mut()
         .set_view_persistence(Box::new(view_journal));
+    let mut image_rows = view_build::ImageRowResidence::default();
     if let Some(recovered) = recovered_view {
         let admission = BuiltinViewAdmission {
             workspace_root,
@@ -1065,9 +1077,14 @@ pub(crate) fn compose_owner(
             )
             .map_err(|error| ProcessError::Profile(error.to_string()))?;
     } else {
-        let (view, _, _) =
-            view_for_workspace(&daemon, &compiler, semantic_deployment, &config.workspace)
-                .map_err(|error| ProcessError::Profile(error.to_string()))?;
+        let (view, _, _) = view_for_workspace(
+            &daemon,
+            &compiler,
+            semantic_deployment,
+            &config.workspace,
+            &mut image_rows,
+        )
+        .map_err(|error| ProcessError::Profile(error.to_string()))?;
         let cursor = backend_engine::Cursor::for_view_root(&view);
         let admission = BuiltinViewAdmission {
             workspace_root,
@@ -1082,9 +1099,16 @@ pub(crate) fn compose_owner(
     // The workspace journal is authoritative. A crash can occur after a
     // workspace commit and between several bounded view-row publications;
     // repair that derived suffix before the listener becomes visible.
-    let published =
-        publish_builtin_view(&mut daemon, &compiler, semantic_deployment, &config.workspace, None, None)
-            .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
+    let published = publish_builtin_view(
+        &mut daemon,
+        &compiler,
+        semantic_deployment,
+        &config.workspace,
+        None,
+        None,
+        &mut image_rows,
+    )
+    .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
     let published_roots = published.roots;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
     let mut sql_projection = futures_executor::block_on(
@@ -1150,6 +1174,7 @@ pub(crate) fn compose_owner(
         search_snapshots,
         remote_semantic,
         Some(published_roots),
+        image_rows,
     );
     let command = move |daemon: &mut crate::Locald<
         BuiltinModel,
@@ -1196,6 +1221,14 @@ pub fn measure_search_source_page() {
 /// publication used to perform, and against projecting that image's rows.
 pub fn measure_semantic_image_reopen() {
     view_build::measure_semantic_image_reopen();
+}
+
+/// Times projecting one semantic image against reusing those rows.
+///
+/// The image and view basis are built before the timer. The printed line is
+/// the release measurement for an unchanged semantic image.
+pub fn measure_semantic_image_rows() {
+    view_build::measure_semantic_image_rows();
 }
 
 /// Starts the compiled locald profile. It does all startup work before the
