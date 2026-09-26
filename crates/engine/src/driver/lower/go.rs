@@ -1261,6 +1261,8 @@ struct NameKey<'source> {
     /// True only on version-6 images when the owning named type declares in
     /// a sibling source file (`name_span` present and not digest-bound).
     cross_file: bool,
+    /// The declaration's source file spelling.
+    file: &'source [u8],
 }
 
 /// One same-package member target: the (package, receiver type, member)
@@ -1326,8 +1328,14 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Records one pushed declaration name for later resolution.
-    fn record_name(&mut self, package: &'source [u8], name: &'source [u8], ordinal: u32) {
-        self.record_name_with_cross_file(package, name, ordinal, false);
+    fn record_name(
+        &mut self,
+        package: &'source [u8],
+        name: &'source [u8],
+        ordinal: u32,
+        file: &'source [u8],
+    ) {
+        self.record_name_with_cross_file(package, name, ordinal, false, file);
     }
 
     /// Records one pushed declaration name, marking sibling-file types so
@@ -1339,12 +1347,14 @@ impl<'x, 'source> Projector<'x, 'source> {
         name: &'source [u8],
         ordinal: u32,
         cross_file: bool,
+        file: &'source [u8],
     ) {
         self.names.push(NameKey {
             package,
             name,
             ordinal,
             cross_file,
+            file,
         });
     }
 
@@ -1419,6 +1429,42 @@ impl<'x, 'source> Projector<'x, 'source> {
             return None;
         }
         Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
+    }
+
+    /// Resolves one package-level function spelling to a local fact. When
+    /// several same-package declarations share one name, only the unique
+    /// digest-bound row (not cross-file) resolves locally; sibling-file rows
+    /// (`name_span` without `bound`) and ambiguous duplicate sets stay
+    /// unresolved so the occurrence keeps the package import-path key the
+    /// join layer matches.
+    fn local_function_target(
+        &self,
+        package: &[u8],
+        name: &[u8],
+        use_file: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let matches: Vec<_> = self
+            .names
+            .iter()
+            .filter(|key| key.package == package && key.name == name)
+            .collect();
+        let bound: Vec<_> = matches.iter().filter(|key| !key.cross_file).collect();
+        let cross: Vec<_> = matches.iter().filter(|key| key.cross_file).collect();
+        if cross.is_empty() {
+            match bound.len() {
+                1 => Some(OccurrenceTarget::Local(EntityId::new(bound[0].ordinal))),
+                _ => None,
+            }
+        } else {
+            let same_file_bound: Vec<_> = bound
+                .iter()
+                .filter(|key| key.file == use_file)
+                .collect();
+            match same_file_bound.len() {
+                1 => Some(OccurrenceTarget::Local(EntityId::new(same_file_bound[0].ordinal))),
+                _ => None,
+            }
+        }
     }
 
     /// True when a version-6 declaration positively lives in a sibling file
@@ -1612,6 +1658,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             declaration.name,
             ordinal,
             Self::cross_file_type(declaration),
+            declaration.file,
         );
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
@@ -1636,7 +1683,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             .mark_parentage_root(ordinal)
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_name(
+            declaration.package,
+            declaration.name,
+            ordinal,
+            declaration.file,
+        );
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
@@ -1941,7 +1993,13 @@ impl<'x, 'source> Projector<'x, 'source> {
             .mark_parentage_root(ordinal)
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_name_with_cross_file(
+            declaration.package,
+            declaration.name,
+            ordinal,
+            Self::cross_file_type(declaration),
+            declaration.file,
+        );
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
@@ -2013,9 +2071,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                     declaration.name,
                     ordinal,
                     Self::cross_file_type(declaration),
+                    declaration.file,
                 );
             } else {
-                self.record_name(declaration.package, declaration.name, ordinal);
+                self.record_name(
+                    declaration.package,
+                    declaration.name,
+                    ordinal,
+                    declaration.file,
+                );
             }
         }
         self.record_declaration_spans(index, declaration, ordinal)?;
@@ -2212,6 +2276,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                     self.local_const_target(owner_package, row.target)
                 } else if row.target_class == ReferenceTargetClass::Var {
                     self.local_var_target(owner_package, row.target)
+                } else if row.target_class == ReferenceTargetClass::Func {
+                    self.local_function_target(owner_package, row.target, row.file)
                 } else {
                     self.lookup(owner_package, row.target)
                         .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
@@ -3426,6 +3492,7 @@ mod tests {
     const NONE: u32 = u32::MAX;
     const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v6\0";
     const FILE: &[u8] = b"main.go";
+    const SIBLING_FILE: &[u8] = b"sibling.go";
     const PACKAGE: &[u8] = b"example.com/demo";
     const SPAN_END: u32 = 256;
 
@@ -3642,6 +3709,8 @@ mod tests {
         name_span: Option<(u32, u32)>,
         /// The authority-bound-source flag (version 6).
         bound: bool,
+        /// The declaration's source file; `None` stamps the fixture default.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3714,6 +3783,8 @@ mod tests {
         target_class: u8,
         /// The target receiver type-name atom (version 6).
         recv_type: Cell,
+        /// The reference's source file; `None` stamps the fixture default.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3953,6 +4024,7 @@ mod tests {
                 span: (0, SPAN_END),
                 name_span: None,
                 bound: false,
+                file: None,
             });
             self.declarations.len() - 1
         }
@@ -4058,6 +4130,33 @@ mod tests {
             target_class: u8,
             recv_type: &[u8],
         ) {
+            self.reference_typed_in_file(
+                owner,
+                receiver,
+                target,
+                target_package,
+                start,
+                end,
+                use_kind,
+                target_class,
+                recv_type,
+                None,
+            );
+        }
+
+        fn reference_typed_in_file(
+            &mut self,
+            owner: u32,
+            receiver: &[u8],
+            target: &[u8],
+            target_package: &[u8],
+            start: u32,
+            end: u32,
+            use_kind: u8,
+            target_class: u8,
+            recv_type: &[u8],
+            file: Option<Cell>,
+        ) {
             let target = self.atom(target);
             let package = self.atom(target_package);
             let receiver = self.atom(receiver);
@@ -4072,6 +4171,7 @@ mod tests {
                 use_kind,
                 target_class,
                 recv_type,
+                file,
             });
         }
 
@@ -4091,6 +4191,10 @@ mod tests {
             self.atom_cell(FILE)
         }
 
+        fn effective_file(&self, file: Option<Cell>) -> Cell {
+            file.unwrap_or_else(|| self.file_cell())
+        }
+
         fn atom_cell(&self, text: &[u8]) -> Cell {
             let offset = self
                 .atom_bytes
@@ -4107,9 +4211,10 @@ mod tests {
             let count = |length: usize| u32::try_from(length).map_err(TestError::from);
             let cell =
                 |borrowed: Cell| (borrowed.offset.to_le_bytes(), borrowed.length.to_le_bytes());
-            let file = self.file_cell();
+            let main_file = self.file_cell();
             let mut declarations = Vec::new();
             for row in &self.declarations {
+                let row_file = self.effective_file(row.file);
                 let (name, name_len) = cell(row.name);
                 let (package, package_len) = cell(row.package);
                 let (value, value_len) = cell(row.value);
@@ -4121,8 +4226,8 @@ mod tests {
                 declarations.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
                 declarations.extend_from_slice(&row.span.0.to_le_bytes());
                 declarations.extend_from_slice(&row.span.1.to_le_bytes());
-                declarations.extend_from_slice(&file.offset.to_le_bytes());
-                declarations.extend_from_slice(&file.length.to_le_bytes());
+                declarations.extend_from_slice(&row_file.offset.to_le_bytes());
+                declarations.extend_from_slice(&row_file.length.to_le_bytes());
                 declarations.extend_from_slice(&value);
                 declarations.extend_from_slice(&value_len);
                 declarations.extend_from_slice(&row.const_group.to_le_bytes());
@@ -4169,8 +4274,8 @@ mod tests {
                 methods.extend_from_slice(&0_u32.to_le_bytes());
                 methods.extend_from_slice(&row.span.0.to_le_bytes());
                 methods.extend_from_slice(&row.span.1.to_le_bytes());
-                methods.extend_from_slice(&file.offset.to_le_bytes());
-                methods.extend_from_slice(&file.length.to_le_bytes());
+                methods.extend_from_slice(&main_file.offset.to_le_bytes());
+                methods.extend_from_slice(&main_file.length.to_le_bytes());
                 // Version 6: the authority-bound flag.
                 methods.extend_from_slice(&[u8::from(row.bound), 0, 0, 0, 0, 0, 0, 0]);
             }
@@ -4206,6 +4311,7 @@ mod tests {
             }
             let mut references = Vec::new();
             for row in &self.references {
+                let row_file = self.effective_file(row.file);
                 let (target, target_len) = cell(row.target);
                 let (package, package_len) = cell(row.target_package);
                 let (receiver, receiver_len) = cell(row.receiver);
@@ -4217,8 +4323,8 @@ mod tests {
                 references.extend_from_slice(&package_len);
                 references.extend_from_slice(&row.start.to_le_bytes());
                 references.extend_from_slice(&row.end.to_le_bytes());
-                references.extend_from_slice(&file.offset.to_le_bytes());
-                references.extend_from_slice(&file.length.to_le_bytes());
+                references.extend_from_slice(&row_file.offset.to_le_bytes());
+                references.extend_from_slice(&row_file.length.to_le_bytes());
                 references.extend_from_slice(&receiver);
                 references.extend_from_slice(&receiver_len);
                 // Version 6: the closed use kind, the target class, and the
@@ -5609,6 +5715,7 @@ mod tests {
                 span: (0, SPAN_END),
                 name_span: None,
                 bound: false,
+                file: None,
             });
         }
         let exact_image = fix.encode(b"package demo\n")?;
@@ -5636,6 +5743,7 @@ mod tests {
             span: (0, SPAN_END),
             name_span: None,
             bound: false,
+            file: None,
         });
         let image = fix.encode(b"package demo\n")?;
         let mut facts = FactSet::new();
@@ -5730,6 +5838,203 @@ mod tests {
             return Err(TestError::Missing("unresolved satisfaction rejection"));
         }
         Ok(())
+    }
+
+    fn duplicate_function_homonym_fixture(
+        fix: &mut Fixture,
+        source: &[u8],
+        bound_first: bool,
+    ) -> Result<(usize, usize, usize, usize), TestError> {
+        let sibling_file = fix.atom(SIBLING_FILE);
+        let (bound_index, sibling_index) = if bound_first {
+            let bound = fix.declaration(KIND_FUNC, b"SetNote", None);
+            let sibling = fix.declaration(KIND_FUNC, b"SetNote", None);
+            (bound, sibling)
+        } else {
+            let sibling = fix.declaration(KIND_FUNC, b"SetNote", None);
+            let bound = fix.declaration(KIND_FUNC, b"SetNote", None);
+            (bound, sibling)
+        };
+        fix.declarations[bound_index].bound = true;
+        fix.declarations[bound_index].name_span = Some(at(source, b"SetNote")?);
+        fix.declarations[sibling_index].bound = false;
+        fix.declarations[sibling_index].name_span = Some((16, 23));
+        fix.declarations[sibling_index].file = Some(sibling_file);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        let use_sibling = fix.declaration(KIND_FUNC, b"UseSibling", None);
+        fix.declarations[use_sibling].file = Some(sibling_file);
+        let (read_site, read_end) = at(source, b":= SetNote;")?;
+        let read_site = read_site + 3;
+        let read_end = read_end - 1;
+        let (call_site, call_end) = at(source, b"f; SetNote()")?;
+        let call_site = call_site + 4;
+        let call_end = call_end - 2;
+        fix.reference_typed(
+            u32::try_from(use_fn).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            read_site,
+            read_end,
+            1,
+            0,
+            b"",
+        );
+        fix.reference_typed(
+            u32::try_from(use_fn).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            call_site,
+            call_end,
+            0,
+            0,
+            b"",
+        );
+        fix.reference_typed_in_file(
+            u32::try_from(use_sibling).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            1,
+            0,
+            b"",
+            Some(sibling_file),
+        );
+        fix.reference_typed_in_file(
+            u32::try_from(use_sibling).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            20,
+            27,
+            0,
+            0,
+            b"",
+            Some(sibling_file),
+        );
+        Ok((bound_index, sibling_index, use_fn, use_sibling))
+    }
+
+    fn assert_duplicate_function_homonym_resolution(bound_first: bool) -> Result<(), TestError> {
+        use backend_semantic::ir::{ForeignKey, ForeignOrigin, PackageLineage};
+
+        let source = b"package demo\n\nfunc SetNote() {}\n\nfunc Use() { f := SetNote; _ = f; SetNote() }\n";
+        let mut fix = Fixture::new();
+        let (bound_index, sibling_index, use_fn, use_sibling) =
+            duplicate_function_homonym_fixture(&mut fix, source, bound_first)?;
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let bound_entity = EntityId::new(
+            u32::try_from(bound_index).map_err(|_| TestError::Missing("bound ordinal"))?,
+        );
+        let sibling_entity = EntityId::new(
+            u32::try_from(sibling_index).map_err(|_| TestError::Missing("sibling ordinal"))?,
+        );
+        if bound_entity == sibling_entity {
+            return Err(TestError::Missing("distinct homonym ordinals"));
+        }
+        let use_owner = EntityId::new(u32::try_from(use_fn).map_err(TestError::from)?);
+        let use_sibling_owner =
+            EntityId::new(u32::try_from(use_sibling).map_err(TestError::from)?);
+        let package_key = OccurrenceTarget::Foreign(
+            ForeignKey::new(
+                ForeignOrigin::Package(
+                    PackageLineage::new("go", "example.com/demo").map_err(|_| {
+                        TestError::Missing("package lineage")
+                    })?,
+                ),
+                "SetNote",
+                "SetNote",
+                Some(EntityKind::Function),
+            )
+            .map_err(|_| TestError::Missing("package foreign key"))?,
+        );
+        let (read_site, read_end) = at(source, b":= SetNote;")?;
+        let read_site = read_site + 3;
+        let read_end = read_end - 1;
+        let (call_site, call_end) = at(source, b"f; SetNote()")?;
+        let call_site = call_site + 4;
+        let call_end = call_end - 2;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let row = occurrences
+            .next()
+            .ok_or(TestError::Missing("main.go function value read"))??;
+        if row.owner != use_owner
+            || row.occurrence.kind != ReferenceKind::VariableUse
+            || row.occurrence.target != OccurrenceTarget::Local(bound_entity)
+            || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            || row.occurrence.span.start != read_site
+            || row.occurrence.span.end != read_end
+        {
+            return Err(TestError::Missing("main.go SetNote value read"));
+        }
+        let row = occurrences
+            .next()
+            .ok_or(TestError::Missing("main.go function call"))??;
+        if row.owner != use_owner
+            || row.occurrence.kind != ReferenceKind::FunctionCall
+            || row.occurrence.target != OccurrenceTarget::Local(bound_entity)
+            || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            || row.occurrence.span.start != call_site
+            || row.occurrence.span.end != call_end
+        {
+            return Err(TestError::Missing("main.go SetNote function call"));
+        }
+        let row = occurrences
+            .next()
+            .ok_or(TestError::Missing("sibling.go function value read"))??;
+        if row.owner != use_sibling_owner
+            || row.occurrence.kind != ReferenceKind::VariableUse
+            || row.occurrence.target != package_key
+            || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            || row.occurrence.span.start != 10
+            || row.occurrence.span.end != 17
+        {
+            return Err(TestError::Missing("sibling.go SetNote value read"));
+        }
+        if row.occurrence.target == OccurrenceTarget::Local(bound_entity)
+            || row.occurrence.target == OccurrenceTarget::Local(sibling_entity)
+        {
+            return Err(TestError::Missing("sibling read must not resolve locally"));
+        }
+        let row = occurrences
+            .next()
+            .ok_or(TestError::Missing("sibling.go function call"))??;
+        if row.owner != use_sibling_owner
+            || row.occurrence.kind != ReferenceKind::FunctionCall
+            || row.occurrence.target != package_key
+            || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            || row.occurrence.span.start != 20
+            || row.occurrence.span.end != 27
+        {
+            return Err(TestError::Missing("sibling.go SetNote function call"));
+        }
+        if row.occurrence.target == OccurrenceTarget::Local(bound_entity)
+            || row.occurrence.target == OccurrenceTarget::Local(sibling_entity)
+        {
+            return Err(TestError::Missing("sibling call must not resolve locally"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact homonym occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_function_homonym_resolves_by_use_file_when_bound_declared_first() -> Result<(), TestError>
+    {
+        assert_duplicate_function_homonym_resolution(true)
+    }
+
+    #[test]
+    fn duplicate_function_homonym_resolves_by_use_file_when_sibling_declared_first() -> Result<(), TestError>
+    {
+        assert_duplicate_function_homonym_resolution(false)
     }
 
     /// A reference row naming another package in this image must still
