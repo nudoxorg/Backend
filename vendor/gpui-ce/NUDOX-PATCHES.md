@@ -40,10 +40,10 @@ timeouts.
 | Site | Change | Why |
 |---|---|---|
 | `src/scrollbar.rs` | `ScrollbarState::new(now)` (Default keeps the wall clock for its own tests); prepaint, wheel, hover, thumb-hover, drag-rate limiting and drag-end stamps read `cx.background_executor().now()`; `with_hovered_on_thumb` and `is_scrollbar_visible` take `now` | scrollbar fade/slide/width motion and its idle hold (whose timer already slept on the executor) now share one clock |
+| `src/input/base/blink_cursor.rs`, `src/input/base/state.rs` | one active cursor lease owns one cancellable task; generation guards reject stale blink/resume deadlines; repeated starts preserve phase; focus and window activation share the active-and-focused predicate | closed, destroyed, and inactive inputs cannot retain or resurrect caret redraw timers; deterministic virtual-clock and native window activation tests cover the lifecycle |
 
 Already on the executor clock, untouched: `motion.rs` (`transition`,
-`spring`), `tooltip.rs` show/grace delays, `input/base/blink_cursor.rs`,
-`hover_card.rs`, `auto_scroll.rs`, and toasts (callers pass
+`spring`), `tooltip.rs` show/grace delays, `hover_card.rs`, `auto_scroll.rs`, and toasts (callers pass
 `cx.background_executor().now()`). `history.rs` undo grouping and
 `measure.rs` profiling stay on the wall clock (not animation).
 
