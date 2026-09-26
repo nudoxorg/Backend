@@ -145,6 +145,11 @@ impl Reader {
     }
 
     #[cfg(test)]
+    pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &gpui::App) -> (Option<gpui::Bounds<Pixels>>, Option<gpui::Bounds<Pixels>>, gpui::LayerTransform) {
+        self.map.as_ref().map_or((None, None, gpui::LayerTransform::IDENTITY), |map| map.read(cx).canvas_geometry(node, cx))
+    }
+
+    #[cfg(test)]
     pub(crate) fn graph_gem_morphing(&self, cx: &gpui::App) -> bool {
         self.map.as_ref().is_some_and(|map| map.read(cx).gem_morphing())
     }

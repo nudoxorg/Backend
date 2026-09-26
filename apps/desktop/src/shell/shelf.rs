@@ -89,7 +89,7 @@ impl Shelf {
     /// A shelf called `name` (`shelf`, or `shelf-over` for the overlay one).
     pub(crate) fn new(name: &'static str, links: Links, store: &DataStore) -> Self {
         Self {
-            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Workspace]),
+            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Workspace, Branch::GraphFocus]),
             links,
             targets: Targets::named(name),
             hover: HoverIntent::default(),
@@ -99,6 +99,11 @@ impl Shelf {
             rows: Rc::new(Vec::new()),
             scroll: UniformListScrollHandle::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_symbols(&self) -> Vec<SymbolRef> {
+        self.rows.iter().filter(|row| row.current).filter_map(|row| row.source.clone()).collect()
     }
 
     pub(crate) const fn renders(&self) -> u64 {
@@ -322,8 +327,10 @@ impl Shelf {
         let Some(package) = route_package(route) else {
             return (Head::default(), Vec::new());
         };
-        let current = route_symbol(route);
         let store = self.links.store.read(cx);
+        let current = if let Some(focus) = store.graph_focus() {
+            focus.indexed.as_ref().filter(|(owner, _)| owner == &package).map(|(_, symbol)| symbol.clone())
+        } else { route_symbol(route) };
         let dossier = store.package(&package);
         let dossier = dossier.loaded_value();
         let crumb = match route {

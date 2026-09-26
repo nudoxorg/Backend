@@ -34,7 +34,7 @@ pub(crate) struct Titlebar {
 impl Titlebar {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
         Self {
-            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Settings]),
+            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Settings, Branch::GraphFocus]),
             links,
             targets: Targets::named("titlebar"),
         }

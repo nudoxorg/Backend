@@ -24,6 +24,25 @@ pub(crate) fn address_lines(snapshot: &AppSnapshot, width: Pixels, cx: &App) -> 
     (fit(&thread::address_parts(snapshot), &role, room, cx), role)
 }
 
+/// A graph focus has explicit fixture provenance, not an invented URL.
+pub(crate) fn display_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
+    let Some(focus) = focus.filter(|focus| focus.active(snapshot)) else { return address_lines(snapshot, width, cx); };
+    let measure = Measure::new(width, &cx.facet());
+    let role = measure.role(ty::MONO_SMALL);
+    let room = (width - measure.space(Space::Roomy) * 2.0).max(px(1.0));
+    (wrap_identifier(&focus.status(), &role, room, cx), role)
+}
+
+pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::GraphNotice>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
+    if let Some(notice) = notice.filter(|notice| notice.active(snapshot)) {
+        let measure = Measure::new(width, &cx.facet());
+        let role = measure.role(ty::MONO_SMALL);
+        let room = (width - measure.space(Space::Roomy) * 2.0).max(px(1.0));
+        return (wrap_identifier(&format!("Graph · {}", notice.message), &role, room, cx), role);
+    }
+    display_lines(snapshot, focus, width, cx)
+}
+
 fn fit(address: &Address, role: &TypeRole, room: Pixels, cx: &App) -> Vec<String> {
     let fits = |line: &str| text_width(line, role, cx) <= room * 0.98;
     let full = address.full();
@@ -54,7 +73,7 @@ pub(crate) struct Status {
 impl Status {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
         Self {
-            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay]),
+            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::GraphFocus]),
             links,
         }
     }
@@ -75,7 +94,8 @@ impl Render for Status {
         self.core.rendered();
         let measure = self.core.measure(cx);
         let palette = cx.facet().palette();
-        let (lines, role) = address_lines(&self.links.snapshot(cx), self.core.width(), cx);
+        let store = self.links.store.read(cx);
+        let (lines, role) = feedback_lines(&store.snapshot(), store.graph_focus(), store.graph_notice(), self.core.width(), cx);
         let color = palette.ink3.hsla();
         div()
             .size_full()

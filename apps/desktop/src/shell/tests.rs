@@ -1118,6 +1118,136 @@ fn direct_graph_view_intents_resolve_the_native_current_selection(cx: &mut TestA
 }
 
 #[gpui::test]
+fn native_graph_handoff_uses_the_scaled_translated_canvas_and_rejects_absent_sources(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+    rig.cx.update(|_, cx| cx.set_global(super::bodies::graph::TestCanvasLayer { scale: 0.75, x: 35.0, y: -28.0 }));
+    rig.repaint();
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("actual mounted graph");
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "this proves the resting canvas path rather than the interrupted-ghost fallback");
+    let raw = graph.read_with(rig.cx, |graph, _| graph.node_bounds(0)).expect("visible core");
+    let (anchor, painted, parent) = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
+    assert_eq!(parent.scale.width, 0.75, "actual GPUI parent layer was prepainted");
+    assert_ne!(painted, Some(raw), "native scale/translation changes the real source rectangle");
+    assert_eq!(painted, Some(parent.apply_bounds(raw)), "the shared ledger records actual composited window bounds");
+    assert_eq!(anchor, painted, "the routed hero starts at actual painted source geometry");
+    rig.cx.update(|_, cx| cx.set_global(super::bodies::graph::TestCanvasLayer { scale: 0.0, x: 35.0, y: -28.0 }));
+    rig.repaint();
+    assert!(graph.read_with(rig.cx, |graph, _| graph.node_bounds(0)).is_some(), "the logical node exists while its native layer is collapsed");
+    let (anchor, painted, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
+    assert!(anchor.is_none() && painted.is_none(), "a collapsed painted source cannot revive the previous nonempty seed");
+    rig.cx.update(|_, cx| cx.set_global(super::bodies::graph::TestCanvasLayer { scale: 0.75, x: 35.0, y: -28.0 }));
+    rig.repaint();
+    let camera = graph.read_with(rig.cx, |graph, _| graph.camera().expect("camera"));
+    graph.update(rig.cx, |graph, cx| graph.fly_to(facet::motion::Camera { x: camera.x + 1_000_000.0, ..camera }, cx));
+    rig.settle();
+    assert!(graph.read_with(rig.cx, |graph, _| graph.node_bounds(0)).is_none(), "the source really left the current viewport");
+    let (anchor, painted, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
+    assert!(anchor.is_none() && painted.is_none(), "a disappeared source never reuses the previous transformed endpoint");
+}
+
+struct MissingSymbolFixture { fail: Arc<std::sync::atomic::AtomicBool> }
+impl PageReader for MissingSymbolFixture {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        if matches!(request, ReadRequest::Symbol(id) if id == &symbol("RelationLabel")) && self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ReadFailure::Fault(crate::core::ErrorValue::new(crate::core::FaultCode::Transport, "current declaration disappeared")));
+        }
+        Fixture.read(request, context)
+    }
+}
+
+#[gpui::test]
+fn new_root_without_an_indexed_join_clears_the_previous_painted_graph_ghost(cx: &mut TestAppContext) {
+    let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = fail.clone();
+    let pool = ReadPool::start(1, move |_| MissingSymbolFixture { fail: flag.clone() }).expect("read pool");
+    let mut rig = rig_with_reads(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0, pool);
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_some(), "there really is a previous indexed paint");
+    let old_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 501) });
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        assert_ne!(store.snapshot().key(), old_root);
+        let resource = store.symbol(&symbol("RelationLabel"));
+        assert!(resource.loaded_value().is_some(), "new-root failure actually retains its prior page");
+        assert_eq!(resource.value_root(), Some(old_root));
+        assert!(matches!(resource.terminal(), crate::core::ResourceTerminal::Fault(_)));
+    });
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_none(), "retained stale page cannot keep its old painted morph endpoint alive");
+}
+
+#[gpui::test]
+fn graph_focus_display_tracks_b_without_rewriting_history_or_guessing_unindexed_rows(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+    let back = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.len());
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    rig.graph.store.read_with(rig.cx, |store, cx| {
+        let snapshot = store.snapshot();
+        let focus = store.graph_focus().expect("current typed B selection");
+        assert_eq!(focus.node, 1);
+        assert_eq!(focus.indexed, Some((package(), symbol("RelationDirection"))), "only the exact typed complete-outline match highlights B");
+        let here = super::thread::here(&snapshot, store);
+        assert_eq!(here.name.to_string(), "RelationDirection");
+        assert!(here.path.contains("graph fixture"));
+        let (lines, _) = super::status::display_lines(&snapshot, Some(focus), px(1440.0), cx);
+        assert_eq!(lines, ["Graph fixture · synthetic-present-v1::glyph::RelationDirection"]);
+        assert_eq!(snapshot.session().back.len(), back);
+        assert_eq!(snapshot.route(), &view_route("RelationLabel", View::Graph), "selection is not navigation");
+        assert!(super::thread::address_parts(&snapshot).full().contains("RelationLabel/graph"), "the copyable address remains the real graph visit");
+    });
+    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_current_symbols(cx)), [symbol("RelationDirection")]);
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
+    rig.settle();
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        let focus = store.graph_focus().expect("unindexed selection still has fixture semantics");
+        assert_eq!(focus.name.as_ref(), "Unindexed");
+        assert!(focus.indexed.is_none(), "a same-name or previous indexed row cannot become its identity");
+    });
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_current_symbols(cx)).is_empty(), "unknown B does not leave old A selected");
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        assert!(store.graph_focus().is_none(), "the hidden graph cannot rename the page capsule");
+        assert_eq!(super::thread::here(&store.snapshot(), store).name.to_string(), "RelationLabel");
+    });
+}
+
+#[gpui::test]
+fn graph_camera_flights_do_not_publish_semantic_selection_events(cx: &mut TestAppContext) {
+    struct SelectionEvents(usize);
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    let store = rig.graph.store.clone();
+    let events = rig.cx.update(|_, cx| cx.new(|cx| {
+        cx.subscribe(&store, |events: &mut SelectionEvents, _, event: &crate::runtime::store::StoreEvent, _| {
+            if event.is_branch(crate::runtime::store::Branch::GraphFocus) { events.0 += 1; }
+        }).detach();
+        SelectionEvents(0)
+    }));
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("real mounted graph");
+    let before = graph.read_with(rig.cx, |graph, _| graph.camera().expect("laid out camera"));
+    graph.update(rig.cx, |graph, cx| graph.fly_to(facet::motion::Camera { x: before.x + 200.0, y: before.y + 70.0, w: before.w * 1.2 }, cx));
+    rig.frame(16);
+    assert_eq!(events.read_with(rig.cx, |events, _| events.0), 0);
+    rig.settle();
+    assert_ne!(graph.read_with(rig.cx, |graph, _| graph.camera().expect("camera after actual flight")), before);
+    assert_eq!(events.read_with(rig.cx, |events, _| events.0), 0, "every real camera frame stays below the semantic notification boundary");
+}
+
+#[gpui::test]
+fn immediate_page_to_graph_acquires_its_actual_visible_hero(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    rig.repaint();
+    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Graph), cx));
+    rig.frame(16);
+    assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
+    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "the immediately visible Page A supplies the native canvas endpoint");
+    rig.settle();
+    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)));
+}
+
+#[gpui::test]
 fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted retained graph");
@@ -1134,6 +1264,13 @@ fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut Tes
     rig.settle();
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "an unavailable pinned symbol does not route arbitrary A or B");
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
+    rig.graph.store.read_with(rig.cx, |store, cx| {
+        let notice = store.graph_notice().expect("hidden pinned failure has visible current-page feedback");
+        let (lines, _) = super::status::feedback_lines(&store.snapshot(), None, Some(notice), px(1440.0), cx);
+        assert!(lines.join("").contains("no exact match"));
+    });
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_notice().is_none()), "the previous page's failed card intent does not follow another route");
 }
 
 #[gpui::test]

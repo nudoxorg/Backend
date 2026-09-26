@@ -821,9 +821,7 @@ impl Map {
         handoff_anchor(
             node,
             graph.focused(),
-            graph
-                .node_bounds(node)
-                .map(|bounds| self.canvas_transform.apply_bounds(bounds)),
+            canvas_bounds(graph.node_bounds(node), self.canvas_transform),
             self.painted_focus,
         )
     }
@@ -942,6 +940,24 @@ impl OpenRequest {
     }
 }
 
+/// A collapsed or invalid native layer no longer paints a canvas source.
+fn canvas_bounds(
+    actual: Option<gpui::Bounds<gpui::Pixels>>,
+    parent: gpui::LayerTransform,
+) -> Option<gpui::Bounds<gpui::Pixels>> {
+    let bounds = parent.apply_bounds(actual?);
+    let values = [
+        bounds.origin.x,
+        bounds.origin.y,
+        bounds.size.width,
+        bounds.size.height,
+    ];
+    (values.iter().all(|value| f32::from(*value).is_finite())
+        && bounds.size.width > px(0.0)
+        && bounds.size.height > px(0.0))
+    .then_some(bounds)
+}
+
 /// A different focused node cannot supply the opened node's geometry.
 /// An in-progress shared gem does supply its actual paint for interruption;
 /// a resting gem uses this frame's node projection, including a resize.
@@ -1028,6 +1044,10 @@ impl gpui::Element for FocusMark {
                 return None;
             }
         };
+        if canvas_bounds(Some(bounds), window.layer_transform()).is_none() {
+            owner.update(cx, |map, _| map.painted_focus = None);
+            return None;
+        }
         let kind = match graph.world().node(node).kind {
             facet::graph::Kind::Trait => facet::icons::Kind::Trait,
             facet::graph::Kind::Function | facet::graph::Kind::Method => {

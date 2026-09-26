@@ -227,6 +227,11 @@ impl Shell {
     pub(crate) fn graph_entity(&self, cx: &App) -> Option<Entity<facet::graph::GraphView>> { self.reader.read(cx).graph_entity(cx) }
 
     #[cfg(test)]
+    pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &App) -> (Option<gpui::Bounds<gpui::Pixels>>, Option<gpui::Bounds<gpui::Pixels>>, gpui::LayerTransform) {
+        self.reader.read(cx).graph_canvas_geometry(node, cx)
+    }
+
+    #[cfg(test)]
     pub(crate) fn graph_gem_morphing(&self, cx: &App) -> bool { self.reader.read(cx).graph_gem_morphing(cx) }
 
     #[cfg(test)]
@@ -251,6 +256,11 @@ impl Shell {
             pins: self.pins.read(cx).renders(),
             ask: self.ask.read(cx).renders(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shelf_current_symbols(&self, cx: &App) -> Vec<crate::model::pages::SymbolRef> {
+        self.shelf.read(cx).current_symbols()
     }
 
     /// Every string the reader's last render put on screen, in order.
@@ -384,6 +394,7 @@ impl Shell {
                 // The shelf toggle moves the columns: the root lays them out.
                 cx.notify();
             }
+            StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
             StoreEvent::Snapshot(Branch::Route) => {
                 if !super::bodies::graph::is_graph(self.links.snapshot(cx).route()) {
@@ -920,7 +931,8 @@ impl Render for Shell {
         self.frame = Some(frame);
         // The status bar grows a line when the address's name has to wrap;
         // sized here from the same fit the bar sets, in the same frame.
-        let (address, address_role) = super::status::address_lines(&snapshot, viewport.width, cx);
+        let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.graph_notice().cloned()) };
+        let (address, address_role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), viewport.width, cx);
         let status_height = super::status::height(address.len(), &address_role, frame.status);
         // Structural changes animate (the shelf becoming a spine, the pins
         // column arriving); a window drag inside one mode tracks directly,

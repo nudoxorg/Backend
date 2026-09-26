@@ -119,6 +119,9 @@ pub(crate) fn here(snapshot: &AppSnapshot, store: &DataStore) -> Here {
             path: "followed releases".into(),
         },
         _ => {
+            if let Some(focus) = store.graph_focus() {
+                return Here { mark: Mark::Kind(kind_of(Some(focus.kind))), name: focus.name.to_string().into(), path: focus.caption_path().into() };
+            }
             let mut here = route_here(snapshot.route(), store);
             // Viewing another release: the capsule says which, and which you
             // pin, in the comb's words.
