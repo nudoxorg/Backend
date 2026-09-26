@@ -466,6 +466,9 @@ pub struct Reference {
     /// The exact chosen overload member index at a resolved call site.
     #[serde(default)]
     pub overload_index: Option<u32>,
+    /// Whether the foreign declaration is a class or interface field read.
+    #[serde(default)]
+    pub is_field: bool,
 }
 
 /// One control-flow-sensitive checker type observed at one plain
@@ -551,6 +554,8 @@ pub struct BoundReference<'report> {
     pub name: Option<&'report str>,
     /// The exact chosen overload member index.
     pub overload_index: Option<u32>,
+    /// Whether the foreign declaration is a class or interface field read.
+    pub is_field: bool,
 }
 
 /// One span-bound assignment narrowing borrowed from a validated report.
@@ -669,6 +674,7 @@ impl<'report> CheckerIndex<'report> {
                         module: reference.module.as_deref(),
                         name: reference.name.as_deref(),
                         overload_index: reference.overload_index,
+                        is_field: reference.is_field,
                     })
                 },
             )

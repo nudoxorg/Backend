@@ -597,6 +597,30 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.fact_at_name.get(&start).copied()
     }
 
+    /// Resolves one source position to the innermost enclosing function
+    /// whose declaring span still contains it.
+    fn enclosing_function_owner(&self, position: u32) -> Option<u32> {
+        let length = coordinate(self.facts.len()).ok()?;
+        let mut best: Option<(u32, u32)> = None;
+        for ordinal in 0..length {
+            let index = usize::try_from(ordinal).ok()?;
+            if self.fact_kinds.get(index).copied() != Some(EntityKind::Function) {
+                continue;
+            }
+            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if start != UNSET
+                && end != UNSET
+                && start <= position
+                && position < end
+                && best.is_none_or(|(known, _)| start >= known)
+            {
+                best = Some((start, ordinal));
+            }
+        }
+        best.map(|(_, ordinal)| ordinal)
+    }
+
     /// Resolves one source position to the innermost pushed fact whose
     /// declaring span contains it.
     fn owning_fact(&self, position: u32) -> Option<u32> {
@@ -794,6 +818,58 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
         }
         false
+    }
+
+    /// Reports whether `span` names the property of a static member expression
+    /// in callee position of a call or `new`.
+    fn is_member_call_position(&self, span: Span) -> bool {
+        let nodes = self.semantic.nodes();
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if (known.start, known.end) != (span.start, span.end) {
+                break;
+            }
+            let member_id = match self.static_member_for_property(*node_id, span) {
+                Some(member_id) => member_id,
+                None => continue,
+            };
+            let member_span = nodes.get_node(member_id).kind().span();
+            let parent = nodes.get_node(nodes.parent_id(member_id)).kind();
+            if let Some(call) = parent.as_call_expression()
+                && call.callee.span() == member_span
+            {
+                return true;
+            }
+            if let Some(construction) = parent.as_new_expression()
+                && construction.callee.span() == member_span
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns the static member node when `span` names its property.
+    fn static_member_for_property(&self, node_id: NodeId, span: Span) -> Option<NodeId> {
+        let nodes = self.semantic.nodes();
+        let kind = nodes.get_node(node_id).kind();
+        if let Some(member) = kind.as_static_member_expression()
+            && member.property.span() == span
+        {
+            return Some(node_id);
+        }
+        if kind.as_identifier_name().is_some() {
+            let parent_id = nodes.parent_id(node_id);
+            let parent = nodes.get_node(parent_id).kind();
+            if let Some(member) = parent.as_static_member_expression()
+                && member.property.span() == span
+            {
+                return Some(parent_id);
+            }
+        }
+        None
     }
 
     /// Pushes one fact per staged generic parameter so uses of the parameter
@@ -3100,7 +3176,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Runs the ordered projection: the self-nominal declaration pass, the
     /// alias/member/signature/variable pass, the checker computed pass, the
     /// narrowing pass, the reference pass, the checker-only reference pass,
-    /// then the documentation pass.
+    /// the static property-access pass, then the documentation pass.
     fn run(&mut self) -> Result<(), TypeScriptCollectError> {
         self.pass_declarations()?;
         self.pass_members()?;
@@ -3108,6 +3184,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.pass_narrowings()?;
         self.pass_references()?;
         self.pass_checker_references()?;
+        self.pass_property_accesses()?;
         self.pass_docs()?;
         self.pass_parentage()?;
         Ok(())
@@ -4259,7 +4336,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(module) = resolved.module else {
             return Ok(None);
         };
-        if let Some(key) = self.checker_foreign_key(span, module, resolved.name)? {
+        if let Some(key) = self.checker_foreign_key(span, module, resolved.name, false)? {
             return Ok(Some((
                 OccurrenceTarget::Foreign(key),
                 OccurrenceConfidence::Oracle,
@@ -4290,6 +4367,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         span: Span,
         module: &str,
         name: Option<&str>,
+        field: bool,
     ) -> Result<Option<ForeignKey<'source>>, TypeScriptCollectError> {
         let spelled_module = self.spelled_in_source(module.as_bytes());
         let site = self.text_span(span).ok_or(TypeScriptCollectError::Span {
@@ -4299,9 +4377,23 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if site.is_empty() {
             return Ok(None);
         }
-        let display = name
-            .and_then(|name| self.spelled_in_source(name.as_bytes()))
-            .unwrap_or(site);
+        let (path, display, kind) = if field {
+            let Some(name) = name else {
+                return Ok(None);
+            };
+            let Some(path) = self
+                .spelled_in_source(name.as_bytes())
+                .filter(|path| !path.is_empty())
+            else {
+                return Ok(None);
+            };
+            (path, path, Some(EntityKind::Field))
+        } else {
+            let display = name
+                .and_then(|name| self.spelled_in_source(name.as_bytes()))
+                .unwrap_or(site);
+            (site, display, None)
+        };
         let origin = match spelled_module {
             Some(module) => ForeignOrigin::Package(
                 package_lineage_for_module(module).map_err(|cause| lineage_fault(cause, span))?,
@@ -4310,7 +4402,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 ecosystem: NPM_ECOSYSTEM,
             },
         };
-        ForeignKey::new(origin, site, display, None)
+        ForeignKey::new(origin, path, display, kind)
             .map(Some)
             .map_err(|cause| foreign_fault(cause, span))
     }
@@ -4334,12 +4426,25 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if self.occurrence_covers(reference.span)? {
                 continue;
             }
-            let Some(owner) = self.owning_fact(reference.span.start) else {
+            let Some(mut owner) = self.owning_fact(reference.span.start) else {
                 continue;
             };
             let Some((target, confidence, kind)) = self.checker_only_target(reference)? else {
                 continue;
             };
+            if kind == ReferenceKind::FieldAccess
+                && matches!(
+                    target,
+                    OccurrenceTarget::Foreign(ForeignKey {
+                        kind: Some(EntityKind::Field),
+                        ..
+                    })
+                )
+            {
+                if let Some(function) = self.enclosing_function_owner(reference.span.start) {
+                    owner = function;
+                }
+            }
             let span = Span::new(reference.span.start, reference.span.end);
             self.commit_occurrence(owner, span, kind, target, confidence)?;
         }
@@ -4390,7 +4495,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         )>,
         TypeScriptCollectError,
     > {
-        let call = reference.overload_index.is_some();
+        let span = Span::new(reference.span.start, reference.span.end);
+        let member_call = self.is_member_call_position(span);
+        let call = reference.overload_index.is_some() || member_call;
         if let Some(target) = reference.target {
             let Some(fact) = self.fact_at_name_start(target.start) else {
                 return Ok(None);
@@ -4406,25 +4513,180 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 kind,
             )));
         }
-        if let Some(module) = reference.module
-            && let Some(key) = self.checker_foreign_key(
-                Span::new(reference.span.start, reference.span.end),
-                module,
-                reference.name,
-            )?
-        {
-            let kind = if call {
-                ReferenceKind::FunctionCall
-            } else {
-                ReferenceKind::VariableUse
-            };
-            return Ok(Some((
-                OccurrenceTarget::Foreign(key),
-                OccurrenceConfidence::Oracle,
-                kind,
-            )));
+        if let Some(module) = reference.module {
+            let field = reference.is_field && !call;
+            if let Some(key) =
+                self.checker_foreign_key(span, module, reference.name, field)?
+            {
+                let kind = if call {
+                    ReferenceKind::FunctionCall
+                } else if field {
+                    ReferenceKind::FieldAccess
+                } else {
+                    ReferenceKind::VariableUse
+                };
+                return Ok(Some((
+                    OccurrenceTarget::Foreign(key),
+                    OccurrenceConfidence::Oracle,
+                    kind,
+                )));
+            }
         }
         Ok(None)
+    }
+
+    /// Pass seven: static member property tokens OXC never binds. Each site
+    /// names only the property identifier span; checker-resolved sites are
+    /// left untouched when [`occurrence_covers`] already owns that span.
+    fn pass_property_accesses(&mut self) -> Result<(), TypeScriptCollectError> {
+        let nodes = self.semantic.nodes();
+        for node in nodes.iter() {
+            let Some(member) = node.kind().as_static_member_expression() else {
+                continue;
+            };
+            let property_span = member.property.span;
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let parent = nodes.get_node(nodes.parent_id(node.id())).kind();
+            let kind = if parent
+                .as_call_expression()
+                .is_some_and(|call| call.callee.span() == member.span)
+            {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::FieldAccess
+            };
+            let (target, confidence) = if Self::is_this_receiver(AstKind::from_expression(
+                &member.object,
+            )) {
+                self.this_property_target(property_span, kind)?
+            } else {
+                self.syntactic_property_target(property_span)?
+            };
+            self.commit_occurrence(owner, property_span, kind, target, confidence)?;
+        }
+        Ok(())
+    }
+
+    /// Reports whether one expression is `this`, peeling one parenthesized
+    /// wrapper when the source wrote `(this)`.
+    fn is_this_receiver(kind: AstKind<'_>) -> bool {
+        if kind.as_this_expression().is_some() {
+            return true;
+        }
+        kind.as_parenthesized_expression()
+            .and_then(|wrapped| {
+                AstKind::from_expression(&wrapped.expression).as_this_expression()
+            })
+            .is_some()
+    }
+
+    /// Resolves the innermost pushed class record whose declaring span
+    /// contains `position`.
+    fn enclosing_record(&self, position: u32) -> Option<u32> {
+        let length = self.facts.len;
+        let mut best: Option<(u32, u32)> = None;
+        for index in 0..length {
+            let ordinal = coordinate(index).ok()?;
+            if self.fact_kinds.get(index).copied() != Some(EntityKind::Record) {
+                continue;
+            }
+            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if start != UNSET
+                && end != UNSET
+                && start <= position
+                && position < end
+                && best.is_none_or(|(known, _)| start >= known)
+            {
+                best = Some((start, ordinal));
+            }
+        }
+        best.map(|(_, ordinal)| ordinal)
+    }
+
+    /// Resolves one `this.property` site through the enclosing class when
+    /// exactly one same-name member of the expected kind lives there.
+    fn this_property_target(
+        &self,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let Some(class) = self.enclosing_record(property_span.start) else {
+            return self.syntactic_property_target(property_span);
+        };
+        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        let expected_kind = match kind {
+            ReferenceKind::FunctionCall => EntityKind::Function,
+            ReferenceKind::FieldAccess => EntityKind::Field,
+            _ => return self.syntactic_property_target(property_span),
+        };
+        let candidates = self
+            .facts_by_name
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        let mut matched = None;
+        for ordinal in candidates {
+            let Some(index) = usize::try_from(ordinal).ok() else {
+                continue;
+            };
+            if self.fact_kinds.get(index).copied() != Some(expected_kind) {
+                continue;
+            }
+            let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            if decl_start == UNSET
+                || self.enclosing_registered_owner(decl_start, Some(ordinal)) != Some(class)
+            {
+                continue;
+            }
+            if matched.is_some() {
+                return self.syntactic_property_target(property_span);
+            }
+            matched = Some(ordinal);
+        }
+        match matched {
+            Some(fact) => Ok((
+                OccurrenceTarget::Local(EntityId::new(fact)),
+                OccurrenceConfidence::Index,
+            )),
+            None => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Builds the honest npm-universe foreign key for one unresolved property
+    /// token, borrowing the exact source spelling as path and display.
+    fn syntactic_property_target(
+        &self,
+        span: Span,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let name = self.text_span(span).ok_or(TypeScriptCollectError::Span {
+            start: span.start,
+            end: span.end,
+        })?;
+        let key = ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: NPM_ECOSYSTEM,
+            },
+            name,
+            name,
+            None,
+        )
+        .map_err(|cause| foreign_fault(cause, span))?;
+        Ok((
+            OccurrenceTarget::Foreign(key),
+            OccurrenceConfidence::Syntactic,
+        ))
     }
 
     /// Resolves one type-reference name through the checker's report when
@@ -5569,6 +5831,7 @@ mod lane_tests {
                 module: Some("hono".to_owned()),
                 name: Some("Context".to_owned()),
                 overload_index: None,
+                is_field: false,
             }],
         )
     }

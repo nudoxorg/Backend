@@ -111,6 +111,51 @@ function moduleSpecifier(node) {
   return null;
 }
 
+/** Maps a resolved foreign file to the import/export specifier that reaches it. */
+const spelledSpecifierCache = new Map();
+
+/** Returns the source spelling of an import/export that resolves to `originFile`. */
+function spelledSpecifierFor(originFile) {
+  const originPath = path.resolve(originFile.fileName);
+  if (spelledSpecifierCache.has(originPath)) {
+    return spelledSpecifierCache.get(originPath);
+  }
+  let found = null;
+  function consider(specifier) {
+    if (found) return;
+    const resolved = ts.resolveModuleName(
+      specifier,
+      sourceFile.fileName,
+      program.getCompilerOptions(),
+      host,
+    );
+    if (resolved.resolvedModule) {
+      const resolvedPath = path.resolve(resolved.resolvedModule.resolvedFileName);
+      if (resolvedPath === originPath) {
+        found = specifier;
+      }
+    }
+  }
+  function visit(node) {
+    if (found) return;
+    if (ts.isImportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      consider(node.moduleSpecifier.text);
+    }
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      consider(node.moduleSpecifier.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  spelledSpecifierCache.set(originPath, found);
+  return found;
+}
+
+/** Reports whether one foreign declaration is a class or interface field. */
+function isFieldOrigin(origin) {
+  return ts.isPropertyDeclaration(origin) || ts.isPropertySignature(origin);
+}
+
 const MAX_TREE_DEPTH = 16;
 
 /** Builds one structured tree for the checker's exact type. */
@@ -488,7 +533,7 @@ function emitReference(node) {
     entry.targetStart = originName.getStart(sourceFile);
     entry.targetEnd = originName.getEnd();
   } else if (originFile) {
-    entry.module = moduleSpecifier(node) || moduleSpecifier(origin) || moduleOf(originFile.fileName);
+    entry.module = moduleSpecifier(node) || moduleSpecifier(origin) || moduleOf(originFile.fileName) || spelledSpecifierFor(originFile);
     entry.name = originName ? originName.getText(originFile) : symbol.getName();
   } else {
     entry.module = 'typescript';
@@ -513,6 +558,9 @@ function emitReference(node) {
       const index = group.indexOf(resolved.declaration);
       if (index >= 0) entry.overloadIndex = index;
     }
+  }
+  if (origin && isFieldOrigin(origin) && parent && ts.isPropertyAccessExpression(parent) && parent.name === node) {
+    entry.isField = true;
   }
   references.push(entry);
 }
