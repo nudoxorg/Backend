@@ -1017,7 +1017,36 @@ pub(crate) fn resolve_specifier_paths(
     }
     push_dotted_module_paths(specifier, project_paths, &mut resolved);
     push_go_import_paths(specifier, project_paths, &mut resolved);
+    push_rust_module_paths(specifier, project_paths, &mut resolved);
     resolved
+}
+
+fn is_rust_module_path_specifier(specifier: &str) -> bool {
+    !specifier.is_empty()
+        && !specifier.starts_with('.')
+        && specifier.contains('/')
+        && !specifier.contains("::")
+        && !specifier.split('/').any(str::is_empty)
+}
+
+fn push_rust_module_paths(
+    specifier: &str,
+    project_paths: &BTreeSet<String>,
+    resolved: &mut BTreeSet<String>,
+) {
+    if !is_rust_module_path_specifier(specifier) {
+        return;
+    }
+    let rs_file = format!("{specifier}.rs");
+    let mod_rs = format!("{specifier}/mod.rs");
+    for path in project_paths {
+        if path == &rs_file || path.ends_with(&format!("/{rs_file}")) {
+            resolved.insert(path.clone());
+        }
+        if path == &mod_rs || path.ends_with(&format!("/{mod_rs}")) {
+            resolved.insert(path.clone());
+        }
+    }
 }
 
 fn declares_a_nominal_type(kind: DeclarationKind) -> bool {

@@ -3,10 +3,11 @@
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must retain its exact current schema form.
 use backend_semantic::ir::{
-    AtomListId, BuildError, ConcreteType, Confidence, CorePayloadHash, EntityAuthorityFacts,
-    EntityId, EntityKind, EntityVersion, FactAvailability, FragmentView, NominalRef, Occurrence,
-    PackageLineage, ParentageAuthority, PrepareError, PreparedFragment, PythonFacts,
-    PythonParameterKind, ReopenedTypeParameterList, RustFacts, RustOwnership, SemanticCoreReader,
+    AtomListId, BuildError, ConcreteType, Confidence, CorePayloadHash, DecodedOccurrence,
+    EntityAuthorityFacts, EntityId, EntityKind, EntityVersion, FactAvailability, ForeignOrigin,
+    FragmentView, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage,
+    ParentageAuthority, PrepareError, PreparedFragment, PythonFacts, PythonParameterKind,
+    ReferenceKind, ReopenedTypeParameterList, RelSpan, RustFacts, RustOwnership, SemanticCoreReader,
     SemanticImageView, SemanticReader, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord,
     SemanticTypeTag, SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId,
     TypeQuadPayload, TypeTriplePayload, VariadicForm, Visibility, encode_full_semantic_image,
@@ -387,6 +388,55 @@ fn c_occurrences_pass_the_declaration_ceiling() -> Result<(), TestError> {
                 cause,
             }))?;
     }
+    Ok(())
+}
+
+#[test]
+fn owned_package_occurrence_admits_the_real_module_path() -> Result<(), TestError> {
+    let mut facts = pending_plan();
+    push_pending_seed(&mut facts)?;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"drive",
+                SemanticProductConstructor::PRODUCT,
+            ),
+        )
+        .map_err(rejected)?;
+    facts
+        .push_owned_package_occurrence(
+            1,
+            "cargo",
+            "src/service",
+            "set_note",
+            "set_note",
+            Some(EntityKind::Function),
+            ReferenceKind::MethodCall,
+            OccurrenceConfidence::Oracle,
+            RelSpan { start: 0, end: 8 },
+        )
+        .map_err(lane_fault)?;
+    let bytes = write(&facts)?;
+    let view = FragmentView::validate(&bytes)?;
+    let mut cursor = view.occurrences().ok_or(TestError::Tail)?;
+    let DecodedOccurrence { occurrence, .. } = cursor
+        .next()
+        .ok_or(TestError::Tail)?
+        .map_err(|_| TestError::Tail)?;
+    let OccurrenceTarget::Foreign(key) = occurrence.target else {
+        return Err(TestError::Tail);
+    };
+    let ForeignOrigin::Package(lineage) = key.origin else {
+        return Err(TestError::Tail);
+    };
+    if lineage.ecosystem != "cargo" || lineage.name != "src/service" {
+        return Err(TestError::Tail);
+    }
+    if key.path != "set_note" || key.display != "set_note" {
+        return Err(TestError::Tail);
+    }
+    owned_topology_projection(&facts)?;
     Ok(())
 }
 

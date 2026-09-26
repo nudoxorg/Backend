@@ -42,7 +42,9 @@
 //!   and paths with a static target land `Local` or foreign at oracle
 //!   confidence; positions the oracle could not resolve stay at syntactic
 //!   confidence, and every span is relative to the innermost owning
-//!   declaration.
+//!   declaration. A method rust-analyzer resolved into another project-local
+//!   file is a cargo package key whose name is that file's module path, not a
+//!   universe key of the method token.
 //! - Macro invocation spellings travel in each owning declaration's Rust
 //!   extension row. A `macro_rules!` definition commits its own closed
 //!   `Macro` row — leaf product, honest unannotated record — exactly as the
@@ -76,7 +78,7 @@ use backend_frontend_rust::legacy::{
 };
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
-    ExternalFragmentId, ForeignKey, ForeignOrigin,
+    ExternalFragmentId, ForeignKey, ForeignOrigin, PackageLineage,
     ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape,
     ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
@@ -3059,6 +3061,38 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 continue;
             }
             emitted_method_spans.push(span);
+            if let Some(function) = call.target {
+                let definition = ra_ap_hir::ModuleDef::from(function);
+                if self.ordinal_of_definition(&definition).is_none()
+                    && let Some(package_path) =
+                        authority.cross_file_method_package_path(function)
+                    && let Some(owner) = self.owner_of(span)
+                {
+                    let owner_span = self
+                        .rows
+                        .iter()
+                        .find(|row| row.ordinal == owner)
+                        .map(|row| row.span)
+                        .ok_or_else(admission)?;
+                    let written = self.bytes_of(span)?;
+                    let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                    let relative = relative_span(span, owner_span)?;
+                    self.facts
+                        .push_owned_package_occurrence(
+                            owner,
+                            CARGO_ECOSYSTEM,
+                            &package_path,
+                            name,
+                            name,
+                            Some(EntityKind::Function),
+                            ReferenceKind::MethodCall,
+                            OccurrenceConfidence::Oracle,
+                            relative,
+                        )
+                        .map_err(|_| admission())?;
+                    continue;
+                }
+            }
             let definition = call.target.map(ra_ap_hir::ModuleDef::from);
             // A dispatch the oracle resolved is oracle tier; a method call
             // rust-analyzer could not resolve stays syntactic confidence
