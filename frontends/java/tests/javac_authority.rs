@@ -13,7 +13,7 @@ use std::{
 
 use backend_frontend_java::legacy::{
     BoundImageError, DeclarationExtension, DeclarationKind, JavaAuthorityImage, JavaImage,
-    TypeKind,
+    TypeKind, UseTag,
     central::Central,
     jar::{EntryData, Jar},
 };
@@ -58,6 +58,13 @@ enum JavacTestError {
     Text {
         expected: &'static str,
         actual: String,
+    },
+    #[error("expected span {expected_start}..{expected_end}, found {actual_start}..{actual_end}")]
+    UnexpectedSpan {
+        expected_start: u32,
+        expected_end: u32,
+        actual_start: u32,
+        actual_end: u32,
     },
     #[error("JDK output was not UTF-8")]
     OutputUtf8,
@@ -209,6 +216,170 @@ const ATTRIBUTED_CALLS: [AttributedCall; 3] = [
         owner_name: "delayed",
     },
 ];
+
+const METHOD_REF_CALLS: [AttributedCall; 4] = [
+    AttributedCall {
+        target_owner: "demo.MethodRef",
+        target_name: "parse",
+        owner_owner: "demo.MethodRef",
+        owner_name: "viaRef",
+    },
+    AttributedCall {
+        target_owner: "java.lang.String",
+        target_name: "length",
+        owner_owner: "demo.MethodRef",
+        owner_name: "viaRef",
+    },
+    AttributedCall {
+        target_owner: "java.lang.String",
+        target_name: "length",
+        owner_owner: "demo.MethodRef",
+        owner_name: "viaRef",
+    },
+    AttributedCall {
+        target_owner: "demo.MethodRef",
+        target_name: "parse",
+        owner_owner: "demo.MethodRef",
+        owner_name: "viaRef",
+    },
+];
+
+struct ConstructorUseExpectation {
+    declaring: &'static str,
+    start: u32,
+    end: u32,
+}
+
+const METHOD_REF_CONSTRUCTOR_USES: [ConstructorUseExpectation; 5] = [
+    ConstructorUseExpectation {
+        declaring: "demo.MethodRef",
+        start: 551,
+        end: 554,
+    },
+    ConstructorUseExpectation {
+        declaring: "demo.MethodRef",
+        start: 665,
+        end: 673,
+    },
+    ConstructorUseExpectation {
+        declaring: "demo.MethodRef",
+        start: 802,
+        end: 805,
+    },
+    ConstructorUseExpectation {
+        declaring: "demo.MethodRef",
+        start: 856,
+        end: 859,
+    },
+    ConstructorUseExpectation {
+        declaring: "demo.MethodRef.Gate",
+        start: 900,
+        end: 903,
+    },
+];
+
+const METHOD_REF_INVOCATION_SPANS: [(u32, u32); 4] = [
+    (491, 496),
+    (608, 614),
+    (733, 744),
+    (920, 925),
+];
+
+#[test]
+fn javac_image_records_method_and_constructor_references() -> Result<(), JavacTestError> {
+    let jdk = PathBuf::from(env::var_os("NUDOX_JDK").ok_or(JavacTestError::MissingJdk)?);
+    let temporary = TemporaryDirectory::create()?;
+    let source_path = "src/demo/MethodRef.java";
+    let outcome = (|| {
+        let classes = temporary.path.join("classes");
+        fs::create_dir(&classes).map_err(|source| JavacTestError::Directory {
+            path: classes.clone(),
+            source,
+        })?;
+        compile_producer(&jdk, &classes)?;
+        let bytes = read_image(&run_producer_binding(
+            &jdk,
+            &classes,
+            &temporary.path,
+            source_path,
+            "MethodRef.image",
+        )?)?;
+        let image = JavaAuthorityImage::open(&bytes)?.image;
+
+        let mut references = image.references();
+        for (reference, expected) in references.by_ref().zip(METHOD_REF_CALLS) {
+            let reference = reference?;
+            let target = image.symbol(reference.target)?;
+            let owner = image.symbol(reference.owner)?;
+            assert_atom(target.owner, expected.target_owner)?;
+            assert_atom(target.name, expected.target_name)?;
+            assert_atom(owner.owner, expected.owner_owner)?;
+            assert_atom(owner.name, expected.owner_name)?;
+            if target.name.utf8().map_err(|_| JavacTestError::OutputUtf8)? == "<init>"
+                || target.name.utf8().map_err(|_| JavacTestError::OutputUtf8)? == "new"
+            {
+                return Err(JavacTestError::Missing {
+                    fact: "no constructor reference on invocation plane",
+                });
+            }
+        }
+        if references.next().is_some() {
+            return Err(JavacTestError::Missing {
+                fact: "exact method-reference invocation count",
+            });
+        }
+
+        let references: Vec<_> = image.references().collect::<Result<Vec<_>, _>>()?;
+        for (reference, (start, end)) in references.iter().zip(METHOD_REF_INVOCATION_SPANS) {
+            if (reference.start, reference.end) != (start, end) {
+                return Err(JavacTestError::UnexpectedSpan {
+                    expected_start: start,
+                    expected_end: end,
+                    actual_start: reference.start,
+                    actual_end: reference.end,
+                });
+            }
+        }
+
+        let uses: Vec<_> = image.uses().collect::<Result<Vec<_>, _>>()?;
+        let constructors: Vec<_> = uses
+            .iter()
+            .filter(|row| row.kind == UseTag::ConstructorCall)
+            .collect();
+        if constructors.len() != METHOD_REF_CONSTRUCTOR_USES.len() {
+            return Err(JavacTestError::Missing {
+                fact: "exact constructor-reference use count",
+            });
+        }
+        for (constructor, expected) in constructors.iter().zip(METHOD_REF_CONSTRUCTOR_USES) {
+            assert_atom(constructor.declaring, expected.declaring)?;
+            assert_atom(
+                constructor.name.ok_or(JavacTestError::Missing {
+                    fact: "constructor use name",
+                })?,
+                "<init>",
+            )?;
+            if (constructor.start, constructor.end) != (expected.start, expected.end) {
+                return Err(JavacTestError::UnexpectedSpan {
+                    expected_start: expected.start,
+                    expected_end: expected.end,
+                    actual_start: constructor.start,
+                    actual_end: constructor.end,
+                });
+            }
+            let owner_declaration = image
+                .declarations()
+                .nth(constructor.owner as usize)
+                .ok_or(JavacTestError::Missing {
+                    fact: "constructor use owner declaration",
+                })??;
+            assert_atom(owner_declaration.name, "viaRef")?;
+        }
+        Ok(())
+    })();
+    outcome?;
+    temporary.remove()
+}
 
 #[test]
 fn javac_image_attributes_nested_and_anonymous_calls_to_declared_owner()
@@ -521,13 +692,14 @@ fn run_producer(
     Ok(output)
 }
 
-fn run_producer_single(
+fn run_producer_binding(
     jdk: &Path,
     classes: &Path,
     temporary: &Path,
     source: &str,
+    output_name: &str,
 ) -> Result<PathBuf, JavacTestError> {
-    let output = temporary.join("package-info.image");
+    let output = temporary.join(output_name);
     command(
         Command::new(jdk.join("bin/java"))
             .args(["--add-modules", "jdk.compiler,jdk.javadoc", "-cp"])
@@ -541,6 +713,15 @@ fn run_producer_single(
         "java",
     )?;
     Ok(output)
+}
+
+fn run_producer_single(
+    jdk: &Path,
+    classes: &Path,
+    temporary: &Path,
+    source: &str,
+) -> Result<PathBuf, JavacTestError> {
+    run_producer_binding(jdk, classes, temporary, source, "package-info.image")
 }
 
 fn command(command: &mut Command, program: &'static str) -> Result<(), JavacTestError> {
