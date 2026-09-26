@@ -43,5 +43,10 @@ name = "package_publication"
 path = "benches/package_publication.rs"
 harness = false
 
+[[bench]]
+name = "manifest_residence"
+path = "benches/manifest_residence.rs"
+harness = false
+
 [lints]
 workspace = true

@@ -30,12 +30,15 @@ pub(in crate::builtin) struct CommandAdapter {
     search_snapshots: super::super::query::SearchSnapshotOwner,
     remote_semantic: super::super::query::RemoteSemantic,
     published: Option<super::super::view_publish::PublishedRoots>,
+    manifests: super::super::local_manifest::LocalManifestResidence,
     dependencies: Option<ResidentDependencies>,
 }
 
 struct ResidentDependencies {
     stamp: [u8; 32],
     local_witness: [u8; 32],
+    catalog: Vec<backend_engine::RegistryPackageRecord>,
+    registry_facts: Vec<backend_engine::PackageDependencySourceFacts>,
     facts: Vec<backend_engine::PackageDependencySourceFacts>,
     index: backend_library::PackageGraphIndex,
     synced_root: Option<[u8; 32]>,
@@ -59,6 +62,7 @@ impl CommandAdapter {
             search_snapshots,
             remote_semantic,
             published,
+            manifests: super::super::local_manifest::LocalManifestResidence::default(),
             dependencies: None,
         }
     }
@@ -461,17 +465,15 @@ impl CommandAdapter {
                     },
                 ),
             surface => {
-                let catalog = self
-                    .registry
-                    .as_mut()
-                    .map_or(Ok(Vec::new()), RegistryGateway::catalog)
+                let roots = local_project_roots(daemon)?;
+                self.manifests
+                    .refresh(roots.iter().map(std::path::PathBuf::as_path))
                     .map_err(BuiltinModelError)?;
+                let local_witness = self.manifests.witness();
                 let stamp = match self.registry.as_mut() {
                     Some(registry) => registry.publication_stamp().map_err(BuiltinModelError)?,
                     None => [0; 32],
                 };
-                let local_facts = local_project_dependencies(daemon)?;
-                let local_witness = dependency_witness(&local_facts);
                 let root = *daemon
                     .engine()
                     .daemon()
@@ -479,20 +481,46 @@ impl CommandAdapter {
                     .view()
                     .root()
                     .as_bytes();
-                let refresh = self.dependencies.as_ref().is_none_or(|cached| {
-                    cached.stamp != stamp || cached.local_witness != local_witness
-                });
-                if refresh {
-                    let mut facts = self
-                        .registry
-                        .as_mut()
-                        .map_or_else(Vec::new, RegistryGateway::dependency_facts);
-                    facts.extend(local_facts);
+                let stamp_changed = self
+                    .dependencies
+                    .as_ref()
+                    .is_none_or(|cached| cached.stamp != stamp);
+                let local_changed = self
+                    .dependencies
+                    .as_ref()
+                    .is_none_or(|cached| cached.local_witness != local_witness);
+                if stamp_changed || local_changed {
+                    let (catalog, registry_facts, synced_root) = if stamp_changed {
+                        let catalog = self
+                            .registry
+                            .as_mut()
+                            .map_or(Ok(Vec::new()), RegistryGateway::catalog)
+                            .map_err(BuiltinModelError)?;
+                        let registry_facts = self
+                            .registry
+                            .as_mut()
+                            .map_or_else(Vec::new, RegistryGateway::dependency_facts);
+                        let synced_root = self
+                            .dependencies
+                            .as_ref()
+                            .and_then(|cached| cached.synced_root);
+                        (catalog, registry_facts, synced_root)
+                    } else {
+                        let cached = self.dependencies.take().ok_or_else(|| {
+                            BuiltinModelError(
+                                "dependency index disappeared during a local refresh".to_owned(),
+                            )
+                        })?;
+                        (cached.catalog, cached.registry_facts, cached.synced_root)
+                    };
+                    let mut facts = registry_facts.clone();
+                    facts.extend(self.manifests.facts().cloned());
                     let index = backend_library::PackageGraphIndex::from_facts(&facts);
-                    let synced_root = self.dependencies.as_ref().and_then(|cached| cached.synced_root);
                     self.dependencies = Some(ResidentDependencies {
                         stamp,
                         local_witness,
+                        catalog,
+                        registry_facts,
                         facts,
                         index,
                         synced_root,
@@ -518,7 +546,7 @@ impl CommandAdapter {
                 let reply = self.product_state.execute(
                     surface,
                     daemon.engine().daemon().library().view(),
-                    &catalog,
+                    &cached.catalog,
                     &cached.facts,
                     &cached.index,
                     workspace.as_deref(),
@@ -813,51 +841,18 @@ fn commit_builtin_intent(
     }
 }
 
-fn local_project_dependencies(
-    daemon: &ProductDaemon,
-) -> Result<Vec<backend_engine::PackageDependencySourceFacts>, BuiltinModelError> {
+fn local_project_roots(daemon: &ProductDaemon) -> Result<Vec<std::path::PathBuf>, BuiltinModelError> {
     let indexed =
         super::super::read_indexed_sources(&daemon.engine().daemon().owner().snapshot())?;
-    let mut facts = Vec::new();
+    let mut roots = Vec::new();
     for project in indexed.projects.values() {
         if project.label.starts_with("pkg:") {
             continue;
         }
         let project_root = Path::new(&project.label);
-        if !project_root.is_dir() {
-            continue;
-        }
-        match super::super::local_manifest::local_dependency_facts(project_root) {
-            Ok(Some(fact)) => facts.push(fact),
-            Ok(None) => {}
-            Err(error) => return Err(BuiltinModelError(error)),
+        if project_root.is_dir() {
+            roots.push(project_root.to_path_buf());
         }
     }
-    Ok(facts)
-}
-
-fn dependency_witness(facts: &[backend_engine::PackageDependencySourceFacts]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.local-dependency.witness.v1\0");
-    for (source, state) in facts {
-        hasher.update(source.as_str().as_bytes());
-        hasher.update(&[0]);
-        match state {
-            backend_library::DependencyFacts::Known(rows) => {
-                hasher.update(&[1]);
-                for row in rows.iter() {
-                    hasher.update(&row.facts_version);
-                }
-            }
-            backend_library::DependencyFacts::Unknown(reason) => {
-                hasher.update(&[2]);
-                hasher.update(reason.as_str().as_bytes());
-            }
-            backend_library::DependencyFacts::Unavailable(reason) => {
-                hasher.update(&[3]);
-                hasher.update(reason.as_str().as_bytes());
-            }
-        }
-    }
-    *hasher.finalize().as_bytes()
+    Ok(roots)
 }

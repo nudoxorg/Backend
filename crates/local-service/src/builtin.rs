@@ -1152,6 +1152,14 @@ pub fn measure_package_publication() {
     view_publish::measure_package_publication();
 }
 
+/// Times local manifest parsing against a byte-identical refresh.
+///
+/// Fixture construction happens before the timer. The printed line is the
+/// release measurement for resident local dependency facts.
+pub fn measure_manifest_residence() {
+    local_manifest::measure_manifest_residence();
+}
+
 /// Starts the compiled locald profile. It does all startup work before the
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]
