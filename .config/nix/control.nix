@@ -759,11 +759,6 @@ in
             test-group = "display-global";
           }
           {
-            filter = "test(/loom|contention|concurrent/)";
-            test-group = "concurrency-proof";
-            priority = 60;
-          }
-          {
             filter = "test(/corpus|multilingual|native|real_package/)";
             test-group = "native-compiler";
             threads-required = 2;
@@ -826,9 +821,12 @@ in
         };
       };
     };
+    # No `concurrency-proof` group: on the Linux worker none of its 13
+    # members (test(/loom|contention|concurrent/)) ever started, in builds
+    # 2321, 2378, and 2390 alike, so every PR run ended with 13 unfinished
+    # tests. They run in the shared pool instead.
     test-groups = {
       allocator-global.max-threads = 1;
-      concurrency-proof.max-threads = 2;
       display-global.max-threads = 1;
       live-qdrant.max-threads = 1;
       # Resource tokens, not OS threads. Native tests request two tokens, so
