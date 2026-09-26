@@ -7,11 +7,20 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
+/// One whitespace clause whose lexical term is the leaf and whose owner
+/// segments must match the presentation parent chain.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct QualifiedClause {
+    leaf: String,
+    owners: Vec<String>,
+}
+
 /// A validated bounded local text query.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalQuery {
     lexical: lexical::Query,
     limit: usize,
+    qualified: Vec<QualifiedClause>,
 }
 
 impl LocalQuery {
@@ -33,12 +42,22 @@ impl LocalQuery {
         if limit == 0 || limit > limits.max_page {
             return Err(QueryError::InvalidLimit);
         }
-        let terms = text
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let mut terms = Vec::new();
+        let mut qualified = Vec::new();
+        for clause in text.split_whitespace() {
+            if let Some(parsed) = parse_qualified_clause(clause) {
+                terms.push(parsed.leaf.clone());
+                qualified.push(parsed);
+            } else {
+                terms.push(clause.to_owned());
+            }
+        }
         let lexical = lexical::Query::prefix(terms, limits).map_err(QueryError::Lexical)?;
-        Ok(Self { lexical, limit })
+        Ok(Self {
+            lexical,
+            limit,
+            qualified,
+        })
     }
 
     /// Maximum displayed rows.
@@ -50,6 +69,27 @@ impl LocalQuery {
     pub(crate) const fn lexical(&self) -> &lexical::Query {
         &self.lexical
     }
+
+    pub(crate) fn qualified_clauses(&self) -> &[QualifiedClause] {
+        &self.qualified
+    }
+}
+
+fn parse_qualified_clause(clause: &str) -> Option<QualifiedClause> {
+    if !clause.contains('.') && !clause.contains("::") {
+        return None;
+    }
+    let normalized = clause.replace("::", ".");
+    let segments: Vec<&str> = normalized.split('.').collect();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        return None;
+    }
+    let leaf = segments.last()?.to_ascii_lowercase();
+    let owners = segments[..segments.len() - 1]
+        .iter()
+        .map(|segment| segment.to_ascii_lowercase())
+        .collect();
+    Some(QualifiedClause { leaf, owners })
 }
 
 /// Query lane identity.
@@ -436,11 +476,26 @@ impl QueryCoordinator {
                 break;
             }
         }
-        let total_matches = hits.len();
-        let matches = hits
+        let mut matches = hits
             .into_iter()
             .map(|hit| (hit.document, hit.relevance))
             .collect::<Vec<_>>();
+        if !query.qualified_clauses().is_empty() {
+            let presentations = presentation_index(&self.corpus.semantic_evidence);
+            matches.retain(|(entity, _)| {
+                self.corpus
+                    .entities
+                    .get(entity)
+                    .is_some_and(|row_id| {
+                        qualified_row_matches(
+                            row_id.stable_key().as_str(),
+                            query.qualified_clauses(),
+                            &presentations,
+                        )
+                    })
+            });
+        }
+        let total_matches = matches.len();
         let rows = matches
             .iter()
             .take(query.limit())
@@ -552,6 +607,59 @@ impl QueryCoordinator {
             .is_some_and(|selected| *selected == entity)
             .then_some(candidate)
     }
+}
+
+fn presentation_index<'a>(
+    semantic_evidence: &'a SemanticQueryCorpus,
+) -> BTreeMap<&'a str, &'a SemanticQueryPresentation> {
+    semantic_evidence
+        .facts()
+        .iter()
+        .map(|fact| {
+            let presentation = fact.presentation();
+            (presentation.id.as_str(), presentation)
+        })
+        .collect()
+}
+
+fn qualified_row_matches(
+    row_id: &str,
+    clauses: &[QualifiedClause],
+    presentations: &BTreeMap<&str, &SemanticQueryPresentation>,
+) -> bool {
+    clauses.iter().all(|clause| {
+        qualified_clause_matches(row_id, clause, presentations)
+    })
+}
+
+fn qualified_clause_matches(
+    row_id: &str,
+    clause: &QualifiedClause,
+    presentations: &BTreeMap<&str, &SemanticQueryPresentation>,
+) -> bool {
+    let Some(mut current) = presentations.get(row_id).copied() else {
+        return false;
+    };
+    if !current
+        .name
+        .to_ascii_lowercase()
+        .starts_with(clause.leaf.as_str())
+    {
+        return false;
+    }
+    for owner in clause.owners.iter().rev() {
+        let Some(parent_id) = current.parent.as_deref() else {
+            return false;
+        };
+        let Some(parent) = presentations.get(parent_id).copied() else {
+            return false;
+        };
+        if parent.name.to_ascii_lowercase() != *owner {
+            return false;
+        }
+        current = parent;
+    }
+    true
 }
 
 fn collect_selected_documents(

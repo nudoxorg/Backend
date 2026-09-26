@@ -140,6 +140,7 @@ fn compose(
     result: &semantic::VectorSearchResult,
 ) -> Composition {
     let lexical = answer.matches.iter().copied().collect::<BTreeMap<_, _>>();
+    let qualified = !answer.query.qualified_clauses().is_empty();
     let mut ranked = Vec::with_capacity(answer.query.limit());
     let mut admitted = BTreeSet::new();
     let mut semantic_admitted = 0usize;
@@ -161,6 +162,10 @@ fn compose(
         };
         let relevance = lexical.get(&entity).copied();
         if relevance.is_none() {
+            if qualified {
+                suppressed = suppressed.saturating_add(1);
+                continue;
+            }
             match policy {
                 CompositionPolicy::RerankLexical => {
                     suppressed = suppressed.saturating_add(1);
