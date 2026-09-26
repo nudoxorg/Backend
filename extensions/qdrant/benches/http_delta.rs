@@ -3,6 +3,9 @@
 //! A cold batch misses every coordinate and pays for a retrieve plus a full put.
 //! A warm batch retrieves matching keys and writes nothing. A one-point delta
 //! retrieves the resident batch and puts only the missing point.
+//!
+//! Retrieve honors `with_vector`. The production client asks for payload only,
+//! so a warm readback is the payload, not a copy of the stored vectors.
 #![allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
@@ -191,12 +194,19 @@ fn serve(ledger: Arc<Mutex<Ledger>>) -> String {
             let response = if first.starts_with("POST ") {
                 let request: serde_json::Value =
                     serde_json::from_slice(&body).expect("retrieve JSON");
+                let with_vector = request["with_vector"].as_bool().unwrap_or(true);
                 let points = request["ids"]
                     .as_array()
                     .into_iter()
                     .flatten()
                     .filter_map(|id| id.as_str())
                     .filter_map(|id| stored.get(id).cloned())
+                    .map(|mut point| {
+                        if !with_vector && let Some(object) = point.as_object_mut() {
+                            object.remove("vector");
+                        }
+                        point
+                    })
                     .collect::<Vec<_>>();
                 let response = serde_json::json!({"result": points}).to_string();
                 ledger
@@ -318,6 +328,11 @@ fn run(size: usize) {
         assert_eq!(delta_put.points, 1);
         assert!(delta_put.bytes < cold_put.bytes);
         assert!(warm_read > cold_read);
+        assert!(
+            warm_read < cold_put.bytes,
+            "a payload-only readback must be smaller than the vector put: warm {warm_read} cold put {}",
+            cold_put.bytes
+        );
         if sample >= WARMUPS {
             let recorded = sample - WARMUPS;
             cold[recorded] = cold_elapsed;
