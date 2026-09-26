@@ -269,6 +269,16 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 .iter()
                 .position(|fact| fact.identity == Some(identity))
         });
+        // A name-less foreign value-authority row exists only so a later
+        // value reference can read declaration kind across a header. It must
+        // never become the slot a main-source definition overwrites.
+        let existing = existing.and_then(|index| {
+            if foreign_value_authority_stub(&self.scratch.declarations[index]) {
+                None
+            } else {
+                Some(index)
+            }
+        });
         if existing.is_some_and(|index| {
             !TranslationUnit::is_definition(cursor)
                 || self.scratch.declarations[index].definition == DefinitionState::Definition
@@ -417,10 +427,10 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         })
     }
 
-    /// Retains one foreign variable or enumerator authority row when a value
-    /// reference resolves across a project header. The row carries identity
-    /// and kind only; it is not a main-source declaration fact and never
-    /// becomes a pushed entity.
+    /// Retains one foreign variable, enumerator, function, or method authority
+    /// row when a value reference resolves across a project header. The row
+    /// carries identity and kind only; it is not a main-source declaration
+    /// fact and never becomes a pushed entity.
     fn ensure_foreign_value_authority(&mut self, cursor: CXCursor) -> Result<(), CollectError> {
         let referenced = TranslationUnit::referenced(cursor);
         if TranslationUnit::is_null_cursor(referenced) {
@@ -430,7 +440,13 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             return Ok(());
         }
         let kind = declaration_kind(TranslationUnit::cursor_kind(referenced));
-        if !matches!(kind, DeclarationKind::Variable | DeclarationKind::Enumerator) {
+        if !matches!(
+            kind,
+            DeclarationKind::Variable
+                | DeclarationKind::Enumerator
+                | DeclarationKind::Function
+                | DeclarationKind::Method
+        ) {
             return Ok(());
         }
         let Some(identity) = TranslationUnit::cursor_identity(referenced) else {
@@ -871,6 +887,20 @@ fn push<Fact>(
         capacity: slots.len(),
     })?;
     Ok(())
+}
+
+/// True when one declaration row was minted by
+/// [`Collector::ensure_foreign_value_authority`] for a cross-header value
+/// reference. The row carries identity and kind only and must never be
+/// upgraded into a named main-source declaration.
+const fn foreign_value_authority_stub(fact: &DeclarationFact) -> bool {
+    fact.name.is_none()
+        && fact.span.start == 0
+        && fact.span.end == 0
+        && matches!(
+            fact.kind,
+            DeclarationKind::Function | DeclarationKind::Method
+        )
 }
 
 /// Borrows an initialized prefix while retaining an impossible internal discrepancy as typed data.

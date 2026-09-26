@@ -148,7 +148,7 @@ fn cross_file_value_use_joins_on_header_package_key() -> Result<(), TestError> {
     let root = unique_temp_project()?;
     let header = root.join("include/workout.h");
     let entry = root.join("src/drive.cpp");
-    let source = b"#include \"workout.h\"\n#include <cstdio>\nvoid drive(Workout item) { int n = limit; int c = Red; item.set_note(); int x = item.note; printf(\"x\"); }\n";
+    let source = b"#include \"workout.h\"\n#include <cstdio>\nvoid drive(Workout item) { int n = limit; int c = Red; item.set_note(); auto mfp = &Workout::set_note; int x = item.note; printf(\"x\"); }\n";
     fs::write(
         &header,
         b"struct Workout { int note; void set_note(); };\nenum Color { Red = 1 };\nextern int limit;\n",
@@ -179,6 +179,7 @@ fn cross_file_value_use_joins_on_header_package_key() -> Result<(), TestError> {
 
     let mut limit_count = 0_u32;
     let mut red_count = 0_u32;
+    let mut set_note_value_count = 0_u32;
     let mut field_read = false;
     let mut method_call = false;
     let mut printf_package_value = false;
@@ -212,6 +213,11 @@ fn cross_file_value_use_joins_on_header_package_key() -> Result<(), TestError> {
                                 return Err(TestError::Missing("Red Variant kind"));
                             }
                             red_count += 1;
+                        } else if key.path == "set_note" && key.display == "set_note" {
+                            if key.kind != Some(EntityKind::Function) {
+                                return Err(TestError::Missing("set_note Function kind"));
+                            }
+                            set_note_value_count += 1;
                         } else if key.path == "printf" {
                             printf_package_value = true;
                         }
@@ -287,6 +293,207 @@ fn cross_file_value_use_joins_on_header_package_key() -> Result<(), TestError> {
     if red_count != 1 {
         return Err(TestError::Missing(
             "exactly one cross-file Red Variant occurrence on include/workout.h",
+        ));
+    }
+    if set_note_value_count != 1 {
+        return Err(TestError::Missing(
+            "exactly one cross-file set_note Function value occurrence on include/workout.h",
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn same_file_function_definition_does_not_stitch_header_authority_row() -> Result<(), TestError> {
+    if !clang_available() {
+        eprintln!(
+            "clang unavailable; skipping same_file_function_definition_does_not_stitch_header_authority_row"
+        );
+        return Ok(());
+    }
+
+    let root = unique_temp_project()?;
+    let header = root.join("include/workout.h");
+    let entry = root.join("src/drive.cpp");
+    let source = b"#include \"workout.h\"\nvoid set_note() {}\nvoid drive() { void (*fp)() = set_note; }\n";
+    fs::write(&header, b"void set_note();\n")
+        .map_err(|_| TestError::Missing("header write"))?;
+    fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
+    let database = format!(
+        "[{{\"directory\":\"{directory}\",\"file\":\"src/drive.cpp\",\"arguments\":[\"clang++\",\"-Iinclude\",\"-std=c++23\",\"-c\",\"src/drive.cpp\"]}}]",
+        directory = root.base.display(),
+    );
+    fs::write(root.join("compile_commands.json"), database)
+        .map_err(|_| TestError::Missing("database write"))?;
+
+    let work = root.join("work");
+    fs::create_dir_all(&work).map_err(|_| TestError::Missing("work dir"))?;
+    let project =
+        ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
+    let mut output = vec![0xa5_u8; 65_536];
+    let view = lower_with_authority(source, &project, &work, &mut output)?;
+
+    let mut set_note_fn_count = 0_u32;
+    for entity in view.entities() {
+        if entity.kind != EntityKind::Function {
+            continue;
+        }
+        let atom = view
+            .atoms()
+            .nth(entity.name.raw as usize)
+            .ok_or(TestError::Missing("entity atom"))?;
+        if atom.bytes == b"set_note" {
+            set_note_fn_count += 1;
+        }
+    }
+    if set_note_fn_count != 1 {
+        return Err(TestError::Missing(
+            "exactly one set_note Function entity in the translation unit",
+        ));
+    }
+
+    let drive_fn = entity_of(&view, b"drive", EntityKind::Function)?;
+    let set_note_fn = entity_of(&view, b"set_note", EntityKind::Function)?;
+
+    let mut local_value = false;
+    let mut package_value = 0_u32;
+    for row in view
+        .occurrences()
+        .ok_or(TestError::Missing("occurrences"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| TestError::Missing("occurrence decode"))?
+    {
+        if row.owner != drive_fn {
+            continue;
+        }
+        if row.occurrence.kind != backend_semantic::ir::ReferenceKind::VariableUse {
+            continue;
+        }
+        match row.occurrence.target {
+            OccurrenceTarget::Local(entity) if entity == set_note_fn => {
+                local_value = true;
+            }
+            OccurrenceTarget::Foreign(key) => {
+                let ForeignOrigin::Package(lineage) = key.origin else {
+                    continue;
+                };
+                if lineage.ecosystem == "c"
+                    && lineage.name == "include/workout.h"
+                    && key.path == "set_note"
+                {
+                    package_value += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !local_value {
+        return Err(TestError::Missing(
+            "set_note value use must stay Local to the same-file definition",
+        ));
+    }
+    if package_value != 0 {
+        return Err(TestError::Missing(
+            "header authority row must not mint a package set_note value occurrence",
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn same_file_function_prototype_after_value_use_becomes_entity() -> Result<(), TestError> {
+    if !clang_available() {
+        eprintln!(
+            "clang unavailable; skipping same_file_function_prototype_after_value_use_becomes_entity"
+        );
+        return Ok(());
+    }
+
+    let root = unique_temp_project()?;
+    let header = root.join("include/workout.h");
+    let entry = root.join("src/drive.cpp");
+    let source = b"#include \"workout.h\"\nvoid drive() { void (*fp)() = set_note; }\nvoid set_note(void);\n";
+    fs::write(&header, b"void set_note();\n")
+        .map_err(|_| TestError::Missing("header write"))?;
+    fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
+    let database = format!(
+        "[{{\"directory\":\"{directory}\",\"file\":\"src/drive.cpp\",\"arguments\":[\"clang++\",\"-Iinclude\",\"-std=c++23\",\"-c\",\"src/drive.cpp\"]}}]",
+        directory = root.base.display(),
+    );
+    fs::write(root.join("compile_commands.json"), database)
+        .map_err(|_| TestError::Missing("database write"))?;
+
+    let work = root.join("work");
+    fs::create_dir_all(&work).map_err(|_| TestError::Missing("work dir"))?;
+    let project =
+        ClangProject::open(&root, &entry).map_err(|_| TestError::Missing("project open"))?;
+    let mut output = vec![0xa5_u8; 65_536];
+    let view = lower_with_authority(source, &project, &work, &mut output)?;
+
+    let mut set_note_fn_count = 0_u32;
+    for entity in view.entities() {
+        if entity.kind != EntityKind::Function {
+            continue;
+        }
+        let atom = view
+            .atoms()
+            .nth(entity.name.raw as usize)
+            .ok_or(TestError::Missing("entity atom"))?;
+        if atom.bytes == b"set_note" {
+            set_note_fn_count += 1;
+        }
+    }
+    if set_note_fn_count != 1 {
+        return Err(TestError::Missing(
+            "exactly one set_note Function entity in the translation unit",
+        ));
+    }
+
+    let drive_fn = entity_of(&view, b"drive", EntityKind::Function)?;
+    let set_note_fn = entity_of(&view, b"set_note", EntityKind::Function)?;
+
+    let mut local_value = false;
+    let mut package_value = 0_u32;
+    for row in view
+        .occurrences()
+        .ok_or(TestError::Missing("occurrences"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| TestError::Missing("occurrence decode"))?
+    {
+        if row.owner != drive_fn {
+            continue;
+        }
+        if row.occurrence.kind != backend_semantic::ir::ReferenceKind::VariableUse {
+            continue;
+        }
+        match row.occurrence.target {
+            OccurrenceTarget::Local(entity) if entity == set_note_fn => {
+                local_value = true;
+            }
+            OccurrenceTarget::Foreign(key) => {
+                let ForeignOrigin::Package(lineage) = key.origin else {
+                    continue;
+                };
+                if lineage.ecosystem == "c"
+                    && lineage.name == "include/workout.h"
+                    && key.path == "set_note"
+                {
+                    package_value += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !local_value {
+        return Err(TestError::Missing(
+            "set_note value use must stay Local to the same-file prototype",
+        ));
+    }
+    if package_value != 0 {
+        return Err(TestError::Missing(
+            "header authority row must not mint a package set_note value occurrence",
         ));
     }
     Ok(())
