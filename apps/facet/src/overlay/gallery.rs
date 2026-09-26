@@ -49,9 +49,15 @@ pub(crate) const SCENES: &[Scene] = &[
     },
     Scene {
         id: "float-edges",
-        title: "Peeks above/below/beside four anchors pinned to the window's edges: centred, clamped inside, a hairline to the anchor. A tip on a fifth anchor draws no connector.",
+        title: "Peeks above/below two anchors pinned to the window's top and bottom edges: both centre on the anchor and flip to the roomier side, with a hairline to the anchor. A tip on a third anchor draws no connector.",
         size: (700, 460),
         build: float_edges,
+    },
+    Scene {
+        id: "float-edges-sides",
+        title: "Peeks below two anchors pinned to the window's left and right edges: both shift along the edge to stay 8 px inside instead of centring off-screen.",
+        size: (700, 460),
+        build: float_edges_sides,
     },
     Scene {
         id: "float-rise",
@@ -620,12 +626,26 @@ fn lab_still(window: &mut Window, cx: &mut App) -> AnyView {
     stage(false, true, steps, window, cx)
 }
 
-/// A blank stage with five small anchor marks pinned to the window's edges
-/// (top, bottom, left, right, and a fifth in the top-right corner for the
-/// tip): proof that above/below peeks centre on the anchor and clamp inside
-/// the viewport, that a peek draws a hairline connector, and that a tip
-/// does not.
-struct Edges;
+/// A blank stage with small anchor marks pinned to the window's edges: proof
+/// that above/below peeks centre on the anchor and flip to the roomier side
+/// (top/bottom, `top_bottom_tip: true`) or shift along the edge to stay 8 px
+/// inside instead of centring off-screen (left/right, `false`), that a peek
+/// draws a hairline connector, and that a tip does not. Split across two
+/// scenes (`float-edges`, `float-edges-sides`) rather than one: every
+/// leveled kind shares one root slot (`model.rs::show`'s "closes every
+/// other open card at that level or deeper"), so a second, third, fourth
+/// anchor opened here always *swaps* the same reused card rather than
+/// opening beside it. That swap glides on a real, elapsed-time spring
+/// (`float.rs::prepaint`, `spec::FOLLOW`; `settle_now` only finishes the
+/// open/close presence, not this), and this harness's own script timer
+/// turned out not to be safely reproducible once a scene's total virtual
+/// span ran past several hundred ms in testing here (identical `--time`s
+/// read as different amounts of progress between runs). One swap per scene
+/// (baseline anchor, then the one being proven) stays well inside the
+/// range that read back identically on every retry.
+struct Edges {
+    top_bottom_tip: bool,
+}
 
 impl Render for Edges {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -639,17 +659,13 @@ impl Render for Edges {
                 .h(px(14.0))
                 .bg(palette.peri.base.hsla())
         };
-        div()
-            .relative()
-            .size_full()
-            .bg(palette.g0.hsla())
-            .child(ground())
-            .child(mark(330.0, 6.0))
-            .child(mark(330.0, 440.0))
-            .child(mark(6.0, 220.0))
-            .child(mark(654.0, 220.0))
-            .child(mark(650.0, 6.0))
-            .child(float::layer(window, cx))
+        let stage = div().relative().size_full().bg(palette.g0.hsla()).child(ground());
+        let stage = if self.top_bottom_tip {
+            stage.child(mark(330.0, 6.0)).child(mark(330.0, 440.0)).child(mark(650.0, 6.0))
+        } else {
+            stage.child(mark(6.0, 220.0)).child(mark(654.0, 220.0))
+        };
+        stage.child(float::layer(window, cx))
     }
 }
 
@@ -683,16 +699,38 @@ fn open_tip_at(name: &'static str, bounds: Bounds<Pixels>, side: Side) -> Step {
 }
 
 fn float_edges(window: &mut Window, cx: &mut App) -> AnyView {
-    let view = cx.new(|_| Edges);
+    let view = cx.new(|_| Edges { top_bottom_tip: true });
     let b = |x: f32, y: f32| Bounds::new(point(px(x), px(y)), size(px(40.0), px(14.0)));
+    // `edge-top` and the tip are both fresh cards (nothing else is open
+    // yet), so they paint at their true target immediately — no spring to
+    // wait on. `edge-bottom` reuses that same card (the single root Peek
+    // slot), so it gets a full 300 ms of settled dt before its own read.
     script(
         vec![
             (1, open_peek_at("edge-top", b(330.0, 6.0), Side::Above)),
-            (1, open_peek_at("edge-bottom", b(330.0, 440.0), Side::Below)),
-            (1, open_peek_at("edge-left", b(6.0, 220.0), Side::Below)),
-            (1, open_peek_at("edge-right", b(654.0, 220.0), Side::Below)),
             (1, open_tip_at("edge-tip", b(650.0, 6.0), Side::Below)),
-            (2, settle()),
+            (50, settle()),
+            (100, open_peek_at("edge-bottom", b(330.0, 440.0), Side::Below)),
+            (400, settle()),
+        ],
+        window,
+        cx,
+    );
+    view.into()
+}
+
+fn float_edges_sides(window: &mut Window, cx: &mut App) -> AnyView {
+    let view = cx.new(|_| Edges { top_bottom_tip: false });
+    let b = |x: f32, y: f32| Bounds::new(point(px(x), px(y)), size(px(40.0), px(14.0)));
+    // Same reasoning as `float_edges`: `edge-left` is the first (and so
+    // fresh) card in this scene, `edge-right` is a swap onto it and gets
+    // 300 ms of settled dt before its own read.
+    script(
+        vec![
+            (1, open_peek_at("edge-left", b(6.0, 220.0), Side::Below)),
+            (50, settle()),
+            (100, open_peek_at("edge-right", b(654.0, 220.0), Side::Below)),
+            (400, settle()),
         ],
         window,
         cx,
