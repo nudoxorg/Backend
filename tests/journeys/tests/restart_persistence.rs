@@ -19,8 +19,8 @@ use backend_engine::registry::{
     storage_root, RegistryEcosystem, RegistryEndpoint, RegistrySource, REGISTRY_SOURCE_ROOT_VERSION,
 };
 use backend_library::{
-    CursorRead, GraphValue, PackageReference, ProjectName, SurfaceCommand, SurfaceReply,
-    ViewRevision, encode_id,
+    CursorRead, GraphValue, PackageReference, PageTerminal, ProjectName, SurfaceCommand,
+    SurfaceReply, ViewRevision, encode_id,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -680,33 +680,50 @@ struct SurfaceEvidence {
     regressions: RegressionSnapshot,
 }
 
+/// Reads every page of the declaration query. Row order follows stable keys
+/// derived from absolute coordinates, so which rows land on the first page
+/// depends on the fixture's temporary path; a regression row can sit on any
+/// page.
 fn graph_query_evidence(session: &mut Session) -> (ViewRevision, BTreeSet<String>) {
-    let page = session
-        .graph_query(
-            "{ Declaration { coordinate @output } }".to_owned(),
-            BTreeMap::<String, GraphValue>::new(),
-            40,
-            None,
-            false,
-        )
-        .expect("execute graph query after restart");
-    assert!(
-        !page.rows.is_empty(),
-        "graph query returned no declarations"
-    );
-    let coordinates = page
-        .rows
-        .iter()
-        .filter_map(|row| {
+    let mut coordinates = BTreeSet::new();
+    let mut continuation = None;
+    let mut revision = None;
+    loop {
+        let page = session
+            .graph_query(
+                "{ Declaration { coordinate @output } }".to_owned(),
+                BTreeMap::<String, GraphValue>::new(),
+                40,
+                continuation.take(),
+                false,
+            )
+            .expect("execute graph query after restart");
+        if let Some(first) = revision {
+            assert_eq!(page.revision, first, "graph query pages crossed revisions");
+        }
+        revision = Some(page.revision);
+        coordinates.extend(page.rows.iter().filter_map(|row| {
             row.fields()
                 .iter()
                 .find_map(|(name, value)| match (name.as_str(), value) {
                     ("coordinate", GraphValue::String(coordinate)) => Some(coordinate.clone()),
                     _ => None,
                 })
-        })
-        .collect();
-    (page.revision, coordinates)
+        }));
+        match page.terminal {
+            PageTerminal::Complete => break,
+            PageTerminal::More(next) => continuation = Some(next),
+            PageTerminal::Cancelled => panic!("graph query was cancelled after restart"),
+        }
+    }
+    assert!(
+        !coordinates.is_empty(),
+        "graph query returned no declarations"
+    );
+    (
+        revision.expect("graph query produced at least one page"),
+        coordinates,
+    )
 }
 
 fn surface_evidence(
