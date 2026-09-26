@@ -97,7 +97,8 @@ impl PreparedFactsUpdate {
 /// bounded by the store's fixed canonical tree height and leaf cut policy.
 #[derive(Clone, Debug)]
 pub(in crate::registry) struct FactsMerkleMap {
-    map: OrderedMap,
+    /// Shared canonical ordered tree for one facts generation.
+    pub(super) map: OrderedMap,
 }
 
 /// A canonical B-tree proof never exceeds this path budget on the supported
