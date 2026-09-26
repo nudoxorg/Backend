@@ -1,8 +1,8 @@
 use super::super::read_indexed_sources;
 use super::super::view_build;
 use super::super::view_build::{
-    ProjectCallableIndex, foreign_namespace_call_retarget, foreign_namespace_field_retarget,
-    foreign_package_call_retarget, foreign_package_field_retarget, join_project_field,
+    ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
+    join_project_field,
     join_project_mention, join_project_value, project_paths_for_package,
 };
 use super::super::{
@@ -369,27 +369,7 @@ fn semantic_link_row_id(
                         super::super::view_build::semantic_symbol(package, identity),
                     )));
             } else if matches!(link_kind, LinkKind::Reads) {
-                let identity = if let Some(identity) = foreign_package_field_retarget(
-                    image,
-                    external,
-                    caller_path,
-                    project_paths,
-                    callable_index,
-                )? {
-                    Some(identity)
-                } else {
-                    foreign_namespace_field_retarget(image, external, callable_index)?
-                };
-                if let Some(identity) = identity {
-                    return Ok(view
-                        .row(backend_engine::RowId::Symbol(
-                            super::super::view_build::semantic_symbol(package, identity),
-                        ))
-                        .map(|_| backend_engine::RowId::Symbol(
-                            super::super::view_build::semantic_symbol(package, identity),
-                        )));
-                }
-                if let Some(identity) = join_project_value(
+                let identity = if let Some(identity) = join_project_field(
                     image,
                     link_kind,
                     external,
@@ -398,6 +378,19 @@ fn semantic_link_row_id(
                     callable_index,
                     published,
                 )? {
+                    Some(identity)
+                } else {
+                    join_project_value(
+                        image,
+                        link_kind,
+                        external,
+                        caller_path,
+                        project_paths,
+                        callable_index,
+                        published,
+                    )?
+                };
+                if let Some(identity) = identity {
                     return Ok(view
                         .row(backend_engine::RowId::Symbol(
                             super::super::view_build::semantic_symbol(package, identity),
@@ -2671,6 +2664,44 @@ mod project_call_tests {
         }
     }
 
+    fn python_field_read_foreign_fixture(foreign_key: u8) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"workout",
+            path_specifier: Some(b"workout.service"),
+            display: b"note",
+            foreign_key,
+            entity_kind: ItemKind::Field,
+            link_kind: LinkKind::Reads,
+        }
+    }
+
+    fn python_note_static_drive_fixture(
+        foreign_key: u8,
+    ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
+        let service_bytes = project_item_image(
+            "workout/service.py",
+            1,
+            b"note",
+            TreeEntityId::new(0),
+            ItemKind::Static,
+            None,
+        )?;
+        let caller_bytes = project_item_image(
+            "weeks.py",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(python_field_read_foreign_fixture(foreign_key)),
+        )?;
+        Ok((
+            service_bytes,
+            caller_bytes,
+            fixture_version(1).identity(),
+            fixture_version(2).identity(),
+        ))
+    }
+
     fn rust_limit_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
@@ -4515,6 +4546,45 @@ mod project_call_tests {
         if callers != ["drive".into()] {
             return Err(format!(
                 "referencedBy on note should name only drive, got {callers:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_python_static_semantic_link_row_id_referenced_by_drive(
+    ) -> Result<(), String> {
+        let package = package_key("fixture");
+        let (service_bytes, caller_bytes, note_identity, drive_identity) =
+            python_note_static_drive_fixture(147)?;
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service.py", 1, "note", fixture_version(1)),
+                ("weeks.py", 2, "drive", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let drive_id = RowId::Symbol(semantic_symbol(package, drive_identity));
+        let note_id = RowId::Symbol(semantic_symbol(package, note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, note_identity),
+            note_id,
+            true,
+            &project_paths(&["workout/service.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let incoming = relations
+            .iter()
+            .filter(|relation| relation.to == note_id)
+            .map(|relation| relation.from)
+            .collect::<Vec<_>>();
+        if incoming != vec![drive_id] {
+            return Err(format!(
+                "referencedBy on note static should name only drive, got {incoming:?}"
             ));
         }
         Ok(())
