@@ -56,7 +56,8 @@ to *find* coordinates and `backend.document` is the way to read them.
 `project`, `parent`, `children`, `related`, `referencedBy`, `sameProject`.
 `related` walks outward. A call, a type reference, an import, or a field read
 of a declaration in this same project lands on that declaration, including
-another file. Variable reads do not. `referencedBy` is that edge reversed, so
+another file, including when the field read's declaring type and field name
+match one field this project publishes. Variable reads do not. `referencedBy` is that edge reversed, so
 the declaration names its callers and mention sites across files. A stable reference
 into another publication stays an external node and is not joined. Any other
 foreign target stays an external node; when the compiler recorded a display

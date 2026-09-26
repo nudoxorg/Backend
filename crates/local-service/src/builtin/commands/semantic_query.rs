@@ -1,9 +1,9 @@
 use super::super::read_indexed_sources;
 use super::super::view_build;
 use super::super::view_build::{
-    ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
-    foreign_package_field_retarget, foreign_package_mention_retarget, join_project_field,
-    join_project_mention, project_paths_for_package,
+    ProjectCallableIndex, foreign_namespace_call_retarget, foreign_namespace_field_retarget,
+    foreign_package_call_retarget, foreign_package_field_retarget, foreign_package_mention_retarget,
+    join_project_field, join_project_mention, project_paths_for_package,
 };
 use super::super::{
     BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
@@ -346,22 +346,27 @@ fn semantic_link_row_id(
                     .map(|_| backend_engine::RowId::Symbol(
                         super::super::view_build::semantic_symbol(package, identity),
                     )));
-            } else if matches!(link_kind, LinkKind::Reads)
-                && let Some(identity) = foreign_package_field_retarget(
+            } else if matches!(link_kind, LinkKind::Reads) {
+                let identity = if let Some(identity) = foreign_package_field_retarget(
                     image,
                     external,
                     caller_path,
                     project_paths,
                     callable_index,
-                )?
-            {
-                return Ok(view
-                    .row(backend_engine::RowId::Symbol(
-                        super::super::view_build::semantic_symbol(package, identity),
-                    ))
-                    .map(|_| backend_engine::RowId::Symbol(
-                        super::super::view_build::semantic_symbol(package, identity),
-                    )));
+                )? {
+                    Some(identity)
+                } else {
+                    foreign_namespace_field_retarget(image, external, callable_index)?
+                };
+                if let Some(identity) = identity {
+                    return Ok(view
+                        .row(backend_engine::RowId::Symbol(
+                            super::super::view_build::semantic_symbol(package, identity),
+                        ))
+                        .map(|_| backend_engine::RowId::Symbol(
+                            super::super::view_build::semantic_symbol(package, identity),
+                        )));
+                }
             }
             let identity = backend_semantic::ir::ExternalTargetIdentity::capture(image, external)
                 .map_err(|error| {
@@ -1047,6 +1052,8 @@ mod project_call_tests {
         caller_version_byte: u8,
         caller_id: TreeEntityId,
         foreign_call: NamespaceCallFixture,
+        callee_kind: ItemKind,
+        foreign_kind: Option<ItemKind>,
     ) -> Result<Vec<u8>, String> {
         let source = SourceIdentity {
             identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[source_identity_byte]),
@@ -1105,7 +1112,7 @@ mod project_call_tests {
             .unwrap_or(ParentageAuthority::Root);
         items.push(TreeItemInput {
             name: callee_name,
-            kind: ItemKind::Function,
+            kind: callee_kind,
             visibility: Visibility::Public,
             authority: authority(callee_parentage),
             parent: callee_parent,
@@ -1155,7 +1162,7 @@ mod project_call_tests {
                 },
                 path: path_atom,
                 display,
-                kind: Some(ItemKind::Function),
+                kind: foreign_kind,
             }))
             .map_err(|e| e.to_string())?;
         let links = [TreeLinkInput {
@@ -3535,6 +3542,620 @@ mod project_call_tests {
         Ok(())
     }
 
+    fn foreign_namespace_link_from_caller(
+        caller_bytes: &[u8],
+        caller_entity: TreeEntityId,
+        expected_kind: LinkKind,
+    ) -> Result<(ExternalId, LinkKind, String), String> {
+        let image = SemanticImageView::reopen(caller_bytes).map_err(|error| error.to_string())?;
+        let caller_path = compiled_source_path(&image).map_err(|error| error.to_string())?;
+        for (_, link) in image.links_from(backend_semantic::ir::EntityId::new(caller_entity.raw)) {
+            if link.kind == expected_kind {
+                if let LinkTarget::External(external) = link.target {
+                    return Ok((external, link.kind, caller_path));
+                }
+            }
+        }
+        Err(format!(
+            "caller fixture has no foreign {:?} link",
+            expected_kind
+        ))
+    }
+
+    fn java_namespace_note_field_image(
+        path: &str,
+        source_identity_byte: u8,
+        note_version_byte: u8,
+        drive_version_byte: u8,
+        foreign_key: u8,
+        namespace: &'static [u8],
+    ) -> Result<Vec<u8>, String> {
+        project_namespace_call_image(
+            path,
+            source_identity_byte,
+            &java_owner_chain(),
+            b"note",
+            note_version_byte,
+            TreeEntityId::new(1),
+            b"drive",
+            drive_version_byte,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace,
+                display: b"note",
+                foreign_key,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Field,
+            Some(ItemKind::Field),
+        )
+    }
+
+    #[test]
+    fn join_project_field_namespace_java_chain_retargets_note() -> Result<(), String> {
+        let service_bytes = java_namespace_note_field_image(
+            "WorkoutService.java",
+            60,
+            61,
+            62,
+            60,
+            b"demo.WorkoutService",
+        )?;
+        let note_identity = fixture_version(61).identity();
+        let paths = project_paths(&["WorkoutService.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([note_identity, fixture_version(62).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(note_identity) {
+            return Err(format!(
+                "join_project_field should retarget to note, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_namespace_java_chain_referenced_by_names_drive() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = java_namespace_note_field_image(
+            "WorkoutService.java",
+            63,
+            64,
+            65,
+            63,
+            b"demo.WorkoutService",
+        )?;
+        let note_identity = fixture_version(64).identity();
+        let drive_identity = fixture_version(65).identity();
+        let paths = project_paths(&["WorkoutService.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([note_identity, drive_identity]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "join_project_field returned None".to_owned())?;
+        let note_id = query_semantic_id(package, joined);
+        let (note_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &service_bytes,
+            note_identity,
+            "note",
+            Box::new([]),
+        )?;
+        let (drive_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &service_bytes,
+            drive_identity,
+            "drive",
+            vec![note_id.clone()].into_boxed_slice(),
+        )?;
+        let workspace = super::super::super::genesis().map_err(|error| error.to_string())?;
+        let corpus = SemanticQueryCorpus::admit(
+            workspace.root(),
+            vec![
+                SemanticQueryFact::new(
+                    SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+                    SemanticQueryPresentation {
+                        id: RowId::Package(package).stable_key(),
+                        kind: "project".to_owned(),
+                        coordinate: "fixture".to_owned(),
+                        name: "fixture".to_owned(),
+                        signature: None,
+                        documentation: String::new(),
+                        score: None,
+                        project: None,
+                        parent: None,
+                        related: Box::new([]),
+                    },
+                ),
+                note_fact,
+                drive_fact,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let (cancellation, _) = SemanticQueryCancellation::new();
+        let request = SemanticQueryRequest::admit_page(
+            corpus,
+            "{ Declaration { name @filter(op: \"=\", value: [\"$name\"]) referencedBy @optional { name @output } } }",
+            BTreeMap::from([("name".to_owned(), "note".into())]),
+            0,
+            8,
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
+        let events = futures_executor::block_on(
+            execute_semantic_query(request)
+                .map_err(|error| error.to_string())?
+                .collect::<Vec<_>>(),
+        );
+        let callers = events
+            .iter()
+            .filter_map(|event| match event {
+                SemanticQueryEvent::Row(row) => row.row().get("name").cloned(),
+                SemanticQueryEvent::Terminal(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if callers != ["drive".into()] {
+            return Err(format!(
+                "referencedBy on note should name only drive, got {callers:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_namespace_owner_chain_retargets_note() -> Result<(), String> {
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.cs",
+            66,
+            &csharp_owner_chain(),
+            b"note",
+            67,
+            TreeEntityId::new(2),
+            b"drive",
+            68,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"nuget",
+                namespace: b"Demo.WorkoutService",
+                display: b"note",
+                foreign_key: 66,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Field,
+            Some(ItemKind::Field),
+        )?;
+        let note_identity = fixture_version(67).identity();
+        let paths = project_paths(&["WorkoutService.cs"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([note_identity, fixture_version(68).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(3), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(note_identity) {
+            return Err(format!(
+                "owner-chain namespace field read should retarget to note, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_namespace_ambiguous_returns_none() -> Result<(), String> {
+        let first_bytes = java_namespace_note_field_image(
+            "WorkoutService.java",
+            69,
+            70,
+            71,
+            69,
+            b"demo.WorkoutService",
+        )?;
+        let duplicate_bytes = java_namespace_note_field_image(
+            "WorkoutService.java",
+            72,
+            73,
+            74,
+            72,
+            b"demo.WorkoutService",
+        )?;
+        let paths = project_paths(&["WorkoutService.java"]);
+        let images = [&first_bytes[..], &duplicate_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(70).identity(),
+            fixture_version(73).identity(),
+            fixture_version(71).identity(),
+        ]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&first_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&first_bytes).map_err(|error| error.to_string())?;
+        if join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("ambiguous namespace field matches must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_namespace_wrong_namespace_returns_none() -> Result<(), String> {
+        let service_bytes = java_namespace_note_field_image(
+            "WorkoutService.java",
+            75,
+            76,
+            77,
+            75,
+            b"demo.Other",
+        )?;
+        let note_identity = fixture_version(76).identity();
+        let paths = project_paths(&["WorkoutService.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([note_identity, fixture_version(77).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        if join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("wrong namespace must not retarget to note".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_namespace_generic_fallback_retargets_note() -> Result<(), String> {
+        let box_chain = [AncestorFixture {
+            name: b"demo.Box",
+            version_byte: 78,
+            entity_id: TreeEntityId::new(0),
+            parent_id: None,
+            parent_version_byte: None,
+            kind: ItemKind::Record,
+        }];
+        let service_bytes = project_namespace_call_image(
+            "Box.java",
+            79,
+            &box_chain,
+            b"note",
+            80,
+            TreeEntityId::new(1),
+            b"drive",
+            81,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.Box<T>",
+                display: b"note",
+                foreign_key: 79,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Field,
+            Some(ItemKind::Field),
+        )?;
+        let note_identity = fixture_version(80).identity();
+        let paths = project_paths(&["Box.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([note_identity, fixture_version(81).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(note_identity) {
+            return Err(format!(
+                "generic namespace fallback should retarget to note, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_namespace_unbalanced_generic_returns_none() -> Result<(), String> {
+        let box_chain = [AncestorFixture {
+            name: b"demo.Box",
+            version_byte: 82,
+            entity_id: TreeEntityId::new(0),
+            parent_id: None,
+            parent_version_byte: None,
+            kind: ItemKind::Record,
+        }];
+        let service_bytes = project_namespace_call_image(
+            "Box.java",
+            83,
+            &box_chain,
+            b"note",
+            84,
+            TreeEntityId::new(1),
+            b"drive",
+            85,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.Box<T",
+                display: b"note",
+                foreign_key: 83,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Field,
+            Some(ItemKind::Field),
+        )?;
+        let note_identity = fixture_version(84).identity();
+        let paths = project_paths(&["Box.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([note_identity, fixture_version(85).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        if join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("unbalanced generic namespace must not retarget to note".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_namespace_function_kind_returns_none() -> Result<(), String> {
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.java",
+            86,
+            &java_owner_chain(),
+            b"setNote",
+            87,
+            TreeEntityId::new(1),
+            b"drive",
+            88,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.WorkoutService",
+                display: b"setNote",
+                foreign_key: 86,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Function,
+            Some(ItemKind::Function),
+        )?;
+        let set_note_identity = fixture_version(87).identity();
+        let paths = project_paths(&["WorkoutService.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, fixture_version(88).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        if join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("Reads of Function kind must not join through join_project_field".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_namespace_method_call_returns_none() -> Result<(), String> {
+        let service_bytes = java_namespace_note_field_image(
+            "WorkoutService.java",
+            89,
+            90,
+            91,
+            89,
+            b"demo.WorkoutService",
+        )?;
+        let note_identity = fixture_version(90).identity();
+        let paths = project_paths(&["WorkoutService.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([note_identity, fixture_version(91).identity()]);
+        let method_call_bytes = project_namespace_call_image(
+            "WorkoutService.java",
+            92,
+            &java_owner_chain(),
+            b"note",
+            93,
+            TreeEntityId::new(1),
+            b"drive",
+            94,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.WorkoutService",
+                display: b"note",
+                foreign_key: 92,
+                link_kind: LinkKind::MethodCall,
+            },
+            ItemKind::Field,
+            Some(ItemKind::Field),
+        )?;
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&method_call_bytes, TreeEntityId::new(2), LinkKind::MethodCall)?;
+        let method_image =
+            SemanticImageView::reopen(&method_call_bytes).map_err(|error| error.to_string())?;
+        if join_project_field(
+            &method_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("MethodCall must not join through join_project_field".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_call_namespace_java_still_retargets_function_not_field() -> Result<(), String> {
+        let service_bytes = project_namespace_call_image(
+            "WorkoutService.java",
+            95,
+            &java_owner_chain(),
+            b"setNote",
+            96,
+            TreeEntityId::new(1),
+            b"sync",
+            97,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.WorkoutService",
+                display: b"setNote",
+                foreign_key: 95,
+                link_kind: LinkKind::Calls,
+            },
+            ItemKind::Function,
+            Some(ItemKind::Function),
+        )?;
+        let set_note_identity = fixture_version(96).identity();
+        let paths = project_paths(&["WorkoutService.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([set_note_identity, fixture_version(97).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Calls)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_call(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(set_note_identity) {
+            return Err(format!(
+                "join_project_call should still retarget to setNote function, got {joined:?}"
+            ));
+        }
+        let note_field_bytes = java_namespace_note_field_image(
+            "WorkoutService.java",
+            98,
+            99,
+            100,
+            98,
+            b"demo.WorkoutService",
+        )?;
+        let note_identity = fixture_version(99).identity();
+        let field_images = [&note_field_bytes[..]];
+        let field_index =
+            ProjectCallableIndex::build_from_bytes(&field_images).map_err(|error| error.to_string())?;
+        let field_published = BTreeSet::from([note_identity, fixture_version(100).identity()]);
+        let (field_external, field_link_kind, field_caller_path) =
+            foreign_namespace_link_from_caller(&note_field_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let field_image =
+            SemanticImageView::reopen(&note_field_bytes).map_err(|error| error.to_string())?;
+        let field_joined = join_project_field(
+            &field_image,
+            field_link_kind,
+            field_external,
+            &field_caller_path,
+            &paths,
+            &field_index,
+            &field_published,
+        )
+        .map_err(|error| error.to_string())?;
+        if field_joined != Some(note_identity) {
+            return Err(format!(
+                "join_project_field should retarget to note field, got {field_joined:?}"
+            ));
+        }
+        if field_joined == joined {
+            return Err("field join must not return the function identity".to_owned());
+        }
+        Ok(())
+    }
+
     #[test]
     fn project_call_rust_function_retarget_links_callee_semantic_row() -> Result<(), String> {
         let package = package_key("fixture");
@@ -5412,6 +6033,8 @@ mod project_call_tests {
                 foreign_key: 21,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let set_note_identity = fixture_version(12).identity();
         let sync_identity = fixture_version(13).identity();
@@ -5464,6 +6087,8 @@ mod project_call_tests {
                 foreign_key: 22,
                 link_kind: LinkKind::Calls,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let set_note_identity = fixture_version(22).identity();
         let sync_identity = fixture_version(23).identity();
@@ -5516,6 +6141,8 @@ mod project_call_tests {
                 foreign_key: 21,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let set_note_identity = fixture_version(12).identity();
         let sync_identity = fixture_version(13).identity();
@@ -5570,6 +6197,8 @@ mod project_call_tests {
                 foreign_key: 21,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let duplicate_bytes = project_namespace_call_image(
             "WorkoutService.cs",
@@ -5588,6 +6217,8 @@ mod project_call_tests {
                 foreign_key: 24,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let sync_identity = fixture_version(13).identity();
         let set_note_identity = fixture_version(12).identity();
@@ -5637,6 +6268,8 @@ mod project_call_tests {
                 foreign_key: 21,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let sync_identity = fixture_version(13).identity();
         let set_note_identity = fixture_version(12).identity();
@@ -5686,6 +6319,8 @@ mod project_call_tests {
                 foreign_key: 21,
                 link_kind: LinkKind::Reads,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let sync_identity = fixture_version(13).identity();
         let set_note_identity = fixture_version(12).identity();
@@ -5940,6 +6575,8 @@ mod project_call_tests {
                 foreign_key: 42,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let set_note_identity = fixture_version(42).identity();
         let sync_identity = fixture_version(43).identity();
@@ -6007,6 +6644,8 @@ mod project_call_tests {
                 foreign_key: 52,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let sync_identity = fixture_version(53).identity();
         let set_note_identity = fixture_version(52).identity();
@@ -6053,6 +6692,8 @@ mod project_call_tests {
                 foreign_key: 21,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let set_note_identity = fixture_version(12).identity();
         let sync_identity = fixture_version(13).identity();
@@ -6114,6 +6755,8 @@ mod project_call_tests {
                 foreign_key: 22,
                 link_kind: LinkKind::Calls,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let set_note_identity = fixture_version(22).identity();
         let sync_identity = fixture_version(23).identity();
@@ -6167,6 +6810,8 @@ mod project_call_tests {
                 foreign_key: 21,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let duplicate_bytes = project_namespace_call_image(
             "WorkoutService.cs",
@@ -6185,6 +6830,8 @@ mod project_call_tests {
                 foreign_key: 24,
                 link_kind: LinkKind::MethodCall,
             },
+            ItemKind::Function,
+            Some(ItemKind::Function),
         )?;
         let sync_identity = fixture_version(13).identity();
         let set_note_identity = fixture_version(12).identity();

@@ -29,6 +29,7 @@ pub(crate) struct ProjectCallableIndex {
     by_path_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     mention_by_path_name_kind: BTreeMap<(String, String, ItemKind), Vec<DeclarationIdentity>>,
+    field_by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
 }
 
 impl ProjectCallableIndex {
@@ -37,6 +38,8 @@ impl ProjectCallableIndex {
         let mut by_owner_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
         let mut mention_by_path_name_kind =
             BTreeMap::<(String, String, ItemKind), Vec<DeclarationIdentity>>::new();
+        let mut field_by_owner_name =
+            BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
         for bytes in images {
             let image = SemanticImageView::reopen(bytes).map_err(|error| {
                 BuiltinModelError(format!("reopen semantic graph image: {error}"))
@@ -77,12 +80,29 @@ impl ProjectCallableIndex {
                         .or_default()
                         .push(identity);
                 }
+                if entity.entity.kind == ItemKind::Field {
+                    if let Some((immediate, chain)) =
+                        owner_chain_keys(&session, &image, entity.entity.id)?
+                    {
+                        field_by_owner_name
+                            .entry((immediate.clone(), name.to_owned()))
+                            .or_default()
+                            .push(identity);
+                        if chain != immediate {
+                            field_by_owner_name
+                                .entry((chain, name.to_owned()))
+                                .or_default()
+                                .push(identity);
+                        }
+                    }
+                }
             }
         }
         Ok(Self {
             by_path_name,
             by_owner_name,
             mention_by_path_name_kind,
+            field_by_owner_name,
         })
     }
 
@@ -151,6 +171,31 @@ impl ProjectCallableIndex {
         }
     }
 
+    pub(crate) fn resolve_field_owner(
+        &self,
+        namespace: &str,
+        display: &str,
+    ) -> Option<DeclarationIdentity> {
+        if namespace.is_empty() || display.is_empty() {
+            return None;
+        }
+        match self.field_owner_matches(namespace, display) {
+            Some(matches) if matches.len() == 1 => matches.into_iter().next(),
+            Some(_) => None,
+            None => {
+                let stripped = strip_type_arguments(namespace)?;
+                if stripped == namespace {
+                    None
+                } else {
+                    match self.field_owner_matches(&stripped, display) {
+                        Some(matches) if matches.len() == 1 => matches.into_iter().next(),
+                        _ => None,
+                    }
+                }
+            }
+        }
+    }
+
     fn owner_matches(
         &self,
         namespace: &str,
@@ -158,6 +203,24 @@ impl ProjectCallableIndex {
     ) -> Option<Vec<DeclarationIdentity>> {
         let mut matches = self
             .by_owner_name
+            .get(&(namespace.to_owned(), display.to_owned()))?
+            .clone();
+        matches.sort();
+        matches.dedup();
+        if matches.is_empty() {
+            None
+        } else {
+            Some(matches)
+        }
+    }
+
+    fn field_owner_matches(
+        &self,
+        namespace: &str,
+        display: &str,
+    ) -> Option<Vec<DeclarationIdentity>> {
+        let mut matches = self
+            .field_by_owner_name
             .get(&(namespace.to_owned(), display.to_owned()))?
             .clone();
         matches.sort();
@@ -331,6 +394,35 @@ pub(crate) fn foreign_namespace_call_retarget(
     Ok(callable_index.resolve_owner(namespace, display))
 }
 
+pub(crate) fn foreign_namespace_field_retarget(
+    image: &SemanticImageView<'_>,
+    external: ExternalId,
+    index: &ProjectCallableIndex,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(None);
+    };
+    let ForeignTargetOrigin::Namespace { namespace, .. } = foreign.origin else {
+        return Ok(None);
+    };
+    if foreign.kind != Some(ItemKind::Field) {
+        return Ok(None);
+    }
+    let namespace_atom = image
+        .atom(namespace)
+        .ok_or_else(|| BuiltinModelError("semantic graph namespace atom is missing".to_owned()))?;
+    let display_atom = image
+        .atom(foreign.display)
+        .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
+    let namespace = std::str::from_utf8(namespace_atom).map_err(|_| {
+        BuiltinModelError("semantic graph namespace is not UTF-8".to_owned())
+    })?;
+    let display = std::str::from_utf8(display_atom).map_err(|_| {
+        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
+    })?;
+    Ok(index.resolve_field_owner(namespace, display))
+}
+
 pub(crate) fn project_paths_for_package(
     sources: &IndexedSources,
     package: PackageKey,
@@ -471,13 +563,17 @@ pub(crate) fn join_project_field(
     if !matches!(link_kind, backend_semantic::ir::LinkKind::Reads) {
         return Ok(None);
     }
-    let identity = foreign_package_field_retarget(
+    let identity = if let Some(identity) = foreign_package_field_retarget(
         image,
         external,
         caller_path,
         project_paths,
         index,
-    )?;
+    )? {
+        Some(identity)
+    } else {
+        foreign_namespace_field_retarget(image, external, index)?
+    };
     Ok(identity.filter(|candidate| published.contains(candidate)))
 }
 

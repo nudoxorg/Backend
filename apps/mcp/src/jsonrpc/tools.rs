@@ -192,7 +192,7 @@ fn query_tool() -> Value {
         "name": QUERY_TOOL,
         "title": "Query the code graph",
         "description": "Run a typed Trustfall query over the indexed semantic graph. \
-    After backend.index, `related` walks outward; a call, a type reference, an import, or a field read of a declaration in this same project lands on that declaration, including another file, and `referencedBy` is that edge reversed so a declaration names its callers and mention sites across files. Variable reads do not. Stable references into another publication stay external nodes and are not joined. \
+    After backend.index, `related` walks outward; a call, a type reference, an import, or a field read of a declaration in this same project lands on that declaration, including another file, including when the field read's declaring type and field name match one field this project publishes, and `referencedBy` is that edge reversed so a declaration names its callers and mention sites across files. Variable reads do not. Stable references into another publication stay external nodes and are not joined. \
     A question such as where error handling lives starts as a filter on `name` or `documentation`. \
     Read `backend://schema/query` first for the edges and worked queries.",
         "inputSchema": {
