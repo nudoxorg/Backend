@@ -1130,6 +1130,37 @@ const fn foreign_entity_kind(class: ReferenceTargetClass) -> EntityKind {
 /// package lineage plus the exact target spelling, under the entity kind
 /// the row's closed target class demands. Unresolved and external uses stay
 /// exactly this — a resolvable, untruncated key — never a dropped row.
+fn namespace_method_target<'source>(
+    reference: u32,
+    recv_type: &'source [u8],
+    method: &'source [u8],
+) -> Result<OccurrenceTarget<'source>, GoCollectError> {
+    let namespace = str::from_utf8(recv_type).map_err(|_| {
+        terminal(ProjectionFault::Utf8 {
+            plane: GoImagePlane::ReferenceTarget,
+            row: reference,
+        })
+    })?;
+    let name = str::from_utf8(method).map_err(|_| {
+        terminal(ProjectionFault::Utf8 {
+            plane: GoImagePlane::ReferenceTarget,
+            row: reference,
+        })
+    })?;
+    let key = ForeignKey::new(
+        ForeignOrigin::Namespace {
+            ecosystem: ECOSYSTEM,
+            namespace,
+        },
+        name,
+        name,
+        Some(EntityKind::Function),
+    )
+    .map_err(|cause| ProjectionFault::ForeignKey { reference, cause })
+    .map_err(terminal)?;
+    Ok(OccurrenceTarget::Foreign(key))
+}
+
 fn foreign_target<'source>(
     reference: u32,
     package: &'source [u8],
@@ -1274,9 +1305,13 @@ struct MemberKey<'source> {
     member: &'source [u8],
     ordinal: u32,
     is_field: bool,
-    /// True only on version-6 images when the owning named type declares in
-    /// a sibling source file (`name_span` present and not digest-bound).
+    /// True only on version-6 images when the concrete method row is not
+    /// digest-bound (interface signatures and method-set rows use the owning
+    /// type's cross-file flag instead).
     cross_file: bool,
+    /// The method row's source file spelling (concrete methods) or the owning
+    /// declaration's file (interface signatures and method-set rows).
+    file: &'source [u8],
 }
 
 /// The two-pass Go projector over one validated authority image.
@@ -1428,6 +1463,16 @@ impl<'x, 'source> Projector<'x, 'source> {
         declaration.name_span.is_some() && !declaration.bound
     }
 
+    /// True when a version-6 concrete method row lives outside the
+    /// digest-bound compile source. Version-5 rows carry no bound fact and
+    /// must not be treated as cross-file.
+    fn cross_file_method(
+        image_version: u16,
+        method: backend_frontend_go::legacy::MethodRow<'source>,
+    ) -> bool {
+        image_version == 6 && !method.bound
+    }
+
     /// Reports whether one unqualified identifier already names a declaration
     /// row in the authority image.
     fn image_declared(&self, name: &[u8]) -> Result<bool, GoCollectError> {
@@ -1501,17 +1546,59 @@ impl<'x, 'source> Projector<'x, 'source> {
         member: &[u8],
     ) -> Option<OccurrenceTarget<'source>> {
         let (ordinal, is_field) = self.lookup_member(package, recv_type, member)?;
-        if is_field {
-            let cross_file = self
-                .members
-                .iter()
-                .find(|key| key.ordinal == ordinal)
-                .is_some_and(|key| key.cross_file);
-            if cross_file {
-                return None;
-            }
+        if !is_field {
+            return None;
+        }
+        let cross_file = self
+            .members
+            .iter()
+            .find(|key| key.ordinal == ordinal)
+            .is_some_and(|key| key.cross_file);
+        if cross_file {
+            return None;
         }
         Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
+    }
+
+    /// Resolves one receiver-qualified method to a local fact. Every
+    /// non-field [`MemberKey`] for the spelling is considered; cross-file
+    /// homonyms stay unresolved unless exactly one bound row lives in the
+    /// use's source file.
+    fn resolve_method_target(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        member: &[u8],
+        use_file: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let matches: Vec<_> = self
+            .members
+            .iter()
+            .filter(|key| {
+                !key.is_field
+                    && key.package == package
+                    && key.type_name == recv_type
+                    && key.member == member
+            })
+            .collect();
+        let bound: Vec<_> = matches.iter().copied().filter(|key| !key.cross_file).collect();
+        let cross: Vec<_> = matches.iter().copied().filter(|key| key.cross_file).collect();
+        if cross.is_empty() {
+            if bound.len() == 1 {
+                Some(OccurrenceTarget::Local(EntityId::new(bound[0].ordinal)))
+            } else {
+                None
+            }
+        } else {
+            let same_file_bound: Vec<_> = bound.iter().copied().filter(|key| key.file == use_file).collect();
+            if same_file_bound.len() == 1 {
+                Some(OccurrenceTarget::Local(EntityId::new(
+                    same_file_bound[0].ordinal,
+                )))
+            } else {
+                None
+            }
+        }
     }
 
     /// Records one image declaration's primary-source facts: its fact's
@@ -1684,6 +1771,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     declaration.package,
                     declaration.name,
                     Self::cross_file_type(declaration),
+                    declaration.file,
                 )?,
                 TypeRowKind::Interface => self.interface_methods(
                     &row,
@@ -1691,12 +1779,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                     type_ordinal,
                     declaration.package,
                     declaration.name,
+                    Self::cross_file_type(declaration),
+                    declaration.file,
                 )?,
                 _ => {}
             }
         }
         let mut methods = Vec::new();
         let mut method_names = Vec::new();
+        let image_version = self.image.version();
         for method_index in 0..self.image.method_count() {
             let method = self
                 .image
@@ -1727,7 +1818,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file: Self::cross_file_method(image_version, method),
+                file: method.file,
             });
             methods.push(ordinal);
             method_names.push(method.name);
@@ -1762,7 +1854,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method_set.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file: Self::cross_file_type(declaration),
+                file: declaration.file,
             });
             methods.push(ordinal);
             method_names.push(method_set.name);
@@ -1842,6 +1935,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         package: &'source [u8],
         type_name: &'source [u8],
         cross_file: bool,
+        file: &'source [u8],
     ) -> Result<(), GoCollectError> {
         let mut field_index = 0usize;
         for member_index in member_run(row) {
@@ -1873,6 +1967,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 ordinal,
                 is_field: true,
                 cross_file,
+                file,
             });
             fields.push(ordinal);
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1890,6 +1985,8 @@ impl<'x, 'source> Projector<'x, 'source> {
         owner: u32,
         package: &'source [u8],
         type_name: &'source [u8],
+        cross_file: bool,
+        file: &'source [u8],
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
             let member = self
@@ -1915,7 +2012,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file,
+                file,
             });
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
@@ -2212,15 +2310,26 @@ impl<'x, 'source> Projector<'x, 'source> {
                     self.local_const_target(owner_package, row.target)
                 } else if row.target_class == ReferenceTargetClass::Var {
                     self.local_var_target(owner_package, row.target)
+                } else if row.target_class == ReferenceTargetClass::Method {
+                    self.resolve_method_target(
+                        owner_package,
+                        row.recv_type,
+                        row.target,
+                        row.file,
+                    )
+                } else if row.target_class == ReferenceTargetClass::Field {
+                    self.local_member_target(owner_package, row.recv_type, row.target)
                 } else {
                     self.lookup(owner_package, row.target)
                         .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                }
-                .or_else(|| {
-                    self.local_member_target(owner_package, row.recv_type, row.target)
-                });
+                };
                 match local {
                     Some(target) => target,
+                    None if row.target_class == ReferenceTargetClass::Method
+                        && !row.recv_type.is_empty() =>
+                    {
+                        namespace_method_target(reference_index, row.recv_type, row.target)?
+                    }
                     None => {
                         // Same-package target with no local fact: promoted
                         // members, blank-keyed fields, or build-excluded
@@ -3642,6 +3751,8 @@ mod tests {
         name_span: Option<(u32, u32)>,
         /// The authority-bound-source flag (version 6).
         bound: bool,
+        /// Optional per-declaration source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3668,6 +3779,8 @@ mod tests {
         span: (u32, u32),
         /// The authority-bound-source flag (version 6).
         bound: bool,
+        /// Optional per-method source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3714,6 +3827,8 @@ mod tests {
         target_class: u8,
         /// The target receiver type-name atom (version 6).
         recv_type: Cell,
+        /// Optional per-reference source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3953,6 +4068,7 @@ mod tests {
                 span: (0, SPAN_END),
                 name_span: None,
                 bound: false,
+                file: None,
             });
             self.declarations.len() - 1
         }
@@ -3999,6 +4115,7 @@ mod tests {
                 ),
                 span: (0, SPAN_END),
                 bound: false,
+                file: None,
             });
             self.methods.len() - 1
         }
@@ -4058,6 +4175,33 @@ mod tests {
             target_class: u8,
             recv_type: &[u8],
         ) {
+            self.reference_typed_in_file(
+                owner,
+                receiver,
+                target,
+                target_package,
+                start,
+                end,
+                use_kind,
+                target_class,
+                recv_type,
+                None,
+            );
+        }
+
+        fn reference_typed_in_file(
+            &mut self,
+            owner: u32,
+            receiver: &[u8],
+            target: &[u8],
+            target_package: &[u8],
+            start: u32,
+            end: u32,
+            use_kind: u8,
+            target_class: u8,
+            recv_type: &[u8],
+            file: Option<Cell>,
+        ) {
             let target = self.atom(target);
             let package = self.atom(target_package);
             let receiver = self.atom(receiver);
@@ -4072,6 +4216,7 @@ mod tests {
                 use_kind,
                 target_class,
                 recv_type,
+                file,
             });
         }
 
@@ -4113,6 +4258,7 @@ mod tests {
                 let (name, name_len) = cell(row.name);
                 let (package, package_len) = cell(row.package);
                 let (value, value_len) = cell(row.value);
+                let row_file = row.file.unwrap_or(file);
                 declarations.extend_from_slice(&[row.kind, 1, u8::from(row.iota), 0]);
                 declarations.extend_from_slice(&name);
                 declarations.extend_from_slice(&name_len);
@@ -4121,8 +4267,8 @@ mod tests {
                 declarations.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
                 declarations.extend_from_slice(&row.span.0.to_le_bytes());
                 declarations.extend_from_slice(&row.span.1.to_le_bytes());
-                declarations.extend_from_slice(&file.offset.to_le_bytes());
-                declarations.extend_from_slice(&file.length.to_le_bytes());
+                declarations.extend_from_slice(&row_file.offset.to_le_bytes());
+                declarations.extend_from_slice(&row_file.length.to_le_bytes());
                 declarations.extend_from_slice(&value);
                 declarations.extend_from_slice(&value_len);
                 declarations.extend_from_slice(&row.const_group.to_le_bytes());
@@ -4155,6 +4301,7 @@ mod tests {
                 let (name, name_len) = cell(row.name);
                 let (receiver, receiver_len) = cell(row.receiver);
                 let (blob, blob_len) = cell(row.receiver_params.0);
+                let row_file = row.file.unwrap_or(file);
                 methods.extend_from_slice(&row.owner.to_le_bytes());
                 methods.extend_from_slice(&[1, 0, 0, 0]);
                 methods.extend_from_slice(&name);
@@ -4169,8 +4316,8 @@ mod tests {
                 methods.extend_from_slice(&0_u32.to_le_bytes());
                 methods.extend_from_slice(&row.span.0.to_le_bytes());
                 methods.extend_from_slice(&row.span.1.to_le_bytes());
-                methods.extend_from_slice(&file.offset.to_le_bytes());
-                methods.extend_from_slice(&file.length.to_le_bytes());
+                methods.extend_from_slice(&row_file.offset.to_le_bytes());
+                methods.extend_from_slice(&row_file.length.to_le_bytes());
                 // Version 6: the authority-bound flag.
                 methods.extend_from_slice(&[u8::from(row.bound), 0, 0, 0, 0, 0, 0, 0]);
             }
@@ -4210,6 +4357,7 @@ mod tests {
                 let (package, package_len) = cell(row.target_package);
                 let (receiver, receiver_len) = cell(row.receiver);
                 let (recv_type, recv_type_len) = cell(row.recv_type);
+                let row_file = row.file.unwrap_or(file);
                 references.extend_from_slice(&row.owner.to_le_bytes());
                 references.extend_from_slice(&target);
                 references.extend_from_slice(&target_len);
@@ -4217,8 +4365,8 @@ mod tests {
                 references.extend_from_slice(&package_len);
                 references.extend_from_slice(&row.start.to_le_bytes());
                 references.extend_from_slice(&row.end.to_le_bytes());
-                references.extend_from_slice(&file.offset.to_le_bytes());
-                references.extend_from_slice(&file.length.to_le_bytes());
+                references.extend_from_slice(&row_file.offset.to_le_bytes());
+                references.extend_from_slice(&row_file.length.to_le_bytes());
                 references.extend_from_slice(&receiver);
                 references.extend_from_slice(&receiver_len);
                 // Version 6: the closed use kind, the target class, and the
@@ -5609,6 +5757,7 @@ mod tests {
                 span: (0, SPAN_END),
                 name_span: None,
                 bound: false,
+                file: None,
             });
         }
         let exact_image = fix.encode(b"package demo\n")?;
@@ -5636,6 +5785,7 @@ mod tests {
             span: (0, SPAN_END),
             name_span: None,
             bound: false,
+            file: None,
         });
         let image = fix.encode(b"package demo\n")?;
         let mut facts = FactSet::new();
@@ -5824,6 +5974,7 @@ mod tests {
         let state = fix.declaration(KIND_VAR, b"state", None);
         let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
         let set_name = fix.method(lang, b"SetName", None);
+        fix.methods[set_name].bound = true;
         let string_row = fix.basic(b"string");
         let lang_row = fix.start_row(ROW_STRUCT);
         fix.field(lang_row, b"Name", Some(string_row));
@@ -5944,6 +6095,288 @@ mod tests {
             return Err(TestError::Missing("exact occurrences"));
         }
         Ok(())
+    }
+
+    fn count_set_note_method_calls(
+        view: &FragmentView<'_>,
+    ) -> Result<(usize, usize), TestError> {
+        let mut local = 0_usize;
+        let mut namespace = 0_usize;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        while let Some(row) = occurrences.next() {
+            let row = row?;
+            if row.occurrence.kind != ReferenceKind::MethodCall
+                || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            {
+                continue;
+            }
+            match row.occurrence.target {
+                OccurrenceTarget::Local(_) => local += 1,
+                OccurrenceTarget::Foreign(key) => {
+                    let ForeignOrigin::Namespace {
+                        ecosystem,
+                        namespace: recv,
+                    } = key.origin
+                    else {
+                        continue;
+                    };
+                    if ecosystem == ECOSYSTEM
+                        && recv == "Workout"
+                        && key.path == "SetNote"
+                        && key.display == "SetNote"
+                        && key.kind == Some(EntityKind::Function)
+                    {
+                        namespace += 1;
+                    }
+                }
+                OccurrenceTarget::Stable(_) => {}
+            }
+        }
+        Ok((local, namespace))
+    }
+
+    fn push_both_workout_set_note_methods(
+        fix: &mut Fixture,
+        bound_first: bool,
+    ) -> Result<(u32, u32, u32), TestError> {
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let push_bound = |fix: &mut Fixture| {
+            let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+            fix.declarations[workout].bound = true;
+            fix.declarations[workout].name_span = Some((0, 7));
+            fix.declarations[workout].file = Some(main);
+            let set_note = fix.method(workout, b"SetNote", None);
+            fix.methods[set_note].bound = true;
+            fix.methods[set_note].file = Some(main);
+        };
+        let push_sibling = |fix: &mut Fixture| {
+            let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+            fix.declarations[workout].bound = false;
+            fix.declarations[workout].name_span = Some((0, 7));
+            fix.declarations[workout].file = Some(sibling);
+            let set_note = fix.method(workout, b"SetNote", None);
+            fix.methods[set_note].bound = false;
+            fix.methods[set_note].file = Some(sibling);
+        };
+        if bound_first {
+            push_bound(fix);
+            push_sibling(fix);
+        } else {
+            push_sibling(fix);
+            push_bound(fix);
+        }
+        let use_main = fix.declaration(KIND_FUNC, b"UseMain", None);
+        fix.declarations[use_main].file = Some(main);
+        let use_sibling = fix.declaration(KIND_FUNC, b"UseSibling", None);
+        fix.declarations[use_sibling].file = Some(sibling);
+        let bound_method_ordinal = if bound_first { 2 } else { 3 };
+        // Facts: two types (0, 1), two methods (2, 3), then the two functions (4, 5).
+        let use_main_ordinal = 4;
+        let use_sibling_ordinal = 5;
+        fix.reference_typed_in_file(
+            u32::try_from(use_main).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        fix.reference_typed_in_file(
+            u32::try_from(use_sibling).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            20,
+            27,
+            0,
+            1,
+            b"Workout",
+            Some(sibling),
+        );
+        Ok((bound_method_ordinal, use_main_ordinal, use_sibling_ordinal))
+    }
+
+    fn assert_cross_file_method_resolution(
+        view: &FragmentView<'_>,
+        bound_method_ordinal: u32,
+        use_main: u32,
+        use_sibling: u32,
+    ) -> Result<(), TestError> {
+        let mut local_main = None;
+        let mut namespace_sibling = None;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        while let Some(row) = occurrences.next() {
+            let row = row?;
+            if row.occurrence.kind != ReferenceKind::MethodCall
+                || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            {
+                continue;
+            }
+            if row.owner.raw == use_main {
+                if !matches!(
+                    row.occurrence.target,
+                    OccurrenceTarget::Local(entity) if entity.raw == bound_method_ordinal
+                ) {
+                    return Err(TestError::Missing("main-file method call"));
+                }
+                if local_main.is_some() {
+                    return Err(TestError::Missing("exact main-file method call"));
+                }
+                local_main = Some(());
+            } else if row.owner.raw == use_sibling {
+                let OccurrenceTarget::Foreign(key) = row.occurrence.target else {
+                    return Err(TestError::Missing("sibling-file namespace method call"));
+                };
+                let ForeignOrigin::Namespace {
+                    ecosystem,
+                    namespace,
+                } = key.origin
+                else {
+                    return Err(TestError::Missing("sibling namespace origin"));
+                };
+                if ecosystem != ECOSYSTEM
+                    || namespace != "Workout"
+                    || key.path != "SetNote"
+                    || key.display != "SetNote"
+                    || key.kind != Some(EntityKind::Function)
+                {
+                    return Err(TestError::Missing("sibling namespace method key"));
+                }
+                if namespace_sibling.is_some() {
+                    return Err(TestError::Missing("exact sibling namespace method call"));
+                }
+                namespace_sibling = Some(());
+            }
+        }
+        if local_main.is_none() || namespace_sibling.is_none() {
+            return Err(TestError::Missing("cross-file method resolution"));
+        }
+        let (local, namespace) = count_set_note_method_calls(view)?;
+        if local != 1 || namespace != 1 {
+            return Err(TestError::Missing("exact homonym method-call counts"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_type_sibling_set_note_use_in_main_is_namespace() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+        fix.declarations[workout].bound = true;
+        fix.declarations[workout].name_span = Some((0, 7));
+        fix.declarations[workout].file = Some(main);
+        let set_note = fix.method(workout, b"SetNote", None);
+        fix.methods[set_note].bound = false;
+        fix.methods[set_note].file = Some(sibling);
+        let drive = fix.declaration(KIND_FUNC, b"Drive", None);
+        fix.declarations[drive].file = Some(main);
+        fix.reference_typed_in_file(
+            u32::try_from(drive).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let (local, namespace) = count_set_note_method_calls(&view)?;
+        if namespace != 1 {
+            return Err(TestError::Missing("namespace SetNote method call"));
+        }
+        if local != 0 {
+            return Err(TestError::Missing("zero local SetNote method calls"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_type_bound_set_note_use_in_main_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+        fix.declarations[workout].bound = false;
+        fix.declarations[workout].name_span = Some((0, 7));
+        fix.declarations[workout].file = Some(sibling);
+        let set_note = fix.method(workout, b"SetNote", None);
+        fix.methods[set_note].bound = true;
+        fix.methods[set_note].file = Some(main);
+        let drive = fix.declaration(KIND_FUNC, b"Drive", None);
+        fix.declarations[drive].file = Some(main);
+        fix.reference_typed_in_file(
+            u32::try_from(drive).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let (local, namespace) = count_set_note_method_calls(&view)?;
+        if local != 1 {
+            return Err(TestError::Missing("local SetNote method call"));
+        }
+        if namespace != 0 {
+            return Err(TestError::Missing("zero namespace SetNote method calls"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let call = occurrences
+            .next()
+            .ok_or(TestError::Missing("method call"))??;
+        if call.occurrence.kind != ReferenceKind::MethodCall
+            || call.occurrence.target != OccurrenceTarget::Local(EntityId::new(1))
+        {
+            return Err(TestError::Missing("bound method ordinal"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_workout_set_note_stays_local_while_sibling_use_is_namespace_bound_first()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let (bound_method_ordinal, use_main, use_sibling) =
+            push_both_workout_set_note_methods(&mut fix, true)?;
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        assert_cross_file_method_resolution(&view, bound_method_ordinal, use_main, use_sibling)
+    }
+
+    #[test]
+    fn bound_workout_set_note_stays_local_while_sibling_use_is_namespace_sibling_first()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let (bound_method_ordinal, use_main, use_sibling) =
+            push_both_workout_set_note_methods(&mut fix, false)?;
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        assert_cross_file_method_resolution(&view, bound_method_ordinal, use_main, use_sibling)
     }
 
     /// The owned IR carries every widened occurrence with an absolute source
