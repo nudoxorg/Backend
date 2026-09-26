@@ -4057,6 +4057,59 @@ mod tests {
     }
 
     #[test]
+    fn bare_property_read_lowers_as_local_variable_use() -> Result<(), TestError> {
+        let source =
+            b"class Widget { public int Count { get; set; } public int Read() => Count; }";
+        let mut fix = Fixture::default();
+        let widget = fix.class(b"demo.Widget", source);
+        let int_ty = fix.named(b"System.Int32");
+        let name_atom = fix.atom(b"Count");
+        let (name_start, name_end) = Fixture::span_of(source, b"Count");
+        let property = Decl::new(11, name_atom, None)
+            .typed(int_ty)
+            .owned_by(widget)
+            .at(name_start, name_start, name_end);
+        fix.declarations.push(property);
+        let method = fix
+            .method(widget, b"Read", Some(int_ty), source)
+            .ending(u32::try_from(source.len()).map_err(|_| TestError::Num)?);
+        fix.declarations.push(method);
+        let spelling = fix.atom(b"Count");
+        let file = fix.atom(b"Widget.cs");
+        let (read_at, read_end) = Fixture::span_of(source, b"=> Count");
+        fix.references.push(RefRow {
+            owner: 2,
+            target: Some(1),
+            spelling,
+            file,
+            start: read_at + 3,
+            end: read_end,
+            kind: 6,
+        });
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let rows: Vec<_> = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        let property_reads = rows
+            .iter()
+            .filter(|row| {
+                row.occurrence.kind == backend_semantic::ir::ReferenceKind::VariableUse
+                    && matches!(
+                        row.occurrence.target,
+                        OccurrenceTarget::Local(local) if local.raw == 1
+                    )
+            })
+            .count();
+        if property_reads != 1 {
+            return Err(TestError::Missing("one property-read VariableUse"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn reference_dense_small_sources_admit_every_occurrence() -> Result<(), TestError> {
         // The reference pool is sized from entered bytes (one row per byte,
         // documented measured demand), so a tiny source with a reference row
