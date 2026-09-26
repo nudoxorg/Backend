@@ -46,29 +46,31 @@ mod model;
 pub mod place;
 #[cfg(all(test, feature = "gallery"))]
 mod storm;
+#[cfg(test)]
+mod window_tests;
 
 pub use model::{AIM_IDLE, Card, DEEPEN, MAX_DEPTH, Model, Pending, Pin, Presence, WARM};
 
 use crate::measure::{Measure, Space};
-use crate::motion::{self, Motion, spec};
+use crate::motion::{self, Motion, Spec, spec};
 use crate::paint::{Bevel, CutPaint, Edge, paint_cut};
 use crate::probe::{self, TrackKind, TrackSample};
 use crate::theme::ActiveFacet;
 use crate::tokens::{Palette, ty};
 use crate::{Set, icons};
 use gpui::{
-    AnyElement, App, Bounds, BoxShadow, ColorExt, ContentMask, Element, ElementId,
-    EntityId, FocusHandle, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, Keystroke, LayoutId,
-    MouseDownEvent, MouseExitEvent, MouseMoveEvent, ParentElement, Pixels, Point,
-    ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement, Style, Styled, Task, Window,
-    WindowId, deferred, div, fill, point, px, size,
+    AnyElement, App, Bounds, BoxShadow, ColorExt, ContentMask, Element, ElementId, EntityId,
+    FocusHandle, Global, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, LayoutId, MouseDownEvent,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, ScrollWheelEvent,
+    SharedString, Size, StatefulInteractiveElement, Style, Styled, Task, Window, WindowId,
+    deferred, div, fill, point, px, size,
 };
 use place::Hang;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// What floats.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -211,9 +213,11 @@ struct Layer {
     follow: Option<Follow>,
     stack_open: bool,
     caps: HashMap<u64, Pixels>,
-    /// Each card's trigger key and anchor as last placed: an anchor that
-    /// moves under the same key drags its card rigidly.
-    placed: HashMap<u64, (ElementId, Bounds<Pixels>)>,
+    /// Each card's trigger key, anchor and the instant it was last placed:
+    /// an anchor that moves under the same key drags its card rigidly, and
+    /// the instant lets that drag publish a real velocity (anchor delta
+    /// over elapsed time) instead of a silent teleport.
+    placed: HashMap<u64, (ElementId, Bounds<Pixels>, Instant)>,
 }
 
 impl Layer {
@@ -274,6 +278,7 @@ fn with_model<R>(window: &mut Window, cx: &mut App, f: impl FnOnce(&mut Model, I
 /// next deadline, and repaint the host.
 fn settle(layer: &Rc<RefCell<Layer>>, window: &mut Window, cx: &mut App) {
     let now = motion::now(cx);
+    publish_finished_presence(layer, now, cx);
     let (closed, host, deadline) = {
         let mut state = layer.borrow_mut();
         let closed = state.model.take_closed();
@@ -464,7 +469,10 @@ pub fn follow(window: &mut Window, cx: &mut App) -> bool {
     let layer = state(window, cx);
     let (key, callback) = {
         let layer = layer.borrow();
-        (layer.model.top().map(|card| card.key.clone()), layer.follow.clone())
+        (
+            layer.model.top().map(|card| card.key.clone()),
+            layer.follow.clone(),
+        )
     };
     let (Some(key), Some(callback)) = (key, callback) else {
         return false;
@@ -657,8 +665,8 @@ pub fn anchor(key: &ElementId, bounds: Bounds<Pixels>, window: &Window, cx: &mut
 
 /// A tracked trigger's hover report from its mouse-move listener (capture
 /// phase). Emits [`rest`] / [`leave`] on change; the layer's own listener
-/// (which runs after every trigger's) closes cards whose tracked trigger
-/// did not report.
+/// (which runs after every trigger's) releases hover for triggers that did
+/// not report. Physical unmount is checked separately from frame anchors.
 pub fn report(
     key: &ElementId,
     bounds: Bounds<Pixels>,
@@ -752,6 +760,21 @@ impl IntoElement for LayerElement {
 /// The rise distance of an entering card, px at 100 % text.
 const RISE: f32 = 6.0;
 
+/// A straight line, like [`crate::motion::LINEAR`], but nudged off the
+/// corners. `LINEAR`'s control points sit exactly on its endpoints, so its
+/// parametric `dx/dt` is *itself* zero at progress 0 and 1 — correct in the
+/// limit (`dy/dx` is still 1 throughout) but `Bezier::slope` doesn't take
+/// that limit, so it reports 0 there. A dragged card retargets fresh every
+/// frame and is always read at progress 0, so `LINEAR` would silently
+/// publish zero velocity on every single frame; this curve reads the same
+/// straight line correctly at that exact point.
+const FOLLOW_LINEAR: crate::tokens::motion::Bezier = crate::tokens::motion::Bezier {
+    x1: 0.001,
+    y1: 0.001,
+    x2: 0.999,
+    y2: 0.999,
+};
+
 /// At or under this effective window width, peeks and lenses are sheets.
 pub const SHEET_FROM: f32 = 480.0;
 
@@ -811,7 +834,10 @@ impl LayerElement {
             layer.build = Build::default();
             let keys = layer.keys.take();
             let focus = layer.focus.get(&card.id).map(|focus| focus.handle.clone());
-            let title = layer.model.card(card.id).and_then(|card| card.title.clone());
+            let title = layer
+                .model
+                .card(card.id)
+                .and_then(|card| card.title.clone());
             (keys, focus, title, layer.crumbs_taken)
         };
         let palette = facet.palette();
@@ -950,6 +976,7 @@ impl Element for LayerElement {
             layer.model.tick(now);
             layer.model.cards().cloned().collect()
         };
+        publish_finished_presence(&self.layer, now, cx);
         let deepest_open = cards
             .iter()
             .filter(|card| card.is_open() && card.level.is_some())
@@ -959,7 +986,8 @@ impl Element for LayerElement {
         for card in &cards {
             let sheet = narrow && matches!(card.kind, FloatKind::Peek | FloatKind::Lens);
             // In the sheet only the deepest card shows; the others wait.
-            let hidden = sheet && card.is_open() && card.level.is_some() && card.level != deepest_open;
+            let hidden =
+                sheet && card.is_open() && card.level.is_some() && card.level != deepest_open;
             let width = if sheet {
                 f32::from(viewport.width)
             } else {
@@ -1001,7 +1029,13 @@ impl Element for LayerElement {
                 0.0
             };
             let motion = self.layer.borrow().motion.clone();
-            let focus = motion.animate(("float-focus", card.id), focus_target, spec::HOVER, window, cx);
+            let focus = motion.animate(
+                ("float-focus", card.id),
+                focus_target,
+                spec::HOVER,
+                window,
+                cx,
+            );
             let swap = card.swapped.map_or(1.0, |at| {
                 let run = now.saturating_duration_since(at).as_secs_f32();
                 (run / 0.12).clamp(0.0, 1.0)
@@ -1032,7 +1066,8 @@ impl Element for LayerElement {
         // The ⌘P stack, when open and there is no pinned column.
         let stack_open = self.layer.borrow().stack_open;
         if stack_open {
-            let width = (300.0 * facet.text_scale).min(f32::from(viewport.width) - 2.0 * place::MARGIN);
+            let width =
+                (300.0 * facet.text_scale).min(f32::from(viewport.width) - 2.0 * place::MARGIN);
             let measure = Measure::new(px(width), &facet);
             let mut element = pinned_stack(&self.layer, &measure, window, cx);
             let layout = element.request_layout(window, cx);
@@ -1088,7 +1123,9 @@ impl Element for LayerElement {
                 .filter(|(_, report)| report.frame == frame)
                 .map(|(key, report)| (key.clone(), report.bounds))
                 .collect();
-            layer.model.resolve_stale(|key| reports.get(key).copied(), now);
+            layer
+                .model
+                .resolve_stale(|key| reports.get(key).copied(), now);
             (layer.motion.clone(), resized)
         };
         let mut parents: HashMap<usize, Bounds<Pixels>> = HashMap::new();
@@ -1096,7 +1133,15 @@ impl Element for LayerElement {
         for index in 0..self.cards.len() {
             let (id, kind, level, side, sheet, open, presence) = {
                 let card = &self.cards[index];
-                (card.id, card.kind, card.level, card.side, card.sheet, card.open, card.presence)
+                (
+                    card.id,
+                    card.kind,
+                    card.level,
+                    card.side,
+                    card.sheet,
+                    card.open,
+                    card.presence,
+                )
             };
             // Anchors can move during this very prepaint (a parent's words
             // report as the parent is prepainted), so read the live one.
@@ -1111,7 +1156,8 @@ impl Element for LayerElement {
             // An anchor whose centre has left the viewport takes its card
             // with it (the card plays its exit rather than clinging to the
             // edge after the thing it describes).
-            let on_screen = Bounds::new(point(px(0.0), px(0.0)), viewport).contains(&anchor.center());
+            let on_screen =
+                Bounds::new(point(px(0.0), px(0.0)), viewport).contains(&anchor.center());
             if open && !on_screen && !sheet {
                 let mut layer = self.layer.borrow_mut();
                 let key = layer.model.card(id).map(|card| card.key.clone());
@@ -1119,36 +1165,52 @@ impl Element for LayerElement {
                     layer.model.close_key(&key, now);
                 }
             }
-            let dragged = {
+            let (dragged, drag_dt) = {
                 let mut layer = self.layer.borrow_mut();
                 let key = layer.model.card(id).map(|card| card.key.clone());
                 match (key, layer.placed.get(&id).cloned()) {
-                    (Some(key), Some((last_key, last_anchor))) => {
+                    (Some(key), Some((last_key, last_anchor, last_now))) => {
                         let moved = last_key == key && last_anchor.origin != anchor.origin;
-                        layer.placed.insert(id, (key, anchor));
-                        moved
+                        let dt = now.saturating_duration_since(last_now);
+                        layer.placed.insert(id, (key, anchor, now));
+                        (moved, dt)
                     }
                     (Some(key), None) => {
-                        layer.placed.insert(id, (key, anchor));
-                        false
+                        layer.placed.insert(id, (key, anchor, now));
+                        (false, Duration::ZERO)
                     }
-                    (None, _) => false,
+                    (None, _) => (false, Duration::ZERO),
                 }
             };
             let natural = window.layout_bounds(self.cards[index].layout);
             let hang = if sheet {
                 Hang::Sheet
             } else {
-                match level.and_then(|level| level.checked_sub(1)).and_then(|p| parents.get(&p)) {
+                match level
+                    .and_then(|level| level.checked_sub(1))
+                    .and_then(|p| parents.get(&p))
+                {
                     Some(parent) => Hang::Parent(*parent),
                     None => Hang::Anchor,
                 }
             };
-            let placed = place::place_with_gap(anchor, natural.size, side, hang, viewport, kind.gap() * scale);
+            let placed = place::place_with_gap(
+                anchor,
+                natural.size,
+                side,
+                hang,
+                viewport,
+                kind.gap() * scale,
+            );
             caps.push((id, placed.capped.is_some(), placed.room));
             let target = placed.bounds;
             let key = |channel: &'static str| ElementId::NamedInteger(channel.into(), id);
-            let keys = [key("float-x"), key("float-y"), key("float-w"), key("float-h")];
+            let keys = [
+                key("float-x"),
+                key("float-y"),
+                key("float-w"),
+                key("float-h"),
+            ];
             let values = [
                 f32::from(target.origin.x),
                 f32::from(target.origin.y),
@@ -1157,13 +1219,30 @@ impl Element for LayerElement {
             ];
             let mut out = [0.0_f32; 4];
             for (slot, (key, value)) in keys.iter().zip(values).enumerate() {
-                // A resize, a leaving card, or its own anchor moving (a
-                // scrolled word, a node under a flying camera): the card
-                // tracks directly. Only a warm swap morphs on the spring.
-                if resized || !open || (dragged && slot < 2) {
+                // A resize or a leaving card: an instant, undragged snap —
+                // nothing to explain to a continuity check. Its own anchor
+                // moving under the same key (a scrolled word, a node under a
+                // flying camera) tracks directly too, but as a real move: a
+                // linear tween across the frame's own elapsed time, so its
+                // published velocity (anchor delta / dt) actually accounts
+                // for the change instead of reporting the teleport as one.
+                // Only a warm swap onto a different trigger morphs on the
+                // spring below.
+                if resized || !open {
                     motion_store.set(key.clone(), value);
+                    out[slot] = motion_store.animate(key.clone(), value, spec::FOLLOW, window, cx);
+                } else if dragged && slot < 2 {
+                    let dt = drag_dt.max(Duration::from_millis(1));
+                    out[slot] = motion_store.animate(
+                        key.clone(),
+                        value,
+                        Spec::tween(dt, FOLLOW_LINEAR),
+                        window,
+                        cx,
+                    );
+                } else {
+                    out[slot] = motion_store.animate(key.clone(), value, spec::FOLLOW, window, cx);
                 }
-                out[slot] = motion_store.animate(key.clone(), value, spec::FOLLOW, window, cx);
             }
             let rise = if sheet { 24.0 } else { RISE * scale };
             let drift = (1.0 - presence) * rise;
@@ -1178,7 +1257,11 @@ impl Element for LayerElement {
             // the parent's text), level with the anchor word.
             let from = match hang {
                 Hang::Parent(parent) => {
-                    let x = if placed.side == Side::Left { parent.left() } else { parent.right() };
+                    let x = if placed.side == Side::Left {
+                        parent.left()
+                    } else {
+                        parent.right()
+                    };
                     Bounds::new(point(x, anchor.origin.y), size(px(0.0), anchor.size.height))
                 }
                 Hang::Anchor | Hang::Sheet => anchor,
@@ -1249,8 +1332,13 @@ impl Element for LayerElement {
                 viewport.width - natural.size.width - px(place::MARGIN),
                 px(58.0),
             );
-            window.insert_hitbox(Bounds::new(origin, natural.size), HitboxBehavior::BlockMouse);
-            window.with_element_offset(origin - natural.origin, |window| element.prepaint(window, cx));
+            window.insert_hitbox(
+                Bounds::new(origin, natural.size),
+                HitboxBehavior::BlockMouse,
+            );
+            window.with_element_offset(origin - natural.origin, |window| {
+                element.prepaint(window, cx)
+            });
         }
         let mut layer = self.layer.borrow_mut();
         // A tracked trigger that did not report this frame while another
@@ -1325,6 +1413,12 @@ impl Element for LayerElement {
     ) {
         let facet = cx.facet();
         let palette = facet.palette();
+        // Register behind the content's own listeners. In the bubble phase
+        // buttons and scroll containers get the event first, then the plate
+        // consumes it before custom listeners on the page can see it. A
+        // BlockMouse hitbox only changes hit testing; it does not stop those
+        // window-wide listeners by itself.
+        self.block_pointer_through(window);
         for draw in &mut self.cards {
             if draw.hidden {
                 continue;
@@ -1335,7 +1429,10 @@ impl Element for LayerElement {
                 let line: Hsla = palette.peri.base.into();
                 let anchor = draw.anchor;
                 let underline = Bounds::new(
-                    point(anchor.origin.x, anchor.origin.y + anchor.size.height - px(1.5)),
+                    point(
+                        anchor.origin.x,
+                        anchor.origin.y + anchor.size.height - px(1.5),
+                    ),
                     size(anchor.size.width, px(1.5)),
                 );
                 window.paint_quad(fill(underline, line.opacity(t)));
@@ -1348,49 +1445,60 @@ impl Element for LayerElement {
                 );
                 window.paint_quad(fill(rect, line.opacity(t)));
             }
-            let chamfer = if draw.sheet { 14.0 } else { draw.kind.chamfer() };
+            let chamfer = if draw.sheet {
+                14.0
+            } else {
+                draw.kind.chamfer()
+            };
             // One group: plate, bevel and content composite once and fade
             // together (a translucent plate never shows the bevel through).
             let painted = draw.painted;
             let grow = draw.grow;
-            window.with_layer_transform(grow, |window| window.with_group_opacity(painted, t, |window| {
-                let shadow: Hsla = palette.shadow.into();
-                window.paint_chamfer_shadows(
-                    draw.painted,
-                    motion::compositing::chamfers(chamfer),
-                    &[
-                        BoxShadow {
-                            color: shadow.opacity(0.86),
-                            offset: point(px(0.0), px(18.0)),
-                            blur_radius: px(15.0),
-                            spread_radius: px(0.0),
-                            inset: false,
-                        },
-                        BoxShadow {
-                            color: shadow.opacity(0.5),
-                            offset: point(px(0.0), px(2.0)),
-                            blur_radius: px(3.0),
-                            spread_radius: px(0.0),
-                            inset: false,
-                        },
-                    ],
-                );
-                let rest = Edge::of(Bevel::Rest, palette);
-                let focus = Edge::of(Bevel::Focus, palette);
-                let spec = CutPaint {
-                    chamfer,
-                    edge: rest.mix(focus, draw.focus),
-                    fill: Some(palette_plate(draw.kind, palette)),
-                    ..CutPaint::new(palette)
-                };
-                paint_cut(window, draw.painted, &spec, palette);
-                let element = &mut draw.element;
-                window.with_element_opacity(Some(draw.swap), |window| {
-                    window.with_content_mask(Some(ContentMask { bounds: draw.painted }), |window| {
-                        element.paint(window, cx);
+            window.with_layer_transform(grow, |window| {
+                window.with_group_opacity(painted, t, |window| {
+                    let shadow: Hsla = palette.shadow.into();
+                    window.paint_chamfer_shadows(
+                        draw.painted,
+                        motion::compositing::chamfers(chamfer),
+                        &[
+                            BoxShadow {
+                                color: shadow.opacity(0.86),
+                                offset: point(px(0.0), px(18.0)),
+                                blur_radius: px(15.0),
+                                spread_radius: px(0.0),
+                                inset: false,
+                            },
+                            BoxShadow {
+                                color: shadow.opacity(0.5),
+                                offset: point(px(0.0), px(2.0)),
+                                blur_radius: px(3.0),
+                                spread_radius: px(0.0),
+                                inset: false,
+                            },
+                        ],
+                    );
+                    let rest = Edge::of(Bevel::Rest, palette);
+                    let focus = Edge::of(Bevel::Focus, palette);
+                    let spec = CutPaint {
+                        chamfer,
+                        edge: rest.mix(focus, draw.focus),
+                        fill: Some(palette_plate(draw.kind, palette)),
+                        ..CutPaint::new(palette)
+                    };
+                    paint_cut(window, draw.painted, &spec, palette);
+                    let element = &mut draw.element;
+                    window.with_element_opacity(Some(draw.swap), |window| {
+                        window.with_content_mask(
+                            Some(ContentMask {
+                                bounds: draw.painted,
+                            }),
+                            |window| {
+                                element.paint(window, cx);
+                            },
+                        );
                     });
-                });
-            }));
+                })
+            });
         }
         if let Some((element, _)) = self.pins.as_mut() {
             element.paint(window, cx);
@@ -1398,6 +1506,60 @@ impl Element for LayerElement {
         for element in &mut self.extras {
             element.paint(window, cx);
         }
+        let now = motion::now(cx);
+        probe::record_stack(cx, || {
+            let layer = self.layer.borrow();
+            let entries = self
+                .cards
+                .iter()
+                .filter(|draw| !draw.hidden)
+                .filter_map(|draw| {
+                    let card = layer.model.card(draw.id)?;
+                    let parent =
+                        card.level
+                            .and_then(|level| level.checked_sub(1))
+                            .and_then(|level| {
+                                self.cards
+                                    .iter()
+                                    .find(|candidate| {
+                                        !candidate.hidden && candidate.level == Some(level)
+                                    })
+                                    .and_then(|parent| layer.model.card(parent.id))
+                                    .map(|parent| parent.key.to_string())
+                            });
+                    Some(probe::StackEntry {
+                        key: card.key.to_string(),
+                        kind: match card.kind {
+                            FloatKind::Tip => "tip",
+                            FloatKind::Peek => "peek",
+                            FloatKind::Lens => "lens",
+                            FloatKind::Menu => "menu",
+                        }
+                        .into(),
+                        parent,
+                        phase: if !card.is_open() {
+                            probe::StackPhase::Leaving
+                        } else if card.presence.live(now) {
+                            probe::StackPhase::Entering
+                        } else {
+                            probe::StackPhase::Open
+                        },
+                        pinned: false,
+                        bounds: Some(probe::BoundsSample {
+                            key: card.key.to_string(),
+                            x: draw.painted.origin.x.into(),
+                            y: draw.painted.origin.y.into(),
+                            width: draw.painted.size.width.into(),
+                            height: draw.painted.size.height.into(),
+                        }),
+                    })
+                })
+                .collect();
+            probe::StackSample {
+                layer: "float".into(),
+                entries,
+            }
+        });
         self.listen(window);
         let mut layer = self.layer.borrow_mut();
         layer.frame += 1;
@@ -1405,6 +1567,41 @@ impl Element for LayerElement {
 }
 
 impl LayerElement {
+    fn block_pointer_through(&self, window: &mut Window) {
+        let hitboxes: Vec<Hitbox> = self
+            .hitboxes
+            .iter()
+            .map(|(_, hitbox)| hitbox.clone())
+            .collect();
+        window.on_mouse_event({
+            let hitboxes = hitboxes.clone();
+            move |_: &MouseDownEvent, phase, window, cx| {
+                if phase == gpui::DispatchPhase::Bubble
+                    && hitboxes.iter().any(|hitbox| hitbox.is_hovered(window))
+                {
+                    cx.stop_propagation();
+                }
+            }
+        });
+        window.on_mouse_event({
+            let hitboxes = hitboxes.clone();
+            move |_: &MouseUpEvent, phase, window, cx| {
+                if phase == gpui::DispatchPhase::Bubble
+                    && hitboxes.iter().any(|hitbox| hitbox.is_hovered(window))
+                {
+                    cx.stop_propagation();
+                }
+            }
+        });
+        window.on_mouse_event(move |_: &ScrollWheelEvent, phase, window, cx| {
+            if phase == gpui::DispatchPhase::Bubble
+                && hitboxes.iter().any(|hitbox| hitbox.is_hovered(window))
+            {
+                cx.stop_propagation();
+            }
+        });
+    }
+
     /// The layer's own window listeners. Registered last, so in the capture
     /// phase they run after every trigger has reported.
     fn listen(&self, window: &mut Window) {
@@ -1426,10 +1623,24 @@ impl LayerElement {
                         .filter(|(_, report)| report.seq != seq)
                         .map(|(key, _)| key.clone())
                         .collect();
-                    state.model.triggers_gone(|key| gone.contains(key), now);
-                    state.triggers.retain(|_, report| report.seq == seq);
-                    state.seq += 1;
+                    // Missing a mouse report means the pointer left that
+                    // trigger, not that the trigger was unmounted. Virtual
+                    // canvas triggers report only the current picked symbol.
+                    // Register the current plate hold before releasing the
+                    // old trigger so transit into its card keeps it alive.
                     state.model.pointer_at(Some(event.position), now);
+                    for key in &gone {
+                        state.model.leave(key, now);
+                        if let Some(report) = state.triggers.get_mut(key) {
+                            report.hovered = false;
+                        }
+                    }
+                    let live: Vec<ElementId> =
+                        state.model.cards().map(|card| card.key.clone()).collect();
+                    state.triggers.retain(|key, report| {
+                        report.seq == seq || report.view.is_some() || live.contains(key)
+                    });
+                    state.seq += 1;
                 }
                 settle(&layer, window, cx);
             }
@@ -1442,7 +1653,22 @@ impl LayerElement {
                 }
                 let Some(layer) = layer.upgrade() else { return };
                 let now = motion::now(cx);
-                layer.borrow_mut().model.pointer_at(None, now);
+                {
+                    let mut state = layer.borrow_mut();
+                    state.model.pointer_at(None, now);
+                    let hovered: Vec<ElementId> = state
+                        .triggers
+                        .iter_mut()
+                        .filter_map(|(key, report)| {
+                            let hovered = report.hovered;
+                            report.hovered = false;
+                            hovered.then(|| key.clone())
+                        })
+                        .collect();
+                    for key in hovered {
+                        state.model.leave(&key, now);
+                    }
+                }
                 settle(&layer, window, cx);
             }
         });
@@ -1475,28 +1701,38 @@ impl LayerElement {
 }
 
 fn publish_presence(card: &Card, value: f32, now: Instant, cx: &mut App) {
+    publish_presence_segment(card.id, card.presence, value, now, cx);
+}
+
+fn publish_finished_presence(layer: &Rc<RefCell<Layer>>, now: Instant, cx: &mut App) {
+    let finished = layer.borrow_mut().model.take_finished_presence();
+    for (id, presence) in finished {
+        publish_presence_segment(id, presence, 0.0, now, cx);
+    }
+}
+
+fn publish_presence_segment(id: u64, presence: Presence, value: f32, now: Instant, cx: &mut App) {
     if !probe::enabled(cx) {
         return;
     }
     let epoch = motion::epoch(cx);
     let millis = |at: Instant| at.saturating_duration_since(epoch).as_secs_f64() * 1000.0;
-    let presence = card.presence;
     let live = presence.live(now);
     probe::record_track(cx, || TrackSample {
-        key: format!("float-{}.presence", card.id),
+        key: format!("float-{id}.presence"),
         kind: TrackKind::Tween,
         value,
         target: presence.target(),
-        velocity: 0.0,
+        velocity: presence.velocity(now),
         started_ms: millis(presence.since()),
         budget_ms: presence.span().as_secs_f64() * 1000.0,
         at_ms: millis(now),
         live,
         overshoot_ratio: 0.0,
-        group: Some(format!("float-{}", card.id)),
+        overshoot_absolute: 0.0,
+        group: Some(format!("float-{id}")),
     });
 }
-
 
 // ------------------------------------------------------------------ pins
 
@@ -1528,7 +1764,10 @@ fn pin_row(
     let key = pin.key.clone();
     let group: SharedString = format!("pin-{}", pin.key).into();
     let row = div()
-        .id(ElementId::NamedChild(std::sync::Arc::new(key.clone()), "pin".into()))
+        .id(ElementId::NamedChild(
+            std::sync::Arc::new(key.clone()),
+            "pin".into(),
+        ))
         .group(group.clone())
         .relative()
         .flex()
@@ -1539,11 +1778,18 @@ fn pin_row(
         .child(div().flex_1().min_w_0().child(content))
         .child(
             div()
-                .id(ElementId::NamedChild(std::sync::Arc::new(key.clone()), "unpin".into()))
+                .id(ElementId::NamedChild(
+                    std::sync::Arc::new(key.clone()),
+                    "unpin".into(),
+                ))
                 .invisible()
                 .group_hover(group, |style| style.visible())
                 .cursor_pointer()
-                .child(icons::ui(icons::Icon::Pin, icons::IconSize::S12, palette.ink3))
+                .child(icons::ui(
+                    icons::Icon::Pin,
+                    icons::IconSize::S12,
+                    palette.ink3,
+                ))
                 .on_click(move |_, window, cx| {
                     unpin(&key, window, cx);
                 }),
@@ -1571,7 +1817,11 @@ fn pins_header(measure: &Measure, palette: &Palette) -> AnyElement {
         .mb(measure.space(Space::Snug))
         .set(PINS_HEAD, measure)
         .text_color(palette.ink3.hsla())
-        .child(icons::ui(icons::Icon::Pin, icons::IconSize::S12, palette.ink3))
+        .child(icons::ui(
+            icons::Icon::Pin,
+            icons::IconSize::S12,
+            palette.ink3,
+        ))
         .child("Pinned");
     if measure.reveal().keys {
         head = head.child(div().flex_1()).child(crate::controls::keys(
@@ -1695,7 +1945,12 @@ impl Element for Trigger {
         anchor(&self.key, bounds, window, cx);
         // In hint mode every trigger is a target: its code opens the float.
         let request = self.request.clone();
-        super::hint::target(bounds, move |window, cx| open(request(bounds), window, cx), window, cx);
+        super::hint::target(
+            bounds,
+            move |window, cx| open(request(bounds), window, cx),
+            window,
+            cx,
+        );
         (hitbox, bounds)
     }
 

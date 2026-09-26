@@ -185,6 +185,25 @@ impl Presence {
         self.to
     }
 
+    /// The rate of change at `now`, in units per second: the same easing
+    /// [`value`](Self::value) samples, differentiated (matches
+    /// `motion::store`'s own tween velocity, `(to - from) * slope / span`),
+    /// so a probe reading this alongside `value` sees one consistent curve
+    /// instead of a real move reported at velocity 0.
+    #[must_use]
+    pub fn velocity(&self, now: Instant) -> f32 {
+        if self.duration.is_zero() {
+            return 0.0;
+        }
+        let span = self.duration.as_secs_f32();
+        let run = now.saturating_duration_since(self.since).as_secs_f32();
+        if run >= span {
+            return 0.0;
+        }
+        let progress = (run / span).clamp(0.0, 1.0);
+        (self.to - self.from) * self.curve().slope(progress) / span
+    }
+
     /// When the current segment ends.
     #[must_use]
     pub fn ends(&self) -> Instant {
@@ -335,6 +354,7 @@ pub struct Model {
     next_id: u64,
     reduced: bool,
     closed: Vec<u64>,
+    finished_presence: Vec<(u64, Presence)>,
     pressed_closed: Option<(ElementId, Instant)>,
     moved: Option<Instant>,
 }
@@ -437,13 +457,25 @@ impl Model {
         std::mem::take(&mut self.closed)
     }
 
+    /// Exit segments retired since the last drain. Keep their real timing
+    /// long enough for the layer to publish the terminal sample.
+    pub(crate) fn take_finished_presence(&mut self) -> Vec<(u64, Presence)> {
+        std::mem::take(&mut self.finished_presence)
+    }
+
     /// Whether anything is open, pending or still moving.
     #[must_use]
     pub fn is_idle(&self, now: Instant) -> bool {
         self.pending.is_none()
             && self.tip_pending.is_none()
-            && self.cards.iter().all(|card| card.is_open() && !card.presence.live(now))
-            && self.pins.iter().all(|pin| !pin.leaving && !pin.presence.live(now))
+            && self
+                .cards
+                .iter()
+                .all(|card| card.is_open() && !card.presence.live(now))
+            && self
+                .pins
+                .iter()
+                .all(|pin| !pin.leaving && !pin.presence.live(now))
     }
 
     /// Whether nothing needs another frame or timer at `now`.
@@ -558,11 +590,10 @@ impl Model {
             });
             return;
         }
-        let warm = self
-            .cards
-            .iter()
-            .any(|card| card.is_open() && card.level == Some(level) && card.kind == request.kind)
-            || self.is_warm_since(request.kind, Some(level), now);
+        let warm =
+            self.cards.iter().any(|card| {
+                card.is_open() && card.level == Some(level) && card.kind == request.kind
+            }) || self.is_warm_since(request.kind, Some(level), now);
         if warm {
             self.show(request, Some(level), false, now);
         } else {
@@ -637,9 +668,8 @@ impl Model {
             self.moved = Some(now);
         }
         for card in &mut self.cards {
-            card.card_hover = card.is_open()
-                && card.level.is_some()
-                && at.is_some_and(|at| card.covers(at));
+            card.card_hover =
+                card.is_open() && card.level.is_some() && at.is_some_and(|at| card.covers(at));
         }
         if moved {
             self.update_aim(now);
@@ -668,7 +698,11 @@ impl Model {
     /// floats (pins stay) and returns `true`.
     pub fn press(&mut self, at: Point<Pixels>, now: Instant) -> bool {
         self.tick(now);
-        if self.cards.iter().any(|card| card.is_open() && card.covers(at)) {
+        if self
+            .cards
+            .iter()
+            .any(|card| card.is_open() && card.covers(at))
+        {
             return false;
         }
         let pressed = self
@@ -687,7 +721,11 @@ impl Model {
     /// tips close; hover cards go stale until their trigger re-anchors.
     pub fn scroll(&mut self, at: Point<Pixels>, now: Instant) {
         self.tick(now);
-        if self.cards.iter().any(|card| card.is_open() && card.covers(at)) {
+        if self
+            .cards
+            .iter()
+            .any(|card| card.is_open() && card.covers(at))
+        {
             return;
         }
         self.tip_pending = None;
@@ -790,7 +828,11 @@ impl Model {
     pub fn step_back(&mut self, now: Instant) -> bool {
         self.tick(now);
         let mut any = false;
-        if let Some(index) = self.cards.iter().position(|card| card.is_open() && card.level.is_none()) {
+        if let Some(index) = self
+            .cards
+            .iter()
+            .position(|card| card.is_open() && card.level.is_none())
+        {
             self.close_index(index, now);
             any = true;
         }
@@ -893,7 +935,11 @@ impl Model {
 
     /// Closes the card whose trigger is `key`. Returns whether one was open.
     pub fn close_key(&mut self, key: &ElementId, now: Instant) -> bool {
-        match self.cards.iter().position(|card| card.is_open() && card.key == *key) {
+        match self
+            .cards
+            .iter()
+            .position(|card| card.is_open() && card.key == *key)
+        {
             Some(index) => {
                 self.close_index(index, now);
                 self.tick(now);
@@ -993,14 +1039,24 @@ impl Model {
             }
         }
         // Exits that settled.
-        self.cards
-            .retain(|card| card.is_open() || card.presence.live(now) || card.presence.value(now) > 0.0);
+        let finished = &mut self.finished_presence;
+        self.cards.retain(|card| {
+            let keep = card.is_open() || card.presence.live(now) || card.presence.value(now) > 0.0;
+            if !keep {
+                finished.push((card.id, card.presence));
+            }
+            keep
+        });
         self.pins
             .retain(|pin| !pin.leaving || pin.presence.live(now) || pin.presence.value(now) > 0.0);
-        self.warm.retain(|_, at| now.saturating_duration_since(*at) < WARM);
+        self.warm
+            .retain(|_, at| now.saturating_duration_since(*at) < WARM);
         if let Some(aim) = self.aim
             && (now.saturating_duration_since(aim.moved) >= AIM_IDLE
-                || !self.cards.iter().any(|card| card.id == aim.card && card.is_open()))
+                || !self
+                    .cards
+                    .iter()
+                    .any(|card| card.id == aim.card && card.is_open()))
         {
             self.aim = None;
         }
@@ -1093,7 +1149,13 @@ impl Model {
     /// Shows `request` at `level`: reuses (morphs) the card of the same kind
     /// already there or leaving there, else opens a new one; closes every
     /// other open card at that level or deeper.
-    fn show(&mut self, request: FloatRequest, level: Option<usize>, sticky: bool, now: Instant) -> u64 {
+    fn show(
+        &mut self,
+        request: FloatRequest,
+        level: Option<usize>,
+        sticky: bool,
+        now: Instant,
+    ) -> u64 {
         let reuse = self
             .cards
             .iter()
@@ -1304,7 +1366,11 @@ impl Model {
         let Some(aim) = self.aim else {
             return;
         };
-        let Some(card) = self.cards.iter().find(|card| card.id == aim.card && card.is_open()) else {
+        let Some(card) = self
+            .cards
+            .iter()
+            .find(|card| card.id == aim.card && card.is_open())
+        else {
             self.aim = None;
             return;
         };
@@ -1337,7 +1403,10 @@ impl Model {
 fn grow(bounds: Bounds<Pixels>, by: f32) -> Bounds<Pixels> {
     Bounds::new(
         point(bounds.origin.x - px(by), bounds.origin.y - px(by)),
-        gpui::size(bounds.size.width + px(2.0 * by), bounds.size.height + px(2.0 * by)),
+        gpui::size(
+            bounds.size.width + px(2.0 * by),
+            bounds.size.height + px(2.0 * by),
+        ),
     )
 }
 
