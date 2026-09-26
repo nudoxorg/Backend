@@ -761,6 +761,9 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
                 Json::obj([("node", node(Some(id))), ("gathered", Json::num(g))])
             }),
         ),
+        ("visible_prism",state.frame.as_ref().map_or(Json::Null,|frame|Json::obj([
+            ("node",node(Some(frame.node))),("gathered",Json::num(frame.e)),
+        ]))),
         (
             "prism_labels",
             Json::Arr(state.frame.as_ref().map_or_else(Vec::new, |f| {
@@ -957,7 +960,7 @@ fn with(strategy: Strategy, src: Src, at: At, window: &mut Window, cx: &mut App)
                     }).min_by_key(|&id|(degree(id),id));
                 if let Some(sparse)=sparse.filter(|&id|degree(id)*2<degree(dense)) {
                     cx.set_global(ExpectedHoverTargets(Some((dense,sparse))));
-                    let script=format!("leave @0; route graph-hover {dense} @200; leave @900; route graph-hover {dense} @1400; route graph-hover-drag-start {dense} @2000; route graph-hover-drag-move 80 40 @2032; route graph-hover-drag-end 80 40 @2300; leave @2400; route graph-hover {dense} @3000; route graph-hover {sparse} @3080; route graph-hover {dense} @3120; route graph-hover {sparse} @3180; route graph-hover {dense} @3260; leave @3600; leave @6200");
+                    let script=format!("leave @0; route graph-hover {dense} @200; leave @900; route graph-hover {dense} @1400; route graph-hover-drag-start {dense} @2000; route graph-hover-drag-move 80 40 @2032; route graph-hover-drag-end 80 40 @2300; leave @2400; route graph-hover {dense} @3000; route graph-hover {sparse} @3080; route graph-hover {dense} @3120; route graph-hover {sparse} @3180; route graph-hover {dense} @3260; leave @3600; route graph-hover-drag-start {dense} @4300; route graph-hover-drag-move 80 40 @4300; route graph-hover-drag-end 80 40 @4300; leave @4600; leave @6200");
                     declare_script(Box::leak(script.into_boxed_str()),cx);
                 }
             }

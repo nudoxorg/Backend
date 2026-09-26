@@ -670,7 +670,7 @@ fn opening_find_during_focus_flight_and_closing_it_after_arrival_restores_prism(
             if tick.drawn.at_ms <= 2000 {
                 assert_eq!(graph.focused(),Some(0),"find lost in-flight focus, reduced={reduced}");
                 assert!(state.find_open,"nativefind did not open, reduced={reduced}");
-                assert!(state.prism.is_none_or(|(_,g)|g==0.0),"find visibly gathers hiddenfocusprism");
+                assert!(state.frame.is_none(),"find visibly gathers prism roads despite actual search mode, reduced={reduced}, at={}ms",tick.drawn.at_ms);
             } else if tick.drawn.at_ms == 3200 {
                 assert!(!state.find_open && !state.searching);
                 assert_eq!(graph.focused(),Some(0));
