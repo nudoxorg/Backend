@@ -2522,7 +2522,14 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 {
                     if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
                         if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
-                            if let Ok(name) = core::str::from_utf8(written) {
+                            let call_span = member_call_callee_span(self.source, reference.span)
+                                .unwrap_or(reference.span);
+                            let Some(span) = owner_relative_span(owner_span, call_span) else {
+                                continue;
+                            };
+                            let name_bytes = member_call_callee_name(self.source, reference.span)
+                                .unwrap_or(written);
+                            if let Ok(name) = core::str::from_utf8(name_bytes) {
                                 self.facts
                                     .push_owned_package_occurrence(
                                         owner,
@@ -2864,6 +2871,53 @@ fn include_spelling_span<'source>(
             end: include.span.start + (open_at as u32 + 1 + relative as u32),
         },
     ))
+}
+
+/// When libclang maps a C++ member call to `CallExpr` but leaves the reference
+/// span on the receiver, the callee token still lives in the main-source bytes
+/// immediately after that span as `.name(` or `->name(`.
+fn member_call_callee_span(source: &[u8], span: SourceSpan) -> Option<SourceSpan> {
+    let tail_start = usize::try_from(span.end).ok()?;
+    let tail = source.get(tail_start..)?;
+    let (prefix_len, rest) = if let Some(rest) = tail.strip_prefix(b".") {
+        (1, rest)
+    } else if let Some(rest) = tail.strip_prefix(b"->") {
+        (2, rest)
+    } else {
+        return None;
+    };
+    let name_len = rest
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .count();
+    if name_len == 0 {
+        return None;
+    }
+    let after_name = rest.get(name_len..)?;
+    let next = after_name
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())?;
+    if *next != b'(' {
+        return None;
+    }
+    let start = tail_start.checked_add(prefix_len)?;
+    let end = start.checked_add(name_len)?;
+    Some(SourceSpan {
+        start: u32::try_from(start).ok()?,
+        end: u32::try_from(end).ok()?,
+    })
+}
+
+/// Borrows the callee identifier of one member call when the authority span
+/// names the receiver instead of the method.
+fn member_call_callee_name<'source>(
+    source: &'source [u8],
+    span: SourceSpan,
+) -> Option<&'source [u8]> {
+    let callee = member_call_callee_span(source, span)?;
+    source.get(
+        usize::try_from(callee.start).ok()?..usize::try_from(callee.end).ok()?,
+    )
 }
 
 /// Projects an absolute reference span onto its owner's span start. The
