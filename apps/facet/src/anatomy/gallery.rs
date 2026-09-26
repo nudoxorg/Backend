@@ -10,14 +10,16 @@
 //! scene scaffolding; the product's hero is the shell's.
 
 use super::text::Links;
-use super::{can, contract, does, fork, holds, in_use, k, pipe, prism, roles};
+use super::{can, contract, does, fork, holds, in_use, k, pipe, prism, recipe, roles};
 use crate::gallery::Scene;
 use crate::graph::{NodeId, Package, World};
 use crate::measure::{Measure, Set};
+use crate::fonts::Typeset as _;
 use crate::overlay::float;
-use crate::overlay::peek::{Peek, SymbolPeek};
+use crate::overlay::peek::Peek;
 use crate::paint::gem::gem;
-use crate::semantics::model::{Facts, Shape, Use};
+use crate::semantics::model::{Facts, RecipeView, Shape, Use};
+use crate::semantics::recipes::Recipes;
 use crate::semantics::page::{Page, in_use as mine_uses, page};
 use crate::semantics::types::Target;
 use crate::semantics::Names;
@@ -55,6 +57,24 @@ pub(crate) const SCENES: &[Scene] = &[
         build: |_, cx| scene("serde_json::de::from_str", cx),
     },
     Scene {
+        id: "anatomy-getting-one",
+        title: "Anatomy: Getting one (present::page::Page) — one route over four steps, ⌥ for its code",
+        size: READER,
+        build: |_, cx| scene("present::page::Page", cx),
+    },
+    Scene {
+        id: "anatomy-value",
+        title: "Anatomy: a fork with Getting one (serde_json::value::Value) — default, folded from, or pick a variant",
+        size: READER,
+        build: |_, cx| scene("serde_json::value::Value", cx),
+    },
+    Scene {
+        id: "anatomy-deserializer",
+        title: "Anatomy: Getting one (serde_json::de::Deserializer) — three makers of equal cost",
+        size: READER,
+        build: |_, cx| scene("serde_json::de::Deserializer", cx),
+    },
+    Scene {
         id: "anatomy-contract",
         title: "Anatomy: a contract with look-alikes folded (serde_core::de::Visitor) — you write, you get, prism",
         size: READER,
@@ -89,29 +109,27 @@ fn read(package: &Package, file: &str) -> Option<Arc<str>> {
     std::fs::read_to_string(fixture().join(dir).join(file)).ok().map(Arc::from)
 }
 
-/// The peek a link raises: the graph's symbol card for a symbol the world
-/// holds.
+/// What the page's links know: yours (mint), and the peek they raise — the
+/// graph's own symbol card (`graph::peek::symbol_peek`), so page and graph
+/// peek alike.
 fn links(world: &'static World) -> Links {
     Links {
         yours: Rc::new(move |target| matches!(target, Target::Node(n) if world.yours(*n))),
-        peek: Rc::new(move |target| {
-            let Target::Node(n) = target else { return None };
-            let node = world.node(*n);
-            let place = world.qual(*n);
-            Some(Peek::Symbol(SymbolPeek {
-                kind: Some(super::icon_kind(node.kind)),
-                name: world.name_of(*n),
-                place: SharedString::from(format!("{} in `{}`", node.kind.text(), place)),
-                path: place,
-                sentence: node.doc.clone(),
-                ..SymbolPeek::default()
-            }))
+        peek: Rc::new(move |target| match target {
+            Target::Node(n) => Some(Peek::Symbol(crate::graph::peek::symbol_peek(world, *n))),
+            Target::Path(_) => None,
         }),
     }
 }
 
 struct AnatomyScene {
-    node: Option<(NodeId, Page, Vec<(Use, SharedString)>)>,
+    node: Option<(NodeId, Page, Vec<(Use, SharedString)>, Option<RecipeView>)>,
+}
+
+thread_local! {
+    /// The producer table and its runs over the fixture world (built on
+    /// first use; the gallery draws on one thread).
+    static RECIPES: &'static Recipes = Box::leak(Box::new(Recipes::new(&world().0)));
 }
 
 fn scene(qualified: &'static str, cx: &mut App) -> AnyView {
@@ -121,7 +139,8 @@ fn scene(qualified: &'static str, cx: &mut App) -> AnyView {
             let name = world.name_of(u.caller);
             (u, name)
         });
-        (node, page(world, names, node), uses.collect())
+        let recipe = RECIPES.with(|r| r.getting_one(world, node).or_else(|| r.calling_it(world, node)).map(|s| s.view(world)));
+        (node, page(world, names, node), uses.collect(), recipe)
     });
     cx.new(|_: &mut Context<AnatomyScene>| AnatomyScene { node }).into()
 }
@@ -147,7 +166,7 @@ const HERO_NAME: TypeRole = TypeRole { face: Face::Display, weight: 700.0, size:
 const LEDE: TypeRole = TypeRole { face: Face::Serif, weight: 400.0, size: 18.0, line: 25.0, tracking: 0.0, italic: true };
 const FACTS: TypeRole = TypeRole { face: Face::Ui, weight: 400.0, size: 12.5, line: 18.0, tracking: 0.0, italic: false };
 
-fn hero(world: &World, node: NodeId, facts: &Facts, measure: &Measure, cx: &App) -> AnyElement {
+fn hero(world: &World, node: NodeId, facts: &Facts, measure: &Measure, reader: f32, cx: &App) -> AnyElement {
     let palette = cx.facet().palette();
     let n = world.node(node);
     let narrow = measure.effective() < 560.0;
@@ -157,9 +176,21 @@ fn hero(world: &World, node: NodeId, facts: &Facts, measure: &Measure, cx: &App)
         .flex()
         .flex_col()
         .min_w_0()
-        .child(div().set(HERO_NAME, measure).text_color(palette.ink0.hsla()).child(breakable(&n.name)));
+        .child(
+            div()
+                .typeset_at(TypeRole { size: (20.0 + 0.02 * reader / measure.scale()).clamp(30.0, 46.0), line: 1.02 * (20.0 + 0.02 * reader / measure.scale()).clamp(30.0, 46.0), ..HERO_NAME }, measure.scale())
+                .text_color(palette.ink0.hsla())
+                .child(breakable(&n.name)),
+        );
     if let Some(doc) = &n.doc {
-        text = text.child(div().mt(k(measure, 6.0)).set(LEDE, measure).text_color(palette.ink2.hsla()).child(doc.clone()));
+        let lede = (12.0 + 0.005 * reader / measure.scale()).clamp(15.0, 18.0);
+        text = text.child(
+            div()
+                .mt(k(measure, 6.0))
+                .typeset_at(TypeRole { size: lede, line: lede * 1.4, ..LEDE }, measure.scale())
+                .text_color(palette.ink2.hsla())
+                .child(doc.clone()),
+        );
     }
     let head = if narrow {
         div().flex().flex_col().gap(k(measure, 12.0)).child(gem_el).child(text)
@@ -179,10 +210,11 @@ fn hero(world: &World, node: NodeId, facts: &Facts, measure: &Measure, cx: &App)
         .into_any_element()
 }
 
-fn body(world: &'static World, node: NodeId, page: Page, uses: Vec<(Use, SharedString)>, measure: &Measure, cx: &App) -> Vec<AnyElement> {
+#[allow(clippy::too_many_arguments)]
+fn body(world: &'static World, node: NodeId, page: Page, uses: Vec<(Use, SharedString)>, recipe_view: Option<RecipeView>, measure: &Measure, reader: f32, cx: &App) -> Vec<AnyElement> {
     let Page { facts, shape, caps, prism: columns, does: members, .. } = page;
     let links = links(world);
-    let mut out = vec![hero(world, node, &facts, measure, cx)];
+    let mut out = vec![hero(world, node, &facts, measure, reader, cx)];
     match shape {
         Shape::Fork(f) => out.push(fork("fork", f, measure, &links).into_any_element()),
         Shape::Holds(h) => out.push(holds("holds", h, measure, &links).into_any_element()),
@@ -192,6 +224,9 @@ fn body(world: &'static World, node: NodeId, page: Page, uses: Vec<(Use, SharedS
     }
     if !caps.is_empty() {
         out.push(can("can", caps, measure).into_any_element());
+    }
+    if let Some(view) = recipe_view {
+        out.push(recipe("recipe", view, measure, &links).into_any_element());
     }
     out.push(prism("prism", Target::Node(node), world.node(node).name.clone(), columns, measure, &links).into_any_element());
     if !members.is_empty() {
@@ -214,7 +249,7 @@ impl Render for AnatomyScene {
         let folio = width.min(900.0);
         let measure = facet.measure(px(folio - pad_x * 2.0));
         let content: Vec<AnyElement> = match &self.node {
-            Some((node, page, uses)) => body(&world().0, *node, page.clone(), uses.clone(), &measure, cx),
+            Some((node, page, uses, recipe_view)) => body(&world().0, *node, page.clone(), uses.clone(), recipe_view.clone(), &measure, width, cx),
             None => vec![div().set(roles::QUIET, &measure).text_color(palette.ink3.hsla()).child("The fixture world is not here.").into_any_element()],
         };
         div()
