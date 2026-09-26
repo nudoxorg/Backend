@@ -1,8 +1,7 @@
 //! Durable typed owner for follows, projects, and the shared session tree.
 
 use backend_engine::{
-    DeclarationRecord, DependencyFacts, ForgeManifestRecord, ForgePackageFact, ForgePackageRecord,
-    ForgeRepositoryMetadataRecord, PackageDependencyRecord, PackageDependencySourceFacts,
+    DeclarationRecord, DependencyFacts, PackageDependencyRecord, PackageDependencySourceFacts,
     PackageReference, ProductText, ProductTreeNodeId as TreeNodeId, ProjectId, ProjectName,
     ProjectRecord, ProjectSelector, RegistryMetadata, RegistryPackageRecord, ReleaseRecord, RowId,
     SemanticGenerationId, SemanticLanguageProfile, SemanticVersionRecord, SubscriptionRecord,
@@ -161,14 +160,11 @@ impl ProductState {
             SurfaceCommand::Package { package } => {
                 (SurfaceReply::Package(package_page(view, catalog, &package)?), false)
             }
-            SurfaceCommand::ForgeAdd { coordinate } => (
-                SurfaceReply::ForgePackageAdded(forge_unavailable(&coordinate)),
-                false,
-            ),
-            SurfaceCommand::ForgeReference { coordinate } => (
-                SurfaceReply::ForgePackageReferenced(forge_unavailable(&coordinate)),
-                false,
-            ),
+            SurfaceCommand::ForgeAdd { .. } | SurfaceCommand::ForgeReference { .. } => {
+                return Err(
+                    "forge acquisition authority is not configured in this owner".to_owned(),
+                );
+            }
             SurfaceCommand::Dependencies { package } => (
                 SurfaceReply::Dependencies(dependencies(dependency_facts, &package)?),
                 false,
@@ -537,38 +533,6 @@ impl ProductState {
             self.state.active = None;
         }
         Ok(count)
-    }
-}
-
-fn forge_unavailable(coordinate: &ProductText) -> ForgePackageRecord {
-    let reason =
-        ProductText::from_static("forge acquisition authority is not configured in this owner");
-    let unavailable_text = || ForgePackageFact::<ProductText>::Unavailable(reason.clone());
-    let unavailable_topics = || ForgePackageFact::<Box<[ProductText]>>::Unavailable(reason.clone());
-    let unavailable_number = || ForgePackageFact::<u64>::Unavailable(reason.clone());
-    let owner = ProductText::from_static("unknown");
-    let repository = ProductText::from_static("unknown");
-    let unavailable_metadata = ForgeRepositoryMetadataRecord {
-        owner: unavailable_text(),
-        description: unavailable_text(),
-        license: unavailable_text(),
-        readme: unavailable_text(),
-        topics: unavailable_topics(),
-        stars: unavailable_number(),
-        forks: unavailable_number(),
-    };
-    ForgePackageRecord {
-        coordinate: coordinate.clone(),
-        provider: ProductText::from_static("unknown"),
-        owner,
-        repository,
-        revision: coordinate.clone(),
-        subdir: None,
-        commit: unavailable_text(),
-        tree: unavailable_text(),
-        metadata: unavailable_metadata,
-        manifests: Box::new([] as [ForgeManifestRecord; 0]),
-        source: unavailable_text(),
     }
 }
 
