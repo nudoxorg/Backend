@@ -3271,6 +3271,36 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 continue;
             }
             emitted_field_spans.push(span);
+            if let Some(field) = target {
+                if self.ordinal_of_field(&field).is_none()
+                    && let Some(package_path) = authority.cross_file_field_package_path(field)
+                    && let Some(owner) = self.owner_of(span)
+                {
+                    let owner_span = self
+                        .rows
+                        .iter()
+                        .find(|row| row.ordinal == owner)
+                        .map(|row| row.span)
+                        .ok_or_else(admission)?;
+                    let written = self.bytes_of(span)?;
+                    let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                    let relative = relative_span(span, owner_span)?;
+                    self.facts
+                        .push_owned_package_occurrence(
+                            owner,
+                            CARGO_ECOSYSTEM,
+                            &package_path,
+                            name,
+                            name,
+                            Some(EntityKind::Field),
+                            ReferenceKind::FieldAccess,
+                            OccurrenceConfidence::Oracle,
+                            relative,
+                        )
+                        .map_err(|_| admission())?;
+                    continue;
+                }
+            }
             let confidence = occurrence_confidence(target.is_some());
             let target = target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
             self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
