@@ -6,6 +6,9 @@ use crate::{
     ViewStateRoot,
 };
 
+#[cfg(test)]
+use backend_semantic::ReadManifest;
+
 mod query;
 
 pub use query::{
