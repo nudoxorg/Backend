@@ -91,6 +91,15 @@ impl ProjectCallableIndex {
                         .or_default()
                         .push(identity);
                 }
+                if matches!(
+                    entity.entity.kind,
+                    ItemKind::Constant | ItemKind::Static | ItemKind::Variant
+                ) {
+                    mention_by_path_name_kind
+                        .entry((path.clone(), name.to_owned(), entity.entity.kind))
+                        .or_default()
+                        .push(identity);
+                }
                 if entity.entity.kind == ItemKind::Field {
                     if let Some((immediate, chain)) =
                         owner_chain_keys(&session, &image, entity.entity.id)?
@@ -730,6 +739,70 @@ pub(crate) fn join_project_field(
     } else {
         foreign_namespace_field_retarget(image, external, index)?
     };
+    Ok(identity.filter(|candidate| published.contains(candidate)))
+}
+
+pub(crate) fn foreign_package_value_retarget(
+    image: &SemanticImageView<'_>,
+    external: ExternalId,
+    caller_path: &str,
+    project_paths: &BTreeSet<String>,
+    index: &ProjectCallableIndex,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(None);
+    };
+    let ForeignTargetOrigin::Package { package, .. } = foreign.origin else {
+        return Ok(None);
+    };
+    let Some(kind) = foreign.kind else {
+        return Ok(None);
+    };
+    if !matches!(kind, ItemKind::Constant | ItemKind::Static | ItemKind::Variant) {
+        return Ok(None);
+    }
+    let package_atom = image
+        .atom(package)
+        .ok_or_else(|| BuiltinModelError("semantic graph package atom is missing".to_owned()))?;
+    let path_atom = image
+        .atom(foreign.path)
+        .ok_or_else(|| BuiltinModelError("semantic graph path atom is missing".to_owned()))?;
+    let display_atom = image
+        .atom(foreign.display)
+        .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
+    let package = std::str::from_utf8(package_atom).map_err(|_| {
+        BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
+    })?;
+    let path = std::str::from_utf8(path_atom).map_err(|_| {
+        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
+    })?;
+    let display = std::str::from_utf8(display_atom).map_err(|_| {
+        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
+    })?;
+    let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
+    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    Ok(index.resolve_mention(&resolved_paths, display, kind))
+}
+
+pub(crate) fn join_project_value(
+    image: &SemanticImageView<'_>,
+    link_kind: backend_semantic::ir::LinkKind,
+    external: ExternalId,
+    caller_path: &str,
+    project_paths: &BTreeSet<String>,
+    index: &ProjectCallableIndex,
+    published: &BTreeSet<DeclarationIdentity>,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !matches!(link_kind, backend_semantic::ir::LinkKind::Reads) {
+        return Ok(None);
+    }
+    let identity = foreign_package_value_retarget(
+        image,
+        external,
+        caller_path,
+        project_paths,
+        index,
+    )?;
     Ok(identity.filter(|candidate| published.contains(candidate)))
 }
 

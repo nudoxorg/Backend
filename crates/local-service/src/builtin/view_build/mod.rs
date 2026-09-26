@@ -16,7 +16,7 @@ pub(crate) use call_join::{
     ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
     foreign_namespace_field_retarget, foreign_package_call_retarget,
     foreign_package_field_retarget, foreign_package_mention_retarget, join_project_call,
-    join_project_field, join_project_mention, project_paths_for_package,
+    join_project_field, join_project_mention, join_project_value, project_paths_for_package,
 };
 
 pub(crate) use identity::query_semantic_id;
