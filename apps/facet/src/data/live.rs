@@ -16,7 +16,7 @@ use crate::motion::Motion;
 use gpui::{
     AnyElement, App, Bounds, InteractiveElement, IntoElement, LayoutId, Styled,
     div, DispatchPhase, ElementId, Entity, FocusHandle, Hitbox,
-    HitboxBehavior, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
+    HitboxBehavior, KeyDownEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, Pixels, Point,
     Window,
 };
 use std::rc::Rc;
@@ -370,6 +370,27 @@ pub(crate) fn paint(
         && let Some(rect) = anchor(part)
     {
         door::anchor(&mark, part, rect, window, cx);
+    }
+
+    // The pointer leaving the window leaves every mark: no move follows to
+    // say so, so a hover would otherwise stay lit.
+    {
+        let (live, mark, door, anchor) = (live.clone(), mark.clone(), door.clone(), anchor.clone());
+        window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture {
+                return;
+            }
+            let Some(prev) = live.read(cx).hover else { return };
+            live.update(cx, |state, cx| {
+                state.hover = None;
+                cx.notify();
+            });
+            if let Some(door) = &door
+                && let Some(rect) = anchor(prev)
+            {
+                door::report(&mark, prev, rect, door.preferred(side), door, false, window, cx);
+            }
+        });
     }
 
     {

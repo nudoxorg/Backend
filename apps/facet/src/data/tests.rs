@@ -217,6 +217,23 @@ fn the_keyboard_walks_parts_and_space_opens_at_once(cx: &mut TestAppContext) {
     assert!(rested(cx).is_empty(), "{:?}", rested(cx));
 }
 
+#[gpui::test]
+fn the_pointer_leaving_the_window_leaves_the_mark(cx: &mut TestAppContext) {
+    let cx = page(cx);
+    move_to(cx, slot_centre(10), COMB_AT.1 + 30.0);
+    frame(cx);
+    assert_eq!(rested(cx).len(), 1);
+    cx.simulate_event(gpui::MouseExitEvent {
+        position: point(px(slot_centre(10)), px(COMB_AT.1 + 30.0)),
+        pressed_button: None,
+        modifiers: Modifiers::none(),
+    });
+    frame(cx);
+    assert!(rested(cx).is_empty(), "the rest outlived the pointer: {:?}", rested(cx));
+    advance(cx, 600);
+    assert_eq!(open_count(cx), 0);
+}
+
 /// A tiny deterministic generator.
 struct Lcg(u64);
 
@@ -357,18 +374,46 @@ fn paint_follows_what_is_visible_not_what_exists(cx: &mut TestAppContext) {
 /// per frame, then a neutral tail and a settle) over the marks with no
 /// doors — nothing floats, so every finding is the marks' own. Every check
 /// must hold: no panic, focus/hover/press truthful, motion continuous and
-/// settled within budget, idle after settle, draw budget.
+/// settled within budget, idle after settle, draw budget, and settle ==
+/// fresh (the settled pixels equal a fresh boot's calm replay).
 ///
-/// Two harness artefacts are quoted, not asserted (both reported):
-/// - `fresh`: the calm replay drops every pointer `leave`, the neutral
-///   tail's too, so its pointer stays parked on the last click or scroll —
-///   over a mark, which then (correctly) shows that hover.
-/// - a continuity "jump" sampled while motion was off (a snap, by design)
-///   when the frame's ledger records the setting at the frame's end, after
-///   a toggle.
+/// One harness artefact is quoted, not asserted: a continuity "jump"
+/// sampled while motion was off (a snap, by design) in a frame whose ledger
+/// records the setting after a later toggle. Reported to W-Harness.
+///
+/// The storms run in a process of their own. The harness reads a window's
+/// invalidations from gpui's process-wide frame-timing ring
+/// (`profiler::FRAME_TIMINGS`), filtered by `WindowId` — and every test app
+/// numbers its windows from the same first key. Any other test drawing a
+/// window at the same time lands in this storm's counts as "frame requested
+/// after idle". (Reproduced: the full `data::` suite in parallel failed with
+/// 93 such findings on `data-dense-bare` seed 1; serially it passes.)
 #[cfg(feature = "gallery")]
 #[test]
 fn harness_storms_over_the_marks_find_nothing() {
+    const CHILD: &str = "FACET_DATA_STORM_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let out = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "data::tests::harness_storms_over_the_marks_find_nothing",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("the storm process ran");
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines().filter(|l| l.contains("seed") || l.contains(" ms ")) {
+            println!("{line}");
+        }
+        assert!(
+            out.status.success(),
+            "storms failed:\n{text}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return;
+    }
     use crate::gallery::storm::{StormConfig, storm};
     use crate::gallery::{Shot, find};
     for id in ["data-dense-bare", "data-20k-map-bare", "film-comb-bare"] {
@@ -398,9 +443,9 @@ fn harness_storms_over_the_marks_find_nothing() {
                 .violations
                 .iter()
                 .partition(|v| v.check == "continuity" && reduced_at(v.at_ms));
-            let (fresh, ours): (Vec<_>, Vec<_>) = rest.into_iter().partition(|v| v.check == "fresh");
+            let ours = rest;
             println!(
-                "{id} seed {seed}: {} frames, worst draw {:.1} ms, {} findings{}{}",
+                "{id} seed {seed}: {} frames, worst draw {:.1} ms, {} findings{}, settle == fresh: {}",
                 report.run.frames,
                 report.run.worst_draw.as_secs_f64() * 1000.0,
                 ours.len(),
@@ -409,7 +454,10 @@ fn harness_storms_over_the_marks_find_nothing() {
                 } else {
                     format!(" ({} snaps under reduced motion)", misattributed.len())
                 },
-                fresh.first().map_or_else(String::new, |v| format!(" (fresh: {})", v.detail)),
+                match (&report.run.settled, &report.run.fresh) {
+                    (Some(a), Some(b)) => (a.as_raw() == b.as_raw()).to_string(),
+                    _ => "not compared".to_owned(),
+                },
             );
             let lines: Vec<String> = ours
                 .iter()

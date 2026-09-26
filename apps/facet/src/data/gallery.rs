@@ -9,6 +9,7 @@ mod lenses;
 mod package;
 mod stage;
 mod symbol;
+mod upgrade;
 
 use super::{
     CombOrientation, Dir, Directions, Door, FileUses, Stone, StoneState, Tick, TickTone, comb,
@@ -157,6 +158,24 @@ pub(crate) const SCENES: &[Scene] = &[
         build: |_, cx| stage::stage(None, &[], |w, _, cx| package::folio(w, Some(super::Spot::Region(0)), cx), cx),
     },
     Scene {
+        id: "upgrade-toml",
+        title: "Upgrade lens (v4/shots/graph/p-upgrade-toml.png): toml's Value page viewing 1.1.6 against the pinned 0.8.23; the shelf line and the section above the anatomy",
+        size: (1440, 900),
+        build: |_, cx| stage::stage(None, &[], upgrade::value, cx),
+    },
+    Scene {
+        id: "upgrade-toml-map",
+        title: "Upgrade lens rows: Map (insert really changes: old struck, new underlined in mint) and Deserializer under ⌥ (new: changed, deprecated, can now fail)",
+        size: (1100, 1700),
+        build: |_, cx| stage::stage(None, &[], upgrade::map, cx),
+    },
+    Scene {
+        id: "upgrade-toml-480",
+        title: "Upgrade lens at a 480 reader: rows stack; and going back to 0.5.11",
+        size: (480, 1100),
+        build: |_, cx| stage::stage(None, &[], upgrade::narrow, cx),
+    },
+    Scene {
         id: "data-marks",
         title: "Data marks: compass (mark/row/bar), comb at four rungs, file comb, mosaic, dense 600/2000",
         size: (1440, 1500),
@@ -185,6 +204,17 @@ fn marks_abyss(window: &mut Window, cx: &mut App) -> AnyView {
 
 fn marks_glacier(window: &mut Window, cx: &mut App) -> AnyView {
     board(Some(Appearance::Glacier), window, cx, marks)
+}
+
+/// RelationLabel's capabilities, from the one authority: derives `Clone,
+/// Copy, Debug, Eq, PartialEq, Hash` and a hand-written `Display` (which
+/// gives `ToString`).
+fn relation_label_caps() -> Vec<crate::semantics::Cap> {
+    crate::semantics::caps::caps(
+        &["Clone", "Copy", "Debug", "Eq", "PartialEq", "Hash"],
+        &[(gpui::SharedString::new_static("Display"), None)],
+        &[] as &[&str],
+    )
 }
 
 /// The release history the boards use: 64 releases, four majors, the pin
@@ -276,8 +306,8 @@ const LABEL: TypeRole = TypeRole {
 
 /// Every data mark, calm at rest, with one rested or walked example each.
 fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
-    use super::{Has, Run, Stage, StageState as St, Tab, caps, facts, gem_progress, lens_bar, seam};
-    use crate::icons::{Cap, Kind};
+    use super::{Run, Stage, StageState as St, Tab, caps, facts, gem_progress, lens_bar, seam};
+    use crate::icons::Kind;
     let facet = cx.facet();
     let palette = cx.palette();
     let s = facet.text_scale;
@@ -419,22 +449,13 @@ fn marks(_window: &mut Window, cx: &mut App) -> AnyElement {
     let lines = row()
         .child(cell(
             cx,
-            "caps, rest: hash",
-            caps(
-                "caps",
-                vec![
-                    (Cap::Clone, Has::On),
-                    (Cap::Copy, Has::On),
-                    (Cap::Debug, Has::On),
-                    (Cap::Eq, Has::On),
-                    (Cap::Hash, Has::On),
-                    (Cap::Ord, Has::Off),
-                    (Cap::Display, Has::Via),
-                ],
-                &m(300.0),
-            )
-            .door(tip.clone())
-            .rest(Some(4)),
+            "caps (RelationLabel, from semantics::caps), rest: hash",
+            caps("caps", &relation_label_caps(), false, &m(300.0)).door(tip.clone()).rest(Some(2)),
+        ))
+        .child(cell(
+            cx,
+            "caps under ⌥: the closed doors",
+            caps("caps-xray", &relation_label_caps(), true, &m(460.0)).door(tip.clone()),
         ))
         .child(cell(
             cx,

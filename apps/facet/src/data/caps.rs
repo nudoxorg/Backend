@@ -1,50 +1,148 @@
-//! The caps row: what you can do with a type (clone it, compare it, hash
-//! it, print it…) as a row of capability marks, one element.
+//! The caps row: the compact, glyph-only form of a type's capabilities,
+//! for rooms where words do not fit (a peek card, a row, a lens).
 //!
-//! Quiet at rest: implemented capabilities in ink3, missing ones as closed
-//! doors (ink4), ones that arrive through a blanket or auto impl dashed.
-//! Resting on one lifts it and takes the contracts hue; its neighbours lift
-//! a little (the same wave as the comb, two tracks for the whole row). Each
-//! cap is a door: its tip names the trait(s) and where they come from.
+//! There is one capability authority: [`semantics::caps`](crate::semantics::caps)
+//! turns a type's derives and impls into [`Cap`]s — a plain word, the
+//! trait, and how it arrives. The anatomy's `can` line spells them in
+//! words; this row draws the same list as glyphs, in the same grammar:
+//! hollow when derived (ink3), solid when written by hand (ink1), dashed
+//! when given through another capability (ink4). Traits with no glyph are
+//! left to the words.
+//!
+//! Missing capabilities — closed doors — are a question only ⌥ asks: at
+//! rest the row shows what the type can do and nothing else. A glyph a
+//! present one implies (`Copy` covers `Clone`, `Ord` covers `Eq`) is never
+//! missing.
+//!
+//! Resting on a glyph lifts it and takes the contracts hue; its neighbours
+//! lift a little (the comb's wave, two tracks for the whole row). Each glyph
+//! is a door: its tip names the trait(s) and how they arrive.
 
 use super::door::{Door, Side};
 use super::live::{self, Hooks, Live};
-use crate::icons::{Cap, Stroke, variant_path};
+use crate::icons::{Cap as Glyph, Stroke, variant_path};
 use crate::measure::Measure;
+use crate::semantics::caps::{Arrives, Cap};
 use crate::theme::ActiveFacet;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Point, Style, TransformationMatrix, Window,
-    point, px, size,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Style, TransformationMatrix,
+    Window, point, px, size,
 };
 use std::rc::Rc;
 
-/// How a capability is present.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+/// The glyph a trait draws as (`None`: words only).
+#[must_use]
+pub fn glyph(trait_name: &str) -> Option<Glyph> {
+    Some(match trait_name {
+        "Clone" => Glyph::Clone,
+        "Copy" => Glyph::Copy,
+        "PartialEq" | "Eq" => Glyph::Eq,
+        "PartialOrd" | "Ord" => Glyph::Ord,
+        "Hash" => Glyph::Hash,
+        "Debug" => Glyph::Debug,
+        "Display" => Glyph::Display,
+        "From" | "Into" | "TryFrom" | "TryInto" | "ToString" | "FromStr" => Glyph::Convert,
+        "Send" | "Sync" => Glyph::Thread,
+        "Default" => Glyph::Default,
+        "Serialize" | "Deserialize" => Glyph::Serde,
+        "Iterator" | "IntoIterator" => Glyph::Iter,
+        "Deref" | "DerefMut" => Glyph::Deref,
+        "Error" => Glyph::Error,
+        _ => return None,
+    })
+}
+
+/// The glyphs a present glyph implies (never shown missing).
+const fn implies(glyph: Glyph) -> &'static [Glyph] {
+    match glyph {
+        Glyph::Copy => &[Glyph::Clone],
+        Glyph::Ord => &[Glyph::Eq],
+        _ => &[],
+    }
+}
+
+/// How one glyph is drawn.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Has {
-    /// Written or derived.
-    On,
-    /// Arrives through a blanket or auto impl.
-    Via,
-    /// Not implemented: a closed door.
-    Off,
+    /// Present: how it arrives (the strongest of its traits: written, then
+    /// derived, then via).
+    Is(Arrives),
+    /// Missing: a closed door (only while ⌥ is held).
+    Missing,
+}
+
+/// One glyph of the row, with the traits it stands for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Slot {
+    /// The glyph.
+    pub glyph: Glyph,
+    /// How it is drawn.
+    pub has: Has,
+    /// Its tip: `PartialEq, Eq — derived`.
+    pub says: SharedString,
+}
+
+const fn strength(arrives: &Arrives) -> u8 {
+    match arrives {
+        Arrives::Written => 2,
+        Arrives::Derived => 1,
+        Arrives::Via(_) => 0,
+    }
+}
+
+/// The row's glyphs for `caps`, in board order; with `xray`, the missing
+/// ones too.
+#[must_use]
+pub fn slots(caps: &[Cap], xray: bool) -> Vec<Slot> {
+    let mut present: Vec<(Glyph, Arrives, Vec<String>)> = Vec::new();
+    for cap in caps {
+        let Some(g) = glyph(&cap.trait_name) else { continue };
+        match present.iter_mut().find(|(p, _, _)| *p == g) {
+            Some((_, arrives, traits)) => {
+                if strength(&cap.arrives) > strength(arrives) {
+                    *arrives = cap.arrives.clone();
+                }
+                traits.push(cap.trait_name.to_string());
+            }
+            None => present.push((g, cap.arrives.clone(), vec![cap.trait_name.to_string()])),
+        }
+    }
+    let implied = |g: Glyph| present.iter().any(|(p, _, _)| implies(*p).contains(&g));
+    Glyph::ALL
+        .iter()
+        .filter_map(|&g| match present.iter().find(|(p, _, _)| *p == g) {
+            Some((_, arrives, traits)) => Some(Slot {
+                glyph: g,
+                says: SharedString::from(format!("{} — {}", traits.join(", "), arrives.text())),
+                has: Has::Is(arrives.clone()),
+            }),
+            None if xray && !implied(g) => Some(Slot {
+                glyph: g,
+                has: Has::Missing,
+                says: SharedString::from(format!("not {}", g.traits())),
+            }),
+            None => None,
+        })
+        .collect()
 }
 
 /// A caps row. Build with [`caps`].
 pub struct Caps {
     id: ElementId,
-    caps: Rc<[(Cap, Has)]>,
+    slots: Rc<[Slot]>,
     measure: Measure,
     door: Option<Door>,
     rest: Option<usize>,
 }
 
-/// A row of `caps` at `measure`'s scale.
+/// The glyph row for `caps` (from `semantics::caps`) at `measure`'s scale;
+/// `xray` (⌥ held) adds the missing ones as closed doors.
 #[must_use]
-pub fn caps(id: impl Into<ElementId>, caps: impl Into<Rc<[(Cap, Has)]>>, measure: &Measure) -> Caps {
+pub fn caps(id: impl Into<ElementId>, caps: &[Cap], xray: bool, measure: &Measure) -> Caps {
     Caps {
         id: id.into(),
-        caps: caps.into(),
+        slots: slots(caps, xray).into(),
         measure: *measure,
         door: None,
         rest: None,
@@ -52,18 +150,25 @@ pub fn caps(id: impl Into<ElementId>, caps: impl Into<Rc<[(Cap, Has)]>>, measure
 }
 
 impl Caps {
-    /// Caps open through `door` (part = cap index).
+    /// Glyphs open through `door` (part = glyph index; [`Caps::says`] is
+    /// what each tip says).
     #[must_use]
     pub fn door(mut self, door: Door) -> Self {
         self.door = Some(door);
         self
     }
 
-    /// Shows a cap as rested (scenes).
+    /// Shows a glyph as rested (scenes).
     #[must_use]
-    pub const fn rest(mut self, cap: Option<usize>) -> Self {
-        self.rest = cap;
+    pub const fn rest(mut self, glyph: Option<usize>) -> Self {
+        self.rest = glyph;
         self
+    }
+
+    /// What each glyph's tip says, by index.
+    #[must_use]
+    pub fn says(&self) -> Vec<SharedString> {
+        self.slots.iter().map(|s| s.says.clone()).collect()
     }
 }
 
@@ -78,7 +183,7 @@ const CELL: f32 = 30.0;
 const ICON: f32 = 18.0;
 const GAP: f32 = 2.0;
 
-/// `(lift px, swell)` at a cap distance from the rested one.
+/// `(lift px, swell)` at a glyph distance from the rested one.
 #[must_use]
 pub fn cap_wave(distance: f32) -> (f32, f32) {
     let d = distance.abs();
@@ -120,7 +225,7 @@ impl Element for Caps {
         let (keys, kid) = live::keys(&live, window, cx);
         let s = self.measure.scale();
         #[allow(clippy::cast_precision_loss)]
-        let n = self.caps.len() as f32;
+        let n = self.slots.len() as f32;
         let mut style = Style::default();
         style.size.width = px(((CELL + GAP) * n - GAP).max(0.0) * s).into();
         style.size.height = px(CELL * s).into();
@@ -159,15 +264,19 @@ impl Element for Caps {
         #[allow(clippy::cast_precision_loss)]
         let (at, _, strength) = live::wave(&self.id, &live, active.map(|i| (i as f32 * pitch, 0.0)), window, cx);
         let centre = at / pitch;
-        for (i, (cap, has)) in self.caps.iter().enumerate() {
+        for (i, slot) in self.slots.iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
             let d = (i as f32 - centre).abs();
             let (lift, swell) = cap_wave(d);
             let (lift, swell) = (lift * strength * s, 1.0 + (swell - 1.0) * strength);
             let lit = (1.0 - d).clamp(0.0, 1.0) * strength;
-            let rest: Hsla = match has {
-                Has::On | Has::Via => palette.ink3.into(),
-                Has::Off => palette.ink4.into(),
+            // The `can` line's grammar: hollow derived, solid written,
+            // dashed via; a closed door in the quietest ink.
+            let (rest, facet, dashed): (Hsla, f32, bool) = match &slot.has {
+                Has::Is(Arrives::Written) => (palette.ink1.into(), 0.55, false),
+                Has::Is(Arrives::Derived) => (palette.ink3.into(), 0.0, false),
+                Has::Is(Arrives::Via(_)) => (palette.ink4.into(), 0.0, true),
+                Has::Missing => (palette.ink4.into(), 0.0, false),
             };
             let ink = crate::paint::mix(rest, palette.f_con.hue.into(), lit);
             let e = ICON * s * swell;
@@ -177,16 +286,12 @@ impl Element for Caps {
                 point(px(cx0 - e * 0.5), px(y0 + CELL * s * 0.5 - e * 0.5 - lift)),
                 size(px(e), px(e)),
             );
-            let stroke = Stroke {
-                width: 1.5,
-                facet: None,
-                dashed: *has == Has::Via,
-            };
+            let stroke = Stroke { width: 1.5, facet: Some(facet), dashed };
             window
-                .paint_svg(at, variant_path(cap.path(), stroke), None, TransformationMatrix::unit(), ink, cx)
+                .paint_svg(at, variant_path(slot.glyph.path(), stroke), None, TransformationMatrix::unit(), ink, cx)
                 .ok();
         }
-        let n = self.caps.len();
+        let n = self.slots.len();
         live::paint(
             Hooks {
                 mark: self.id.clone(),
@@ -219,7 +324,10 @@ impl Element for Caps {
 
 #[cfg(test)]
 mod tests {
-    use super::cap_wave;
+    use super::{Has, cap_wave, slots};
+    use crate::icons::Cap as Glyph;
+    use crate::semantics::caps::{Arrives, caps};
+    use gpui::SharedString;
 
     #[test]
     fn the_rested_cap_lifts_most_and_neighbours_less() {
@@ -227,5 +335,40 @@ mod tests {
         assert!((cap_wave(1.0).0 - 1.5).abs() < 1e-6 && (cap_wave(1.0).1 - 1.0).abs() < 1e-6);
         assert!(cap_wave(2.0).0.abs() < 1e-6);
         assert!((cap_wave(0.999).0 - cap_wave(1.001).0).abs() < 0.01);
+    }
+
+    /// RelationLabel's capabilities, from the one authority: derives
+    /// `Clone, Copy, Debug, Eq, PartialEq, Hash`, a hand-written `Display`
+    /// (which gives `ToString`).
+    fn relation_label() -> Vec<crate::semantics::caps::Cap> {
+        caps(&["Clone", "Copy", "Debug", "Eq", "PartialEq", "Hash"], &[(SharedString::new_static("Display"), None)], &[] as &[&str])
+    }
+
+    #[test]
+    fn glyphs_say_how_each_capability_arrives() {
+        let row = slots(&relation_label(), false);
+        let drawn: Vec<(Glyph, &Has, &str)> = row.iter().map(|s| (s.glyph, &s.has, s.says.as_ref())).collect();
+        assert_eq!(
+            drawn,
+            [
+                (Glyph::Copy, &Has::Is(Arrives::Derived), "Copy — derived"),
+                (Glyph::Eq, &Has::Is(Arrives::Derived), "Eq — derived"),
+                (Glyph::Hash, &Has::Is(Arrives::Derived), "Hash — derived"),
+                (Glyph::Debug, &Has::Is(Arrives::Derived), "Debug — derived"),
+                (Glyph::Display, &Has::Is(Arrives::Written), "Display — written"),
+                // `ToString` arrives through `Display`: dashed.
+                (Glyph::Convert, &Has::Is(Arrives::Via(SharedString::new_static("Display"))), "ToString — via Display"),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_capabilities_are_closed_doors_only_under_the_option_key() {
+        let at_rest = slots(&relation_label(), false);
+        assert!(at_rest.iter().all(|s| s.has != Has::Missing), "{at_rest:?}");
+        let xray = slots(&relation_label(), true);
+        let missing: Vec<Glyph> = xray.iter().filter(|s| s.has == Has::Missing).map(|s| s.glyph).collect();
+        // `Clone` is implied by `Copy`: never missing.
+        assert_eq!(missing, [Glyph::Ord, Glyph::Thread, Glyph::Default, Glyph::Serde, Glyph::Iter, Glyph::Deref, Glyph::Error]);
     }
 }

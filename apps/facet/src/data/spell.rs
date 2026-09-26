@@ -434,6 +434,10 @@ impl Element for Spell {
             let max = match (known.width, available.width) {
                 (Some(w), _) => Some(f32::from(w)),
                 (None, AvailableSpace::Definite(w)) if wrap => Some(f32::from(w)),
+                // Min-content is the widest unit that cannot break: without
+                // this a flex item's automatic minimum is the whole line, and
+                // the line never shrinks to its room (so never wraps).
+                (None, AvailableSpace::MinContent) if wrap => Some(0.0),
                 _ => None,
             };
             let proxies: Vec<Placed> = sizes
