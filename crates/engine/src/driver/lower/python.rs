@@ -30,7 +30,8 @@ use std::collections::{HashMap, HashSet};
 use backend_frontend_python::legacy::{
     Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
     DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
-    OccurrenceFact, OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
+    OccurrenceFact, OccurrenceKind, OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span,
+    SymbolOutcome,
     TypeReason as ExtractedReason, extract,
 };
 use backend_semantic::ir::{
@@ -1842,7 +1843,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             end: occurrence.span.end,
                         })
                     })?;
-                    let target = foreign_package(module_spelling, binding, imported)?;
+                    let target =
+                        foreign_package(module_spelling, binding, imported, None)?;
                     let confidence = match checked {
                         Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                         _ => OccurrenceConfidence::Index,
@@ -1859,27 +1861,107 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 )))
             }
             OccurrenceReceiver::EnclosingClass { class } => {
-                match self.enclosing_method(occurrence, class) {
-                    Some(ordinal) => {
+                if occurrence.kind == OccurrenceKind::AttributeRead {
+                    match self.enclosing_field(occurrence, class) {
+                        Some(ordinal) => {
+                            let confidence = match checked {
+                                Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                                _ => OccurrenceConfidence::Index,
+                            };
+                            Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence,
+                            )))
+                        }
+                        None => Ok(Some((
+                            foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
+                            OccurrenceConfidence::Index,
+                        ))),
+                    }
+                } else {
+                    match self.enclosing_method(occurrence, class) {
+                        Some(ordinal) => {
+                            let confidence = match checked {
+                                Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                                _ => OccurrenceConfidence::Index,
+                            };
+                            Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence,
+                            )))
+                        }
+                        // The attribute resolves to no live method of the class
+                        // (an inherited or unknown method): an honest typed
+                        // foreign method key, never a fabricated local.
+                        None => Ok(Some((
+                            foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                            OccurrenceConfidence::Index,
+                        ))),
+                    }
+                }
+            }
+            OccurrenceReceiver::Foreign { receiver } => {
+                if occurrence.kind == OccurrenceKind::AttributeRead {
+                    if let Some(receiver) = receiver {
+                        if let Some(row) = rows
+                            .iter()
+                            .find(|row| row.name == receiver.as_bytes() && row.imported.is_some())
+                        {
+                            let imported =
+                                row.imported.expect("imported span proven non-None above");
+                            let module_spelling =
+                                self.imported_module_spelling(receiver, imported)?;
+                            let module_span = self
+                                .spelling_span(core::str::from_utf8(module_spelling).map_err(
+                                    |_| {
+                                        PythonCollectError::Projection(
+                                            PythonProjectionFault::ForeignSpellingUtf8 {
+                                                start: imported.start,
+                                                end: imported.end,
+                                            },
+                                        )
+                                    },
+                                )?)
+                                .unwrap_or(imported);
+                            let binding = self.slice(occurrence.span)?;
+                            let binding = core::str::from_utf8(binding).map_err(|_| {
+                                PythonCollectError::Projection(
+                                    PythonProjectionFault::ForeignSpellingUtf8 {
+                                        start: occurrence.span.start,
+                                        end: occurrence.span.end,
+                                    },
+                                )
+                            })?;
+                            let target = foreign_package(
+                                module_spelling,
+                                binding,
+                                module_span,
+                                Some(EntityKind::Field),
+                            )?;
+                            let confidence = match checked {
+                                Some(SymbolOutcome::Foreign { .. }) => {
+                                    OccurrenceConfidence::Import
+                                }
+                                _ => OccurrenceConfidence::Index,
+                            };
+                            return Ok(Some((target, confidence)));
+                        }
+                    }
+                    if let Some(ordinal) = self.module_field(occurrence) {
                         let confidence = match checked {
                             Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
                             _ => OccurrenceConfidence::Index,
                         };
-                        Ok(Some((
+                        return Ok(Some((
                             OccurrenceTarget::Local(EntityId::new(ordinal)),
                             confidence,
-                        )))
+                        )));
                     }
-                    // The attribute resolves to no live method of the class
-                    // (an inherited or unknown method): an honest typed
-                    // foreign method key, never a fabricated local.
-                    None => Ok(Some((
-                        foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                    return Ok(Some((
+                        foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
                         OccurrenceConfidence::Index,
-                    ))),
+                    )));
                 }
-            }
-            OccurrenceReceiver::Foreign { receiver } => {
                 // A receiver that names an import binding resolves through
                 // that binding's own package key; any other receiver stays
                 // an honest typed foreign method key.
@@ -1889,7 +1971,20 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         .find(|row| row.name == receiver.as_bytes() && row.imported.is_some())
                     {
                         let imported = row.imported.expect("imported span proven non-None above");
-                        let module_spelling = self.slice(imported)?;
+                        let module_spelling =
+                            self.imported_module_spelling(receiver, imported)?;
+                        let module_span = self
+                            .spelling_span(core::str::from_utf8(module_spelling).map_err(
+                                |_| {
+                                    PythonCollectError::Projection(
+                                        PythonProjectionFault::ForeignSpellingUtf8 {
+                                            start: imported.start,
+                                            end: imported.end,
+                                        },
+                                    )
+                                },
+                            )?)
+                            .unwrap_or(imported);
                         let binding = self.slice(occurrence.span)?;
                         let binding = core::str::from_utf8(binding).map_err(|_| {
                             PythonCollectError::Projection(
@@ -1899,7 +1994,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 },
                             )
                         })?;
-                        let target = foreign_package(module_spelling, binding, imported)?;
+                        let target =
+                            foreign_package(module_spelling, binding, module_span, None)?;
                         let confidence = match checked {
                             Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                             _ => OccurrenceConfidence::Index,
@@ -1956,6 +2052,114 @@ impl<'a, 'source> Emitter<'a, 'source> {
             }
         }
         method.map(|(_, ordinal)| ordinal)
+    }
+
+    /// The lane ordinal of the live field one widened `self`/`cls` attribute
+    /// read resolves to: the innermost live field declaration with the
+    /// attribute's spelling inside the innermost live class declaration
+    /// with the recorded class's name whose extent contains the read site.
+    fn enclosing_field(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
+        let class_bytes = class.as_bytes();
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut class_span: Option<Span> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Class
+                || declaration.name.as_bytes() != class_bytes
+                || !self.live[index]
+                || !span_contains(declaration.span, occurrence.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let occupied = class_span.map_or(true, |span| area < span.end - span.start);
+            if occupied {
+                class_span = Some(declaration.span);
+            }
+        }
+        let class_span = class_span?;
+        let mut matches: Vec<u32> = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Field
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+                || !span_contains(class_span, declaration.span)
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
+    /// The borrowed module spelling of one import binding when a `from … import
+    /// …` row carries a dotted module in `value_source`; otherwise the
+    /// binding's own `value_span` spelling.
+    fn imported_module_spelling(
+        &self,
+        receiver: &str,
+        imported: Span,
+    ) -> Result<&'source [u8], PythonCollectError> {
+        if let Some(declaration) = self
+            .module
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name == receiver)
+        {
+            if let Some(module) = declaration
+                .value_source
+                .as_deref()
+                .filter(|module| *module != receiver)
+            {
+                if let Some(span) = self.spelling_span(module) {
+                    return self.slice(span);
+                }
+            }
+        }
+        self.slice(imported)
+    }
+
+    /// The first exact source span of one written spelling, when it appears in
+    /// the module bytes.
+    fn spelling_span(&self, spelling: &str) -> Option<Span> {
+        let spelling = spelling.as_bytes();
+        self.source
+            .windows(spelling.len())
+            .position(|window| window == spelling)
+            .and_then(|start| {
+                let end = start + spelling.len();
+                let start = u32::try_from(start).ok()?;
+                let end = u32::try_from(end).ok()?;
+                Some(Span { start, end })
+            })
+    }
+
+    /// The lane ordinal of the live field one attribute read resolves to when
+    /// exactly one live field in the module carries the attribute spelling.
+    fn module_field(&self, occurrence: &OccurrenceFact) -> Option<u32> {
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut matches: Vec<u32> = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Field
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
     }
 
     /// Lowers one checker-inferred type to its root record and the ordered
@@ -2261,6 +2465,9 @@ fn reference_kind(kind: backend_frontend_python::legacy::OccurrenceKind) -> Refe
             ReferenceKind::FunctionCall
         }
         backend_frontend_python::legacy::OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
+        backend_frontend_python::legacy::OccurrenceKind::AttributeRead => {
+            ReferenceKind::FieldAccess
+        }
     }
 }
 
@@ -3049,6 +3256,7 @@ fn foreign_package<'source>(
     module_spelling: &'source [u8],
     display: &'source str,
     spelling_span: Span,
+    kind: Option<EntityKind>,
 ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
     let path = core::str::from_utf8(module_spelling).map_err(|_| {
         PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
@@ -3062,7 +3270,7 @@ fn foreign_package<'source>(
     };
     let lineage =
         PackageLineage::new("pypi", name).map_err(|cause| lineage_fault(cause, spelling_span))?;
-    let key = ForeignKey::new(ForeignOrigin::Package(lineage), path, display, None)
+    let key = ForeignKey::new(ForeignOrigin::Package(lineage), path, display, kind)
         .map_err(|cause| foreign_key_fault(cause, spelling_span))?;
     Ok(OccurrenceTarget::Foreign(key))
 }
@@ -3095,6 +3303,24 @@ fn foreign_method<'source>(
     written: &'source [u8],
     spelling_span: Span,
 ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
+    foreign_entity(written, spelling_span, EntityKind::Function)
+}
+
+/// The honest typed foreign key for one unresolved attribute read: the exact
+/// written attribute spelling as a `pypi`-universe field target, never a
+/// fabricated local.
+fn foreign_field<'source>(
+    written: &'source [u8],
+    spelling_span: Span,
+) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
+    foreign_entity(written, spelling_span, EntityKind::Field)
+}
+
+fn foreign_entity<'source>(
+    written: &'source [u8],
+    spelling_span: Span,
+    kind: EntityKind,
+) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
     let path = core::str::from_utf8(written).map_err(|_| {
         PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
             start: spelling_span.start,
@@ -3105,7 +3331,7 @@ fn foreign_method<'source>(
         ForeignOrigin::Universe { ecosystem: "pypi" },
         path,
         path,
-        Some(EntityKind::Function),
+        Some(kind),
     )
     .map_err(|cause| foreign_key_fault(cause, spelling_span))?;
     Ok(OccurrenceTarget::Foreign(key))
