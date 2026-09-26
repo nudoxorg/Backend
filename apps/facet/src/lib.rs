@@ -25,7 +25,6 @@ pub mod probe;
 pub mod code;
 pub mod graph;
 pub mod semantics;
-#[cfg(feature = "anatomy-wip")]
 pub mod anatomy;
 
 #[cfg(feature = "gallery")]

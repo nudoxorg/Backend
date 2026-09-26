@@ -15,7 +15,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
     App, Bounds, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement, PathBuilder,
-    Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, point, px,
+    Pixels, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
 };
 use std::sync::Arc;
 
@@ -76,7 +76,7 @@ enum Mark {
 
 fn mark_of(kind: Option<Kind>) -> Mark {
     match kind {
-        Some(Kind::Function | Kind::Method | Kind::Macro | Kind::Constant) => Mark::Square,
+        Some(Kind::Function | Kind::Method | Kind::Macro | Kind::Constant | Kind::Field | Kind::Variant) => Mark::Square,
         Some(Kind::Trait) | None => Mark::Open,
         _ => Mark::Solid,
     }
@@ -226,10 +226,10 @@ impl Ctx<'_> {
     }
 }
 
-fn gem(measure: &Measure, palette: &Palette) -> impl IntoElement {
-    let s = measure.scale();
+fn gem(measure: &Measure, palette: &Palette, small: bool) -> impl IntoElement {
+    let s = measure.scale() * if small { 0.55 } else { 1.0 };
     let fill = palette.peri.base.hsla();
-    let ring = palette.peri.base.hsla().opacity(0.45);
+    let ring = palette.peri.base.alpha(0.45).hsla();
     canvas(
         |_, _, _| {},
         move |bounds, (), window, _| {
@@ -264,7 +264,7 @@ impl RenderOnce for PrismView {
             .id(ctx.key("gem".into()))
             .flex_none()
             .cursor_pointer()
-            .child(gem(&m, palette))
+            .child(gem(&m, palette, m.effective() < ONE_COLUMN_BELOW))
             .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                 window.dispatch_action(Box::new(ToGraph { target: to_graph.clone() }), cx);
                 cx.stop_propagation();
@@ -276,7 +276,7 @@ impl RenderOnce for PrismView {
                 .flex()
                 .items_center()
                 .gap(k(&m, 4.0))
-                .ml(-px(16.0 * s) - px(18.0 * s))
+                .ml(-px(16.0 * s) - px(10.0 * s))
                 .child(gem_el)
                 .child(name);
             return root
@@ -294,7 +294,15 @@ impl RenderOnce for PrismView {
         let hr = column_height(&self.right);
         let h = hl.max(hr).max(40.0);
         let width = f32::from(m.width()) / s;
-        let cx0 = width / 2.0;
+        // A one-sided prism fans from the content edge instead of stranding
+        // its gem mid-page.
+        let cx0 = if self.left.is_empty() {
+            (width / 2.0).min(40.0)
+        } else if self.right.is_empty() {
+            (width / 2.0).max(width - 40.0)
+        } else {
+            width / 2.0
+        };
         let yl: Vec<f32> = row_centres(&self.left).into_iter().map(|y| y + (h - hl) / 2.0).collect();
         let yr: Vec<f32> = row_centres(&self.right).into_iter().map(|y| y + (h - hr) / 2.0).collect();
         let curve = palette.line3.hsla();

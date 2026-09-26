@@ -8,7 +8,8 @@ use super::{heading, roles};
 use crate::measure::{Measure, Set};
 use crate::semantics::model::Holds;
 use crate::theme::ActiveFacet;
-use gpui::{App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px};
+use gpui::{
+    InteractiveElement,App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px};
 use std::sync::Arc;
 
 /// Holds. Build with [`holds`].

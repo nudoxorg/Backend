@@ -17,7 +17,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    Styled, Window, div,
 };
 use std::sync::Arc;
 
@@ -104,6 +104,9 @@ pub(crate) fn row(
 ) -> gpui::Stateful<gpui::Div> {
     let xray = measure.reveal().xray;
     let room = measure.effective() >= SAY_BELOW;
+    if mark.is_none() && super::stacked(measure) {
+        return stacked_row(id, row, measure, links, palette);
+    }
     let (line, say): (Line, Option<(SharedString, bool)>) = match row {
         Row::One(member) => (member_line(member, links, xray, palette), member.doc.clone().map(|d| (d, true))),
         Row::Fold(fold) => (fold_line(fold, links, xray, palette), Some((SharedString::from(fold_count(fold)), false))),
@@ -120,12 +123,32 @@ pub(crate) fn row(
         .min_h(row_pad(measure, 34.0))
         .hover(|s| s.bg(palette.tint.hsla()))
         .children(mark.map(|m| div().flex_none().w(k(measure, 18.0)).child(m)))
-        .child(div().flex_shrink().min_w_0().child(line.element(line_id, roles::ROW, measure, links, palette)));
+        .child(div().flex_shrink_1().min_w_0().child(line.element(line_id, roles::ROW, measure, links, palette)));
     if room && let Some((say, serif)) = say {
         let role = if serif { roles::SAY } else { crate::tokens::TypeRole { size: 12.0, line: 16.0, ..roles::QUIET } };
         el = el.child(div().flex_1().min_w_0().truncate().set(role, measure).text_color(palette.ink3.hsla()).child(say));
     }
     el
+}
+
+/// A contract row in a narrow room: the name and signature (wrapping as
+/// text), then the sentence or the folded count below, whole.
+fn stacked_row(id: ElementId, row: &Row, measure: &Measure, links: &Links, palette: &Palette) -> gpui::Stateful<gpui::Div> {
+    let xray = measure.reveal().xray;
+    let (line, say, serif) = match row {
+        Row::One(member) => (member_line(member, links, xray, palette), member.doc.clone(), true),
+        Row::Fold(fold) => (fold_line(fold, links, xray, palette), Some(SharedString::from(fold_count(fold))), false),
+    };
+    let line_id = ElementId::NamedChild(Arc::new(id.clone()), SharedString::new_static("line"));
+    let role = if serif { roles::SAY } else { crate::tokens::TypeRole { size: 12.0, line: 16.0, ..roles::QUIET } };
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .gap(k(measure, 2.0))
+        .py(row_pad(measure, 7.0))
+        .child(line.element(line_id, roles::ROW, measure, links, palette))
+        .children(say.map(|say| div().set(role, measure).text_color(palette.ink3.hsla()).child(say)))
 }
 
 /// The Does section. Build with [`does`].

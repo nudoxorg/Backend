@@ -11,6 +11,7 @@ use crate::overlay::text::{Link, words};
 use crate::semantics::caps::{Arrives, Cap};
 use crate::theme::ActiveFacet;
 use gpui::{
+    InteractiveElement,
     App, ElementId, IntoElement, ParentElement, PathBuilder, RenderOnce, SharedString, Styled, StyledText, Window,
     canvas, div, point, px,
 };
@@ -22,12 +23,23 @@ pub struct Can {
     id: ElementId,
     caps: Vec<Cap>,
     measure: Measure,
+    bare: bool,
 }
 
 /// The `can` line for `caps` at `measure` (nothing when there are none).
 #[must_use]
 pub fn can(id: impl Into<ElementId>, caps: Vec<Cap>, measure: &Measure) -> Can {
-    Can { id: id.into(), caps, measure: *measure }
+    Can { id: id.into(), caps, measure: *measure, bare: false }
+}
+
+impl Can {
+    /// Without the `can` heading (the graph's focus card has no section
+    /// heads): the same marks, words and tips.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
 }
 
 fn mark(arrives: &Arrives, measure: &Measure, palette: &crate::tokens::Palette) -> impl IntoElement {
@@ -108,7 +120,10 @@ impl RenderOnce for Can {
                 .child(mark(&cap.arrives, &m, palette))
                 .child(words(key, StyledText::new(word), vec![(0..len, link)], palette))
         });
-        root = root.child(heading("can", &m, palette)).child(
+        if !self.bare {
+            root = root.child(heading("can", &m, palette));
+        }
+        root = root.child(
             div()
                 .flex()
                 .flex_wrap()

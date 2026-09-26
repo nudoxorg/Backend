@@ -12,6 +12,7 @@ use crate::semantics::model::{Fork, Payload};
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
 use gpui::{
+    InteractiveElement,
     AnyElement, App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px,
 };
 use std::sync::Arc;
@@ -58,7 +59,7 @@ pub(crate) fn part_row(
             .items_baseline()
             .gap(k(measure, 18.0))
             .child(div().flex_none().child(name))
-            .children(ty.map(|t| div().flex_shrink().min_w_0().child(t)))
+            .children(ty.map(|t| div().flex_shrink_1().min_w_0().child(t)))
             .children(say);
     }
     row

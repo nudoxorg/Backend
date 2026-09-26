@@ -11,7 +11,8 @@ use crate::measure::{Measure, Set};
 use crate::semantics::model::{Contract, Row};
 use crate::theme::ActiveFacet;
 use crate::tokens::Palette;
-use gpui::{App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div};
+use gpui::{
+    InteractiveElement,App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div};
 use std::sync::Arc;
 
 /// A contract. Build with [`contract`].

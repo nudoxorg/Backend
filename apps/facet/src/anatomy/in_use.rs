@@ -9,7 +9,8 @@ use crate::measure::{Measure, Set};
 use crate::semantics::model::Use;
 use crate::semantics::types::Target;
 use crate::theme::ActiveFacet;
-use gpui::{App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div};
+use gpui::{
+    InteractiveElement,App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div};
 use std::sync::Arc;
 
 /// In use. Build with [`in_use`].

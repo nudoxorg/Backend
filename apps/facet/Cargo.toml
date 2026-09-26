@@ -40,8 +40,6 @@ highlight = ["gpui_component/tree-sitter-rust", "gpui_component/tree-sitter-type
 overlay-wip = []
 # Lane W-Graph bring-up gate for unfinished `facet::graph` modules.
 graph-wip = []
-# Lane W-Anatomy bring-up gate for `facet::anatomy` (removed once it compiles).
-anatomy-wip = []
 # The gallery binary: every component state as a scene, captured headless
 # through the shared harness at a fixed virtual time.
 gallery = ["dep:backend-gui-harness", "dep:image", "dep:gpui_platform", "gpui_component/headless"]

@@ -10,6 +10,7 @@
 //!   bounds as sentences;
 //! - [`contract`]: "you write" (a dashed bracket) and "you get";
 //! - [`can`]: capabilities in words, marked derived / written / via;
+//! - [`rail`]: Getting one / Calling it — routes as rails, ⌥ for code;
 //! - [`prism`]: the static prism, curves from each row to the gem (one
 //!   column in narrow rooms);
 //! - [`does`]: members by what they do to it, look-alikes folded;
@@ -33,7 +34,10 @@ pub mod holds;
 pub mod in_use;
 pub mod pipe;
 pub mod prism;
+pub mod rail;
 pub mod text;
+#[cfg(test)]
+mod tests;
 
 pub use can::{Can, can};
 pub use contract::{ContractView, contract};
@@ -43,7 +47,8 @@ pub use holds::{HoldsView, holds};
 pub use in_use::{InUse, in_use};
 pub use pipe::{PipeView, pipe};
 pub use prism::{PrismView, ToGraph, prism};
-pub use text::{Line, Links, Open};
+pub use rail::{RecipeSection, recipe};
+pub use text::{Deco, Line, Links, Open, TypeInk};
 
 use crate::measure::{Measure, Set, Space};
 use crate::theme::ActiveFacet;
@@ -97,10 +102,11 @@ pub mod roles {
         TypeRole { face: Face::Ui, weight: 400.0, italic: false, tracking: 0.0, ..base }
     }
 
-    /// `base` in italic (generic variables).
+    /// A generic variable beside `base`: the italic serif, a size up, the
+    /// way mathematics sets a variable (the mono face has no italic cut).
     #[must_use]
     pub const fn italic(base: TypeRole) -> TypeRole {
-        TypeRole { italic: true, ..base }
+        TypeRole { face: Face::Serif, weight: 400.0, italic: true, tracking: 0.0, size: base.size + 1.5, ..base }
     }
 }
 

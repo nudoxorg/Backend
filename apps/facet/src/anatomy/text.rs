@@ -32,6 +32,15 @@ pub struct Open {
     pub target: Target,
 }
 
+/// A decoration over a range of a [`Line`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Deco {
+    /// Underlined in this colour (what is new).
+    Underline(Hsla),
+    /// Struck through in this colour (what went away).
+    Strike(Hsla),
+}
+
 /// What the page knows about the things its links name.
 #[derive(Clone)]
 pub struct Links {
@@ -98,6 +107,8 @@ impl TypeInk {
 pub struct Line {
     text: String,
     runs: Vec<TextRun>,
+    /// The roles text was pushed in (for the layout lints).
+    roles: Vec<TypeRole>,
     links: Vec<(Range<usize>, Target)>,
     marks: Vec<Range<usize>>,
 }
@@ -121,6 +132,12 @@ impl Line {
         &self.text
     }
 
+    /// The runs so far (tests).
+    #[cfg(test)]
+    pub(crate) fn runs_for_test(&self) -> &[TextRun] {
+        &self.runs
+    }
+
     /// The links so far: `(range, target)`.
     #[must_use]
     pub fn links(&self) -> &[(Range<usize>, Target)] {
@@ -134,9 +151,14 @@ impl Line {
             return start..start;
         }
         self.text.push_str(text);
+        if !self.roles.contains(&role) {
+            self.roles.push(role);
+        }
         let f = font(role);
         match self.runs.last_mut() {
-            Some(last) if last.font == f && last.color == color => last.len += text.len(),
+            Some(last) if last.font == f && last.color == color && last.underline.is_none() && last.strikethrough.is_none() => {
+                last.len += text.len();
+            }
             _ => self.runs.push(TextRun {
                 len: text.len(),
                 font: f,
@@ -160,6 +182,42 @@ impl Line {
     /// Underlines `range` in periwinkle (the In use hit).
     pub fn mark(&mut self, range: Range<usize>) {
         self.marks.push(range);
+    }
+
+    /// Decorates the text in `range` (a byte range this line returned):
+    /// underlined or struck through in `deco`'s colour. Runs split at the
+    /// range's ends; text pushed afterwards never joins a decorated run.
+    pub fn decorate(&mut self, range: Range<usize>, deco: Deco) {
+        if range.is_empty() {
+            return;
+        }
+        let mut out: Vec<TextRun> = Vec::with_capacity(self.runs.len() + 2);
+        let mut at = 0;
+        for run in self.runs.drain(..) {
+            let (start, end) = (at, at + run.len);
+            at = end;
+            let cuts = [start, range.start.clamp(start, end), range.end.clamp(start, end), end];
+            for pair in cuts.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                if a == b {
+                    continue;
+                }
+                let mut piece = run.clone();
+                piece.len = b - a;
+                if a >= range.start && b <= range.end {
+                    match deco {
+                        Deco::Underline(color) => {
+                            piece.underline = Some(gpui::UnderlineStyle { thickness: gpui::px(1.5), color: Some(color), wavy: false });
+                        }
+                        Deco::Strike(color) => {
+                            piece.strikethrough = Some(gpui::StrikethroughStyle { thickness: gpui::px(1.0), color: Some(color) });
+                        }
+                    }
+                }
+                out.push(piece);
+            }
+        }
+        self.runs = out;
     }
 
     /// Appends a type in plain words; with `xray`, its exact source follows
@@ -201,6 +259,14 @@ impl Line {
     #[must_use]
     pub fn element(self, id: impl Into<ElementId>, role: TypeRole, measure: &Measure, links: &Links, palette: &Palette) -> AnyElement {
         let id: ElementId = id.into();
+        // The layout lints measure a line in one face; a line that mixes
+        // faces (words in the UI face beside mono names) is not published,
+        // since one face would misjudge its width. Break opportunities are
+        // gpui's own (before punctuation that is not part of a word), so a
+        // long code token is not mistaken for an unbreakable word.
+        let one_face = self.roles.windows(2).all(|w| w[0].face == w[1].face && w[0].italic == w[1].italic);
+        let probe_role = self.roles.iter().copied().max_by(|a, b| a.size.total_cmp(&b.size)).unwrap_or(role);
+        let content = SharedString::from(wrap_units(&self.text));
         let text = StyledText::new(self.text).with_runs(self.runs);
         let layout = text.layout().clone();
         let mut rest = Vec::new();
@@ -217,7 +283,14 @@ impl Line {
         }
         let marks = self.marks;
         let targets = self.links;
-        let mut root = gpui::div().set(role, measure).child(element);
+        // Published for the layout lints: a line wraps, so only a word wider
+        // than its box is a clip.
+        let mut root = gpui::div().set(role, measure);
+        root = if one_face {
+            root.child(crate::probe::text(id.clone(), content, measure.role(probe_role), 1.0, crate::probe::TextOverflow::Wrap, element))
+        } else {
+            root.child(element)
+        };
         if !marks.is_empty() {
             root = root.child(Marks { layout: layout.clone(), ranges: marks, color: palette.peri.base.hsla() });
         }
@@ -233,6 +306,24 @@ impl Line {
         })
         .into_any_element()
     }
+}
+
+/// `text` with a space before every place gpui may wrap inside a word run
+/// (punctuation that is not a word character), so the lint's "widest word"
+/// is gpui's widest unbreakable unit.
+#[must_use]
+pub fn wrap_units(text: &str) -> String {
+    let word = |c: char| {
+        c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '\'' | '’' | '‘' | '$' | '%' | '@' | '#' | '^' | '~' | ',' | '=' | ':' | ';')
+    };
+    let mut out = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        if !word(c) && !c.is_whitespace() {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Periwinkle underlines under marked ranges of a laid-out text (painted

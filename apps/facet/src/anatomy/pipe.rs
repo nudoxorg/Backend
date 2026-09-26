@@ -10,6 +10,7 @@ use crate::semantics::model::Pipe;
 use crate::semantics::types::Piece;
 use crate::theme::ActiveFacet;
 use gpui::{
+    InteractiveElement,
     App, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
 };
 use std::sync::Arc;
