@@ -894,6 +894,37 @@ fn resolve_rust_specifier(
     resolved
 }
 
+fn is_dotted_module_specifier(specifier: &str) -> bool {
+    !specifier.is_empty()
+        && !specifier.starts_with('.')
+        && specifier.contains('.')
+        && !specifier.contains('/')
+        && !specifier.contains('\\')
+        && specifier.split('.').all(|segment| !segment.is_empty())
+}
+
+fn push_dotted_module_paths(
+    specifier: &str,
+    project_paths: &BTreeSet<String>,
+    resolved: &mut BTreeSet<String>,
+) {
+    if !is_dotted_module_specifier(specifier) {
+        return;
+    }
+    let slashed = specifier.replace('.', "/");
+    let py_module = format!("{slashed}.py");
+    let py_init = format!("{slashed}/__init__.py");
+    for path in project_paths {
+        if path == &py_module
+            || path.ends_with(&format!("/{py_module}"))
+            || path == &py_init
+            || path.ends_with(&format!("/{py_init}"))
+        {
+            resolved.insert(path.clone());
+        }
+    }
+}
+
 pub(crate) fn resolve_specifier_paths(
     specifier: &str,
     caller_path: &str,
@@ -941,6 +972,7 @@ pub(crate) fn resolve_specifier_paths(
             resolved.insert(path.clone());
         }
     }
+    push_dotted_module_paths(specifier, project_paths, &mut resolved);
     resolved
 }
 

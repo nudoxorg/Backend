@@ -501,6 +501,25 @@ fn strip_type_arguments(namespace: &str) -> Option<String> {
     Some(out)
 }
 
+fn foreign_dotted_module_specifier<'a>(path: &'a str, display: &'a str) -> Option<&'a str> {
+    if path == display {
+        return None;
+    }
+    if path.is_empty()
+        || path.starts_with('.')
+        || path.contains('/')
+        || path.contains('\\')
+        || path.contains("::")
+        || !path.contains('.')
+    {
+        return None;
+    }
+    if path.split('.').any(|segment| segment.is_empty()) {
+        return None;
+    }
+    Some(path)
+}
+
 fn foreign_package_call_retarget(
     image: &backend_semantic::ir::SemanticImageView<'_>,
     external: backend_semantic::ir::ExternalId,
@@ -517,15 +536,22 @@ fn foreign_package_call_retarget(
     let package_atom = image
         .atom(package)
         .ok_or_else(|| BuiltinModelError("semantic graph package atom is missing".to_owned()))?;
+    let path_atom = image
+        .atom(foreign.path)
+        .ok_or_else(|| BuiltinModelError("semantic graph path atom is missing".to_owned()))?;
     let display_atom = image
         .atom(foreign.display)
         .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
-    let specifier = std::str::from_utf8(package_atom).map_err(|_| {
+    let package = std::str::from_utf8(package_atom).map_err(|_| {
         BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
+    })?;
+    let path = std::str::from_utf8(path_atom).map_err(|_| {
+        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
     })?;
     let display = std::str::from_utf8(display_atom).map_err(|_| {
         BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
     })?;
+    let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
     let resolved_paths =
         view_build::resolve_specifier_paths(specifier, caller_path, project_paths);
     Ok(callable_index.resolve(&resolved_paths, display))
@@ -1200,6 +1226,7 @@ mod project_call_tests {
 
     struct ForeignCallFixture {
         package_specifier: &'static [u8],
+        path_specifier: Option<&'static [u8]>,
         display: &'static [u8],
         foreign_key: u8,
         link_kind: LinkKind,
@@ -1427,7 +1454,7 @@ mod project_call_tests {
                 .intern_atom(foreign_call.display)
                 .map_err(|e| e.to_string())?;
             let path_atom = builder
-                .intern_atom(foreign_call.display)
+                .intern_atom(foreign_call.path_specifier.unwrap_or(foreign_call.display))
                 .map_err(|e| e.to_string())?;
             let external = builder
                 .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
@@ -1647,6 +1674,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"./apply-set",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 link_kind: LinkKind::Calls,
@@ -1700,6 +1728,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"./apply-set",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 link_kind: LinkKind::Calls,
@@ -1762,6 +1791,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"./apply-set",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 link_kind: LinkKind::Calls,
@@ -1811,6 +1841,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"lodash",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 10,
                 link_kind: LinkKind::Calls,
@@ -1839,6 +1870,404 @@ mod project_call_tests {
         .map_err(|error| error.to_string())?;
         if relation_targets(&relations, sync_id).contains(&entries_id) {
             return Err("lodash import must not retarget to entriesFromItems".to_owned());
+        }
+        Ok(())
+    }
+
+    fn dotted_foreign_call_fixture(foreign_key: u8) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"workout",
+            path_specifier: Some(b"workout.service"),
+            display: b"set_note",
+            foreign_key,
+            link_kind: LinkKind::Calls,
+        }
+    }
+
+    fn dotted_foreign_call_fixture_with_path(
+        path_specifier: &'static [u8],
+        foreign_key: u8,
+    ) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"workout",
+            path_specifier: Some(path_specifier),
+            display: b"set_note",
+            foreign_key,
+            link_kind: LinkKind::Calls,
+        }
+    }
+
+    #[test]
+    fn project_call_dotted_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "workout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(30)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["workout/service.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, sync_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected sync_workout to call set_note semantic row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_dotted_src_suffix_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/workout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(31)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/workout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["src/workout/service.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, sync_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected sync_workout to call src/workout/service.py set_note row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_dotted_init_package_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "workout/service/__init__.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(32)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service/__init__.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["workout/service/__init__.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, sync_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected sync_workout to call workout/service/__init__.py set_note row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_dotted_retarget_incoming_from_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "workout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(33)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            set_note_id,
+            true,
+            &project_paths(&["workout/service.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if !relations
+            .iter()
+            .any(|relation| relation.from == sync_id && relation.to == set_note_id)
+        {
+            return Err(format!(
+                "expected incoming edge from sync_workout, got {relations:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_dotted_package_head_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let workout_bytes = project_call_image(
+            "workout.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(34)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&workout_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["workout.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("dotted import must not fall back to workout.py".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_dotted_ambiguous_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let root_service_bytes = project_call_image(
+            "workout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let src_service_bytes = project_call_image(
+            "src/workout/service.py",
+            3,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(35)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&root_service_bytes, &src_service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["workout/service.py", "src/workout/service.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("ambiguous dotted module target must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_dotted_wrong_prefix_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "notworkout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(36)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("notworkout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["notworkout/service.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("notworkout/service.py must not satisfy workout.service".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_dotted_invalid_path_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture_with_path(b"workout..service", 37)),
+        )?;
+        let weeks_dot_bytes = project_call_image(
+            "weeks.py",
+            4,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture_with_path(b".workout.service", 38)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[("weeks.py", 2, "sync_workout", fixture_version(2))],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        for weeks_image in [&weeks_bytes, &weeks_dot_bytes] {
+            let relations = project_semantic_graph_relations_from_bytes(
+                &[weeks_image],
+                &view,
+                package,
+                semantic_symbol(package, sync_identity),
+                sync_id,
+                false,
+                &project_paths(&["weeks.py"]),
+            )
+            .map_err(|error| error.to_string())?;
+            if !relation_targets(&relations, sync_id).is_empty() {
+                return Err("invalid dotted path must stay external".to_owned());
+            }
         }
         Ok(())
     }
@@ -2046,6 +2475,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"./apply-set",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 link_kind: LinkKind::Calls,
@@ -2115,6 +2545,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"./apply-set",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 link_kind: LinkKind::Calls,
@@ -2166,6 +2597,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"lodash",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 10,
                 link_kind: LinkKind::Calls,
@@ -2201,6 +2633,353 @@ mod project_call_tests {
     }
 
     #[test]
+    fn project_references_dotted_retarget_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "workout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(40)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["workout/service.py", "weeks.py"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        let fact = &facts[0];
+        if fact.site != semantic_symbol(package, sync_identity) {
+            return Err("dotted foreign retarget site is not sync_workout".to_owned());
+        }
+        if fact.relation != backend_engine::SemanticLinkKind::Calls {
+            return Err(format!("dotted foreign retarget relation is {:?}", fact.relation));
+        }
+        let expected_target = semantic_declaration_identity(set_note_identity);
+        if !matches!(
+            &fact.target,
+            backend_engine::SemanticLinkTarget::Local { declaration }
+                if *declaration == expected_target
+        ) {
+            return Err("dotted foreign retarget target is not set_note".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_dotted_src_suffix_retarget_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/workout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(41)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/workout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["src/workout/service.py", "weeks.py"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        if facts[0].site != semantic_symbol(package, sync_identity) {
+            return Err("dotted src suffix retarget site is not sync_workout".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_dotted_init_package_retarget_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "workout/service/__init__.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(42)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service/__init__.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["workout/service/__init__.py", "weeks.py"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        if facts[0].site != semantic_symbol(package, sync_identity) {
+            return Err("dotted init package retarget site is not sync_workout".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_dotted_package_head_emits_nothing() -> Result<(), String> {
+        let package = package_key("fixture");
+        let workout_bytes = project_call_image(
+            "workout.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(43)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let set_note_identity = fixture_version(1).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&workout_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["workout.py", "weeks.py"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        let sync_symbol = semantic_symbol(package, sync_identity);
+        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
+        if sync_site_facts != 0 {
+            return Err(format!(
+                "dotted import must not fall back to workout.py, got {sync_site_facts} sync-site facts"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_dotted_ambiguous_emits_nothing() -> Result<(), String> {
+        let package = package_key("fixture");
+        let root_service_bytes = project_call_image(
+            "workout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let src_service_bytes = project_call_image(
+            "src/workout/service.py",
+            3,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(44)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let set_note_identity = fixture_version(1).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&root_service_bytes, &src_service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["workout/service.py", "src/workout/service.py", "weeks.py"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        let sync_symbol = semantic_symbol(package, sync_identity);
+        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
+        if sync_site_facts != 0 {
+            return Err(format!(
+                "ambiguous dotted module target produced {sync_site_facts} sync-site facts"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_dotted_wrong_prefix_emits_nothing() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "notworkout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture(45)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let set_note_identity = fixture_version(1).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("notworkout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["notworkout/service.py", "weeks.py"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        let sync_symbol = semantic_symbol(package, sync_identity);
+        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
+        if sync_site_facts != 0 {
+            return Err(format!(
+                "notworkout/service.py produced {sync_site_facts} sync-site facts"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_dotted_invalid_path_emits_nothing() -> Result<(), String> {
+        let package = package_key("fixture");
+        let other_bytes = project_call_image(
+            "other.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.py",
+            2,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture_with_path(b"workout..service", 46)),
+        )?;
+        let weeks_dot_bytes = project_call_image(
+            "weeks.py",
+            4,
+            b"sync_workout",
+            TreeEntityId::new(0),
+            Some(dotted_foreign_call_fixture_with_path(b".workout.service", 47)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let set_note_identity = fixture_version(1).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("other.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "sync_workout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        for weeks_image in [&weeks_bytes, &weeks_dot_bytes] {
+            let facts = project_reference_facts_from_bytes(
+                &[&other_bytes, weeks_image],
+                &view,
+                package,
+                semantic_symbol(package, set_note_identity),
+                &project_paths(&["other.py", "weeks.py"]),
+                &[],
+            )
+            .map_err(|error| error.to_string())?;
+            let sync_symbol = semantic_symbol(package, sync_identity);
+            let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
+            if sync_site_facts != 0 {
+                return Err(format!(
+                    "invalid dotted path produced {sync_site_facts} sync-site facts"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn project_references_reads_are_not_callers() -> Result<(), String> {
         let package = package_key("fixture");
         let apply_bytes = project_call_image(
@@ -2217,6 +2996,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"./apply-set",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 link_kind: LinkKind::Reads,
@@ -3238,6 +4018,7 @@ mod project_call_tests {
             TreeEntityId::new(0),
             Some(ForeignCallFixture {
                 package_specifier: b"./apply-set",
+                path_specifier: None,
                 display: b"entriesFromItems",
                 foreign_key: 9,
                 link_kind: LinkKind::Calls,
