@@ -416,15 +416,41 @@ impl Record {
             State::Present => Sampled {
                 pose: Pose::REST,
                 room: Extent::FULL,
+                room_rate: Extent::NONE,
                 presence: 1.0,
                 target: 1.0,
                 velocity: 0.0,
                 live: false,
             },
-            State::Moving { way, forward, .. } => {
-                let (s, _) = self.progress(now);
+            State::Moving {
+                way,
+                forward,
+                start,
+                hold,
+                ..
+            } => {
+                let (s, done) = self.progress(now);
                 let act = self.act(way);
                 let (pose, room) = act.at(s);
+                // The room's rate where the act heads next (ds/dt is 1 over
+                // its duration, backwards when reversing; held: still).
+                let held = now.saturating_duration_since(start) < hold;
+                let room_rate = if held || done || act.duration.is_zero() {
+                    Extent::NONE
+                } else {
+                    let rate = (if forward { 1.0 } else { -1.0 }) / act.duration.as_secs_f32();
+                    let h = 1e-4 * rate.signum();
+                    let next = act.room.at((s + h).clamp(0.0, 1.0));
+                    let dh = (s + h).clamp(0.0, 1.0) - s;
+                    if dh == 0.0 {
+                        Extent::NONE
+                    } else {
+                        Extent {
+                            share: (next.share - room.share) / dh * rate,
+                            px: (next.px - room.px) / dh * rate,
+                        }
+                    }
+                };
                 let presence = match way {
                     Way::In => s,
                     Way::Out => 1.0 - s,
@@ -438,6 +464,7 @@ impl Record {
                 Sampled {
                     pose,
                     room,
+                    room_rate,
                     presence,
                     target: if toward_presence { 1.0 } else { 0.0 },
                     velocity: if toward_presence { rate } else { -rate },
@@ -476,6 +503,8 @@ impl Finished {
 struct Sampled {
     pose: Pose,
     room: Extent,
+    /// How fast the room changes, per second (zero while held or at rest).
+    room_rate: Extent,
     presence: f32,
     target: f32,
     velocity: f32,
@@ -706,6 +735,9 @@ struct Inner {
     scope: SharedString,
     axis: Axis,
     model: Model,
+    /// How fast the slots prepainted so far this frame are growing along the
+    /// axis, summed (px/s): what they push every later slot by.
+    carry: f32,
 }
 
 /// Keyed enter and exit (see the [module docs](self)). Cloning shares the
@@ -730,6 +762,8 @@ pub struct Item {
     pub room: Extent,
     /// Its position in this frame's list (leavers included).
     pub index: usize,
+    /// How fast its room changes, per second.
+    room_rate: Extent,
     axis: Axis,
     inner: Rc<RefCell<Inner>>,
 }
@@ -756,6 +790,7 @@ impl Item {
             key: self.key.clone(),
             inner: Rc::clone(&self.inner),
             room: self.room,
+            room_rate: self.room_rate,
             axis: self.axis,
             layout: SlotLayout::Through,
         }
@@ -772,6 +807,7 @@ impl Presence {
                 scope: scope.into(),
                 axis: Axis::Vertical,
                 model: Model::new(),
+                carry: 0.0,
             })),
         }
     }
@@ -857,6 +893,8 @@ impl Presence {
         let (items, reports) = {
             let mut inner = self.inner.borrow_mut();
             let axis = inner.axis;
+            // A new frame of slots: nothing pushes the first one.
+            inner.carry = 0.0;
             let mut reports = Vec::new();
             let items = inner
                 .model
@@ -873,6 +911,7 @@ impl Presence {
                         pose: sample.pose,
                         room: sample.room,
                         index,
+                        room_rate: sample.room_rate,
                         axis,
                         inner: Rc::clone(&self.inner),
                     }
@@ -1038,6 +1077,7 @@ fn publish(cx: &mut App, scope: &SharedString, reports: Vec<Report>, now: Instan
             at_ms,
             live: report.live,
             overshoot_ratio: 0.0,
+            overshoot_absolute: 0.0,
             group: group.clone(),
         });
         let Some((act, s, end, rate)) = &report.travel else {
@@ -1063,6 +1103,7 @@ fn publish(cx: &mut App, scope: &SharedString, reports: Vec<Report>, now: Instan
                 at_ms,
                 live: report.live,
                 overshoot_ratio: overshoot,
+                overshoot_absolute: 0.0,
                 group: group.clone(),
             });
         }
@@ -1108,6 +1149,7 @@ pub struct Slot {
     key: ElementId,
     inner: Rc<RefCell<Inner>>,
     room: Extent,
+    room_rate: Extent,
     axis: Axis,
     layout: SlotLayout,
 }
@@ -1206,8 +1248,23 @@ impl gpui::Element for Slot {
             Axis::Vertical => natural.height,
             Axis::Horizontal => natural.width,
         };
-        self.inner.borrow_mut().model.measure(&self.key, main);
-        self.child.prepaint(window, cx);
+        // The slots before this one push it (and everything in it) at the
+        // rate their rooms grow; this one pushes the slots after it at its
+        // own. Announced to flow items inside, so they follow it from the
+        // first frame instead of reading its motion as a jump.
+        let carry = {
+            let mut inner = self.inner.borrow_mut();
+            inner.model.measure(&self.key, main);
+            let carry = inner.carry;
+            inner.carry += f32::from(main) * self.room_rate.share + self.room_rate.px;
+            carry
+        };
+        let carry = match self.axis {
+            Axis::Vertical => point(0.0, carry),
+            Axis::Horizontal => point(carry, 0.0),
+        };
+        let child = &mut self.child;
+        super::flow::carried(carry, || child.prepaint(window, cx));
     }
 
     fn paint(

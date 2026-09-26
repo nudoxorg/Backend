@@ -91,6 +91,11 @@ enum State {
     },
 }
 
+/// Where a spring comes to rest, in the track's own units: close enough to
+/// its target that the last step onto it is below anything a frame shows and
+/// within what its velocity accounts for.
+const REST: f64 = 1e-3;
+
 #[derive(Clone, Copy, Debug)]
 struct Sample {
     value: f32,
@@ -225,7 +230,10 @@ impl State {
                     offset: f64::from(current.value - target),
                     velocity: f64::from(current.velocity),
                 };
-                let rest = 1e-3 * origin.offset.abs().max(1.0);
+                // An absolute rest: the final snap onto the target is at most
+                // 1e-3 units, whatever the size of the move (a threshold
+                // relative to the move snapped 0.1 % of it: 0.26 px at 222 px).
+                let rest = REST;
                 let budget = Duration::from_secs_f64(spring.settle_time(origin, rest));
                 Self::Spring {
                     spring,
@@ -550,6 +558,7 @@ fn publish(
         at_ms: millis_since(epoch, now),
         live: sample.live,
         overshoot_ratio: meta.overshoot,
+        overshoot_absolute: 0.0,
         group: probe::current_group(),
     });
 }
@@ -733,6 +742,50 @@ mod tests {
         let settled = state.sample(at(start, 5_000));
         assert!(!settled.live);
         assert_eq!(settled.value.to_bits(), (-50.0_f32).to_bits());
+    }
+
+    /// The last step onto the target must be one the spring's own velocity
+    /// accounts for, at any size of move: a rest threshold relative to the
+    /// move snapped 0.1 % of it (0.26 px on a 222 px shelf, W-Shell's storm;
+    /// 0.010 px on a 16 px ring, W-Controls).
+    #[test]
+    fn a_spring_lands_on_its_target_without_a_snap() {
+        use crate::motion::spring::{GENTLE, SNAPPY};
+        for spring in [SNAPPY, GENTLE, BOUNCY] {
+            for span in [1.0_f32, 16.0, 39.6, 222.0, 500.0] {
+                for frame in [8_u64, 16] {
+                    let start = Instant::now();
+                    let mut state = State::Still(0.0);
+                    state.retarget(Sample::at_rest(0.0), span, Spec::Spring(spring), start);
+                    let budget = state.budget();
+                    let mut last = state.sample(start);
+                    let mut t = 0;
+                    loop {
+                        t += frame;
+                        assert!(t < 10_000, "{spring:?} {span}: never settled");
+                        let now = state.sample(at(start, t));
+                        if now.live {
+                            last = now;
+                            continue;
+                        }
+                        let dt = frame as f32 / 1000.0;
+                        let step = (now.value - last.value).abs();
+                        // The probe's continuity allowance for this step.
+                        let allowed = 1.5 * last.velocity.abs() * dt + 0.02 * (span - last.value).abs() + 1e-3;
+                        assert!(
+                            step <= allowed,
+                            "{spring:?} span {span} @{frame} ms frames: snapped {step} ({} -> {}) at {:.2}/s, allowed {allowed}",
+                            last.value, now.value, last.velocity
+                        );
+                        assert!(
+                            Duration::from_millis(t) <= budget + Duration::from_millis(frame),
+                            "{spring:?} span {span}: settled at {t} ms, budget {budget:?}"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     #[test]
