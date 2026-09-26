@@ -1252,6 +1252,17 @@ struct AnonymousMemo {
     coordinate: u32,
 }
 
+/// Same-package declaration name, resolved for reference rows naming a
+/// package-level symbol.
+struct NameKey<'source> {
+    package: &'source [u8],
+    name: &'source [u8],
+    ordinal: u32,
+    /// True only on version-6 images when the owning named type declares in
+    /// a sibling source file (`name_span` present and not digest-bound).
+    cross_file: bool,
+}
+
 /// One same-package member target: the (package, receiver type, member)
 /// spelling of a declared method or field plus its pushed fact ordinal, so
 /// reference rows naming members through their receiver type resolve to
@@ -1279,7 +1290,7 @@ struct Projector<'x, 'source> {
     /// Lane ordinal per image member row index.
     member_ordinals: Vec<Option<u32>>,
     /// Declared names to already-pushed fact ordinals.
-    names: Vec<(&'source [u8], &'source [u8], u32)>,
+    names: Vec<NameKey<'source>>,
     /// Memoized anonymous-context coordinates per image type row. Entries are
     /// valid only for the current declaration transaction and are replaced
     /// when the next owner reaches the same image coordinate.
@@ -1316,15 +1327,54 @@ impl<'x, 'source> Projector<'x, 'source> {
 
     /// Records one pushed declaration name for later resolution.
     fn record_name(&mut self, package: &'source [u8], name: &'source [u8], ordinal: u32) {
-        self.names.push((package, name, ordinal));
+        self.record_name_with_cross_file(package, name, ordinal, false);
+    }
+
+    /// Records one pushed declaration name, marking sibling-file types so
+    /// type-reference rows keep the package import-path key the join layer
+    /// matches.
+    fn record_name_with_cross_file(
+        &mut self,
+        package: &'source [u8],
+        name: &'source [u8],
+        ordinal: u32,
+        cross_file: bool,
+    ) {
+        self.names.push(NameKey {
+            package,
+            name,
+            ordinal,
+            cross_file,
+        });
     }
 
     /// Resolves one declared name to its pushed fact ordinal.
     fn lookup(&self, package: &[u8], name: &[u8]) -> Option<u32> {
         self.names
             .iter()
-            .find(|(known_package, known, _)| *known_package == package && *known == name)
-            .map(|(_, _, ordinal)| *ordinal)
+            .find(|key| key.package == package && key.name == name)
+            .map(|key| key.ordinal)
+    }
+
+    /// Resolves one package-level type spelling to a local fact. Types whose
+    /// declaration positively lives in a sibling file (version-6 `name_span`
+    /// without the digest-bound flag) stay unresolved here so the occurrence
+    /// keeps the package import-path key the join layer matches.
+    fn local_type_target(
+        &self,
+        package: &[u8],
+        name: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let ordinal = self.lookup(package, name)?;
+        let cross_file = self
+            .names
+            .iter()
+            .find(|key| key.ordinal == ordinal)
+            .is_some_and(|key| key.cross_file);
+        if cross_file {
+            return None;
+        }
+        Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
     }
 
     /// True when a version-6 declaration positively lives in a sibling file
@@ -1513,7 +1563,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             .mark_parentage_root(ordinal)
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_name_with_cross_file(
+            declaration.package,
+            declaration.name,
+            ordinal,
+            Self::cross_file_type(declaration),
+        );
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
@@ -2098,12 +2153,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                 };
                 foreign_target(reference_index, package, row.target, EntityKind::Module)?
             } else if row.target_package.is_empty() {
-                let local = self
-                    .lookup(owner_package, row.target)
-                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    .or_else(|| {
-                        self.local_member_target(owner_package, row.recv_type, row.target)
-                    });
+                let local = if row.target_class == ReferenceTargetClass::Type {
+                    self.local_type_target(owner_package, row.target)
+                } else {
+                    self.lookup(owner_package, row.target)
+                        .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                }
+                .or_else(|| {
+                    self.local_member_target(owner_package, row.recv_type, row.target)
+                });
                 match local {
                     Some(target) => target,
                     None => {

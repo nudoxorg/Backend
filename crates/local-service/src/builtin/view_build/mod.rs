@@ -9,6 +9,8 @@
 mod call_join;
 #[cfg(test)]
 mod go_field_join;
+#[cfg(test)]
+mod go_type_mention_join;
 mod identity;
 mod query;
 mod semantic;
