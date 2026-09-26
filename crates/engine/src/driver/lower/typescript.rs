@@ -3564,6 +3564,54 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     let init_span = init.span();
                     self.declare_expression_bindings(init_span.start, init_span.end, 0)?;
                 }
+            } else if let Some(parameter) = kind.as_catch_parameter() {
+                if !parameter.pattern.is_binding_identifier() {
+                    continue;
+                }
+                let name_span = parameter.pattern.span();
+                if self.fact_at_name_start(name_span.start).is_some() {
+                    continue;
+                }
+                let name_bytes =
+                    self.slice_span(name_span)
+                        .ok_or(TypeScriptCollectError::Span {
+                            start: name_span.start,
+                            end: name_span.end,
+                        })?;
+                let entity_kind = self.declarator_kind(name_span.start);
+                let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let member_base = self.staged_members.len();
+                let cells = match parameter.type_annotation.as_ref() {
+                    Some(annotation) => {
+                        let inner = annotation.type_annotation.span();
+                        self.owner_cells(inner.start, inner.end, 0)?
+                    }
+                    None => TypeCells::unknown(TypeReason::Unannotated),
+                };
+                let extension = self.extension(type_parameter_start)?;
+                let record = cells.record;
+                let child_count = cells.len;
+                let fact = with_cells(
+                    SemanticFact::new(entity_kind, name_bytes, LEAF_PRODUCT)
+                        .with_extension(extension),
+                    cells,
+                );
+                if child_count == 0 {
+                    if let Some(ordinal) = self.merged_simple_declaration(
+                        entity_kind,
+                        name_bytes,
+                        declaration_span,
+                        record,
+                        0,
+                        None,
+                    ) {
+                        self.fact_at_name.insert(name_span.start, ordinal);
+                        continue;
+                    }
+                }
+                let ordinal = self.push(fact)?;
+                self.register(ordinal, name_span, name_span, entity_kind)?;
+                self.claim_staged_members(member_base, ordinal);
             } else if let Some(property) = kind.as_ts_property_signature() {
                 if self.fact_at_name_start(property.key.span().start).is_some() {
                     continue;

@@ -1424,3 +1424,102 @@ fn constructor_assignments_declare_nested_function_bindings() {
     assert_eq!(parameter_count(&view, b"caught"), 1);
     assert_eq!(parameter_count(&view, b"mid"), 1);
 }
+
+#[test]
+fn catch_binding_use_is_a_local_static() {
+    const SOURCE: &[u8] = b"export const value = 1;
+export function probe(): void {
+  try {
+  } catch (err) {
+    err;
+    value;
+  }
+}
+";
+    let v = view(SOURCE, None);
+    let err_entities: Vec<_> = entities(&v)
+        .into_iter()
+        .filter(|(_, name, _)| name == b"err")
+        .collect();
+    assert_eq!(err_entities.len(), 1);
+    assert_eq!(err_entities[0].2, EntityKind::Static);
+    assert!(
+        !entities(&v)
+            .iter()
+            .any(|(_, name, kind)| name == b"err" && *kind == EntityKind::Parameter)
+    );
+    let (probe_id, _) = named(&v, b"probe");
+    let (err_id, _) = named(&v, b"err");
+    let (value_id, _) = named(&v, b"value");
+    let var_uses: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|row| row.occurrence.kind == ReferenceKind::VariableUse)
+        .collect();
+    assert_eq!(var_uses.len(), 2);
+    let err_use = var_uses
+        .iter()
+        .find(|row| {
+            row.occurrence.target
+                == OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(err_id))
+        })
+        .expect("err use");
+    assert_eq!(err_use.owner.raw, probe_id);
+    assert_eq!(err_use.occurrence.confidence, OccurrenceConfidence::Index);
+    let value_use = var_uses
+        .iter()
+        .find(|row| {
+            row.occurrence.target
+                == OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(value_id))
+        })
+        .expect("value use");
+    assert_eq!(value_use.owner.raw, probe_id);
+    assert_eq!(value_use.occurrence.confidence, OccurrenceConfidence::Index);
+}
+
+#[test]
+fn catch_binding_destructure_stays_unpublished() {
+    const SOURCE: &[u8] = b"export function probe(): void {
+  try {
+  } catch ({ message }) {
+    message;
+  }
+}
+";
+    let v = view(SOURCE, None);
+    assert!(
+        !entities(&v)
+            .iter()
+            .any(|(_, name, _)| name == b"message")
+    );
+    assert!(
+        !occurrences(&v)
+            .iter()
+            .any(|row| row.occurrence.kind == ReferenceKind::VariableUse)
+    );
+}
+
+#[test]
+fn catch_binding_repeated_name_still_lowers() {
+    const SOURCE: &[u8] = b"export function probe(): void {
+  try {} catch (err) { err; }
+  try {} catch (err) { err; }
+}
+";
+    let v = view(SOURCE, None);
+    let var_uses: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|row| row.occurrence.kind == ReferenceKind::VariableUse)
+        .collect();
+    assert_eq!(var_uses.len(), 2);
+    for row in &var_uses {
+        let OccurrenceTarget::Local(target) = row.occurrence.target else {
+            panic!("expected Local target, got {:?}", row.occurrence.target);
+        };
+        let (_, name, kind) = entities(&v)
+            .into_iter()
+            .find(|(id, _, _)| *id == target.raw)
+            .expect("local target names a published entity");
+        assert_eq!(name, b"err");
+        assert_eq!(kind, EntityKind::Static);
+    }
+}

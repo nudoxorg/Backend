@@ -1334,7 +1334,7 @@ enum TsLaneProjection {
     Embodied,
     /// The lane never mints a fact for this symbol: a parameter of an arrow
     /// function, anonymous function, or function type; a destructured
-    /// binding element; or a catch parameter.
+    /// binding element; or a destructured catch pattern.
     Unpublished,
 }
 
@@ -1345,9 +1345,11 @@ enum TsLaneProjection {
 /// declarations, `declare function`, and named function expressions — plus
 /// method signatures, method definitions, and call/construct signatures;
 /// constructors qualify through the `MethodDefinition` above their anonymous
-/// `Function` value). Arrow, anonymous, and function-type parameters,
-/// destructured binding elements, and catch parameters stay
-/// [`TsLaneProjection::Unpublished`].
+/// `Function` value). Arrow, anonymous, and function-type parameters and
+/// destructured binding elements stay [`TsLaneProjection::Unpublished`].
+/// A binding-identifier catch parameter is published as a storage binding
+/// (`Entity` / `Static`); a destructured catch pattern stays unpublished,
+/// same as a destructured declarator element.
 fn ts_lane_projection(
     semantic: &backend_frontend_typescript::legacy::Semantic,
     symbol: backend_frontend_typescript::legacy::SymbolId,
@@ -1410,7 +1412,13 @@ fn ts_lane_projection(
                 TsLaneProjection::Unpublished
             }
         }
-        AstKind::CatchParameter(_) => TsLaneProjection::Unpublished,
+        AstKind::CatchParameter(parameter) => {
+            if parameter.pattern.is_binding_identifier() {
+                TsLaneProjection::Entity
+            } else {
+                TsLaneProjection::Unpublished
+            }
+        }
         _ => TsLaneProjection::Entity,
     }
 }
@@ -1451,8 +1459,10 @@ fn declarator_annotation(
 /// type-parameter scopes of top-level callables) and parameter facts —
 /// [`ItemKind::Parameter`] — for exactly the callable classes
 /// [`ts_lane_projection`] enumerates; it never mints facts for arrow,
-/// anonymous, or function-type parameters, destructured binding elements, or
-/// catch parameters.  The declarations plane predicts exactly that set, with
+/// anonymous, or function-type parameters, or destructured binding elements.
+/// Binding-identifier catch parameters are published as storage bindings
+/// (`Entity` / `Static`); destructured catch patterns stay unpublished.  The
+/// declarations plane predicts exactly that set, with
 /// the parameter rows carrying the lane's parameter kind.  For relations, the
 /// lane commits an occurrence only when a pushed fact owns the use site *and*
 /// the referenced symbol is itself a published fact, so the mirror predicts a
