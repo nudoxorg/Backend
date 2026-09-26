@@ -126,12 +126,20 @@ pub(super) fn index_project_intent_at(
             request_id,
             compiler,
         )?;
-        let sources = ingest::admit_compiler_sources(
+        let present = ingest::present_compiler_paths(
+            &scan.compiler_sources,
+            &scan.reused_compiler_files,
+        );
+        let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
+            .map_err(BuiltinModelError)?;
+        let (fresh, reused) = ingest::select_compiler_inputs(
             source_root,
             scan.compiler_sources,
             scan.reused_compiler_files,
-        )
-        .map_err(BuiltinModelError)?;
+            &lost,
+        );
+        let sources = ingest::admit_compiler_sources(source_root, fresh, reused)
+            .map_err(BuiltinModelError)?;
         compile_semantic_publications(daemon, &semantic_context, sources)?
     };
     if changes.is_empty() && semantic_changes.is_empty() {
@@ -277,33 +285,8 @@ fn compile_semantic_publications(
 }
 
 /// Selects the exact profile one source is compiled under.
-///
-/// A file's extension names its language, but a Rust file's edition is a
-/// fact of the crate that owns it: the authority checks it against Cargo's
-/// own metadata and refuses a mismatch. Compiling every `.rs` file as edition
-/// 2024 therefore sent every 2015, 2018, and 2021 crate (most of crates.io)
-/// to a terminal `ProjectAuthority` failure and a structural-only answer. The
-/// edition is read from the nearest `Cargo.toml` with a `[package]` table
-/// between the file and the source root, exactly as Cargo resolves it.
 fn compile_profile(source_root: &Path, source: &ingest::CompilerSource) -> LanguageProfile {
-    let LanguageProfile::Rust(_) = source.profile else {
-        return source.profile;
-    };
-    let mut directory = source_root.join(&source.relative_path);
-    while directory.pop() && directory.starts_with(source_root) {
-        let manifest = directory.join("Cargo.toml");
-        let declares_package = std::fs::read_to_string(&manifest)
-            .is_ok_and(|contents| contents.lines().any(|line| line.trim() == "[package]"));
-        if declares_package {
-            // An unreadable or unknown edition keeps the default profile; the
-            // authority then reports the exact mismatch as a typed terminal
-            // rather than this scan failing the whole package.
-            return backend_frontend_rust::legacy::manifest_edition(&directory)
-                .map_or(source.profile, LanguageProfile::Rust);
-        }
-    }
-    // No owning manifest: the authority reports the missing project itself.
-    source.profile
+    ingest::compilation_profile(source_root, &source.relative_path, source.profile)
 }
 
 fn semantic_coordinate(
