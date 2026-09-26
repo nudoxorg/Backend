@@ -99,6 +99,8 @@ pub struct Chain {
 pub struct Search {
     /// Whether the query asks what a callable takes and gives.
     pub shaped: bool,
+    /// A bounded grammar rejection, shown instead of claiming no answers.
+    pub issue: Option<&'static str>,
     /// At most seven direct answers.
     pub rows: Vec<Match>,
     /// At most 400 direct answers, ranked in the same order as the panel.
@@ -121,6 +123,65 @@ struct Shape {
     out: Option<Words>,
 }
 
+/// Immutable facts a focus card reads without traversal during a flight.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FocusFacts {
+    /// Variant, field, and method counts, in that order.
+    pub counts: [usize; 3],
+    /// Distinct top-level places referring to the node or its members.
+    pub used: usize,
+    /// How many of those places are in your packages.
+    pub yours: usize,
+    /// The same semantic capabilities used by the symbol page.
+    pub caps: Vec<crate::semantics::caps::Cap>,
+}
+
+fn focus_facts(world: &World) -> Vec<FocusFacts> {
+    let mut counts = vec![[0; 3]; world.len()];
+    for node in &world.nodes {
+        if let Some(parent) = node.parent {
+            let column = match node.kind {
+                Kind::Variant => Some(0),
+                Kind::Field => Some(1),
+                Kind::Method => Some(2),
+                _ => None,
+            };
+            if let Some(column) = column {
+                counts[parent as usize][column] += 1;
+            }
+        }
+    }
+    world
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(at, _)| {
+            let i = NodeId::try_from(at).expect("world node IDs fit u32");
+            // This is World::used_in's exact set, including member callers,
+            // with sorting/deduplication instead of quadratic Vec::contains.
+            let mut places: Vec<_> = world
+                .in_edges(i)
+                .chain(
+                    world
+                        .kids(i)
+                        .iter()
+                        .flat_map(|&child| world.in_edges(child)),
+                )
+                .map(|(caller, _)| world.top(caller))
+                .filter(|&caller| caller != i)
+                .collect();
+            places.sort_unstable();
+            places.dedup();
+            FocusFacts {
+                counts: counts[at],
+                used: places.len(),
+                yours: places.iter().filter(|&&caller| world.yours(caller)).count(),
+                caps: crate::semantics::page::caps_of(world, i),
+            }
+        })
+        .collect()
+}
+
 /// Indexes and bounded query caches for one immutable world.
 pub struct Discovery {
     capabilities: Arc<HashMap<String, HashSet<Capability>>>,
@@ -128,6 +189,8 @@ pub struct Discovery {
     proof: Arc<Vec<proof::TypeProof>>,
     semantic_names: Arc<crate::semantics::names::Names>,
     package_items: Arc<Vec<Vec<NodeId>>>,
+    package_tours: Arc<Vec<crate::semantics::tour::Tour>>,
+    focus_facts: Arc<Vec<FocusFacts>>,
     recipes: Recipes,
     names: Arc<Vec<(NodeId, String, String)>>,
     types: Arc<HashMap<String, Vec<NodeId>>>,
@@ -147,6 +210,8 @@ pub struct PreparedDiscovery {
     proof: Arc<Vec<proof::TypeProof>>,
     semantic_names: Arc<crate::semantics::names::Names>,
     package_items: Arc<Vec<Vec<NodeId>>>,
+    package_tours: Arc<Vec<crate::semantics::tour::Tour>>,
+    focus_facts: Arc<Vec<FocusFacts>>,
     recipes: recipes::PreparedRecipes,
     names: Arc<Vec<(NodeId, String, String)>>,
     types: Arc<HashMap<String, Vec<NodeId>>>,
@@ -222,12 +287,22 @@ impl Discovery {
             by_out.entry(e.out.clone()).or_default().push(q);
         }
         let (capabilities, requirements) = capability::index(world, &recipes);
+        let package_tours = package_items
+            .iter()
+            .enumerate()
+            .map(|(package, items)| {
+                crate::semantics::tour::of_items(world, &semantic_names, package as u32, items)
+            })
+            .collect();
+        let focus_facts = focus_facts(world);
         PreparedDiscovery {
             capabilities: Arc::new(capabilities),
             requirements: Arc::new(requirements),
             proof: Arc::new(proof),
             semantic_names,
             package_items: Arc::new(package_items),
+            package_tours: Arc::new(package_tours),
+            focus_facts: Arc::new(focus_facts),
             recipes: recipes.into_prepared(),
             names: Arc::new(names),
             types: Arc::new(types),
@@ -246,6 +321,8 @@ impl Discovery {
             proof: data.proof,
             semantic_names: data.semantic_names,
             package_items: data.package_items,
+            package_tours: data.package_tours,
+            focus_facts: data.focus_facts,
             recipes: Recipes::from_prepared(data.recipes),
             names: data.names,
             types: data.types,
@@ -266,6 +343,8 @@ impl Discovery {
             proof: self.proof.clone(),
             semantic_names: self.semantic_names.clone(),
             package_items: self.package_items.clone(),
+            package_tours: self.package_tours.clone(),
+            focus_facts: self.focus_facts.clone(),
             recipes: self.recipes.prepared(),
             names: self.names.clone(),
             types: self.types.clone(),
@@ -317,7 +396,19 @@ impl Discovery {
         result
     }
 
-    /// The semantic name index, prepared off the UI thread once per world.
+    /// A package reading path, prepared once off the UI thread.
+    #[must_use]
+    pub fn package_tour(&self, package: u32) -> Option<&crate::semantics::tour::Tour> {
+        self.package_tours.get(package as usize)
+    }
+
+    /// Background-prepared focus facts, including exact distinct caller counts.
+    #[must_use]
+    pub fn focus_facts(&self, node: NodeId) -> Option<&FocusFacts> {
+        self.focus_facts.get(node as usize)
+    }
+
+    /// Shared semantic type names for readers that use prepared candidate sets.
     #[must_use]
     pub fn semantic_names(&self) -> &crate::semantics::names::Names {
         &self.semantic_names
@@ -345,6 +436,20 @@ impl Discovery {
             return value;
         }
         let shaped = is_shape(&query);
+        if shaped && let Some(issue) = shape_budget(&query) {
+            // Rejections are never retained: the budget re-check is linear
+            // in the query, so a retyped broken shape re-rejects without
+            // evicting retained results or seeded runs.
+            return Rc::new(Search {
+                shaped,
+                issue: Some(issue),
+                rows: Vec::new(),
+                lit: Vec::new(),
+                lit_set: HashSet::new(),
+                packages: 0,
+                chains: Vec::new(),
+            });
+        }
         let shape = shaped.then(|| self.parse_shape(world, &query));
         let lit = shape
             .as_ref()
@@ -372,6 +477,7 @@ impl Discovery {
             .map_or_else(Vec::new, |s| self.chains(world, &s));
         let result = Rc::new(Search {
             shaped,
+            issue: None,
             rows,
             lit_set: lit.iter().copied().collect(),
             lit,
@@ -552,8 +658,8 @@ impl Discovery {
         };
         match expr {
             TypeExpr::Ref { inner, .. } => self.expr_words(world, inner),
-            TypeExpr::Ptr { .. } => Words::default(),
-            TypeExpr::Slice(inner) | TypeExpr::Array { inner, .. } => {
+            TypeExpr::Ptr { .. } | TypeExpr::Array { .. } => Words::default(),
+            TypeExpr::Slice(inner) => {
                 let byte = inner.last() == Some("u8");
                 let w = self.expr_words(world, inner);
                 Words {
@@ -1337,6 +1443,49 @@ impl Discovery {
             How::Call | How::Method => world.node(e.node).name.to_string(),
         }
     }
+}
+
+// Shape parsing has recursive plain-word wrappers and recursive Rust types.
+// Bound its work before either parser is entered; name search is unrestricted.
+fn shape_budget(query: &str) -> Option<&'static str> {
+    if query.len() > 4096 {
+        return Some("shape is too long; split it into a smaller query");
+    }
+    let mut depth = 0usize;
+    let mut tokens = 0usize;
+    let mut in_word = false;
+    let mut indirections = 0usize;
+    for ch in query.chars() {
+        let word = ch.is_alphanumeric() || ch == '_';
+        if word && !in_word {
+            tokens += 1;
+        }
+        in_word = word;
+        // The shared type parser recursively skips unknown punctuation.
+        // Count every syntactic token, including unmatched closers and junk.
+        if !word && !ch.is_whitespace() {
+            tokens += 1;
+        }
+        match ch {
+            '<' | '(' | '[' | '{' => {
+                depth += 1;
+            }
+            '>' | ')' | ']' | '}' => {
+                depth = depth.saturating_sub(1);
+            }
+            '&' | '*' => {
+                indirections += 1;
+            }
+            _ => {}
+        }
+        if depth > 32 || indirections > 32 {
+            return Some("shape is too deeply nested; simplify the type");
+        }
+        if tokens > 128 {
+            return Some("shape is too complex; split it into a smaller query");
+        }
+    }
+    None
 }
 
 /// Queries with arrows, or `takes` / `gives`, ask for a callable's shape.
