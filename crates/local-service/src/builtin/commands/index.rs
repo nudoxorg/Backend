@@ -126,7 +126,13 @@ pub(super) fn index_project_intent_at(
             request_id,
             compiler,
         )?;
-        compile_semantic_publications(daemon, &semantic_context, scan.compiler_sources)?
+        let sources = ingest::admit_compiler_sources(
+            source_root,
+            scan.compiler_sources,
+            scan.reused_compiler_files,
+        )
+        .map_err(BuiltinModelError)?;
+        compile_semantic_publications(daemon, &semantic_context, sources)?
     };
     if changes.is_empty() && semantic_changes.is_empty() {
         return Ok(None);
