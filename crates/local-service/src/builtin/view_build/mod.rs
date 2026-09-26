@@ -14,7 +14,8 @@ mod structural;
 
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
-    foreign_package_call_retarget, foreign_package_mention_retarget, join_project_call,
+    foreign_package_call_retarget, foreign_package_field_retarget,
+    foreign_package_mention_retarget, join_project_call, join_project_field,
     join_project_mention, project_paths_for_package,
 };
 

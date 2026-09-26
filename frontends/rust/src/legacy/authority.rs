@@ -558,6 +558,15 @@ impl<'analysis> RustAuthority<'analysis> {
         self.cross_file_package_path_from_syntax(source.value.syntax())
     }
 
+    /// Rust module path of one resolved named field when it lives in another
+    /// project-local file. Named struct fields share the same `src/...` path
+    /// rules as types and functions.
+    #[must_use]
+    pub fn cross_file_field_package_path(&self, field: Field) -> Option<String> {
+        let source = self.semantics.source(field)?;
+        self.cross_file_package_path_from_syntax(source.value.syntax())
+    }
+
     /// Rust module path of one resolved type or module definition when it lives
     /// in another project-local file. Structs, unions, enums, traits, type
     /// aliases, and modules share the same `src/...` path rules as functions.
