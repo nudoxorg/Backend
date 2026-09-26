@@ -354,10 +354,13 @@ internal static class AuthorityImage
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>()) AddReference(model, node, 2, node.Type);
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberAccessExpressionSyntax>())
             {
-                if (model.GetSymbolInfo(node).Symbol is IMethodSymbol
+                var symbol = model.GetSymbolInfo(node).Symbol;
+                if (symbol is IMethodSymbol
                     && !IsInvocationCallee(node)
                     && !InsideNameOf(node))
                     AddReference(model, node, 8, node.Name);
+                else if (symbol is IFieldSymbol { IsConst: true })
+                    AddReference(model, node, IsFieldWrite(node) ? (byte)7 : (byte)6, node.Name);
                 else
                     AddReference(model, node, 3, node.Name);
             }
@@ -382,12 +385,16 @@ internal static class AuthorityImage
             {
                 if (node.Parent is MemberAccessExpressionSyntax) continue;
                 if (model.GetSymbolInfo(node).Symbol is not (IFieldSymbol or IPropertySymbol { IsIndexer: false })) continue;
-                var write = (node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node)
-                    || node.Parent.IsKind(SyntaxKind.PreIncrementExpression)
-                    || node.Parent.IsKind(SyntaxKind.PostIncrementExpression)
-                    || node.Parent.IsKind(SyntaxKind.PreDecrementExpression)
-                    || node.Parent.IsKind(SyntaxKind.PostDecrementExpression);
-                AddReference(model, node, write ? (byte)7 : (byte)6, node);
+                var symbol = model.GetSymbolInfo(node).Symbol;
+                var write = IsFieldWrite(node);
+                byte tag;
+                if (symbol is IFieldSymbol { IsConst: true })
+                    tag = write ? (byte)7 : (byte)6;
+                else if (ResolveTarget(symbol) == Absent)
+                    tag = (byte)3;
+                else
+                    tag = write ? (byte)7 : (byte)6;
+                AddReference(model, node, tag, node);
             }
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>())
             {
@@ -455,6 +462,13 @@ internal static class AuthorityImage
             return false;
         }
 
+        private static bool IsFieldWrite(SyntaxNode node) =>
+            (node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node)
+            || node.Parent.IsKind(SyntaxKind.PreIncrementExpression)
+            || node.Parent.IsKind(SyntaxKind.PostIncrementExpression)
+            || node.Parent.IsKind(SyntaxKind.PreDecrementExpression)
+            || node.Parent.IsKind(SyntaxKind.PostDecrementExpression);
+
         private void AddReference(SemanticModel model, SyntaxNode node, byte tag, SyntaxNode spellingNode)
         {
             var ownerNode = node.Ancestors().FirstOrDefault(syntaxMap.ContainsKey);
@@ -477,7 +491,6 @@ internal static class AuthorityImage
             }
             else if (target == Absent
                 && symbol is IFieldSymbol or IPropertySymbol or IEventSymbol
-                && symbol is not IFieldSymbol { IsConst: true }
                 && symbol.ContainingType is not null
                 && tag is 3 or 6 or 7)
             {

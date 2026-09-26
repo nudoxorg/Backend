@@ -2228,6 +2228,7 @@ fn typed_member_foreign_key(
                 && !suffix.contains('\r')
         })
         .unwrap_or((spelling, spelling));
+    let entity_kind = member_foreign_entity_kind(kind, prefix != spelling);
     if prefix != spelling {
         ForeignKey::new(
             ForeignOrigin::Namespace {
@@ -2236,7 +2237,7 @@ fn typed_member_foreign_key(
             },
             suffix,
             suffix,
-            foreign_kind(kind),
+            entity_kind,
         )
         .map_err(|_| ProjectionFault::Foreign {
             reference: reference_index,
@@ -2248,11 +2249,21 @@ fn typed_member_foreign_key(
             },
             spelling,
             spelling,
-            foreign_kind(kind),
+            entity_kind,
         )
         .map_err(|_| ProjectionFault::Foreign {
             reference: reference_index,
         })
+    }
+}
+
+/// Qualified const reads and writes land as namespace `Constant` keys; every
+/// other member-access class keeps the field-shaped foreign kind.
+const fn member_foreign_entity_kind(kind: ReferenceTag, qualified: bool) -> Option<EntityKind> {
+    if qualified && matches!(kind, ReferenceTag::FieldRead | ReferenceTag::FieldWrite) {
+        Some(EntityKind::Constant)
+    } else {
+        foreign_kind(kind)
     }
 }
 
@@ -3891,6 +3902,63 @@ mod tests {
             return Err(TestError::Missing("single occurrence"));
         }
         let _ = note;
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_namespace_const_key_splits_qualified_member_spelling() -> Result<(), TestError> {
+        let source = b"class Drive { void Run() { var x = service.Limit; } }";
+        let mut fix = Fixture::default();
+        let drive = fix.class(b"demo.Drive", source);
+        let qualified = fix.atom(b"Demo.WorkoutService.Limit");
+        let file = fix.atom(b"Drive.cs");
+        let (start, end) = Fixture::span_of(source, b"Limit");
+        fix.references.push(RefRow {
+            owner: drive,
+            target: None,
+            spelling: qualified,
+            file,
+            start,
+            end,
+            kind: 6,
+        });
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let occurrence = occurrences
+            .next()
+            .ok_or(TestError::Missing("occurrence"))?
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        let OccurrenceTarget::Foreign(key) = occurrence.occurrence.target else {
+            return Err(TestError::Missing("foreign target"));
+        };
+        if key.path != "Limit"
+            || key.display != "Limit"
+            || key.kind != Some(EntityKind::Constant)
+            || occurrence.occurrence.kind != backend_semantic::ir::ReferenceKind::VariableUse
+        {
+            return Err(TestError::Missing("namespace const key"));
+        }
+        let ForeignOrigin::Namespace {
+            ecosystem,
+            namespace,
+        } = key.origin
+        else {
+            return Err(TestError::Missing("namespace origin"));
+        };
+        if ecosystem != "nuget" || namespace != "Demo.WorkoutService" {
+            return Err(TestError::Missing("declaring type namespace"));
+        }
+        if occurrence.occurrence.span.start != start - 6
+            || occurrence.occurrence.span.end != end - 6
+        {
+            return Err(TestError::Missing("name token span"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("single occurrence"));
+        }
         Ok(())
     }
 
