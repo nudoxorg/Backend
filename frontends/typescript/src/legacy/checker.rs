@@ -469,6 +469,9 @@ pub struct Reference {
     /// Whether the foreign declaration is a class or interface field read.
     #[serde(default)]
     pub is_field: bool,
+    /// Whether the foreign declaration is an enum member read.
+    #[serde(default)]
+    pub is_enum_member: bool,
 }
 
 /// One control-flow-sensitive checker type observed at one plain
@@ -556,6 +559,8 @@ pub struct BoundReference<'report> {
     pub overload_index: Option<u32>,
     /// Whether the foreign declaration is a class or interface field read.
     pub is_field: bool,
+    /// Whether the foreign declaration is an enum member read.
+    pub is_enum_member: bool,
 }
 
 /// One span-bound assignment narrowing borrowed from a validated report.
@@ -675,6 +680,7 @@ impl<'report> CheckerIndex<'report> {
                         name: reference.name.as_deref(),
                         overload_index: reference.overload_index,
                         is_field: reference.is_field,
+                        is_enum_member: reference.is_enum_member,
                     })
                 },
             )
