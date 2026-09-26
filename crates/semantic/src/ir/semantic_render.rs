@@ -18,7 +18,7 @@ use crate::ir::{
 mod canonical;
 #[path = "semantic_render/display.rs"]
 mod display;
-#[path = "semantic_render/document.rs"]
+#[path = "semantic_render/document/mod.rs"]
 mod document;
 
 pub use canonical::{
