@@ -1263,6 +1263,9 @@ struct MemberKey<'source> {
     member: &'source [u8],
     ordinal: u32,
     is_field: bool,
+    /// True only on version-6 images when the owning named type declares in
+    /// a sibling source file (`name_span` present and not digest-bound).
+    cross_file: bool,
 }
 
 /// The two-pass Go projector over one validated authority image.
@@ -1324,6 +1327,13 @@ impl<'x, 'source> Projector<'x, 'source> {
             .map(|(_, _, ordinal)| *ordinal)
     }
 
+    /// True when a version-6 declaration positively lives in a sibling file
+    /// of the digest-bound compile source. Version-5 rows carry no `name_span`
+    /// and must not be treated as cross-file.
+    fn cross_file_type(declaration: &Declaration<'source>) -> bool {
+        declaration.name_span.is_some() && !declaration.bound
+    }
+
     /// Reports whether one unqualified identifier already names a declaration
     /// row in the authority image.
     fn image_declared(&self, name: &[u8]) -> Result<bool, GoCollectError> {
@@ -1382,6 +1392,32 @@ impl<'x, 'source> Projector<'x, 'source> {
                 key.package == package && key.type_name == type_name && key.member == member
             })
             .map(|key| (key.ordinal, key.is_field))
+    }
+
+    /// Resolves one receiver-qualified member to a local fact. Fields whose
+    /// owning type positively declares in a sibling file (version-6
+    /// `name_span` without the digest-bound flag) stay unresolved here so
+    /// the occurrence keeps the package import-path key the join layer
+    /// matches. Unset version-5 bound defaults keep the historical local
+    /// resolution.
+    fn local_member_target(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        member: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let (ordinal, is_field) = self.lookup_member(package, recv_type, member)?;
+        if is_field {
+            let cross_file = self
+                .members
+                .iter()
+                .find(|key| key.ordinal == ordinal)
+                .is_some_and(|key| key.cross_file);
+            if cross_file {
+                return None;
+            }
+        }
+        Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
     }
 
     /// Records one image declaration's primary-source facts: its fact's
@@ -1548,6 +1584,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     type_ordinal,
                     declaration.package,
                     declaration.name,
+                    Self::cross_file_type(declaration),
                 )?,
                 TypeRowKind::Interface => self.interface_methods(
                     &row,
@@ -1591,6 +1628,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method.name,
                 ordinal,
                 is_field: false,
+                cross_file: false,
             });
             methods.push(ordinal);
             method_names.push(method.name);
@@ -1625,6 +1663,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method_set.name,
                 ordinal,
                 is_field: false,
+                cross_file: false,
             });
             methods.push(ordinal);
             method_names.push(method_set.name);
@@ -1703,6 +1742,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         owner: u32,
         package: &'source [u8],
         type_name: &'source [u8],
+        cross_file: bool,
     ) -> Result<(), GoCollectError> {
         let mut field_index = 0usize;
         for member_index in member_run(row) {
@@ -1733,6 +1773,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: true,
+                cross_file,
             });
             fields.push(ordinal);
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1775,6 +1816,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: false,
+                cross_file: false,
             });
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
@@ -2060,8 +2102,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     .lookup(owner_package, row.target)
                     .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
                     .or_else(|| {
-                        self.lookup_member(owner_package, row.recv_type, row.target)
-                            .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                        self.local_member_target(owner_package, row.recv_type, row.target)
                     });
                 match local {
                     Some(target) => target,

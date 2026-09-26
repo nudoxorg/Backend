@@ -7,6 +7,8 @@
 //! answers semantic and typed stale rather than being silently replaced.
 
 mod call_join;
+#[cfg(test)]
+mod go_field_join;
 mod identity;
 mod query;
 mod semantic;
