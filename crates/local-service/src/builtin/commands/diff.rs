@@ -17,11 +17,12 @@ use std::collections::BTreeMap;
 pub(super) fn execute_semantic_diff(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     from: &backend_engine::PackageReference,
     to: &backend_engine::PackageReference,
 ) -> Result<Box<[backend_engine::DiffRecord]>, BuiltinModelError> {
-    let before = semantic_package_snapshot(daemon, compiler, from)?;
-    let after = semantic_package_snapshot(daemon, compiler, to)?;
+    let before = semantic_package_snapshot(daemon, compiler, from, generations)?;
+    let after = semantic_package_snapshot(daemon, compiler, to, generations)?;
     if let (Some(before), Some(after)) = (before, after) {
         return diff_semantic_snapshots(&before, &after);
     }

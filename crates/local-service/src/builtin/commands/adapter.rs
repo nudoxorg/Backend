@@ -32,6 +32,7 @@ pub(in crate::builtin) struct CommandAdapter {
     published: Option<super::super::view_publish::PublishedRoots>,
     manifests: super::super::local_manifest::LocalManifestResidence,
     image_rows: super::super::view_build::ImageRowResidence,
+    generations: super::super::generation_residence::SemanticGenerationResidence,
     dependencies: Option<ResidentDependencies>,
 }
 
@@ -55,6 +56,7 @@ impl CommandAdapter {
         remote_semantic: super::super::query::RemoteSemantic,
         published: Option<super::super::view_publish::PublishedRoots>,
         image_rows: super::super::view_build::ImageRowResidence,
+        generations: super::super::generation_residence::SemanticGenerationResidence,
     ) -> Self {
         Self {
             sql_projection,
@@ -66,6 +68,7 @@ impl CommandAdapter {
             published,
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
             image_rows,
+            generations,
             dependencies: None,
         }
     }
@@ -116,6 +119,7 @@ impl CommandAdapter {
                     daemon,
                     &self.compiler,
                     &mut self.search_snapshots,
+                    &mut self.generations,
                     &request,
                     certificate,
                 )
@@ -307,6 +311,7 @@ impl CommandAdapter {
             self.published.as_ref(),
             edit,
             &mut self.image_rows,
+            &mut self.generations,
         )
         .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
         self.published = Some(outcome.roots);
@@ -325,6 +330,7 @@ impl CommandAdapter {
             &self.compiler,
             &mut self.search_snapshots,
             &mut self.remote_semantic,
+            &mut self.generations,
             query,
         )
         .unwrap_or_else(|error| CommandReply::Error(error.to_string()));
@@ -332,7 +338,7 @@ impl CommandAdapter {
     }
 
     fn graph(
-        &self,
+        &mut self,
         daemon: &ProductDaemon,
         query: backend_engine::GraphNeighborhoodQuery,
         certificate: Option<WireCertificate>,
@@ -344,7 +350,13 @@ impl CommandAdapter {
             Command::Graph(query)
         };
         let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
-        let reply = match execute_semantic_graph(daemon, &self.compiler, query, include_incoming)? {
+        let reply = match execute_semantic_graph(
+            daemon,
+            &self.compiler,
+            &mut self.generations,
+            query,
+            include_incoming,
+        )? {
             Some(snapshot) => CommandReply::Graph(snapshot),
             None => match execute_structural_call_graph(daemon, query, include_incoming)? {
                 Some(snapshot) => CommandReply::Graph(snapshot),
@@ -417,7 +429,7 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
             backend_engine::SurfaceCommand::References { target } => {
-                execute_references(daemon, &self.compiler, &target).map_or_else(
+                execute_references(daemon, &self.compiler, &mut self.generations, &target).map_or_else(
                     |error| {
                         CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
                             error.to_string(),
@@ -427,7 +439,8 @@ impl CommandAdapter {
                 )
             }
             backend_engine::SurfaceCommand::Diff { from, to } => {
-                execute_semantic_diff(daemon, &self.compiler, &from, &to).map_or_else(
+                execute_semantic_diff(daemon, &self.compiler, &mut self.generations, &from, &to)
+                    .map_or_else(
                     |error| {
                         CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
                             error.to_string(),

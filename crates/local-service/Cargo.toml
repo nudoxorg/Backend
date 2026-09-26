@@ -73,5 +73,10 @@ name = "semantic_query_walk"
 path = "benches/semantic_query_walk.rs"
 harness = false
 
+[[bench]]
+name = "semantic_generation"
+path = "benches/semantic_generation.rs"
+harness = false
+
 [lints]
 workspace = true

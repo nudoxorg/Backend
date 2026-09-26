@@ -15,6 +15,7 @@ fn execute_graph_query(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
     snapshots: &mut super::super::query::SearchSnapshotOwner,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     request: &backend_engine::GraphQueryRequest,
 ) -> Result<backend_engine::GraphQueryPage, BuiltinModelError> {
     let owner_cursor = daemon.engine().daemon().library().cursor();
@@ -39,7 +40,9 @@ fn execute_graph_query(
     let corpus = snapshots.admit_corpus(
         snapshot.root(),
         || super::super::read_indexed_sources(&snapshot),
-        |sources| super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources),
+        |sources| {
+            super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources, generations)
+        },
     )?;
     let (cancellation, control) = backend_extension_trustfall::SemanticQueryCancellation::new();
     let query = backend_extension_trustfall::SemanticQueryRequest::admit_page(
@@ -209,6 +212,7 @@ pub(super) fn execute_search(
     compiler: &LocalCompilerClient,
     snapshots: &mut super::super::query::SearchSnapshotOwner,
     remote_semantic: &mut super::super::query::RemoteSemantic,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     query: &backend_engine::Query,
 ) -> Result<CommandReply, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
@@ -216,7 +220,9 @@ pub(super) fn execute_search(
     let semantic_evidence = snapshots.admit_corpus(
         snapshot.root(),
         || super::super::read_indexed_sources(&snapshot),
-        |sources| super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources),
+        |sources| {
+            super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources, generations)
+        },
     )?;
     let coordinator = snapshots
         .select(
@@ -252,11 +258,12 @@ pub(super) fn execute_certified_graph_query(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
     snapshots: &mut super::super::query::SearchSnapshotOwner,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     request: &backend_engine::GraphQueryRequest,
     base: Option<WireCertificate>,
 ) -> Result<(CommandReply, Option<WireCertificate>), BuiltinModelError> {
     let command = Command::GraphQuery(request.clone());
-    let reply = execute_graph_query(daemon, compiler, snapshots, request).map_or_else(
+    let reply = execute_graph_query(daemon, compiler, snapshots, generations, request).map_or_else(
         |error| {
             CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
                 error.to_string(),

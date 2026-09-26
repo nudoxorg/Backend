@@ -67,6 +67,7 @@ pub(crate) fn rows_for_indexed_sources(
     workspace: &std::path::Path,
     foreign: ForeignPublication,
     residence: &mut super::image_rows::ImageRowResidence,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
 ) -> Result<ProjectedRows, BuiltinModelError> {
     if sources.projects.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -87,6 +88,7 @@ pub(crate) fn rows_for_indexed_sources(
         MAX_REBUILD_PACKAGES - sources.projects.len(),
         foreign,
         residence,
+        generations,
     )?;
     let source_capacity = projected_source_capacity(sources, &semantics.complete)?;
     let total_capacity = source_capacity
@@ -482,6 +484,7 @@ fn semantic_rows(
     row_capacity: usize,
     foreign: ForeignPublication,
     residence: &mut super::image_rows::ImageRowResidence,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
 ) -> Result<SemanticRows, BuiltinModelError> {
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -531,7 +534,7 @@ fn semantic_rows(
                     "semantic publication refers to a missing package frontier".to_owned(),
                 )
             })?;
-            let activated = super::super::load_semantic_publication(compiler, key, *claim)?;
+            let activated = super::super::load_semantic_publication(compiler, key, *claim, generations)?;
             // An image already admitted for this publication key keeps its
             // path and source identity. Row projection is reused when the
             // freshness overlay is already resident.

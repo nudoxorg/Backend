@@ -71,6 +71,9 @@ mod worker;
 use worker::connect_worker;
 #[path = "builtin/view_build/mod.rs"]
 mod view_build;
+#[path = "builtin/generation_residence.rs"]
+mod generation_residence;
+use generation_residence::SemanticGenerationResidence;
 #[path = "builtin/view_journal.rs"]
 mod view_journal;
 #[path = "builtin/view_publish.rs"]
@@ -166,12 +169,20 @@ pub(crate) fn admitted_coverage() -> Result<CoverageWitness, BuiltinModelError> 
 /// from receiving an image whose manifest is valid under another package or
 /// language scope.
 pub(super) struct ActivatedProductSemantics {
-    publication: backend_engine::application::ActivatedSemanticPackage,
+    images: Arc<[backend_library::interface::SemanticImageSnapshot]>,
 }
 
 impl ActivatedProductSemantics {
     pub(super) fn images(&self) -> &[backend_library::interface::SemanticImageSnapshot] {
-        &self.publication.images
+        &self.images
+    }
+
+    /// Shared image bytes. A second activation of the same claim returns this allocation.
+    #[must_use]
+    pub(super) fn image_set(
+        &self,
+    ) -> &Arc<[backend_library::interface::SemanticImageSnapshot]> {
+        &self.images
     }
 }
 
@@ -179,19 +190,24 @@ fn load_semantic_publication(
     compiler: &backend_engine::application::LocalCompilerClient,
     key: &backend_engine::builtin::ProductSemanticPublicationKey,
     claim: backend_engine::builtin::SemanticPublicationClaim,
+    generations: &mut SemanticGenerationResidence,
 ) -> Result<ActivatedProductSemantics, BuiltinModelError> {
-    let publication = compiler
-        .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
-        .map_err(|error| BuiltinModelError(format!("activate semantic publication: {error}")))?;
-    Ok(ActivatedProductSemantics { publication })
+    let images = generations.load(claim, || {
+        compiler
+            .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
+            .map(|activated| activated.images)
+            .map_err(|error| BuiltinModelError(format!("activate semantic publication: {error}")))
+    })?;
+    Ok(ActivatedProductSemantics { images })
 }
 
 pub(super) fn activate_semantic_publication(
     compiler: &backend_engine::application::LocalCompilerClient,
     key: &backend_engine::builtin::ProductSemanticPublicationKey,
     claim: backend_engine::builtin::SemanticPublicationClaim,
+    generations: &mut SemanticGenerationResidence,
 ) -> Result<ActivatedProductSemantics, BuiltinModelError> {
-    let activated = load_semantic_publication(compiler, key, claim)?;
+    let activated = load_semantic_publication(compiler, key, claim, generations)?;
     for image in activated.images() {
         let view =
             backend_semantic::ir::SemanticImageView::reopen(image.as_ref()).map_err(|error| {
@@ -642,6 +658,7 @@ fn view_for_workspace(
     deployment: SemanticDeployment,
     filesystem_workspace: &std::path::Path,
     image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
 ) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_indexed_sources(&snapshot)?;
@@ -655,6 +672,7 @@ fn view_for_workspace(
         filesystem_workspace,
         view_build::ForeignPublication::Reject,
         image_rows,
+        generations,
     )?;
     let coverage = view_coverage(&snapshot, &projected.activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
@@ -678,6 +696,7 @@ fn publish_builtin_view(
     prior: Option<&view_publish::PublishedRoots>,
     edit: Option<&BuiltinIntent>,
     image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
 ) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let source_target = view_publish::source_root(&snapshot)?;
@@ -725,6 +744,7 @@ fn publish_builtin_view(
             source_target,
             semantic_target,
             image_rows,
+            generations,
         )?
     {
         return Ok(outcome);
@@ -736,6 +756,7 @@ fn publish_builtin_view(
         deployment,
         filesystem_workspace,
         image_rows,
+        generations,
     )?;
     let deltas = commit_published_target(daemon, current, target)?;
     Ok(view_publish::PublicationOutcome {
@@ -760,6 +781,7 @@ fn publish_package_view(
     source_target: [u8; 32],
     semantic_target: [u8; 32],
     image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
 ) -> Result<Option<view_publish::PublicationOutcome>, BuiltinModelError> {
     let Some(prior) = prior else {
         return Ok(None);
@@ -811,6 +833,7 @@ fn publish_package_view(
         filesystem_workspace,
         view_build::ForeignPublication::Skip,
         image_rows,
+        generations,
     )?;
     let mut activated = prior.activated.clone();
     activated.retain(|(key, _)| *key != package);
@@ -1060,6 +1083,7 @@ pub(crate) fn compose_owner(
         .daemon_mut()
         .set_view_persistence(Box::new(view_journal));
     let mut image_rows = view_build::ImageRowResidence::default();
+    let mut generations = SemanticGenerationResidence::default();
     if let Some(recovered) = recovered_view {
         let admission = BuiltinViewAdmission {
             workspace_root,
@@ -1083,6 +1107,7 @@ pub(crate) fn compose_owner(
             semantic_deployment,
             &config.workspace,
             &mut image_rows,
+            &mut generations,
         )
         .map_err(|error| ProcessError::Profile(error.to_string()))?;
         let cursor = backend_engine::Cursor::for_view_root(&view);
@@ -1107,6 +1132,7 @@ pub(crate) fn compose_owner(
         None,
         None,
         &mut image_rows,
+        &mut generations,
     )
     .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
     let published_roots = published.roots;
@@ -1175,6 +1201,7 @@ pub(crate) fn compose_owner(
         remote_semantic,
         Some(published_roots),
         image_rows,
+        generations,
     );
     let command = move |daemon: &mut crate::Locald<
         BuiltinModel,
@@ -1243,6 +1270,14 @@ pub fn measure_semantic_image_batch() {
 /// the corpus used to perform before emitting facts.
 pub fn measure_semantic_query_walk() {
     view_build::measure_semantic_query_walk();
+}
+
+/// Times a compiler-owner semantic reopen against the resident generation.
+///
+/// The package is compiled before either timer. The printed line is the
+/// release measurement for an unchanged semantic claim.
+pub fn measure_semantic_generation() {
+    generation_residence::measure_semantic_generation();
 }
 
 /// Starts the compiled locald profile. It does all startup work before the
