@@ -10,7 +10,7 @@
 
 use super::with_alpha;
 use crate::Set;
-use crate::controls::{Look, field};
+use crate::controls::{Look, Release, VersionSelected, field, version_comb};
 use crate::icons::{self, Icon, IconSize, Kind, Stroke, variant_path};
 use crate::measure::Measure;
 use crate::motion::{Motion, spec};
@@ -150,6 +150,7 @@ pub(crate) fn kind_mark(kind: Kind, size: Pixels, cx: &App) -> AnyElement {
 #[derive(IntoElement)]
 pub struct Row {
     row: ShelfRow,
+    scope: Option<ElementId>,
     focused: bool,
     look: Look,
     measure: Measure,
@@ -161,6 +162,7 @@ pub struct Row {
 pub fn row(row: ShelfRow, measure: &Measure) -> Row {
     Row {
         row,
+        scope: None,
         focused: false,
         look: Look::LIVE,
         measure: *measure,
@@ -169,6 +171,14 @@ pub fn row(row: ShelfRow, measure: &Measure) -> Row {
 }
 
 impl Row {
+    /// The shelf (or list) this row belongs to: keeps its motion apart from
+    /// a row with the same key in another shelf.
+    #[must_use]
+    pub fn scope(mut self, scope: impl Into<ElementId>) -> Self {
+        self.scope = Some(scope.into());
+        self
+    }
+
     /// The shell's keyboard focus is on this row (J/K walk).
     #[must_use]
     pub const fn focused(mut self, focused: bool) -> Self {
@@ -197,25 +207,31 @@ impl RenderOnce for Row {
         let measure = self.measure;
         let s = measure.scale();
         let row = self.row;
-        let id = ElementId::NamedChild(Arc::new(row.key.clone()), "row".into());
+        let id = match &self.scope {
+            Some(scope) => ElementId::NamedChild(
+                Arc::new(ElementId::NamedChild(Arc::new(scope.clone()), row.key.to_string().into())),
+                "row".into(),
+            ),
+            None => ElementId::NamedChild(Arc::new(row.key.clone()), "row".into()),
+        };
         let hovered = window.use_keyed_state(id.clone(), cx, |_, _| false);
-        let motion = Motion::scoped(ElementId::NamedChild(Arc::new(id.clone()), "m".into()), cx);
+        let motion = Motion::scoped(ElementId::View(hovered.entity_id()), cx);
         let hover = motion.animate(
-            "hover",
+            ElementId::NamedChild(Arc::new(id.clone()), "hover".into()),
             if *hovered.read(cx) || self.look.hover { 1.0 } else { 0.0 },
             spec::HOVER,
             window,
             cx,
         );
         let focus = motion.animate(
-            "focus",
+            ElementId::NamedChild(Arc::new(id.clone()), "focus".into()),
             if self.focused || self.look.focus { 1.0 } else { 0.0 },
             spec::HOVER,
             window,
             cx,
         );
         let current = motion.animate(
-            "current",
+            ElementId::NamedChild(Arc::new(id.clone()), "current".into()),
             if row.tone == RowTone::Current { 1.0 } else { 0.0 },
             spec::REVEAL,
             window,
@@ -334,25 +350,90 @@ pub fn up_link(label: impl Into<SharedString>, measure: &Measure, cx: &App) -> A
         .into_any_element()
 }
 
-/// The book header: the package's gem, its name and version.
+/// The shelf's book: the package you are in, and — when its history is
+/// known — its release comb.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Book {
+    /// The package's gem.
+    pub kind: Kind,
+    /// Its name.
+    pub name: SharedString,
+    /// The version you use (your lockfile's pin).
+    pub version: SharedString,
+    /// Its releases, oldest first (the comb).
+    pub releases: Option<Rc<[Release]>>,
+    /// Which release is pinned.
+    pub pinned: Option<usize>,
+    /// Which release the page is scoped to (defaults to the pin).
+    pub viewing: Option<usize>,
+    /// Releases whose changes reach your code (W-Data's `data::release`).
+    pub touches: Vec<usize>,
+    /// State sheets: a release shown hovered, a lens shown open.
+    pub(crate) hover_look: Option<usize>,
+    pub(crate) lens_look: Option<f32>,
+}
+
+impl Book {
+    /// A book without a release history.
+    #[must_use]
+    pub fn new(kind: Kind, name: impl Into<SharedString>, version: impl Into<SharedString>) -> Self {
+        Self {
+            kind,
+            name: name.into(),
+            version: version.into(),
+            releases: None,
+            pinned: None,
+            viewing: None,
+            touches: Vec::new(),
+            hover_look: None,
+            lens_look: None,
+        }
+    }
+
+    /// With its release history, the pin, and the release being read.
+    #[must_use]
+    pub fn releases(mut self, releases: Rc<[Release]>, pinned: usize, viewing: usize) -> Self {
+        self.releases = Some(releases);
+        self.pinned = Some(pinned);
+        self.viewing = Some(viewing);
+        self
+    }
+}
+
+type OnVersion = Rc<dyn Fn(&VersionSelected, &mut Window, &mut App)>;
+
+/// The comb's measure inside a book of `measure`: inset by the book's
+/// gutter on both sides.
+pub(crate) fn comb_measure(measure: &Measure) -> Measure {
+    measure.inset(px(14.0 * measure.scale()))
+}
+
+/// The book's header (gem, name, version — the version turns periwinkle
+/// while the page reads another release) and its comb, for a shelf of
+/// `measure`'s width.
 #[must_use]
-pub fn book_header(
-    kind: Kind,
-    name: impl Into<SharedString>,
-    version: impl Into<SharedString>,
+pub fn book(
+    id: impl Into<ElementId>,
+    book: &Book,
     measure: &Measure,
+    on_version: Option<OnVersion>,
     cx: &App,
 ) -> AnyElement {
     let palette = cx.palette();
     let s = measure.scale();
-    div()
+    let away = match (&book.releases, book.pinned, book.viewing) {
+        (Some(releases), Some(pin), Some(view)) if pin != view => releases.get(view).map(|r| r.version.clone()),
+        _ => None,
+    };
+    let (version, ink) = away.map_or((book.version.clone(), palette.ink3.hsla()), |v| (v, palette.peri_hi.hsla()));
+    let head = div()
         .flex()
         .items_center()
         .gap(px(10.0 * s))
-        .pt(px(8.0 * s))
+        .pt(px(6.0 * s))
         .px(px(14.0 * s))
-        .pb(px(12.0 * s))
-        .child(gem(kind).size(28.0 * s))
+        .pb(px(10.0 * s))
+        .child(gem(book.kind).size(28.0 * s))
         .child(
             div()
                 .flex()
@@ -366,89 +447,37 @@ pub fn book_header(
                         .text_ellipsis()
                         .set(BOOK_NAME, measure)
                         .text_color(palette.ink0.hsla())
-                        .child(name.into()),
+                        .child(book.name.clone()),
                 )
-                .child(
-                    div()
-                        .set(BOOK_VERSION, measure)
-                        .text_color(palette.ink3.hsla())
-                        .child(version.into()),
-                ),
-        )
-        .into_any_element()
-}
-
-/// The book plate (the shelf's header on the first v4 board): a cut plate
-/// holding the package's gem, name, language and version, and — when given
-/// — its release comb underneath.
-#[must_use]
-pub fn book_plate(
-    kind: Kind,
-    name: impl Into<SharedString>,
-    version: impl Into<SharedString>,
-    lang: Option<icons::Lang>,
-    comb: Option<AnyElement>,
-    measure: &Measure,
-    cx: &App,
-) -> AnyElement {
-    let palette = cx.palette();
-    let s = measure.scale();
-    let head = div()
-        .flex()
-        .items_center()
-        .gap(px(12.0 * s))
-        .child(gem(kind).size(34.0 * s))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.0 * s))
-                .flex_1()
-                .min_w(px(0.0))
-                .child(
-                    div()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .set(crate::tokens::ty::BOOK, measure)
-                        .text_color(palette.ink0.hsla())
-                        .child(name.into()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0 * s))
-                        .children(lang.map(|lang| icons::lang_mark(lang, 14.0).size(measure.icon(14.0))))
-                        .child(
-                            div()
-                                .set(BOOK_VERSION, measure)
-                                .text_color(palette.ink2.hsla())
-                                .child(version.into()),
-                        ),
-                ),
+                .child(div().set(BOOK_VERSION, measure).text_color(ink).child(version)),
         );
-    cut()
-        .chamfer(Chamfer::Sm)
-        .bevel(Bevel::Rest)
-        .plate(Plate::Flat)
+    let comb = book.releases.clone().map(|releases| {
+        let mut comb = version_comb(id, releases, &comb_measure(measure));
+        if let Some(pin) = book.pinned {
+            comb = comb.pinned(pin);
+        }
+        if let Some(view) = book.viewing {
+            comb = comb.selected(view);
+        }
+        comb = comb.touches(book.touches.iter().copied());
+        if let Some(hot) = book.hover_look {
+            comb = comb.hover_look(hot);
+        }
+        if let Some(x) = book.lens_look {
+            comb = comb.lens_look(x);
+        }
+        if let Some(handler) = on_version {
+            comb = comb.on_select(move |event, window, cx| handler(event, window, cx));
+        }
+        div().px(px(14.0 * s)).child(comb)
+    });
+    div()
         .flex()
         .flex_col()
-        .gap(px(12.0 * s))
-        .mx(px(10.0 * s))
-        .pt(px(12.0 * s))
-        .px(px(12.0 * s))
-        .pb(px(10.0 * s))
+        .pb(px(12.0 * s))
         .child(head)
         .children(comb)
         .into_any_element()
-}
-
-/// The measure for whatever sits inside a [`book_plate`] of `measure`'s
-/// width (its release comb).
-#[must_use]
-pub fn book_inner(measure: &Measure) -> Measure {
-    measure.inset(px(22.0 * measure.scale()))
 }
 
 /// Everything a shelf can hold; every piece is optional.
@@ -456,8 +485,8 @@ pub fn book_inner(measure: &Measure) -> Measure {
 pub struct ShelfData {
     /// The up-link's label (`backend`).
     pub up: Option<SharedString>,
-    /// The book: kind, name, version.
-    pub book: Option<(Kind, SharedString, SharedString)>,
+    /// The book (and its release comb).
+    pub book: Option<Book>,
     /// The filter's editing state.
     pub filter: Option<Entity<InputState>>,
     /// The rows.
@@ -474,6 +503,7 @@ pub struct Shelf {
     data: ShelfData,
     measure: Measure,
     on_open: Option<OnRow>,
+    on_version: Option<OnVersion>,
 }
 
 /// A shelf showing `data`.
@@ -484,10 +514,21 @@ pub fn shelf(id: impl Into<ElementId>, data: ShelfData, measure: &Measure) -> Sh
         data,
         measure: *measure,
         on_open: None,
+        on_version: None,
     }
 }
 
 impl Shelf {
+    /// The book's comb chose a release.
+    #[must_use]
+    pub fn on_version(
+        mut self,
+        handler: impl Fn(&VersionSelected, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_version = Some(Rc::new(handler));
+        self
+    }
+
     /// A row was opened.
     #[must_use]
     pub fn on_open(mut self, handler: impl Fn(&ElementId, &mut Window, &mut App) + 'static) -> Self {
@@ -517,8 +558,14 @@ impl RenderOnce for Shelf {
         if let Some(up) = data.up {
             column = column.child(up_link(up, &measure, cx));
         }
-        if let Some((kind, name, version)) = data.book {
-            column = column.child(book_header(kind, name, version, &measure, cx));
+        if let Some(shelf_book) = &data.book {
+            column = column.child(book(
+                ElementId::NamedChild(Arc::new(self.id.clone()), "comb".into()),
+                shelf_book,
+                &measure,
+                self.on_version.clone(),
+                cx,
+            ));
         }
         if let Some(filter) = &data.filter {
             let inner = measure.inset(px(10.0 * s));
@@ -538,7 +585,9 @@ impl RenderOnce for Shelf {
             );
         }
         let rows = data.rows.into_iter().enumerate().map(|(index, shelf_row)| {
-            let mut element = row(shelf_row, &measure).focused(data.focused == Some(index));
+            let mut element = row(shelf_row, &measure)
+                .scope(self.id.clone())
+                .focused(data.focused == Some(index));
             if let Some(handler) = self.on_open.clone() {
                 element = element.on_open(move |key, window, cx| handler(key, window, cx));
             }
@@ -609,7 +658,10 @@ impl RenderOnce for Spine {
             let mark_id = ElementId::NamedChild(Arc::new(key.clone()), "spine".into());
             let hovered = window.use_keyed_state(mark_id.clone(), cx, |_, _| false);
             let lit = motion.animate(
-                ElementId::NamedChild(Arc::new(key.clone()), "lit".into()),
+                ElementId::NamedChild(
+                    Arc::new(ElementId::NamedChild(Arc::new(self.id.clone()), key.to_string().into())),
+                    "lit".into(),
+                ),
                 if on || *hovered.read(cx) { 1.0 } else { 0.55 },
                 spec::HOVER,
                 window,
@@ -703,4 +755,55 @@ pub fn pins_frame(measure: &Measure, window: &mut Window, cx: &mut App) -> AnyEl
         .border_color(palette.line1.hsla())
         .child(crate::overlay::float::pinned_column(&inner, window, cx))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::comb_measure;
+    use crate::controls::comb::{Layout, nearest, unreachable};
+    use crate::measure::Measure;
+    use crate::theme::Facet;
+    use gpui::px;
+
+    #[test]
+    fn every_release_is_reachable_in_a_narrow_shelf_at_double_text() {
+        // The shelf at its narrowest, 200 px, with text at 200 %: the comb
+        // gets what the book leaves it, and every release of a young
+        // package, `present`, W-Data's toml and a tokio-sized history must
+        // still be reachable by pointer, each with a target of at least
+        // 5 px at this scale once reached.
+        for (width, scale) in [(200.0, 2.0), (200.0, 1.0), (264.0, 2.0)] {
+            let facet = Facet { text_scale: scale, ..Facet::default() };
+            let comb = comb_measure(&Measure::new(px(width), &facet));
+            let comb_width = f32::from(comb.width());
+            assert!(comb_width > 0.0 && comb_width < width, "{comb_width} of {width}");
+            for n in [3, 17, 120, 400] {
+                let layout = Layout::new(n, comb_width, scale);
+                let missed = unreachable(&layout);
+                assert!(
+                    missed.is_empty(),
+                    "{n} releases in a {width} px shelf at {scale}x ({comb_width} px comb): unreachable {missed:?}"
+                );
+                // Where the pointer rests, the release under it is a target
+                // of at least 5 px at this scale (under the lens when the
+                // comb is too tight for that at rest).
+                for at in [0.25, 0.5, 0.75] {
+                    let x = comb_width * at;
+                    let lens = layout.needs_lens().then(|| layout.follow(None, x));
+                    let positions = layout.positions(lens.as_ref(), 1.0);
+                    let hot = nearest(&positions, x).expect("a release under the pointer");
+                    let gap = positions
+                        .windows(2)
+                        .skip(hot.saturating_sub(1))
+                        .take(2)
+                        .map(|pair| pair[1] - pair[0])
+                        .fold(f32::INFINITY, f32::min);
+                    assert!(
+                        gap >= 5.0 * scale - 1e-3,
+                        "{n} releases, {comb_width} px at {scale}x, pointer at {x}: release {hot} is {gap} px wide"
+                    );
+                }
+            }
+        }
+    }
 }

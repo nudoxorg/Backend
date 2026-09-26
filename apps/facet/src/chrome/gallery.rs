@@ -15,7 +15,7 @@
 #![allow(clippy::too_many_lines)]
 
 use super::{
-    Bead, Here, Lights, RowTone, ShelfData, ShelfRow, TitleButton, TitlebarData, shelf, spine,
+    Book, Bead, Here, Lights, RowTone, ShelfData, ShelfRow, TitleButton, TitlebarData, shelf, spine,
     status_bar, titlebar,
 };
 use crate::Set;
@@ -204,7 +204,7 @@ fn flow_rows() -> Vec<ShelfRow> {
 fn shelf_data(filter: &Entity<InputState>) -> ShelfData {
     ShelfData {
         up: Some("backend".into()),
-        book: Some((Kind::Package, "present".into(), "0.4.2".into())),
+        book: Some(Book::new(Kind::Package, "present", "0.4.2")),
         filter: Some(filter.clone()),
         rows: flow_rows(),
         focused: None,

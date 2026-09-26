@@ -312,6 +312,11 @@ fn presence(id: &ElementId, part: &str, cx: &mut App) -> Presence {
         .exit(DEPART)
 }
 
+/// A bead key as a name inside a titlebar's track keys.
+fn bead_name(key: &ElementId) -> SharedString {
+    key.to_string().into()
+}
+
 /// A bead's size and strength by how far behind "here" it is.
 fn bead_look(age: usize) -> (f32, f32) {
     match age {
@@ -504,14 +509,14 @@ impl RenderOnce for Titlebar {
             let (size, strength) = bead_look(age);
             // Older beads shrink and fade a step as the thread grows.
             let r = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(bead.key.clone()), "r".into()),
+                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "r".into()),
                 size * 0.5 * std::f32::consts::SQRT_2 * s,
                 spec::LIFT,
                 window,
                 cx,
             );
             let alpha = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(bead.key.clone()), "a".into()),
+                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "a".into()),
                 strength,
                 spec::REVEAL,
                 window,
@@ -521,7 +526,7 @@ impl RenderOnce for Titlebar {
             let bead_id = ElementId::NamedChild(std::sync::Arc::new(bead.key.clone()), "bead".into());
             let hovered = window.use_keyed_state(bead_id.clone(), cx, |_, _| false);
             let grow = motion.animate(
-                ElementId::NamedChild(std::sync::Arc::new(bead.key.clone()), "grow".into()),
+                ElementId::NamedChild(std::sync::Arc::new(ElementId::NamedChild(std::sync::Arc::new(id.clone()), bead_name(&bead.key))), "grow".into()),
                 if *hovered.read(cx) && !item.is_leaving() { 1.25 } else { 1.0 },
                 spec::LIFT,
                 window,
@@ -558,7 +563,7 @@ impl RenderOnce for Titlebar {
         }
 
         // The capsule.
-        let fill_t = motion.animate("fill", if plan.fill { 1.0 } else { 0.0 }, spec::SETTLE, window, cx);
+        let fill_t = motion.animate(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "fill".into()), if plan.fill { 1.0 } else { 0.0 }, spec::SETTLE, window, cx);
         let here_id = ElementId::NamedChild(std::sync::Arc::new(id.clone()), "here".into());
         thread = thread.child(capsule(
             &here_id,
@@ -672,7 +677,7 @@ fn capsule(
     let motion = Motion::scoped(ElementId::NamedChild(std::sync::Arc::new(id.clone()), "m".into()), cx);
     let hovered = window.use_keyed_state(id.clone(), cx, |_, _| false);
     let hover_t = motion.animate(
-        "hover",
+        ElementId::NamedChild(std::sync::Arc::new(id.clone()), "hover".into()),
         if *hovered.read(cx) { 1.0 } else { 0.0 },
         spec::HOVER,
         window,

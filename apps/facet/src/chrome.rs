@@ -13,8 +13,7 @@ pub mod shelf;
 pub mod titlebar;
 
 pub use shelf::{
-    Row, RowTone, Shelf, ShelfData, ShelfRow, Spine, book_header, book_inner, book_plate,
-    pins_frame, row, shelf, spine,
+    Book, Row, RowTone, Shelf, ShelfData, ShelfRow, Spine, book, pins_frame, row, shelf, spine,
     status_bar, up_link,
 };
 pub use titlebar::{Bead, Here, Lights, Plan, TitleButton, Titlebar, TitlebarData, titlebar};
