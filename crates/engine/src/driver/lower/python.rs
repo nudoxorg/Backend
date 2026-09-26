@@ -2000,6 +2000,24 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             };
                             return Ok(Some((target, confidence)));
                         }
+                        if let Some(class_index) = self.unique_live_class_index(receiver) {
+                            let confidence = match checked {
+                                Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                                _ => OccurrenceConfidence::Index,
+                            };
+                            if let Some(ordinal) =
+                                self.attribute_read_for_class(occurrence, class_index)
+                            {
+                                return Ok(Some((
+                                    OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                    confidence,
+                                )));
+                            }
+                            return Ok(Some((
+                                foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
+                                OccurrenceConfidence::Index,
+                            )));
+                        }
                     }
                     if let Some(ordinal) = self.module_field(occurrence) {
                         let confidence = match checked {
@@ -2055,6 +2073,22 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             _ => OccurrenceConfidence::Index,
                         };
                         return Ok(Some((target, confidence)));
+                    }
+                    if let Some(class_index) = self.unique_live_class_index(receiver) {
+                        let confidence = match checked {
+                            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                            _ => OccurrenceConfidence::Index,
+                        };
+                        if let Some(ordinal) = self.method_call_for_class(occurrence, class_index) {
+                            return Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence,
+                            )));
+                        }
+                        return Ok(Some((
+                            foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                            OccurrenceConfidence::Index,
+                        )));
                     }
                     if let Some(resolved) =
                         self.annotated_receiver_target(occurrence, receiver, checked)?
@@ -2172,6 +2206,18 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// for exactly one inherited method of that spelling.
     fn enclosing_method(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
         let class_span = self.enclosing_class_span(occurrence, class)?;
+        let class_index = self.class_index_for_span(class_span)?;
+        self.method_call_for_class(occurrence, class_index)
+    }
+
+    /// Resolves one method call on a named same-file class: unique local
+    /// methods bind locally; inherited methods are walked through bases.
+    fn method_call_for_class(
+        &self,
+        occurrence: &OccurrenceFact,
+        class_index: usize,
+    ) -> Option<u32> {
+        let class_span = self.module.declarations[class_index].span;
         let attribute_bytes = occurrence.target.as_bytes();
         let local = self.member_ordinals_in_class(
             class_span,
@@ -2181,10 +2227,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         match local.len() {
             1 => Some(local[0]),
             n if n > 1 => None,
-            _ => {
-                let class_index = self.class_index_for_span(class_span)?;
-                self.inherited_member_ordinal(class_index, DeclarationKind::Function, attribute_bytes)
-            }
+            _ => self.inherited_member_ordinal(class_index, DeclarationKind::Function, attribute_bytes),
         }
     }
 
@@ -2195,6 +2238,18 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// or its same-file bases.
     fn enclosing_attribute_read(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
         let class_span = self.enclosing_class_span(occurrence, class)?;
+        let class_index = self.class_index_for_span(class_span)?;
+        self.attribute_read_for_class(occurrence, class_index)
+    }
+
+    /// Resolves one attribute read on a named same-file class using the same
+    /// field-first matrix as [`Self::enclosing_attribute_read`].
+    fn attribute_read_for_class(
+        &self,
+        occurrence: &OccurrenceFact,
+        class_index: usize,
+    ) -> Option<u32> {
+        let class_span = self.module.declarations[class_index].span;
         let attribute_bytes = occurrence.target.as_bytes();
         let local_fields =
             self.member_ordinals_in_class(class_span, DeclarationKind::Field, attribute_bytes);
@@ -2203,7 +2258,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
             n if n > 1 => return None,
             _ => {}
         }
-        let class_index = self.class_index_for_span(class_span)?;
         match self.inherited_member_status(class_index, DeclarationKind::Field, attribute_bytes) {
             InheritedMemberStatus::Unique(ordinal) => return Some(ordinal),
             InheritedMemberStatus::Ambiguous => return None,

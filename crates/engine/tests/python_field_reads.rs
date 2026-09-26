@@ -1260,3 +1260,223 @@ fn python_self_field_read_still_binds_child_override() -> Result<(), TestError> 
     )?;
     Ok(())
 }
+
+#[test]
+fn python_class_field_read_binds_named_class() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Item:\n    note: str\n\ndef read():\n    return Item.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let item_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"note")?;
+    let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    if item_note == other_note {
+        return Err(TestError::Falsified("Item.note and Other.note are one field"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        item_note,
+        Some(other_note),
+        b"note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_class_method_call_binds_named_class() -> Result<(), TestError> {
+    let source = b"class Other:\n    def set_note(self):\n        pass\n\nclass Item:\n    def set_note(self):\n        pass\n\ndef run():\n    Item.set_note()\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let item_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"set_note")?;
+    let other_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
+    if item_set_note == other_set_note {
+        return Err(TestError::Falsified("Item.set_note and Other.set_note are one method"));
+    }
+    pin_local_method_call(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"run",
+        item_set_note,
+        Some(other_set_note),
+        b"set_note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_class_inherited_field_read() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Base:\n    note: str\n\nclass Item(Base):\n    pass\n\ndef read():\n    return Item.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    if base_note == other_note {
+        return Err(TestError::Falsified("Base.note and Other.note are one field"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        base_note,
+        Some(other_note),
+        b"note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_class_inherited_method_call() -> Result<(), TestError> {
+    let source = b"class Other:\n    def set_note(self):\n        pass\n\nclass Base:\n    def set_note(self):\n        pass\n\nclass Item(Base):\n    pass\n\ndef run():\n    Item.set_note()\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"set_note")?;
+    let other_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
+    if base_set_note == other_set_note {
+        return Err(TestError::Falsified("Base.set_note and Other.set_note are one method"));
+    }
+    pin_local_method_call(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"run",
+        base_set_note,
+        Some(other_set_note),
+        b"set_note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_class_field_read_shadows_base() -> Result<(), TestError> {
+    let source = b"class Base:\n    note: str\n\nclass Item(Base):\n    note: str\n\ndef read():\n    return Item.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let item_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"note")?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if item_note == base_note {
+        return Err(TestError::Falsified("Item.note and Base.note are one field"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        item_note,
+        Some(base_note),
+        b"note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_class_method_value_binds_named_class() -> Result<(), TestError> {
+    let source = b"class Other:\n    def note(self):\n        pass\n\nclass Item:\n    def note(self):\n        pass\n\ndef read():\n    return Item.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let item_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Item", b"note")?;
+    let other_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    if item_note == other_note {
+        return Err(TestError::Falsified("Item.note and Other.note are one method"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        item_note,
+        Some(other_note),
+        b"note",
+    )?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    for row in rows
+        .iter()
+        .filter(|row| row.owner == read && row.occurrence.kind == ReferenceKind::MethodCall)
+    {
+        let spelling_note = matches!(
+            &row.occurrence.target,
+            OccurrenceTarget::Foreign(key) if key.display == "note"
+        ) || matches!(
+            row.occurrence.target,
+            OccurrenceTarget::Local(target) if target == item_note || target == other_note
+        );
+        if spelling_note {
+            return Err(TestError::Falsified(
+                "Item.note produced a MethodCall owned by read",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn python_class_ambiguous_inherited_fields_stays_universe() -> Result<(), TestError> {
+    let source = b"class Left:\n    note: str\n\nclass Right:\n    note: str\n\nclass Item(Left, Right):\n    pass\n\ndef read():\n    return Item.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
+    let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if left_note == right_note {
+        return Err(TestError::Falsified("Left.note and Right.note are one field"));
+    }
+    pin_universe_field_access(source, &module, &decoded, &atoms, &rows, b"read", "note")?;
+    Ok(())
+}
+
+#[test]
+fn python_class_generic_base_field_read() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Base:\n    note: str\n\nclass Item(Base[int]):\n    pass\n\ndef read():\n    return Item.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    if base_note == other_note {
+        return Err(TestError::Falsified("Base.note and Other.note are one field"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        base_note,
+        Some(other_note),
+        b"note",
+    )?;
+    Ok(())
+}

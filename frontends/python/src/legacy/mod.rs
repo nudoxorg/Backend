@@ -492,13 +492,16 @@ fn project(
     facts: &mut ModuleFacts,
 ) -> Result<(), ExtractionError> {
     let mut names = FunctionNames::default();
+    let mut class_names = ClassNames::default();
     for statement in &syntax.body {
         names.visit_stmt(statement);
+        class_names.visit_stmt(statement);
     }
     let error = {
         let mut projection = Projection {
             text,
             names: &names.0,
+            class_names: &class_names.0,
             facts,
             owner: MODULE_IDENTITY.to_owned(),
             class_depth: 0,
@@ -861,6 +864,17 @@ fn docstring(body: &[ast::Stmt], text: &str) -> Result<Option<DocstringFact>, Ex
 }
 
 #[derive(Default)]
+struct ClassNames(Vec<String>);
+impl<'a> Visitor<'a> for ClassNames {
+    fn visit_stmt(&mut self, statement: &'a ast::Stmt) {
+        if let ast::Stmt::ClassDef(class) = statement {
+            self.0.push(class.name.as_str().to_owned());
+        }
+        visitor::walk_stmt(self, statement);
+    }
+}
+
+#[derive(Default)]
 struct FunctionNames(Vec<String>);
 impl<'a> Visitor<'a> for FunctionNames {
     fn visit_stmt(&mut self, statement: &'a ast::Stmt) {
@@ -918,6 +932,7 @@ fn type_parameter_spans(type_params: Option<&ast::TypeParams>) -> Vec<Span> {
 struct Projection<'a> {
     text: &'a str,
     names: &'a [String],
+    class_names: &'a [String],
     facts: &'a mut ModuleFacts,
     owner: String,
     class_depth: usize,
@@ -1322,7 +1337,16 @@ impl<'a> Visitor<'a> for Projection<'a> {
                         ast::Expr::Name(name)
                             if self.names.iter().any(|declared| declared == name.id.as_str())
                     );
+                    let receiver_is_class_name = matches!(
+                        attribute.value.as_ref(),
+                        ast::Expr::Name(name)
+                            if self
+                                .class_names
+                                .iter()
+                                .any(|class| class == name.id.as_str())
+                    );
                     let gated = receiver_is_module_name
+                        && !receiver_is_class_name
                         && self.names.iter().any(|declared| declared == target);
                     Some((
                         target,
@@ -1655,6 +1679,7 @@ mod tests {
         let mut projection = Projection {
             text: "x",
             names: &[],
+            class_names: &[],
             facts: &mut facts,
             owner: String::new(),
             class_depth: 0,
