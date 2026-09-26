@@ -70,6 +70,9 @@ pub struct TrackSample {
     /// ([`crate::tokens::motion::Bezier::overshoot`],
     /// [`crate::motion::Spring::overshoot_ratio`]), not hand-tagged per key.
     pub overshoot_ratio: f32,
+    /// Additional bound in channel units for trajectories that can bulge
+    /// even when start and target are equal (camera flights and carries).
+    pub overshoot_absolute: f32,
     /// An optional alignment group: elements that are meant to move in
     /// lockstep (a compound shape, a multi-part control) tag their tracks
     /// with the same group via [`grouped`] so the harness can catch one part
@@ -113,7 +116,10 @@ impl BoundsSample {
     /// viewport at the origin.
     #[must_use]
     pub fn within(&self, width: f32, height: f32) -> bool {
-        self.x >= 0.0 && self.y >= 0.0 && self.x + self.width <= width && self.y + self.height <= height
+        self.x >= 0.0
+            && self.y >= 0.0
+            && self.x + self.width <= width
+            && self.y + self.height <= height
     }
 }
 
@@ -188,6 +194,8 @@ pub struct Ledger {
     /// Interactive elements and the state their components believe they are
     /// in, in paint order.
     pub targets: Vec<TargetSample>,
+    /// Scrollable containers that published this frame (see [`ScrollSample`]).
+    pub scrolls: Vec<ScrollSample>,
     /// Overlay stacks, one per floating layer that published this frame.
     pub stacks: Vec<StackSample>,
     /// The motion gate's running count of requested frames.
@@ -249,6 +257,56 @@ pub struct TargetSample {
     pub bounds: BoundsSample,
     /// What the component believes.
     pub state: Target,
+}
+
+/// A scrollable container's viewport and its full scrollable content extent,
+/// both in window space (as if scrolled to the origin), published by a
+/// container so the `offscreen` lint can tell "below the fold, reachable by
+/// scrolling" from "clipped by a fixed box or the window, unreachable".
+///
+/// This is an opt-in seam: a scroll container calls [`record_scroll`] once
+/// per frame it paints. Nothing calls it yet in the shipped shell (see
+/// `apps/desktop/src/shell/*`, none of which this lane owns) — until one
+/// does, focusables inside a real scroll container still lint as
+/// `offscreen` exactly as before. The rule and its exemption are proven by
+/// canary scenes in `apps/facet/src/gallery/bench.rs` that call this
+/// directly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollSample {
+    /// The container's key.
+    pub key: String,
+    /// The container's own visible viewport, in window space.
+    pub viewport: BoundsSample,
+    /// The full scrollable content extent, in the same window space, as it
+    /// would be laid out at scroll offset zero (i.e. everything reachable by
+    /// scrolling this container, not just what is visible right now).
+    pub content: BoundsSample,
+}
+
+impl ScrollSample {
+    /// Whether `bounds` is reachable by scrolling this container: inside the
+    /// full content extent on every axis the container actually scrolls, and
+    /// inside the viewport on every axis it does not (scrolling that axis
+    /// cannot help, so the container's own fixed cross-axis size still
+    /// bounds it). A container whose content does not exceed its viewport on
+    /// either axis does not scroll at all, so it reaches nothing extra.
+    #[must_use]
+    pub(crate) fn reaches(&self, bounds: &BoundsSample) -> bool {
+        let scrolls_y = self.content.height > self.viewport.height + 0.5;
+        let scrolls_x = self.content.width > self.viewport.width + 0.5;
+        if !scrolls_x && !scrolls_y {
+            return false;
+        }
+        let within_content = bounds.x >= self.content.x - 0.5
+            && bounds.y >= self.content.y - 0.5
+            && bounds.x + bounds.width <= self.content.x + self.content.width + 0.5
+            && bounds.y + bounds.height <= self.content.y + self.content.height + 0.5;
+        let within_viewport_x = bounds.x >= self.viewport.x - 0.5
+            && bounds.x + bounds.width <= self.viewport.x + self.viewport.width + 0.5;
+        let within_viewport_y = bounds.y >= self.viewport.y - 0.5
+            && bounds.y + bounds.height <= self.viewport.y + self.viewport.height + 0.5;
+        within_content && (scrolls_x || within_viewport_x) && (scrolls_y || within_viewport_y)
+    }
 }
 
 /// Where a floating entry is in its life.
@@ -336,6 +394,26 @@ pub fn record_target(cx: &mut App, key: &ElementId, bounds: Bounds<Pixels>, stat
             state,
         };
         cx.default_global::<Probe>().ledger.targets.push(sample);
+    }
+}
+
+/// Publishes a scroll container's viewport and full content extent while
+/// recording (see [`ScrollSample`]). A container calls this once per frame
+/// it paints so the `offscreen` lint can tell content reachable by scrolling
+/// it from content genuinely clipped away.
+pub fn record_scroll(
+    cx: &mut App,
+    key: &ElementId,
+    viewport: Bounds<Pixels>,
+    content: Bounds<Pixels>,
+) {
+    if enabled(cx) {
+        let sample = ScrollSample {
+            key: key.to_string(),
+            viewport: bounds_sample(key, viewport),
+            content: bounds_sample(key, content),
+        };
+        cx.default_global::<Probe>().ledger.scrolls.push(sample);
     }
 }
 
@@ -731,7 +809,12 @@ pub fn text(
 
 /// The width `content` takes set in `role` at `scale` on one line.
 #[must_use]
-pub fn natural_width(content: &SharedString, role: TypeRole, scale: f32, window: &Window) -> Pixels {
+pub fn natural_width(
+    content: &SharedString,
+    role: TypeRole,
+    scale: f32,
+    window: &Window,
+) -> Pixels {
     let size = role.size * scale;
     let font = Font {
         family: SharedString::new_static(crate::fonts::family(role)),
