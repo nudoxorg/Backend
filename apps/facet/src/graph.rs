@@ -24,6 +24,7 @@ pub mod model;
 pub(crate) mod navigation;
 pub mod peek;
 pub mod prism;
+pub mod road;
 pub mod scene;
 pub mod view;
 

@@ -4,6 +4,24 @@ use super::layout::{Box2, Layout};
 use super::model::{Kind, NodeId, World};
 use std::collections::BTreeMap;
 
+/// Estimate reliable release velocity in screen pixels per millisecond.
+/// Coalesced events do not measure physical speed; the total coast remains
+/// bounded by one third of the shorter viewport dimension.
+pub(crate) fn release_velocity(samples: &[(std::time::Instant, f32, f32)], now: std::time::Instant, width: f32, height: f32) -> Option<(f64, f64)> {
+    let newest = samples.last()?;
+    if now.saturating_duration_since(newest.0) > std::time::Duration::from_millis(60) { return None; }
+    let oldest = samples.iter().find(|sample| newest.0.saturating_duration_since(sample.0) <= std::time::Duration::from_millis(90))?;
+    let span = newest.0.saturating_duration_since(oldest.0);
+    if span < std::time::Duration::from_millis(16) { return None; }
+    let milliseconds = span.as_secs_f64() * 1000.0;
+    let (vx, vy) = (f64::from(newest.1 - oldest.1) / milliseconds, f64::from(newest.2 - oldest.2) / milliseconds);
+    let speed = vx.hypot(vy);
+    let extent = f64::from(width.min(height));
+    if !speed.is_finite() || speed == 0.0 || !extent.is_finite() || extent <= 0.0 { return None; }
+    let factor = (extent / 3.0 / super::camera::GLIDE_MS / speed).min(1.0);
+    Some((vx * factor, vy * factor))
+}
+
 /// What would feel a change, counted once per top-level symbol.
 #[derive(Clone, Debug)]
 pub struct Reach {
@@ -119,6 +137,23 @@ pub struct TourRoad {
 #[cfg(test)]
 mod tests {
     use super::Reach;
+    #[test]
+    fn release_rejects_coalesced_or_stale_events_and_bounds_coast() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        for span in [0, 1, 15] {
+            let end = start + Duration::from_millis(span);
+            assert!(super::release_velocity(&[(start, 0.0, 0.0), (end, 250.0, -50.0)], end, 1440.0, 900.0).is_none());
+        }
+        for (width, height) in [(1440.0, 900.0), (480.0, 400.0), (96.0, 64.0)] {
+            let end = start + Duration::from_millis(32);
+            let (vx, vy) = super::release_velocity(&[(start, 0.0, 0.0), (end, 250.0, -50.0)], end, width, height).expect("reliable span");
+            assert!(vx.hypot(vy) * super::super::camera::GLIDE_MS <= f64::from(width.min(height)) / 3.0 + 1e-9);
+            assert!(vx > 0.0 && vy < 0.0);
+            assert!(super::release_velocity(&[(start, 0.0, 0.0), (end, 250.0, -50.0)], end + Duration::from_millis(61), width, height).is_none());
+        }
+    }
+
     use crate::graph::model::tests::tiny;
     use crate::graph::model::{Edge, Kind, Node, Rel, World};
     use crate::graph::layout::Layout;

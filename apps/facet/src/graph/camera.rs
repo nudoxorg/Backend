@@ -177,7 +177,8 @@ struct Sample {
 }
 
 const EASE_MS: f64 = 70.0;
-const GLIDE_MS: f64 = 260.0;
+/// Decay horizon shared with the production release-coast bound.
+pub(crate) const GLIDE_MS: f64 = 260.0;
 const ZOOM_EPS: f64 = 1e-4;
 
 /// Time to arrive exactly after exponential decay down to `eps`, then its
@@ -796,9 +797,9 @@ mod tests {
     use gpui::{Context, IntoElement, Render, TestAppContext, VisualTestContext, Window, div};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
-    type Log = Rc<RefCell<Vec<(Camera, Option<Landing>, bool)>>>;
+    type Log = Rc<RefCell<Vec<(Camera, Option<Landing>, bool, Instant)>>>;
 
     /// A view that steps a rig once per render and logs every frame.
     struct Stepper {
@@ -811,7 +812,9 @@ mod tests {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let (moving, landed) = self.rig.borrow_mut().step(&self.view, window, cx);
             let cam = self.rig.borrow().cam;
-            self.log.borrow_mut().push((cam, landed, moving));
+            self.log
+                .borrow_mut()
+                .push((cam, landed, moving, motion::now(cx)));
             div()
         }
     }
@@ -900,8 +903,15 @@ mod tests {
         // ∫ e^(-t/260) dt to the 0.02 px/ms cutoff, at k = 10.
         assert!((travelled - 259.48).abs() < 1e-10, "travelled {travelled}");
         assert_eq!(rig.borrow().cam, expected, "exact finite glide endpoint");
-        let last_moving = log.borrow().iter().rposition(|f| f.2).unwrap_or(0);
-        assert!(last_moving < 150, "still moving at frame {last_moving}");
+        let log = log.borrow();
+        let start = log.iter().position(|f| f.2).expect("glide starts");
+        let landed = log[start..].iter().find(|f| !f.2).expect("glide stops");
+        let elapsed = landed.3.duration_since(log[start].3).as_secs_f64() * 1000.0;
+        let deadline = super::GLIDE_MS * 500.0_f64.ln();
+        assert!(
+            elapsed >= deadline && elapsed - deadline <= 16.0,
+            "glide stopped at{elapsed}ms, analytic cutoff{deadline}ms"
+        );
     }
 
     #[gpui::test]
@@ -927,10 +937,13 @@ mod tests {
         // clamp(170·S + 260, 320, 1250) ms: count the moving frames.
         let path = motion::flight::Path::new(from, to);
         let ms = (170.0 * path.length() + 260.0).clamp(320.0, 1250.0);
-        #[allow(clippy::cast_precision_loss)]
-        let flew = (landed[0] - 1) as f64 * 16.0;
+        // Executor time, not draw count: notifications may redraw more
+        // than once on the same platform clock. Keep a strict one-frame
+        // deadline and forbid arrival before the planned duration.
+        let started = log.iter().find(|f| f.2).expect("flight starts").3;
+        let flew = log[landed[0]].3.duration_since(started).as_secs_f64() * 1000.0;
         assert!(
-            (flew - ms).abs() <= 32.0,
+            flew >= ms && flew - ms <= 16.0,
             "flew {flew} ms, pacing says {ms} ms"
         );
         // Continuity: no frame jumps more than the path allows (log-width).

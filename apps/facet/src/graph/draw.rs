@@ -2,8 +2,8 @@
 //!
 //! Paint cost follows what is visible, not what exists:
 //! - packages and modules are culled by box against the view;
-//! - items are visited only inside visible modules, members only when their
-//!   item is big enough to show them;
+//! - immutable bounds indices visit occupied items and crossing segments;
+//!   members appear only when their item reaches reading scale;
 //! - shapes are batched per (shape, tone, brightness) into one GPUI path
 //!   each, so ~20 fills draw every symbol on screen (see [`Strategy`] for
 //!   the measured alternatives);
@@ -83,7 +83,12 @@ pub enum Exploration<'a> {
     /// A find query's cached constellation.
     Search(&'a Search),
     /// A selected or held value road.
-    Chain(&'a [RoadStop]),
+    Chain {
+        /// Folded type stops and exact calls.
+        stops: &'a [RoadStop],
+        /// The one-shot carried value, sampled by the view.
+        progress: super::road::RoadSample,
+    },
     /// A change reach and its current wave progress.
     Reach {
         /// Cached reach membership and threads.
@@ -118,8 +123,15 @@ impl<'a> Exploration<'a> {
         }
     }
     fn chain(self) -> Option<&'a [RoadStop]> {
-        if let Self::Chain(data) = self {
-            Some(data)
+        if let Self::Chain { stops, .. } = self {
+            Some(stops)
+        } else {
+            None
+        }
+    }
+    fn road(self) -> Option<super::road::RoadSample> {
+        if let Self::Chain { progress, .. } = self {
+            Some(progress)
         } else {
             None
         }
@@ -152,7 +164,7 @@ pub struct Look<'a> {
     /// The hovered territory (no symbol under the pointer).
     pub hover_terr: Option<Terr>,
     /// One bounded departing packet, visual-only and never pickable.
-    pub(crate) outgoing_hover: Option<(&'a super::scene::Neighbourhood, f32)>,
+    pub(crate) outgoing_hover: Option<(&'a super::scene::Neighbourhood, f32, f32)>,
     /// The focused symbol.
     pub focus: Option<NodeId>,
     /// The gathered prism, laid out.
@@ -342,11 +354,7 @@ fn quad_to(out: &mut Vec<Pt>, from: Pt, ctrl: Pt, to: Pt, steps: u32) {
     for s in 1..=steps {
         #[allow(clippy::cast_precision_loss)]
         let t = s as f32 / steps as f32;
-        let u = 1.0 - t;
-        out.push(pt(
-            u * u * from.x + 2.0 * u * t * ctrl.x + t * t * to.x,
-            u * u * from.y + 2.0 * u * t * ctrl.y + t * t * to.y,
-        ));
+        out.push(quadratic_point(from, ctrl, to, t));
     }
 }
 
@@ -435,6 +443,16 @@ impl Occupancy {
         }
     }
 
+    /// One composite label owns its overlapping line boxes together.
+    pub fn take_pair(&mut self, a: [f32; 4], b: [f32; 4]) -> bool {
+        self.take(
+            a[0].min(b[0]),
+            a[1].min(b[1]),
+            a[2].max(b[2]),
+            a[3].max(b[3]),
+        )
+    }
+
     /// Takes the box (window px) if it is on screen and free.
     pub fn take(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
         if ![x0, y0, x1, y1].iter().all(|v| v.is_finite())
@@ -512,6 +530,18 @@ fn bank() -> Bank {
 /// A star for the quad path: `(x, y, side, tone, brightness)`.
 type Star = (f32, f32, f32, usize, usize);
 
+/// Ambient context belongs to nearby territories. A soft96px edge keeps
+/// endpoint relevance continuous during pan, while distant crossing-only
+/// wires do not compete with exact hovered relations.
+fn ambient_relevance(view: &View, [x0, y0, x1, y1]: [f32; 4]) -> f32 {
+    let outside = (view.x - x1)
+        .max(x0 - view.x - view.w)
+        .max(view.y - y1)
+        .max(y0 - view.y - view.h)
+        .max(0.0);
+    (1.0 - smooth(f64::from(outside), 0.0, 96.0)) as f32
+}
+
 fn hover_envelope(active: Option<f32>, outgoing: Option<f32>) -> f32 {
     active
         .unwrap_or(0.0)
@@ -587,7 +617,7 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             1.0 - 0.45
                 * hover_envelope(
                     look.hover.map(|_| look.hover_a),
-                    look.outgoing_hover.map(|(_, a)| a),
+                    look.outgoing_hover.map(|(_, a, _)| a),
                 )
         };
     // The lit neighbourhood of the hovered symbol (not while a prism shows).
@@ -747,10 +777,31 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 if !projected.visible_with_margin(&bounds, 1.0) {
                     continue;
                 }
+                let relevance = ambient_relevance(
+                    &view,
+                    [
+                        sx(a.bounds.x0),
+                        sy(a.bounds.y0),
+                        sx(a.bounds.x1),
+                        sy(a.bounds.y1),
+                    ],
+                )
+                .max(ambient_relevance(
+                    &view,
+                    [
+                        sx(b.bounds.x0),
+                        sy(b.bounds.y0),
+                        sx(b.bounds.x1),
+                        sy(b.bounds.y1),
+                    ],
+                ));
+                if relevance <= 0.001 {
+                    continue;
+                }
                 let bucket = (((0.02 + 0.012 * (e.weight as f32).log2()).min(0.12) - 0.02) / 0.02)
                     .floor()
                     .clamp(0.0, 5.0) as usize;
-                buckets[bucket].seg(pt(sx(a.x), sy(a.y)), pt(sx(b.x), sy(b.y)), 0.8);
+                buckets[bucket].seg(pt(sx(a.x), sy(a.y)), pt(sx(b.x), sy(b.y)), 0.8 * relevance);
                 st.edges += 1;
             }
             for (q, f) in buckets.into_iter().enumerate() {
@@ -1063,14 +1114,18 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             paint_fill(halos, tone(peri, 0.13), window, &mut st);
             paint_fill(gems, tone(peri, 0.95), window, &mut st);
         }
-        let road_labels = paint_roads(look, kf, &sx, &sy, stroke_clip, window, &mut st);
+        let mut road_labels = paint_roads(look, kf, &sx, &sy, stroke_clip, window, &mut st);
 
         // ---- the lit neighbourhood: bundled edges with flow, bright nodes
-        for (neighbours, a, promote) in look
+        for (neighbours, a, flow_alpha, promote) in look
             .outgoing_hover
-            .map(|(nb, a)| (nb, a, false))
+            .map(|(nb, a, flow_alpha)| (nb, a, flow_alpha, false))
             .into_iter()
-            .chain(lit_nb.as_deref().map(|nb| (nb, look.hover_a, true)))
+            .chain(
+                lit_nb
+                    .as_deref()
+                    .map(|nb| (nb, look.hover_a, look.flow_alpha, true)),
+            )
         {
             if a <= 0.001 || (!promote && look.hover == Some(neighbours.node)) {
                 continue;
@@ -1082,10 +1137,11 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 st.fading_hover_relations = neighbours.edges.len() as u32;
             }
             let mut trunks: [Fill; 3] = std::array::from_fn(|_| Fill::new());
-            let colour = |edge: &super::scene::HoverEdge| {
-                if !edge.incoming {
+            let mut hubs: [Fill; 3] = std::array::from_fn(|_| Fill::new());
+            let colour = |incoming: bool, other: NodeId| {
+                if !incoming {
                     0
-                } else if world.yours(edge.other) {
+                } else if world.yours(other) {
                     2
                 } else {
                     1
@@ -1107,7 +1163,34 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 }
                 let screen = screen_points(edge);
                 let width = (0.8 + (bundle.count as f32).log2() * 0.08).min(1.5);
-                trunks[colour(edge)].polyline(&screen[..edge.points.len()], width);
+                trunks[colour(edge.incoming, edge.other)]
+                    .polyline(&screen[..edge.points.len()], width);
+                if let Some(caption) = &bundle.caption {
+                    let remote = screen[if edge.incoming { 0 } else { screen.len() - 1 }];
+                    if projected.contains(remote.x, remote.y) {
+                        let color = colour(edge.incoming, edge.other);
+                        hubs[color].diamond_ring(remote.x, remote.y, 3.5, 1.0);
+                        if promote {
+                            road_labels.push((
+                                caption.clone(),
+                                remote.x,
+                                remote.y,
+                                3.5,
+                                roles::SUB,
+                                tone(
+                                    if color == 0 {
+                                        ink
+                                    } else if color == 1 {
+                                        peri
+                                    } else {
+                                        mint
+                                    },
+                                    0.65 * a,
+                                ),
+                            ));
+                        }
+                    }
+                }
                 if promote {
                     st.hover_routes += 1;
                 } else {
@@ -1127,6 +1210,23 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                             mint
                         },
                         0.3 * a,
+                    ),
+                    window,
+                    &mut st,
+                );
+            }
+            for (q, batch) in hubs.into_iter().enumerate() {
+                paint_fill(
+                    batch,
+                    tone(
+                        if q == 0 {
+                            ink
+                        } else if q == 1 {
+                            peri
+                        } else {
+                            mint
+                        },
+                        0.65 * a,
                     ),
                     window,
                     &mut st,
@@ -1164,16 +1264,19 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 let mut end = start;
                 while end < leaves.len() && leaves[end].0 == module {
                     let edge = &neighbours.edges[leaves[end].1];
-                    let screen = screen_points(edge);
+                    let route = scene.leaf_route(h, edge);
+                    let screen = screen_points(&route);
                     let coverage = leaves[end].3;
-                    let colour = colour(edge);
+                    let colour = colour(edge.incoming, edge.other);
                     // Coverage fading varies stroke width within one uniform
                     // color batch, so a thousand boundary leaves cannot create
                     // a thousand individual paint submissions.
-                    batches[colour].polyline(&screen[..edge.points.len()], 1.2 * coverage);
-                    if look.flow_alpha > 0.0 {
+                    if edge.shared {
+                        batches[colour].polyline(&screen[..route.points.len()], 1.2 * coverage);
+                    }
+                    if flow_alpha > 0.0 {
                         lights[colour].dashed_in(
-                            &screen[..edge.points.len()],
+                            &screen[..route.points.len()],
                             coverage,
                             2.0,
                             7.0,
@@ -1181,7 +1284,9 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                             stroke_clip,
                         );
                     }
-                    st.edges += 1;
+                    if edge.shared || flow_alpha > 0.0 {
+                        st.edges += 1;
+                    }
                     end += 1;
                 }
                 for (q, (batch, light)) in batches.into_iter().zip(lights).enumerate() {
@@ -1195,7 +1300,7 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                     paint_fill(batch, tone(color, 0.5 * a * alpha), window, &mut st);
                     paint_fill(
                         light,
-                        tone(color, 0.5 * a * alpha * look.flow_alpha),
+                        tone(color, 0.5 * a * alpha * flow_alpha),
                         window,
                         &mut st,
                     );
@@ -1355,15 +1460,12 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             let lift = smooth(pxs, 220.0, 300.0) as f32;
             let y = sy(t.y) + (sy(t.bounds.y0) + 18.0 * ts - sy(t.y)) * lift;
             let half = r.size / 2.0 + 3.0;
-            if !occ.take(x - 4.0, y - half, x + w + 4.0, y + half) {
-                continue;
-            }
-            let base = baseline(&label, y);
-            texts.push((label, x, base));
-            st.labels += 1;
-            if pxs > 60.0 && pxs < 500.0 {
+            let title_box = [x - 4.0, y - half, x + w + 4.0, y + half];
+            let subtitle_alpha =
+                (smooth(pxs, 60.0, 90.0) * (1.0 - smooth(pxs, 420.0, 500.0))) as f32;
+            let subtitle = if subtitle_alpha > 0.001 {
                 let reach = scene.pkg_reach[p as usize];
-                let sub = if !yours_pkg(p) && reach > 0 {
+                let text = if !yours_pkg(p) && reach > 0 {
                     format!(
                         "{} symbols · you use {reach}",
                         group(scene.pkg_size[p as usize])
@@ -1372,18 +1474,37 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                     format!("{} symbols", group(scene.pkg_size[p as usize]))
                 };
                 let sub = shape(
-                    SharedString::from(sub),
+                    SharedString::from(text),
                     scaled(roles::SUB, ts),
-                    tone(ink, 0.32 * a),
+                    tone(ink, 0.32 * a * subtitle_alpha),
                     window,
                 );
                 let sy_ = y + r.size * 0.5 + 9.0 * ts;
                 let sx_ = sx(t.x) - sub.width() / 2.0;
-                let half = (sub.ascent() + sub.descent()) * 0.5 + 2.0;
-                if occ.take(sx_ - 2.0, sy_ - half, sx_ + sub.width() + 2.0, sy_ + half) {
-                    let base = baseline(&sub, sy_);
-                    texts.push((sub, sx_, base));
-                }
+                let sub_half = (sub.ascent() + sub.descent()) * 0.5 + 2.0;
+                let rect = [
+                    sx_ - 2.0,
+                    sy_ - sub_half,
+                    sx_ + sub.width() + 2.0,
+                    sy_ + sub_half,
+                ];
+                Some((sub, sx_, sy_, rect))
+            } else {
+                None
+            };
+            let with_sub = subtitle
+                .as_ref()
+                .is_some_and(|(_, _, _, rect)| occ.take_pair(title_box, *rect));
+            if !with_sub && !occ.take(title_box[0], title_box[1], title_box[2], title_box[3]) {
+                continue;
+            }
+            let base = baseline(&label, y);
+            texts.push((label, x, base));
+            st.labels += 1;
+            if with_sub && let Some((sub, sx_, sy_, _)) = subtitle {
+                let base = baseline(&sub, sy_);
+                texts.push((sub, sx_, base));
+                st.labels += 1;
             }
         }
         let mut by_size = vis_m.clone();
@@ -1521,7 +1642,15 @@ fn halo(batch: &mut Fill, x: f32, y: f32, r: f32) {
     }
 }
 
-type RoadLabel = (String, f32, f32, f32, TypeRole, Hsla);
+fn quadratic_point(a: Pt, c: Pt, b: Pt, t: f32) -> Pt {
+    let u = 1.0 - t;
+    pt(
+        u * u * a.x + 2.0 * u * t * c.x + t * t * b.x,
+        u * u * a.y + 2.0 * u * t * c.y + t * t * b.y,
+    )
+}
+
+type RoadLabel = (SharedString, f32, f32, f32, TypeRole, Hsla);
 
 /// Short roads own their labels. Their geometry stays in three colour batches,
 /// and dash clipping bounds work when a stop lies outside the current camera.
@@ -1543,6 +1672,11 @@ fn paint_roads(
     let mut peri = Fill::new();
     let mut mint = Fill::new();
     let mut halos = Fill::new();
+    let mut pending: [Fill; 3] = std::array::from_fn(|_| Fill::new());
+    let mut pending_halos = Fill::new();
+    let mut bead = Fill::new();
+    let mut bead_halo = Fill::new();
+    let progress = look.exploration.road();
     let stops: Vec<_> = if let Some(chain) = look.exploration.chain() {
         chain
             .iter()
@@ -1588,47 +1722,57 @@ fn paint_roads(
             (a.y + b.y) * 0.5 + (b.x - a.x) * 0.18,
         );
         quad_to(&mut pts, a, ctrl, b, 20);
+        if let Some((arc, t)) = progress.and_then(super::road::RoadSample::bead)
+            && arc == j
+        {
+            let at = quadratic_point(a, ctrl, b, t);
+            bead.diamond(at.x, at.y, 3.2);
+            halo(&mut bead_halo, at.x, at.y, 8.0);
+        }
         let near = look.exploration.chain().is_some()
             || look
                 .exploration
                 .tour()
                 .is_some_and(|tour| j == tour.at || j + 1 == tour.at);
         if near {
-            road.dashed_in(
-                &pts,
-                1.2,
-                2.0,
-                5.0,
-                if look.flow_alpha > 0.0 {
-                    -look.flow
-                } else {
-                    0.0
-                },
-                clip,
-            );
+            road.dashed_in(&pts, 1.2, 2.0, 5.0, 0.0, clip);
         } else {
             hinted.dashed_in(&pts, 1.2, 2.0, 5.0, 0.0, clip);
         }
         st.edges += 1;
     }
-    for (i, label, on, past, yours) in stops {
+    for (index, (i, label, on, past, yours)) in stops.into_iter().enumerate() {
+        let arrived = progress.is_none_or(|sample| sample.reached(index));
         let j = i as usize;
         let (x, y) = (sx(layout.x[j]), sy(layout.y[j]));
         if x < clip[0] - 16.0 || x > clip[2] + 16.0 || y < clip[1] - 16.0 || y > clip[3] + 16.0 {
             continue;
         }
         let radius = if on { r + 2.0 } else { r };
+        let [pending_ink, pending_peri, pending_mint] = &mut pending;
+        let mut_ink = if arrived { &mut ink } else { pending_ink };
+        let mut_peri = if arrived { &mut peri } else { pending_peri };
+        let mut_mint = if arrived { &mut mint } else { pending_mint };
         if yours {
-            mint.diamond_ring(x, y, radius + 2.5, 1.4);
+            mut_mint.diamond_ring(x, y, radius + 2.5, 1.4);
         } else if on {
-            halo(&mut halos, x, y, radius + 7.0);
-            peri.diamond(x, y, radius);
+            halo(
+                if arrived {
+                    &mut halos
+                } else {
+                    &mut pending_halos
+                },
+                x,
+                y,
+                radius + 7.0,
+            );
+            mut_peri.diamond(x, y, radius);
         } else if past {
-            ink.diamond_ring(x, y, radius, 1.3);
+            mut_ink.diamond_ring(x, y, radius, 1.3);
         } else if look.exploration.chain().is_some() {
-            ink.diamond(x, y, radius);
+            mut_ink.diamond(x, y, radius);
         } else {
-            peri.diamond_ring(x, y, radius, 1.3);
+            mut_peri.diamond_ring(x, y, radius, 1.3);
         }
         let c = if yours {
             p.mint.base
@@ -1638,12 +1782,21 @@ fn paint_roads(
             p.ink1
         };
         words.push((
-            label,
+            label.into(),
             x,
             y,
             radius,
             if on { roles::ITEM_BOLD } else { roles::ITEM },
-            tone(c, if on || yours { 1.0 } else { 0.75 }),
+            tone(
+                c,
+                if progress.is_some() {
+                    if arrived { 1.0 } else { 0.35 }
+                } else if on || yours {
+                    1.0
+                } else {
+                    0.75
+                },
+            ),
         ));
     }
     for (batch, color) in [
@@ -1653,6 +1806,18 @@ fn paint_roads(
         (ink, tone(p.ink1, 0.75)),
         (peri, tone(p.peri.base, 0.95)),
         (mint, tone(p.mint.base, 0.95)),
+        (pending_halos, tone(p.peri.base, 0.16 * 0.35)),
+        (std::mem::take(&mut pending[0]), tone(p.ink1, 0.75 * 0.35)),
+        (
+            std::mem::take(&mut pending[1]),
+            tone(p.peri.base, 0.95 * 0.35),
+        ),
+        (
+            std::mem::take(&mut pending[2]),
+            tone(p.mint.base, 0.95 * 0.35),
+        ),
+        (bead_halo, tone(p.mint.base, 0.2)),
+        (bead, tone(p.mint.base, 1.0)),
     ] {
         if !batch.is_empty() {
             batch.paint(window, color);
@@ -1931,6 +2096,89 @@ mod tests {
                     }
                 }
                 assert!(!accepted.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn ambient_endpoint_relevance_fades_continuously_at_territory_boundary() {
+        let view = View {
+            x: 37.0,
+            y: 53.0,
+            w: 480.0,
+            h: 618.0,
+        };
+        let mut previous = 1.0;
+        for n in 0..=1600 {
+            let outside = -8.0 + n as f32 * 0.125;
+            let relevance = super::ambient_relevance(
+                &view,
+                [
+                    view.x + view.w + outside,
+                    view.y + 100.0,
+                    view.x + view.w + outside + 40.0,
+                    view.y + 140.0,
+                ],
+            );
+            assert!((0.0..=1.0).contains(&relevance));
+            assert!(relevance <= previous + 1e-6);
+            assert!((relevance - previous).abs() < 0.0021);
+            previous = relevance;
+            if outside >= 96.0 {
+                assert_eq!(relevance, 0.0);
+            }
+        }
+        assert_eq!(
+            super::ambient_relevance(
+                &view,
+                [view.x + 20.0, view.y + 20.0, view.x + 60.0, view.y + 60.0]
+            ),
+            1.0
+        );
+    }
+    #[test]
+    fn package_two_line_label_reserves_itself_as_one_group() {
+        let view = View {
+            x: 37.0,
+            y: 53.0,
+            w: 480.0,
+            h: 618.0,
+        };
+        let title = [200.0, 200.0, 280.0, 220.0];
+        let subtitle = [190.0, 217.0, 290.0, 232.0];
+        let mut old = Occupancy::new(&view);
+        assert!(old.take(title[0], title[1], title[2], title[3]));
+        assert!(!old.take(subtitle[0], subtitle[1], subtitle[2], subtitle[3]));
+        let mut composite = Occupancy::new(&view);
+        assert!(composite.take_pair(title, subtitle));
+        assert!(!composite.take(200.0, 223.0, 210.0, 229.0));
+        let mut blocked = Occupancy::new(&view);
+        blocked.reserve([190.0, 226.0, 290.0, 236.0]);
+        assert!(!blocked.take_pair(title, subtitle));
+        assert!(blocked.take(title[0], title[1], title[2], title[3]));
+    }
+
+    #[test]
+    fn carried_value_uses_the_exact_road_quadratic_under_projection() {
+        for scale in [0.1, 1.0, 2.0, 26.0] {
+            let a = super::pt(37.0, 53.0);
+            let b = super::pt(137.0, 73.0);
+            let c = super::pt(67.0, 103.0);
+            let mut points = vec![a];
+            super::quad_to(&mut points, a, c, b, 20);
+            let transform = |p: super::Pt| super::pt(p.x * scale + 113.0, p.y * scale - 79.0);
+            for (i, &sampled) in points.iter().enumerate() {
+                let t = i as f32 / 20.0;
+                let bead = super::quadratic_point(a, c, b, t);
+                assert_eq!(bead.x, sampled.x);
+                assert_eq!(bead.y, sampled.y);
+                let projected = super::quadratic_point(transform(a), transform(c), transform(b), t);
+                let expected = transform(bead);
+                assert!(
+                    (projected.x - expected.x).abs() < 0.001
+                        && (projected.y - expected.y).abs() < 0.001
+                );
+                assert!(projected.x.is_finite() && projected.y.is_finite());
             }
         }
     }

@@ -30,6 +30,8 @@ use crate::motion::{self, Camera, Motion};
 const PRISM_KEY: &str = "graph-prism";
 /// The hover highlight's fade track.
 const HOVER_KEY: &str = "graph-hover";
+/// The finite edge activity envelope, independent from its wrapped phase.
+const FLOW_KEY: &str = "graph-flow";
 use crate::paint::{Bevel, Chamfer, Plate, cut};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
@@ -71,6 +73,7 @@ struct OutgoingHover {
     epoch: usize,
     packet: Arc<super::scene::Neighbourhood>,
     alpha: f32,
+    flow_alpha: f32,
 }
 
 struct Drag {
@@ -132,6 +135,7 @@ pub struct GraphView {
     hover: Option<NodeId>,
     hover_slot: Option<usize>,
     hover_a: f32,
+    flow_a: f32,
     hover_terr: Option<Terr>,
     prism: Option<Prism>,
     frame: Option<PrismFrame>,
@@ -161,6 +165,8 @@ pub struct GraphView {
     find: Entity<InputState>,
     results: Vec<NodeId>,
     results_scroll: ScrollHandle,
+    code_scroll: ScrollHandle,
+    road: Option<super::road::RoadProgress>,
     focus_scroll: ScrollHandle,
     chain_scroll: ScrollHandle,
     tour_scroll: ScrollHandle,
@@ -236,6 +242,7 @@ impl GraphView {
             hover: None,
             hover_slot: None,
             hover_a: 0.0,
+            flow_a: 0.0,
             hover_terr: None,
             prism: None,
             frame: None,
@@ -261,6 +268,8 @@ impl GraphView {
             find,
             results: Vec::new(),
             results_scroll: ScrollHandle::new(),
+            code_scroll: ScrollHandle::new(),
+            road: None,
             focus_scroll: ScrollHandle::new(),
             chain_scroll: ScrollHandle::new(),
             tour_scroll: ScrollHandle::new(),
@@ -494,12 +503,13 @@ impl GraphView {
     }
 
     fn package_tour(&mut self, package: u32) -> Option<Tour> {
-        let discovery = self.discovery.as_ref()?;
-        Some(self.tours.entry(package).or_insert_with(|| tour::of_items(&self.world, discovery.semantic_names(), package, discovery.package_items(package))).clone())
+        let tour = self.discovery.as_ref()?.package_tour(package)?;
+        Some(self.tours.entry(package).or_insert_with(|| tour.clone()).clone())
     }
 
     fn tour_package(&self) -> Option<u32> {
         if let Some(i) = self.state.focus { return Some(self.world.node(i).pkg); }
+        if let Some((tour, _)) = self.state.exploration.tour() { return Some(tour.package); }
         let (scene, rig) = (self.scene.as_ref()?, self.rig.as_ref()?);
         #[allow(clippy::cast_possible_truncation)]
         scene.territory_at(rig.cam.x as f32, rig.cam.y as f32).map(|t| t.pkg)
@@ -575,10 +585,12 @@ impl GraphView {
         if let (Some(scene), Some(view), Some(rig)) = (&self.scene, self.view, &mut self.rig) {
             let bounds = chain.stops.iter().fold(Box2::EMPTY, |b, s| b.with(scene.layout.x[s.node as usize], scene.layout.y[s.node as usize]));
             if !chain.stops.is_empty() {
-                let to = view.frame(bounds, 1.45);
+                let to = readable_frame(scene, &view, &view, bounds, chain.stops[0].node, chain_margin(&view));
                 rig.fly_with(to, None, Travel::Survey(to));
             }
         }
+        self.road = Some(super::road::RoadProgress::new(&chain, motion::now(cx).saturating_duration_since(motion::epoch(cx))));
+        self.code_scroll.set_offset(point(px(0.0), px(0.0)));
         self.state.apply(Event::HoldChain(chain));
         cx.notify();
     }
@@ -626,15 +638,15 @@ impl GraphView {
     }
 
     /// Drops the input's transient ownership without taking route focus.
-    fn reset_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The query text stays in the field: reopening find restores the last
+    /// search, and the blink clock's blur path already retires the caret
+    /// without replacing the field.
+    fn reset_find(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.state.apply(Event::CloseFind);
         self._search_task = None;
         self.searching = false;
         self.search = empty_search();
         self.results.clear();
-        let (find, subscription) = Self::find_field(window, cx);
-        self.find = find;
-        self._subscriptions = vec![subscription];
         cx.notify();
     }
 
@@ -784,12 +796,20 @@ impl GraphView {
             if self.hover.is_some() {
                 self.motion.set((HOVER_KEY, self.hover_epoch), self.hover_a);
                 if self.hover_a > 0.0 && self.prism.is_none() {
-                    if let Some(previous) = self.outgoing_hover.take() {
-                        self.motion.replay((HOVER_KEY, previous.epoch));
-                        self.ended_fade = Some((previous.epoch, 0.0));
-                    }
-                    if let (Some(scene), Some(node)) = (&self.scene, self.hover) {
-                        self.outgoing_hover = Some(OutgoingHover { epoch: self.hover_epoch, packet: scene.neighbourhood(node), alpha: self.hover_a });
+                    if self.outgoing_hover.as_ref().is_some_and(|previous| previous.alpha > self.hover_a) {
+                        // A fleeting new hover cannot replace the stronger
+                        // visual that is already departing. Keep its original
+                        // clock, with only one outgoing packet retained.
+                        self.motion.set((HOVER_KEY, self.hover_epoch), 0.0);
+                        self.ended_fade = Some((self.hover_epoch, 0.0));
+                    } else {
+                        if let Some(previous) = self.outgoing_hover.take() {
+                            self.motion.replay((HOVER_KEY, previous.epoch));
+                            self.ended_fade = Some((previous.epoch, 0.0));
+                        }
+                        if let (Some(scene), Some(node)) = (&self.scene, self.hover) {
+                            self.outgoing_hover = Some(OutgoingHover { epoch: self.hover_epoch, packet: scene.neighbourhood(node), alpha: self.hover_a, flow_alpha: self.flow_strength() });
+                        }
                     }
                 } else { self.ended_fade = Some((self.hover_epoch, 0.0)); }
             }
@@ -880,9 +900,16 @@ impl GraphView {
         cx.notify();
     }
 
-    fn pointer_up(&mut self, x: f32, y: f32, clicks: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn pointer_up(&mut self, x: f32, y: f32, clicks: usize, allow_click: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Native delivery can coalesce the final move into mouse-up. Complete
+        // direct manipulation before estimating coast from reliable samples.
+        let complete_move = self.drag.as_ref().is_some_and(|drag| {
+            drag.moved.max((x - drag.x).hypot(y - drag.y)) > 3.0
+                && drag.hist.last().is_none_or(|sample| sample.1 != x || sample.2 != y)
+        });
+        if complete_move { self.pointer_move(x, y, true, window, cx); }
         let Some(drag) = self.drag.take() else { return };
-        if drag.moved <= 3.0 && self.over_chrome(x, y) { return; }
+        if drag.moved <= 3.0 && (!allow_click || self.over_chrome(x, y)) { return; }
         let (Some(scene), Some(view)) = (self.scene.clone(), self.view) else { return };
         if drag.moved <= 3.0 {
             let slot = self.frame.as_ref().and_then(|p| p.pick(x, y));
@@ -911,13 +938,10 @@ impl GraphView {
                 self.set_focus(None, false, cx);
             }
         } else {
-            let now = motion::now(cx);
-            let (Some(a), Some(b)) = (drag.hist.first(), drag.hist.last()) else { return };
-            let dt = b.0.saturating_duration_since(a.0).as_secs_f64() * 1000.0;
-            if now.saturating_duration_since(b.0).as_millis() < 60 && dt > 0.0 {
+            if let Some((vx, vy)) = super::interaction::release_velocity(&drag.hist, motion::now(cx), view.w, view.h) {
                 if let Some(rig) = &mut self.rig {
-                    let k = f64::from(view.w) / rig.cam.w;
-                    rig.fling(-f64::from(b.1 - a.1) / dt.max(1.0) / k, -f64::from(b.2 - a.2) / dt.max(1.0) / k);
+                    let k = view.k(&rig.cam);
+                    rig.fling(-vx / k, -vy / k);
                 }
             }
         }
@@ -1080,13 +1104,11 @@ impl GraphView {
         let prism_key: ElementId = PRISM_KEY.into();
         self.fade_outgoing(window, cx);
         let outgoing_key = self.outgoing_hover.as_ref().map(|outgoing| ElementId::from((HOVER_KEY, outgoing.epoch)));
-        self.motion.retain(|key| key == &active_hover || key == &prism_key || outgoing_key.as_ref() == Some(key));
-        let flow = (motion::now(cx).saturating_duration_since(motion::epoch(cx)).as_secs_f32() * 18.0).rem_euclid(9.0);
-        let flow_alpha = if moving { 1.0 } else {
-            let gather = self.prism.as_ref().map_or(0.0, |prism| (prism.target - prism.g).abs());
-            let hover = if self.hover.is_some() { 1.0 - self.hover_a } else { 0.0 };
-            gather.max(hover).clamp(0.0, 1.0)
-        };
+        let flow_key: ElementId = FLOW_KEY.into();
+        self.motion.retain(|key| key == &active_hover || key == &prism_key || key == &flow_key || outgoing_key.as_ref() == Some(key));
+        #[allow(clippy::cast_possible_truncation)]
+        let flow = (motion::now(cx).saturating_duration_since(motion::epoch(cx)).as_secs_f64() * 18.0).rem_euclid(45.0) as f32;
+        let flow_alpha = self.flow_strength();
         let reach_wave = if let Exploration::Reach(reach) = &self.state.exploration {
             let started = &mut self.reach_started;
             let depth = u8::try_from(reach.waves.len()).unwrap_or(8);
@@ -1097,6 +1119,17 @@ impl GraphView {
                 progress.min(f32::from(depth))
             }
         } else { 0.0 };
+        let selected_chain = self.state.exploration.chain().or_else(|| self.state.result_sel.checked_sub(self.results.len()).filter(|_| self.state.find_open).and_then(|n| self.search.chains.get(n)));
+        let elapsed = motion::now(cx).saturating_duration_since(motion::epoch(cx));
+        let chain_progress = if let Some(chain) = selected_chain {
+            if self.road.as_ref().is_none_or(|road| !road.matches(chain)) { self.road = Some(super::road::RoadProgress::new(chain, elapsed)); }
+            let road = self.road.as_mut().expect("selected road clock");
+            let sample = road.sample(elapsed, motion::reduced(cx));
+            let (started, budget) = road.timing();
+            crate::probe::record_track(cx, || crate::probe::TrackSample { key: "graph-chain-road".into(), kind: crate::probe::TrackKind::Tween, value: sample.progress, target: 1.0, velocity: 0.0, started_ms: started.as_secs_f64() * 1000.0, budget_ms: budget.as_secs_f64() * 1000.0, at_ms: elapsed.as_secs_f64() * 1000.0, live: sample.moving, overshoot_ratio: 0.0, overshoot_absolute: 0.0, group: None });
+            if sample.moving { motion::request_frame(window, cx); }
+            sample
+        } else { self.road = None; super::road::RoadSample { progress: 1.0, arcs: 0, moving: false } };
         let facet = cx.facet();
         Some(Prepared {
             scene,
@@ -1106,7 +1139,7 @@ impl GraphView {
             text_scale: facet.text_scale,
             hover: self.hover,
             hover_a: self.hover_a,
-            outgoing_hover: self.outgoing_hover.as_ref().map(|outgoing| (outgoing.packet.clone(), outgoing.alpha)),
+            outgoing_hover: self.outgoing_hover.as_ref().map(|outgoing| (outgoing.packet.clone(), outgoing.alpha, outgoing.flow_alpha)),
             hover_terr: self.hover_terr,
             focus: self.state.focus,
             prism: (!self.state.find_open).then(|| self.prism.clone()).flatten(),
@@ -1118,7 +1151,8 @@ impl GraphView {
             reach: self.state.exploration.reach().cloned(),
             reach_wave,
             search: (self.state.find_open && !self.find.read(cx).value().trim().is_empty()).then(|| self.search.clone()),
-            chain: self.state.exploration.chain().or_else(|| self.state.result_sel.checked_sub(self.results.len()).filter(|_| self.state.find_open).and_then(|n| self.search.chains.get(n))).map(|c| c.stops.clone()),
+            chain: selected_chain.map(|chain| chain.stops.clone()),
+            chain_progress,
             tour: self.state.exploration.tour().map(|(t, at)| TourRoad { stops: t.stops.iter().map(|s| s.node).collect(), at }),
             strategy: self.strategy,
             occupied: None,
@@ -1158,7 +1192,7 @@ impl GraphView {
             Exploration::Chain(chain) => {
                 let bounds = chain.stops.iter().fold(Box2::EMPTY, |b, stop| b.with(prepared.scene.layout.x[stop.node as usize], prepared.scene.layout.y[stop.node as usize]));
                 if chain.stops.is_empty() { return occupied; }
-                readable_frame(&prepared.scene, &prepared.view, &room, bounds, chain.stops[0].node, 1.45)
+                readable_frame(&prepared.scene, &prepared.view, &room, bounds, chain.stops[0].node, chain_margin(&prepared.view))
             }
             Exploration::Tour { data, at } => {
                 let node = data.stops[*at].node;
@@ -1188,6 +1222,7 @@ impl GraphView {
                 ("graph-focus-scroll", &self.focus_scroll, self.state.focus.is_some() && !self.state.find_open),
                 ("graph-chain-scroll", &self.chain_scroll, self.state.exploration.chain().is_some()),
                 ("graph-tour-scroll", &self.tour_scroll, self.state.exploration.tour().is_some()),
+                ("graph-chain-code-scroll", &self.code_scroll, self.state.exploration.chain().is_some() && window.modifiers().alt),
             ] {
                 if visible { if let Some(content) = handle.bounds_for_item(0) {
                     crate::probe::record_scroll(cx, &key.into(), handle.bounds(), content);
@@ -1224,16 +1259,22 @@ impl GraphView {
             .and_then(|(x, y)| pointer_territory(&prepared.scene, &prepared.view, &prepared.cam, x, y));
         self.hover_a = if self.hover.is_some() { self.motion.animate_from((HOVER_KEY, self.hover_epoch), 0.0, 1.0, motion::spec::REVEAL, window, cx) } else { 0.0 };
         self.fade_outgoing(window, cx);
-        prepared.outgoing_hover = self.outgoing_hover.as_ref().map(|outgoing| (outgoing.packet.clone(), outgoing.alpha));
+        prepared.outgoing_hover = self.outgoing_hover.as_ref().map(|outgoing| (outgoing.packet.clone(), outgoing.alpha, outgoing.flow_alpha));
         prepared.hover = self.hover; prepared.hover_a = self.hover_a; prepared.hover_slot = self.hover_slot; prepared.prism_sel = self.state.prism_sel;
-        prepared.flow_alpha = if self.moving { 1.0 } else {
-            let gather = self.prism.as_ref().map_or(0.0, |prism| (prism.target - prism.g).abs());
-            gather.max(if self.hover.is_some() { 1.0 - self.hover_a } else { 0.0 }).clamp(0.0, 1.0)
-        };
+        self.flow_a = self.motion.animate_from(FLOW_KEY, 0.0, if self.moving { 1.0 } else { 0.0 }, motion::spec::REVEAL, window, cx);
+        // Publish the exact terminal sample before releasing this finite key.
+        if !self.moving && self.flow_a == 0.0 { self.motion.replay(FLOW_KEY); }
+        prepared.flow_alpha = self.flow_strength();
         prepared.hover_terr = self.hover_terr;
         self.sync_peek(window, cx);
         self.report_peek(window, cx);
         if let Some((key, node)) = self.peek.clone() { if let Some((anchor, _)) = self.peek_anchor(node) { float::anchor(&key, anchor, window, cx); } }
+    }
+
+    fn flow_strength(&self) -> f32 {
+        let gather = self.prism.as_ref().map_or(0.0, |prism| (prism.target - prism.g).abs());
+        let hover = if self.hover.is_some() { 1.0 - self.hover_a } else { 0.0 };
+        self.flow_a.max(gather).max(hover).clamp(0.0, 1.0)
     }
 
     fn fade_outgoing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1274,7 +1315,7 @@ impl GraphView {
     /// suspension while retaining its reading camera and focused symbol.
     pub fn suspend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.find_open { self.reset_find(window, cx); }
-        self._search_task = None; self.searching = false;
+        self._search_task = None; self.searching = false; self.road = None;
         self.pointer = None; self.drag = None; self.set_hover(None, None); self.sync_peek(window, cx);
         cx.notify();
     }
@@ -1314,7 +1355,7 @@ struct Prepared {
     text_scale: f32,
     hover: Option<NodeId>,
     hover_a: f32,
-    outgoing_hover: Option<(Arc<super::scene::Neighbourhood>, f32)>,
+    outgoing_hover: Option<(Arc<super::scene::Neighbourhood>, f32, f32)>,
     hover_terr: Option<Terr>,
     focus: Option<NodeId>,
     prism: Option<Prism>,
@@ -1328,6 +1369,7 @@ struct Prepared {
     tour: Option<TourRoad>,
     search: Option<Rc<Search>>,
     chain: Option<Vec<RoadStop>>,
+    chain_progress: super::road::RoadSample,
     strategy: Strategy,
     occupied: Option<Bounds<Pixels>>,
     reserved: Vec<Bounds<Pixels>>,
@@ -1382,6 +1424,8 @@ fn readable_frame(scene: &Scene, view: &View, room: &View, bounds: Box2, source:
     let (half_w, half_h) = (bounds.width().max(minimum as f32) * 0.5, bounds.height().max((minimum * f64::from(room.h / room.w)) as f32) * 0.5);
     view.frame_in(Box2 { x0: x - half_w, y0: y - half_h, x1: x + half_w, y1: y + half_h }, room, pad)
 }
+
+fn chain_margin(view: &View) -> f64 { if view.w < 640.0 { 2.8 } else { 1.9 } }
 
 fn package_context(scene: &Scene, view: &View, node: NodeId) -> Camera {
     view.frame(scene.layout.packages[scene.world.node(node).pkg as usize].bounds, 1.2)
@@ -1518,7 +1562,7 @@ impl Element for Canvas {
             text_scale: p.text_scale,
             hover: p.hover,
             hover_a: p.hover_a,
-            outgoing_hover: p.outgoing_hover.as_ref().map(|(packet, alpha)| (packet.as_ref(), *alpha)),
+            outgoing_hover: p.outgoing_hover.as_ref().map(|(packet, alpha, flow_alpha)| (packet.as_ref(), *alpha, *flow_alpha)),
             hover_terr: p.hover_terr,
             focus: p.focus,
             prism: frame,
@@ -1526,10 +1570,10 @@ impl Element for Canvas {
             flow_alpha: p.flow_alpha,
             trail: &p.trail,
             exploration: if let Some(search) = p.search.as_deref() {
-                if let Some(chain) = p.chain.as_deref() { draw::Exploration::Chain(chain) } else { draw::Exploration::Search(search) }
+                if let Some(chain) = p.chain.as_deref() { draw::Exploration::Chain { stops: chain, progress: p.chain_progress } } else { draw::Exploration::Search(search) }
             } else if let Some(reach) = p.reach.as_deref() { draw::Exploration::Reach { data: reach, wave: p.reach_wave } }
             else if let Some(tour) = p.tour.as_ref() { draw::Exploration::Tour(tour) }
-            else if let Some(chain) = p.chain.as_deref() { draw::Exploration::Chain(chain) }
+            else if let Some(chain) = p.chain.as_deref() { draw::Exploration::Chain { stops: chain, progress: p.chain_progress } }
             else { draw::Exploration::Free },
             occupied,
             reserved: &p.reserved,
@@ -1584,12 +1628,18 @@ impl Element for Canvas {
             view.update(cx, |v, cx| v.pointer_down(x, y, window, cx));
         });
         let view = self.view.clone();
+        let hit = hitbox.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
-                return;
-            }
+            if phase != DispatchPhase::Capture || event.button != MouseButton::Left { return; }
             let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
-            view.update(cx, |v, cx| v.pointer_up(x, y, event.click_count, window, cx));
+            let moved = view.read(cx).drag.as_ref().map(|drag| drag.moved.max((x - drag.x).hypot(y - drag.y)));
+            let Some(moved) = moved else { return };
+            let allow_click = hit.is_hovered(window);
+            // Clear every owned press before a child can stop bubbling. Actual
+            // drags retain capture across foreground cards; controls still
+            // receive click-sized releases with canvas ownership gone.
+            view.update(cx, |v, cx| v.pointer_up(x, y, event.click_count, allow_click, window, cx));
+            if moved > 3.0 { cx.stop_propagation(); }
         });
         let view = self.view.clone();
         let hit = hitbox.clone();
@@ -1651,7 +1701,7 @@ impl Render for GraphView {
         if self.state.find_open {
             root = root.child(MeasuredChrome::new("graph-results-bounds", self.results_list(&measure, window, cx), cx.entity()));
         }
-        if self.state.exploration.chain().is_some() { root = root.child(MeasuredChrome::new("graph-chain-bounds", self.chain_plate(&measure, window.modifiers().alt, cx), cx.entity())); }
+        if self.state.exploration.chain().is_some() { root = root.child(MeasuredChrome::new("graph-chain-bounds", self.chain_plate(&measure, window.modifiers().alt, window, cx), cx.entity())); }
         if self.state.exploration.tour().is_some() { root = root.child(MeasuredChrome::new("graph-tour-bounds", self.tour_plate(&measure, cx), cx.entity())); }
         if let Some(i) = self.state.focus.filter(|_| !self.state.find_open) {
             let card = self.focus_card(i, &measure, window.modifiers().platform, cx);
@@ -1675,6 +1725,13 @@ impl Render for GraphView {
                 line = line.child(div().text_color(palette.ink4.hsla()).child("›")).child(m);
             }
             line = line.child(div().ml(px(8.0)).set(ty::STATUS, &measure).text_color(palette.ink4.hsla()).child(level));
+            if self.state.exploration.tour().is_none() {
+                if let Some(package) = self.tour_package().filter(|&package| self.discovery.as_ref().and_then(|discovery| discovery.package_tour(package)).is_some_and(Tour::shown)) {
+                    line = line.child(div().id("graph-start-here").cursor_pointer().ml(px(8.0)).flex().items_center().gap(px(5.0))
+                        .child(kbd("T", &measure)).child("start here")
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| { window.focus(&this.focus_handle, cx); this.start_tour(package, 0, cx); })));
+                }
+            }
             root = root.child(MeasuredChrome::new("graph-where-bounds", line, cx.entity()));
         }
         GraphFrame { child: root.into_any_element(), view: cx.entity(), draft }
@@ -1700,29 +1757,39 @@ impl GraphView {
         })).into_any_element()
     }
 
-    fn chain_plate(&self, measure: &Measure, xray: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn chain_plate(&self, measure: &Measure, xray: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let chain = self.state.exploration.chain().expect("a held chain plate has a chain");
         let palette = cx.palette();
         let from = crate::semantics::recipes::key_words(&self.world, &chain.from);
         let to = crate::semantics::recipes::key_words(&self.world, &chain.output);
         let steps = ["zero", "one", "two", "three", "four"].get(chain.steps.len()).copied().unwrap_or("many");
         let title = format!("{from} to {to}, in {steps} steps");
-        let mut rail = div().flex().flex_wrap().items_center().gap(px(8.0));
+        let lead = format!("from your {from}{}", chain.via.as_ref().map_or_else(String::new, |via| format!(", a {}", via.trim_start_matches("any "))));
+        let mut rail = div().flex().flex_wrap().items_center().gap(px(8.0))
+            .child(div().set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child(lead));
         for (n, step) in chain.steps.iter().enumerate() {
             if n > 0 { rail = rail.child(div().text_color(palette.ink4.hsla()).child("→")); }
             let node = step.node;
             rail = rail.child(div().id(("graph-chain-step", n)).cursor_pointer().px(px(8.0)).py(px(8.0))
                 .border_b_1().border_color(palette.peri.base.hsla()).set(ty::MONO_ROW, measure).text_color(palette.ink0.hsla())
-                .child(step.verb.clone()).children((step.fails || step.maybe).then(|| div().text_color(palette.ink3.hsla()).child("?")))
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| this.set_focus(Some(node), true, cx))));
+                .child(step.verb.clone())
+                .children(step.fails.then(|| div().set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child("or fails")))
+                .children(step.maybe.then(|| div().set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child("maybe")))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| { window.focus(&this.focus_handle, cx); this.set_focus(Some(node), true, cx); })));
             for rider in &step.riders {
                 rail = rail.child(div().set(ty::SMALL, measure).text_color(palette.ink4.hsla()).child(format!("+ {rider}")));
             }
         }
+        let code = SharedString::from(chain.code.clone());
+        let natural = crate::probe::natural_width(&code, measure.role(ty::MONO_SMALL), 1.0, window);
+        let viewport = (f32::from(measure.width()) - 68.0).min(724.0).max(1.0);
+        let code_body = div().id("graph-chain-code-horizontal").w(px(viewport)).overflow_x_scroll().track_scroll(&self.code_scroll)
+            .child(div().w(natural.max(px(viewport))).child(graph_text("graph-chain-code", code, ty::MONO_SMALL, measure, palette.ink2, crate::probe::TextOverflow::Clip)));
         let body = div().flex().flex_col().gap(px(12.0))
             .child(graph_text("graph-chain-title", title, ty::TITLE, measure, palette.ink1, crate::probe::TextOverflow::Wrap))
-            .child(rail)
-            .children(xray.then(|| graph_text("graph-chain-code", chain.code.clone(), ty::MONO_SMALL, measure, palette.ink2, crate::probe::TextOverflow::Wrap)));
+            .children((!xray).then_some(rail))
+            .children(xray.then_some(code_body))
+            .child(graph_text("graph-chain-controls", "your value is the spine; the rest rides along · ⌥ for code · esc to let go", ty::SMALL, measure, palette.ink4, crate::probe::TextOverflow::Wrap));
         cut().chamfer(Chamfer::Md).bevel(Bevel::Rest).plate(Plate::Flat)
             .fill(tone(palette.g1, 0.94)).absolute().left(px(16.0)).right(px(16.0)).bottom(px(50.0))
             .max_w(px(760.0)).max_h(px(reading_plate_height(self.view))).px(px(18.0)).py(px(16.0))
@@ -1755,6 +1822,7 @@ impl GraphView {
         if let Some(doc) = &node.doc {
             body = body.child(div().set(ty::MARGIN, measure).text_color(palette.ink2.hsla()).child(tour::plain(doc)));
         }
+        body = body.child(graph_text("graph-tour-controls", "→ next · ← back · ↵ open its page · esc end", ty::SMALL, measure, palette.ink4, crate::probe::TextOverflow::Wrap));
         cut().chamfer(Chamfer::Md).bevel(Bevel::Rest).plate(Plate::Flat)
             .fill(tone(palette.g1, 0.94)).absolute().left(px(16.0)).right(px(16.0)).bottom(px(50.0))
             .max_w(px(760.0)).max_h(px(reading_plate_height(self.view))).px(px(18.0)).py(px(16.0))
@@ -1833,12 +1901,14 @@ impl GraphView {
             .max_h(px((available - 12.0).max(4.0))).overflow_y_scroll().track_scroll(&self.results_scroll)
             .children(rows)
             .children(self.find.read(cx).value().trim().is_empty().then(|| self.find_hints(measure, cx)))
-            .children((!self.find.read(cx).value().trim().is_empty() && self.results.is_empty() && self.search.chains.is_empty()).then(|| div().px(px(8.0)).py(px(10.0)).set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child(if self.discovery.is_none() || self.searching { "Finding…" } else if self.search.shaped { "nothing in this world has that shape" } else { "no symbols match" })))
+            .children((!self.find.read(cx).value().trim().is_empty() && self.results.is_empty() && self.search.chains.is_empty()).then(|| div().px(px(8.0)).py(px(10.0)).set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child(if let Some(issue) = self.search.issue { issue } else if self.discovery.is_none() || self.searching { "Finding…" } else if self.search.shaped { "nothing in this world has that shape" } else { "no symbols match" })))
             .children((!self.search.chains.is_empty()).then(|| div().px(px(8.0)).pt(px(8.0)).set(ty::SMALL, measure).text_color(palette.ink4.hsla()).child(if self.results.is_empty() { "no one call does it; in steps" } else { "or, in steps" })))
             .children(self.search.chains.iter().enumerate().map(|(n, chain)| {
                 let selected = self.state.result_sel == self.results.len() + n;
                 div().id(("graph-chain-result", n)).px(px(8.0)).py(px(8.0)).cursor_pointer().when_selected(selected, palette)
-                    .set(ty::MONO_SMALL, measure).text_color(palette.ink1.hsla()).child(chain.brief.clone())
+                    .flex().items_start().gap(px(8.0)).set(ty::MONO_SMALL, measure).text_color(palette.ink1.hsla())
+                    .child(graph_text(format!("graph-chain-calls-{n}"), "◆".repeat(chain.steps.len()), ty::SMALL, measure, palette.peri.base, crate::probe::TextOverflow::Wrap))
+                    .child(div().min_w(px(0.0)).child(chain.brief.clone()))
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| { this.state.result_sel = this.results.len() + n; this.choose_result(window, cx); }))
             }))
             .children((!self.search.lit.is_empty()).then(|| div().px(px(8.0)).pt(px(8.0)).pb(px(4.0)).set(ty::SMALL, measure).text_color(palette.ink4.hsla()).child(format!("{} lit in the graph, across {} package{}", self.search.lit.len(), self.search.packages, if self.search.packages == 1 { "" } else { "s" }))));
@@ -1852,23 +1922,17 @@ impl GraphView {
         let facet = cx.facet();
         let world = &self.world;
         let node = world.node(i);
-        let mut facts: Vec<String> = Vec::new();
-        let count = |k: super::model::Kind| world.kids(i).iter().filter(|&&j| world.node(j).kind == k).count();
-        let plural = |n: usize, w: &str| format!("{n} {w}{}", if n == 1 { "" } else { "s" });
-        for (k, w) in [
-            (super::model::Kind::Variant, "variant"),
-            (super::model::Kind::Field, "field"),
-            (super::model::Kind::Method, "method"),
-        ] {
-            let n = count(k);
-            if n > 0 {
-                facts.push(plural(n, w));
+        let prepared = self.discovery.as_ref().and_then(|discovery| discovery.focus_facts(i));
+        let mut facts: Vec<String> = Vec::with_capacity(4);
+        if let Some(prepared) = prepared {
+            for (n, word) in prepared.counts.into_iter().zip(["variant", "field", "method"]) {
+                if n > 0 { facts.push(format!("{n} {word}{}", if n == 1 { "" } else { "s" })); }
             }
-        }
-        let used = world.used_in(i);
-        facts.push(format!("used in {} place{}", used.len(), if used.len() == 1 { "" } else { "s" }));
-        let yours = used.iter().filter(|&&j| world.yours(j)).count();
-        let caps = crate::semantics::page::caps_of(world, i);
+            facts.push(format!("used in {} place{}", prepared.used, if prepared.used == 1 { "" } else { "s" }));
+        } else { facts.push("Preparing symbol details…".into()); }
+        let yours = prepared.map_or(0, |facts| facts.yours);
+        let caps = prepared.map_or_else(Vec::new, |facts| facts.caps.clone());
+        let tour_eligible = self.discovery.as_ref().and_then(|discovery| discovery.package_tour(node.pkg)).is_some_and(Tour::shown);
         let card_w = (f32::from(measure.width()) - 32.0).min(340.0);
         let card = Measure::new(px(card_w), &facet);
         let mut body = div()
@@ -1930,7 +1994,7 @@ impl GraphView {
                 .text_color(palette.ink4.hsla())
                 .child(key("↵", "open page"))
                 .child(key("R", "reach"))
-                .child(key("T", "start here"))
+                .children(tour_eligible.then(|| key("T", "start here")))
                 .child(key("esc", "back out")),
         ); }
         cut()
@@ -1956,7 +2020,7 @@ impl GraphView {
     }
 }
 
-fn empty_search() -> Rc<Search> { Rc::new(Search { shaped: false, rows: Vec::new(), lit: Vec::new(), lit_set: Default::default(), packages: 0, chains: Vec::new() }) }
+fn empty_search() -> Rc<Search> { Rc::new(Search { shaped: false, issue: None, rows: Vec::new(), lit: Vec::new(), lit_set: Default::default(), packages: 0, chains: Vec::new() }) }
 
 fn graph_text(key: impl Into<ElementId>, content: impl Into<SharedString>, role: crate::tokens::TypeRole, measure: &Measure, tone: crate::tokens::Tone, overflow: crate::probe::TextOverflow) -> AnyElement {
     let content = content.into();
@@ -1991,7 +2055,8 @@ pub fn backed_out(scene: &Scene, view: &View, i: NodeId) -> Camera {
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphView, Start};
+    use super::{Camera, GraphView, Start};
+    use crate::graph::camera::View;
     use crate::graph::layout::Layout;
     use crate::graph::layout::tests_support::synthetic;
     use crate::graph::prism::Prism;
@@ -2018,6 +2083,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn coalesced_native_release_cannot_fling_the_map_into_empty_space(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        for (span, deliver_move) in [(0, false), (1, false), (0, true), (1, true)] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+            frames(cx, 30);
+            let region = view.read_with(cx, |v, _| v.view.expect("viewport"));
+            let start = point(px(region.x + region.w * 0.6), px(region.y + region.h * 0.75));
+            cx.simulate_mouse_move(start, None, Modifiers::none());
+            cx.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::none());
+            let before = view.read_with(cx, |v, _| v.camera().expect("pressed camera"));
+            let k = region.k(&before);
+            let held = Camera::new(before.x - 250.0 / k, before.y + 50.0 / k, before.w);
+            cx.executor().advance_clock(Duration::from_millis(span));
+            let end = point(start.x + px(250.0), start.y - px(50.0));
+            if deliver_move { cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), Modifiers::none()); }
+            cx.simulate_mouse_up(end, gpui::MouseButton::Left, Modifiers::none());
+            assert_eq!(view.read_with(cx, |v, _| v.camera()), Some(held), "mouse-up completes direct movement even without a delivered move");
+            frames(cx, 160);
+            assert_eq!(view.read_with(cx, |v, _| v.camera()), Some(held), "{span}ms coalesced deliveries (move={deliver_move}) cannot estimate a giant physical velocity");
+            assert!(view.read_with(cx, |v, _| v.drag.is_none()));
+            assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        }
+    }
+
+    #[gpui::test]
     fn owned_canvas_drag_crosses_card_bounds_without_pausing_or_jumping(cx: &mut TestAppContext) {
         cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
         let world = Arc::new(crate::graph::model::tests::tiny());
@@ -2037,6 +2129,89 @@ mod tests {
         }
         cx.simulate_mouse_up(point(start.x + px(120.0), start.y), gpui::MouseButton::Left, Modifiers::none());
         assert!(view.read_with(cx, |v, _| v.drag.is_none()));
+    }
+
+    #[gpui::test]
+    fn brief_hover_handoff_preserves_the_stronger_departing_envelope(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        let mut preserved_old = false;
+        let mut replaced_with_new = false;
+        // Observe the actual strengths: at 16ms the old packet dominates;
+        // at 32ms the fast arriving packet has become stronger. Both native
+        // handoffs must preserve the maximum visible envelope.
+        for brief_frames in [1, 2] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+            frames(cx, 30);
+            let positions = [0, 3, 5].map(|node| view.read_with(cx, |v, _| v.screen_position(node).expect("visible native target")));
+            let at = |n: usize| point(px(positions[n].0), px(positions[n].1));
+            cx.simulate_mouse_move(at(0), None, Modifiers::none());
+            frames(cx, 20);
+            assert_eq!(view.read_with(cx, |v, _| v.hover), Some(0), "actual native pointer first lights A");
+            assert_eq!(view.read_with(cx, |v, _| v.hover_a), 1.0);
+            cx.simulate_mouse_move(at(1), None, Modifiers::none());
+            frames(cx, brief_frames);
+            let (old, current) = view.read_with(cx, |v, _| {
+                assert_eq!(v.hover, Some(3), "the brief native pointer actually entered B");
+                let outgoing = v.outgoing_hover.as_ref().expect("A is still fading");
+                assert_eq!(outgoing.packet.node, 0);
+                ((outgoing.packet.node, outgoing.epoch, outgoing.alpha, outgoing.flow_alpha),
+                 (3, v.hover_epoch, v.hover_a, v.flow_a.max(1.0 - v.hover_a)))
+            });
+            let expected = if old.2 > current.2 {
+                preserved_old = true; old
+            } else {
+                replaced_with_new = true; current
+            };
+            cx.simulate_mouse_move(at(2), None, Modifiers::none());
+            view.read_with(cx, |v, _| {
+                assert_eq!(v.hover, Some(5), "C owns the actual native pick immediately");
+                let outgoing = v.outgoing_hover.as_ref().expect("one dominant outgoing packet remains");
+                assert_eq!((outgoing.packet.node, outgoing.epoch), (expected.0, expected.1));
+                assert_eq!(outgoing.alpha, old.2.max(current.2), "same-clock handoff must retain the independently observed stronger envelope");
+                assert_eq!(outgoing.flow_alpha, expected.3, "new hover activity cannot revive a retained outgoing packet's flow");
+            });
+            frames(cx, 2);
+            assert!(view.read_with(cx, |v, _| v.outgoing_hover.as_ref().is_none_or(|outgoing| outgoing.alpha < expected.2)), "the selected packet continues its bounded fade");
+            frames(cx, 60);
+            assert!(view.read_with(cx, |v, _| v.outgoing_hover.is_none() && v.motion.len() <= 2));
+            assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        }
+        assert!(preserved_old && replaced_with_new, "real native timings must exercise both dominant-packet decisions");
+    }
+
+    #[gpui::test]
+    fn camera_flow_fades_after_landing_and_releases_its_frame_lease(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let viewport = View { x: 0.0, y: 0.0, w: 1024.0, h: 768.0 };
+        let camera = scene.focus_cam(&viewport, 0, 0.0);
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Cam(camera), window, cx));
+        frames(cx, 30);
+        view.update(cx, |v, cx| v.show_world(cx));
+        let mut saw_motion = false;
+        let mut landed = None;
+        for _ in 0..200 {
+            frame(cx);
+            let (moving, alpha) = view.read_with(cx, |v, _| (v.moving, v.flow_a));
+            saw_motion |= moving;
+            if saw_motion && !moving { landed = Some(alpha); break; }
+        }
+        let landed = landed.expect("the actual world flight must settle within its finite budget");
+        assert!(landed > 0.0, "landing retains the last visible edge activity rather than dropping it");
+        frames(cx, 2);
+        let fading = view.read_with(cx, |v, _| v.flow_a);
+        assert!(fading > 0.0 && fading < landed, "the finite envelope decreases smoothly after landing");
+        frames(cx, 30);
+        assert_eq!(view.read_with(cx, |v, _| v.flow_a), 0.0);
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "edge activity cannot lease frames at rest");
+        cx.update(|_, cx| set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx));
+        view.update(cx, |v, cx| v.set_focus(Some(0), true, cx));
+        frames(cx, 30);
+        assert_eq!(view.read_with(cx, |v, _| v.flow_a), 0.0);
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
     }
 
     #[gpui::test]
@@ -2191,15 +2366,25 @@ mod tests {
         cx.simulate_input("Error");
         cx.run_until_parked();
         assert!(view.read_with(cx, |v, _| v.searching && v.discovery.is_none()));
-        cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+        let typed_query = view.read_with(cx, |v, cx| v.find.read(cx).value().to_string());
+        assert_eq!(typed_query, "Error", "the real focused input accepted the pending query");
+        cx.update(|window, cx| {
+            window.focus(&view.focus_handle(cx), cx);
+            assert!(!view.read(cx).find_focused(window, cx), "native keyboard focus actually left the input");
+        });
+        // GPUI publishes old/current focus paths after a draw. The native
+        // window schedules this frame automatically; the headless driver
+        // must draw it before expecting the Blur observer.
+        frame(cx);
         cx.run_until_parked();
         assert!(!view.read_with(cx, |v, _| v.state.find_open || v.searching));
         view.update(cx, |v, cx| {
             v.discovery = Some(std::rc::Rc::new(super::Discovery::from_prepared(prepared)));
             // The same requery used by both constructor worker completions.
-            let query = v.find.read(cx).value().to_string();
-            assert_eq!(query, "Error");
-            v.refresh_search(&query, cx);
+            assert!(v.find.read(cx).value().is_empty(), "blur replaced and cleared the native input");
+            // Deliver the nonempty query captured before blur, rather than
+            // mistaking the fresh field for the old pending request.
+            v.refresh_search(&typed_query, cx);
         });
         frames(cx, 20);
         assert!(view.read_with(cx, |v, _| v.ready() && v._search_task.is_none()), "an obsolete cold-load query must not hang quiet readiness");

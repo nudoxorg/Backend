@@ -124,12 +124,20 @@ pub(crate) struct HoverEdge {
     pub bounds: Box2,
 }
 
+/// Exact directed membership. Leaf geometry is sampled only after the
+/// endpoint index and semantic zoom admit it to the visible frame.
+pub(crate) struct RelationLeaf {
+    pub other: NodeId,
+    pub incoming: bool,
+    pub shared: bool,
+}
+
 /// A hovered symbol's immutable, cached neighbourhood.
 pub(crate) struct Neighbourhood {
     pub node: NodeId,
 
     pub lit: Vec<NodeId>,
-    pub edges: Vec<HoverEdge>,
+    pub edges: Vec<RelationLeaf>,
     pub bundles: Vec<HoverBundle>,
     leaves: BoundsIndex<usize>,
     visible_lit: BoundsIndex<NodeId>,
@@ -138,6 +146,7 @@ pub(crate) struct Neighbourhood {
 pub(crate) struct HoverBundle {
     pub route: HoverEdge,
     pub count: usize,
+    pub caption: Option<gpui::SharedString>,
 }
 impl Neighbourhood {
     pub(crate) fn visit_leaves(&self, projection: &Projection, emit: impl FnMut(usize)) -> usize {
@@ -520,14 +529,22 @@ impl Scene {
         }
         lit.sort_unstable();
         lit.dedup();
-        let edges: Vec<_> = outs
+        let mut edges: Vec<_> = outs
             .iter()
-            .map(|&(j, _)| self.hover_edge(node, j, false))
-            .chain(ins.iter().map(|&(j, _)| self.hover_edge(j, node, true)))
+            .map(|&(j, _)| RelationLeaf {
+                other: j,
+                incoming: false,
+                shared: true,
+            })
+            .chain(ins.iter().map(|&(j, _)| RelationLeaf {
+                other: j,
+                incoming: true,
+                shared: true,
+            }))
             .collect();
         let at = self.world.node(node);
-        let mut groups: BTreeMap<(u32, Option<u32>, bool, bool), (NodeId, usize)> = BTreeMap::new();
-        for edge in &edges {
+        let mut groups: BTreeMap<(u32, Option<u32>, bool, bool), (usize, usize)> = BTreeMap::new();
+        for (index, edge) in edges.iter().enumerate() {
             let other = self.world.node(edge.other);
             let key = (
                 other.pkg,
@@ -535,32 +552,51 @@ impl Scene {
                 edge.incoming,
                 self.world.yours(edge.other),
             );
-            let value = groups.entry(key).or_insert((edge.other, 0));
+            let value = groups.entry(key).or_insert((index, 0));
             value.1 += 1;
         }
         let source = [self.layout.x[node as usize], self.layout.y[node as usize]];
         let context = &self.layout.packages[at.pkg as usize];
         let bundles = groups
             .into_iter()
-            .map(|((pkg, module, incoming, _), (other, count))| {
-                let hub = module.map_or(&self.layout.packages[pkg as usize], |m| {
-                    &self.layout.modules[m as usize]
-                });
-                let remote = [hub.x, hub.y];
-                let (a, b) = if incoming {
-                    (remote, source)
+            .map(|((pkg, module, incoming, _), (index, count))| {
+                edges[index].shared = count > 1;
+                let other = edges[index].other;
+                let route = if count == 1 {
+                    self.leaf_route(node, &edges[index])
                 } else {
-                    (source, remote)
-                };
-                let (points, bounds) = relation_curve(a, b, [context.x, context.y]);
-                HoverBundle {
-                    route: HoverEdge {
+                    let hub = module.map_or(&self.layout.packages[pkg as usize], |m| {
+                        &self.layout.modules[m as usize]
+                    });
+                    let remote = [hub.x, hub.y];
+                    let (a, b) = if incoming {
+                        (remote, source)
+                    } else {
+                        (source, remote)
+                    };
+                    let (points, bounds) = relation_curve(a, b, [context.x, context.y]);
+                    HoverEdge {
                         other,
                         incoming,
                         points,
                         bounds,
-                    },
+                    }
+                };
+                let caption = (count > 1).then(|| {
+                    let name = module.map_or(self.world.package_short(pkg), |m| {
+                        self.world.modules[m as usize]
+                            .path
+                            .rsplit("::")
+                            .next()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(self.world.package_short(pkg))
+                    });
+                    gpui::SharedString::from(format!("{name} · {count}"))
+                });
+                HoverBundle {
+                    route,
                     count,
+                    caption,
                 }
             })
             .collect();
@@ -584,6 +620,16 @@ impl Scene {
         });
         *cached = Some(neighbours.clone());
         neighbours
+    }
+
+    /// Reify only a visible exact leaf. Remote degree never allocates sampled
+    /// geometry; coarse counted routes are the only cached curves.
+    pub(crate) fn leaf_route(&self, node: NodeId, leaf: &RelationLeaf) -> HoverEdge {
+        if leaf.incoming {
+            self.hover_edge(leaf.other, node, true)
+        } else {
+            self.hover_edge(node, leaf.other, false)
+        }
     }
 
     /// Cache affine world-space bundles once per hovered target. Bounds cover
@@ -1398,6 +1444,10 @@ mod tests {
         let scene = Scene::new(world, layout);
         let packet = scene.neighbourhood(0);
         assert_eq!(packet.edges.len(), n as usize);
+        assert!(
+            std::mem::size_of::<super::RelationLeaf>() <= 8,
+            "remote leaves retain IDs/direction, not curve samples"
+        );
         assert_eq!(
             packet.bundles.iter().map(|b| b.count).sum::<usize>(),
             n as usize
@@ -1421,6 +1471,12 @@ mod tests {
                 })
                 .count();
             assert_eq!(bundle.count, count);
+            assert!(
+                bundle
+                    .caption
+                    .as_ref()
+                    .is_some_and(|s| s.ends_with(&format!(" · {count}")))
+            );
         }
         let view = View {
             x: 37.0,
@@ -1521,6 +1577,14 @@ mod tests {
         let scene = Scene::new(world, layout);
         let first = scene.neighbourhood(2);
         assert_eq!(first.lit, vec![0, 2, 3]);
+        assert_eq!(first.bundles.len(), 1);
+        assert_eq!(first.bundles[0].count, 1);
+        assert!(first.bundles[0].caption.is_none());
+        assert!(!first.edges[0].shared);
+        assert_eq!(
+            first.bundles[0].route.points,
+            scene.leaf_route(2, &first.edges[0]).points
+        );
         assert!(
             Arc::ptr_eq(&first, &scene.neighbourhood(2)),
             "hover animation must not rederive adjacency"
@@ -1732,7 +1796,8 @@ mod tests {
         let scene = Scene::new(world, layout);
         let neighbours = scene.neighbourhood(3);
         assert!(!neighbours.edges.is_empty());
-        for edge in &neighbours.edges {
+        for leaf in &neighbours.edges {
+            let edge = scene.leaf_route(neighbours.node, leaf);
             assert!(
                 edge.points.len() <= 41,
                 "animation stack buffer covers every nested bundle"
