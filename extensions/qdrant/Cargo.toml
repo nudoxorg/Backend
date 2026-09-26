@@ -32,3 +32,8 @@ path = "src/lib.rs"
 name = "http_delta"
 path = "benches/http_delta.rs"
 harness = false
+
+[[bench]]
+name = "residence_rebind"
+path = "benches/residence_rebind.rs"
+harness = false
