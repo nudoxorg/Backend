@@ -171,6 +171,7 @@ pub enum ParameterKind {
 pub enum OccurrenceKind {
     FunctionCall,
     MethodCall,
+    AttributeRead,
 }
 /// How a call's receiver was written, which decides the target key the
 /// occurrence resolves through. Bare-name and module-gated rows keep the
@@ -1206,7 +1207,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
             ast::Stmt::ImportFrom(import) if self.function_depth == 0 && self.class_depth == 0 => {
                 for alias in &import.names {
-                    self.add_alias(alias, statement);
+                    self.add_from_alias(import, alias, statement);
                 }
             }
             ast::Stmt::TypeAlias(alias) if self.function_depth == 0 && self.class_depth == 0 => {
@@ -1323,6 +1324,52 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 });
             }
         }
+        if let ast::Expr::Attribute(attribute) = expr {
+            let target = attribute.attr.as_str();
+            let attr_span = span(attribute.attr.range());
+            let already_recorded = self.facts.occurrences.iter().any(|occurrence| {
+                occurrence.target == target
+                    && occurrence.span.start <= attr_span.start
+                    && occurrence.span.end >= attr_span.end
+            });
+            if !already_recorded {
+                let receiver = match attribute.value.as_ref() {
+                    ast::Expr::Name(name)
+                        if matches!(name.id.as_str(), "self" | "cls")
+                            && self.enclosing_class.is_some() =>
+                    {
+                        OccurrenceReceiver::EnclosingClass {
+                            class: self
+                                .enclosing_class
+                                .clone()
+                                .expect("enclosing class proven above"),
+                        }
+                    }
+                    ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
+                        receiver: Some(name.id.as_str().to_owned()),
+                    },
+                    _ => OccurrenceReceiver::Foreign { receiver: None },
+                };
+                let owner = if self.decorator_ranges.iter().any(|range| {
+                    range.start() <= expr.range().start() && range.end() >= expr.range().end()
+                }) {
+                    match self.decorator_owner.as_deref() {
+                        Some(owner) => owner,
+                        None => &self.owner,
+                    }
+                } else {
+                    &self.owner
+                };
+                self.facts.occurrences.push(OccurrenceFact {
+                    owner: owner.to_owned(),
+                    target: target.to_owned(),
+                    kind: OccurrenceKind::AttributeRead,
+                    confidence: Confidence::Index,
+                    span: attr_span,
+                    receiver,
+                });
+            }
+        }
         visitor::walk_expr(self, expr);
     }
 }
@@ -1378,6 +1425,46 @@ impl Projection<'_> {
             receiver: ReceiverKind::Plain,
             parameters: Vec::new(),
             value_source: Some(alias.name.as_str().to_owned()),
+            value_span: Some(span(alias.name.range())),
+            type_parameters: Vec::new(),
+            total: None,
+            header_end: None,
+            docstring: None,
+        });
+    }
+
+    /// Records one `from … import …` binding. The alias's `value_source`
+    /// carries the imported module spelling (`workout.service` in `from
+    /// workout.service import service`); `value_span` keeps the binding
+    /// identifier span so bare-name call keying stays unchanged.
+    fn add_from_alias(
+        &mut self,
+        import: &ast::StmtImportFrom,
+        alias: &ast::Alias,
+        statement: &ast::Stmt,
+    ) {
+        let binding = alias_binding(alias);
+        let Some(binding_span) = self.alias_binding_span(alias) else {
+            return;
+        };
+        let value_source = import
+            .module
+            .as_ref()
+            .map(|module| module.as_str().to_owned())
+            .or_else(|| Some(alias.name.as_str().to_owned()));
+        self.add_declaration(DeclarationFact {
+            name: binding,
+            name_span: binding_span,
+            kind: DeclarationKind::Alias,
+            span: span(statement.range()),
+            bases: Vec::new(),
+            class_form: None,
+            decorators: Vec::new(),
+            decorator_spans: Vec::new(),
+            is_async: false,
+            receiver: ReceiverKind::Plain,
+            parameters: Vec::new(),
+            value_source,
             value_span: Some(span(alias.name.range())),
             type_parameters: Vec::new(),
             total: None,
