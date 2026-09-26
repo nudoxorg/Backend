@@ -2289,7 +2289,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
 
     /// Resolves one plain-name receiver through its parameter annotation when
     /// the import-binding arm did not apply: a unique live class yields the
-    /// unique method inside that class; a unique live import alias yields the
+    /// unique method inside that class, or a unique same-file base method when
+    /// the annotated class declares none; a unique live import alias yields the
     /// alias statement's package key. Every ambiguous or unproven case keeps
     /// today's universe key by returning `None`.
     fn annotated_receiver_target(
@@ -2315,8 +2316,23 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let declaration = &self.module.declarations[index];
         match declaration.kind {
             DeclarationKind::Class => {
-                let Some(ordinal) = self.method_in_class(occurrence, declaration.span) else {
-                    return Ok(None);
+                let attribute_bytes = occurrence.target.as_bytes();
+                let local = self.member_ordinals_in_class(
+                    declaration.span,
+                    DeclarationKind::Function,
+                    attribute_bytes,
+                );
+                let ordinal = match local.len() {
+                    1 => local[0],
+                    n if n > 1 => return Ok(None),
+                    _ => match self.inherited_member_ordinal(
+                        index,
+                        DeclarationKind::Function,
+                        attribute_bytes,
+                    ) {
+                        Some(ordinal) => ordinal,
+                        None => return Ok(None),
+                    },
                 };
                 let confidence = match checked {
                     Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
