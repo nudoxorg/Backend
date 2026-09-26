@@ -293,6 +293,9 @@ pub(super) fn measure_semantic_image_rows() {
         .expect("staleness changed the projected row set");
     fresh_has_no_note(&fresh);
     stale_has_note(&stale);
+    (proof.misses() == 1 && proof.len() == 1 && stale_residence.misses() == 1)
+        .then_some(())
+        .expect("proof projection was not a single miss");
     drop(opened);
 
     let cold = sample(WARMUPS, SAMPLES, || {
