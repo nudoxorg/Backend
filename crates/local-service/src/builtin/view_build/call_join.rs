@@ -41,6 +41,7 @@ pub(crate) struct ProjectCallableIndex {
     by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     mention_by_path_name_kind: BTreeMap<(String, String, ItemKind), Vec<DeclarationIdentity>>,
     field_by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
+    value_by_owner_name_kind: BTreeMap<(String, String, ItemKind), Vec<DeclarationIdentity>>,
 }
 
 impl ProjectCallableIndex {
@@ -51,6 +52,8 @@ impl ProjectCallableIndex {
             BTreeMap::<(String, String, ItemKind), Vec<DeclarationIdentity>>::new();
         let mut field_by_owner_name =
             BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
+        let mut value_by_owner_name_kind =
+            BTreeMap::<(String, String, ItemKind), Vec<DeclarationIdentity>>::new();
         for bytes in images {
             let image = SemanticImageView::reopen(bytes).map_err(|error| {
                 BuiltinModelError(format!("reopen semantic graph image: {error}"))
@@ -116,6 +119,25 @@ impl ProjectCallableIndex {
                         }
                     }
                 }
+                if matches!(
+                    entity.entity.kind,
+                    ItemKind::Constant | ItemKind::Static | ItemKind::Variant
+                ) {
+                    if let Some((immediate, chain)) =
+                        owner_chain_keys(&session, &image, entity.entity.id)?
+                    {
+                        value_by_owner_name_kind
+                            .entry((immediate.clone(), name.to_owned(), entity.entity.kind))
+                            .or_default()
+                            .push(identity);
+                        if chain != immediate {
+                            value_by_owner_name_kind
+                                .entry((chain, name.to_owned(), entity.entity.kind))
+                                .or_default()
+                                .push(identity);
+                        }
+                    }
+                }
             }
         }
         Ok(Self {
@@ -123,6 +145,7 @@ impl ProjectCallableIndex {
             by_owner_name,
             mention_by_path_name_kind,
             field_by_owner_name,
+            value_by_owner_name_kind,
         })
     }
 
@@ -276,6 +299,32 @@ impl ProjectCallableIndex {
         }
     }
 
+    pub(crate) fn resolve_value_owner(
+        &self,
+        namespace: &str,
+        display: &str,
+        kind: ItemKind,
+    ) -> Option<DeclarationIdentity> {
+        if namespace.is_empty() || display.is_empty() {
+            return None;
+        }
+        match self.value_owner_matches(namespace, display, kind) {
+            Some(matches) if matches.len() == 1 => matches.into_iter().next(),
+            Some(_) => None,
+            None => {
+                let stripped = strip_type_arguments(namespace)?;
+                if stripped == namespace {
+                    None
+                } else {
+                    match self.value_owner_matches(&stripped, display, kind) {
+                        Some(matches) if matches.len() == 1 => matches.into_iter().next(),
+                        _ => None,
+                    }
+                }
+            }
+        }
+    }
+
     fn owner_matches(
         &self,
         namespace: &str,
@@ -302,6 +351,25 @@ impl ProjectCallableIndex {
         let mut matches = self
             .field_by_owner_name
             .get(&(namespace.to_owned(), display.to_owned()))?
+            .clone();
+        matches.sort();
+        matches.dedup();
+        if matches.is_empty() {
+            None
+        } else {
+            Some(matches)
+        }
+    }
+
+    fn value_owner_matches(
+        &self,
+        namespace: &str,
+        display: &str,
+        kind: ItemKind,
+    ) -> Option<Vec<DeclarationIdentity>> {
+        let mut matches = self
+            .value_by_owner_name_kind
+            .get(&(namespace.to_owned(), display.to_owned(), kind))?
             .clone();
         matches.sort();
         matches.dedup();
@@ -742,6 +810,38 @@ pub(crate) fn join_project_field(
     Ok(identity.filter(|candidate| published.contains(candidate)))
 }
 
+pub(crate) fn foreign_namespace_value_retarget(
+    image: &SemanticImageView<'_>,
+    external: ExternalId,
+    index: &ProjectCallableIndex,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(None);
+    };
+    let ForeignTargetOrigin::Namespace { namespace, .. } = foreign.origin else {
+        return Ok(None);
+    };
+    let Some(kind) = foreign.kind else {
+        return Ok(None);
+    };
+    if !matches!(kind, ItemKind::Constant | ItemKind::Static | ItemKind::Variant) {
+        return Ok(None);
+    }
+    let namespace_atom = image
+        .atom(namespace)
+        .ok_or_else(|| BuiltinModelError("semantic graph namespace atom is missing".to_owned()))?;
+    let display_atom = image
+        .atom(foreign.display)
+        .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
+    let namespace = std::str::from_utf8(namespace_atom).map_err(|_| {
+        BuiltinModelError("semantic graph namespace is not UTF-8".to_owned())
+    })?;
+    let display = std::str::from_utf8(display_atom).map_err(|_| {
+        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
+    })?;
+    Ok(index.resolve_value_owner(namespace, display, kind))
+}
+
 pub(crate) fn foreign_package_value_retarget(
     image: &SemanticImageView<'_>,
     external: ExternalId,
@@ -796,13 +896,17 @@ pub(crate) fn join_project_value(
     if !matches!(link_kind, backend_semantic::ir::LinkKind::Reads) {
         return Ok(None);
     }
-    let identity = foreign_package_value_retarget(
+    let identity = if let Some(identity) = foreign_package_value_retarget(
         image,
         external,
         caller_path,
         project_paths,
         index,
-    )?;
+    )? {
+        Some(identity)
+    } else {
+        foreign_namespace_value_retarget(image, external, index)?
+    };
     Ok(identity.filter(|candidate| published.contains(candidate)))
 }
 
