@@ -405,12 +405,62 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 .filter(|name| name.end > name.start)
                 .unwrap_or(extent),
         };
+        if kind == ReferenceKind::Value {
+            self.ensure_foreign_value_authority(cursor)?;
+        }
         let target = self.reference_target(TranslationUnit::referenced(cursor))?;
         self.push_reference(ReferenceFact {
             kind,
             span,
             owner: TranslationUnit::semantic_parent(cursor),
             target,
+        })
+    }
+
+    /// Retains one foreign variable or enumerator authority row when a value
+    /// reference resolves across a project header. The row carries identity
+    /// and kind only; it is not a main-source declaration fact and never
+    /// becomes a pushed entity.
+    fn ensure_foreign_value_authority(&mut self, cursor: CXCursor) -> Result<(), CollectError> {
+        let referenced = TranslationUnit::referenced(cursor);
+        if TranslationUnit::is_null_cursor(referenced) {
+            return Ok(());
+        }
+        if self.unit.is_local(referenced)? {
+            return Ok(());
+        }
+        let kind = declaration_kind(TranslationUnit::cursor_kind(referenced));
+        if !matches!(kind, DeclarationKind::Variable | DeclarationKind::Enumerator) {
+            return Ok(());
+        }
+        let Some(identity) = TranslationUnit::cursor_identity(referenced) else {
+            return Ok(());
+        };
+        if self.scratch.declarations[..self.declarations]
+            .iter()
+            .any(|fact| fact.identity == Some(identity))
+        {
+            return Ok(());
+        }
+        let id = DeclarationId {
+            raw: u32::try_from(self.declarations).map_err(|_| CollectError::SlotOrdinalTooLarge {
+                lane: ScratchLane::Declarations,
+                observed: self.declarations,
+            })?,
+        };
+        self.push_declaration(DeclarationFact {
+            id,
+            kind,
+            definition: DefinitionState::Declaration,
+            virtuality: MethodVirtuality::NonVirtual,
+            identity: Some(identity),
+            span: SourceSpan { start: 0, end: 0 },
+            name: None,
+            owner: None,
+            documentation: None,
+            storage: StorageClass::None,
+            type_root: None,
+            enum_underlying: None,
         })
     }
 
