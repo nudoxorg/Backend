@@ -196,6 +196,17 @@ impl<S> Adapter<S> {
             limits: limits.validate()?,
         })
     }
+
+    /// Returns the resident source.
+    #[must_use]
+    pub(crate) fn source(&self) -> &S {
+        &self.source
+    }
+
+    /// Returns the resident source for an in-place projection update.
+    pub(crate) fn source_mut(&mut self) -> &mut S {
+        &mut self.source
+    }
 }
 
 impl<S: LexicalSource> Adapter<S> {
