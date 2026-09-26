@@ -508,8 +508,13 @@ mod tests {
         byteorder::{LittleEndian, U32},
     };
 
+    use backend_semantic::index_core::{ExactRow, IndexSnapshot};
+
     use super::*;
-    use crate::index_publish::pack::grammar;
+    use crate::index_publish::pack::{
+        MAX_PACK_SEGMENTS,
+        grammar::{self, ExactDirectory, LexicalDirectory, PackHeader},
+    };
 
     #[derive(Debug, thiserror::Error)]
     enum PackTestError {
