@@ -367,7 +367,12 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     unlink_dead_endpoint(paths.endpoint());
     let executable = locald_executable()?;
     let mut command = Command::new(&executable);
+    // locald derives its configured project from the working directory when
+    // no project flag exists, and rejects a workspace owned by a different
+    // checkout. Services launch from unrelated working directories, so the
+    // spawn must pin the CWD to the owning project.
     command
+        .current_dir(paths.project())
         .arg("--endpoint")
         .arg(paths.endpoint())
         .arg("--workspace")
