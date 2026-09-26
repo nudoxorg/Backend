@@ -4021,7 +4021,326 @@ fn conan_v2_recipe_revision_and_export_archive_are_admitted() {
     }
     .expect("read Conan artifact");
     assert_eq!(fetched, archive);
+    assert!(matches!(
+        &package.dependency_facts,
+        backend_library::DependencyFacts::Unavailable(reason)
+            if reason.as_str() == "native feed omits dependency metadata"
+    ));
     server.join().expect("Conan fixture server");
+}
+
+fn conan_source() -> PackageCoordinate {
+    PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate")
+}
+
+fn conan_facts(
+    recipe: &str,
+    python: bool,
+) -> Result<
+    backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
+    TransportFailure,
+> {
+    ecosystem::conan_dependency_facts(&conan_source(), recipe, python, b"conan-fixture")
+}
+
+fn known_conan<'a>(
+    facts: &'a backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>>,
+    name: &str,
+) -> &'a backend_library::PackageDependencyRecord {
+    let backend_library::DependencyFacts::Known(rows) = facts else {
+        panic!("expected known Conan facts, got {facts:?}");
+    };
+    rows.iter()
+        .find(|row| row.target.name.as_str() == name)
+        .unwrap_or_else(|| panic!("missing Conan dependency {name}"))
+}
+
+#[test]
+fn conan_text_recipe_admits_literal_scopes_and_drops_comments() {
+    let facts = conan_facts(
+        "[requires]\n\
+         zlib/1.2.13:shared=True\n\
+         openssl/3.0.0@openssl/stable\n\
+         # zlib/9.9.9\n\
+         [tool_requires]\n\
+         cmake/3.22.0\n\
+         [build_requires]\n\
+         ninja/1.11.1\n\
+         [test_requires]\n\
+         gtest/1.14.0\n\
+         [options]\n\
+         shared=True\n",
+        false,
+    )
+    .expect("text recipe");
+    let backend_library::DependencyFacts::Known(rows) = &facts else {
+        panic!("expected known text recipe, got {facts:?}");
+    };
+    assert_eq!(rows.len(), 5);
+    let zlib = known_conan(&facts, "zlib");
+    assert_eq!(zlib.target.requirement.as_str(), "1.2.13");
+    assert_eq!(zlib.scope, backend_library::DependencyScope::Runtime);
+    assert!(!zlib.optional);
+    let openssl = known_conan(&facts, "openssl");
+    assert_eq!(openssl.target.requirement.as_str(), "3.0.0@openssl/stable");
+    assert_eq!(openssl.scope, backend_library::DependencyScope::Runtime);
+    assert_eq!(
+        known_conan(&facts, "cmake").scope,
+        backend_library::DependencyScope::Build
+    );
+    assert_eq!(
+        known_conan(&facts, "ninja").scope,
+        backend_library::DependencyScope::Build
+    );
+    assert_eq!(
+        known_conan(&facts, "gtest").scope,
+        backend_library::DependencyScope::Development
+    );
+    assert!(rows.iter().all(|row| row.target.name.as_str() != "shared"));
+    assert!(
+        rows.iter()
+            .all(|row| row.target.requirement.as_str() != "9.9.9")
+    );
+    let empty = conan_facts("[options]\nshared=True\n", false).expect("options only");
+    assert!(matches!(
+        empty,
+        backend_library::DependencyFacts::Known(rows) if rows.is_empty()
+    ));
+    assert!(matches!(
+        conan_facts("[requires]\n!!!/1.0\n", false),
+        Err(TransportFailure::Protocol)
+    ));
+}
+
+#[test]
+fn conan_python_recipe_keeps_literals_and_rejects_dynamic_declarations() {
+    let facts = conan_facts(
+        "# self.requires(\"fake/1.0\")\n\
+         note = \"self.requires(\\\"fake/1.0\\\")\"\n\
+         \"\"\"\n\
+         self.requires(\"fake/1.0\")\n\
+         \"\"\"\n\
+         def requirements(self):\n\
+             self.requires(\"zlib/1.2.11\")\n\
+             self.tool_requires(\"cmake/3.22.6\")\n\
+         requires = (\"bzip2/1.0.8\", \"xz/5.4.0\",)\n",
+        true,
+    )
+    .expect("literal python");
+    let backend_library::DependencyFacts::Known(rows) = &facts else {
+        panic!("expected known python recipe, got {facts:?}");
+    };
+    assert_eq!(rows.len(), 4);
+    assert_eq!(
+        known_conan(&facts, "zlib").scope,
+        backend_library::DependencyScope::Runtime
+    );
+    assert_eq!(
+        known_conan(&facts, "zlib").target.requirement.as_str(),
+        "1.2.11"
+    );
+    assert_eq!(
+        known_conan(&facts, "cmake").scope,
+        backend_library::DependencyScope::Build
+    );
+    assert_eq!(
+        known_conan(&facts, "bzip2").target.requirement.as_str(),
+        "1.0.8"
+    );
+    assert_eq!(
+        known_conan(&facts, "xz").scope,
+        backend_library::DependencyScope::Runtime
+    );
+    assert!(rows.iter().all(|row| row.target.name.as_str() != "fake"));
+    let dynamic = conan_facts(
+        "self.requires(\"zlib/1.2.11\")\nself.requires(zlib_ref)\n",
+        true,
+    )
+    .expect("dynamic call");
+    assert!(matches!(
+        &dynamic,
+        backend_library::DependencyFacts::Unavailable(reason)
+            if reason.as_str() == "Conan Python recipe requirements are not literal declarations"
+    ));
+    let assigned = conan_facts("requires = variable\n", true).expect("dynamic assignment");
+    assert!(matches!(
+        &assigned,
+        backend_library::DependencyFacts::Unavailable(reason)
+            if reason.as_str() == "Conan Python recipe requirements are not literal declarations"
+    ));
+    let undeclared = conan_facts("def requirements(self):\n    pass\n", true).expect("pass");
+    assert!(matches!(
+        &undeclared,
+        backend_library::DependencyFacts::Unavailable(reason)
+            if reason.as_str() == "Conan Python recipe does not declare literal requirements"
+    ));
+}
+
+fn gzip_ustar(members: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut tar = Vec::new();
+    for (name, body) in members {
+        assert!(name.len() < 100, "ustar name fits in the header");
+        let mut header = [0_u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        let size = format!("{:011o}\0", body.len());
+        header[124..136].copy_from_slice(size.as_bytes());
+        header[156] = b'0';
+        header[148..156].fill(b' ');
+        let sum = header.iter().map(|byte| u64::from(*byte)).sum::<u64>();
+        let checksum = format!("{sum:06o}\0 ");
+        header[148..156].copy_from_slice(checksum.as_bytes());
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(body);
+        let pad = (512 - (body.len() % 512)) % 512;
+        tar.resize(tar.len() + pad, 0);
+    }
+    tar.resize(tar.len() + 1024, 0);
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&tar).expect("gzip ustar");
+    encoder.finish().expect("finish gzip")
+}
+
+#[test]
+fn conan_export_archive_admits_text_recipe_dependencies() {
+    let recipe = b"[requires]\nzlib/1.2.13\n[tool_requires]\ncmake/3.22.0\n";
+    let python = b"def requirements(self):\n    self.requires(\"onlypy/9.9.9\")\n";
+    let archive = gzip_ustar(&[("conanfile.py", python), ("pkg/conanfile.txt", recipe)]);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind Conan recipe fixture");
+    let address = listener.local_addr().expect("Conan recipe fixture address");
+    let endpoint_text = format!("http://{address}");
+    let revision = br#"{"reference":"hello/1.0.0@_/_","revisions":[{"revision":"abc123"}]}"#;
+    let files = br#"{"files":{"conan_export.tgz":{}}}"#;
+    let expected_bodies = [revision.to_vec(), files.to_vec(), archive.clone()];
+    let server = thread::spawn(move || {
+        for body in expected_bodies {
+            let (mut stream, _) = listener.accept().expect("accept Conan recipe request");
+            let request = read_request_head(&mut stream, "Conan recipe fixture request")
+                .expect("read Conan recipe request headers");
+            assert!(!request.is_empty());
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("write Conan recipe headers");
+            stream.write_all(&body).expect("write Conan recipe body");
+        }
+    });
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cpp, endpoint_text)
+        .expect("loopback Conan endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("hello").expect("package"),
+        Some(PackageName::new("1.0.0").expect("version")),
+    )
+    .expect("Conan adapter");
+    let mut transport =
+        HttpRegistryTransport::for_native(adapter, None, limits()).expect("Conan transport");
+    let page = match transport
+        .fetch_page(FeedRequest {
+            cursor: FeedCursor::genesis(endpoint.id()),
+            max_items: 1,
+        })
+        .expect("Conan page")
+    {
+        TransportResult::Available(page) => page,
+        other => panic!("unexpected Conan page result: {other:?}"),
+    };
+    let package = page.packages.first().expect("Conan release");
+    let fetched = match transport.fetch_archive(package).expect("Conan archive") {
+        TransportResult::Available(artifact) => artifact.into_bytes(limits().max_archive_bytes),
+        other => panic!("unexpected Conan archive result: {other:?}"),
+    }
+    .expect("read Conan artifact");
+    assert_eq!(fetched, archive);
+    let facts = &package.dependency_facts;
+    let backend_library::DependencyFacts::Known(rows) = facts else {
+        panic!("expected recipe dependencies, got {facts:?}");
+    };
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        known_conan(facts, "zlib").scope,
+        backend_library::DependencyScope::Runtime
+    );
+    assert_eq!(
+        known_conan(facts, "cmake").scope,
+        backend_library::DependencyScope::Build
+    );
+    assert!(rows.iter().all(|row| row.target.name.as_str() != "onlypy"));
+    server.join().expect("Conan recipe fixture server");
+}
+
+#[test]
+fn conan_source_archive_still_reads_requires_from_the_export() {
+    let source_archive = b"project source tree".to_vec();
+    let recipe = b"[requires]\nzlib/1.2.13\n# ignored/9.9.9\n";
+    let export = gzip_ustar(&[
+        ("conanfile.txt", recipe),
+        ("conandata.yml", b"sources: {}\n"),
+    ]);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind Conan source fixture");
+    let address = listener.local_addr().expect("Conan source fixture address");
+    let endpoint_text = format!("http://{address}");
+    let revision = br#"{"reference":"hello/1.0.0@_/_","revisions":[{"revision":"abc123"}]}"#;
+    let files = br#"{"files":{"conan_sources.tgz":{},"conan_export.tgz":{}}}"#;
+    let expected_bodies = [
+        revision.to_vec(),
+        files.to_vec(),
+        source_archive.clone(),
+        export,
+    ];
+    let server = thread::spawn(move || {
+        for body in expected_bodies {
+            let (mut stream, _) = listener.accept().expect("accept Conan source request");
+            let request = read_request_head(&mut stream, "Conan source fixture request")
+                .expect("read Conan source request headers");
+            assert!(!request.is_empty());
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("write Conan source headers");
+            stream.write_all(&body).expect("write Conan source body");
+        }
+    });
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Cpp, endpoint_text)
+        .expect("loopback Conan endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint.clone(),
+        PackageName::new("hello").expect("package"),
+        Some(PackageName::new("1.0.0").expect("version")),
+    )
+    .expect("Conan adapter");
+    let mut transport =
+        HttpRegistryTransport::for_native(adapter, None, limits()).expect("Conan transport");
+    let page = match transport
+        .fetch_page(FeedRequest {
+            cursor: FeedCursor::genesis(endpoint.id()),
+            max_items: 1,
+        })
+        .expect("Conan page")
+    {
+        TransportResult::Available(page) => page,
+        other => panic!("unexpected Conan page result: {other:?}"),
+    };
+    let package = page.packages.first().expect("Conan release");
+    let fetched = match transport.fetch_archive(package).expect("Conan archive") {
+        TransportResult::Available(artifact) => artifact.into_bytes(limits().max_archive_bytes),
+        other => panic!("unexpected Conan archive result: {other:?}"),
+    }
+    .expect("read Conan artifact");
+    assert_eq!(fetched, source_archive);
+    let facts = &package.dependency_facts;
+    assert_eq!(
+        known_conan(facts, "zlib").target.requirement.as_str(),
+        "1.2.13"
+    );
+    assert_eq!(
+        known_conan(facts, "zlib").scope,
+        backend_library::DependencyScope::Runtime
+    );
+    server.join().expect("Conan source fixture server");
 }
 
 #[test]

@@ -1186,7 +1186,7 @@ impl EcosystemAdapter {
 
 #[path = "ecosystem_decoders.rs"]
 mod decoders;
-pub(crate) use decoders::ConanSourceAvailability;
+pub(crate) use decoders::{ConanFileEntry, ConanSourceAvailability, conan_dependency_facts};
 
 fn component(value: &str) -> String {
     let mut output = String::new();

@@ -1723,6 +1723,7 @@ impl HttpRegistryTransport {
         let archive_url = adapter.conan_archive_url(&revision, &archive_name);
         let source_entry = manifest.entry("conan_sources.tgz");
         let export_entry = manifest.entry("conan_export.tgz");
+        let mut recipe_member = None;
         let (checksum, archive, source_url) = if let Some(entry) = source_entry {
             // A Conan source archive is already content-addressed by the
             // recipe file manifest. Prefer it over the recipe export so the
@@ -1752,6 +1753,11 @@ impl HttpRegistryTransport {
                 self.cache_archive(checksum.cache_key(), fetched)?;
                 checksum
             };
+            if let Some(export_entry) = export_entry {
+                let export_url = adapter.conan_archive_url(&revision, "conan_export.tgz");
+                let export = self.verified_conan_export(&export_url, export_entry)?;
+                recipe_member = conan_recipe_member(&export, self.limits.max_archive_bytes)?;
+            }
             (checksum, archive_url.clone(), Some(archive_url.clone()))
         } else {
             let Some(export_entry) = export_entry else {
@@ -1779,6 +1785,7 @@ impl HttpRegistryTransport {
                     return Err(TransportFailure::Integrity);
                 }
             }
+            recipe_member = conan_recipe_member(&recipe, self.limits.max_archive_bytes)?;
             let source = Self::conan_source_spec(
                 &recipe,
                 adapter.conan_recipe_version(),
@@ -1849,6 +1856,14 @@ impl HttpRegistryTransport {
             &provenance,
             ReleaseFacts::default(),
         )?;
+        if let Some((python, text)) = recipe_member {
+            release.dependency_facts = super::ecosystem::conan_dependency_facts(
+                &release.coordinate,
+                &text,
+                python,
+                &provenance,
+            )?;
+        }
         let archive_url = release.archive_url.clone();
         let artifact_kind = match source_availability {
             super::ecosystem::ConanSourceAvailability::Archive => {
@@ -2089,6 +2104,38 @@ impl HttpRegistryTransport {
             .push_back(ArchiveHandoff { key, artifact });
         Ok(())
     }
+
+    /// Downloads the recipe export and checks the manifest size and digest.
+    ///
+    /// The bytes stay out of the indexed archive handoff. When a source
+    /// tarball is preferred, that tarball remains the content the owner
+    /// fetches; the export is only the dependency declaration.
+    fn verified_conan_export(
+        &mut self,
+        url: &str,
+        entry: &super::ecosystem::ConanFileEntry,
+    ) -> Result<Vec<u8>, TransportFailure> {
+        let fetched = match self.get_archive(url, self.limits.max_archive_bytes)? {
+            TransportResult::Available(value) => value,
+            TransportResult::Unavailable | TransportResult::RetryAfter(_) => {
+                return Err(TransportFailure::DownloadUnavailable);
+            }
+            TransportResult::NotModified => return Err(TransportFailure::Protocol),
+        };
+        let bytes = fetched.into_bytes(self.limits.max_archive_bytes)?;
+        if entry
+            .size
+            .is_some_and(|size| size != u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+        {
+            return Err(TransportFailure::Integrity);
+        }
+        if let Some(expected) = &entry.sha256 {
+            if !expected.verifies(&bytes) {
+                return Err(TransportFailure::Integrity);
+            }
+        }
+        Ok(bytes)
+    }
 }
 
 struct ConanSourceSpec {
@@ -2145,6 +2192,91 @@ fn conan_export_file(archive: &[u8], maximum: usize) -> Result<Option<Vec<u8>>, 
             .ok_or(TransportFailure::Bounds)?;
     }
     Err(TransportFailure::Protocol)
+}
+
+/// Reads `conanfile.txt` or `conanfile.py` from a gzip ustar export.
+///
+/// A text recipe wins over a Python recipe. An opaque non-gzip payload is
+/// `Ok(None)`, the same legacy handoff `conan_export_file` keeps. A gzip
+/// member that is not valid UTF-8 is a protocol failure.
+fn conan_recipe_member(
+    archive: &[u8],
+    maximum: usize,
+) -> Result<Option<(bool, String)>, TransportFailure> {
+    if !archive.starts_with(&[0x1f, 0x8b]) {
+        return Ok(None);
+    }
+    let mut decoder = GzDecoder::new(Cursor::new(archive));
+    let mut tar = Vec::new();
+    decoder
+        .by_ref()
+        .take(
+            u64::try_from(maximum)
+                .map_err(|_| TransportFailure::Bounds)?
+                .saturating_add(1),
+        )
+        .read_to_end(&mut tar)
+        .map_err(|_| TransportFailure::Protocol)?;
+    if tar.len() > maximum {
+        return Err(TransportFailure::Overrun {
+            measured: u64::try_from(tar.len()).map_err(|_| TransportFailure::Bounds)?,
+            limit: u64::try_from(maximum).map_err(|_| TransportFailure::Bounds)?,
+        });
+    }
+    let mut offset = 0usize;
+    let mut text = None;
+    let mut python = None;
+    let mut terminated = false;
+    while offset.checked_add(512).is_some_and(|end| end <= tar.len()) {
+        let header = &tar[offset..offset + 512];
+        if header.iter().all(|byte| *byte == 0) {
+            terminated = true;
+            break;
+        }
+        validate_tar_checksum(header)?;
+        let size = tar_octal(&header[124..136])?;
+        let data_start = offset.checked_add(512).ok_or(TransportFailure::Bounds)?;
+        let data_end = data_start
+            .checked_add(size)
+            .ok_or(TransportFailure::Bounds)?;
+        if data_end > tar.len() {
+            return Err(TransportFailure::Protocol);
+        }
+        let name = trim_tar_nul(&header[..100])?;
+        let member = if name == "conanfile.txt" || name.ends_with("/conanfile.txt") {
+            Some(false)
+        } else if name == "conanfile.py" || name.ends_with("/conanfile.py") {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(is_python) = member {
+            let bytes = tar[data_start..data_end].to_vec();
+            if is_python {
+                python = Some(bytes);
+            } else {
+                text = Some(bytes);
+            }
+        }
+        let padded = size.checked_add(511).ok_or(TransportFailure::Bounds)? / 512 * 512;
+        offset = data_start
+            .checked_add(padded)
+            .ok_or(TransportFailure::Bounds)?;
+    }
+    if !terminated {
+        return Err(TransportFailure::Protocol);
+    }
+    let (python, bytes) = if let Some(bytes) = text {
+        (false, bytes)
+    } else if let Some(bytes) = python {
+        (true, bytes)
+    } else {
+        return Ok(None);
+    };
+    let decoded = std::str::from_utf8(&bytes)
+        .map_err(|_| TransportFailure::Protocol)?
+        .to_owned();
+    Ok(Some((python, decoded)))
 }
 
 fn conan_source_mirror_allowed(url: &str) -> bool {

@@ -1869,6 +1869,410 @@ fn is_marker_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+pub(crate) fn conan_dependency_facts(
+    source: &super::PackageCoordinate,
+    recipe: &str,
+    python: bool,
+    provenance: &[u8],
+) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+    let rows = if python {
+        match conan_python_requirements(recipe)? {
+            ConanPythonRequirements::Dynamic => {
+                return Ok(DependencyFacts::Unavailable(
+                    ProductText::new(
+                        "Conan Python recipe requirements are not literal declarations",
+                    )
+                    .map_err(|_| TransportFailure::Protocol)?,
+                ));
+            }
+            ConanPythonRequirements::Undeclared => {
+                return Ok(DependencyFacts::Unavailable(
+                    ProductText::new("Conan Python recipe does not declare literal requirements")
+                        .map_err(|_| TransportFailure::Protocol)?,
+                ));
+            }
+            ConanPythonRequirements::Known(rows) => rows,
+        }
+    } else {
+        conan_text_requirements(recipe)?
+    };
+    if rows.len() > super::MAX_NATIVE_RELEASES {
+        return Err(TransportFailure::Overrun {
+            measured: u64::try_from(rows.len()).map_err(|_| TransportFailure::Bounds)?,
+            limit: u64::try_from(super::MAX_NATIVE_RELEASES)
+                .map_err(|_| TransportFailure::Bounds)?,
+        });
+    }
+    let records = rows
+        .into_iter()
+        .map(|(name, requirement, scope)| {
+            dependency_record(
+                source,
+                backend_semantic::vocabulary::RegistryEcosystem::Cpp,
+                &name,
+                &requirement,
+                scope,
+                false,
+                provenance,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(DependencyFacts::Known(
+        admit_dependency_rows(collapse_dependency_rows(records))
+            .map_err(|_| TransportFailure::Protocol)?,
+    ))
+}
+
+enum ConanPythonRequirements {
+    Known(Vec<(String, String, DependencyScope)>),
+    Dynamic,
+    Undeclared,
+}
+
+fn conan_text_requirements(
+    recipe: &str,
+) -> Result<Vec<(String, String, DependencyScope)>, TransportFailure> {
+    let mut scope = None;
+    let mut rows = Vec::new();
+    for line in recipe.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.is_empty() {
+            continue;
+        }
+        if let Some(section) = code
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            scope = match section.trim() {
+                "requires" => Some(DependencyScope::Runtime),
+                "tool_requires" | "build_requires" => Some(DependencyScope::Build),
+                "test_requires" => Some(DependencyScope::Development),
+                _ => None,
+            };
+            continue;
+        }
+        let Some(scope) = scope else {
+            continue;
+        };
+        let token = code.split_whitespace().next().unwrap_or("");
+        let reference = token.split(':').next().unwrap_or(token);
+        let (name, requirement) = split_conan_reference(reference)?;
+        rows.push((name, requirement, scope));
+    }
+    Ok(rows)
+}
+
+fn conan_python_requirements(recipe: &str) -> Result<ConanPythonRequirements, TransportFailure> {
+    let bytes = recipe.as_bytes();
+    let mut index = 0usize;
+    let mut rows = Vec::new();
+    let mut dynamic = false;
+    let mut declared = false;
+    while index < bytes.len() {
+        if bytes[index] == b'#' {
+            index = skip_conan_line(bytes, index);
+            continue;
+        }
+        if bytes[index].is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+        if starts_with_bytes(bytes, index, b"\"\"\"") || starts_with_bytes(bytes, index, b"'''") {
+            let quote = if bytes[index] == b'"' {
+                b"\"\"\""
+            } else {
+                b"'''"
+            };
+            index = skip_conan_marker(bytes, index + 3, quote).unwrap_or(bytes.len());
+            continue;
+        }
+        if bytes[index] == b'"' || bytes[index] == b'\'' {
+            index = skip_conan_quoted(bytes, index).unwrap_or(bytes.len());
+            continue;
+        }
+        if is_conan_ident_start(bytes[index])
+            && (index == 0 || !is_conan_ident_continue(bytes[index - 1]))
+        {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_conan_ident_continue(bytes[index]) {
+                index += 1;
+            }
+            let word = &recipe[start..index];
+            if word == "self" {
+                let method_at = skip_conan_space(bytes, index);
+                if method_at < bytes.len() && bytes[method_at] == b'.' {
+                    let name_at = skip_conan_space(bytes, method_at + 1);
+                    let name_end = conan_ident_end(bytes, name_at);
+                    let method = &recipe[name_at..name_end];
+                    let scope = conan_python_scope(method);
+                    let paren_at = skip_conan_space(bytes, name_end);
+                    if let Some(scope) = scope
+                        && paren_at < bytes.len()
+                        && bytes[paren_at] == b'('
+                    {
+                        declared = true;
+                        match conan_python_call(recipe, paren_at)? {
+                            ConanCall::Literal(reference, next) => {
+                                let (name, requirement) = split_conan_reference(&reference)?;
+                                rows.push((name, requirement, scope));
+                                index = next;
+                                continue;
+                            }
+                            ConanCall::Dynamic(next) => {
+                                dynamic = true;
+                                index = next;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            if conan_python_scope(word).is_some() {
+                let eq_at = skip_conan_space(bytes, index);
+                if eq_at < bytes.len()
+                    && bytes[eq_at] == b'='
+                    && !starts_with_bytes(bytes, eq_at, b"==")
+                {
+                    declared = true;
+                    match conan_python_assignment(recipe, eq_at + 1)? {
+                        ConanAssignment::Literals(references, next) => {
+                            let scope = conan_python_scope(word).expect("scope");
+                            for reference in references {
+                                let (name, requirement) = split_conan_reference(&reference)?;
+                                rows.push((name, requirement, scope));
+                            }
+                            index = next;
+                            continue;
+                        }
+                        ConanAssignment::Dynamic(next) => {
+                            dynamic = true;
+                            index = next;
+                            continue;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        index += 1;
+    }
+    if dynamic {
+        return Ok(ConanPythonRequirements::Dynamic);
+    }
+    if !declared {
+        return Ok(ConanPythonRequirements::Undeclared);
+    }
+    Ok(ConanPythonRequirements::Known(rows))
+}
+
+enum ConanCall {
+    Literal(String, usize),
+    Dynamic(usize),
+}
+
+enum ConanAssignment {
+    Literals(Vec<String>, usize),
+    Dynamic(usize),
+}
+
+fn conan_python_scope(method: &str) -> Option<DependencyScope> {
+    match method {
+        "requires" => Some(DependencyScope::Runtime),
+        "tool_requires" | "build_requires" => Some(DependencyScope::Build),
+        "test_requires" => Some(DependencyScope::Development),
+        _ => None,
+    }
+}
+
+fn conan_python_call(recipe: &str, paren_at: usize) -> Result<ConanCall, TransportFailure> {
+    let bytes = recipe.as_bytes();
+    let value_at = skip_conan_space(bytes, paren_at + 1);
+    if value_at >= bytes.len() {
+        return Ok(ConanCall::Dynamic(bytes.len()));
+    }
+    if bytes[value_at] == b'"' || bytes[value_at] == b'\'' {
+        let Some((literal, next)) = read_conan_literal(recipe, value_at) else {
+            return Ok(ConanCall::Dynamic(bytes.len()));
+        };
+        let end = skip_conan_call(bytes, paren_at).unwrap_or(bytes.len());
+        let _ = next;
+        return Ok(ConanCall::Literal(literal, end));
+    }
+    Ok(ConanCall::Dynamic(
+        skip_conan_call(bytes, paren_at).unwrap_or(bytes.len()),
+    ))
+}
+
+fn conan_python_assignment(
+    recipe: &str,
+    after_eq: usize,
+) -> Result<ConanAssignment, TransportFailure> {
+    let bytes = recipe.as_bytes();
+    let value_at = skip_conan_space(bytes, after_eq);
+    if value_at >= bytes.len() {
+        return Ok(ConanAssignment::Dynamic(bytes.len()));
+    }
+    if bytes[value_at] == b'"' || bytes[value_at] == b'\'' {
+        let Some((literal, next)) = read_conan_literal(recipe, value_at) else {
+            return Ok(ConanAssignment::Dynamic(bytes.len()));
+        };
+        return Ok(ConanAssignment::Literals(vec![literal], next));
+    }
+    if bytes[value_at] == b'(' {
+        let mut references = Vec::new();
+        let mut index = value_at + 1;
+        loop {
+            index = skip_conan_space(bytes, index);
+            if index >= bytes.len() {
+                return Ok(ConanAssignment::Dynamic(bytes.len()));
+            }
+            if bytes[index] == b')' {
+                return Ok(ConanAssignment::Literals(references, index + 1));
+            }
+            if bytes[index] == b',' {
+                index += 1;
+                continue;
+            }
+            if bytes[index] == b'"' || bytes[index] == b'\'' {
+                let Some((literal, next)) = read_conan_literal(recipe, index) else {
+                    return Ok(ConanAssignment::Dynamic(bytes.len()));
+                };
+                references.push(literal);
+                index = next;
+                continue;
+            }
+            return Ok(ConanAssignment::Dynamic(
+                skip_conan_call(bytes, value_at).unwrap_or(bytes.len()),
+            ));
+        }
+    }
+    Ok(ConanAssignment::Dynamic(skip_conan_line(bytes, value_at)))
+}
+
+fn split_conan_reference(reference: &str) -> Result<(String, String), TransportFailure> {
+    let Some((name, requirement)) = reference.split_once('/') else {
+        return Err(TransportFailure::Protocol);
+    };
+    if name.is_empty()
+        || requirement.is_empty()
+        || requirement.chars().any(char::is_whitespace)
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'.' | b'-'))
+    {
+        return Err(TransportFailure::Protocol);
+    }
+    Ok((name.to_owned(), requirement.to_owned()))
+}
+
+fn is_conan_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_conan_ident_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn conan_ident_end(bytes: &[u8], start: usize) -> usize {
+    let mut index = start;
+    while index < bytes.len() && is_conan_ident_continue(bytes[index]) {
+        index += 1;
+    }
+    index
+}
+
+fn skip_conan_space(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    index
+}
+
+fn skip_conan_line(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && bytes[index] != b'\n' {
+        index += 1;
+    }
+    index
+}
+
+fn starts_with_bytes(bytes: &[u8], index: usize, marker: &[u8]) -> bool {
+    bytes.get(index..index + marker.len()) == Some(marker)
+}
+
+fn skip_conan_marker(bytes: &[u8], mut index: usize, marker: &[u8]) -> Option<usize> {
+    while index + marker.len() <= bytes.len() {
+        if starts_with_bytes(bytes, index, marker) {
+            return Some(index + marker.len());
+        }
+        index += 1;
+    }
+    None
+}
+
+fn skip_conan_quoted(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = bytes[start];
+    let mut index = start + 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == quote {
+            return Some(index + 1);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn read_conan_literal(recipe: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = recipe.as_bytes();
+    let quote = bytes[start];
+    let mut index = start + 1;
+    let mut literal = String::new();
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            if index + 1 >= bytes.len() {
+                return None;
+            }
+            literal.push(char::from(bytes[index + 1]));
+            index += 2;
+            continue;
+        }
+        if bytes[index] == quote {
+            return Some((literal, index + 1));
+        }
+        if bytes[index] == b'\n' {
+            return None;
+        }
+        literal.push(char::from(bytes[index]));
+        index += 1;
+    }
+    None
+}
+
+fn skip_conan_call(bytes: &[u8], paren_at: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut index = paren_at;
+    while index < bytes.len() {
+        if bytes[index] == b'"' || bytes[index] == b'\'' {
+            index = skip_conan_quoted(bytes, index)?;
+            continue;
+        }
+        if bytes[index] == b'(' {
+            depth += 1;
+        } else if bytes[index] == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index + 1);
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
 fn dependency_record(
     source: &super::PackageCoordinate,
     ecosystem: backend_semantic::vocabulary::RegistryEcosystem,
