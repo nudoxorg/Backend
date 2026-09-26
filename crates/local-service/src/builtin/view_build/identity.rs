@@ -86,7 +86,7 @@ pub(crate) fn semantic_symbol(
     backend_engine::symbol_key(&semantic_identity(package, identity))
 }
 
-pub(super) fn semantic_coordinate(
+pub(crate) fn semantic_coordinate(
     project: &str,
     identity: DeclarationIdentity,
     name: &str,

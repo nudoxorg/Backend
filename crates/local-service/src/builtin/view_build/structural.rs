@@ -894,7 +894,7 @@ fn resolve_rust_specifier(
     resolved
 }
 
-fn resolve_specifier_paths(
+pub(crate) fn resolve_specifier_paths(
     specifier: &str,
     caller_path: &str,
     project_paths: &BTreeSet<String>,
@@ -1121,19 +1121,12 @@ fn resolve_call_targets(
     )
 }
 
-/// Same-file and import-resolved call edges inferred from bounded declaration
-/// excerpts when no complete semantic publication supplies compiler-proven
-/// `Calls` links.
-pub(crate) fn structural_call_graph_relations(
-    view: &backend_engine::ViewRoot,
+/// Same-file and import-resolved call coordinate pairs inferred from bounded
+/// declaration excerpts.
+pub(crate) fn structural_call_coordinate_pairs(
     sources: &IndexedSources,
     package: backend_engine::PackageKey,
-    source_id: RowId,
-    include_incoming: bool,
-) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
-    let _source_row = view.row(source_id).ok_or_else(|| {
-        BuiltinModelError("structural call graph source is absent from the view".to_owned())
-    })?;
+) -> Result<Vec<(String, String)>, BuiltinModelError> {
     let project = sources
         .projects
         .values()
@@ -1144,12 +1137,6 @@ pub(crate) fn structural_call_graph_relations(
             )
         })?;
     let project_key = project.package.to_bytes();
-    let mut coordinate_ids = BTreeMap::<String, RowId>::new();
-    for row in view.rows() {
-        if row.package == Some(package) {
-            coordinate_ids.insert(row.label.clone(), row.id);
-        }
-    }
     let mut project_paths = BTreeSet::new();
     let mut static_files = Vec::new();
     for (_, record) in &sources.files {
@@ -1169,7 +1156,7 @@ pub(crate) fn structural_call_graph_relations(
     for file in &static_files {
         files_by_path.insert(file.path.clone(), file);
     }
-    let mut relations = BTreeSet::new();
+    let mut pairs = BTreeSet::new();
     for file in &static_files {
         let imports = file
             .declarations
@@ -1190,11 +1177,6 @@ pub(crate) fn structural_call_graph_relations(
                 &file.declarations,
             );
             let caller_coordinate = caller_containment.coordinate(caller);
-            let caller_id = coordinate_ids.get(&caller_coordinate).ok_or_else(|| {
-                BuiltinModelError(
-                    "structural call graph caller is absent from the published view".to_owned(),
-                )
-            })?;
             for call in structural_excerpt_call_sites(excerpt) {
                 let targets = resolve_call_targets(
                     &project.label,
@@ -1212,19 +1194,150 @@ pub(crate) fn structural_call_graph_relations(
                 if callee_coordinate == caller_coordinate {
                     continue;
                 }
-                let callee_id = coordinate_ids.get(&callee_coordinate).ok_or_else(|| {
-                    BuiltinModelError(
-                        "structural call graph callee is absent from the published view"
-                            .to_owned(),
-                    )
-                })?;
-                relations.insert(backend_engine::GraphRelation::new(
-                    *caller_id,
-                    *callee_id,
-                    backend_library::SemanticLinkKind::Calls,
-                ));
+                pairs.insert((caller_coordinate.clone(), callee_coordinate));
             }
         }
+    }
+    Ok(pairs.into_iter().collect())
+}
+
+struct ParsedDeclarationCoordinate {
+    path: String,
+    line: u32,
+    name: String,
+}
+
+fn parsed_declaration_coordinate(coordinate: &str) -> Option<ParsedDeclarationCoordinate> {
+    let (prefix, name) = coordinate.rsplit_once("::")?;
+    if name.is_empty() {
+        return None;
+    }
+    let (path_prefix, line_text) = prefix.rsplit_once(':')?;
+    let line = line_text.parse().ok()?;
+    let path = path_prefix
+        .split_once("::")
+        .map_or(path_prefix, |(_, path)| path);
+    if path.is_empty() {
+        return None;
+    }
+    Some(ParsedDeclarationCoordinate {
+        path: path.to_owned(),
+        line,
+        name: name.to_owned(),
+    })
+}
+
+/// Resolves one structural declaration coordinate against the published view.
+///
+/// A row whose label is exactly the coordinate is preferred. Otherwise a
+/// semantic-shaped row is matched by captured source path, line, and name.
+pub(crate) fn view_row_for_structural_coordinate(
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    coordinate: &str,
+) -> Option<RowId> {
+    let mut semantic_matches = Vec::new();
+    for row in view.rows() {
+        if row.package != Some(package) {
+            continue;
+        }
+        if row.label == coordinate {
+            return Some(row.id);
+        }
+        let Some(parsed) = parsed_declaration_coordinate(coordinate) else {
+            continue;
+        };
+        let Some(location) = row.source.captured() else {
+            continue;
+        };
+        if location.path() != parsed.path || location.start_line() != parsed.line {
+            continue;
+        }
+        if row.label.ends_with(&format!("::{}", parsed.name)) || row.label == parsed.name {
+            semantic_matches.push(row.id);
+        }
+    }
+    if semantic_matches.len() == 1 {
+        semantic_matches.pop()
+    } else {
+        None
+    }
+}
+
+/// Maps structural call coordinate pairs onto view rows, skipping pairs whose
+/// endpoints are absent or ambiguous in the published view.
+pub(crate) fn structural_call_graph_relations_mapped(
+    view: &backend_engine::ViewRoot,
+    pairs: &[(String, String)],
+    package: backend_engine::PackageKey,
+    source_id: RowId,
+    include_incoming: bool,
+) -> Vec<backend_engine::GraphRelation> {
+    let mut relations = BTreeSet::new();
+    for (caller_coordinate, callee_coordinate) in pairs {
+        let Some(caller_id) = view_row_for_structural_coordinate(view, package, caller_coordinate)
+        else {
+            continue;
+        };
+        let Some(callee_id) = view_row_for_structural_coordinate(view, package, callee_coordinate)
+        else {
+            continue;
+        };
+        relations.insert(backend_engine::GraphRelation::new(
+            caller_id,
+            callee_id,
+            backend_library::SemanticLinkKind::Calls,
+        ));
+    }
+    relations
+        .into_iter()
+        .filter(|relation| {
+            if include_incoming {
+                relation.from == source_id || relation.to == source_id
+            } else {
+                relation.from == source_id
+            }
+        })
+        .collect()
+}
+
+/// Same-file and import-resolved call edges inferred from bounded declaration
+/// excerpts when no complete semantic publication supplies compiler-proven
+/// `Calls` links.
+pub(crate) fn structural_call_graph_relations(
+    view: &backend_engine::ViewRoot,
+    sources: &IndexedSources,
+    package: backend_engine::PackageKey,
+    source_id: RowId,
+    include_incoming: bool,
+) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
+    let _source_row = view.row(source_id).ok_or_else(|| {
+        BuiltinModelError("structural call graph source is absent from the view".to_owned())
+    })?;
+    let mut coordinate_ids = BTreeMap::<String, RowId>::new();
+    for row in view.rows() {
+        if row.package == Some(package) {
+            coordinate_ids.insert(row.label.clone(), row.id);
+        }
+    }
+    let mut relations = BTreeSet::new();
+    for (caller_coordinate, callee_coordinate) in structural_call_coordinate_pairs(sources, package)?
+    {
+        let caller_id = coordinate_ids.get(&caller_coordinate).ok_or_else(|| {
+            BuiltinModelError(
+                "structural call graph caller is absent from the published view".to_owned(),
+            )
+        })?;
+        let callee_id = coordinate_ids.get(&callee_coordinate).ok_or_else(|| {
+            BuiltinModelError(
+                "structural call graph callee is absent from the published view".to_owned(),
+            )
+        })?;
+        relations.insert(backend_engine::GraphRelation::new(
+            *caller_id,
+            *callee_id,
+            backend_library::SemanticLinkKind::Calls,
+        ));
     }
     let relations = relations
         .into_iter()

@@ -622,7 +622,7 @@ pub(super) fn compiled_source(
 }
 
 /// Returns the exact relative source path one image was compiled from.
-fn compiled_source_path(image: &SemanticImageView<'_>) -> Result<String, BuiltinModelError> {
+pub(crate) fn compiled_source_path(image: &SemanticImageView<'_>) -> Result<String, BuiltinModelError> {
     compiled_source(image).map(|(path, _)| path)
 }
 
