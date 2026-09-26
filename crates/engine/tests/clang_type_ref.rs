@@ -148,8 +148,8 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
     let root = unique_temp_project()?;
     let header = root.join("include/workout.h");
     let entry = root.join("src/drive.cpp");
-    let source = b"#include \"workout.h\"\n#include <cstdio>\nstruct LocalType { int x; };\nvoid drive(Workout item) { item.set_note(); printf(\"x\"); }\nvoid same_file(LocalType local) {}\n";
-    fs::write(&header, b"struct Workout { void set_note(); };\n")
+    let source = b"#include \"workout.h\"\n#include <cstdio>\nstruct LocalType { int x; };\nvoid drive(Workout item) { int n = item.note; item.set_note(); printf(\"x\"); }\nvoid same_file(LocalType local) { int y = local.x; }\n";
+    fs::write(&header, b"struct Workout { int note; void set_note(); };\n")
         .map_err(|_| TestError::Missing("header write"))?;
     fs::write(&entry, source).map_err(|_| TestError::Missing("entry write"))?;
     let database = format!(
@@ -169,6 +169,7 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
     let drive_fn = entity_of(&view, b"drive", EntityKind::Function)?;
     let same_file_fn = entity_of(&view, b"same_file", EntityKind::Function)?;
     let local_type = entity_of(&view, b"LocalType", EntityKind::Record)?;
+    let local_field = entity_of(&view, b"x", EntityKind::Field)?;
 
     let rows = view
         .occurrences()
@@ -177,9 +178,11 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
         .map_err(|_| TestError::Missing("occurrence decode"))?;
 
     let mut workout_type_count = 0_u32;
+    let mut field_read = false;
     let mut method_call = false;
     let mut system_reference = false;
     let mut same_file_type = false;
+    let mut same_file_field = false;
 
     for row in &rows {
         if row.owner == drive_fn {
@@ -211,6 +214,31 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
                                 return Err(TestError::Missing("oracle confidence"));
                             }
                             workout_type_count += 1;
+                        }
+                        _ => {}
+                    }
+                }
+                backend_semantic::ir::ReferenceKind::FieldAccess => {
+                    match row.occurrence.target {
+                        OccurrenceTarget::Foreign(key) => {
+                            let ForeignOrigin::Package(lineage) = key.origin else {
+                                return Err(TestError::Missing("package foreign origin"));
+                            };
+                            if lineage.ecosystem != "c" || lineage.name != "include/workout.h" {
+                                return Err(TestError::Missing("c:include/workout.h package"));
+                            }
+                            if key.path != "note" || key.display != "note" {
+                                return Err(TestError::Missing("note path/display"));
+                            }
+                            if key.kind != Some(EntityKind::Field) {
+                                return Err(TestError::Missing("field entity kind"));
+                            }
+                            if row.occurrence.confidence
+                                != backend_semantic::ir::OccurrenceConfidence::Oracle
+                            {
+                                return Err(TestError::Missing("oracle confidence"));
+                            }
+                            field_read = true;
                         }
                         _ => {}
                     }
@@ -266,6 +294,17 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
             }
             same_file_type = true;
         }
+        if row.owner == same_file_fn
+            && row.occurrence.kind == backend_semantic::ir::ReferenceKind::FieldAccess
+        {
+            let OccurrenceTarget::Local(target) = row.occurrence.target else {
+                return Err(TestError::Missing("same-file field read must stay Local"));
+            };
+            if target != local_field {
+                return Err(TestError::Missing("local field target"));
+            }
+            same_file_field = true;
+        }
     }
 
     for row in &rows {
@@ -275,6 +314,14 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
             {
                 return Err(TestError::Missing(
                     "system spelling must not retarget to a package key",
+                ));
+            }
+            if matches!(key.origin, ForeignOrigin::Package(_))
+                && key.kind == Some(EntityKind::Field)
+                && key.path == "item"
+            {
+                return Err(TestError::Missing(
+                    "receiver must not retarget to a package field key",
                 ));
             }
         }
@@ -301,6 +348,11 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
             "exactly one cross-file Workout type occurrence on include/workout.h",
         ));
     }
+    if !field_read {
+        return Err(TestError::Missing(
+            "cross-file field read occurrence on include/workout.h:note",
+        ));
+    }
     if !method_call {
         return Err(TestError::Missing(
             "cross-file method call occurrence on include/workout.h:set_note",
@@ -313,6 +365,9 @@ fn cross_file_type_use_joins_on_header_package_key() -> Result<(), TestError> {
     }
     if !same_file_type {
         return Err(TestError::Missing("same-file LocalType type occurrence"));
+    }
+    if !same_file_field {
+        return Err(TestError::Missing("same-file local field occurrence"));
     }
     Ok(())
 }

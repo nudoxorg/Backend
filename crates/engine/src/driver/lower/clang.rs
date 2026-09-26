@@ -2515,10 +2515,20 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let Some(span) = owner_relative_span(owner_span, reference.span) else {
                 continue;
             };
+            let member_field = (reference.kind == ReferenceKind::Member)
+                .then(|| member_field_name_bytes(self.source, reference.span, written))
+                .flatten()
+                .map(|name_bytes| {
+                    (
+                        name_bytes,
+                        member_field_name_span(self.source, reference.span, written),
+                    )
+                });
             if matches!(
                 reference.kind,
                 ReferenceKind::Call | ReferenceKind::Type | ReferenceKind::Template
-            ) {
+            ) || member_field.is_some()
+            {
                 if let ReferenceTarget::Foreign {
                     path: Some(slot), ..
                 } = reference.target
@@ -2536,6 +2546,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                     type_reference_name_bytes(written).unwrap_or(written),
                                     type_reference_name_span(self.source, reference.span, written),
                                 ),
+                                ReferenceKind::Member => member_field.expect("member field"),
                                 _ => unreachable!(),
                             };
                             let Some(span) = owner_relative_span(owner_span, site_span) else {
@@ -2546,6 +2557,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                 ReferenceKind::Type | ReferenceKind::Template => {
                                     Some(EntityKind::Record)
                                 }
+                                ReferenceKind::Member => Some(EntityKind::Field),
                                 _ => unreachable!(),
                             };
                             if let Ok(name) = core::str::from_utf8(name_bytes) {
@@ -2989,6 +3001,137 @@ fn member_call_callee_name<'source>(
     source.get(
         usize::try_from(callee.start).ok()?..usize::try_from(callee.end).ok()?,
     )
+}
+
+/// Maximum bytes after a member-access authority span to recover a field name
+/// from the receiver tail. Keeps the scan on the immediate access, not a later
+/// field in the same statement.
+const MEMBER_FIELD_SCAN_WINDOW: usize = 32;
+
+/// True when one borrowed slice is a single source identifier token.
+fn is_source_identifier(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && !bytes[0].is_ascii_digit()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
+/// Narrows one member-access span to the field-name identifier. When the
+/// authority span already names the field token, returns it unchanged. When
+/// libclang leaves the span on the receiver, recovers `.field` or `->field`
+/// from the bytes immediately after that span.
+fn member_field_name_span(source: &[u8], span: SourceSpan, written: &[u8]) -> SourceSpan {
+    if member_access_is_call_tail(source, span) {
+        return span;
+    }
+    if is_source_identifier(written) {
+        return span;
+    }
+    member_field_name_span_after_receiver(source, span).unwrap_or(span)
+}
+
+/// Borrows the field identifier of one member access when the authority span
+/// already names the field, or when it names the receiver and the field token
+/// follows immediately as `.name` or `->name` that is not a call. Call-shaped
+/// tails and receiver misses never fall back to the receiver spelling.
+fn member_field_name_bytes<'source>(
+    source: &'source [u8],
+    span: SourceSpan,
+    written: &'source [u8],
+) -> Option<&'source [u8]> {
+    if member_access_is_call_tail(source, span) {
+        return None;
+    }
+    if is_source_identifier(written) {
+        return Some(written);
+    }
+    member_field_name_span_after_receiver(source, span).and_then(|field| {
+        source.get(
+            usize::try_from(field.start).ok()?..usize::try_from(field.end).ok()?,
+        )
+    })
+}
+
+/// True when a member-access span is immediately followed by a call argument
+/// list, including `receiver.method(` and `receiver->method(` when libclang
+/// leaves the span on the receiver. libclang also emits a `Member` reference on
+/// the callee name of `receiver.method(...)`, which must stay on the default
+/// projection so the paired `Call` occurrence carries the package key.
+fn member_access_is_call_tail(source: &[u8], span: SourceSpan) -> bool {
+    let tail_start = usize::try_from(span.end).ok();
+    let tail = tail_start.and_then(|start| source.get(start..));
+    let Some(tail) = tail else {
+        return false;
+    };
+    if matches!(
+        tail.iter().find(|byte| !byte.is_ascii_whitespace()),
+        Some(b'(')
+    ) {
+        return true;
+    }
+    member_receiver_call_shape(tail)
+}
+
+/// True when one tail begins with `.name(` or `->name(`.
+fn member_receiver_call_shape(tail: &[u8]) -> bool {
+    let rest = if let Some(rest) = tail.strip_prefix(b".") {
+        rest
+    } else if let Some(rest) = tail.strip_prefix(b"->") {
+        rest
+    } else {
+        return false;
+    };
+    let name_len = rest
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .count();
+    if name_len == 0 {
+        return false;
+    }
+    let Some(after_name) = rest.get(name_len..) else {
+        return false;
+    };
+    matches!(
+        after_name.iter().find(|byte| !byte.is_ascii_whitespace()),
+        Some(b'(')
+    )
+}
+
+/// When libclang maps a field read to the receiver, the field token still
+/// lives in the main-source bytes immediately after that span as `.name` or
+/// `->name`, and the next non-whitespace byte must not be `(`.
+fn member_field_name_span_after_receiver(source: &[u8], span: SourceSpan) -> Option<SourceSpan> {
+    let tail_start = usize::try_from(span.end).ok()?;
+    let window_end = tail_start.saturating_add(MEMBER_FIELD_SCAN_WINDOW).min(source.len());
+    let tail = source.get(tail_start..window_end)?;
+    let (prefix_len, rest) = if let Some(rest) = tail.strip_prefix(b".") {
+        (1, rest)
+    } else if let Some(rest) = tail.strip_prefix(b"->") {
+        (2, rest)
+    } else {
+        return None;
+    };
+    let name_len = rest
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .count();
+    if name_len == 0 {
+        return None;
+    }
+    let after_name = rest.get(name_len..)?;
+    let next = after_name
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())?;
+    if *next == b'(' {
+        return None;
+    }
+    let start = tail_start.checked_add(prefix_len)?;
+    let end = start.checked_add(name_len)?;
+    Some(SourceSpan {
+        start: u32::try_from(start).ok()?,
+        end: u32::try_from(end).ok()?,
+    })
 }
 
 /// Projects an absolute reference span onto its owner's span start. The
