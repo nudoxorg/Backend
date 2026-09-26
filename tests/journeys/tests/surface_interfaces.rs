@@ -330,11 +330,15 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
             command: SurfaceCommand::ForgeAdd {
                 coordinate: forge.clone(),
             },
-            expectation: SurfaceExpectation::Result("forge-package-added"),
+            expectation: SurfaceExpectation::TypedInvalidQuery(&[
+                "forge acquisition authority is not configured in this owner",
+            ]),
         },
         SurfaceCase {
             command: SurfaceCommand::ForgeReference { coordinate: forge },
-            expectation: SurfaceExpectation::Result("forge-package-referenced"),
+            expectation: SurfaceExpectation::TypedInvalidQuery(&[
+                "forge acquisition authority is not configured in this owner",
+            ]),
         },
         SurfaceCase {
             command: SurfaceCommand::Dependents {
