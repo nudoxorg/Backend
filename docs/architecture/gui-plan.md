@@ -215,6 +215,31 @@ Nothing is done until the harness says so and the lead has looked.
    p95 under 8 ms at 1440×900, under 12 ms at 2560×1440.
 9. **Content truth.** Page scenes assert the rendered text against the backend
    reply (signature, doc fragments, member names), not just structure.
+10. **Journeys: the end-to-end acceptance (binding).** A journey is a person's path through the real desktop app (`backend-desktop`, not a gallery stand-in) over a pinned local index.
+    - It is scripted as acts (key, type, hover, click by probe id, resize, text-scale, wait-settle) with **content assertions** at named checkpoints: the probe text that must be on screen, the route, the focused element.
+    - Each journey is filmed (strip + motion report).
+    - It passes only when:
+      - every checkpoint's content is true;
+      - continuity and settle are clean, settle == fresh at the end, and there are no lints on any checkpoint frame;
+      - the budgets hold in release: page open ≤ 120 ms to the first complete frame, search results ≤ 50 ms after the last keystroke, any flight ≤ 1500 ms, p95 frame ≤ 8 ms at 1440×900.
+    - A journey that passes on a stand-in, or that asserts counts instead of content, is not a journey.
+
+    | # | journey | checkpoints (content that must be true) |
+    |---|---|---|
+    | J1 | **first look**: launch → Orbit → your project → a dependency's package page → Start here, stop 1 → its page → ⌘. code → back ×3 | Orbit names your project; the package hero names the package and its pinned version; Start here lists the tour's stops in order; the page hero names stop 1; the code shows its real first line; each back lands on the previous route with focus restored |
+    | J2 | **find**: ⌘K → `toml Value` → ↵ → the shape `Invocation -> list of text` → the chain row → ↵ hold → click `grammar` | the name results show toml's `Value` first; the shape results show `Invocation::positional`, then "or, in steps"; the held plate reads "Invocation *to* list of text, *in two steps*"; the page opens on `Invocation::grammar` |
+    | J3 | **upgrade**: toml's package page → scrub the comb to 1.1.6 → the upgrade lens → a use site → esc to pin | the line reads "viewing 1.1.6 · you pin 0.8.23"; the lens counts 82 added, 2 removed, 103 changed; `from_str` shows as respelled; esc restores the pin with no lens |
+    | J4 | **the map**: from a page, G → the graph flight → R reach → esc → T tour → → → ↵ | the camera lands on the symbol (focus card names it); reach shows "If it changes — …" with nonzero waves; the tour plate reads "toml *in six stops*"; ↵ opens the stop-2 page (`Value`) |
+    | J5 | **failure**: the `ensure_locald` page → the "or fails with" kinds → click `Spawn` → RuntimeError's How it fails → the maker link | the pipe names "Io, Spawn, DaemonExited or StartTimeout" and "MissingExecutable through locald_executable"; the error page's Spawn row lists `ensure_locald`; the maker link opens `ensure_locald` again |
+    | J6 | **weather**: J1 re-run with a resize storm (1440 → 480 → 2560) and text scale 85 → 200 mid-flight, reduced motion on for the second half | the same checkpoints, plus no text cut to "…" where §8.3 forbids it; nothing is offscreen that isn't inside a scroll |
+
+    `facet-gallery journey <name>` runs one journey and writes `journeys/<name>/{strip.png,motion.json,REPORT.txt}`. `verify` gains a `journeys` column.
+
+    **Data.** Journeys run on the desktop harness's fixture index (`apps/desktop/src/harness.rs`, which today indexes `crates/present` and `frontends/rust/fixtures/rich_project`). Its roots grow to cover every journey's subject:
+    - `crates/runtime` (J5);
+    - a fixture project that pins `toml = "0.8.23"` and uses `toml::from_str`, indexed offline from the local registry cache (J2, J3).
+
+    Where the index cannot yet serve a checkpoint's data (release history and diffs, §8.5), the journey reports **BLOCKED (data)** and names the missing reply. It never passes on a stand-in, and the lead routes the gap to the data plane.
 
 ## 4. Phases
 
@@ -432,8 +457,86 @@ drops any group its own anatomy already shows, so each thing is said once per vi
   - Faint dashed tethers run back home. Names from another package carry the package name, and duplicate names carry their module.
   - ↑↓←→ walk the proxies, ↵ goes to the selected proxy (a flight), Esc releases the prism, then backs out.
   - Below 720 px of free width the prism becomes one column.
+- **Reach (R on a focused symbol): what would feel it if this changed.**
+  - Dependents are in-edges (every relation points from the dependent to what it depends on), followed breadth-first for up to 8 waves.
+  - A method passes the change on to its callers. A field or variant passes it to its owner as well, because the shape changed.
+  - Waves are counted per top-level symbol.
+  - The camera frames the source plus the nearest 90 % of what it reaches. The waves then light 240 ms apart: ◆ at 95 / 66 / 34 / 20 % alpha by depth, mint for your code, everything else dimmed.
+  - Faint threads run from the 48 most important first-wave symbols back to the source, and first- and second-wave labels are promoted. The prism steps aside while reach is shown.
+  - The focus card gains one quiet block: "If it changes — 3 direct · 8 within two steps · 151 in all · across 4 packages · 111 in your code", then "most in desktop 104 · present 38 · …".
+  - R again or Esc hides it.
 - **Hover** raises the peek (W-Float) anchored to a moving node; the anchor is re-read every frame.
 - **Find:** `/` or ⌘K; ↵ flies there.
+  - **By shape.** A query with an arrow searches callables by what they take and give, in plain words or Rust:
+    - examples: `path -> maybe text`, `takes bytes gives Value`, `text, number → Span`;
+    - inputs match in any order, the result matches through maybe/fails, and each extra parameter costs a little;
+    - same-shaped overloads fold into one row (`From<String>`, `From<&str>` and `From<Cow<str>>` all read "(text) → Value");
+    - each row shows its shape in words under the name.
+  - **The constellation.** While the find box holds a query, every match (up to 400) is lit in the graph as a periwinkle diamond with a soft halo. Its label is promoted and everything else dims to 42 %, so the answer has a *place*, not just a list. The panel ends with "N lit in the graph, across P packages". Blur or Esc restores the map.
+  - **The empty box teaches.** Focused and empty, the panel shows three quiet rows (click fills the box):
+    - `Value`: a name;
+    - `path -> maybe text`: a shape (what it takes, what it gives);
+    - `Invocation -> list of text`: what you have → what you need, in steps if it takes more than one call.
+
+    Nobody guesses that `->` searches by shape; the box says so once, where the eye already is.
+  - **Traits count.** A value of yours also matches a parameter typed by a trait it implements: `WireSchema -> text` finds `serde_json::to_string(value)` as a one-call answer, through "any Serialize" (it scores below a concrete match). A generic's associated type (`V::Value`, `T::Err`) is "anything", never a same-named type elsewhere.
+  - **In steps (chains).** When fewer than three single calls answer a shape, the panel adds "or, in steps" (or "no one call does it; in steps") with up to three **chains** from what you have to what you need:
+    - `RustEdition -> text` → `Language::from(LanguageProfile::Rust(edition)).name()`;
+    - `Invocation -> list of text` → `invocation.grammar().aliases()`.
+
+    The engine is the Getting one table with a second least-cost pass. It first runs Knuth with your inputs free alongside the plain values (R0). Then a Dijkstra over keys counts only derivations that *consume* what you have. A producer fed by a had key pays:
+    - its own weight;
+    - that key's cost;
+    - each other input's R0 cost + 0.3 (what you must bring along is not free here);
+    - +0.6 for a step outside *home* (the packages of the input and output types).
+
+    Rules that keep chains honest, each found by reading real output:
+    - **No hollow detours.** Never call a method on a value you just wrapped in a variant (`Value::String(t).as_table()` always gives nothing).
+    - **No round trips.** A getter named like a parameter of the constructor that made its receiver is an echo (`HeadExpectation::new(root, sequence).sequence()`).
+    - **Not a step:** views of the same thing (`as_ref`, `borrow`, `deref`, `clone`, `into`, `index`) and comparisons (`eq`, `cmp`, …).
+    - **Plain values alone** (`text -> number`) get no chains: from text, every road leads somewhere.
+    - **Caps:** at most 3 calls; cost ≤ 3.6 and ≤ best + 1.5; one chain per distinct spine.
+
+    A chain row shows its steps as small diamonds (one per call) and one line: `from RustEdition › LanguageProfile::Rust › from › name → text`.
+  - **The road.**
+    - **Selecting a chain row previews its road in the graph.** The road runs through *types as places*: calls on the same type fold into one stop labelled `Language · from › name`, and a free function is its own place.
+      - Your value's stop is a mint hollow diamond, the answer's a larger periwinkle one. Stops are joined by gentle arcs that all bend the same way.
+      - A mint bead carries the value along the road once (380 + 260 ms per arc, sine ease), and stops brighten as it passes.
+      - Everything else dims to 42 %. The chain labels its own stops (right, else left, below or above; always inside the view), and the graph's own label for those nodes is suppressed.
+    - **↵ holds the chain.** The camera flies to frame its stops (wider margin below 640 px). A plate at the foot says "RustEdition *to* text, *in three steps*", then the rail (Getting one's grammar; its lead reads "from your RustEdition", or "from your WireSchema, a Serialize" when a trait carried it). The foot reads "your value is the spine; the rest rides along · ⌥ for code · esc to let go".
+    - ⌥ swaps the rail for the code. In the code, a step that may give nothing reads `?` inside the chain; the answer itself stays maybe.
+- **Start here (T): a package's reading path, computed and flown.** docs.rs lists a crate's items alphabetically; we give the five or six a newcomer should read, in the order they meet them (`graph/tour.js`):
+  - **start here:** the door. A free function used from other packages, preferring one that hands you the heart; failing that, the heart's own most-used maker ("how you get one").
+  - **what you hold:** the heart, the type with the most weight (importance + 0.22·ln(1 + packages that use it) + 0.15 if your code does).
+  - **inside it:** at most two public types the heart's fields and variants are made of.
+  - **what it promises:** the trait with the most implementors + outside users.
+  - **when it fails:** the `…Error` the door or the heart returns, else the weightiest one.
+
+  A package whose idea is a trait (its top trait outweighs the heart by 2× + 5) starts with it ("the idea · 486 types do it"). It adds the second trait when that weighs at least a third as much ("and the other half"), and drops the heart unless it carries a quarter of the trait's weight. The results:
+  - toml: `from_str → Value → Table → Array → Index → Error`;
+  - serde_json: `from_slice → Value → Map → Number → Read → Error`;
+  - serde: `Serialize → Deserialize → Error`.
+
+  A tour needs at least three stops.
+
+  In the graph:
+  - The where-line says "T start here" while a package with a tour is under the camera (packages and modules altitudes).
+  - T starts the tour of the focused symbol's package, else the one under the camera. → / space: next; ←: back; ↵: open the stop's page; esc: end.
+  - Each step is a flight (van Wijk) to the stop at 2.6× its focus width, sitting 12 % above centre because the plate covers the foot.
+  - The road is dashed periwinkle arcs. The legs into and out of the current stop are drawn at 55 %, the rest hinted at 12 %.
+  - Stops are numbered and labelled by the road itself. The current one is a filled periwinkle diamond with a soft halo; past stops are ink, upcoming ones periwinkle outlines.
+  - The plate at the foot reads:
+    - "toml *in six stops* · 2 of 6";
+    - the strip of stops (diamond + name, the current one filled, each a button);
+    - "*what you hold* **Value** everything turns on it", then the lede as prose (markdown marks and link targets dropped);
+    - the foot "→ next · ← back · ↵ open its page · esc end".
+
+  **On the package page** the same tour is a **Start here** strip under the tabs, replacing the old "Start with X, then Y" line (target `PackagePage.png`):
+  - "Start here", then each stop as an 18 px gem, the name (mono) and its role beneath (serif italic), joined by 34 px periwinkle legs;
+  - the first stop is underlined in periwinkle, because that's where you begin;
+  - "T fly it" at the right starts the graph tour;
+  - below 760 px the strip becomes rows: gem, name, role, why;
+  - every stop is a link and peeks on hover.
 - **Where:** a quiet line bottom-left names the package › module under the camera and the altitude.
 - **Trail:** the symbols you visited are joined by a faint mint line. This is the titlebar's thread, drawn on the map.
 
@@ -452,10 +555,57 @@ drops any group its own anatomy already shows, so each thing is said once per vi
   - generics as italic variables, never links.
 
   ⌥ spells the exact source type beside each one. Every named type is a link.
+- **How it fails** (`graph/fails.js`). docs.rs says `Result<Workspace, RuntimeError>` and stops. The index records every mention of a variant in a body (uses/calls/type/has edges).
+  - **Makers and readers.** A mention by a callable that *returns* the error (its `Result<_, E>`, or the package's `type Result<T> = Result<T, E>`) builds that kind: a **maker**. A mention by E's own methods that take `&self` (fmt, source, is_retryable), or by a callable returning something else (`Fault::from_client_error`), only tells kinds apart.
+  - **Spread through calls.** A callable returning E that calls g, which also returns E, can give whatever g gives (`?` carries it up). This is memoised over the call graph; a cycle sees what is known so far.
+  - **On a callable's pipe,** under "or fails with RuntimeError":
+    - the kinds it builds itself, as links ("Io, Spawn, DaemonExited or StartTimeout");
+    - then each group carried up from a call: "MissingExecutable *through* locald_executable";
+    - then "5 of its 10 kinds" (or "any of its 10 kinds").
+  - **On an error type,** a **How it fails** section (after `can`), one row per kind:
+    - the kind (mono, a link; underlined mint when your code tells it apart), then its makers (yours first, in mint, then importance; four, then "+ N");
+    - one column for every row, sized to the longest kind;
+    - below 560 px each row stacks, the makers indented under the kind;
+    - the foot: "12 calls in this world can fail with it · your code tells 1 of its 10 kinds apart".
+  - A struct error (toml's `Error`) has no kinds, so the page shows neither.
 - **`can`:** capabilities in words, marked `derived` (hollow), `written` (solid) or `via Display` (dashed).
   - Implied derives drop out: Copy covers Clone, Eq covers PartialEq, Ord covers PartialOrd and Eq.
   - Example: `copies freely · sorts · hashes · debug-prints · prints · to text`.
-- **The prism** (static): the same groups as the graph, minus those the anatomy already shows. Its gem opens the graph (G).
+- **Getting one** (types) and **Calling it** (callables): how to obtain the thing from plain values, computed rather than written.
+  - The engine is one table of producers: every public callable, variant, open struct literal and `Default`. Their inputs and outputs are keyed by the plain-word types. `From` impls are producers, so conversions come for free.
+  - Plain values (text, path, number, bool, bytes) cost 0. A producer costs one step plus its inputs (+0.45 if it may fail, +0.35 if it may give nothing).
+  - A least-cost derivation over that AND-OR graph (Knuth's generalisation of Dijkstra) gives every type its cheapest recipe. It runs once per package perspective: public items, plus everything inside the target's own package.
+  - The page shows at most three routes, one per distinct maker, ranked:
+    1. the type's own makers first;
+    2. then its package's;
+    3. then helpers elsewhere, preferring fewer arguments;
+    4. a route over 6 steps or 3 cost units longer than the best is dropped.
+  - Same-named makers fold into one route: "from a number · also from yes or no, text, Number and 2 more".
+  - An enum's own variants are the fork above, so the foot says "or pick one of its N variants above".
+  - **Display: a rail.** It reads left to right like a transit line:
+    - the plain-value source in words (`from text what`), then each step as a boxed link, then the intermediate type as a station ◇ (a link), ending in the target's ◆;
+    - the spine follows the costliest input, and the other inputs ride along as `+ a number n` / `+ a DeclarationKind kind`;
+    - `?` marks a step that may fail.
+  - **⌥ spells the code** the way a person writes it: nested steps become `let` bindings named after their type, shared sub-steps are bound once, and `?` marks each fallible step.
+  - For a callable, "Calling it" is the same tree rooted at the callable itself: how to get each argument. It is omitted when every argument is plain.
+  - The foot counts the makers ("257 ways in this world make one"). When nothing public makes one, the section says so in one sentence ("You receive it; the prism shows from where").
+  - Getting one sits above the prism and replaces its "made by" group on type pages.
+- **Its cousins:** the same idea in another package, and the road each way. "How do I turn a toml Value into a serde_json Value" is a classic question that docs cannot answer; the world can.
+  - **Finding cousins.** A cousin is a public top-level struct, enum or union in *another* package with:
+    - the same name and ≥ 3 shared public method names, or
+    - a different name with ≥ 6 shared names at Jaccard ≥ 0.35.
+
+    Names every type has don't count (new, default, from, into, fmt, clone, eq, len, iter, get, serialize, deserialize, …). Same-name cousins rank first, then Jaccard; at most two are shown.
+  - **Each cousin row:**
+    - "**serde_json::Value** · the same idea in serde_json · both have `get_mut`, `as_bool`, `as_str` and 8 more";
+    - then *to it* and *from it*, each a rail from `recipes.convert(i, j)`: the chain engine with single-call answers kept, so trait roads count (toml's Value is a Deserializer, so `serde_json::Value::deserialize(value)?`; serde_json's Value is a Serialize, so `toml::Value::try_from(value)?`);
+    - the lead says whose value it is ("from toml's Value, *a* Deserializer");
+    - with no road: "no road between them in this world".
+  - **Code** spells two same-named types with their crate (`serde_json::Value::…`), and your value's variable is named for its type.
+  - The section renders after first paint (each road costs a derivation) and sits after Does, before In use.
+- **The prism** (static): the same groups as the graph, minus those the anatomy and Getting one already show. Its gem opens the graph (G).
+  - With four or more groups it shows 3 per group.
+  - A one-sided prism fans from the content edge instead of stranding its gem mid-page.
 - **Does:** members grouped by what they do to it (`reads it`, `changes it`, `uses it up`, `makes one`).
   - A by-value receiver on a Copy type is `reads it`.
   - **Look-alikes fold:** ≥ 4 members that share a name prefix and a result become one row ("visit_… (one of bool, i8, … and 16 more) → its Value or fails with E · 22 of them").
@@ -473,11 +623,29 @@ drops any group its own anatomy already shows, so each thing is said once per vi
 - **Graph → page (↵ / double-click):** the focus gem flies (FLIP) into the hero gem while the page rises in (460 ms).
 - **Page → graph (G):** the page lifts away, the camera flies from wherever you last left the map (or from the package's altitude the first time) to the symbol, and the prism gathers on arrival.
 - The version comb in the shelf header (`VersionComb.png`) re-scopes page and graph to a release. In the graph, symbols absent at that release fade and ones added since your pin glow once.
+- **The upgrade lens (the comb scrubbed away from your pin).** docs.rs shows one version in isolation; this shows the *difference* against the version you pin, and against the places your code uses the crate.
+  - **Data.** Releases come from the registry index (every version with its publish time; ticks for versions not on the machine are dimmed, with date only). The API comes from each local version, keyed by stable path with re-exports resolved.
+  - **Diffs** are pinned → each local version and consecutive, each change marked `breaking` or `additive`. `semverSlip` marks breaking changes shipped in a minor (after 1.0) or a patch.
+  - **Uses** are your workspace's use sites of the crate's items, resolved through imports. **Impact** is the uses whose item changed.
+  - **Shelf, under the comb:** "viewing 1.1.6 · you pin 0.8.23 · esc", then one quiet line: "14 breaking · 31 added · 2 of your 9 uses change", plus "breaking in a minor release" when semver slipped.
+  - **Page, above the anatomy:** "Upgrading to 1.1.6" (or "Going back to …").
+    - One line on your code: "2 of the 9 places your code uses toml change".
+    - Up to 4 affected use sites: file:line, the change, and the statement with a periwinkle rule.
+    - Then this symbol's own changes as rows (`added` / `removed` / `changed` / `deprecated` / `variant added` …).
+  - **Signatures in the rows are spelled in the page's plain words**, and a change marks exactly what differs: new parts underlined mint, old parts struck.
+    - When both sides read the same in plain words (a lifetime or spelling-only change), the row says "reads the same in plain words; only its Rust spelling moved" instead of alarming you.
+    - The Rust spelling is in the tooltip and under ⌥.
 
 ### 8.5 Data the index must provide
 - Per package closure: symbols (kind, name, parent, visibility, file:line span, doc first sentence).
 - Members with receiver kind, required/provided, and trait-via.
 - Derives, and resolved impls (trait id + member names).
+- **Impl-block generics with their bounds**, attached to every member of the impl (`impl<R: Read> Deserializer<R>` → `new(read: R)` reads "from any Read", not "from anything"). Getting one and search by shape both depend on it; the prototype's extractor records only item-level generics.
+- **Per dependency:** every release with its publish time and yanked flag (the registry index has them), and the public API of each release present locally.
+  - The API is keyed by stable path, with re-exports resolved to the shortest public alias.
+  - Signatures are normalized: whitespace, trailing commas, `Self` → the owner, and lifetime parameters canonicalized by position.
+  - The workspace's use sites of each dependency's items come from path expressions, imports plus bare names, and turbofish. Method calls on values need type inference and are not yet covered; the lens must say so if asked.
+  - The prototype's `graph/releases.mjs` is the reference implementation, and its header documents the schema.
 - Generics and where-clauses as text.
 - Typed relations with kinds (has, takes, gives, is, derives, impl, calls, uses, type), at member granularity. Rolled-up symbol edges are derived in the view model.
 
