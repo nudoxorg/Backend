@@ -338,7 +338,7 @@ struct Row<'source> {
 struct MacroSite<'source> {
     spelling: &'source [u8],
     span: ByteSpan,
-    resolved: bool,
+    macro_def: Option<ra_ap_hir::Macro>,
 }
 
 /// One lowered type position: the lattice record plus the already-interned
@@ -433,6 +433,8 @@ struct Emitter<'authority, 'analysis, 'source> {
     definitions: Vec<(ra_ap_hir::ModuleDef, u32)>,
     /// Pushed named-field ordinals, for field-access occurrence resolution.
     fields: Vec<(ra_ap_hir::Field, u32)>,
+    /// Pushed macro ordinals, for macro-invocation occurrence resolution.
+    macros: Vec<(ra_ap_hir::Macro, u32)>,
     /// HIR definitions the written syntax walk already materialized; the
     /// HIR module-scope walk emits only the uncovered remainder.
     covered_defs: Vec<ra_ap_hir::ModuleDef>,
@@ -476,6 +478,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             rows: Vec::new(),
             definitions: Vec::new(),
             fields: Vec::new(),
+            macros: Vec::new(),
             covered_defs: Vec::new(),
             covered_fields: Vec::new(),
             covered_impls: Vec::new(),
@@ -916,11 +919,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             // reader searched for — never the whole invocation call, whose
             // argument text can carry arbitrary bytes.
             let span = authority.span(path.syntax())?;
-            let resolved = authority.resolve_macro(&call).is_some();
+            let macro_def = authority.resolve_macro(&call);
             self.macro_sites.push(MacroSite {
                 spelling,
                 span,
-                resolved,
+                macro_def,
             });
         }
         Ok(())
@@ -2114,6 +2117,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         });
         match &declaration.definition {
             RustDefinition::Field(field) => self.fields.push((*field, ordinal)),
+            RustDefinition::Macro(macro_) => self.macros.push((*macro_, ordinal)),
             other => {
                 if let Some(definition) = module_def(other) {
                     self.definitions.push((definition, ordinal));
@@ -2156,6 +2160,21 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             .iter()
             .find(|(known, _)| known == field)
             .map(|(_, ordinal)| *ordinal)
+    }
+
+    /// Looks up the pushed ordinal of one pushed macro when exactly one row
+    /// matches; zero or duplicate handles stay unresolved.
+    fn ordinal_of_macro(&self, macro_: &ra_ap_hir::Macro) -> Option<u32> {
+        let mut ordinal = None;
+        for (known, candidate) in &self.macros {
+            if known == macro_ {
+                if ordinal.is_some() {
+                    return None;
+                }
+                ordinal = Some(*candidate);
+            }
+        }
+        ordinal
     }
 
     /// Picks the innermost pushed row whose span contains `span`.
@@ -3138,11 +3157,14 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         }
         let sites: Vec<MacroSite<'source>> = self.macro_sites.to_vec();
         for site in &sites {
-            let confidence = occurrence_confidence(site.resolved);
+            let confidence = occurrence_confidence(site.macro_def.is_some());
+            let target = site
+                .macro_def
+                .map_or(ResolvedTarget::Definition(None), ResolvedTarget::Macro);
             self.emit_one_occurrence(
                 site.span,
                 ReferenceKind::MacroInvocation,
-                ResolvedTarget::Definition(None),
+                target,
                 confidence,
                 Some(site.spelling),
             )?;
@@ -3239,6 +3261,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         let ordinal = match resolved {
             ResolvedTarget::Definition(Some(definition)) => self.ordinal_of_definition(&definition),
             ResolvedTarget::NamedField(field) => self.ordinal_of_field(&field),
+            ResolvedTarget::Macro(macro_) => self.ordinal_of_macro(&macro_),
             ResolvedTarget::Definition(None) => None,
         };
         let target = match ordinal {
@@ -3488,6 +3511,8 @@ enum ResolvedTarget {
     Definition(Option<ra_ap_hir::ModuleDef>),
     /// A named struct field.
     NamedField(ra_ap_hir::Field),
+    /// A macro definition.
+    Macro(ra_ap_hir::Macro),
 }
 
 /// Which written position of a callable anchor one child lowers from.
@@ -4980,6 +5005,89 @@ mod tests {
         }
         if key.path != "vanish_without_trace" || key.display != "vanish_without_trace" {
             return Err(TestError::Missing("written spelling as the key"));
+        }
+        Ok(())
+    }
+
+    /// A local macro invocation resolves to the pushed macro fact at oracle
+    /// confidence, owned by the containing function.
+    #[test]
+    fn local_macro_invocation_links_to_pushed_macro_fact() -> Result<(), TestError> {
+        let view = lower(
+            "macro_rules! my_macro { () => {}; }\npub fn caller() { my_macro!(); }\n",
+        )?;
+        let my_macro = fact_of(&view, b"my_macro", EntityKind::Macro)?;
+        let caller = fact_of(&view, b"caller", EntityKind::Function)?;
+        let occurrences = occurrences(&view)?;
+        let macro_invocations = occurrences
+            .iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::MacroInvocation)
+            .collect::<Vec<_>>();
+        if macro_invocations.len() != 1 {
+            return Err(TestError::Missing("exactly one macro invocation occurrence"));
+        }
+        let invocation = macro_invocations[0];
+        if invocation.0 != caller {
+            return Err(TestError::Missing("macro invocation owned by caller"));
+        }
+        if invocation.1.target
+            != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(my_macro))
+            || invocation.1.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("local macro target at oracle confidence"));
+        }
+        Ok(())
+    }
+
+    /// An unresolved macro invocation stays syntactic with a cargo-universe
+    /// foreign key carrying the exact written spelling.
+    #[test]
+    fn local_macro_invocation_unresolved_stays_foreign_with_written_spelling() -> Result<(), TestError> {
+        let view = lower("pub fn caller() { not_a_real_macro!(); }\n")?;
+        let occurrences = occurrences(&view)?;
+        let invocation = occurrences
+            .iter()
+            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::MacroInvocation)
+            .ok_or(TestError::Missing("unresolved macro invocation occurrence"))?;
+        if invocation.1.confidence != OccurrenceConfidence::Syntactic {
+            return Err(TestError::Missing("syntactic confidence"));
+        }
+        let backend_semantic::ir::OccurrenceTarget::Foreign(key) = invocation.1.target else {
+            return Err(TestError::Missing("foreign target"));
+        };
+        if !matches!(
+            key.origin,
+            backend_semantic::ir::ForeignOrigin::Universe { ecosystem: "cargo" }
+        ) {
+            return Err(TestError::Missing("cargo-universe origin"));
+        }
+        if key.path != "not_a_real_macro" || key.display != "not_a_real_macro" {
+            return Err(TestError::Missing("written spelling as the key"));
+        }
+        Ok(())
+    }
+
+    /// A resolved standard-library macro this compilation did not push stays
+    /// foreign even when rust-analyzer resolves the call.
+    #[test]
+    fn local_macro_invocation_resolved_but_not_pushed_stays_foreign() -> Result<(), TestError> {
+        let view = lower("pub fn caller() { println!(\"hi\"); }\n")?;
+        let occurrences = occurrences(&view)?;
+        let invocation = occurrences
+            .iter()
+            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::MacroInvocation)
+            .ok_or(TestError::Missing("println macro invocation occurrence"))?;
+        if matches!(invocation.1.target, OccurrenceTarget::Local(_)) {
+            return Err(TestError::Missing("foreign target for unpushed println"));
+        }
+        if invocation.1.confidence != OccurrenceConfidence::Oracle {
+            return Err(TestError::Missing("oracle confidence for resolved println"));
+        }
+        let backend_semantic::ir::OccurrenceTarget::Foreign(key) = invocation.1.target else {
+            return Err(TestError::Missing("foreign target"));
+        };
+        if key.path != "println" || key.display != "println" {
+            return Err(TestError::Missing("println written spelling as the key"));
         }
         Ok(())
     }
