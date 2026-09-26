@@ -109,11 +109,32 @@ def territory(W=780):
     return "".join(out)
 
 
+# Start here: the package's reading path (graph/tour.js), computed not written. docs.rs lists items
+# alphabetically; the page says which few to read, in the order you meet them. T flies it in the graph.
+TOUR = [("trait", "Serialize", "the idea", "486 types do it"),
+        ("trait", "Deserialize", "and the other half", "412 types do it"),
+        ("enum", "Error", "when it fails", "")]
+
+
+def start_here(width):
+    stops = "".join(
+        (f'<span class="tl"></span>' if i else "")
+        + f'<a class="ts{" on" if i == 0 else ""}">{gem(k, 18)}<span class="tx"><b>{esc(n)}</b><em>{esc(role)}</em></span></a>'
+        for i, (k, n, role, _why) in enumerate(TOUR))
+    rows = "".join(
+        f'<a class="tr">{gem(k, 18)}<b>{esc(n)}</b><em>{esc(role)}</em><span>{esc(why)}</span></a>'
+        for (k, n, role, why) in TOUR)
+    fly = '<span class="fly"><kbd>T</kbd>fly it</span>'
+    if width >= 760:
+        return f'<div class="shere"><span class="sh">Start here</span><div class="strip">{stops}</div>{fly}</div>'
+    return f'<div class="shere col"><div class="shh"><span class="sh">Start here</span>{fly}</div><div class="rows">{rows}</div></div>'
+
+
 def folio(width):
     tw = max(300, min(800, width - 96))
     return ('<div class="cfol" style="max-width:896px">' + hero() + releases()
             + calm.tabs(["Map", "Readme", "Depends", "Used by", "Changes"])
-            + '<div class="start">Start with <code>Deserialize</code>, then <code>derive</code>.</div>'
+            + start_here(width)
             + territory(tw) + '</div>')
 
 
@@ -125,8 +146,26 @@ CSS = """
 .crel .ticks i.yours{background:var(--mint);opacity:.6}
 .crel .ccap{display:flex;justify-content:space-between;align-items:baseline;font:400 12.5px var(--ui);color:var(--ink3)}
 .crel .ccap .mono{font:400 11px var(--mono);color:var(--ink4)}.crel .ccap b{color:var(--mint);font-weight:600}
-.start{font:400 13px var(--ui);color:var(--ink3);margin-bottom:-12px}
-.start code{font:500 12.5px var(--mono);color:var(--ink1)}
+.shere{display:flex;align-items:flex-start;gap:22px;margin-bottom:-8px}
+.shere .sh{font:400 13px var(--ui);color:var(--ink3);padding-top:1px;white-space:nowrap}
+.shere .strip{display:flex;align-items:flex-start;flex-wrap:wrap;row-gap:12px;min-width:0}
+.shere .ts{display:flex;align-items:flex-start;gap:9px;cursor:pointer}
+.shere .ts .gem{flex:none;margin-top:-1px}
+.shere .ts .tx{display:flex;flex-direction:column;gap:2px}
+.shere .ts b{font:500 13px var(--mono);color:var(--ink1)}
+.shere .ts.on b{color:var(--ink0);box-shadow:inset 0 -1.5px 0 var(--peri)}
+.shere .ts em{font:italic 400 13px var(--serif,"Newsreader"),serif;color:var(--ink3)}
+.shere .tl{flex:none;width:34px;height:1px;margin:9px 12px 0;background:var(--peri-line,rgba(147,162,250,.35))}
+.shere .fly{margin-left:auto;font:400 12px var(--ui);color:var(--ink4);white-space:nowrap;padding-top:1px}
+.shere kbd{font:500 10.5px var(--mono);color:var(--ink3);box-shadow:inset 0 0 0 1px var(--line2);padding:0 5px;margin-right:6px}
+.shere.col{flex-direction:column;gap:10px}
+.shere.col .shh{display:flex;align-items:baseline;width:100%}
+.shere .rows{display:flex;flex-direction:column;gap:9px;width:100%}
+.shere .tr{display:grid;grid-template-columns:18px auto auto minmax(0,1fr);align-items:baseline;column-gap:10px}
+.shere .tr .gem{align-self:center}
+.shere .tr b{font:500 13px var(--mono);color:var(--ink1)}
+.shere .tr em{font:italic 400 13px var(--serif,"Newsreader"),serif;color:var(--ink3)}
+.shere .tr span{font:400 12px var(--ui);color:var(--ink4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .terr{position:relative}
 .terr .reg{position:absolute;background:rgba(255,255,255,.018);box-shadow:inset 0 0 0 1px var(--line1);padding:8px 8px;overflow:hidden}
 .terr .reg.hov{box-shadow:inset 0 0 0 1px var(--line3)}
