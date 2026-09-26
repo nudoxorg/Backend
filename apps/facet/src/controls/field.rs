@@ -8,9 +8,10 @@
 //! The caret is mint, the selection periwinkle, the placeholder `ink3`.
 //!
 //! The select trigger is the same plate holding a mark, the chosen value and
-//! a chevron that turns over while its menu is open. The menu itself is a
-//! float (`facet::overlay::float`, W-Float); the trigger only reports that
-//! it wants one.
+//! a chevron that turns over while its menu is open. Given its choices
+//! ([`Select::options`], [`Select::menu`]) it opens them itself as an
+//! `overlay::menu` below the plate (a press, ↵, Space or ↓); the float layer
+//! (W-Float) owns the menu, its keys and its dismissal.
 
 use super::button::{Handler, sunk, wire};
 use super::state::{Look, Touch, hover_zone, track};
@@ -19,15 +20,19 @@ use crate::Set;
 use crate::icons::{self, Icon, IconSize, Lang, ui};
 use crate::measure::{Control, Measure, Space};
 use crate::motion::spec;
+use crate::overlay::Side;
+use crate::overlay::menu::{self, Menu, MenuItem};
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
 use gpui::{
-    App, ElementId, Entity, Focusable, Hsla, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, SharedString, Styled, Transformation, Window, div, px, radians,
+    App, ElementId, Entity, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, RenderOnce, SharedString, Styled, Transformation, Window, div, px,
+    radians,
 };
 use gpui_component::input::{Input, InputState};
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Points the text engine's colours at the active palette: the caret mint,
 /// the selection periwinkle, text `ink0`, the placeholder `ink3`. Writes only
@@ -237,6 +242,7 @@ pub struct Select {
     look: Look,
     measure: Measure,
     on_open: Option<Handler>,
+    menu: Option<Menu>,
 }
 
 /// A select trigger reading `value`, sized for `measure`.
@@ -252,6 +258,7 @@ pub fn select(id: impl Into<ElementId>, value: impl Into<SharedString>, measure:
         look: Look::LIVE,
         measure: *measure,
         on_open: None,
+        menu: None,
     }
 }
 
@@ -291,12 +298,38 @@ impl Select {
         self
     }
 
-    /// Called on click, Enter or Space: open (or close) the menu.
+    /// Called on click, Enter or Space when the trigger has no menu of its
+    /// own (the caller opens something).
     #[must_use]
     pub fn on_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(handler));
         self
     }
+
+    /// Its menu: a press, ↵, Space or ↓ opens it below the plate on the
+    /// float layer; the chevron turns over while it is open. The menu
+    /// closes itself on a choice.
+    #[must_use]
+    pub fn menu(mut self, menu: Menu) -> Self {
+        self.menu = Some(menu);
+        self
+    }
+
+    /// Its choices as a plain menu of labels; `on_choose` gets the index.
+    #[must_use]
+    pub fn options<S: Into<SharedString>>(
+        self,
+        options: impl IntoIterator<Item = S>,
+        on_choose: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.menu(Menu::new(options.into_iter().map(MenuItem::new).collect(), on_choose))
+    }
+}
+
+/// The float key of the menu a select trigger `id` opens.
+#[must_use]
+pub fn select_menu_key(id: &ElementId) -> ElementId {
+    ElementId::NamedChild(Arc::new(id.clone()), "menu".into())
 }
 
 impl RenderOnce for Select {
@@ -310,6 +343,21 @@ impl RenderOnce for Select {
         let height = measure.control(Control::Medium) + px(2.0 * measure.scale());
         let s = f32::from(height) / 32.0;
         let chamfer = 9.0 * s;
+        // With a menu of its own, the trigger opens it and reads its state
+        // from the float layer.
+        let menu_key = select_menu_key(&id);
+        let open = self.open || (self.menu.is_some() && crate::overlay::float::is_open(&menu_key, window, cx));
+        let open_menu: Option<Handler> = self.menu.clone().map(|menu| {
+            let frame = touch.frame.clone();
+            let focus = touch.focus.clone();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                // The trigger holds focus first, so the menu hands it back
+                // here when it closes (a press opens before the click would
+                // have focused it).
+                window.focus(&focus, cx);
+                menu::open(menu_key.clone(), frame.get(), Side::Below, menu.clone(), window, cx);
+            }) as Handler
+        });
 
         let hover = motion.animate(
             track(&id, "hover"),
@@ -327,14 +375,14 @@ impl RenderOnce for Select {
         );
         let lit = motion.animate(
             track(&id, "open"),
-            if self.open || touch.focused { 1.0 } else { 0.0 },
+            if open || touch.focused { 1.0 } else { 0.0 },
             spec::HOVER,
             window,
             cx,
         );
         let turn = motion.animate(
             track(&id, "turn"),
-            if self.open { 1.0 } else { 0.0 },
+            if open { 1.0 } else { 0.0 },
             spec::LIFT,
             window,
             cx,
@@ -384,10 +432,31 @@ impl RenderOnce for Select {
             .child(chevron)
             .id(id)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
-        let plate = if active {
-            wire(plate, &touch, self.on_open).into_any_element()
-        } else {
-            plate.into_any_element()
+        let plate = match (active, open_menu) {
+            (false, _) => plate.into_any_element(),
+            (true, None) => wire(plate, &touch, self.on_open).into_any_element(),
+            (true, Some(open_menu)) => {
+                // The pointer opens on press, as menus do (a press on the
+                // open trigger closes it: the layer's outside press, and
+                // this same press does not reopen it); keys open on ↵,
+                // Space and ↓.
+                let pressed = open_menu.clone();
+                let keyed = open_menu.clone();
+                let plate = plate
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| pressed(window, cx))
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "down" && !event.keystroke.modifiers.modified() {
+                            keyed(window, cx);
+                            cx.stop_propagation();
+                        }
+                    });
+                let by_key: Handler = Rc::new(move |window: &mut Window, cx: &mut App| {
+                    if window.last_input_was_keyboard() {
+                        open_menu(window, cx);
+                    }
+                });
+                wire(plate, &touch, Some(by_key)).into_any_element()
+            }
         };
         hover_zone(plate, &touch, chamfer, active)
     }

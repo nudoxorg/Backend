@@ -7,8 +7,9 @@
 //!   script — hover (sweep), press, keyboard focus, a switch, a check, a seg
 //!   glide, a version-comb scrub, a splitter drag past both limits and a
 //!   release, ⌘ held — for filmstrips and motion reports;
-//! - `version-comb`: the version comb over 24, 3 and 400 releases (the book
-//!   plate of the shelf), scrubbed by pointer and keys;
+//! - `version-comb`: the version comb target's five states in shelf books
+//!   (17 and ~400 releases) plus a three-release package, scrubbed by pointer
+//!   and keys;
 //! - `controls-storm`: a seeded storm over the live controls, then a settle,
 //!   then a remount of the same state under fresh ids (settle == fresh).
 //!
@@ -23,22 +24,23 @@ use super::state::Look;
 use super::sweep::sweep;
 use super::toggle::Tri;
 use super::{
-    Intent, KbdVoice, PanelSide, Release, ReleaseId, SplitEvent, SplitModel, Step, button, check,
-    density_toggle, field, icon_button, kbd, keys, radio, seg, select, split_width, splitter,
-    switch, theme_toggle, version_comb,
+    Intent, KbdVoice, PanelSide, Release, ReleaseId, ReleaseStep, SplitEvent, SplitModel, Step,
+    button, check, density_toggle, field, icon_button, kbd, keys, radio, seg, select, split_width,
+    splitter, step_release, switch, theme_toggle, version_comb,
 };
 use crate::Set;
 use crate::gallery::{Scene, declare_script};
 use crate::icons::{Icon, Lang};
-use crate::measure::{Control, Density, Measure};
+use crate::measure::{Control, Density, Measure, Space};
 use crate::paint::gallery::{canvas, doc, role, section, text};
 use crate::paint::{Bevel, Chamfer, Plate, cut, ground};
 use crate::probe;
 use crate::theme::ActiveFacet;
 use crate::tokens::{Face, TypeRole, ty};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Context, Div, ElementId, Entity, IntoElement,
-    ParentElement, Render, SharedString, Styled, WeakEntity, Window, div, px,
+    AnyElement, AnyView, App, AppContext, Context, Div, ElementId, Entity, FocusHandle,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, ScrollHandle,
+    SharedString, Size, StatefulInteractiveElement, Styled, WeakEntity, Window, div, px,
 };
 use gpui_component::input::InputState;
 use std::rc::Rc;
@@ -71,12 +73,23 @@ pub(crate) const SCENES: &[Scene] = &[
     },
     Scene {
         id: "version-comb",
-        title: "The version comb over 24 (in the book plate), 3 and 400 releases: hover tips, \
-                drag scrub, keys, the lens over dense history, the way back to your pin",
-        size: (620, 460),
+        title: "The version comb (VersionComb.png): at rest, hovering, scrubbed, 400 releases at \
+                rest and under the lens, 3 releases; the default script scrubs by pointer and keys",
+        size: (1000, 900),
         build: |window, cx| {
             declare_script(COMB_SCRIPT, cx);
             Board::view(Mode::Comb, window, cx)
+        },
+    },
+    Scene {
+        id: "controls-storm",
+        title: "The live controls under a storm (`facet-gallery storm --scene controls-storm`): \
+                every live control tells the probe what it shows; the storm aims at them, \
+                holds ⌘, steps the comb, opens the select, and checks settle == fresh",
+        size: (1200, 640),
+        build: |window, cx| {
+            crate::gallery::storm::declare_keys(&["home", "end", "pageup", "pagedown", "[", "]"], cx);
+            Board::view(Mode::Storm, window, cx)
         },
     },
 ];
@@ -127,31 +140,40 @@ release cmd @6700
 /// The version-comb scene's script (see [`comb_scene`] for the layout).
 const COMB_SCRIPT: &str = "
 move 10,10 @0
-# hover along the 24-release comb in the book plate: ticks rise, tips name them
-move 120,112 @200
-move 180,112 @500
-move 226,112 @800
-# press and drag back through history, release away from the pin
-down left 226,112 @1100
-move 200,112 @1160
-move 160,112 @1240
-move 120,112 @1320
-up left 120,112 @1400
+# present, at rest: hover along the comb, rest on 0.3.0 (its tip opens below)
+move 120,200 @200
+move 195,200 @500
+# press on 0.3.0 and drag back through history, release on 0.2.1
+down left 195,200 @1400
+move 170,200 @1480
+move 150,200 @1560
+move 136,200 @1640
+up left 136,200 @1720
 # keys: one release, one minor, the newest, then Esc back to the pin
-key right @1700
-key pageup @2000
-key end @2300
-key escape @2600
-# the 400-release comb: the lens opens under the pointer and slides at its edge
-move 60,360 @3000
-move 100,360 @3200
-move 130,360 @3400
-move 160,360 @3600
-move 240,360 @3800
-down left 240,360 @4000
-move 270,360 @4100
-up left 270,360 @4200
-move 10,10 @4600
+key right @2000
+key pageup @2300
+key end @2600
+key escape @2900
+# tokio, 400 releases: the lens opens under the pointer, slides at its edge
+move 70,460 @3300
+move 100,460 @3500
+move 130,460 @3700
+move 160,460 @3900
+move 240,460 @4100
+down left 240,460 @4300
+move 260,460 @4400
+up left 260,460 @4500
+# three releases: hover one, press another
+move 804,460 @4900
+click left 686,460 @5300
+key escape @5700
+move 10,10 @6100
+# the page, not a comb: `]` twice and `[` once step toml; its comb echoes
+click left 960,880 @6300
+key ] @6500
+key ] @7300
+key [ @8100
+move 10,10 @9800
 ";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,6 +182,9 @@ enum Mode {
     States,
     Live,
     Comb,
+    /// The live controls in a flow that wraps and scrolls at any window
+    /// size, keyboard focus kept on screen (the storm's scene).
+    Storm,
 }
 
 /// Every scene's state: what the controls show and change.
@@ -172,11 +197,22 @@ struct Board {
     lens: usize,
     density: usize,
     theme: usize,
-    histories: [Rc<[Release]>; 3],
-    pins: [usize; 3],
-    viewing: [usize; 3],
+    histories: [Rc<[Release]>; 4],
+    pins: [usize; 4],
+    viewing: [usize; 4],
+    /// The toml history's releases that touch your code.
+    toml_touches: Vec<usize>,
     split: SplitModel,
-    select_open: bool,
+    /// The live selects' language (an index into [`LANGS`]).
+    language: usize,
+    /// The page itself: `[` / `]` step the page's package (toml) from
+    /// anywhere a control does not take them.
+    page: FocusHandle,
+    /// The storm flow's cells (each holds one control), its scroll, and the
+    /// (cell, window size) it last scrolled keyboard focus into view for.
+    cells: Vec<FocusHandle>,
+    scroll: ScrollHandle,
+    followed: Option<(usize, Size<Pixels>)>,
 }
 
 impl Board {
@@ -196,7 +232,14 @@ impl Board {
             })
         })
         .collect();
-        cx.new(|_| Self {
+        // The target's tokio pins 1.38.1.
+        let tokio = tokio();
+        let toml = toml();
+        let tokio_pin = tokio
+            .iter()
+            .position(|release| release.version.as_ref() == "1.38.1")
+            .unwrap_or(0);
+        let board = cx.new(|cx| Self {
             mode,
             inputs,
             switch_on: false,
@@ -205,13 +248,22 @@ impl Board {
             lens: 0,
             density: 0,
             theme: 1,
-            histories: [history(24, (0, 1, 0)), history(3, (2, 0, 0)), history(400, (0, 1, 0))],
-            pins: [19, 1, 311],
-            viewing: [19, 1, 311],
+            histories: [present(), young(), tokio.clone(), toml.0.clone()],
+            pins: [16, 1, tokio_pin, toml.1],
+            viewing: [16, 1, tokio_pin, toml.1],
+            toml_touches: toml.2.clone(),
             split: SplitModel::shelf(264.0, false),
-            select_open: false,
-        })
-        .into()
+            language: 0,
+            page: cx.focus_handle(),
+            cells: (0..STORM_CELLS).map(|_| cx.focus_handle()).collect(),
+            scroll: ScrollHandle::new(),
+            followed: None,
+        });
+        if mode == Mode::Comb {
+            let page = board.read(cx).page.clone();
+            window.focus(&page, cx);
+        }
+        board.into()
     }
 }
 
@@ -223,10 +275,32 @@ impl Render for Board {
             Mode::States => states(self, window, cx),
             Mode::Live => live(self, &me, window, cx),
             Mode::Comb => comb_scene(self, &me, cx),
+            Mode::Storm => storm_flow(self, &me, window, cx),
         };
+        let page = cx.entity().downgrade();
         // The float layer (tips, menus) is the root's last child.
         div()
             .size_full()
+            .track_focus(&self.page)
+            // `[` / `]` from anywhere: the page's package steps through its
+            // releases by the comb's own steps; its comb echoes the move.
+            .on_key_down(move |event: &KeyDownEvent, _window, cx| {
+                let step = match event.keystroke.key.as_str() {
+                    "[" => ReleaseStep::Older,
+                    "]" => ReleaseStep::Newer,
+                    _ => return,
+                };
+                let _ = page.update(cx, |board, cx| {
+                    if board.mode != Mode::Comb {
+                        return;
+                    }
+                    if let Some(next) = step_release(&board.histories[3], board.viewing[3], step) {
+                        board.viewing[3] = next;
+                        cx.notify();
+                    }
+                });
+                cx.stop_propagation();
+            })
             .child(content)
             .child(crate::overlay::float::layer(window, cx))
     }
@@ -246,6 +320,25 @@ fn with(
     }
 }
 
+/// The ecosystems a live select chooses among.
+const LANGS: [(Lang, &str); 7] = [
+    (Lang::Rust, "Rust"),
+    (Lang::Typescript, "TypeScript"),
+    (Lang::Python, "Python"),
+    (Lang::Go, "Go"),
+    (Lang::Java, "Java"),
+    (Lang::Csharp, "C#"),
+    (Lang::Cpp, "C++"),
+];
+
+/// A live select over [`LANGS`]: it opens its own menu.
+fn language_select(id: &'static str, board: &Board, me: &WeakEntity<Board>, measure: &Measure) -> super::Select {
+    let (lang, label) = LANGS[board.language.min(LANGS.len() - 1)];
+    select(id, label, measure)
+        .lang(lang)
+        .options(LANGS.map(|(_, label)| label), with_index(me, |board, index| board.language = index))
+}
+
 /// A handler taking an index.
 fn with_index(
     me: &WeakEntity<Board>,
@@ -260,43 +353,96 @@ fn with_index(
     }
 }
 
-/// A release history of `n` releases from `start`, oldest first: patches,
-/// a minor every nine, a major every ninety-seven, one release a week.
-fn history(n: usize, start: (u32, u32, u32)) -> Rc<[Release]> {
-    let (mut major, mut minor, mut patch) = start;
-    (0..n)
-        .map(|i| {
-            let step = if i == 0 {
-                Step::Minor
-            } else if i % 97 == 0 {
-                major += 1;
-                minor = 0;
-                patch = 0;
-                Step::Major
-            } else if i % 9 == 0 {
-                minor += 1;
-                patch = 0;
-                Step::Minor
-            } else {
-                patch += 1;
-                Step::Patch
-            };
-            let weeks = n - 1 - i;
+/// Releases from their versions (oldest first), one every two weeks.
+fn releases_of(versions: &[String]) -> Rc<[Release]> {
+    let n = versions.len();
+    versions
+        .iter()
+        .enumerate()
+        .map(|(i, version)| {
+            let weeks = (n - 1 - i) * 2;
             let age = match weeks {
                 0 => "this week".to_owned(),
-                1 => "last week".to_owned(),
                 2..=8 => format!("{weeks} weeks ago"),
                 9..=103 => format!("{} months ago", weeks * 7 / 30),
                 _ => format!("{} years ago", weeks / 52),
             };
             Release {
-                id: ReleaseId(format!("r{i}").into()),
-                version: format!("{major}.{minor}.{patch}").into(),
-                step,
+                id: ReleaseId(version.clone().into()),
+                version: version.clone().into(),
+                step: Step::of(version),
                 age: age.into(),
             }
         })
         .collect()
+}
+
+/// `present`'s seventeen releases (the target's).
+fn present() -> Rc<[Release]> {
+    let versions = [
+        "0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.2.0", "0.2.1", "0.2.2", "0.2.3", "0.2.4", "0.3.0",
+        "0.3.1", "0.3.2", "0.3.3", "0.3.4", "0.4.0", "0.4.1", "0.4.2",
+    ];
+    releases_of(&versions.map(str::to_owned))
+}
+
+/// `toml` from W-Data's release fixture (120 releases, your pin 0.8.23):
+/// the releases, the pin, and the releases whose move from the pin touches
+/// your uses (`Crate::impact(pinned, v)` not empty).
+fn toml() -> (Rc<[Release]>, usize, Vec<usize>) {
+    let Some(krate) = crate::data::release::fixture::get("toml") else {
+        return (Rc::from(Vec::new()), 0, Vec::new());
+    };
+    let date = |at: &str| {
+        let mut parts = at.get(..10).unwrap_or("0-0-0").split('-').map(|p| p.parse::<i64>().unwrap_or(0));
+        let (y, m, d) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+        y * 372 + m * 31 + d
+    };
+    let newest = krate.versions.last().map_or(0, |v| date(&v.at));
+    let releases: Rc<[Release]> = krate
+        .versions
+        .iter()
+        .map(|v| {
+            let days = newest - date(&v.at);
+            let age = match days {
+                0..=6 => "this week".to_owned(),
+                7..=59 => format!("{} weeks ago", days / 7),
+                60..=729 => format!("{} months ago", days / 31),
+                _ => format!("{} years ago", days / 372),
+            };
+            Release {
+                id: ReleaseId(v.v.clone()),
+                version: v.v.clone(),
+                step: Step::of(&v.v),
+                age: age.into(),
+            }
+        })
+        .collect();
+    let pin = krate.versions.iter().position(|v| v.v == krate.pinned).unwrap_or(0);
+    let touches = krate
+        .versions
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| !krate.impact(&krate.pinned, &v.v).is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    (releases, pin, touches)
+}
+
+/// A young package: three releases.
+fn young() -> Rc<[Release]> {
+    releases_of(&["1.0.0", "1.0.1", "1.1.0"].map(str::to_owned))
+}
+
+/// A long history (the target's `tokio`): 1.0.0 to 1.40.x, about 400.
+fn tokio() -> Rc<[Release]> {
+    let mut versions = Vec::new();
+    for minor in 0..41_usize {
+        for patch in 0..[9, 12, 6, 14, 8, 11][minor % 6] {
+            versions.push(format!("1.{minor}.{patch}"));
+        }
+    }
+    releases_of(&versions)
 }
 
 /// A handler for comb `slot` that moves the board's viewed release.
@@ -318,6 +464,8 @@ fn on_version(
     }
 }
 
+const CELL: TypeRole = role(Face::Ui, 500.0, 12.0, 16.0, 0.0);
+const TITLE: TypeRole = role(Face::Display, 700.0, 30.0, 34.0, -0.02);
 const CLABEL: TypeRole = role(Face::Mono, 400.0, 10.5, 12.0, 0.0);
 const CCAP: TypeRole = role(Face::Serif, 400.0, 12.5, 18.0, 0.0);
 const SLAB: TypeRole = role(Face::Ui, 500.0, 14.0, 18.0, 0.0);
@@ -581,17 +729,12 @@ fn inputs_section(board: &Board, me: &WeakEntity<Board>, measure: &Measure, cx: 
                 cx,
             ))
             .child(step(
-                select("sel-open", "Python", m)
-                    .lang(Lang::Python)
-                    .open(!board.select_open),
+                select("sel-open", "Python", m).lang(Lang::Python).open(true),
                 "select · open",
                 cx,
             ))
             .child(step(
-                select("sel-live", "TypeScript", m)
-                    .lang(Lang::Typescript)
-                    .open(board.select_open)
-                    .on_open(with(me, |board| board.select_open = !board.select_open)),
+                language_select("sel-live", board, me, m),
                 "select · live",
                 cx,
             )),
@@ -894,15 +1037,177 @@ fn live(board: &Board, me: &WeakEntity<Board>, window: &mut Window, cx: &mut Con
             .top(px(y))
             .child(probe::measure(key, el))
     };
-    let split_id = ElementId::from("live-split");
-    let width = split_width(&split_id, &board.split, PanelSide::Left, window, cx);
-    let panel = div()
+    let panel = split_panel(board, me, &m, window, cx)
         .absolute()
         .left(px(600.0))
         .top(px(300.0))
         .w(px(560.0))
-        .h(px(240.0))
+        .h(px(240.0));
+    div()
+        .size_full()
+        .relative()
+        .bg(palette.g1)
+        .child(ground())
+        .child(at(
+            60.0,
+            80.0,
+            "live-button",
+            button("live-add", "Add package", &m)
+                .glyph(Glyph::Plus)
+                .key("A")
+                .into_any_element(),
+        ))
+        .child(at(
+            300.0,
+            80.0,
+            "live-icon",
+            icon_button("live-shelf", Icon::SideL, "Shelf", &m)
+                .key("\\")
+                .into_any_element(),
+        ))
+        .child(at(400.0, 80.0, "live-switch", live_switch(board, me, &m)))
+        .child(at(560.0, 80.0, "live-check", live_check(board, me, &m)))
+        .child(at(680.0, 80.0, "live-radio", live_radio(board, me, &m)))
+        .child(at(800.0, 80.0, "live-seg", live_seg(board, me, &m)))
+        .child(at(60.0, 210.0, "live-comb", live_comb(board, me, &m.within(px(236.0)))))
+        .child(at(
+            60.0,
+            300.0,
+            "live-field",
+            div()
+                .w(px(280.0))
+                .child(field("live-field", &board.inputs[0], &m).icon(Icon::Filter))
+                .into_any_element(),
+        ))
+        .child(at(
+            60.0,
+            380.0,
+            "live-select",
+            language_select("live-select", board, me, &m).into_any_element(),
+        ))
+        .child(panel)
+        .into_any_element()
+}
+
+/// How many cells the storm flow holds.
+const STORM_CELLS: usize = 10;
+
+/// The live controls as a flow that wraps to any window and scrolls, for
+/// storms: whatever holds keyboard focus is scrolled into view when focus
+/// moves or the window changes size, so focus is never left off screen.
+fn storm_flow(board: &mut Board, me: &WeakEntity<Board>, window: &mut Window, cx: &mut Context<Board>) -> AnyElement {
+    let facet = cx.facet();
+    let palette = cx.palette();
+    let viewport = window.viewport_size();
+    let m = facet.measure(viewport.width);
+    let s = m.scale();
+    if let Some(cell) = board.cells.iter().position(|cell| cell.contains_focused(window, cx))
+        && board.followed != Some((cell, viewport))
+    {
+        board.scroll.scroll_to_item(cell);
+        board.followed = Some((cell, viewport));
+    }
+    let controls: [(&'static str, AnyElement); STORM_CELLS] = [
+        (
+            "live-button",
+            button("live-add", "Add package", &m).glyph(Glyph::Plus).key("A").into_any_element(),
+        ),
+        (
+            "live-icon",
+            icon_button("live-shelf", Icon::SideL, "Shelf", &m).key("\\").into_any_element(),
+        ),
+        ("live-switch", live_switch(board, me, &m)),
+        ("live-check", live_check(board, me, &m)),
+        ("live-radio", live_radio(board, me, &m)),
+        ("live-seg", live_seg(board, me, &m)),
+        ("live-comb", live_comb(board, me, &m.within(px(236.0) * s))),
+        (
+            "live-field",
+            div()
+                .w(px(280.0) * s)
+                .child(field("live-field", &board.inputs[0], &m).icon(Icon::Filter))
+                .into_any_element(),
+        ),
+        ("live-select", language_select("live-select", board, me, &m).into_any_element()),
+        (
+            "split-row",
+            split_panel(board, me, &m, window, cx)
+                .w(px(480.0) * s)
+                .h(px(160.0) * s)
+                .into_any_element(),
+        ),
+    ];
+    let gap = m.space(Space::Roomy) * 2.0;
+    div()
+        .id("storm-flow")
+        .size_full()
+        .overflow_y_scroll()
+        .track_scroll(&board.scroll)
+        .bg(palette.g1)
+        .p(gap)
         .flex()
+        .flex_wrap()
+        .content_start()
+        .items_center()
+        .gap(gap)
+        .children(controls.into_iter().zip(&board.cells).map(|((key, control), cell)| {
+            div().track_focus(cell).child(probe::measure(key, control))
+        }))
+        .into_any_element()
+}
+
+fn live_switch(board: &Board, me: &WeakEntity<Board>, m: &Measure) -> AnyElement {
+    switch("live-switch", board.switch_on, m)
+        .label("derive")
+        .on_toggle(with(me, |board| board.switch_on = !board.switch_on))
+        .into_any_element()
+}
+
+fn live_check(board: &Board, me: &WeakEntity<Board>, m: &Measure) -> AnyElement {
+    check("live-check", board.check, m)
+        .label("Debug")
+        .on_toggle(with(me, |board| {
+            board.check = if board.check == Tri::On { Tri::Off } else { Tri::On };
+        }))
+        .into_any_element()
+}
+
+fn live_radio(board: &Board, me: &WeakEntity<Board>, m: &Measure) -> AnyElement {
+    radio("live-radio", board.radio == 1, m)
+        .label("Pin")
+        .on_toggle(with(me, |board| board.radio = 1))
+        .into_any_element()
+}
+
+fn live_seg(board: &Board, me: &WeakEntity<Board>, m: &Measure) -> AnyElement {
+    seg("live-seg", m)
+        .label("Reference")
+        .key("1")
+        .label("Relations")
+        .key("2")
+        .label("Usage")
+        .key("3")
+        .selected(board.lens)
+        .on_select(with_index(me, |board, index| board.lens = index))
+        .into_any_element()
+}
+
+fn live_comb(board: &Board, me: &WeakEntity<Board>, m: &Measure) -> AnyElement {
+    version_comb("live-comb", board.histories[0].clone(), m)
+        .pinned(board.pins[0])
+        .selected(board.viewing[0])
+        .on_select(on_version(me, 0))
+        .into_any_element()
+}
+
+/// A pane beside the shelf, its width the splitter's.
+fn split_panel(board: &Board, me: &WeakEntity<Board>, m: &Measure, window: &mut Window, cx: &mut Context<Board>) -> Div {
+    let palette = cx.palette();
+    let split_id = ElementId::from("live-split");
+    let width = split_width(&split_id, &board.split, PanelSide::Left, window, cx);
+    div()
+        .flex()
+        .overflow_hidden()
         .border_1()
         .border_color(palette.line1.hsla())
         .child(
@@ -917,7 +1222,7 @@ fn live(board: &Board, me: &WeakEntity<Board>, window: &mut Window, cx: &mut Con
                     .border_color(palette.line1.hsla()),
             ),
         )
-        .child(splitter(split_id, board.split, &m).on_change({
+        .child(splitter(split_id, board.split, m).on_change({
             let me = me.clone();
             move |event, _window, cx| {
                 let _ = me.update(cx, |board, cx| {
@@ -945,165 +1250,111 @@ fn live(board: &Board, me: &WeakEntity<Board>, window: &mut Window, cx: &mut Con
                 });
             }
         }))
-        .child(div().flex_1());
-    div()
-        .size_full()
-        .relative()
-        .bg(palette.g1)
-        .child(ground())
-        .child(at(
-            60.0,
-            80.0,
-            "live-button",
-            button("live-add", "Add package", &m)
-                .glyph(Glyph::Plus)
-                .key("A")
-                .into_any_element(),
-        ))
-        .child(at(
-            300.0,
-            80.0,
-            "live-icon",
-            icon_button("live-shelf", Icon::SideL, "Shelf", &m)
-                .key("\\")
-                .into_any_element(),
-        ))
-        .child(at(
-            400.0,
-            80.0,
-            "live-switch",
-            switch("live-switch", board.switch_on, &m)
-                .label("derive")
-                .on_toggle(with(me, |board| board.switch_on = !board.switch_on))
-                .into_any_element(),
-        ))
-        .child(at(
-            560.0,
-            80.0,
-            "live-check",
-            check("live-check", board.check, &m)
-                .label("Debug")
-                .on_toggle(with(me, |board| {
-                    board.check = if board.check == Tri::On { Tri::Off } else { Tri::On };
-                }))
-                .into_any_element(),
-        ))
-        .child(at(
-            680.0,
-            80.0,
-            "live-radio",
-            radio("live-radio", board.radio == 1, &m)
-                .label("Pin")
-                .on_toggle(with(me, |board| board.radio = 1))
-                .into_any_element(),
-        ))
-        .child(at(
-            800.0,
-            80.0,
-            "live-seg",
-            seg("live-seg", &m)
-                .label("Reference")
-                .key("1")
-                .label("Relations")
-                .key("2")
-                .label("Usage")
-                .key("3")
-                .selected(board.lens)
-                .on_select(with_index(me, |board, index| board.lens = index))
-                .into_any_element(),
-        ))
-        .child(at(
-            60.0,
-            210.0,
-            "live-comb",
-            version_comb("live-comb", board.histories[0].clone(), &m.within(px(236.0)))
-                .pinned(board.pins[0])
-                .selected(board.viewing[0])
-                .on_select(on_version(me, 0))
-                .into_any_element(),
-        ))
-        .child(at(
-            60.0,
-            300.0,
-            "live-field",
-            div()
-                .w(px(280.0))
-                .child(field("live-field", &board.inputs[0], &m).icon(Icon::Filter))
-                .into_any_element(),
-        ))
-        .child(at(
-            60.0,
-            380.0,
-            "live-select",
-            select("live-select", "Rust", &m)
-                .lang(Lang::Rust)
-                .open(board.select_open)
-                .on_open(with(me, |board| board.select_open = !board.select_open))
-                .into_any_element(),
-        ))
-        .child(panel)
-        .into_any_element()
+        .child(div().flex_1())
 }
 
-/// The version comb three ways, at the shelf's width (236 px inside a
-/// 264 px shelf): the book plate over 24 releases, a young package with 3,
-/// and an old one with 400.
+/// The version comb as the target draws it: a shelf's book at 264 px in
+/// each cell — at rest, hovering, scrubbed, 400 releases at rest, 400 under
+/// the pointer — and a young package with three releases.
 fn comb_scene(board: &Board, me: &WeakEntity<Board>, cx: &mut Context<Board>) -> AnyElement {
     let facet = cx.facet();
     let palette = cx.palette();
-    let m = facet.measure(px(236.0) * facet.text_scale);
-    let label = |body: &'static str| text(CLABEL, facet, palette.ink3, body);
     let s = facet.text_scale;
-    let book = facet.measure(px(264.0) * s);
-    let inner = crate::chrome::book_inner(&book);
-    let comb = |slot: usize, key: &'static str| {
-        version_comb(key, board.histories[slot].clone(), if slot == 0 { &inner } else { &m })
-            .pinned(board.pins[slot])
-            .selected(board.viewing[slot])
-            .on_select(on_version(me, slot))
+    let shelf = facet.measure(px(264.0) * s);
+    let cell = |label: &'static str, book: crate::chrome::Book, key: &'static str, slot: Option<usize>, x: f32, y: f32| {
+        let handler = slot.map(|slot| {
+            let handler: Rc<dyn Fn(&super::VersionSelected, &mut Window, &mut App)> =
+                Rc::new(on_version(me, slot));
+            handler
+        });
+        div()
+            .absolute()
+            .left(px(x) * s)
+            .top(px(y) * s)
+            .flex()
+            .flex_col()
+            .gap(px(10.0) * s)
+            .child(text(CELL, facet, palette.ink3, label))
+            .child(probe::measure(
+                key,
+                div()
+                    .w(px(264.0) * s)
+                    .pt(px(8.0) * s)
+                    .pb(px(2.0) * s)
+                    .bg(palette.pane)
+                    .border_r_1()
+                    .border_color(palette.line1.hsla())
+                    .child(crate::chrome::book(key, &book, &shelf, handler, cx)),
+            ))
     };
+    let book = |slot: usize, name: &'static str| {
+        let releases = board.histories[slot].clone();
+        let pin = board.pins[slot];
+        crate::chrome::Book::new(crate::icons::Kind::Package, name, releases[pin].version.clone())
+            .releases(releases, pin, board.viewing[slot])
+    };
+    // The target's still states (hover, scrubbed, lens) are pinned looks.
+    let sheet = |slot: usize, name: &'static str, view: Option<usize>, hot: Option<usize>, lens: Option<f32>| {
+        let mut b = book(slot, name);
+        // A still state does not follow the live cells' scrubbing.
+        b.viewing = Some(view.unwrap_or(board.pins[slot]));
+        b.hover_look = hot;
+        b.lens_look = lens;
+        b
+    };
+    let over_121 = board.histories[2]
+        .iter()
+        .position(|release| release.version.as_ref() == "1.21.0")
+        .unwrap_or(0);
     div()
         .size_full()
         .relative()
         .bg(palette.g1)
-        .child(ground())
         .child(
             div()
                 .absolute()
-                .left(px(26.0))
-                .top(px(40.0))
-                .w(px(264.0) * s)
-                .child(crate::chrome::book_plate(
-                    crate::icons::Kind::Package,
-                    "present",
-                    board.histories[0][board.pins[0]].version.clone(),
-                    Some(Lang::Rust),
-                    Some(probe::measure("comb-24", comb(0, "comb-24")).into_any_element()),
-                    &book,
-                    cx,
-                )),
+                .left(px(48.0) * s)
+                .top(px(40.0) * s)
+                .child(text(TITLE, facet, palette.ink0, "The version comb")),
         )
-        .child(
-            div()
-                .absolute()
-                .left(px(40.0))
-                .top(px(230.0) * s)
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .child(label("3 releases"))
-                .child(probe::measure("comb-3", comb(1, "comb-3"))),
-        )
-        .child(
-            div()
-                .absolute()
-                .left(px(40.0))
-                .top(px(330.0) * s)
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .child(label("400 releases"))
-                .child(probe::measure("comb-400", comb(2, "comb-400"))),
-        )
+        .child(cell("At rest", book(0, "present"), "comb-rest", Some(0), 48.0, 110.0))
+        .child(cell(
+            "Hovering a release",
+            sheet(0, "present", None, Some(9), None),
+            "comb-hover",
+            None,
+            360.0,
+            110.0,
+        ))
+        .child(cell(
+            "Scrubbed to an older release",
+            sheet(0, "present", Some(9), None, None),
+            "comb-scrub",
+            None,
+            672.0,
+            110.0,
+        ))
+        .child(cell("400 releases at rest", book(2, "tokio"), "comb-400", Some(2), 48.0, 370.0))
+        .child(cell(
+            "400 releases, pointer over 1.21",
+            sheet(2, "tokio", None, Some(over_121), Some(118.0)),
+            "comb-400-lens",
+            None,
+            360.0,
+            370.0,
+        ))
+        .child(cell("3 releases", book(1, "fresh"), "comb-3", Some(1), 672.0, 370.0))
+        .child(cell(
+            "toml: mint moves touch your code · [ ] step",
+            {
+                let mut b = book(3, "toml");
+                b.touches = board.toml_touches.clone();
+                b
+            },
+            "comb-toml",
+            Some(3),
+            48.0,
+            630.0,
+        ))
         .into_any_element()
 }
