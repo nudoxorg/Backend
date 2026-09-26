@@ -50,6 +50,7 @@ type CodeItem {
   parent: [CodeItem!]!
   children: [CodeItem!]!
   related: [CodeItem!]!
+  referencedBy: [CodeItem!]!
   sameProject: [CodeItem!]!
 }
 ";
@@ -1243,6 +1244,7 @@ struct SemanticGraph {
     external_targets: Arc<[usize]>,
     by_id: BTreeMap<String, usize>,
     children: BTreeMap<String, Arc<[usize]>>,
+    referenced_by: BTreeMap<String, Arc<[usize]>>,
     project_members: BTreeMap<PackageKey, Arc<[usize]>>,
 }
 
@@ -1253,6 +1255,7 @@ impl SemanticGraph {
         let mut external_targets = Vec::new();
         let mut by_id = BTreeMap::new();
         let mut children = BTreeMap::<String, Vec<usize>>::new();
+        let mut referenced_by = BTreeMap::<String, Vec<usize>>::new();
         let mut project_members = BTreeMap::<PackageKey, Vec<usize>>::new();
         for (index, fact) in corpus.facts().iter().enumerate() {
             let row = fact.presentation();
@@ -1274,6 +1277,9 @@ impl SemanticGraph {
             } else if let Some(project) = &row.project {
                 children.entry(project.clone()).or_default().push(index);
             }
+            for target in &row.related {
+                referenced_by.entry(target.clone()).or_default().push(index);
+            }
         }
         Self {
             all: (0..corpus.facts().len()).collect::<Vec<_>>().into(),
@@ -1282,6 +1288,10 @@ impl SemanticGraph {
             external_targets: external_targets.into(),
             by_id,
             children: children
+                .into_iter()
+                .map(|(key, values)| (key, values.into()))
+                .collect(),
+            referenced_by: referenced_by
                 .into_iter()
                 .map(|(key, values)| (key, values.into()))
                 .collect(),
@@ -1334,6 +1344,12 @@ impl Vertex {
                 .filter_map(|id| self.graph.by_id.get(id).copied())
                 .collect::<Vec<_>>()
                 .into(),
+            "referencedBy" => self
+                .graph
+                .referenced_by
+                .get(&row.id)
+                .cloned()
+                .unwrap_or_else(|| Arc::from([])),
             _ => Arc::from([]),
         }
     }
@@ -1456,7 +1472,7 @@ impl AsyncBasicAdapter<'static> for SemanticAdapter {
         _parameters: &EdgeParameters,
     ) -> AsyncContextOutcomeStream<'static, V, AsyncNeighborStream<'static, Self::Vertex>> {
         match edge_name {
-            "project" | "parent" | "children" | "related" | "sameProject" => {
+            "project" | "parent" | "children" | "related" | "referencedBy" | "sameProject" => {
                 let edge = edge_name.to_owned();
                 resolve_neighbors_with(contexts, move |vertex: &Vertex| {
                     Vertex::stream(Arc::clone(&vertex.graph), vertex.neighbors(&edge))

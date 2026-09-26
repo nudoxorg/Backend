@@ -18,6 +18,8 @@ pub use self::checker::{
     PyreflyExecutableError, SymbolOutcome, SymbolResolution,
 };
 
+use std::collections::HashSet;
+
 use backend_semantic::vocabulary::PythonVersion;
 use ruff_python_ast::{
     self as ast,
@@ -169,6 +171,7 @@ pub enum ParameterKind {
 pub enum OccurrenceKind {
     FunctionCall,
     MethodCall,
+    AttributeRead,
 }
 /// How a call's receiver was written, which decides the target key the
 /// occurrence resolves through. Bare-name and module-gated rows keep the
@@ -501,6 +504,8 @@ fn project(
             decorator_ranges: Vec::new(),
             decorator_owner: None,
             error: None,
+            module_declared: HashSet::new(),
+            last_module_function: None,
         };
         for statement in &syntax.body {
             projection.visit_stmt(statement);
@@ -876,9 +881,31 @@ struct Projection<'a> {
     decorator_ranges: Vec<ruff_text_size::TextRange>,
     decorator_owner: Option<String>,
     error: Option<ExtractionError>,
+    /// Module-level names already declared. The first declaration of a name
+    /// wins; later rebindings are dropped. Consecutive overloads of one name
+    /// are exempt via [`last_module_function`].
+    module_declared: HashSet<String>,
+    /// The most recent module-level function name, so overload runs stay
+    /// distinct from later rebindings of the same spelling.
+    last_module_function: Option<String>,
 }
 impl<'a> Projection<'a> {
     fn add_declaration(&mut self, declaration: DeclarationFact) {
+        if self.function_depth == 0 && self.class_depth == 0 {
+            let allow_overload = declaration.kind == DeclarationKind::Function
+                && self.last_module_function.as_deref() == Some(declaration.name.as_str());
+            if self.module_declared.contains(&declaration.name) && !allow_overload {
+                return;
+            }
+            if !allow_overload {
+                self.module_declared.insert(declaration.name.clone());
+            }
+            if declaration.kind == DeclarationKind::Function {
+                self.last_module_function = Some(declaration.name.clone());
+            } else {
+                self.last_module_function = None;
+            }
+        }
         self.facts.declarations.push(declaration);
     }
 
@@ -1180,7 +1207,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
             ast::Stmt::ImportFrom(import) if self.function_depth == 0 && self.class_depth == 0 => {
                 for alias in &import.names {
-                    self.add_alias(alias, statement);
+                    self.add_from_alias(import, alias, statement);
                 }
             }
             ast::Stmt::TypeAlias(alias) if self.function_depth == 0 && self.class_depth == 0 => {
@@ -1258,7 +1285,13 @@ impl<'a> Visitor<'a> for Projection<'a> {
                         },
                         _ => OccurrenceReceiver::Foreign { receiver: None },
                     };
-                    let gated = self.names.iter().any(|declared| declared == target);
+                    let receiver_is_module_name = matches!(
+                        attribute.value.as_ref(),
+                        ast::Expr::Name(name)
+                            if self.names.iter().any(|declared| declared == name.id.as_str())
+                    );
+                    let gated = receiver_is_module_name
+                        && self.names.iter().any(|declared| declared == target);
                     Some((
                         target,
                         OccurrenceKind::MethodCall,
@@ -1293,6 +1326,52 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     kind,
                     confidence: Confidence::Index,
                     span: span(callee_span),
+                    receiver,
+                });
+            }
+        }
+        if let ast::Expr::Attribute(attribute) = expr {
+            let target = attribute.attr.as_str();
+            let attr_span = span(attribute.attr.range());
+            let already_recorded = self.facts.occurrences.iter().any(|occurrence| {
+                occurrence.target == target
+                    && occurrence.span.start <= attr_span.start
+                    && occurrence.span.end >= attr_span.end
+            });
+            if !already_recorded {
+                let receiver = match attribute.value.as_ref() {
+                    ast::Expr::Name(name)
+                        if matches!(name.id.as_str(), "self" | "cls")
+                            && self.enclosing_class.is_some() =>
+                    {
+                        OccurrenceReceiver::EnclosingClass {
+                            class: self
+                                .enclosing_class
+                                .clone()
+                                .expect("enclosing class proven above"),
+                        }
+                    }
+                    ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
+                        receiver: Some(name.id.as_str().to_owned()),
+                    },
+                    _ => OccurrenceReceiver::Foreign { receiver: None },
+                };
+                let owner = if self.decorator_ranges.iter().any(|range| {
+                    range.start() <= expr.range().start() && range.end() >= expr.range().end()
+                }) {
+                    match self.decorator_owner.as_deref() {
+                        Some(owner) => owner,
+                        None => &self.owner,
+                    }
+                } else {
+                    &self.owner
+                };
+                self.facts.occurrences.push(OccurrenceFact {
+                    owner: owner.to_owned(),
+                    target: target.to_owned(),
+                    kind: OccurrenceKind::AttributeRead,
+                    confidence: Confidence::Index,
+                    span: attr_span,
                     receiver,
                 });
             }
@@ -1352,6 +1431,46 @@ impl Projection<'_> {
             receiver: ReceiverKind::Plain,
             parameters: Vec::new(),
             value_source: Some(alias.name.as_str().to_owned()),
+            value_span: Some(span(alias.name.range())),
+            type_parameters: Vec::new(),
+            total: None,
+            header_end: None,
+            docstring: None,
+        });
+    }
+
+    /// Records one `from … import …` binding. The alias's `value_source`
+    /// carries the imported module spelling (`workout.service` in `from
+    /// workout.service import service`); `value_span` keeps the binding
+    /// identifier span so bare-name call keying stays unchanged.
+    fn add_from_alias(
+        &mut self,
+        import: &ast::StmtImportFrom,
+        alias: &ast::Alias,
+        statement: &ast::Stmt,
+    ) {
+        let binding = alias_binding(alias);
+        let Some(binding_span) = self.alias_binding_span(alias) else {
+            return;
+        };
+        let value_source = import
+            .module
+            .as_ref()
+            .map(|module| module.as_str().to_owned())
+            .or_else(|| Some(alias.name.as_str().to_owned()));
+        self.add_declaration(DeclarationFact {
+            name: binding,
+            name_span: binding_span,
+            kind: DeclarationKind::Alias,
+            span: span(statement.range()),
+            bases: Vec::new(),
+            class_form: None,
+            decorators: Vec::new(),
+            decorator_spans: Vec::new(),
+            is_async: false,
+            receiver: ReceiverKind::Plain,
+            parameters: Vec::new(),
+            value_source,
             value_span: Some(span(alias.name.range())),
             type_parameters: Vec::new(),
             total: None,
@@ -1483,6 +1602,8 @@ impl Projection<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use ruff_text_size::{TextRange, TextSize};
 
     use backend_semantic::vocabulary::PythonVersion;
@@ -1525,6 +1646,8 @@ mod tests {
             decorator_ranges: Vec::new(),
             decorator_owner: None,
             error: None,
+            module_declared: HashSet::new(),
+            last_module_function: None,
         };
         assert!(projection.source_owned(range).is_none());
         match projection.error.take() {

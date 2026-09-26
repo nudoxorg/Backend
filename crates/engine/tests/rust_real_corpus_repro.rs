@@ -301,9 +301,11 @@ fn rust_real_corpus_regression_fixtures() {
     // Several inherent impl blocks for one type are legal Rust and must not
     // collide: the impl variant frames its ordered member set.
     let impl_blocks = "pub struct Node; impl Node { pub fn a(&self) -> u8 { 1 } } impl Node { pub fn b(&self) -> u8 { 2 } }";
-    // Two same-typed wildcard parameters bind nothing; their positional names
-    // keep the signature carriers distinct.
+    // Two same-typed wildcard parameters bind nothing; their display name stays
+    // `_` and the positional discriminator keeps the signature carriers distinct.
     let wildcard_parameters = "pub fn pair(_: u8, _: u8) -> u8 { 0 }";
+    // A wildcard must not take the identity of a parameter the source named `_0`.
+    let wildcard_clash = "pub fn clash(_: u8, _0: u16) -> u16 { _0 }";
     // Two impls of one local trait for one self type differ only in the
     // trait's generic arguments; the written trait spelling frames that.
     let local_trait_arguments = "pub trait Convert<T> { fn go(&self, value: T) -> u8; } pub struct S; impl Convert<u8> for S { fn go(&self, value: u8) -> u8 { value } } impl Convert<u16> for S { fn go(&self, value: u16) -> u8 { value as u8 } }";
@@ -336,6 +338,7 @@ fn rust_real_corpus_regression_fixtures() {
     for (label, body) in [
         ("multiple-inherent-impls", impl_blocks),
         ("wildcard-parameters", wildcard_parameters),
+        ("wildcard-clash", wildcard_clash),
         ("local-trait-arguments", local_trait_arguments),
         ("macro-line-continuation", macro_line_continuation),
         ("repeated-compound-carrier", repeated_compound_carrier),

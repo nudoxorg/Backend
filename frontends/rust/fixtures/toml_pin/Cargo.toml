@@ -1,0 +1,14 @@
+[package]
+name = "toml-pin-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Journey fixture: a project that pins toml 0.8.23 and reads its settings with toml::from_str."
+
+[dependencies]
+toml = "0.8.23"
+
+# Its own single-package workspace, like `rich_project`: not a member of the
+# root workspace (`frontends/*` matches one level only), and never a member
+# of its build graph. Indexed by the desktop harness's fixture owner.
+[workspace]

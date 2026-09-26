@@ -74,17 +74,12 @@ pub enum FolderPickerOutcome {
 pub enum Intent {
     /// Replace the current typed route.
     Navigate(Route),
-    /// Descend to source while retaining a selected object.
-    OpenSource {
-        /// Parent package coordinate.
-        package: crate::core::PackageId,
-        /// Source coordinate selected by the page.
-        coordinate: super::route::Coordinate,
-        /// Source line.
-        line: u32,
-        /// Selected object retained by the route.
-        object: Option<ObjectId>,
-    },
+    /// Show the current declaration another way. Replaces the current
+    /// history entry's view: not navigation, so Back leaves the declaration.
+    SetView(super::route::View),
+    /// View the current package or declaration at another release (`None`:
+    /// the pinned one). Replaces the current entry, like a view switch.
+    SetRelease(Option<super::route::ReleaseId>),
     /// Move one content level up.
     ZoomOut,
     /// Move backward in typed history.
@@ -109,11 +104,31 @@ pub enum Intent {
     ToggleContext,
     /// Cycle surface appearance.
     ToggleAppearance,
-    /// Increase or decrease the global interface text scale.
-    SetTextScale {
-        /// Move one step up or down the closed scale ladder.
-        up: bool,
+    /// ⌘+ / ⌘− / ⌘0 on the display the window is on.
+    Zoom {
+        /// The display's stable key.
+        display: Arc<str>,
+        /// Which way.
+        step: crate::model::ZoomStep,
     },
+    /// Sets one display's zoom to the ladder step nearest `percent`
+    /// (harness and tests; people use the zoom keys).
+    ZoomTo {
+        /// The display's stable key.
+        display: Arc<str>,
+        /// Percent of the system text size.
+        percent: u16,
+    },
+    /// Set the surface appearance (theme or follow the system).
+    SetAppearance(crate::model::AppearancePreference),
+    /// Set the spacing density.
+    SetDensity(crate::model::DensityPreference),
+    /// Set the contrast treatment.
+    SetContrast(crate::model::ContrastPreference),
+    /// Set the motion preference.
+    SetMotion(crate::model::MotionPreference),
+    /// Open the calm inbox of followed releases.
+    OpenInbox,
     /// Toggle local-only versus registry metadata policy.
     TogglePrivacy,
     /// Toggle registry advisory fetching.

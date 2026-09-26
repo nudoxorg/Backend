@@ -28,7 +28,10 @@ pub use contracts::{
     CaseSensitivity, Cursor, FieldSelection, MatchMode, Query, RankedHit, Relevance,
 };
 pub use delta::{DocumentChange, DocumentDelta, DocumentState};
-pub use engine::{TantivyAdapter, TantivySource, TantivySourceError};
+pub use engine::{
+    MaintainOutcome, ProjectionKind, ProjectionRevision, TantivyAdapter, TantivySource,
+    TantivySourceError,
+};
 pub use identity::{
     Authority, AuthoritySchema, Binding, Frontier, FrontierSchema, IndexRelation, Limits,
     QueryVersion, ReadManifest, ReadManifestSchema, Recipe, RecipeSchema, Root, SchemaVersion,

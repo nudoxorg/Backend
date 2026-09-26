@@ -53,7 +53,18 @@ to *find* coordinates and `backend.document` is the way to read them.
 
 ## edges from a row
 
-`project`, `parent`, `children`, `related`, `sameProject`. An edge that may be
+`project`, `parent`, `children`, `related`, `referencedBy`, `sameProject`.
+`related` walks outward. A call, a type reference, an import, or a field read
+of a declaration in this same project lands on that declaration, including
+another file, including when the field read's declaring type and field name
+match one field this project publishes. A read of a const, static, variant, or
+function this project publishes also lands on that declaration, including when the
+declaring type and name match. Variable reads that are not a published const,
+static, variant, or function still do not join. `referencedBy` is that edge reversed, so
+the declaration names its callers and mention sites across files. A stable reference
+into another publication stays an external node and is not joined. Any other
+foreign target stays an external node; when the compiler recorded a display
+spelling, that spelling is the node's name. An edge that may be
 empty needs `@optional`, or its row is dropped.
 
 ## worked queries
@@ -92,6 +103,21 @@ Each declaration and what it is nested inside:
     parent @optional {
       name @output(name: "parent")
       kind @output(name: "parentKind")
+    }
+  }
+}
+```
+
+Who in this package references one named declaration:
+
+```graphql
+{
+  Declaration {
+    name @filter(op: "=", value: ["$name"])
+    referencedBy @optional {
+      name @output(name: "caller")
+      coordinate @output(name: "callerAt")
+      kind @output(name: "callerKind")
     }
   }
 }

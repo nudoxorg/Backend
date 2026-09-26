@@ -3,18 +3,18 @@
 //! The audited file (`test-utils/index.d.ts`, 14343 bytes) declares
 //! `mockComponent(...): typeof ReactTestUtils` where `ReactTestUtils` is a
 //! namespace import of the whole module. The checker computes that namespace
-//! type as one anonymous record with more exported members than the lane
-//! holds per row, and the computed lane raised its typed `TypeChildCapacity`
-//! rejection instead of committing the record. Wide anonymous records now
-//! fold into per-row-bounded record rows exactly as wide unions fold: no
-//! member is lost, none nests deeper than the fold requires, every member
-//! keeps its source-backed name, and each folded row is named by the member
-//! that closes its chunk. Records at or under the per-row bound are unchanged
+//! type as one anonymous record with more exported members than one type
+//! row holds, and the computed lane raised its typed `TypeChildCapacity`
+//! rejection instead of committing the record. Wide anonymous records fold
+//! into per-row-bounded record rows exactly as wide unions fold: no member
+//! is lost, none nests deeper than the fold requires, every member keeps
+//! its source-backed name, and each folded row is named by the member that
+//! closes its chunk. Records at or under the per-row bound are unchanged
 //! byte for byte.
 //!
 //! The synthetic half proves the fold on a hand-built checker report whose
-//! namespace type carries 130 members; the corpus half proves the exact
-//! audited file end to end.
+//! namespace type carries 256 members, one past the type-child lane; the
+//! corpus half proves the exact audited file end to end.
 
 use std::{
     path::{Path, PathBuf},
@@ -96,8 +96,8 @@ fn lower_semantic(source: &'static [u8], authority: &'static Report) -> String {
 }
 
 /// A hand-built checker report: `probe` is one computed namespace-object type
-/// over 130 source-spelled members, the exact shape the checker derives for
-/// `typeof Ns` when the module exports more members than one row holds.
+/// over 256 source-spelled members, one past the type-child lane, the shape
+/// that used to raise `TypeChildCapacity` instead of folding.
 fn wide_report(source: &[u8], members: usize) -> Report {
     let text = String::from_utf8_lossy(source).into_owned();
     let name_start = u32::try_from(text.find("probe").expect("probe is spelled")).expect("span");
@@ -134,7 +134,7 @@ fn wide_report(source: &[u8], members: usize) -> Report {
     }
 }
 
-/// 130 source-spelled member names as separate small declarations, plus the
+/// 256 source-spelled member names as separate small declarations, plus the
 /// namespace-typed owner: the report's namespace type names each member, and
 /// every name is spelled in the source without any oversized written literal
 /// (the whole point is a shape only the checker's computed type has).
@@ -149,7 +149,7 @@ fn wide_source(members: usize) -> Vec<u8> {
 
 #[test]
 fn typescript_wide_computed_namespace_records_fold() {
-    const MEMBERS: usize = 130;
+    const MEMBERS: usize = 256;
     let source: &'static [u8] = leak(&wide_source(MEMBERS));
     let authority: &'static Report = Box::leak(Box::new(wide_report(source, MEMBERS)));
     let outcome = lower_semantic(source, authority);

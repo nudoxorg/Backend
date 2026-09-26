@@ -21,6 +21,7 @@ required-features = ["visual-harness"]
 [dependencies]
 anyhow.workspace = true
 backend-client = { path = "../../crates/client" }
+backend-facet = { path = "../facet" }
 backend-library = { path = "../../crates/library" }
 backend-local-service = { path = "../../crates/local-service" }
 backend-platform = { path = "../../crates/platform" }
@@ -37,11 +38,15 @@ toml.workspace = true
 
 [features]
 # Direct GPUI CE capture against the same live host/bootstrap as the product.
-visual-harness = ["dep:backend-gui-harness", "dep:image", "gpui_component/headless"]
+visual-harness = ["dep:backend-gui-harness", "dep:image", "gpui_component/headless", "backend-facet/gallery"]
 
 [dependencies.backend-gui-harness]
 path = "../../tools/gui-harness"
 optional = true
+
+[[test]]
+name = "shell_capture"
+path = "tests/shell_capture.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"] }
@@ -53,9 +58,13 @@ gpui_platform = { workspace = true, features = ["x11", "wayland"] }
 gpui_platform = { workspace = true, features = ["wgpu"] }
 
 [dev-dependencies]
+backend-gui-harness = { path = "../../tools/gui-harness" }
 blake3.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 proptest.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
+# Test windows have no native view: the text engine's macOS hooks stay off.
+gpui_component = { workspace = true, features = ["headless"] }
 gpui_platform = { workspace = true, features = ["test-support"] }
 
 [lints]

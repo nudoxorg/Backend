@@ -638,6 +638,59 @@ impl TranslationUnit {
         native_relative_identity(name, root.to_bytes(), b"nudox.clang.file.v1")
     }
 
+    /// Returns the compilation-root-relative path of the file declaring a
+    /// cursor's target as a `/`-separated UTF-8 string.
+    ///
+    /// Only a path that lives underneath the compilation root is returned: an
+    /// absolute system or store path yields `None`, as do empty tails, a `:`, or
+    /// a non-UTF-8 native name.
+    pub(crate) fn cursor_relative_path(&self, cursor: CXCursor) -> Option<String> {
+        let root = self.compile_root.as_deref()?;
+        // SAFETY: cursor was supplied by this live translation unit.
+        let range = unsafe { clang_sys::clang_getCursorExtent(cursor) };
+        // SAFETY: range was obtained from this translation unit; the calls are pure native reads.
+        let location = unsafe { clang_sys::clang_getRangeStart(range) };
+        let mut file = ptr::null_mut();
+        let mut line = 0;
+        let mut column = 0;
+        let mut offset = 0;
+        // SAFETY: all output pointers are initialized local cells and location came from this TU.
+        unsafe {
+            clang_sys::clang_getExpansionLocation(
+                location,
+                &raw mut file,
+                &raw mut line,
+                &raw mut column,
+                &raw mut offset,
+            );
+        }
+        if file.is_null() {
+            return None;
+        }
+        // SAFETY: file belongs to this live translation unit and its name string is disposed below.
+        let name = unsafe { clang_sys::clang_getFileName(file) };
+        let pointer = unsafe { clang_sys::clang_getCString(name) };
+        let relative = if pointer.is_null() {
+            None
+        } else {
+            // SAFETY: libclang documents live CXString bytes as NUL-terminated until disposal.
+            let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes();
+            relative_path(bytes, root.to_bytes()).and_then(|relative| {
+                if relative.is_empty() || relative.contains(&b':') {
+                    return None;
+                }
+                let normalized = relative
+                    .iter()
+                    .map(|byte| if *byte == b'\\' { b'/' } else { *byte })
+                    .collect::<Vec<_>>();
+                std::str::from_utf8(&normalized).ok().map(str::to_owned)
+            })
+        };
+        // SAFETY: string is owned by this function and has not been disposed before this point.
+        unsafe { clang_sys::clang_disposeString(name) };
+        relative
+    }
+
     pub(crate) fn imported_module_identity(cursor: CXCursor) -> Option<SymbolIdentity> {
         // SAFETY: cursor was supplied by this live translation unit.
         let module = unsafe { clang_sys::clang_Cursor_getModule(cursor) };

@@ -480,6 +480,9 @@ impl<P: Product> Server<P> {
         instructions.push_str(INSTRUCTIONS);
         instructions.push_str("\n\nMCP workspace selection:\n- selected project: ");
         instructions.push_str(&project);
+        instructions.push_str(
+            "\n- when this path is not the repository you were asked about, pass that repository's absolute path to backend.index",
+        );
         match directory.as_deref() {
             Some(directory) if directory != project => {
                 instructions.push_str("\n- process working directory: ");
@@ -844,13 +847,14 @@ impl<P: Product> Server<P> {
     }
 }
 
-const INSTRUCTIONS: &str = "Every tool is one row of one command registry, grouped by domain in \
-tools/list. Read backend://workspace/current first: it says in four lines which lanes are ready \
-and which are simply not configured, so a thin answer is never mistaken for an empty one. Then \
-backend.search or backend.outline to find a coordinate, and backend.document to read it — a \
-coordinate returned by any tool is accepted verbatim by every other. Answers are Markdown in the \
-text block and the same typed values in structuredContent. A refusal names the exact operand it \
-refused and the next tool call to make.";
+const INSTRUCTIONS: &str = "Index the repository before you answer questions about its code. \
+backend.index adds a project: pass its absolute path. Then call backend.packages. An empty shelf \
+means you have not indexed yet, and a lane that is not configured is not an empty codebase. Find \
+a coordinate with backend.search, or with backend.outline when you do not know the names. Copy \
+that coordinate verbatim into backend.document for the signature and docs, backend.source for \
+the body, backend.references for uses, and backend.graph for calls. Do not invent coordinates \
+and do not guess from filenames when a tool can answer. A refusal names the operand and the next \
+call; follow it. Read backend://workspace/current when a result looks thin.";
 
 /// Returns the readable head of one stable identity.
 fn abbreviate(bytes: &[u8; 32]) -> String {

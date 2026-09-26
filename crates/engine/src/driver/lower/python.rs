@@ -25,10 +25,13 @@
 //!   fresh buffer (slashed foreign paths, module-level owners, the module
 //!   docstring) are documented limitations, never synthesized data.
 
+use std::collections::{HashMap, HashSet};
+
 use backend_frontend_python::legacy::{
     Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
     DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
-    OccurrenceFact, OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
+    OccurrenceFact, OccurrenceKind, OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span,
+    SymbolOutcome,
     TypeReason as ExtractedReason, extract,
 };
 use backend_semantic::ir::{
@@ -224,12 +227,68 @@ struct Emitter<'a, 'source> {
     reserved_anchor: Option<u32>,
 }
 
+/// How one module-level spelling is bound for nominal resolution.
+enum BindingResolution {
+    Nominal(u32),
+    Ambiguous,
+    External,
+}
+
+impl BindingResolution {
+    fn nominal_ordinal(&self) -> Option<u32> {
+        match self {
+            BindingResolution::Nominal(ordinal) => Some(*ordinal),
+            BindingResolution::Ambiguous => None,
+            BindingResolution::External => None,
+        }
+    }
+}
+
 /// The interned name tables annotation lowering resolves against.
 struct TypeTables<'source> {
-    /// Module classes: exact name bytes to their already-pushed ordinal.
     classes: Vec<(&'source [u8], u32)>,
-    /// Names bound by a `TypeVar(...)` assignment in this module.
     typevars: Vec<&'source [u8]>,
+    bindings: HashMap<String, BindingResolution>,
+}
+
+impl TypeTables<'_> {
+    fn bound_nominal(&self, name: &str) -> Option<u32> {
+        if let Some(ordinal) = self.direct_bound_nominal(name) {
+            return Some(ordinal);
+        }
+        self.qualified_bound_nominal(name)
+    }
+
+    fn direct_bound_nominal(&self, name: &str) -> Option<u32> {
+        match self.bindings.get(name) {
+            Some(resolution) => resolution.nominal_ordinal(),
+            None => None,
+        }
+    }
+
+    fn qualified_bound_nominal(&self, name: &str) -> Option<u32> {
+        let mut start = 0;
+        while let Some(rel) = name[start..].find('.') {
+            let dot = start + rel;
+            let prefix = &name[..dot];
+            let rest = &name[dot + 1..];
+            if self.direct_bound_nominal(prefix).is_some() {
+                if let Some((_, ordinal)) = self
+                    .classes
+                    .iter()
+                    .find(|(known, _)| *known == rest.as_bytes())
+                {
+                    return Some(*ordinal);
+                }
+            }
+            start = dot + 1;
+        }
+        None
+    }
+
+    fn binding_state(&self, name: &str) -> Option<&BindingResolution> {
+        self.bindings.get(name)
+    }
 }
 
 /// One annotation lowered into its lattice record plus the fact ordinals
@@ -304,6 +363,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let mut tables = TypeTables {
             classes: Vec::new(),
             typevars: self.module_typevar_names()?,
+            bindings: HashMap::new(),
         };
         for index in indices {
             let declaration = &self.module.declarations[index];
@@ -579,8 +639,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
 
     /// Pass two: functions (parameters and result slots first), then
     /// variables and aliases, all in source order. Shadowed bindings are
-    /// skipped: Python rebinds the name in place and the later binding wins,
-    /// so only the live row reaches the lane.
+    /// skipped: the extractor already dropped later module-level rebindings,
+    /// and identical twins keep the first declaration.
     fn emit_non_class_declarations(&mut self) -> Result<(), PythonCollectError> {
         let tables = self.type_tables()?;
         for index in 0..self.module.declarations.len() {
@@ -712,7 +772,54 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 typevars.push(self.slice(*parameter)?);
             }
         }
-        Ok(TypeTables { classes, typevars })
+        let bindings = self.name_bindings(&classes)?;
+        Ok(TypeTables { classes, typevars, bindings })
+    }
+
+    fn name_bindings(
+        &self,
+        classes: &[(&'source [u8], u32)],
+    ) -> Result<HashMap<String, BindingResolution>, PythonCollectError> {
+        let text = std::str::from_utf8(self.source).map_err(|error| {
+            let start = error.valid_up_to();
+            let end = error
+                .error_len()
+                .map_or(self.source.len(), |l| start.saturating_add(l))
+                .min(self.source.len());
+            PythonCollectError::Span {
+                start: u32::try_from(start).unwrap_or(0),
+                end: u32::try_from(end).unwrap_or(0),
+            }
+        })?;
+        let mut bound = import_name_bindings(text, &self.module.identity, classes);
+        let mut locals: HashMap<String, u32> = HashMap::new();
+        for (name, ordinal) in classes {
+            record_local_binding(&mut bound, &mut locals, name, *ordinal);
+        }
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if !self.live[index] || declaration.kind != DeclarationKind::Alias {
+                continue;
+            }
+            let is_type_alias =
+                declaration.value_span.is_none() && declaration.value_source.is_some();
+            if !is_type_alias {
+                continue;
+            }
+            let Some(annotation) = self.alias_value_annotation(declaration) else {
+                continue;
+            };
+            let Some(target) = annotation_root_name(&annotation.annotation) else {
+                continue;
+            };
+            let resolution = resolve_alias_target(&bound, classes, &target);
+            apply_type_alias_binding(
+                &mut bound,
+                &mut locals,
+                &declaration.name,
+                resolution,
+            );
+        }
+        Ok(bound)
     }
 
     /// Lowers one function: its parameter facts and annotated-return result
@@ -734,6 +841,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let mut any_resolved = false;
         let mut any_checked = false;
         for parameter in &declaration.parameters {
+            if is_receiver_parameter(declaration.receiver, &parameter.name) {
+                continue;
+            }
             let unannotated = matches!(
                 parameter.annotation,
                 Annotation::Unknown(ExtractedReason::Unannotated { .. })
@@ -1164,8 +1274,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
         });
         match base_name {
             Some("tuple") | Some("typing.Tuple") => {
-                let children = self.row_children(args, tables, anchor)?;
-                let Some(children) = children else {
+                let Some(children) = self.member_rows(args, tables, anchor)? else {
+                    return Ok(None);
+                };
+                let Some(children) =
+                    self.admit_flat_children(tuple_record(), children, anchor)?
+                else {
                     return Ok(None);
                 };
                 Ok(Some((tuple_record(), children)))
@@ -1248,7 +1362,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-    /// Lowers every member of one written union to its row coordinate.
+    /// Lowers every member of one written compound to its row coordinate.
+    /// A run wider than one type-child row stays `None`. Tuple and union
+    /// callers use [`Self::member_rows`] and fold the same tag instead.
     fn row_children(
         &mut self,
         members: &[Annotation],
@@ -1258,6 +1374,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
         if members.len() > MAX_TYPE_CHILDREN {
             return Ok(None);
         }
+        self.member_rows(members, tables, anchor)
+    }
+
+    /// Lowers every member without the per-row width gate. The caller folds
+    /// a tuple or union, or rejects a tag that cannot be nested honestly.
+    fn member_rows(
+        &mut self,
+        members: &[Annotation],
+        tables: &TypeTables<'source>,
+        anchor: u32,
+    ) -> Result<Option<Vec<u32>>, PythonCollectError> {
         let mut rows = Vec::with_capacity(members.len());
         for member in members {
             match self.type_row(member, None, tables, anchor)? {
@@ -1336,6 +1463,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 None => return Ok(None),
                             }
                         }
+                        let Some(children) =
+                            self.admit_flat_children(union_record(), children, anchor)?
+                        else {
+                            return Ok(None);
+                        };
                         self.parent_row(union_record(), &children, anchor)
                     }
                 }
@@ -1346,6 +1478,47 @@ impl<'a, 'source> Emitter<'a, 'source> {
             },
             Annotation::StringLiteral(_) | Annotation::Unknown(_) => Ok(None),
         }
+    }
+
+    /// Keeps every member of a tuple or union inside the type-child lane.
+    ///
+    /// A run that already fits is returned unchanged. A wider run becomes a
+    /// tree of anonymous rows of the same tag, each at most
+    /// [`MAX_TYPE_CHILDREN`] wide, and the returned coordinates are those
+    /// chunk rows. Flattening same-tag nesting recovers the member order.
+    /// A callable is not folded: nesting function pointers would claim a
+    /// different type. Pool overflow stays `None`, the same fallback a
+    /// single unhostable row already uses.
+    fn admit_flat_children(
+        &mut self,
+        record: SemanticTypeRecord<'source>,
+        mut children: Vec<u32>,
+        anchor: u32,
+    ) -> Result<Option<Vec<u32>>, PythonCollectError> {
+        let folds = record.tag == SemanticTypeTag::Tuple || record.tag == SemanticTypeTag::Union;
+        if !folds {
+            if children.len() > MAX_TYPE_CHILDREN {
+                return Ok(None);
+            }
+            return Ok(Some(children));
+        }
+        while children.len() > MAX_TYPE_CHILDREN {
+            let mut folded = Vec::new();
+            let mut start = 0;
+            while start < children.len() {
+                let end = start.saturating_add(MAX_TYPE_CHILDREN).min(children.len());
+                let Some(chunk) = children.get(start..end) else {
+                    return Ok(None);
+                };
+                match self.parent_row(record, chunk, anchor)? {
+                    Some(row) => folded.push(row),
+                    None => return Ok(None),
+                }
+                start = end;
+            }
+            children = folded;
+        }
+        Ok(Some(children))
     }
 
     /// Appends already-lowered children and interns one parent row.
@@ -1450,6 +1623,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 None => return self.unrepresentable(spelling),
             }
         }
+        let Some(children) = self.admit_flat_children(union_record(), children, anchor)? else {
+            return self.unrepresentable(spelling);
+        };
         Ok(LoweredType {
             record: union_record(),
             children,
@@ -1520,13 +1696,24 @@ impl<'a, 'source> Emitter<'a, 'source> {
             };
             return leaf(record, true);
         }
-        // The written spelling is the exact evidence this lane can carry:
-        // imported names resolve outside the module and everything else is a
-        // local name one resolution pass away from a type.
-        let reason = if self.is_imported_name(name) {
-            TypeReason::UnresolvedExternal
-        } else {
-            TypeReason::UnresolvedLocalName
+        if let Some(ordinal) = tables.bound_nominal(name) {
+            let record = SemanticTypeRecord {
+                tag: SemanticTypeTag::Nominal,
+                payload0: 0,
+                payload1: 0,
+                text: None,
+                text2: None,
+                nominal: Some(NominalRef::Local(EntityId::new(ordinal))),
+                children: ListSpan::new(0, 0),
+            };
+            return leaf(record, true);
+        }
+        let reason = match tables.binding_state(name) {
+            Some(BindingResolution::External) => TypeReason::UnresolvedExternal,
+            Some(BindingResolution::Ambiguous) => TypeReason::UnresolvedLocalName,
+            Some(BindingResolution::Nominal(_)) => TypeReason::UnresolvedLocalName,
+            None if self.is_import_binding(name) => TypeReason::UnresolvedExternal,
+            None => TypeReason::UnresolvedLocalName,
         };
         Ok(LoweredType {
             record: spelled_unknown(reason, self.spelling_bytes(spelling)?),
@@ -1535,18 +1722,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
         })
     }
 
-    /// True when the name is a live import binding of this module.
-    /// Shadowed bindings are dead, so they never mark a name as imported.
-    fn is_imported_name(&self, name: &str) -> bool {
-        self.module
-            .declarations
-            .iter()
-            .enumerate()
-            .any(|(index, declaration)| {
-                self.live[index]
-                    && declaration.kind == DeclarationKind::Alias
-                    && declaration.name == name
-            })
+    fn is_import_binding(&self, name: &str) -> bool {
+        self.module.declarations.iter().enumerate().any(|(index, declaration)| {
+            self.live[index]
+                && declaration.kind == DeclarationKind::Alias
+                && declaration.value_span.is_some()
+                && declaration.name == name
+        })
     }
 
     /// Lowers a union: expressible exactly when every member lowers to a
@@ -1562,14 +1744,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let Some(anchor) = self.anchor() else {
             return self.unrepresentable(spelling);
         };
-        match self.row_children(members, tables, anchor)? {
-            Some(children) => Ok(LoweredType {
-                record: union_record(),
-                children,
-                resolved: true,
-            }),
-            None => self.unrepresentable(spelling),
-        }
+        let Some(children) = self.member_rows(members, tables, anchor)? else {
+            return self.unrepresentable(spelling);
+        };
+        let Some(children) = self.admit_flat_children(union_record(), children, anchor)? else {
+            return self.unrepresentable(spelling);
+        };
+        Ok(LoweredType {
+            record: union_record(),
+            children,
+            resolved: true,
+        })
     }
 
     /// The exact written annotation bytes, or the empty cell when the
@@ -1658,7 +1843,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             end: occurrence.span.end,
                         })
                     })?;
-                    let target = foreign_package(module_spelling, binding, imported)?;
+                    let target =
+                        foreign_package(module_spelling, binding, imported, None)?;
                     let confidence = match checked {
                         Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                         _ => OccurrenceConfidence::Index,
@@ -1675,27 +1861,107 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 )))
             }
             OccurrenceReceiver::EnclosingClass { class } => {
-                match self.enclosing_method(occurrence, class) {
-                    Some(ordinal) => {
+                if occurrence.kind == OccurrenceKind::AttributeRead {
+                    match self.enclosing_field(occurrence, class) {
+                        Some(ordinal) => {
+                            let confidence = match checked {
+                                Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                                _ => OccurrenceConfidence::Index,
+                            };
+                            Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence,
+                            )))
+                        }
+                        None => Ok(Some((
+                            foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
+                            OccurrenceConfidence::Index,
+                        ))),
+                    }
+                } else {
+                    match self.enclosing_method(occurrence, class) {
+                        Some(ordinal) => {
+                            let confidence = match checked {
+                                Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                                _ => OccurrenceConfidence::Index,
+                            };
+                            Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence,
+                            )))
+                        }
+                        // The attribute resolves to no live method of the class
+                        // (an inherited or unknown method): an honest typed
+                        // foreign method key, never a fabricated local.
+                        None => Ok(Some((
+                            foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                            OccurrenceConfidence::Index,
+                        ))),
+                    }
+                }
+            }
+            OccurrenceReceiver::Foreign { receiver } => {
+                if occurrence.kind == OccurrenceKind::AttributeRead {
+                    if let Some(receiver) = receiver {
+                        if let Some(row) = rows
+                            .iter()
+                            .find(|row| row.name == receiver.as_bytes() && row.imported.is_some())
+                        {
+                            let imported =
+                                row.imported.expect("imported span proven non-None above");
+                            let module_spelling =
+                                self.imported_module_spelling(receiver, imported)?;
+                            let module_span = self
+                                .spelling_span(core::str::from_utf8(module_spelling).map_err(
+                                    |_| {
+                                        PythonCollectError::Projection(
+                                            PythonProjectionFault::ForeignSpellingUtf8 {
+                                                start: imported.start,
+                                                end: imported.end,
+                                            },
+                                        )
+                                    },
+                                )?)
+                                .unwrap_or(imported);
+                            let binding = self.slice(occurrence.span)?;
+                            let binding = core::str::from_utf8(binding).map_err(|_| {
+                                PythonCollectError::Projection(
+                                    PythonProjectionFault::ForeignSpellingUtf8 {
+                                        start: occurrence.span.start,
+                                        end: occurrence.span.end,
+                                    },
+                                )
+                            })?;
+                            let target = foreign_package(
+                                module_spelling,
+                                binding,
+                                module_span,
+                                Some(EntityKind::Field),
+                            )?;
+                            let confidence = match checked {
+                                Some(SymbolOutcome::Foreign { .. }) => {
+                                    OccurrenceConfidence::Import
+                                }
+                                _ => OccurrenceConfidence::Index,
+                            };
+                            return Ok(Some((target, confidence)));
+                        }
+                    }
+                    if let Some(ordinal) = self.module_field(occurrence) {
                         let confidence = match checked {
                             Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
                             _ => OccurrenceConfidence::Index,
                         };
-                        Ok(Some((
+                        return Ok(Some((
                             OccurrenceTarget::Local(EntityId::new(ordinal)),
                             confidence,
-                        )))
+                        )));
                     }
-                    // The attribute resolves to no live method of the class
-                    // (an inherited or unknown method): an honest typed
-                    // foreign method key, never a fabricated local.
-                    None => Ok(Some((
-                        foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                    return Ok(Some((
+                        foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
                         OccurrenceConfidence::Index,
-                    ))),
+                    )));
                 }
-            }
-            OccurrenceReceiver::Foreign { receiver } => {
                 // A receiver that names an import binding resolves through
                 // that binding's own package key; any other receiver stays
                 // an honest typed foreign method key.
@@ -1705,7 +1971,20 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         .find(|row| row.name == receiver.as_bytes() && row.imported.is_some())
                     {
                         let imported = row.imported.expect("imported span proven non-None above");
-                        let module_spelling = self.slice(imported)?;
+                        let module_spelling =
+                            self.imported_module_spelling(receiver, imported)?;
+                        let module_span = self
+                            .spelling_span(core::str::from_utf8(module_spelling).map_err(
+                                |_| {
+                                    PythonCollectError::Projection(
+                                        PythonProjectionFault::ForeignSpellingUtf8 {
+                                            start: imported.start,
+                                            end: imported.end,
+                                        },
+                                    )
+                                },
+                            )?)
+                            .unwrap_or(imported);
                         let binding = self.slice(occurrence.span)?;
                         let binding = core::str::from_utf8(binding).map_err(|_| {
                             PythonCollectError::Projection(
@@ -1715,12 +1994,18 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 },
                             )
                         })?;
-                        let target = foreign_package(module_spelling, binding, imported)?;
+                        let target =
+                            foreign_package(module_spelling, binding, module_span, None)?;
                         let confidence = match checked {
                             Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                             _ => OccurrenceConfidence::Index,
                         };
                         return Ok(Some((target, confidence)));
+                    }
+                    if let Some(resolved) =
+                        self.annotated_receiver_target(occurrence, receiver, checked)?
+                    {
+                        return Ok(Some(resolved));
                     }
                 }
                 Ok(Some((
@@ -1774,15 +2059,253 @@ impl<'a, 'source> Emitter<'a, 'source> {
         method.map(|(_, ordinal)| ordinal)
     }
 
+    fn enclosing_field(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
+        let class_bytes = class.as_bytes();
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut class_span: Option<Span> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Class
+                || declaration.name.as_bytes() != class_bytes
+                || !self.live[index]
+                || !span_contains(declaration.span, occurrence.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let occupied = class_span.map_or(true, |span| area < span.end - span.start);
+            if occupied {
+                class_span = Some(declaration.span);
+            }
+        }
+        let class_span = class_span?;
+        let mut matches: Vec<u32> = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Field
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+                || !span_contains(class_span, declaration.span)
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
+    /// The borrowed module spelling of one import binding when a `from … import
+    /// …` row carries a dotted module in `value_source`; otherwise the
+    /// binding's own `value_span` spelling.
+    fn imported_module_spelling(
+        &self,
+        receiver: &str,
+        imported: Span,
+    ) -> Result<&'source [u8], PythonCollectError> {
+        if let Some(declaration) = self
+            .module
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name == receiver)
+        {
+            if let Some(module) = declaration
+                .value_source
+                .as_deref()
+                .filter(|module| *module != receiver)
+            {
+                if let Some(span) = self.spelling_span(module) {
+                    return self.slice(span);
+                }
+            }
+        }
+        self.slice(imported)
+    }
+
+    /// The first exact source span of one written spelling, when it appears in
+    /// the module bytes.
+    fn spelling_span(&self, spelling: &str) -> Option<Span> {
+        let spelling = spelling.as_bytes();
+        self.source
+            .windows(spelling.len())
+            .position(|window| window == spelling)
+            .and_then(|start| {
+                let end = start + spelling.len();
+                let start = u32::try_from(start).ok()?;
+                let end = u32::try_from(end).ok()?;
+                Some(Span { start, end })
+            })
+    }
+
+    /// The lane ordinal of the live field one attribute read resolves to when
+    /// exactly one live field in the module carries the attribute spelling.
+    fn module_field(&self, occurrence: &OccurrenceFact) -> Option<u32> {
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut matches: Vec<u32> = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Field
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
+    /// Resolves one plain-name receiver through its parameter annotation when
+    /// the import-binding arm did not apply: a unique live class yields the
+    /// unique method inside that class; a unique live import alias yields the
+    /// alias statement's package key. Every ambiguous or unproven case keeps
+    /// today's universe key by returning `None`.
+    fn annotated_receiver_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        receiver: &str,
+        checked: Option<&SymbolOutcome>,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        let function_index = match self.enclosing_function_index(occurrence) {
+            Some(index) => index,
+            None => return Ok(None),
+        };
+        let function = &self.module.declarations[function_index];
+        let type_name = match receiver_annotation_name(function, receiver) {
+            Some(name) => name,
+            None => return Ok(None),
+        };
+        let candidates = self.live_class_or_alias_indices(type_name);
+        if candidates.len() != 1 {
+            return Ok(None);
+        }
+        let index = candidates[0];
+        let declaration = &self.module.declarations[index];
+        match declaration.kind {
+            DeclarationKind::Class => {
+                let Some(ordinal) = self.method_in_class(occurrence, declaration.span) else {
+                    return Ok(None);
+                };
+                let confidence = match checked {
+                    Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                    _ => OccurrenceConfidence::Index,
+                };
+                Ok(Some((
+                    OccurrenceTarget::Local(EntityId::new(ordinal)),
+                    confidence,
+                )))
+            }
+            DeclarationKind::Alias => {
+                let module_span = match alias_import_module_span(self.source, declaration.span) {
+                    Some(span) => span,
+                    None => return Ok(None),
+                };
+                let module_spelling = self.slice(module_span)?;
+                let binding = self.slice(occurrence.span)?;
+                let binding = core::str::from_utf8(binding).map_err(|_| {
+                    PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+                        start: occurrence.span.start,
+                        end: occurrence.span.end,
+                    })
+                })?;
+                let target = foreign_package(
+                    module_spelling,
+                    binding,
+                    module_span,
+                    Some(EntityKind::Function),
+                )?;
+                let confidence = match checked {
+                    Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
+                    _ => OccurrenceConfidence::Index,
+                };
+                Ok(Some((target, confidence)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The declaration index of the innermost live function whose name equals
+    /// `occurrence.owner` and whose span contains the call site.
+    fn enclosing_function_index(&self, occurrence: &OccurrenceFact) -> Option<usize> {
+        let owner_bytes = occurrence.owner.as_bytes();
+        let mut best: Option<(Span, usize)> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Function
+                || declaration.name.as_bytes() != owner_bytes
+                || !self.live[index]
+                || !span_contains(declaration.span, occurrence.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let occupied = best.map_or(true, |(span, _)| area < span.end - span.start);
+            if occupied {
+                best = Some((declaration.span, index));
+            }
+        }
+        best.map(|(_, index)| index)
+    }
+
+    /// Live class and import-alias declaration indices sharing one name.
+    fn live_class_or_alias_indices(&self, name: &str) -> Vec<usize> {
+        let name_bytes = name.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter(|(index, declaration)| {
+                self.live[*index]
+                    && matches!(
+                        declaration.kind,
+                        DeclarationKind::Class | DeclarationKind::Alias
+                    )
+                    && declaration.name.as_bytes() == name_bytes
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The lane ordinal of the sole live method with the attribute spelling
+    /// inside `class_span`, or `None` when zero or more than one match.
+    fn method_in_class(&self, occurrence: &OccurrenceFact, class_span: Span) -> Option<u32> {
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut matches = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Function
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+                || !span_contains(class_span, declaration.span)
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
     /// Lowers one checker-inferred type to its root record and the ordered
     /// row coordinates of its children. The root record sits directly on
     /// the owning fact; nested compounds consume pooled anonymous rows.
     /// A `Named` spelling that resolves to a module class becomes that
     /// class's nominal row; any other named spelling has no borrowed bytes
-    /// to own, so the honest gap names the oracle. A member run wider than
-    /// the bounded fact child lane cannot be hosted either, so it answers
-    /// `None` — the caller's honest oracle gap — instead of truncating a
-    /// proven shape.
+    /// to own, so the honest gap names the oracle. A tuple or union wider
+    /// than one type-child row is folded into same-tag chunks so every
+    /// member stays reachable. A callable wider than that lane answers
+    /// `None` — nesting function pointers would invent a different type.
     fn inferred_root(
         &mut self,
         inferred: &InferredType,
@@ -1842,9 +2365,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 let Some(anchor) = anchor else {
                     return Ok(None);
                 };
-                if elements.len() > MAX_TYPE_CHILDREN {
-                    return Ok(None);
-                }
                 let mut children = Vec::new();
                 for element in elements.as_ref() {
                     match self.inferred_row(element, tables, anchor)? {
@@ -1852,15 +2372,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         None => return Ok(None),
                     }
                 }
+                let Some(children) =
+                    self.admit_flat_children(tuple_record(), children, anchor)?
+                else {
+                    return Ok(None);
+                };
                 Ok(Some((tuple_record(), children)))
             }
             InferredType::Union(members) => {
                 let Some(anchor) = anchor else {
                     return Ok(None);
                 };
-                if members.len() > MAX_TYPE_CHILDREN {
-                    return Ok(None);
-                }
                 let mut children = Vec::new();
                 for member in members.as_ref() {
                     match self.inferred_row(member, tables, anchor)? {
@@ -1868,6 +2390,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         None => return Ok(None),
                     }
                 }
+                let Some(children) =
+                    self.admit_flat_children(union_record(), children, anchor)?
+                else {
+                    return Ok(None);
+                };
                 Ok(Some((union_record(), children)))
             }
             InferredType::Callable { params, result } => {
@@ -2073,6 +2600,9 @@ fn reference_kind(kind: backend_frontend_python::legacy::OccurrenceKind) -> Refe
             ReferenceKind::FunctionCall
         }
         backend_frontend_python::legacy::OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
+        backend_frontend_python::legacy::OccurrenceKind::AttributeRead => {
+            ReferenceKind::FieldAccess
+        }
     }
 }
 
@@ -2115,13 +2645,279 @@ const fn span_contains(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
 
-/// Python legally rebinds a name in the same scope: the later binding wins
-/// and the earlier one is dead at runtime. The identity model is
-/// coordinate-free, so two byte-identical twins in one scope share one
-/// family and one structural variant and the image build rejects the honest
-/// duplicate as `DuplicateDeclarationIdentity`. This pass keeps the live
-/// binding per `(owner, kind, name)` signature group instead of minting
-/// coordinates into identity.
+/// `self` on an instance method and `cls` on a classmethod are receivers, not
+/// parameters. Any other parameter with those names stays.
+fn is_receiver_parameter(receiver: ReceiverKind, name: &str) -> bool {
+    match receiver {
+        ReceiverKind::Plain => name == "self",
+        ReceiverKind::ClassMethod => name == "cls",
+        ReceiverKind::StaticMethod | ReceiverKind::Property => false,
+    }
+}
+
+/// The non-receiver parameter whose name equals `receiver`, when its
+/// annotation is a plain undotted name.
+fn receiver_annotation_name<'a>(
+    declaration: &'a DeclarationFact,
+    receiver: &str,
+) -> Option<&'a str> {
+    for parameter in &declaration.parameters {
+        if is_receiver_parameter(declaration.receiver, &parameter.name) {
+            continue;
+        }
+        if parameter.name != receiver {
+            continue;
+        }
+        return match &parameter.annotation {
+            Annotation::Name { name, .. } if !name.contains('.') => Some(name.as_str()),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// Borrowed source span of the module path in one import alias statement.
+fn alias_import_module_span(source: &[u8], statement: Span) -> Option<Span> {
+    let raw = source.get(statement.start as usize..statement.end as usize)?;
+    let (lo, hi) = trim_ascii_bounds(raw);
+    if lo >= hi {
+        return None;
+    }
+    let stmt = raw.get(lo..hi)?;
+    let base = statement.start + lo as u32;
+    if stmt.starts_with(b"from ") {
+        let rest = stmt.get(5..)?;
+        let (rlo, rhi) = trim_ascii_bounds(rest);
+        if rlo >= rhi {
+            return None;
+        }
+        let rest = rest.get(rlo..rhi)?;
+        let rest_base = base + 5 + rlo as u32;
+        let import_pos = rest
+            .windows(8)
+            .position(|window| window == b" import ")?;
+        let module = rest.get(..import_pos)?;
+        let (mlo, mhi) = trim_ascii_bounds(module);
+        if mlo >= mhi {
+            return None;
+        }
+        let module = module.get(mlo..mhi)?;
+        if module.is_empty() || module[0] == b'.' || module.contains(&b'\n') {
+            return None;
+        }
+        return Some(Span {
+            start: rest_base + mlo as u32,
+            end: rest_base + mhi as u32,
+        });
+    }
+    if stmt.starts_with(b"import ") {
+        let rest = stmt.get(7..)?;
+        let (rlo, rhi) = trim_ascii_bounds(rest);
+        if rlo >= rhi {
+            return None;
+        }
+        let rest = rest.get(rlo..rhi)?;
+        let rest_base = base + 7 + rlo as u32;
+        let mut parts: Vec<&[u8]> = Vec::new();
+        for part in rest.split(|byte: &u8| byte.is_ascii_whitespace()) {
+            if !part.is_empty() {
+                parts.push(part);
+            }
+        }
+        if parts.len() != 3 || parts[1] != b"as" {
+            return None;
+        }
+        let module = parts[0];
+        if module.is_empty() || module[0] == b'.' || module.contains(&b'\n') {
+            return None;
+        }
+        return Some(Span {
+            start: rest_base,
+            end: rest_base + module.len() as u32,
+        });
+    }
+    None
+}
+
+const fn trim_ascii_bounds(bytes: &[u8]) -> (usize, usize) {
+    let mut start = 0;
+    while start < bytes.len() && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    (start, end)
+}
+
+fn collect_import_bindings(source: &str, module_name: &str) -> (HashMap<String, String>, HashSet<String>) {
+    let is_package = module_name.ends_with("__init__");
+    let mut bound = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    for line in source.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("from ") {
+            if let Some((origin, names)) = rest.split_once(" import ") {
+                let (level, module) = parse_relative_origin(origin);
+                let origin = import_origin(module_name, is_package, level, module);
+                for part in names.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() || part == "*" { continue; }
+                    let (imported, local) = parse_import_alias(part);
+                    let target = if origin.is_empty() { imported.to_owned() } else { format!("{origin}.{imported}") };
+                    record_import_target(&mut bound, &mut ambiguous, local, target);
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("import ") {
+            for part in rest.split(',') {
+                let part = part.trim();
+                if part.is_empty() { continue; }
+                let (imported, local) = parse_import_alias(part);
+                record_import_target(&mut bound, &mut ambiguous, local, imported.to_owned());
+            }
+        }
+    }
+    (bound, ambiguous)
+}
+
+fn parse_relative_origin(origin: &str) -> (u32, Option<&str>) {
+    let dots = origin.chars().take_while(|c| *c == '.').count();
+    let tail = origin[dots..].trim();
+    (u32::try_from(dots).unwrap_or(0), if tail.is_empty() { None } else { Some(tail) })
+}
+
+fn parse_import_alias(part: &str) -> (&str, &str) {
+    let mut words = part.split_whitespace();
+    let imported = words.next().unwrap_or(part);
+    if words.next() == Some("as") { (imported, words.next().unwrap_or(imported)) } else { (imported, imported.split('.').next().unwrap_or(imported)) }
+}
+
+fn import_origin(module_name: &str, is_package: bool, level: u32, module: Option<&str>) -> String {
+    if level == 0 { return module.unwrap_or("").to_owned(); }
+    let mut parts: Vec<&str> = module_name.split('.').filter(|p| !p.is_empty()).collect();
+    if !is_package { parts.pop(); }
+    let extra = (level as usize).saturating_sub(1);
+    if extra >= parts.len() { parts.clear(); } else if extra > 0 { parts.truncate(parts.len() - extra); }
+    let mut origin = parts.join(".");
+    if let Some(module) = module.filter(|n| !n.is_empty()) {
+        origin = if origin.is_empty() { module.to_owned() } else { format!("{origin}.{module}") };
+    }
+    origin
+}
+
+fn record_import_target(bound: &mut HashMap<String, String>, ambiguous: &mut HashSet<String>, local: &str, target: String) {
+    if ambiguous.contains(local) { return; }
+    match bound.get(local) {
+        Some(existing) if existing == &target => {}
+        Some(_) => { bound.remove(local); ambiguous.insert(local.to_owned()); }
+        None => { bound.insert(local.to_owned(), target); }
+    }
+}
+
+fn import_name_bindings(
+    source: &str,
+    module_name: &str,
+    classes: &[(&[u8], u32)],
+) -> HashMap<String, BindingResolution> {
+    let (import_targets, ambiguous) = collect_import_bindings(source, module_name);
+    let mut bound = HashMap::new();
+    for (local, target) in import_targets {
+        let resolution = import_binding_resolution(&target, classes);
+        bound.insert(local, resolution);
+    }
+    for name in ambiguous {
+        bound.insert(name, BindingResolution::Ambiguous);
+    }
+    bound
+}
+
+fn resolve_alias_target(
+    bound: &HashMap<String, BindingResolution>,
+    classes: &[(&[u8], u32)],
+    target: &str,
+) -> Option<BindingResolution> {
+    match bound.get(target) {
+        Some(BindingResolution::Nominal(ordinal)) => Some(BindingResolution::Nominal(*ordinal)),
+        Some(BindingResolution::Ambiguous) => Some(BindingResolution::Ambiguous),
+        Some(BindingResolution::External) => Some(BindingResolution::External),
+        None => class_binding_for_name(classes, target),
+    }
+}
+
+fn class_binding_for_name(classes: &[(&[u8], u32)], name: &str) -> Option<BindingResolution> {
+    classes
+        .iter()
+        .find(|(known, _)| *known == name.as_bytes())
+        .map(|(_, ordinal)| BindingResolution::Nominal(*ordinal))
+}
+
+fn apply_type_alias_binding(
+    bound: &mut HashMap<String, BindingResolution>,
+    locals: &mut HashMap<String, u32>,
+    alias_name: &str,
+    resolution: Option<BindingResolution>,
+) {
+    match resolution {
+        Some(BindingResolution::Nominal(ordinal)) => {
+            record_local_binding(bound, locals, alias_name.as_bytes(), ordinal);
+        }
+        Some(BindingResolution::Ambiguous) => {
+            bound.insert(alias_name.to_owned(), BindingResolution::Ambiguous);
+        }
+        Some(BindingResolution::External) => {
+            bound.insert(alias_name.to_owned(), BindingResolution::External);
+        }
+        None => {}
+    }
+}
+
+fn record_local_binding(
+    bound: &mut HashMap<String, BindingResolution>,
+    locals: &mut HashMap<String, u32>,
+    name: &[u8],
+    ordinal: u32,
+) {
+    let name = std::str::from_utf8(name).unwrap_or("");
+    if name.is_empty() {
+        return;
+    }
+    if let Some(prev) = locals.get(name) {
+        if *prev != ordinal {
+            bound.insert(name.to_owned(), BindingResolution::Ambiguous);
+        }
+        return;
+    }
+    locals.insert(name.to_owned(), ordinal);
+    bound.insert(name.to_owned(), BindingResolution::Nominal(ordinal));
+}
+
+fn import_binding_resolution(target: &str, classes: &[(&[u8], u32)]) -> BindingResolution {
+    let simple = target.rsplit('.').next().unwrap_or(target);
+    let matches: Vec<u32> = classes
+        .iter()
+        .filter(|(known, _)| *known == simple.as_bytes())
+        .map(|(_, ordinal)| *ordinal)
+        .collect();
+    match matches.len() {
+        0 => BindingResolution::External,
+        1 => BindingResolution::Nominal(matches[0]),
+        _ => BindingResolution::Ambiguous,
+    }
+}
+
+fn annotation_root_name(annotation: &Annotation) -> Option<String> {
+    match annotation { Annotation::Name { name, .. } => Some(name.clone()), _ => None }
+}
+
+/// Python legally rebinds a name in the same scope at runtime, but the syntax
+/// extractor already drops later module-level rebindings and keeps overload
+/// branches distinct. The identity model is coordinate-free, so two
+/// byte-identical twins in one scope share one family and one structural
+/// variant and the image build rejects the honest duplicate as
+/// `DuplicateDeclarationIdentity`. This pass keeps the first live binding per
+/// `(owner, kind, name)` signature group instead of minting coordinates into
+/// identity.
 ///
 /// Grouping is by lexical owner (the innermost enclosing class or function,
 /// or the module root), declaration kind, and name, so two different scopes
@@ -2186,8 +2982,8 @@ fn compute_live_set(module: &ModuleFacts) -> Vec<bool> {
             }
             let mut ordered = twins.clone();
             ordered.sort_by_key(|index| (module.declarations[*index].span.start, *index));
-            // Keep the last (live) binding; earlier twins are shadowed.
-            for shadowed in &ordered[..ordered.len() - 1] {
+            // Keep the first (live) binding; later twins are shadowed.
+            for shadowed in &ordered[1..] {
                 live[*shadowed] = false;
             }
         }
@@ -2690,6 +3486,7 @@ fn foreign_package<'source>(
     module_spelling: &'source [u8],
     display: &'source str,
     spelling_span: Span,
+    kind: Option<EntityKind>,
 ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
     let path = core::str::from_utf8(module_spelling).map_err(|_| {
         PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
@@ -2703,7 +3500,7 @@ fn foreign_package<'source>(
     };
     let lineage =
         PackageLineage::new("pypi", name).map_err(|cause| lineage_fault(cause, spelling_span))?;
-    let key = ForeignKey::new(ForeignOrigin::Package(lineage), path, display, None)
+    let key = ForeignKey::new(ForeignOrigin::Package(lineage), path, display, kind)
         .map_err(|cause| foreign_key_fault(cause, spelling_span))?;
     Ok(OccurrenceTarget::Foreign(key))
 }
@@ -2736,6 +3533,24 @@ fn foreign_method<'source>(
     written: &'source [u8],
     spelling_span: Span,
 ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
+    foreign_entity(written, spelling_span, EntityKind::Function)
+}
+
+/// The honest typed foreign key for one unresolved attribute read: the exact
+/// written attribute spelling as a `pypi`-universe field target, never a
+/// fabricated local.
+fn foreign_field<'source>(
+    written: &'source [u8],
+    spelling_span: Span,
+) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
+    foreign_entity(written, spelling_span, EntityKind::Field)
+}
+
+fn foreign_entity<'source>(
+    written: &'source [u8],
+    spelling_span: Span,
+    kind: EntityKind,
+) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
     let path = core::str::from_utf8(written).map_err(|_| {
         PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
             start: spelling_span.start,
@@ -2746,7 +3561,7 @@ fn foreign_method<'source>(
         ForeignOrigin::Universe { ecosystem: "pypi" },
         path,
         path,
-        Some(EntityKind::Function),
+        Some(kind),
     )
     .map_err(|cause| foreign_key_fault(cause, spelling_span))?;
     Ok(OccurrenceTarget::Foreign(key))

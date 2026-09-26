@@ -7,11 +7,20 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
+/// One whitespace clause whose lexical term is the leaf and whose owner
+/// segments must match the presentation parent chain.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct QualifiedClause {
+    leaf: String,
+    owners: Vec<String>,
+}
+
 /// A validated bounded local text query.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalQuery {
     lexical: lexical::Query,
     limit: usize,
+    qualified: Vec<QualifiedClause>,
 }
 
 impl LocalQuery {
@@ -33,12 +42,22 @@ impl LocalQuery {
         if limit == 0 || limit > limits.max_page {
             return Err(QueryError::InvalidLimit);
         }
-        let terms = text
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let mut terms = Vec::new();
+        let mut qualified = Vec::new();
+        for clause in text.split_whitespace() {
+            if let Some(parsed) = parse_qualified_clause(clause) {
+                terms.push(parsed.leaf.clone());
+                qualified.push(parsed);
+            } else {
+                terms.push(clause.to_owned());
+            }
+        }
         let lexical = lexical::Query::prefix(terms, limits).map_err(QueryError::Lexical)?;
-        Ok(Self { lexical, limit })
+        Ok(Self {
+            lexical,
+            limit,
+            qualified,
+        })
     }
 
     /// Maximum displayed rows.
@@ -50,6 +69,27 @@ impl LocalQuery {
     pub(crate) const fn lexical(&self) -> &lexical::Query {
         &self.lexical
     }
+
+    pub(crate) fn qualified_clauses(&self) -> &[QualifiedClause] {
+        &self.qualified
+    }
+}
+
+fn parse_qualified_clause(clause: &str) -> Option<QualifiedClause> {
+    if !clause.contains('.') && !clause.contains("::") {
+        return None;
+    }
+    let normalized = clause.replace("::", ".");
+    let segments: Vec<&str> = normalized.split('.').collect();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        return None;
+    }
+    let leaf = segments.last()?.to_ascii_lowercase();
+    let owners = segments[..segments.len() - 1]
+        .iter()
+        .map(|segment| segment.to_ascii_lowercase())
+        .collect();
+    Some(QualifiedClause { leaf, owners })
 }
 
 /// Query lane identity.
@@ -280,15 +320,34 @@ pub struct QueryCoordinator {
     pub(super) corpus: Arc<Corpus>,
 }
 
+/// How the resident search snapshot absorbed the latest published view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SnapshotMaintenance {
+    /// The published selection already matched the resident snapshot.
+    Reused,
+    /// Lexical fields were unchanged, so only the binding stamp moved.
+    Rebound,
+    /// A bounded document edit was written into the resident Tantivy index.
+    Revised {
+        /// Documents added, removed, or rewritten. Untouched documents kept
+        /// their postings.
+        rewritten_documents: usize,
+    },
+    /// The resident projection was replaced by a complete build.
+    Rebuilt,
+}
+
 /// Owns the immutable local search materialization selected by the current
 /// published product view.
 ///
-/// Search commands reuse the Tantivy adapter and canonical identity maps
-/// while the workspace, view root, and coverage witness remain unchanged.
-/// A replacement is built completely before it becomes current.
+/// An unchanged selection reuses the coordinator. A changed selection keeps
+/// the resident Tantivy index when the lexical document edit fits the
+/// maintenance budget, and replaces it completely otherwise.
 #[derive(Default)]
 pub struct SearchSnapshotOwner {
     selected: Option<QueryCoordinator>,
+    builds: u64,
+    maintenance: Option<SnapshotMaintenance>,
 }
 
 impl SearchSnapshotOwner {
@@ -305,14 +364,51 @@ impl SearchSnapshotOwner {
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<&QueryCoordinator, QueryError> {
-        let current = self.selected.as_ref().is_some_and(|selected| {
+        if self.selected.as_ref().is_some_and(|selected| {
             selected.matches_selection(workspace, &view, coverage, &semantic_evidence)
-        });
-        if !current {
-            let replacement = QueryCoordinator::new(workspace, view, coverage, semantic_evidence)?;
-            self.selected = Some(replacement);
+        }) {
+            self.maintenance = Some(SnapshotMaintenance::Reused);
+            return self.selected.as_ref().ok_or(QueryError::InvalidView);
         }
+        let revised = match self.selected.as_mut() {
+            Some(selected) => selected.try_revise(workspace, &view, coverage, &semantic_evidence),
+            None => Ok(None),
+        };
+        match revised {
+            Ok(Some(maintenance)) => {
+                self.maintenance = Some(maintenance);
+                return self.selected.as_ref().ok_or(QueryError::InvalidView);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if matches!(error, QueryError::LexicalProvider) {
+                    self.selected = None;
+                } else {
+                    return Err(error);
+                }
+            }
+        }
+        self.selected = Some(QueryCoordinator::new(
+            workspace,
+            view,
+            coverage,
+            semantic_evidence,
+        )?);
+        self.builds = self.builds.saturating_add(1);
+        self.maintenance = Some(SnapshotMaintenance::Rebuilt);
         self.selected.as_ref().ok_or(QueryError::InvalidView)
+    }
+
+    /// Returns how the most recent [`Self::select`] treated the resident index.
+    #[must_use]
+    pub(crate) fn maintenance(&self) -> Option<SnapshotMaintenance> {
+        self.maintenance
+    }
+
+    /// Returns how many complete Tantivy builds this owner has performed.
+    #[must_use]
+    pub(crate) fn projection_builds(&self) -> u64 {
+        self.builds
     }
 }
 
@@ -334,65 +430,64 @@ impl QueryCoordinator {
         coverage: CoverageWitness,
         semantic_evidence: SemanticQueryCorpus,
     ) -> Result<Self, QueryError> {
-        if !matches!(
-            coverage,
-            CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
-        ) {
-            return Err(QueryError::IncompleteCoverage);
-        }
-        if !view.is_coherent()
-            || view.capability().is_none()
-            || !view
-                .coverage()
-                .iter()
-                .any(|coverage| coverage.is_complete())
-        {
-            return Err(QueryError::IncompleteCoverage);
-        }
-        if view.row_count() > Self::MAX_QUERY_ROWS {
-            return Err(QueryError::CorpusLimit);
-        }
-        if semantic_evidence.workspace() != workspace {
-            return Err(QueryError::InvalidSemanticEvidence);
-        }
-        let (documents, entities, candidates, semantic_documents) =
-            collect_selected_documents(workspace, &view, &semantic_evidence)?;
-        let state = RelationState::<lexical::IndexRelation>::from_entries(
-            documents.iter().cloned(),
-            coverage,
-        )
-        .map_err(|_| QueryError::InvalidView)?;
-        let binding = lexical::Binding::new(
-            workspace,
-            state.root(),
-            lexical::Recipe::from_value(view.recipe().as_bytes()),
-            lexical::Authority::from_value(&semantic_evidence.evidence_digest()),
-            lexical::ReadManifest::from_value(&semantic_read_identity(
-                &view,
-                semantic_evidence.evidence_digest(),
-            )),
-        )
-        .with_frontier(lexical::Frontier::from_value(
-            view.frontier().root.as_bytes(),
-        ));
-        let state =
-            lexical::DocumentState::new(binding, coverage, documents, lexical::Limits::default())
-                .map_err(QueryError::Lexical)?;
-        let lexical = lexical::TantivySource::local_adapter(&state, lexical::Limits::default())
-            .map_err(|_| QueryError::LexicalProvider)?;
+        let prepared = prepare_corpus(workspace, view, coverage, semantic_evidence)?;
+        let lexical =
+            lexical::TantivySource::local_adapter(&prepared.state, lexical::Limits::default())
+                .map_err(|_| QueryError::LexicalProvider)?;
         Ok(Self {
             corpus: Arc::new(Corpus {
-                workspace,
-                view,
-                coverage,
+                workspace: prepared.workspace,
+                view: prepared.view,
+                coverage: prepared.coverage,
                 lexical,
-                lexical_binding: binding,
-                entities,
-                candidates,
-                semantic_documents,
-                semantic_evidence,
+                lexical_binding: prepared.binding,
+                entities: prepared.entities,
+                candidates: prepared.candidates,
+                semantic_documents: prepared.semantic_documents,
+                semantic_evidence: prepared.semantic_evidence,
             }),
         })
+    }
+
+    fn try_revise(
+        &mut self,
+        workspace: WorkspaceRoot,
+        view: &ViewRoot,
+        coverage: CoverageWitness,
+        semantic_evidence: &SemanticQueryCorpus,
+    ) -> Result<Option<SnapshotMaintenance>, QueryError> {
+        let prepared =
+            prepare_corpus(workspace, view.clone(), coverage, semantic_evidence.clone())?;
+        let Some(corpus) = Arc::get_mut(&mut self.corpus) else {
+            return Ok(None);
+        };
+        let outcome = corpus
+            .lexical
+            .maintain(&prepared.state, lexical::OverlayLimits::default())
+            .map_err(|error| match error {
+                lexical::TantivySourceError::Contract(error) => QueryError::Lexical(error),
+                lexical::TantivySourceError::Backend(_)
+                | lexical::TantivySourceError::Io(_)
+                | lexical::TantivySourceError::Corrupt(_) => QueryError::LexicalProvider,
+            })?;
+        let maintenance = match outcome {
+            lexical::MaintainOutcome::RebuildRequired => return Ok(None),
+            lexical::MaintainOutcome::Applied(revision) => match revision.kind {
+                lexical::ProjectionKind::Rebound => SnapshotMaintenance::Rebound,
+                lexical::ProjectionKind::Revised => SnapshotMaintenance::Revised {
+                    rewritten_documents: revision.rewritten_documents,
+                },
+            },
+        };
+        corpus.workspace = prepared.workspace;
+        corpus.view = prepared.view;
+        corpus.coverage = prepared.coverage;
+        corpus.lexical_binding = prepared.binding;
+        corpus.entities = prepared.entities;
+        corpus.candidates = prepared.candidates;
+        corpus.semantic_documents = prepared.semantic_documents;
+        corpus.semantic_evidence = prepared.semantic_evidence;
+        Ok(Some(maintenance))
     }
 
     fn matches_selection(
@@ -436,11 +531,26 @@ impl QueryCoordinator {
                 break;
             }
         }
-        let total_matches = hits.len();
-        let matches = hits
+        let mut matches = hits
             .into_iter()
             .map(|hit| (hit.document, hit.relevance))
             .collect::<Vec<_>>();
+        if !query.qualified_clauses().is_empty() {
+            let presentations = presentation_index(&self.corpus.semantic_evidence);
+            matches.retain(|(entity, _)| {
+                self.corpus
+                    .entities
+                    .get(entity)
+                    .is_some_and(|row_id| {
+                        qualified_row_matches(
+                            row_id.stable_key().as_str(),
+                            query.qualified_clauses(),
+                            &presentations,
+                        )
+                    })
+            });
+        }
+        let total_matches = matches.len();
         let rows = matches
             .iter()
             .take(query.limit())
@@ -494,8 +604,8 @@ impl QueryCoordinator {
     ///
     /// The coordinator has already validated the view and bounded its rows,
     /// so callers can safely pass these inputs to an optional semantic
-    /// producer.  Rebuilding a coordinator is required when the selected view
-    /// changes.
+    /// producer. A bounded lexical edit keeps this coordinator and rewrites
+    /// only the affected Tantivy postings.
     #[must_use]
     pub fn semantic_documents(&self) -> &[SemanticDocument] {
         &self.corpus.semantic_documents
@@ -552,6 +662,132 @@ impl QueryCoordinator {
             .is_some_and(|selected| *selected == entity)
             .then_some(candidate)
     }
+}
+
+fn presentation_index<'a>(
+    semantic_evidence: &'a SemanticQueryCorpus,
+) -> BTreeMap<&'a str, &'a SemanticQueryPresentation> {
+    semantic_evidence
+        .facts()
+        .iter()
+        .map(|fact| {
+            let presentation = fact.presentation();
+            (presentation.id.as_str(), presentation)
+        })
+        .collect()
+}
+
+fn qualified_row_matches(
+    row_id: &str,
+    clauses: &[QualifiedClause],
+    presentations: &BTreeMap<&str, &SemanticQueryPresentation>,
+) -> bool {
+    clauses.iter().all(|clause| {
+        qualified_clause_matches(row_id, clause, presentations)
+    })
+}
+
+fn qualified_clause_matches(
+    row_id: &str,
+    clause: &QualifiedClause,
+    presentations: &BTreeMap<&str, &SemanticQueryPresentation>,
+) -> bool {
+    let Some(mut current) = presentations.get(row_id).copied() else {
+        return false;
+    };
+    if !current
+        .name
+        .to_ascii_lowercase()
+        .starts_with(clause.leaf.as_str())
+    {
+        return false;
+    }
+    for owner in clause.owners.iter().rev() {
+        let Some(parent_id) = current.parent.as_deref() else {
+            return false;
+        };
+        let Some(parent) = presentations.get(parent_id).copied() else {
+            return false;
+        };
+        if parent.name.to_ascii_lowercase() != *owner {
+            return false;
+        }
+        current = parent;
+    }
+    true
+}
+
+struct PreparedCorpus {
+    workspace: WorkspaceRoot,
+    view: ViewRoot,
+    coverage: CoverageWitness,
+    binding: lexical::Binding,
+    state: lexical::DocumentState,
+    entities: BTreeMap<EntityId, RowId>,
+    candidates: BTreeMap<backend_extension_qdrant::CandidateId, EntityId>,
+    semantic_documents: Box<[SemanticDocument]>,
+    semantic_evidence: SemanticQueryCorpus,
+}
+
+fn prepare_corpus(
+    workspace: WorkspaceRoot,
+    view: ViewRoot,
+    coverage: CoverageWitness,
+    semantic_evidence: SemanticQueryCorpus,
+) -> Result<PreparedCorpus, QueryError> {
+    if !matches!(
+        coverage,
+        CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+    ) {
+        return Err(QueryError::IncompleteCoverage);
+    }
+    if !view.is_coherent()
+        || view.capability().is_none()
+        || !view
+            .coverage()
+            .iter()
+            .any(|coverage| coverage.is_complete())
+    {
+        return Err(QueryError::IncompleteCoverage);
+    }
+    if view.row_count() > QueryCoordinator::MAX_QUERY_ROWS {
+        return Err(QueryError::CorpusLimit);
+    }
+    if semantic_evidence.workspace() != workspace {
+        return Err(QueryError::InvalidSemanticEvidence);
+    }
+    let (documents, entities, candidates, semantic_documents) =
+        collect_selected_documents(workspace, &view, &semantic_evidence)?;
+    let state =
+        RelationState::<lexical::IndexRelation>::from_entries(documents.iter().cloned(), coverage)
+            .map_err(|_| QueryError::InvalidView)?;
+    let binding = lexical::Binding::new(
+        workspace,
+        state.root(),
+        lexical::Recipe::from_value(view.recipe().as_bytes()),
+        lexical::Authority::from_value(&semantic_evidence.evidence_digest()),
+        lexical::ReadManifest::from_value(&semantic_read_identity(
+            &view,
+            semantic_evidence.evidence_digest(),
+        )),
+    )
+    .with_frontier(lexical::Frontier::from_value(
+        view.frontier().root.as_bytes(),
+    ));
+    let state =
+        lexical::DocumentState::new(binding, coverage, documents, lexical::Limits::default())
+            .map_err(QueryError::Lexical)?;
+    Ok(PreparedCorpus {
+        workspace,
+        view,
+        coverage,
+        binding,
+        state,
+        entities,
+        candidates,
+        semantic_documents,
+        semantic_evidence,
+    })
 }
 
 fn collect_selected_documents(

@@ -388,7 +388,25 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
     let mut server = ready(Fake::default());
     let listed = request(&mut server, "tools/list", &json!({}));
     let tools = &listed["result"]["tools"];
-    for spec in COMMANDS {
+    const SESSION: &[&str] = &[
+        "packages",
+        "add",
+        "remove",
+        "health",
+        "outline",
+        "search",
+        "resolve",
+        "show",
+        "source",
+        "read",
+        "references",
+        "graph",
+    ];
+    for name in SESSION {
+        let spec = COMMANDS
+            .iter()
+            .find(|spec| spec.name == *name)
+            .unwrap_or_else(|| panic!("session row `{name}` left the registry"));
         let grammar = grammar_for(spec.name)
             .unwrap_or_else(|| panic!("registry row `{}` has no grammar", spec.name));
         let tool = tool_named(tools, grammar.tool());
@@ -419,12 +437,15 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
         let required = tool["inputSchema"]["required"]
             .as_array()
             .expect("required is an array");
-        let expected = grammar
+        let mut expected = grammar
             .positional()
             .iter()
-            .filter(|argument| argument.is_required())
+            .filter(|argument| argument.is_required() || grammar.tool() == "backend.index")
             .map(|argument| Value::String(argument.name().to_owned()))
             .collect::<Vec<_>>();
+        if grammar.tool() == "backend.index" {
+            expected = vec![Value::String("path".to_owned())];
+        }
         assert_eq!(required, &expected, "`{}` required operands", spec.name);
         for argument in grammar.positional().iter().chain(grammar.options()) {
             assert!(
@@ -435,37 +456,48 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
             );
         }
     }
+    let names = tools
+        .as_array()
+        .expect("tools is an array")
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
     assert_eq!(
-        tools.as_array().map(Vec::len),
-        Some(COMMANDS.len() + 2),
-        "one tool per registry row, plus backend.query and backend.surface"
+        names,
+        vec![
+            "backend.packages",
+            "backend.index",
+            "backend.remove",
+            "backend.status",
+            "backend.outline",
+            "backend.search",
+            "backend.resolve",
+            "backend.document",
+            "backend.source",
+            "backend.read",
+            "backend.references",
+            "backend.graph",
+        ]
     );
 }
 
 #[test]
-fn the_tool_table_is_grouped_by_domain_in_registry_order() {
+fn the_session_tool_list_leads_with_packages_and_index() {
     let mut server = ready(Fake::default());
     let listed = request(&mut server, "tools/list", &json!({}));
-    let domains: Vec<String> = listed["result"]["tools"]
+    let names: Vec<&str> = listed["result"]["tools"]
         .as_array()
         .expect("tools is an array")
         .iter()
-        .filter_map(|tool| tool["_meta"]["backend/domain"].as_str())
-        .map(ToOwned::to_owned)
+        .map(|tool| tool["name"].as_str().unwrap_or_default())
         .collect();
-    let mut seen: Vec<&str> = Vec::new();
-    for domain in &domains[..COMMANDS.len()] {
-        if seen.last().copied() != Some(domain.as_str()) {
-            assert!(
-                !seen.contains(&domain.as_str()),
-                "the {domain} domain is emitted in two runs"
-            );
-            seen.push(domain);
-        }
-    }
-    assert_eq!(
-        seen,
-        vec!["library", "registry", "home", "session", "system"]
+    assert_eq!(names.first().copied(), Some("backend.packages"));
+    assert_eq!(names.get(1).copied(), Some("backend.index"));
+    assert!(
+        names
+            .iter()
+            .all(|name| *name != "backend.surface" && *name != "backend.query"),
+        "the session list must not advertise the escape hatches: {names:?}"
     );
 }
 
@@ -488,24 +520,13 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
 }
 
 #[test]
-fn the_surface_escape_hatch_still_advertises_every_typed_operation() {
+fn the_session_list_hides_the_surface_escape_hatch() {
     let mut server = ready(Fake::default());
     let listed = request(&mut server, "tools/list", &json!({}));
-    let surface = tool_named(&listed["result"]["tools"], SURFACE_TOOL);
-    let advertised =
-        surface["inputSchema"]["properties"]["command"]["properties"]["operation"]["enum"]
-            .as_array()
-            .expect("the operation enum");
-    let expected = COMMANDS
-        .iter()
-        .filter(|spec| spec.is_surface())
-        .map(|spec| Value::String(spec.name.to_owned()))
-        .collect::<Vec<_>>();
-    assert_eq!(advertised, &expected);
-    assert_eq!(
-        surface["inputSchema"]["properties"]["detail"]["enum"],
-        json!(["summary", "standard", "full"]),
-        "the escape hatch must advertise the presentation control it accepts"
+    let tools = listed["result"]["tools"].as_array().expect("tools");
+    assert!(
+        tools.iter().all(|tool| tool["name"] != SURFACE_TOOL),
+        "backend.surface is not part of the session tool list"
     );
 }
 
@@ -1101,11 +1122,13 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
     let instructions = initialized["result"]["instructions"]
         .as_str()
         .unwrap_or_default();
+    assert!(instructions.contains("backend.index"), "{instructions}");
+    assert!(instructions.contains("absolute path"), "{instructions}");
+    assert!(instructions.contains("backend.document"), "{instructions}");
     assert!(
         instructions.contains("backend://workspace/current"),
         "{instructions}"
     );
-    assert!(instructions.contains("backend.document"), "{instructions}");
 }
 
 #[test]

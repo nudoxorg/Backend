@@ -132,7 +132,7 @@ pub fn records(list: &RecordList, within: Option<&ProjectRef>, theme: Theme) -> 
     let mut lines = Lines::new();
     lines.push(coverage(list.coverage(), theme));
     if list.is_empty() {
-        lines.push(empty_sentence(list));
+        lines.push(list.empty_explanation());
         return lines.finish();
     }
     for record in list.records() {
@@ -145,17 +145,6 @@ pub fn records(list: &RecordList, within: Option<&ProjectRef>, theme: Theme) -> 
         ));
     }
     lines.finish()
-}
-
-fn empty_sentence(list: &RecordList) -> String {
-    let coverage = list.coverage();
-    if coverage.has_unavailable() {
-        "no rows, and at least one lane answered nothing — read the marks above".to_owned()
-    } else if coverage.readiness() == "indexing" {
-        "no rows yet; indexing has not finished for this revision".to_owned()
-    } else {
-        format!("no declaration matches {:?} at this revision", list.query())
-    }
 }
 
 fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>, theme: Theme) {

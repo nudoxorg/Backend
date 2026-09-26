@@ -100,6 +100,8 @@
 (parameter (identifier) @variable.parameter)
 
 (lifetime (identifier) @label)
+; NUDOX: the whole lifetime reads as one token (the tick was `@operator` below).
+(lifetime "'" @label)
 
 "as" @keyword
 "async" @keyword

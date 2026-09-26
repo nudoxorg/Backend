@@ -1,0 +1,412 @@
+{
+ "v": 3,
+ "createdOnFiles": {
+  "v": 1,
+  "at": "2026-09-21T05:47:00Z"
+ },
+ "title": "Nudox Design System",
+ "launch": {
+  "view": "canvas",
+  "page": "foundations"
+ },
+ "pages": [
+  {
+   "id": "foundations",
+   "name": "1 Foundations"
+  },
+  {
+   "id": "components",
+   "name": "2 Components"
+  },
+  {
+   "id": "app",
+   "name": "3 Reading"
+  },
+  {
+   "id": "discover",
+   "name": "4 Discover"
+  },
+  {
+   "id": "teams",
+   "name": "5 Spaces and admin"
+  },
+  {
+   "id": "personal",
+   "name": "6 Settings and onboarding"
+  },
+  {
+   "id": "states",
+   "name": "7 States and faults"
+  },
+  {
+   "id": "motion",
+   "name": "8 Motion, keys, resize"
+  }
+ ],
+ "boards": {
+  "Main.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1500,
+   "title": "Page \u00b7 a symbol and everything it touches",
+   "page": "app",
+   "is_interactive": true
+  },
+  "Orbit.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Orbit \u00b7 your code, and everything around it",
+   "page": "discover",
+   "is_interactive": true
+  },
+  "TrailMap.dc.html": {
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Trail map \u00b7 where you have been, as a line",
+   "page": "app",
+   "is_interactive": true
+  },
+  "Territory.dc.html": {
+   "x": 3080,
+   "y": 0,
+   "w": 1440,
+   "h": 1080,
+   "title": "Package \u00b7 one package as a mosaic",
+   "page": "app",
+   "is_interactive": true
+  },
+  "AddFlow.dc.html": {
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Orbit list \u00b7 a package arrives",
+   "page": "discover",
+   "is_interactive": true
+  },
+  "Source.dc.html": {
+   "x": 0,
+   "y": 1660,
+   "w": 1440,
+   "h": 900,
+   "title": "Source \u00b7 the deepest depth",
+   "page": "app",
+   "is_interactive": true
+  },
+  "Descent.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1160,
+   "title": "Descent",
+   "page": "foundations",
+   "is_interactive": true
+  },
+  "Brand.dc.html": {
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 1420,
+   "title": "One mark, one language",
+   "page": "foundations",
+   "is_interactive": true
+  },
+  "Color.dc.html": {
+   "x": 3080,
+   "y": 0,
+   "w": 1440,
+   "h": 1340,
+   "title": "Colour with a job",
+   "page": "foundations",
+   "is_interactive": true
+  },
+  "Language.dc.html": {
+   "x": 0,
+   "y": 1580,
+   "w": 1440,
+   "h": 1760,
+   "title": "The information language",
+   "page": "foundations",
+   "is_interactive": true
+  },
+  "Controls.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1320,
+   "title": "Controls",
+   "page": "components",
+   "is_interactive": true
+  },
+  "Plates.dc.html": {
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 1760,
+   "title": "Plates",
+   "page": "components",
+   "is_interactive": true
+  },
+  "DataMarks.dc.html": {
+   "x": 3080,
+   "y": 0,
+   "w": 1440,
+   "h": 1230,
+   "title": "Data marks",
+   "page": "components",
+   "is_interactive": true
+  },
+  "TypeSheet.dc.html": {
+   "x": 0,
+   "y": 1920,
+   "w": 1440,
+   "h": 1950,
+   "title": "Type sheet",
+   "page": "components",
+   "is_interactive": true
+  },
+  "TraitPage.dc.html": {
+   "x": 1540,
+   "y": 1660,
+   "w": 1440,
+   "h": 1400,
+   "title": "Page \u00b7 a trait, its bounds and its hundreds of implementors",
+   "page": "app",
+   "is_interactive": true
+  },
+  "ClassPage.dc.html": {
+   "x": 3080,
+   "y": 1660,
+   "w": 1440,
+   "h": 1300,
+   "title": "Page \u00b7 a class, its bases and the members it keeps for itself",
+   "page": "app",
+   "is_interactive": true
+  },
+  "Ask.dc.html": {
+   "x": 3080,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Ask \u00b7 the overlay that finds anything",
+   "page": "discover",
+   "is_interactive": true
+  },
+  "SearchResults.dc.html": {
+   "x": 0,
+   "y": 1060,
+   "w": 1440,
+   "h": 1040,
+   "title": "Search \u00b7 retry with backoff, across the library",
+   "page": "discover",
+   "is_interactive": true
+  },
+  "Recommend.dc.html": {
+   "x": 1540,
+   "y": 1060,
+   "w": 1440,
+   "h": 560,
+   "title": "Page \u00b7 read next, at the foot of a page",
+   "page": "discover",
+   "is_interactive": true
+  },
+  "SpaceHome.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1120,
+   "title": "Space \u00b7 the team's shared layer over the library",
+   "page": "teams",
+   "is_interactive": true
+  },
+  "SharedTrail.dc.html": {
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Space \u00b7 one shared trail, opened",
+   "page": "teams",
+   "is_interactive": true
+  },
+  "AdminPolicies.dc.html": {
+   "x": 3080,
+   "y": 0,
+   "w": 1440,
+   "h": 1040,
+   "title": "Admin \u00b7 package approval policy",
+   "page": "teams",
+   "is_interactive": true
+  },
+  "AdminMembers.dc.html": {
+   "x": 0,
+   "y": 1280,
+   "w": 1440,
+   "h": 1080,
+   "title": "Admin \u00b7 members, roles and seats",
+   "page": "teams",
+   "is_interactive": true
+  },
+  "Onboarding.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "First run \u00b7 the empty Orbit asks for a folder",
+   "page": "personal",
+   "is_interactive": true
+  },
+  "SettingsAppearance.dc.html": {
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Settings \u00b7 Appearance, as a page",
+   "page": "personal",
+   "is_interactive": true
+  },
+  "SettingsIndex.dc.html": {
+   "x": 3080,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Settings \u00b7 Index and registries",
+   "page": "personal",
+   "is_interactive": true
+  },
+  "Inbox.dc.html": {
+   "x": 0,
+   "y": 1060,
+   "w": 1440,
+   "h": 900,
+   "title": "Inbox \u00b7 personal notifications, calmly",
+   "page": "personal",
+   "is_interactive": true
+  },
+  "Offline.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Registry unreachable \u00b7 say it once",
+   "page": "states",
+   "is_interactive": true
+  },
+  "Loading.dc.html": {
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 1180,
+   "title": "Page arriving \u00b7 structure first, prose and relations seal",
+   "page": "states",
+   "is_interactive": true
+  },
+  "EmptyStates.dc.html": {
+   "x": 3080,
+   "y": 0,
+   "w": 1440,
+   "h": 860,
+   "title": "Nothing to show, on purpose",
+   "page": "states",
+   "is_interactive": true
+  },
+  "FaultAnatomy.dc.html": {
+   "x": 0,
+   "y": 1340,
+   "w": 1440,
+   "h": 900,
+   "title": "The anatomy of a fault",
+   "page": "states",
+   "is_interactive": true
+  },
+  "MotionLive.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 940,
+   "title": "Motion, running",
+   "page": "motion",
+   "is_interactive": true
+  },
+  "Keyboard.dc.html": {
+   "x": 1540,
+   "y": 0,
+   "w": 1440,
+   "h": 1180,
+   "title": "Every key has a place",
+   "page": "motion",
+   "is_interactive": true
+  },
+  "HintMode.dc.html": {
+   "x": 3080,
+   "y": 0,
+   "w": 1440,
+   "h": 900,
+   "title": "Hint mode \u00b7 F labels everything you can act on",
+   "page": "motion",
+   "is_interactive": true
+  },
+  "Resize.dc.html": {
+   "x": 0,
+   "y": 1340,
+   "w": 1440,
+   "h": 760,
+   "title": "Resizable end to end",
+   "page": "motion",
+   "is_interactive": true
+  },
+  "Collapse.dc.html": {
+   "x": 1540,
+   "y": 1340,
+   "w": 1440,
+   "h": 900,
+   "title": "Splitters and folds \u00b7 a page pinned beside another",
+   "page": "motion",
+   "is_interactive": true
+  }
+ },
+ "order": [
+  "Main.dc.html",
+  "Orbit.dc.html",
+  "TrailMap.dc.html",
+  "Territory.dc.html",
+  "AddFlow.dc.html",
+  "Source.dc.html",
+  "Descent.dc.html",
+  "Brand.dc.html",
+  "Color.dc.html",
+  "Language.dc.html",
+  "Controls.dc.html",
+  "Plates.dc.html",
+  "DataMarks.dc.html",
+  "TypeSheet.dc.html",
+  "TraitPage.dc.html",
+  "ClassPage.dc.html",
+  "Ask.dc.html",
+  "SearchResults.dc.html",
+  "Recommend.dc.html",
+  "SpaceHome.dc.html",
+  "SharedTrail.dc.html",
+  "AdminPolicies.dc.html",
+  "AdminMembers.dc.html",
+  "Onboarding.dc.html",
+  "SettingsAppearance.dc.html",
+  "SettingsIndex.dc.html",
+  "Inbox.dc.html",
+  "Offline.dc.html",
+  "Loading.dc.html",
+  "EmptyStates.dc.html",
+  "FaultAnatomy.dc.html",
+  "MotionLive.dc.html",
+  "Keyboard.dc.html",
+  "HintMode.dc.html",
+  "Resize.dc.html",
+  "Collapse.dc.html"
+ ],
+ "notes": {},
+ "designSystems": []
+}

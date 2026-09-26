@@ -387,6 +387,8 @@ pub enum ReferenceTag {
     /// increment both reads and writes; the row keeps the write class, the
     /// state-changing half.
     FieldWrite = 7,
+    /// A compiler-resolved method used as a value, not an invocation.
+    MethodGroup = 8,
 }
 
 impl ReferenceTag {
@@ -399,6 +401,7 @@ impl ReferenceTag {
             5 => Some(Self::InterfaceImplementation),
             6 => Some(Self::FieldRead),
             7 => Some(Self::FieldWrite),
+            8 => Some(Self::MethodGroup),
             _ => None,
         }
     }

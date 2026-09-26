@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -327,12 +328,127 @@ type Term struct {
 }
 
 // serializer carries the file set needed to resolve positions.
+//
+// unresolved collects cgo and other incomplete named types whose method
+// set or underlying type go/types refuses to expand (`Named.check == nil
+// but type is incomplete`). The package still seals; these names are
+// reported instead of panicking the oracle.
 type serializer struct {
-	fset *token.FileSet
+	fset       *token.FileSet
+	unresolved map[string]struct{}
 }
 
 func newSerializer(pkg *packages.Package) *serializer {
 	return &serializer{fset: pkg.Fset}
+}
+
+func (s *serializer) noteUnresolved(name string) {
+	if name == "" {
+		return
+	}
+	if s.unresolved == nil {
+		s.unresolved = map[string]struct{}{}
+	}
+	s.unresolved[name] = struct{}{}
+}
+
+func (s *serializer) unresolvedList() []string {
+	if len(s.unresolved) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.unresolved))
+	for name := range s.unresolved {
+		out = append(out, name)
+	}
+	return out
+}
+
+// catchUnresolved runs fn and, if go/types panics on an incomplete named
+// type, records that type and any cgo names reachable without expanding
+// them. The panic is the bug we are containing: `under` panics when a
+// named type's underlying chain is still a *Named and its checker is nil,
+// which is how cgo leaves `_Ctype_*` / package `C` types.
+func (s *serializer) catchUnresolved(named *types.Named, fn func()) {
+	defer func() {
+		if recover() == nil {
+			return
+		}
+		s.noteUnresolved(qualifiedNamed(named))
+		s.collectCgo(named, 0)
+	}()
+	fn()
+}
+
+func qualifiedNamed(n *types.Named) string {
+	if n == nil || n.Obj() == nil {
+		return ""
+	}
+	name := n.Obj().Name()
+	if p := n.Obj().Pkg(); p != nil && p.Path() != "" {
+		return p.Path() + "." + name
+	}
+	return name
+}
+
+func cgoNamed(qualified, pkgPath string) bool {
+	if pkgPath == "C" {
+		return true
+	}
+	base := qualified
+	if i := strings.LastIndex(qualified, "."); i >= 0 {
+		base = qualified[i+1:]
+	}
+	return strings.HasPrefix(base, "_Ctype_") ||
+		strings.HasPrefix(base, "_Cfunc_") ||
+		strings.HasPrefix(base, "_Ciconst_") ||
+		strings.HasPrefix(base, "_Cvar_")
+}
+
+// collectCgo records cgo named types in t. It does not call Underlying on
+// a cgo name, and a panic while expanding any other named type records
+// that name and stops that branch.
+func (s *serializer) collectCgo(t types.Type, depth int) {
+	if t == nil || depth > 16 {
+		return
+	}
+	switch t := t.(type) {
+	case *types.Named:
+		q := qualifiedNamed(t)
+		pkgPath := ""
+		if t.Obj() != nil && t.Obj().Pkg() != nil {
+			pkgPath = t.Obj().Pkg().Path()
+		}
+		if cgoNamed(q, pkgPath) {
+			s.noteUnresolved(q)
+			return
+		}
+		var u types.Type
+		func() {
+			defer func() {
+				if recover() != nil {
+					s.noteUnresolved(q)
+					u = nil
+				}
+			}()
+			u = t.Underlying()
+		}()
+		s.collectCgo(u, depth+1)
+	case *types.Pointer:
+		s.collectCgo(t.Elem(), depth+1)
+	case *types.Slice:
+		s.collectCgo(t.Elem(), depth+1)
+	case *types.Array:
+		s.collectCgo(t.Elem(), depth+1)
+	case *types.Chan:
+		s.collectCgo(t.Elem(), depth+1)
+	case *types.Map:
+		s.collectCgo(t.Key(), depth+1)
+		s.collectCgo(t.Elem(), depth+1)
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			s.collectCgo(t.Field(i).Type(), depth+1)
+		}
+	}
 }
 
 func (s *serializer) position(pos token.Pos) *Pos {
@@ -536,6 +652,14 @@ func (s *serializer) typeParams(tps *types.TypeParamList) []*TypeParamDecl {
 // declaredMethods serializes the methods declared directly on a named
 // type (value AND pointer receivers), attaching harvested doc comments.
 func (s *serializer) declaredMethods(named *types.Named, docs *docCatalog) []*Method {
+	var out []*Method
+	s.catchUnresolved(named, func() {
+		out = s.declaredMethodsBody(named, docs)
+	})
+	return out
+}
+
+func (s *serializer) declaredMethodsBody(named *types.Named, docs *docCatalog) []*Method {
 	typeName := named.Obj().Name()
 	var out []*Method
 	for i := 0; i < named.NumMethods(); i++ {
@@ -597,6 +721,18 @@ func (s *serializer) methodSpan(docs *docCatalog, typeName, methodName string) *
 // promotedMethods serializes methods reachable on *T through embedded
 // fields but not declared on T itself, recording the embedded origin.
 func (s *serializer) promotedMethods(named *types.Named, docs *docCatalog) []*Method {
+	// Record cgo names before NewMethodSet. The walk itself panics on an
+	// incomplete named type, and a recovered panic would otherwise be the
+	// only place those names were seen.
+	s.collectCgo(named, 0)
+	var out []*Method
+	s.catchUnresolved(named, func() {
+		out = s.promotedMethodsBody(named, docs)
+	})
+	return out
+}
+
+func (s *serializer) promotedMethodsBody(named *types.Named, docs *docCatalog) []*Method {
 	declared := map[string]bool{}
 	for i := 0; i < named.NumMethods(); i++ {
 		declared[named.Method(i).Name()] = true
@@ -659,6 +795,14 @@ func (s *serializer) implementsInterfaces(named *types.Named, candidates []inter
 	if named == nil {
 		return nil
 	}
+	var out []*Type
+	s.catchUnresolved(named, func() {
+		out = s.implementsInterfacesBody(named, candidates)
+	})
+	return out
+}
+
+func (s *serializer) implementsInterfacesBody(named *types.Named, candidates []interfaceCandidate) []*Type {
 	ptr := types.NewPointer(named)
 	methodCount := types.NewMethodSet(ptr).Len()
 	var out []*Type

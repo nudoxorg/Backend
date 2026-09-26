@@ -124,17 +124,17 @@ fn parse_toml_dependencies(
         ));
     };
     let mut rows = Vec::new();
-    for (table_name, scope, optional_default) in [
-        ("dependencies", DependencyScope::Runtime, false),
-        ("dev-dependencies", DependencyScope::Development, true),
-        ("build-dependencies", DependencyScope::Build, false),
+    for (table_name, scope) in [
+        ("dependencies", DependencyScope::Runtime),
+        ("dev-dependencies", DependencyScope::Development),
+        ("build-dependencies", DependencyScope::Build),
     ] {
         let Some(table) = root.get(table_name).and_then(toml::Value::as_table) else {
             continue;
         };
         for (name, value) in table {
-            let (requirement, optional) = match value {
-                toml::Value::String(value) => (value.clone(), optional_default),
+            let (requirement, declared_optional) = match value {
+                toml::Value::String(value) => (value.clone(), false),
                 toml::Value::Table(table) => (
                     table
                         .get("version")
@@ -144,7 +144,7 @@ fn parse_toml_dependencies(
                     table
                         .get("optional")
                         .and_then(toml::Value::as_bool)
-                        .unwrap_or(optional_default),
+                        .unwrap_or(false),
                 ),
                 _ => continue,
             };
@@ -153,7 +153,7 @@ fn parse_toml_dependencies(
                     source.clone(),
                     target,
                     scope,
-                    optional,
+                    backend_library::dependency_optional(scope, declared_optional),
                     DependencyEvidence {
                         authority: DependencyAuthority::ForgeManifest,
                         frontier: [0; 32],
@@ -163,14 +163,15 @@ fn parse_toml_dependencies(
             }
         }
     }
-    backend_library::admit_dependency_rows(rows).map_or_else(
-        |_| {
-            DependencyFacts::Unavailable(ProductText::from_static(
-                "manifest dependency rows exceed bounds",
-            ))
-        },
-        DependencyFacts::Known,
-    )
+    backend_library::admit_dependency_rows(backend_library::collapse_dependency_rows(rows))
+        .map_or_else(
+            |_| {
+                DependencyFacts::Unavailable(ProductText::from_static(
+                    "manifest dependency rows exceed bounds",
+                ))
+            },
+            DependencyFacts::Known,
+        )
 }
 
 fn parse_npm(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
@@ -181,15 +182,16 @@ fn parse_npm(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
         PackageReference::parse(format!("pkg:npm/{name}@{version}")).ok()
     });
     let mut rows = Vec::new();
-    for (field, scope, optional) in [
-        ("dependencies", DependencyScope::Runtime, false),
-        ("devDependencies", DependencyScope::Development, true),
-        ("peerDependencies", DependencyScope::Peer, false),
-        ("optionalDependencies", DependencyScope::Optional, true),
+    for (field, scope) in [
+        ("dependencies", DependencyScope::Runtime),
+        ("devDependencies", DependencyScope::Development),
+        ("peerDependencies", DependencyScope::Peer),
+        ("optionalDependencies", DependencyScope::Optional),
     ] {
         if let (Some(source), Some(table)) =
             (source.clone(), value.get(field).and_then(Value::as_object))
         {
+            let declared_optional = matches!(scope, DependencyScope::Optional);
             for (name, requirement) in table {
                 if let Some(requirement) = requirement
                     .as_str()
@@ -205,7 +207,7 @@ fn parse_npm(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
                             source.clone(),
                             target,
                             scope,
-                            optional,
+                            backend_library::dependency_optional(scope, declared_optional),
                             DependencyEvidence {
                                 authority: DependencyAuthority::ForgeManifest,
                                 frontier: [0; 32],
@@ -224,14 +226,15 @@ fn parse_npm(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
             ))
         },
         |_| {
-            backend_library::admit_dependency_rows(rows).map_or_else(
-                |_| {
-                    DependencyFacts::Unavailable(ProductText::from_static(
-                        "manifest dependency rows exceed bounds",
-                    ))
-                },
-                DependencyFacts::Known,
-            )
+            backend_library::admit_dependency_rows(backend_library::collapse_dependency_rows(rows))
+                .map_or_else(
+                    |_| {
+                        DependencyFacts::Unavailable(ProductText::from_static(
+                            "manifest dependency rows exceed bounds",
+                        ))
+                    },
+                    DependencyFacts::Known,
+                )
         },
     );
     Ok((
@@ -361,4 +364,87 @@ fn parse_pom(bytes: &[u8]) -> Result<ManifestParts, ForgeRejectReason> {
         product(version),
         facts,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_cargo, parse_npm};
+    use backend_library::{DependencyFacts, DependencyScope};
+
+    #[test]
+    fn forge_cargo_dev_and_normal_same_name_stays_runtime() {
+        let manifest = r#"
+            [package]
+            name = "demo"
+            version = "1.0.0"
+
+            [dependencies]
+            serde = "1"
+
+            [dev-dependencies]
+            serde = "1"
+        "#;
+        let (_, _, _, facts) = parse_cargo(manifest.as_bytes()).expect("parse");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "serde");
+        assert_eq!(rows[0].scope, DependencyScope::Runtime);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn forge_cargo_dev_only_stays_development_and_optional_false() {
+        let manifest = r#"
+            [package]
+            name = "demo"
+            version = "1.0.0"
+
+            [dev-dependencies]
+            serde = "1"
+        "#;
+        let (_, _, _, facts) = parse_cargo(manifest.as_bytes()).expect("parse");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].scope, DependencyScope::Development);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn forge_npm_dev_dependencies_vitest_is_development_optional_false() {
+        let manifest = br#"{
+            "name": "demo",
+            "version": "1.0.0",
+            "devDependencies": {"vitest": "^1.0.0"}
+        }"#;
+        let (_, _, _, facts) = parse_npm(manifest).expect("parse");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "vitest");
+        assert_eq!(rows[0].scope, DependencyScope::Development);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn forge_npm_name_in_dependencies_and_dev_dependencies_stays_runtime() {
+        let manifest = br#"{
+            "name": "demo",
+            "version": "1.0.0",
+            "dependencies": {"lodash": "^4.0.0"},
+            "devDependencies": {"lodash": "^4.0.0"}
+        }"#;
+        let (_, _, _, facts) = parse_npm(manifest).expect("parse");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "lodash");
+        assert_eq!(rows[0].scope, DependencyScope::Runtime);
+        assert!(!rows[0].optional);
+    }
 }

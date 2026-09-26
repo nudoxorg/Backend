@@ -1,0 +1,351 @@
+html,body{margin:0;height:100%;background:#030814;overflow:hidden}
+.gnx{width:100vw;height:100vh;background:var(--g0);position:relative}
+.gwin{width:100vw;height:100vh}
+.gwin .cbody{min-height:0}
+.gview{flex:1;min-width:0;position:relative;overflow:hidden;container:gview / inline-size;background:#040a16}
+.gview canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:default}
+.gview canvas.grab{cursor:grabbing}
+.gview canvas.point{cursor:pointer}
+
+/* the view switch (the altimeter's slot): only the active view is named */
+.titlebar .views{margin-left:4px}
+.titlebar .views>button{height:24px;display:inline-flex;align-items:center;gap:7px;color:var(--ink3);background:none;border:0;padding:0 7px;cursor:pointer}
+.titlebar .views>button span{display:none}
+.titlebar .views>button.on span{display:inline;font:620 13px var(--display);letter-spacing:-.01em;color:var(--ink0)}
+.titlebar .views>button .d{width:7px;height:7px;transform:rotate(45deg);box-shadow:inset 0 0 0 1.4px currentColor}
+.titlebar .views>button.on .d{background:var(--mint);box-shadow:none;width:9px;height:9px}
+.titlebar .views>button:hover{color:var(--ink1)}
+
+/* find */
+.gfind{position:absolute;left:16px;top:14px;z-index:5;display:flex;align-items:center;gap:9px;height:34px;padding:0 10px 0 12px;
+  width:min(300px,calc(100% - 32px));color:var(--ink3);background:rgba(8,15,29,.72);backdrop-filter:blur(10px);
+  box-shadow:inset 0 0 0 1px var(--line2);clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+.gfind input{flex:1;min-width:0;background:none;border:0;outline:0;font:500 13px var(--mono);color:var(--ink0)}
+.gfind input::placeholder{font:400 13px var(--ui);color:var(--ink4)}
+.gfind kbd{font:500 11px var(--mono);color:var(--ink4);box-shadow:inset 0 0 0 1px var(--line2);padding:1px 6px}
+.gfind.on{box-shadow:inset 0 0 0 1px var(--peri-line)}
+.gres{position:absolute;left:16px;top:52px;z-index:5;width:min(420px,calc(100% - 32px));display:none;flex-direction:column;padding:6px;
+  background:rgba(8,15,29,.9);backdrop-filter:blur(12px);box-shadow:inset 0 0 0 1px var(--line2)}
+.gres.on{display:flex}
+.gres .r{display:grid;grid-template-columns:18px auto minmax(0,1fr);gap:10px;align-items:baseline;padding:7px 8px;cursor:pointer}
+.gres .r .k{align-self:center}
+.gres .r .n{font:500 13px var(--mono);color:var(--ink0);white-space:nowrap}
+.gres .r .n u{text-decoration:none;box-shadow:inset 0 -1.5px 0 var(--mint)}
+.gres .r .w{font:400 11.5px var(--mono);color:var(--ink4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
+.gres .r.sel{background:var(--plate2,rgba(143,160,255,.08));box-shadow:inset 2px 0 0 var(--peri)}
+
+/* where the camera is */
+.gwhere{position:absolute;left:18px;bottom:14px;z-index:4;font:500 12px var(--mono);color:var(--ink3);pointer-events:none;white-space:nowrap;
+  display:flex;align-items:center;gap:10px}
+.gwhere b{font-weight:600;color:var(--ink1)}
+.gwhere .sep{color:var(--ink4)}
+.gwhere .alt{font:400 11px var(--ui);color:var(--ink4);margin-left:8px}
+
+/* the peek follows its node */
+.gpeek{position:absolute;z-index:6;left:0;top:0;width:340px;max-width:calc(100% - 32px);pointer-events:none;opacity:0;transition:opacity .12s;
+  background:var(--glass);clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);
+  box-shadow:inset 1px 1px 0 var(--bevel-hi,rgba(255,255,255,.08)),inset -1px -1px 0 var(--bevel-lo,rgba(0,0,0,.4));padding:13px 15px 12px}
+.gpeek.on{opacity:1}
+.gpeek .h{display:flex;align-items:center;gap:9px;min-width:0}
+.gpeek .h .nm{font:600 14px var(--mono);color:var(--ink0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpeek .wh{font:400 11.5px var(--mono);color:var(--ink4);margin:3px 0 0 27px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpeek .sg{margin-top:9px;font:400 11.5px/17px var(--mono);color:var(--ink2);white-space:pre-wrap;word-break:break-word;max-height:52px;overflow:hidden}
+.gpeek .sy{margin-top:8px;font:italic 400 14px/20px var(--serif);color:var(--ink1)}
+.gpeek .fc{margin-top:9px;font:400 12px var(--ui);color:var(--ink3);display:flex;gap:10px;flex-wrap:wrap}
+.gpeek .fc b{color:var(--ink1);font-weight:600}.gpeek .fc b.y{color:var(--mint)}
+
+/* the focused symbol: a quiet card at the right edge */
+.gfocus{position:absolute;right:16px;top:14px;z-index:5;width:min(340px,calc(100% - 32px));display:none;flex-direction:column;gap:10px;padding:16px 18px;
+  background:rgba(8,15,29,.84);backdrop-filter:blur(12px);box-shadow:inset 0 0 0 1px var(--line2);
+  clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px)}
+.gfocus.on{display:flex}
+.gfocus .h{display:flex;align-items:center;gap:12px;min-width:0}
+.gfocus .h .nm{font:650 19px var(--display);letter-spacing:-.02em;color:var(--ink0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gfocus .h .wh{font:400 11.5px var(--mono);color:var(--ink3)}
+.gfocus .sy{font:italic 400 14.5px/21px var(--serif);color:var(--ink1)}
+.gfocus .ax{display:flex;flex-direction:column;gap:5px}
+.gfocus .ax .row{display:grid;grid-template-columns:64px minmax(0,1fr);gap:10px;align-items:baseline}
+.gfocus .ax .w{font:italic 400 13px var(--serif);color:var(--ink3)}
+.gfocus .ax .ns{font:500 12px/18px var(--mono);color:var(--ink1)}
+.gfocus .ax .ns i{font-style:normal;color:var(--ink4)}
+.gfocus .ax .ns .y{color:var(--mint)}
+.gfocus .fx{font:400 12.5px var(--ui);color:var(--ink3);display:flex;flex-wrap:wrap;gap:4px 8px}
+.gfocus .fx i{font-style:normal;color:var(--ink4)}.gfocus .fx b{color:var(--mint);font-weight:600}
+.gfocus .ft{display:flex;gap:14px;font:400 11.5px var(--ui);color:var(--ink4);padding-top:2px}
+.gfocus .ft kbd{font:500 10.5px var(--mono);color:var(--ink3);box-shadow:inset 0 0 0 1px var(--line2);padding:0 5px;margin-right:5px}
+
+.ghud{position:absolute;right:16px;bottom:12px;z-index:4;font:400 11px var(--mono);color:var(--ink4);pointer-events:none;white-space:pre;text-align:right}
+
+/* page overlay (for the page ⇄ graph morph) */
+.gpage{position:absolute;inset:0;z-index:8;display:none;background:var(--g0)}
+.gpage.on{display:flex}
+.gpage .creader{flex:1;min-width:0;overflow:auto;container:reader / inline-size}
+.gpage .cshelf{overflow:hidden}
+.gpage .crow[data-i]{cursor:pointer}
+.gpage .crow .k svg,.gpage .cshelf .k svg{width:14px;height:14px}
+.gfly{position:fixed;z-index:30;width:64px;height:64px;pointer-events:none;transform-origin:32px 32px}
+.hgem{flex:none;display:inline-flex}
+.pfol{max-width:900px}
+.pfol .chero .nm{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:normal;word-break:normal}
+
+/* anatomy: fork (one of), bundle (holds), pipe (takes → gives), contract (you write / you get) */
+.anat{display:flex;flex-direction:column}
+.anat .ah,.pcaps .ah{font:500 11.5px var(--ui);color:var(--ink4);letter-spacing:.02em;margin:0 0 6px}
+.anat .arows{position:relative;padding-left:22px;margin-bottom:10px}
+.anat .ar{position:relative;display:grid;grid-template-columns:minmax(0,max-content) minmax(0,max-content) minmax(0,1fr);gap:18px;align-items:baseline;
+  padding:calc(7px*var(--drow)) 0;min-height:calc(32px*var(--drow))}
+.anat .ar .vn{font:600 calc(13.5px*var(--dtxt)) var(--mono);color:var(--ink0);white-space:nowrap}
+.anat .ar .vt{font:400 calc(13px*var(--dtxt)) var(--mono);color:var(--ink1);min-width:0}
+.anat .ar .say{font:italic 400 calc(14px*var(--dtxt)) var(--serif);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.anat .ar.priv .vn{color:var(--ink2);font-weight:500}
+.fork .arows::before{content:"";position:absolute;left:5px;top:18px;bottom:18px;width:1px;background:var(--line3)}
+.fork .ar::before{content:"";position:absolute;left:-17px;top:calc(50% - .5px);width:11px;height:1px;background:var(--line3)}
+.fork .ar::after{content:"";position:absolute;left:-7px;top:calc(50% - 3px);width:5px;height:5px;transform:rotate(45deg);box-shadow:inset 0 0 0 1px var(--ink3)}
+.bundle .arows::before{content:"";position:absolute;left:4px;top:8px;bottom:8px;width:7px;border:1px solid var(--line3);border-right:0}
+.contract .arows.req .vn{color:var(--ink0)}
+.contract .arows.req::before{content:"";position:absolute;left:4px;top:8px;bottom:8px;width:7px;border:1px dashed var(--line3);border-right:0}
+.contract .arows:not(.req)::before{content:"";position:absolute;left:4px;top:8px;bottom:8px;width:7px;border:1px solid var(--line2);border-right:0}
+.anat .afoot{font:400 12.5px var(--ui);color:var(--ink3)}
+.pipe{display:grid;grid-template-columns:minmax(0,max-content) 64px minmax(0,1fr);align-items:center;column-gap:10px;row-gap:12px}
+.pipe .pins{display:flex;flex-direction:column;gap:8px;padding:6px 18px 6px 0;border-right:1px solid var(--line3);min-width:0}
+.pipe .pi{display:flex;gap:14px;align-items:baseline;font:400 calc(13px*var(--dtxt)) var(--mono);color:var(--ink1);white-space:nowrap}
+.pipe .pn{font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink3)}
+.pipe .parrow{position:relative;height:12px}
+.pipe .parrow i{position:absolute;left:0;right:6px;top:50%;height:1px;background:var(--line3)}
+.pipe .parrow::after{content:"";position:absolute;right:1px;top:calc(50% - 4px);width:7px;height:7px;border-top:1px solid var(--ink3);border-right:1px solid var(--ink3);transform:rotate(45deg)}
+.pipe .po{font:500 calc(14.5px*var(--dtxt)) var(--mono);color:var(--ink0)}
+.pipe .pf{margin-top:8px;font:400 calc(13px*var(--dtxt)) var(--mono);color:var(--ink2)}
+.pipe .pflags{grid-column:1/-1;display:flex;gap:14px;font:400 12px var(--ui);color:var(--ink3)}
+.gty{white-space:normal}
+.gty .gtw{font:400 calc(12px*var(--dtxt)) var(--ui);font-style:normal;color:var(--ink3)}
+.gty .gtp{font-style:normal;color:var(--ink4)}
+.gty .gtk{color:var(--ink2)}
+.gpage a.gtl{color:var(--ink1);text-decoration:none;box-shadow:inset 0 -1px 0 rgba(158,176,255,.18);cursor:pointer}
+.gpage a.gtl:hover{color:var(--ink0);box-shadow:inset 0 -1.5px 0 var(--peri)}
+.gpage a.gtl.y{color:var(--mint)}
+body.xray .gpage .gty[title]::after{content:"  " attr(title);font:400 11px var(--mono);color:var(--ink4);white-space:pre}
+.crow2 .nm .gsl{margin-left:2px;font-weight:400;color:var(--ink2)}
+.crow2 .nm .gsl .gty{white-space:nowrap}
+.crow2.via .nm{font-weight:400}
+.pcaps{display:flex;flex-direction:column}
+
+/* the prism, page form */
+.prism{position:relative;width:100%;margin:6px 0}
+.prism .pcurves{position:absolute;left:0;top:0;overflow:visible}
+.prism .pcurves path{fill:none;stroke:rgba(158,176,255,.2);stroke-width:1}
+.prism .pc{position:absolute;display:flex;flex-direction:column;gap:8px}
+.prism .ph{height:24px;display:flex;align-items:flex-end;padding-bottom:5px;box-sizing:border-box;font:italic 400 13px var(--serif);color:var(--ink3)}
+.prism .left .ph{justify-content:flex-end}
+.prism .pe{height:24px;display:flex;align-items:center;gap:9px;font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink1);white-space:nowrap}
+.prism .pe.l{justify-content:flex-end}
+.prism .pe.more{font:italic 400 13px var(--serif);color:var(--ink4)}
+.prism .pw{font:400 10.5px var(--mono);color:var(--ink4)}
+.prism .pm{width:6px;height:6px;flex:none;transform:rotate(45deg);background:var(--ink2)}
+.prism .pm.ca,.prism .pm.va{transform:none;width:6px;height:6px}
+.prism .pm.co{background:none;box-shadow:inset 0 0 0 1.2px var(--ink2)}
+.prism .pgem{position:absolute;transform:translate(-50%,-50%);width:28px;height:28px;padding:0;background:none;border:0;cursor:pointer;display:grid;place-items:center}
+.prism .pgem i{width:14px;height:14px;transform:rotate(45deg);background:var(--peri);box-shadow:0 0 0 5px rgba(4,10,22,1),0 0 0 6px rgba(147,162,250,.45)}
+.prism .pgem:hover i{background:var(--peri-hi)}
+.prism.narrow{display:flex;flex-direction:column;gap:6px;padding-left:16px;border-left:1px solid var(--line3)}
+.prism.narrow .pc{position:static}
+.prism.narrow .pgem{position:static;transform:none;display:flex;gap:10px;width:auto;height:auto;align-items:center;font:600 13px var(--mono);color:var(--ink0);margin-left:-20px}
+.prism.narrow .pgem i{width:8px;height:8px;box-shadow:0 0 0 3px var(--g0)}
+
+/* code view */
+.pfol.code{max-width:1100px}
+.pfol .scr{font:500 12.5px var(--mono);color:var(--ink3)}.pfol .scr b{color:var(--ink0);font-weight:600}
+.pfol .src{font:400 calc(13px*var(--dtxt))/calc(22px*var(--drow)) var(--mono);color:var(--ink2)}
+.pfol .src .sl{display:grid;grid-template-columns:44px 2px minmax(0,1fr);column-gap:12px;white-space:pre-wrap;word-break:break-word}
+.pfol .src .ln{text-align:right;color:var(--ink4);font-size:11.5px}
+.pfol .src .sl.cur .tx{color:var(--ink1)}.pfol .src .sl.cur .tk{background:var(--peri-line)}
+.pfol .src .kw{color:#c5a3ff}.pfol .src .ty{color:var(--f-type);white-space:pre-wrap}.pfol .src .dc{font-style:italic;color:var(--ink3)}.pfol .src .at{color:var(--ink3)}
+
+@container gview (max-width:640px){ .gfocus{top:auto;bottom:40px;right:12px;left:12px;width:auto} .gfind{left:12px;top:10px} }
+
+/* capabilities: one line, plain words; derived = hollow, written = solid, via = dashed */
+.gcaps{display:flex;flex-wrap:wrap;gap:4px 14px;font:500 12.5px var(--ui);color:var(--ink2)}
+.gcaps .gcap{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.gcaps .gcap i{width:6px;height:6px;transform:rotate(45deg);flex:none}
+.gcaps .gcap.derived i{box-shadow:inset 0 0 0 1.2px var(--ink3)}
+.gcaps .gcap.written i{background:var(--ink1)}
+.gcaps .gcap.via i{box-shadow:inset 0 0 0 1px var(--ink4);outline:1px dashed var(--ink4);outline-offset:1px;width:4px;height:4px}
+
+.gty .gv,.pipe .gv{font-style:italic;color:var(--ink1)}
+.pipe .pwhere{grid-column:1/-1;display:flex;flex-direction:column;gap:4px;padding-top:2px}
+.pipe .pwr{display:flex;gap:10px;align-items:baseline;font:400 13px var(--mono);color:var(--ink1)}
+.pipe .pwr .gv{min-width:18px;font:italic 500 13px var(--mono)}
+.anat .ar.fold .say,.crow2.fold .say{font:400 12px var(--ui);font-style:normal;color:var(--ink3)}
+.crow2.fold .nm{display:flex;gap:14px;align-items:baseline}
+.crow2.fold .nm .vn{font:500 13px var(--mono);color:var(--ink0)}
+.crow2.fold .nm .say{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* narrow: the gem goes above the name; the shelf leaves below 640 */
+@container reader (max-width:560px){ .pfol .chero{flex-direction:column;align-items:flex-start;gap:12px} .pfol .hgem svg{width:40px;height:40px}
+  .anat .ar{grid-template-columns:minmax(0,1fr);gap:2px} .anat .ar .say{white-space:normal}
+  .pipe{grid-template-columns:minmax(0,1fr)} .pipe .parrow{display:none} .pipe .pins{border-right:0;border-bottom:1px solid var(--line3);padding:0 0 10px} }
+@container win (max-width:640px){ .gpage .cshelf{display:none} }
+@container win (max-width:900px){ .gpage .cshelf{width:200px} }
+.gtw,.gtp{font-style:normal}
+
+/* in use: real lines from real callers */
+.inuse{gap:14px}
+.inuse .use{margin:0;display:flex;flex-direction:column;gap:6px}
+.inuse figcaption{display:flex;align-items:baseline;gap:10px;font:500 12.5px var(--mono)}
+.inuse .uw{font:400 11.5px var(--mono);color:var(--ink4)}
+.inuse pre{margin:0;padding:10px 14px;background:rgba(0,0,0,.2);font:400 calc(12.5px*var(--dtxt))/1.65 var(--mono);color:var(--ink3);white-space:pre-wrap;word-break:break-word}
+.inuse pre .hot{color:var(--ink1)}.inuse pre b{font-weight:600;color:var(--ink0);box-shadow:inset 0 -1.5px 0 var(--peri)}
+.gpage ~ .gpeek,.gpeek{z-index:20}
+/* getting one / calling it: recipes from plain values, read as rails (recipes.js) */
+.gget{gap:10px}
+.gget .route{display:flex;flex-direction:column}
+.gget .route+.route{opacity:.62;transition:opacity .16s ease}.gget .route+.route:hover,.gget:hover .route:hover{opacity:1}
+.gget .rrail{display:flex;flex-wrap:wrap;align-items:center;row-gap:8px;font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink2);min-width:0}
+.gget .rsrc{font:italic 400 calc(13px*var(--dtxt)) var(--serif,"Newsreader"),serif;color:var(--ink3);margin-right:2px;white-space:nowrap}
+.gget .rsrc a.gtl{font:500 calc(12.5px*var(--dtxt)) var(--mono);font-style:normal}
+.gget .rstep{display:inline-flex;align-items:center;gap:0;white-space:nowrap}
+.gget .rl{display:inline-block;width:14px;height:1px;background:var(--peri-line,rgba(147,162,250,.35))}
+.gget .rstep>a.rv{padding:1px 6px;color:var(--ink1);box-shadow:inset 0 0 0 1px var(--line1,rgba(158,176,255,.12))}
+.gget .rstep>a.rv:hover{box-shadow:inset 0 0 0 1px var(--peri)}
+.gget .rq{font:600 11px var(--mono);font-style:normal;color:var(--ink3);margin-left:2px}
+.gget .rq.m{color:var(--ink4)}
+.gget .rside{font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4);margin-left:6px}
+.gget .rside a.gtl{font:500 calc(11.5px*var(--dtxt)) var(--mono)}
+.gget .rnm{font:italic 400 11px var(--mono);color:var(--ink4)}
+.gget .rst{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;margin:0 1px}
+.gget .rst::before{content:"";width:5px;height:5px;transform:rotate(45deg);box-shadow:inset 0 0 0 1px var(--ink3)}
+.gget .rend{width:8px;height:8px;margin-left:3px;transform:rotate(45deg);background:var(--peri);box-shadow:0 0 0 3px rgba(147,162,250,.14)}
+.gget .rend[data-call]{background:none;box-shadow:inset 0 0 0 1.5px var(--peri)}
+.gget .rcode{display:none;margin-top:2px;padding:7px 12px;background:rgba(0,0,0,.2);font:400 calc(12.5px*var(--dtxt))/1.6 var(--mono);color:var(--ink1);white-space:pre-wrap;word-break:break-word}
+body.xray .gget .rcode{display:block}body.xray .gget .rrail{display:none}
+.gget .rfoot{font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4)}
+.gget .rnone{margin:0;font:400 calc(13px*var(--dtxt)) var(--ui);color:var(--ink3)}
+.gres .r.shp .n i{font-style:normal;color:var(--ink4)}
+.gres .r.shp{grid-template-columns:18px minmax(0,1fr);row-gap:3px}
+.gres .r.shp .w.gsig{grid-column:2;font:400 11.5px var(--mono);color:var(--ink3);white-space:normal;text-align:left;overflow:visible}
+.gres .r.shp .w.gsig .gtw{font:400 11.5px var(--ui);color:var(--ink4)}
+.gres .r.none{color:var(--ink4);font:400 12px var(--ui);padding:8px 12px}
+.gget .ralt{font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4);margin-left:10px;white-space:normal}
+.gget .ralt i{font-style:normal}
+.gres .r.lit{display:block;padding:7px 8px 3px;font:400 11.5px var(--ui);color:var(--peri-hi,#b9c3ff);cursor:default;box-shadow:inset 0 1px 0 var(--line1)}
+.gfocus .rip{margin-top:8px;padding-top:8px;box-shadow:inset 0 1px 0 var(--line1);font:400 12px/1.55 var(--ui);color:var(--ink3)}
+.gfocus .rip .rh{display:block;font:italic 400 12.5px var(--serif,"Newsreader"),serif;color:var(--ink3);margin-bottom:2px}
+.gfocus .rip b{font-weight:600;color:var(--peri-hi,#b9c3ff)}.gfocus .rip b.y{color:var(--mint)}
+.gfocus .rip i{font-style:normal;color:var(--ink4);margin:0 5px}
+.gfocus .rip .rmost{margin-top:3px;font:400 11.5px var(--ui);color:var(--ink4)}.gfocus .rip .rmost span{font:500 11.5px var(--mono);color:var(--ink2)}.gfocus .rip .rmost span.y{color:var(--mint)}
+/* the version comb in the shelf header (releases-ui.js; target shots/VersionComb.png) */
+.vhead{padding:0 14px 12px}
+.vhead .vcomb{position:relative;height:24px;outline:0;cursor:pointer}
+.vhead .vcomb:focus-visible{box-shadow:0 0 0 1px var(--peri-line)}
+.vhead .vcomb .t{position:absolute;bottom:0;width:1px;background:var(--ink4);transform:translateX(-.5px);transition:left .08s linear}
+.vhead .vcomb .t.far{opacity:.55}
+.vhead .vcomb .t.pin{background:var(--mint);width:2px}
+.vhead .vcomb .t.view{background:var(--peri);width:2px;box-shadow:0 0 0 2px rgba(147,162,250,.18)}
+.vhead .vcomb .t.hov{background:var(--ink0)}
+.vhead .vcomb .ctip{position:absolute;top:30px;z-index:3;transform:translateX(-50%);white-space:nowrap;font:400 11.5px var(--ui);color:var(--ink2);opacity:0;pointer-events:none;
+  background:var(--glass,rgba(10,18,34,.92));padding:5px 9px;box-shadow:inset 1px 1px 0 var(--bevel-hi,rgba(255,255,255,.08))}
+.vhead .vcomb .ctip b{font:600 11.5px var(--mono);color:var(--ink0)}
+.vhead .vline{margin-top:10px;font:400 12px var(--ui);color:var(--ink3);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.vhead .vline b{font:600 11.5px var(--mono);color:var(--peri-hi)}.vhead .vline span{font:500 11.5px var(--mono);color:var(--mint)}
+.vhead .vline i{font-style:normal;color:var(--ink4)}
+.vhead .vline kbd{margin-left:auto;font:500 10.5px var(--mono);color:var(--ink3);box-shadow:inset 0 0 0 1px var(--line2);padding:0 5px}
+.vhead .vsum{margin-top:4px;font:400 11.5px var(--ui);color:var(--ink4)}.vhead .vsum b{color:var(--ink1);font-weight:600}.vhead .vsum b.y{color:var(--mint)}.vhead .vsum i{font-style:normal;margin:0 5px}
+.vhead .vslip{color:var(--ink3);font-style:italic}
+.cbook .bv.on{color:var(--peri-hi)}
+/* the upgrade lens on the page */
+.glens{gap:10px}
+.glens .glyou{font:400 calc(13px*var(--dtxt)) var(--ui);color:var(--ink2)}.glens .glyou b{color:var(--mint);font-weight:600}
+.glens .gluses{display:flex;flex-direction:column;gap:10px}
+.glens .gluses .use{margin:0;display:flex;flex-direction:column;gap:5px}
+.glens .gluses figcaption{display:flex;gap:10px;align-items:baseline;font:500 12px var(--mono)}
+.glens .gluses .uw{color:var(--ink3)}
+.glens .gluses pre{margin:0;padding:8px 12px;background:rgba(0,0,0,.2);font:400 calc(12.5px*var(--dtxt))/1.6 var(--mono);color:var(--ink1);white-space:pre-wrap;word-break:break-word;box-shadow:inset 2px 0 0 var(--peri)}
+.glens .glrows{display:flex;flex-direction:column;gap:6px}
+.glens .glrow{display:grid;grid-template-columns:86px auto minmax(0,1fr);gap:12px;align-items:baseline}
+.glens .glw{font:400 11.5px var(--ui);color:var(--ink4)}.glens .glrow.br .glw,.glens .glw.br{color:var(--ink2)}
+.glens .gln{font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink1)}
+.glens .gls{display:flex;flex-direction:column;gap:2px;min-width:0}
+.glens .gls code{font:400 calc(12px*var(--dtxt)) var(--mono);white-space:pre-wrap;word-break:break-word}
+.glens .gls .glb{color:var(--ink4);text-decoration:line-through;text-decoration-color:rgba(255,255,255,.25)}
+.glens .gls .gla{color:var(--ink1)}
+.glens .gls .gtn{font-style:normal;color:var(--ink3)}
+.glens .gls .glb .gty,.glens .gls .glb .gtl,.glens .gls .glb .gtw,.glens .gls .glb .gtn{color:var(--ink4)}
+.glens .gls b.gnew{font-weight:inherit;box-shadow:inset 0 -1.5px 0 var(--mint)}
+.glens .gls b.gold{font-weight:inherit;text-decoration:line-through;text-decoration-color:var(--ink3)}
+.glens .gls .glb{text-decoration:none}
+.glens .gsame{font:italic 400 12px var(--serif,"Newsreader"),serif;color:var(--ink4)}
+.glens .glrow.same .gln{color:var(--ink3)}
+.glens .glyou .gmoved{color:var(--ink4)}
+.glens .gluses .use.same pre{box-shadow:inset 2px 0 0 var(--line2);color:var(--ink3)}
+.glens .glyou .gmoved{margin-top:3px;font:400 12px var(--ui);color:var(--ink4)}
+.glens .gsite{font:400 11.5px var(--mono);color:var(--ink3);box-shadow:inset 0 -1px 0 var(--line1)}
+.gwhere .rel{font:400 12px var(--ui);color:var(--peri-hi,#b9c3ff)}
+/* chains: "have -> need" in steps (recipes.js chains); rows in the find box, a held chain as a plate at the foot */
+.gres .r.hd{display:block;padding:9px 8px 3px;font:400 11.5px var(--ui);color:var(--ink4);cursor:default;box-shadow:inset 0 1px 0 var(--line1)}
+.gres .r.hd:first-child{box-shadow:none;padding-top:4px}
+.gres .r.chn{grid-template-columns:18px minmax(0,1fr)}
+.gres .r.chn .st{display:flex;flex-direction:column;align-items:center;gap:3px;padding-top:4px}
+.gres .r.chn .st i{width:4px;height:4px;transform:rotate(45deg);box-shadow:inset 0 0 0 1px var(--peri)}
+.gres .r.chn .st i:last-child{background:var(--peri)}
+.gres .r.chn .w.gsig{white-space:normal;text-align:left;overflow:visible;font:500 12px var(--mono);color:var(--ink2);line-height:1.55}
+.gres .r.chn .gtw{font:400 11.5px var(--ui);font-style:normal;color:var(--ink4)}
+.gres .r.chn .gtp{font-style:normal;color:var(--ink4);padding:0 1px}
+.gchain{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:5;width:min(760px,calc(100% - 32px));display:none;flex-direction:column;gap:12px;padding:16px 20px 14px;--dtxt:1;
+  background:rgba(8,15,29,.86);backdrop-filter:blur(12px);box-shadow:inset 0 0 0 1px var(--line2);
+  clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px)}
+.gchain.on{display:flex}
+.gchain .ch{display:flex;align-items:baseline;gap:14px;min-width:0}
+.gchain .ch .chn{font:500 14px var(--mono);color:var(--ink0);min-width:0}
+.gchain .ch .chn i{font:italic 400 15px var(--serif,"Newsreader"),serif;color:var(--ink3)}
+/* start here: a package's reading path (tour.js), flown stop to stop; the plate at the foot */
+.gtour{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:5;width:min(760px,calc(100% - 32px));display:none;flex-direction:column;gap:12px;padding:16px 20px 14px;
+  background:rgba(8,15,29,.86);backdrop-filter:blur(12px);box-shadow:inset 0 0 0 1px var(--line2);
+  clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px)}
+.gtour.on{display:flex}
+.gtour .th{display:flex;align-items:baseline;gap:10px}
+.gtour .th b{font:620 15px var(--display,"Bricolage Grotesque");color:var(--ink0)}
+.gtour .th i{font:italic 400 15px var(--serif,"Newsreader"),serif;color:var(--ink3)}
+.gtour .th .tn{margin-left:auto;font:400 11.5px var(--ui);color:var(--ink4)}
+.gtour .tstrip{display:flex;align-items:center;flex-wrap:wrap;row-gap:8px}
+.gtour .ts{display:inline-flex;align-items:center;gap:7px;font:500 12px var(--mono);color:var(--ink3);cursor:pointer;white-space:nowrap}
+.gtour .ts:hover span{color:var(--ink1)}
+.gtour .ts i{width:6px;height:6px;transform:rotate(45deg);box-shadow:inset 0 0 0 1.2px var(--peri)}
+.gtour .ts.past{color:var(--ink4)}.gtour .ts.past i{box-shadow:inset 0 0 0 1.2px var(--ink4)}
+.gtour .ts.on{color:var(--ink0)}.gtour .ts.on i{background:var(--peri);box-shadow:0 0 0 3px rgba(147,162,250,.16)}
+.gtour .tl{display:inline-block;width:16px;height:1px;margin:0 7px;background:var(--peri-line,rgba(147,162,250,.35))}
+.gtour .tnow .tr{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.gtour .tnow em{font:italic 400 16px var(--serif,"Newsreader"),serif;color:var(--peri-hi,#b9c3ff)}
+.gtour .tnow b{font:600 14px var(--mono);color:var(--ink0)}
+.gtour .tnow span{font:400 12px var(--ui);color:var(--ink4)}
+.gtour .tnow p{margin:6px 0 0;font:400 13.5px/1.5 var(--ui);color:var(--ink2)}
+.gtour .ft{display:flex;gap:14px;flex-wrap:wrap;font:400 11.5px var(--ui);color:var(--ink4)}
+.gtour .ft kbd,.gwhere .tk kbd{font:500 10.5px var(--mono);color:var(--ink3);box-shadow:inset 0 0 0 1px var(--line2);padding:0 5px;margin-right:5px}
+.gwhere .tk{font:400 11px var(--ui);color:var(--ink4);margin-left:12px}
+/* how it fails (fails.js): the kinds a call can give under the pipe's "or fails with"; on error types, who gives each kind */
+.pipe .pfk{margin-top:6px;font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink2);line-height:1.7}
+.pipe .pfk .pfv{font:italic 400 calc(13px*var(--dtxt)) var(--serif,"Newsreader"),serif;color:var(--ink4);padding:0 2px}
+.pipe .pfk .pfs{font-style:normal;color:var(--ink4);padding:0 5px}
+.pipe .pfc{margin-top:1px;font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4)}
+.gfails .gfrows{display:flex;flex-direction:column}
+.gfails .gfrows{font:500 calc(13px*var(--dtxt)) var(--mono)}
+.gfails .gfr{display:grid;grid-template-columns:var(--gfk,20ch) minmax(0,1fr);column-gap:28px;align-items:baseline;padding:7px 0;box-shadow:inset 0 -1px 0 var(--line1)}
+.gfails .gfv{justify-self:start;font:500 calc(13px*var(--dtxt)) var(--mono);color:var(--ink1)}
+.gfails .gfr.told .gfv{box-shadow:inset 0 -1.5px 0 var(--mint)}
+.gfails .gfw{font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink3);min-width:0}
+.gfails .gfs{font-style:normal;color:var(--ink4);padding:0 3px}
+.gfails .gfm,.gfails .gfn{font:400 calc(12px*var(--dtxt)) var(--ui);font-style:normal;color:var(--ink4)}
+.gfails .gffoot{margin-top:10px;font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4)}
+@container reader (max-width:560px){ .gfails .gfr{grid-template-columns:1fr;row-gap:4px} .gfails .gfw{padding-left:14px} }
+/* its cousins: the same idea in another package, and the road each way */
+.gcous .gcr{display:flex;flex-direction:column;gap:10px;padding:4px 0 14px}
+.gcous .gcr+.gcr{box-shadow:inset 0 1px 0 var(--line1);padding-top:16px}
+.gcous .gch{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.gcous .gch a.gtl{font:500 calc(14px*var(--dtxt)) var(--mono);color:var(--ink0)}
+.gcous .gch span{font:400 calc(12.5px*var(--dtxt)) var(--ui);color:var(--ink3)}
+.gcous .gch code{font:500 calc(12px*var(--dtxt)) var(--mono);color:var(--ink2)}
+.gcous .gcw{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:baseline;column-gap:14px}
+.gcous .gcl{font:italic 400 calc(13px*var(--dtxt)) var(--serif,"Newsreader"),serif;color:var(--ink4)}
+.gcous .gcn{font:400 calc(12.5px*var(--dtxt)) var(--ui);color:var(--ink4)}
+.gcous .route+.route{opacity:1}
+/* the empty find box: what it can do */
+.gres .r.hint{grid-template-columns:minmax(0,max-content) minmax(0,1fr);column-gap:14px}
+.gres .r.hint .n{font:500 12.5px var(--mono);color:var(--ink1)}
+.gres .r.hint .w{font:400 11.5px var(--ui);color:var(--ink4);white-space:normal;text-align:left}

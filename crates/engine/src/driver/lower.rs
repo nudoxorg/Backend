@@ -25,9 +25,10 @@ use backend_semantic::ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
     DocFactInput, DocFragmentInput, DocLinkTarget, EntityKind, EntityRecord, ExtensionPoolsLane,
     ExtensionRefList, ExtensionSectionInput, ExtensionSectionPlane, ExtensionTypeParameter,
-    ExtensionTypeParameterRange, Occurrence, OccurrenceInput, OccurrenceLane, PrepareError,
-    PreparedFragment, RecipeFact, SourceIdentity, TypeFactInput, TypeFactLane, TypeNode,
-    WriteError, canonicalize_data_with_budget,
+    ExtensionTypeParameterRange, ForeignKey, ForeignOrigin, Occurrence, OccurrenceConfidence,
+    OccurrenceInput, OccurrenceLane, OccurrenceTarget, PackageLineage, PrepareError,
+    PreparedFragment, RecipeFact, ReferenceKind, RelSpan, SourceIdentity, TypeFactInput,
+    TypeFactLane, TypeNode, WriteError, canonicalize_data_with_budget,
 };
 use backend_semantic::vocabulary::ProjectionFactLane;
 use core::mem::size_of;
@@ -57,17 +58,34 @@ use provenance::{MemberSetCapture, Provenance, local_parent};
 /// 32,768 slots × 4-byte `u32` coordinate = 128 KiB; measured high-water 6,882 facts, and the clang authority mirror measures 32,768 declaration-lane rows for fmt's deferred-parameter traversal, so the coupled protocol geometry moves with it. Roll back to 16,384 if every target package stays below 8,192 facts.
 pub(super) const MAX_EMISSION_FACTS: usize = 32768;
 /// Dense bound of one fact's ordered product children.
-/// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 244 pooled children. Roll back to 32 if it stays below 16 per fact.
-pub(super) const MAX_FACT_CHILDREN: usize = 64;
+///
+/// A signature or product may name this many children. The count is a `u8`,
+/// so 255 is the hard per-row maximum. The pooled lane stays at
+/// [`PRODUCT_CHILD_POOL_STRIDE`] on average so `protocol_maximum` does not
+/// reserve a 255-wide slot for every fact.
+pub(super) const MAX_FACT_CHILDREN: usize = 255;
+/// Average product-child slots reserved per fact in the pooled lane.
+const PRODUCT_CHILD_POOL_STRIDE: usize = 64;
+const _: () = assert!(MAX_FACT_CHILDREN <= u8::MAX as usize);
 /// Dense bound of one fact's ordered type-record children.
-/// 64 slots × 8-byte child = 512 bytes per fact; measured target high-water 23,876 pooled computed children. Roll back to 32 if every target stays below 16 per row.
-pub(super) const MAX_TYPE_CHILDREN: usize = 64;
+///
+/// A compound row may name this many children. The count is a `u8`, so 255
+/// is the hard per-row maximum. The pooled lanes stay at
+/// [`TYPE_CHILD_POOL_STRIDE`] on average: raising this constant must not
+/// multiply `protocol_maximum` by 255.
+pub(super) const MAX_TYPE_CHILDREN: usize = 255;
+/// Average child slots reserved per type row in the pooled lanes.
+///
+/// One row may still use [`MAX_TYPE_CHILDREN`]. The pool product stays at
+/// this stride so a maximal fact set does not allocate a 255-wide slot for
+/// every declaration.
+const TYPE_CHILD_POOL_STRIDE: usize = 64;
 /// Total pooled product-child ceiling across one request. Per-row legality is
 /// still governed by [`MAX_FACT_CHILDREN`]; production allocation uses the
 /// request's measured aggregate demand rather than this Cartesian maximum.
-const MAX_EMISSION_CHILDREN: usize = MAX_EMISSION_FACTS * MAX_FACT_CHILDREN;
+const MAX_EMISSION_CHILDREN: usize = MAX_EMISSION_FACTS * PRODUCT_CHILD_POOL_STRIDE;
 /// Total pooled declared-type-child ceiling across one request.
-const MAX_EMISSION_TYPE_CHILDREN: usize = MAX_EMISSION_FACTS * MAX_TYPE_CHILDREN;
+const MAX_EMISSION_TYPE_CHILDREN: usize = MAX_EMISSION_FACTS * TYPE_CHILD_POOL_STRIDE;
 /// The uncommitted portion of either fixed type-child lane can never exceed
 /// one record's bounded child capacity, so its cursor has a total compact
 /// representation independent of the platform's native word width.
@@ -78,11 +96,11 @@ const _: () = assert!(MAX_TYPE_CHILDREN <= u8::MAX as usize);
 /// This is the protocol ceiling for the *pooled* occurrence lane, which
 /// [`ResourcePlan::for_source`] budgets from entered bytes; it exists so a
 /// genuine measured overrun is a typed `OccurrenceCapacity` fault rather than
-/// an eager maximum allocation. Raised from 8,192 to the declaration-fact
-/// budget because real multi-package fragments emit more occurrences than
-/// declarations, and the old bound rejected them before the measured budget
-/// could be consumed.
-pub(super) const MAX_EMISSION_OCCURRENCES: usize = MAX_EMISSION_FACTS;
+/// an eager maximum allocation. The Clang authority records four references
+/// per declaration (`MAX_CLANG_REFERENCES`), so a translation unit past the
+/// declaration ceiling was still `OccurrenceCapacity` while its source bytes
+/// had room. The ceiling matches that four-times ratio.
+pub(super) const MAX_EMISSION_OCCURRENCES: usize = 4 * MAX_EMISSION_FACTS;
 /// Dense bound of the documentation lane; measured maximum is 13,529 fragments (`StringUtils.java`), so 16,384 is next.
 pub(super) const MAX_EMISSION_DOC_FRAGMENTS: usize = 16384;
 /// Dense bound of extension atoms admitted beside declaration names.
@@ -97,7 +115,7 @@ pub(super) const MAX_TYPE_PARAMETERS: usize = 4096;
 /// Dense bound of ordered type/lifetime bounds across one request.
 /// Each bound has written source evidence, so the request geometry scales
 /// with entered bytes rather than allocating a language-wide maximum.
-pub(super) const MAX_TYPE_PARAMETER_BOUNDS: usize = MAX_TYPE_PARAMETERS * MAX_REF_LIST_ELEMENTS;
+pub(super) const MAX_TYPE_PARAMETER_BOUNDS: usize = MAX_TYPE_PARAMETERS * 255;
 /// Dense bound of pooled Rust free generic predicates across one request.
 /// Each predicate carries written source evidence, so real usage scales with
 /// entered bytes like type parameters do.
@@ -110,12 +128,13 @@ pub(super) const MAX_FREE_PREDICATES: usize = 4096;
 /// a hard `RefListCapacity` wall.
 pub(super) const MAX_REF_LISTS: usize = 4096;
 /// Dense bound of one pooled reference list.
-/// The measured corpus maximum is 220 (`pflag.FlagSet` method set; testify's
-/// `Assertions` reaches 146). Raised from 128 to 255 — the exact `u8` list
-/// length ceiling — to admit real wide method sets while preserving the dense
-/// geometry; a list beyond this is still a typed `RefListElements` rejection,
-/// never a truncated emission.
-pub(super) const MAX_REF_LIST_ELEMENTS: usize = 255;
+///
+/// The measured Go method-set maximum was 220, which fit in a `u8` length.
+/// C translation units such as Lua and json-c emit a wider include or
+/// reference list at the first fact, so the ceiling is the element count a
+/// flat pool can address, not a fixed row width. A list beyond this is still
+/// a typed `RefListElements` rejection, never a truncated emission.
+pub(super) const MAX_REF_LIST_ELEMENTS: usize = 4096;
 /// Total atom budget: one name per fact plus every extension atom.
 pub(super) const MAX_EMISSION_ATOMS: usize = MAX_EMISSION_FACTS + MAX_EXTENSION_ATOMS;
 /// Dense bound of anonymous type rows interned beside the fact rows.
@@ -126,8 +145,8 @@ pub(super) const MAX_ANONYMOUS_TYPE_ROWS: usize = 8192;
 pub(super) const MAX_COMPUTED_TYPE_ROWS: usize = 32768;
 /// Aggregate anonymous/computed child ceilings. These remain protocol limits,
 /// not eager allocation instructions.
-const MAX_ANONYMOUS_TYPE_CHILDREN: usize = MAX_ANONYMOUS_TYPE_ROWS * MAX_TYPE_CHILDREN;
-const MAX_COMPUTED_TYPE_CHILDREN: usize = MAX_COMPUTED_TYPE_ROWS * MAX_TYPE_CHILDREN;
+const MAX_ANONYMOUS_TYPE_CHILDREN: usize = MAX_ANONYMOUS_TYPE_ROWS * TYPE_CHILD_POOL_STRIDE;
+const MAX_COMPUTED_TYPE_CHILDREN: usize = MAX_COMPUTED_TYPE_ROWS * TYPE_CHILD_POOL_STRIDE;
 /// Total type-row budget: one record per fact plus the anonymous pool.
 pub(super) const MAX_TYPE_ROWS: usize =
     MAX_EMISSION_FACTS + MAX_ANONYMOUS_TYPE_ROWS + MAX_COMPUTED_TYPE_ROWS;
@@ -212,7 +231,7 @@ impl ResourcePlan {
         let units = source_bytes.saturating_add(1);
         let bounded = |value: usize, maximum: usize| value.clamp(8, maximum);
         let bounded_children =
-            |value: usize, maximum: usize| value.clamp(MAX_TYPE_CHILDREN, maximum);
+            |value: usize, maximum: usize| value.clamp(TYPE_CHILD_POOL_STRIDE, maximum);
         let facts = bounded(units / 2 + 8, MAX_EMISSION_FACTS);
         Self {
             facts,
@@ -581,6 +600,49 @@ impl RejectedFact<'_> {
 
 /// Caller-owned bounded SoA lanes for the ordered emission set. Only the
 /// admitted prefix is read by [`admit`]; slots past `len` are never observed.
+/// Flat pool of reference-list rows. Each row is a span into `elements`,
+/// so a list wider than 255 does not reserve a fixed-width scratch row.
+struct PooledRefLists {
+    elements: Vec<u32>,
+    starts: Box<[u32]>,
+    lengths: Box<[u32]>,
+    len: usize,
+}
+
+impl PooledRefLists {
+    fn reserve(lists: usize) -> Self {
+        Self {
+            elements: Vec::new(),
+            starts: vec![0; lists].into_boxed_slice(),
+            lengths: vec![0; lists].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    fn row(&self, index: usize) -> Option<&[u32]> {
+        if index >= self.len {
+            return None;
+        }
+        let start = usize::try_from(self.starts[index]).ok()?;
+        let length = usize::try_from(self.lengths[index]).ok()?;
+        let end = start.checked_add(length)?;
+        self.elements.get(start..end)
+    }
+
+    fn push(&mut self, elements: &[u32]) -> Result<(), ()> {
+        let start = u32::try_from(self.elements.len()).map_err(|_| ())?;
+        let length = u32::try_from(elements.len()).map_err(|_| ())?;
+        if self.len >= self.starts.len() {
+            return Err(());
+        }
+        self.elements.extend_from_slice(elements);
+        self.starts[self.len] = start;
+        self.lengths[self.len] = length;
+        self.len += 1;
+        Ok(())
+    }
+}
+
 pub(super) struct FactSet<'source> {
     plan: ResourcePlan,
     primary_source_len: Option<u32>,
@@ -627,14 +689,11 @@ pub(super) struct FactSet<'source> {
     free_predicates: Box<[backend_semantic::ir::ExtensionFreePredicate]>,
     free_predicate_len: usize,
     free_predicate_ranges: Box<[Option<StagedFreePredicateRange>]>,
-    atom_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    atom_list_lengths: Box<[u8]>,
+    atom_lists: PooledRefLists,
     atom_list_len: usize,
-    type_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    type_list_lengths: Box<[u8]>,
+    type_lists: PooledRefLists,
     type_list_len: usize,
-    entity_lists: Box<[[u32; MAX_REF_LIST_ELEMENTS]]>,
-    entity_list_lengths: Box<[u8]>,
+    entity_lists: PooledRefLists,
     entity_list_len: usize,
     anonymous_records: Box<[SemanticTypeRecord<'source>]>,
     anonymous_owners: Box<[u32]>,
@@ -656,7 +715,12 @@ pub(super) struct FactSet<'source> {
     computed_rows: usize,
     computed_children_total: usize,
     computed_child_pending: u8,
+    foreign_text: Vec<Box<str>>,
+    occurrence_package_slot: Box<[Option<u32>]>,
 }
+
+/// Staging package name for owned cross-file keys before overlay.
+const OWNED_PACKAGE_STAGING: &str = "owned";
 
 /// An explicit transaction-local type-parameter range.  The public semantic
 /// ID is dense only after admission; a bare staging start is ambiguous when
@@ -987,14 +1051,11 @@ impl<'source> FactSet<'source> {
             .into_boxed_slice(),
             free_predicate_len: 0,
             free_predicate_ranges: vec![None; plan.facts].into_boxed_slice(),
-            atom_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
-            atom_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
+            atom_lists: PooledRefLists::reserve(plan.ref_lists),
             atom_list_len: 0,
-            type_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
-            type_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
+            type_lists: PooledRefLists::reserve(plan.ref_lists),
             type_list_len: 0,
-            entity_lists: vec![[0; MAX_REF_LIST_ELEMENTS]; plan.ref_lists].into_boxed_slice(),
-            entity_list_lengths: vec![0; plan.ref_lists].into_boxed_slice(),
+            entity_lists: PooledRefLists::reserve(plan.ref_lists),
             entity_list_len: 0,
             anonymous_records: vec![opaque_record(); plan.anonymous_rows].into_boxed_slice(),
             anonymous_owners: vec![0; plan.anonymous_rows].into_boxed_slice(),
@@ -1016,6 +1077,8 @@ impl<'source> FactSet<'source> {
             computed_rows: 0,
             computed_children_total: 0,
             computed_child_pending: 0,
+            foreign_text: Vec::new(),
+            occurrence_package_slot: vec![None; plan.occurrences].into_boxed_slice(),
         }
     }
 
@@ -1839,26 +1902,18 @@ impl<'source> FactSet<'source> {
         let (count, matches) = match lane {
             ReferenceListLane::Atoms => {
                 let count = self.atom_list_len;
-                let matches = (0..count).find(|index| {
-                    usize::from(self.atom_list_lengths[*index]) == elements.len()
-                        && self.atom_lists[*index][..elements.len()] == *elements
-                });
+                let matches = (0..count).find(|index| self.atom_lists.row(*index) == Some(elements));
                 (count, matches)
             }
             ReferenceListLane::Types => {
                 let count = self.type_list_len;
-                let matches = (0..count).find(|index| {
-                    usize::from(self.type_list_lengths[*index]) == elements.len()
-                        && self.type_lists[*index][..elements.len()] == *elements
-                });
+                let matches = (0..count).find(|index| self.type_lists.row(*index) == Some(elements));
                 (count, matches)
             }
             ReferenceListLane::Entities => {
                 let count = self.entity_list_len;
-                let matches = (0..count).find(|index| {
-                    usize::from(self.entity_list_lengths[*index]) == elements.len()
-                        && self.entity_lists[*index][..elements.len()] == *elements
-                });
+                let matches =
+                    (0..count).find(|index| self.entity_lists.row(*index) == Some(elements));
                 (count, matches)
             }
         };
@@ -1868,24 +1923,16 @@ impl<'source> FactSet<'source> {
         if count == self.plan.ref_lists {
             return Err(FactFault::RefListCapacity);
         }
-        let mut row = [0; MAX_REF_LIST_ELEMENTS];
-        row[..elements.len()].copy_from_slice(elements);
+        let pool = match lane {
+            ReferenceListLane::Atoms => &mut self.atom_lists,
+            ReferenceListLane::Types => &mut self.type_lists,
+            ReferenceListLane::Entities => &mut self.entity_lists,
+        };
+        pool.push(elements).map_err(|_| FactFault::RefListElements)?;
         match lane {
-            ReferenceListLane::Atoms => {
-                self.atom_lists[count] = row;
-                self.atom_list_lengths[count] = elements.len() as u8;
-                self.atom_list_len = count + 1;
-            }
-            ReferenceListLane::Types => {
-                self.type_lists[count] = row;
-                self.type_list_lengths[count] = elements.len() as u8;
-                self.type_list_len = count + 1;
-            }
-            ReferenceListLane::Entities => {
-                self.entity_lists[count] = row;
-                self.entity_list_lengths[count] = elements.len() as u8;
-                self.entity_list_len = count + 1;
-            }
+            ReferenceListLane::Atoms => self.atom_list_len = count + 1,
+            ReferenceListLane::Types => self.type_list_len = count + 1,
+            ReferenceListLane::Entities => self.entity_list_len = count + 1,
         }
         Ok(count as u32)
     }
@@ -2140,6 +2187,106 @@ impl<'source> FactSet<'source> {
         self.occurrences[self.occurrence_len] = occurrence;
         self.occurrence_len += 1;
         Ok(())
+    }
+
+    /// Appends one occurrence whose cargo package name is owned until admit.
+    pub(super) fn push_owned_package_occurrence(
+        &mut self,
+        owner: u32,
+        ecosystem: &'source str,
+        package: &str,
+        path: &'source str,
+        display: &'source str,
+        entity_kind: Option<EntityKind>,
+        kind: ReferenceKind,
+        confidence: OccurrenceConfidence,
+        span: RelSpan,
+    ) -> Result<(), FactFault> {
+        if PackageLineage::new(ecosystem, package).is_err() {
+            return Err(FactFault::EmptyName);
+        }
+        if self.occurrence_len == self.plan.occurrences
+            || self.foreign_text.len() >= self.plan.occurrences
+        {
+            return Err(FactFault::OccurrenceCapacity);
+        }
+        let staging_lineage = match PackageLineage::new(ecosystem, OWNED_PACKAGE_STAGING) {
+            Ok(lineage) => lineage,
+            Err(_) => return Err(FactFault::EmptyName),
+        };
+        let key = match ForeignKey::new(
+            ForeignOrigin::Package(staging_lineage),
+            path,
+            display,
+            entity_kind,
+        ) {
+            Ok(key) => key,
+            Err(_) => return Err(FactFault::EmptyName),
+        };
+        // Own the module path before the occurrence is visible. A later
+        // rejection drops that string so the staging name `owned` cannot be
+        // admitted without a slot.
+        let slot = match u32::try_from(self.foreign_text.len()) {
+            Ok(slot) => slot,
+            Err(_) => return Err(FactFault::OccurrenceCapacity),
+        };
+        self.foreign_text.push(package.to_owned().into_boxed_str());
+        if let Err(fault) = self.push_occurrence(
+            owner,
+            Occurrence {
+                target: OccurrenceTarget::Foreign(key),
+                kind,
+                confidence,
+                span,
+            },
+        ) {
+            self.foreign_text.pop();
+            return Err(fault);
+        }
+        self.occurrence_package_slot[self.occurrence_len - 1] = Some(slot);
+        Ok(())
+    }
+
+    fn materialize_occurrence<'a>(
+        &'a self,
+        index: usize,
+    ) -> Result<Occurrence<'a>, (u32, usize)> {
+        if index >= self.occurrence_len {
+            return Err((0, self.foreign_text.len()));
+        }
+        let Some(slot) = self.occurrence_package_slot[index] else {
+            return Ok(self.occurrences[index]);
+        };
+        let stored = self.occurrences[index];
+        let OccurrenceTarget::Foreign(stored_key) = stored.target else {
+            return Err((slot, self.foreign_text.len()));
+        };
+        let ForeignOrigin::Package(staging_lineage) = stored_key.origin else {
+            return Err((slot, self.foreign_text.len()));
+        };
+        let package_text = match self.foreign_text.get(slot as usize) {
+            Some(text) => text.as_ref(),
+            None => return Err((slot, self.foreign_text.len())),
+        };
+        let lineage = match PackageLineage::new(staging_lineage.ecosystem, package_text) {
+            Ok(lineage) => lineage,
+            Err(_) => return Err((slot, self.foreign_text.len())),
+        };
+        let key = match ForeignKey::new(
+            ForeignOrigin::Package(lineage),
+            stored_key.path,
+            stored_key.display,
+            stored_key.kind,
+        ) {
+            Ok(key) => key,
+            Err(_) => return Err((slot, self.foreign_text.len())),
+        };
+        Ok(Occurrence {
+            target: OccurrenceTarget::Foreign(key),
+            kind: stored.kind,
+            confidence: stored.confidence,
+            span: stored.span,
+        })
     }
 
     /// Appends one documentation fragment owned by an already-pushed fact
@@ -2564,19 +2711,13 @@ impl<'source> FactSet<'source> {
             if self.atom_list_len == 0 && list == 0 {
                 continue;
             }
-            let length = self.atom_list_lengths.get(list).copied().ok_or(
-                backend_semantic::ir::BuildError::Dangling {
-                    space: backend_semantic::ir::SemanticSpace::AtomList,
-                    raw: list as u32,
-                },
-            )?;
-            if list >= self.atom_list_len {
+            let Some(row) = self.atom_lists.row(list) else {
                 return Err(backend_semantic::ir::BuildError::Dangling {
                     space: backend_semantic::ir::SemanticSpace::AtomList,
                     raw: list as u32,
                 });
-            }
-            let length = usize::from(length);
+            };
+            let length = row.len();
             item_attribute_ranges[ordinal] = (item_attribute_total, length);
             item_attribute_total = item_attribute_total.checked_add(length).ok_or(
                 backend_semantic::ir::BuildError::Dangling {
@@ -2596,7 +2737,13 @@ impl<'source> FactSet<'source> {
                 continue;
             }
             let (start, length) = item_attribute_ranges[ordinal];
-            for (relative, provisional) in self.atom_lists[list][..length].iter().enumerate() {
+            let Some(row) = self.atom_lists.row(list) else {
+                return Err(backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::AtomList,
+                    raw: list as u32,
+                });
+            };
+            for (relative, provisional) in row[..length].iter().enumerate() {
                 let offset = usize::try_from(*provisional).map_err(|_| {
                     backend_semantic::ir::BuildError::Dangling {
                         space: backend_semantic::ir::SemanticSpace::Atom,
@@ -2722,7 +2869,12 @@ impl<'source> FactSet<'source> {
         let mut links = Vec::with_capacity(self.occurrence_len);
         for index in 0..self.occurrence_len {
             let owner = self.occurrence_owners[index];
-            let occurrence = self.occurrences[index];
+            let occurrence = self.materialize_occurrence(index).map_err(|_| {
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: u32::try_from(index).unwrap_or(u32::MAX),
+                }
+            })?;
             let source = occurrence_source_span(self, source_file, owner, occurrence.span)?;
             links.push(TreeLinkInput {
                 from: backend_semantic::ir::TreeEntityId::new(owner),
@@ -3170,20 +3322,14 @@ fn live_atom_list<'source>(
     if facts.atom_list_len == 0 && index == 0 {
         return tree.intern_attributes(&[]);
     }
-    let length = facts.atom_list_lengths.get(index).copied().ok_or(
-        backend_semantic::ir::BuildError::Dangling {
-            space: backend_semantic::ir::SemanticSpace::AtomList,
-            raw: id.raw,
-        },
-    )?;
-    if index >= facts.atom_list_len {
+    let Some(row) = facts.atom_lists.row(index) else {
         return Err(backend_semantic::ir::BuildError::Dangling {
             space: backend_semantic::ir::SemanticSpace::AtomList,
             raw: id.raw,
         });
-    }
-    let mut atoms = Vec::with_capacity(usize::from(length));
-    for provisional in &facts.atom_lists[index][..usize::from(length)] {
+    };
+    let mut atoms = Vec::with_capacity(row.len());
+    for provisional in row {
         let bytes = facts
             .extension_atoms
             .get(*provisional as usize)
@@ -3288,9 +3434,14 @@ fn live_type_list<'source>(
             raw: id.raw,
         });
     }
-    let length = usize::from(facts.type_list_lengths[index]);
-    let mut types = Vec::with_capacity(length);
-    for row in &facts.type_lists[index][..length] {
+    let Some(rows) = facts.type_lists.row(index) else {
+        return Err(backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::TypeList,
+            raw: id.raw,
+        });
+    };
+    let mut types = Vec::with_capacity(rows.len());
+    for row in rows {
         types.push(live_type(tree, facts, *row, ids, seen, scratch)?);
     }
     tree.intern_types(&types)
@@ -3311,9 +3462,14 @@ fn live_entity_list(
             raw: id.raw,
         });
     }
-    let length = usize::from(facts.entity_list_lengths[index]);
-    let mut entities = Vec::with_capacity(length);
-    for raw in &facts.entity_lists[index][..length] {
+    let Some(rows) = facts.entity_lists.row(index) else {
+        return Err(backend_semantic::ir::BuildError::Dangling {
+            space: backend_semantic::ir::SemanticSpace::EntityList,
+            raw: id.raw,
+        });
+    };
+    let mut entities = Vec::with_capacity(rows.len());
+    for raw in rows {
         let local = backend_semantic::ir::TreeEntityId::new(*raw);
         entities.push(tree.entities().get(local).ok_or(
             backend_semantic::ir::BuildError::InvalidTreeEntity {
@@ -5311,9 +5467,21 @@ pub(super) fn admit<'source, 'output>(
         .iter()
         .enumerate()
     {
+        let occurrence = facts.materialize_occurrence(index).map_err(
+            |(slot, stored)| {
+                // An owned package slot outside the text lane is an unbound
+                // staging coordinate, reported through the extension-atom fault
+                // so the public compile-failure enum stays unchanged.
+                AdmissionFault::ExtensionAtom {
+                    row: index,
+                    provisional: slot,
+                    atom_count: stored,
+                }
+            },
+        )?;
         occurrence_inputs[index] = OccurrenceInput {
             owner: backend_semantic::ir::EntityId::new(*owner),
-            occurrence: facts.occurrences[index],
+            occurrence,
         };
     }
     let occurrence_lane = OccurrenceLane {
@@ -5327,16 +5495,17 @@ pub(super) fn admit<'source, 'output>(
 
     // Extension pooled lanes: provisional atom coordinates become final atom
     // lane positions; type and entity coordinates were already final.
-    let mut atom_list_elements =
-        vec![[0; MAX_REF_LIST_ELEMENTS]; facts.atom_list_len].into_boxed_slice();
-    for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
-        .iter()
-        .enumerate()
-    {
-        for (offset, provisional) in facts.atom_lists[index][..usize::from(*length)]
-            .iter()
-            .enumerate()
-        {
+    let mut atom_list_elements = Vec::with_capacity(facts.atom_list_len);
+    for index in 0..facts.atom_list_len {
+        let Some(row) = facts.atom_lists.row(index) else {
+            return Err(AdmissionFault::ExtensionAtom {
+                row: index,
+                provisional: 0,
+                atom_count: extension_atom_count,
+            });
+        };
+        let mut mapped = Vec::with_capacity(row.len());
+        for provisional in row {
             if *provisional as usize >= extension_atom_count {
                 return Err(AdmissionFault::ExtensionAtom {
                     row: index,
@@ -5344,48 +5513,39 @@ pub(super) fn admit<'source, 'output>(
                     atom_count: extension_atom_count,
                 });
             }
-            atom_list_elements[index][offset] = (fact_count + *provisional as usize) as u32;
+            mapped.push((fact_count + *provisional as usize) as u32);
         }
+        atom_list_elements.push(mapped);
     }
-    let mut pooled_atom_lists = vec![ExtensionRefList { elements: &[] }; facts.atom_list_len];
-    for (index, length) in facts.atom_list_lengths[..facts.atom_list_len]
+    let pooled_atom_lists = atom_list_elements
         .iter()
-        .enumerate()
-    {
-        pooled_atom_lists[index] = ExtensionRefList {
-            elements: &atom_list_elements[index][..usize::from(*length)],
+        .map(|row| ExtensionRefList { elements: row })
+        .collect::<Vec<_>>();
+    let mut type_list_elements = Vec::with_capacity(facts.type_list_len);
+    for index in 0..facts.type_list_len {
+        let Some(row) = facts.type_lists.row(index) else {
+            return Err(AdmissionFault::ExtensionAtom {
+                row: index,
+                provisional: 0,
+                atom_count: 0,
+            });
         };
+        type_list_elements.push(row.iter().copied().map(remap_staged_type).collect::<Vec<_>>());
     }
-    let mut type_list_elements =
-        vec![[0; MAX_REF_LIST_ELEMENTS]; facts.type_list_len].into_boxed_slice();
-    for (index, length) in facts.type_list_lengths[..facts.type_list_len]
+    let pooled_type_lists = type_list_elements
         .iter()
-        .enumerate()
-    {
-        for (offset, raw) in facts.type_lists[index][..usize::from(*length)]
-            .iter()
-            .enumerate()
-        {
-            type_list_elements[index][offset] = remap_staged_type(*raw);
-        }
-    }
-    let mut pooled_type_lists = vec![ExtensionRefList { elements: &[] }; facts.type_list_len];
-    for (index, length) in facts.type_list_lengths[..facts.type_list_len]
-        .iter()
-        .enumerate()
-    {
-        pooled_type_lists[index] = ExtensionRefList {
-            elements: &type_list_elements[index][..usize::from(*length)],
+        .map(|row| ExtensionRefList { elements: row })
+        .collect::<Vec<_>>();
+    let mut pooled_entity_lists = Vec::with_capacity(facts.entity_list_len);
+    for index in 0..facts.entity_list_len {
+        let Some(row) = facts.entity_lists.row(index) else {
+            return Err(AdmissionFault::ExtensionAtom {
+                row: index,
+                provisional: 0,
+                atom_count: 0,
+            });
         };
-    }
-    let mut pooled_entity_lists = vec![ExtensionRefList { elements: &[] }; facts.entity_list_len];
-    for (index, length) in facts.entity_list_lengths[..facts.entity_list_len]
-        .iter()
-        .enumerate()
-    {
-        pooled_entity_lists[index] = ExtensionRefList {
-            elements: &facts.entity_lists[index][..usize::from(*length)],
-        };
+        pooled_entity_lists.push(ExtensionRefList { elements: row });
     }
     const EMPTY_FREE_PREDICATE_LISTS: [ExtensionTypeParameterRange; 1] =
         [ExtensionTypeParameterRange {

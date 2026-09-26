@@ -330,11 +330,15 @@ fn surface_cases(root: &Path) -> Vec<SurfaceCase> {
             command: SurfaceCommand::ForgeAdd {
                 coordinate: forge.clone(),
             },
-            expectation: SurfaceExpectation::Result("forge-package-added"),
+            expectation: SurfaceExpectation::TypedInvalidQuery(&[
+                "forge acquisition authority is not configured in this owner",
+            ]),
         },
         SurfaceCase {
             command: SurfaceCommand::ForgeReference { coordinate: forge },
-            expectation: SurfaceExpectation::Result("forge-package-referenced"),
+            expectation: SurfaceExpectation::TypedInvalidQuery(&[
+                "forge acquisition authority is not configured in this owner",
+            ]),
         },
         SurfaceCase {
             command: SurfaceCommand::Dependents {
@@ -532,7 +536,9 @@ fn assert_cli_surface_reply(value: &Value, case: &SurfaceCase, label: &str, stat
             assert!(status, "{label} failed: {value}");
             assert_eq!(value["answer"], "product", "{label} answer kind");
             assert!(
-                value["heading"].as_str().is_some_and(|heading| !heading.is_empty()),
+                value["heading"]
+                    .as_str()
+                    .is_some_and(|heading| !heading.is_empty()),
                 "{label} published no heading: {value}"
             );
             assert!(
@@ -549,11 +555,15 @@ fn assert_cli_surface_reply(value: &Value, case: &SurfaceCase, label: &str, stat
                     "{label} carried an untyped fault: {value}"
                 );
                 assert!(
-                    fault["operand"].as_str().is_some_and(|operand| !operand.is_empty()),
+                    fault["operand"]
+                        .as_str()
+                        .is_some_and(|operand| !operand.is_empty()),
                     "{label} carried a fault with no operand: {value}"
                 );
                 assert!(
-                    fault["detail"].as_str().is_some_and(|detail| !detail.is_empty()),
+                    fault["detail"]
+                        .as_str()
+                        .is_some_and(|detail| !detail.is_empty()),
                     "{label} carried a fault with no sentence: {value}"
                 );
             }
@@ -705,21 +715,13 @@ fn run_mcp_surface_matrix(
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("MCP tools list");
-    let surface = tools
-        .iter()
-        .find(|tool| tool["name"] == "backend.surface")
-        .expect("backend.surface tool");
-    let advertised =
-        surface["inputSchema"]["properties"]["command"]["properties"]["operation"]["enum"]
-            .as_array()
-            .expect("backend.surface operation enum");
-    let expected = registry_surface_rows()
-        .iter()
-        .map(|row| Value::String(row.name.to_owned()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        advertised, &expected,
-        "MCP surface schema drifted from COMMANDS"
+    assert!(
+        tools.iter().any(|tool| tool["name"] == "backend.index"),
+        "MCP session list omitted backend.index: {tools}"
+    );
+    assert!(
+        tools.iter().all(|tool| tool["name"] != "backend.surface"),
+        "MCP session list advertised the surface escape hatch"
     );
     for (index, case) in cases.iter().enumerate() {
         let response = &responses[index + 2];

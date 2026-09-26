@@ -721,7 +721,7 @@ impl SyntaxFrontend {
             language: self.language,
             content: typed_of::<InputContentSchema>(source),
             producer: self.producer,
-            declarations: self.declarations_of(path, &captured, text)?,
+            declarations: self.declarations_of(path, tree.root_node(), &captured, text)?,
         })
     }
 
@@ -745,6 +745,7 @@ impl SyntaxFrontend {
     fn declarations_of(
         &self,
         path: &Path,
+        root: Node<'_>,
         captured: &[CapturedDefinition<'_>],
         text: &str,
     ) -> Result<Arc<[SourceDeclaration]>, SyntaxError> {
@@ -771,6 +772,29 @@ impl SyntaxFrontend {
                 )?
                 .with_source_excerpt(SourceExcerpt::capture_bounded(declaration_source))
                 .with_container(definition.container),
+            );
+            if declarations.len() > MAX_DECLARATIONS {
+                return Err(SyntaxError::TooManyDeclarations);
+            }
+        }
+        for import in extract_import_declarations(self.language, root, text) {
+            excerpt_bytes = excerpt_bytes
+                .checked_add(bounded_excerpt_end(&import.excerpt))
+                .ok_or(SyntaxError::TooManySourceBytes)?;
+            if excerpt_bytes > Self::MAX_EXCERPT_BYTES {
+                return Err(SyntaxError::TooManySourceBytes);
+            }
+            declarations.push(
+                SourceDeclaration::at_path(
+                    path.display().to_string(),
+                    import.name,
+                    DeclarationKind::Import,
+                    import.line,
+                    import.signature,
+                    "",
+                )?
+                .with_source_excerpt(SourceExcerpt::capture_bounded(&import.excerpt))
+                .with_container(Container::Module),
             );
             if declarations.len() > MAX_DECLARATIONS {
                 return Err(SyntaxError::TooManyDeclarations);
@@ -1249,6 +1273,465 @@ fn xml_documentation_text(text: &str) -> String {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+struct ExtractedImport {
+    name: String,
+    line: u32,
+    signature: String,
+    excerpt: String,
+}
+
+fn node_line(node: Node<'_>) -> u32 {
+    u32::try_from(node.start_position().row.saturating_add(1)).unwrap_or(u32::MAX)
+}
+
+fn extract_import_declarations(
+    language: SourceLanguage,
+    root: Node<'_>,
+    text: &str,
+) -> Vec<ExtractedImport> {
+    let mut imports = Vec::new();
+    match language {
+        SourceLanguage::TypeScript => walk_typescript_imports(root, text, &mut imports),
+        SourceLanguage::Rust => walk_rust_imports(root, text, &mut imports),
+        SourceLanguage::Python => walk_python_imports(root, text, &mut imports),
+        _ => {}
+    }
+    imports
+}
+
+fn walk_typescript_imports(node: Node<'_>, text: &str, imports: &mut Vec<ExtractedImport>) {
+    if node.kind() == "import_statement" {
+        push_typescript_import(node, text, imports);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_typescript_imports(child, text, imports);
+    }
+}
+
+fn push_typescript_import(node: Node<'_>, text: &str, imports: &mut Vec<ExtractedImport>) {
+    if typescript_import_is_type_only(node, text) {
+        return;
+    }
+    let Some(source) = node.child_by_field_name("source") else {
+        return;
+    };
+    let specifier = string_literal_value(node_text(source, text));
+    if specifier.is_empty() {
+        return;
+    }
+    let line = node_line(node);
+    let excerpt = node_text(node, text);
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "import_clause" => {
+                let mut clause_cursor = child.walk();
+                for clause_child in child.children(&mut clause_cursor) {
+                    match clause_child.kind() {
+                        "identifier" => {
+                            let local = node_text(clause_child, text);
+                            if !local.is_empty() {
+                                imports.push(value_import(
+                                    local,
+                                    line,
+                                    &specifier,
+                                    local,
+                                    excerpt,
+                                ));
+                            }
+                        }
+                        "named_imports" => {
+                            push_typescript_named_imports(
+                                clause_child,
+                                text,
+                                line,
+                                &specifier,
+                                excerpt,
+                                imports,
+                            );
+                        }
+                        "namespace_import" => {
+                            let mut ns_cursor = clause_child.walk();
+                            for ns_child in clause_child.children(&mut ns_cursor) {
+                                if ns_child.kind() == "identifier" {
+                                    let local = node_text(ns_child, text);
+                                    if !local.is_empty() {
+                                        imports.push(qualifier_import(
+                                            local,
+                                            line,
+                                            &specifier,
+                                            excerpt,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn push_typescript_named_imports(
+    node: Node<'_>,
+    text: &str,
+    line: u32,
+    specifier: &str,
+    excerpt: &str,
+    imports: &mut Vec<ExtractedImport>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "import_specifier" || typescript_import_specifier_is_type_only(child) {
+            continue;
+        }
+        let exported = child
+            .child_by_field_name("name")
+            .map(|name| node_text(name, text))
+            .filter(|name| !name.is_empty());
+        let Some(exported) = exported else {
+            continue;
+        };
+        let local = child
+            .child_by_field_name("alias")
+            .map(|alias| node_text(alias, text))
+            .filter(|alias| !alias.is_empty())
+            .unwrap_or_else(|| exported.clone());
+        imports.push(value_import(local, line, specifier, &exported, excerpt));
+    }
+}
+
+fn typescript_import_is_type_only(node: Node<'_>, text: &str) -> bool {
+    node_text(node, text)
+        .trim_start()
+        .strip_prefix("import")
+        .map(str::trim_start)
+        .is_some_and(|rest| rest.starts_with("type"))
+}
+
+fn typescript_import_specifier_is_type_only(specifier: Node<'_>) -> bool {
+    let mut cursor = specifier.walk();
+    specifier.children(&mut cursor).any(|child| child.kind() == "type" && !child.is_named())
+}
+
+fn walk_rust_imports(node: Node<'_>, text: &str, imports: &mut Vec<ExtractedImport>) {
+    if node.kind() == "use_declaration" {
+        push_rust_use(node, text, imports);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_rust_imports(child, text, imports);
+    }
+}
+
+fn push_rust_use(node: Node<'_>, text: &str, imports: &mut Vec<ExtractedImport>) {
+    let Some(argument) = node.child_by_field_name("argument") else {
+        return;
+    };
+    let line = node_line(node);
+    let excerpt = node_text(node, text);
+    push_rust_use_argument(argument, text, line, excerpt, imports);
+}
+
+fn push_rust_use_argument(
+    node: Node<'_>,
+    text: &str,
+    line: u32,
+    excerpt: &str,
+    imports: &mut Vec<ExtractedImport>,
+) {
+    match node.kind() {
+        "use_as_clause" => {
+            let Some(path) = node.child_by_field_name("path") else {
+                return;
+            };
+            let Some((specifier, exported)) = rust_value_path_parts(path, text) else {
+                return;
+            };
+            let local = node
+                .child_by_field_name("alias")
+                .map(|alias| node_text(alias, text).to_owned())
+                .filter(|alias| !alias.is_empty())
+                .unwrap_or_else(|| exported.clone());
+            imports.push(value_import(local, line, &specifier, &exported, excerpt));
+        }
+        "scoped_use_list" => {
+            let specifier = node
+                .child_by_field_name("path")
+                .map(|path| rust_path_text(path, text))
+                .filter(|path| !path.is_empty())
+                .unwrap_or_default();
+            let Some(list) = node.child_by_field_name("list") else {
+                return;
+            };
+            push_rust_use_list(list, text, line, &specifier, excerpt, imports);
+        }
+        "use_list" => push_rust_use_list(node, text, line, "", excerpt, imports),
+        "scoped_identifier" => {
+            let Some((specifier, exported)) = rust_value_path_parts(node, text) else {
+                return;
+            };
+            imports.push(value_import(
+                exported.clone(),
+                line,
+                &specifier,
+                &exported,
+                excerpt,
+            ));
+        }
+        "identifier" => {
+            let local = node_text(node, text);
+            if !local.is_empty() {
+                imports.push(qualifier_import(local, line, &local, excerpt));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_rust_use_list(
+    node: Node<'_>,
+    text: &str,
+    line: u32,
+    specifier: &str,
+    excerpt: &str,
+    imports: &mut Vec<ExtractedImport>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "use_as_clause" => {
+                let exported = child
+                    .child_by_field_name("path")
+                    .map(|path| rust_path_text(path, text))
+                    .filter(|path| !path.is_empty());
+                let local = child
+                    .child_by_field_name("alias")
+                    .map(|alias| node_text(alias, text))
+                    .filter(|alias| !alias.is_empty());
+                if let (Some(exported), Some(local)) = (exported, local) {
+                    imports.push(value_import(local, line, specifier, &exported, excerpt));
+                }
+            }
+            "scoped_identifier" => {
+                let exported = child
+                    .child_by_field_name("name")
+                    .map(|name| node_text(name, text))
+                    .filter(|name| !name.is_empty());
+                if let Some(exported) = exported {
+                    imports.push(value_import(
+                        exported.clone(),
+                        line,
+                        specifier,
+                        &exported,
+                        excerpt,
+                    ));
+                }
+            }
+            "identifier" => {
+                let exported = node_text(child, text);
+                if !exported.is_empty() {
+                    imports.push(value_import(
+                        exported.clone(),
+                        line,
+                        specifier,
+                        &exported,
+                        excerpt,
+                    ));
+                }
+            }
+            "use_list" => push_rust_use_list(child, text, line, specifier, excerpt, imports),
+            "scoped_use_list" => push_rust_use_argument(child, text, line, excerpt, imports),
+            _ => {}
+        }
+    }
+}
+
+fn rust_path_text(node: Node<'_>, text: &str) -> String {
+    match node.kind() {
+        "identifier" | "crate" | "self" | "super" => node_text(node, text).to_owned(),
+        "scoped_identifier" => {
+            let path = node
+                .child_by_field_name("path")
+                .map(|path| rust_path_text(path, text))
+                .unwrap_or_default();
+            let name = node
+                .child_by_field_name("name")
+                .map(|name| node_text(name, text).to_owned())
+                .unwrap_or_default();
+            if path.is_empty() {
+                name
+            } else if name.is_empty() {
+                path
+            } else {
+                format!("{path}::{name}")
+            }
+        }
+        _ => node_text(node, text).to_owned(),
+    }
+}
+
+fn rust_value_path_parts(node: Node<'_>, text: &str) -> Option<(String, String)> {
+    let full = rust_path_text(node, text);
+    let (specifier, exported) = full.rsplit_once("::")?;
+    if exported.is_empty() {
+        return None;
+    }
+    Some((specifier.to_owned(), exported.to_owned()))
+}
+
+fn walk_python_imports(node: Node<'_>, text: &str, imports: &mut Vec<ExtractedImport>) {
+    match node.kind() {
+        "import_statement" => push_python_import_statement(node, text, imports),
+        "import_from_statement" => push_python_import_from(node, text, imports),
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                walk_python_imports(child, text, imports);
+            }
+        }
+    }
+}
+
+fn push_python_import_statement(node: Node<'_>, text: &str, imports: &mut Vec<ExtractedImport>) {
+    let line = node_line(node);
+    let excerpt = node_text(node, text);
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "aliased_import" {
+            let specifier = child
+                .child_by_field_name("name")
+                .map(|name| python_dotted_name(name, text))
+                .filter(|name| !name.is_empty());
+            let local = child
+                .child_by_field_name("alias")
+                .map(|alias| node_text(alias, text))
+                .filter(|alias| !alias.is_empty());
+            if let (Some(specifier), Some(local)) = (specifier, local) {
+                imports.push(qualifier_import(local, line, &specifier, excerpt));
+            }
+        } else if child.kind() == "dotted_name" {
+            let specifier = python_dotted_name(child, text);
+            if !specifier.is_empty() {
+                let local = specifier
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(specifier.as_str())
+                    .to_owned();
+                imports.push(qualifier_import(local, line, &specifier, excerpt));
+            }
+        }
+    }
+}
+
+fn push_python_import_from(node: Node<'_>, text: &str, imports: &mut Vec<ExtractedImport>) {
+    let specifier = node
+        .child_by_field_name("module_name")
+        .map(|module| python_module_name(module, text))
+        .filter(|module| !module.is_empty());
+    let Some(specifier) = specifier else {
+        return;
+    };
+    let line = node_line(node);
+    let excerpt = node_text(node, text);
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "aliased_import" {
+            let exported = child
+                .child_by_field_name("name")
+                .map(|name| python_dotted_name(name, text))
+                .filter(|name| !name.is_empty());
+            let local = child
+                .child_by_field_name("alias")
+                .map(|alias| node_text(alias, text))
+                .filter(|alias| !alias.is_empty());
+            if let (Some(exported), Some(local)) = (exported, local) {
+                let exported = exported
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(exported.as_str())
+                    .to_owned();
+                imports.push(value_import(local, line, &specifier, &exported, excerpt));
+            }
+        } else if child.kind() == "dotted_name" {
+            let exported = python_dotted_name(child, text);
+            if !exported.is_empty() {
+                let local = exported
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(exported.as_str())
+                    .to_owned();
+                imports.push(value_import(local.clone(), line, &specifier, &local, excerpt));
+            }
+        }
+    }
+}
+
+fn python_module_name(node: Node<'_>, text: &str) -> String {
+    match node.kind() {
+        "dotted_name" => python_dotted_name(node, text),
+        "relative_import" => node_text(node, text)
+            .trim()
+            .trim_end_matches('.')
+            .replace('.', "/"),
+        _ => node_text(node, text).trim().to_owned(),
+    }
+}
+
+fn python_dotted_name(node: Node<'_>, text: &str) -> String {
+    let mut parts = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "identifier" {
+            parts.push(node_text(child, text));
+        }
+    }
+    parts.join(".")
+}
+
+fn value_import(
+    local: impl Into<String>,
+    line: u32,
+    specifier: &str,
+    exported: &str,
+    excerpt: &str,
+) -> ExtractedImport {
+    let local = local.into();
+    ExtractedImport {
+        name: bounded(&local),
+        line,
+        signature: format!("value\n{specifier}\n{exported}"),
+        excerpt: excerpt.to_owned(),
+    }
+}
+
+fn qualifier_import(
+    local: impl Into<String>,
+    line: u32,
+    specifier: &str,
+    excerpt: &str,
+) -> ExtractedImport {
+    let local = local.into();
+    ExtractedImport {
+        name: bounded(&local),
+        line,
+        signature: format!("qualifier\n{specifier}"),
+        excerpt: excerpt.to_owned(),
+    }
+}
+
+fn string_literal_value(text: &str) -> String {
+    text.trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'' || ch == '`')
+        .to_owned()
 }
 
 fn bounded(value: &str) -> String {

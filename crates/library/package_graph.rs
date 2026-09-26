@@ -10,7 +10,8 @@
 use crate::{PackageReference, ProductAdmissionError, ProductText, RegistryEcosystem};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -59,8 +60,10 @@ pub fn discover_source_files(
 pub const MAX_PACKAGE_GRAPH_ROWS: usize = 2_048;
 
 /// Dependency facts associated with one canonical source package.
-pub type PackageDependencySourceFacts =
-    (PackageReference, DependencyFacts<Box<[PackageDependencyRecord]>>);
+pub type PackageDependencySourceFacts = (
+    PackageReference,
+    DependencyFacts<Box<[PackageDependencyRecord]>>,
+);
 
 /// Why one dependency fact was observed.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -90,6 +93,70 @@ pub enum DependencyScope {
     Build,
     /// Peer dependency supplied by the consuming application.
     Peer,
+}
+
+impl DependencyScope {
+    /// Precedence when the same target name appears more than once.
+    ///
+    /// Higher values win over lower ones: Runtime, then Build, Optional, Peer,
+    /// and finally Development.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Runtime => 5,
+            Self::Build => 4,
+            Self::Optional => 3,
+            Self::Peer => 2,
+            Self::Development => 1,
+        }
+    }
+}
+
+/// Returns the canonical `optional` flag for one dependency row.
+///
+/// Only [`DependencyScope::Optional`] rows and runtime rows whose manifest or
+/// registry metadata explicitly marks them optional retain `optional = true`.
+#[must_use]
+pub const fn dependency_optional(scope: DependencyScope, declared_optional: bool) -> bool {
+    match scope {
+        DependencyScope::Optional => true,
+        DependencyScope::Runtime => declared_optional,
+        DependencyScope::Development | DependencyScope::Build | DependencyScope::Peer => false,
+    }
+}
+
+fn should_replace_dependency(
+    existing: &PackageDependencyRecord,
+    candidate: &PackageDependencyRecord,
+) -> bool {
+    match candidate.scope.rank().cmp(&existing.scope.rank()) {
+        Ordering::Greater => true,
+        Ordering::Equal => existing.optional && !candidate.optional,
+        Ordering::Less => false,
+    }
+}
+
+/// Collapses duplicate target names, retaining the highest-ranked scope.
+///
+/// At equal rank, a non-optional row replaces an optional one.
+#[must_use]
+pub fn collapse_dependency_rows(
+    rows: Vec<PackageDependencyRecord>,
+) -> Vec<PackageDependencyRecord> {
+    let mut index_by_target = BTreeMap::<(RegistryEcosystem, ProductText), usize>::new();
+    let mut collapsed = Vec::with_capacity(rows.len());
+    for row in rows {
+        let key = (row.target.ecosystem, row.target.name.clone());
+        if let Some(&existing_index) = index_by_target.get(&key) {
+            if should_replace_dependency(&collapsed[existing_index], &row) {
+                collapsed[existing_index] = row;
+            }
+        } else {
+            index_by_target.insert(key, collapsed.len());
+            collapsed.push(row);
+        }
+    }
+    collapsed
 }
 
 /// A package lineage plus the version requirement written by its source.
@@ -265,13 +332,8 @@ mod tests {
     fn edge(requirement: &str, frontier: u8) -> PackageDependencyRecord {
         PackageDependencyRecord::new(
             source(),
-            PackageDependencyTarget::new(
-                RegistryEcosystem::Cargo,
-                "serde",
-                requirement,
-                None,
-            )
-            .expect("valid target"),
+            PackageDependencyTarget::new(RegistryEcosystem::Cargo, "serde", requirement, None)
+                .expect("valid target"),
             DependencyScope::Runtime,
             false,
             DependencyEvidence {
@@ -293,7 +355,10 @@ mod tests {
         let first = edge("^1", 1);
         let second = edge("^2", 2);
         let admitted = admit_dependency_rows(vec![second.clone(), first.clone()]).expect("admit");
-        assert_eq!(admitted[0].facts_version, first.facts_version.min(second.facts_version));
+        assert_eq!(
+            admitted[0].facts_version,
+            first.facts_version.min(second.facts_version)
+        );
         assert!(admit_dependency_rows(vec![first.clone(), first]).is_err());
     }
 
@@ -320,8 +385,11 @@ mod tests {
         fs::create_dir_all(root.join("src")).expect("source directory");
         fs::create_dir_all(root.join("node_modules/pkg")).expect("dependency directory");
         fs::write(root.join("src/lib.rs"), b"pub fn source() {}").expect("source");
-        fs::write(root.join("node_modules/pkg/lib.rs"), b"pub fn generated() {}")
-            .expect("generated");
+        fs::write(
+            root.join("node_modules/pkg/lib.rs"),
+            b"pub fn generated() {}",
+        )
+        .expect("generated");
 
         let paths = discover_source_files(&root, source_selection_policy()).expect("discover");
         let relative = paths
@@ -330,5 +398,51 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(relative, [PathBuf::from("src/lib.rs")]);
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn dependency_row(
+        name: &str,
+        scope: DependencyScope,
+        optional: bool,
+    ) -> PackageDependencyRecord {
+        PackageDependencyRecord::new(
+            source(),
+            PackageDependencyTarget::new(RegistryEcosystem::Cargo, name, "^1", None)
+                .expect("valid target"),
+            scope,
+            optional,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [1; 32],
+                provenance: [2; 32],
+            },
+        )
+    }
+
+    #[test]
+    fn dependency_optional_is_false_for_development_build_and_peer() {
+        assert!(!dependency_optional(DependencyScope::Development, true));
+        assert!(!dependency_optional(DependencyScope::Build, true));
+        assert!(!dependency_optional(DependencyScope::Peer, true));
+        assert!(dependency_optional(DependencyScope::Optional, false));
+        assert!(dependency_optional(DependencyScope::Runtime, true));
+        assert!(!dependency_optional(DependencyScope::Runtime, false));
+    }
+
+    #[test]
+    fn collapse_keeps_higher_rank_and_non_optional_at_equal_rank() {
+        let runtime = dependency_row("serde", DependencyScope::Runtime, false);
+        let development = dependency_row("serde", DependencyScope::Development, false);
+        let collapsed = collapse_dependency_rows(vec![development.clone(), runtime.clone()]);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].scope, DependencyScope::Runtime);
+
+        let optional_runtime = dependency_row("serde", DependencyScope::Runtime, true);
+        let required_runtime = dependency_row("serde", DependencyScope::Runtime, false);
+        let collapsed = collapse_dependency_rows(vec![optional_runtime, required_runtime.clone()]);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].scope, DependencyScope::Runtime);
+        assert!(!collapsed[0].optional);
+        assert_eq!(collapsed[0].facts_version, required_runtime.facts_version);
     }
 }

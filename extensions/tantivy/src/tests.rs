@@ -2,6 +2,7 @@
 
 #![allow(
     clippy::expect_used,
+    clippy::panic,
     reason = "test fixtures use expect to make invariant failures local"
 )]
 
@@ -944,4 +945,223 @@ fn concrete_tantivy_can_commit_its_projection_to_disk() {
         Err(TantivySourceError::Contract(Error::StaleRoot))
     ));
     std::fs::remove_dir_all(directory).expect("remove test index directory");
+}
+
+fn state_for(
+    documents: Vec<(EntityId, Vec<(String, String)>)>,
+    frontier: [u8; 32],
+) -> DocumentState {
+    let (binding, coverage) = binding(&documents);
+    let binding = binding.with_frontier(Frontier::from_value(&frontier));
+    DocumentState::new(binding, coverage, documents, Limits::default()).expect("document state")
+}
+
+fn term_hits(source: &TantivySource, term: &str) -> Vec<EntityId> {
+    source
+        .search(&Query::new(vec![term.to_owned()], Limits::default()).expect("query"))
+        .expect("search")
+        .into_iter()
+        .map(|hit| hit.document)
+        .collect()
+}
+
+#[test]
+fn rebinding_a_view_keeps_every_posting_and_rejects_the_old_binding() {
+    let documents = vec![
+        (document(1), vec![("name".into(), "alpha".into())]),
+        (document(2), vec![("name".into(), "beta".into())]),
+    ];
+    let current = state_for(documents.clone(), [1; 32]);
+    let mut source = TantivySource::build(&current, Limits::default()).expect("projection");
+    let before = source.indexed_postings();
+    let next = state_for(documents, [2; 32]);
+    let outcome = source
+        .maintain(&next, OverlayLimits::default())
+        .expect("rebind");
+    assert_eq!(
+        outcome,
+        MaintainOutcome::Applied(ProjectionRevision {
+            kind: ProjectionKind::Rebound,
+            rewritten_documents: 0,
+            retired_postings: 0,
+            added_postings: 0,
+        })
+    );
+    assert_eq!(source.indexed_postings(), before);
+    assert_eq!(term_hits(&source, "alpha"), vec![document(1)]);
+    assert_eq!(term_hits(&source, "beta"), vec![document(2)]);
+    let stale = Query::new(vec!["alpha".into()], Limits::default()).expect("query");
+    assert!(matches!(
+        LexicalSource::fetch(
+            &source,
+            &QueryRequest {
+                binding: current.binding(),
+                query: stale.clone(),
+                cursor: None,
+                limit: 8,
+            }
+        ),
+        Err(TantivySourceError::Contract(Error::StaleRoot))
+    ));
+    let page = LexicalSource::fetch(
+        &source,
+        &QueryRequest {
+            binding: next.binding(),
+            query: stale,
+            cursor: None,
+            limit: 8,
+        },
+    )
+    .expect("new binding");
+    assert_eq!(page.hits[0].document, document(1));
+}
+
+#[test]
+fn one_document_revision_deletes_only_that_documents_postings() {
+    let original = vec![
+        (document(1), vec![("name".into(), "alpha".into())]),
+        (document(2), vec![("name".into(), "beta".into())]),
+        (document(3), vec![("name".into(), "gamma".into())]),
+    ];
+    let mut source =
+        TantivySource::build(&state_for(original, [1; 32]), Limits::default()).expect("projection");
+    let before = source.indexed_postings();
+    let revised = vec![
+        (document(1), vec![("name".into(), "alpha".into())]),
+        (document(2), vec![("name".into(), "zephyr".into())]),
+        (document(3), vec![("name".into(), "gamma".into())]),
+    ];
+    let outcome = source
+        .maintain(&state_for(revised, [2; 32]), OverlayLimits::default())
+        .expect("revise");
+    let MaintainOutcome::Applied(revision) = outcome else {
+        panic!("revision was refused");
+    };
+    assert_eq!(revision.kind, ProjectionKind::Revised);
+    assert_eq!(revision.rewritten_documents, 1);
+    assert_eq!(
+        source.indexed_postings(),
+        before - revision.retired_postings + revision.added_postings
+    );
+    assert_eq!(revision.retired_postings, revision.added_postings);
+    assert!(revision.retired_postings > 0);
+    assert_eq!(term_hits(&source, "alpha"), vec![document(1)]);
+    assert_eq!(term_hits(&source, "gamma"), vec![document(3)]);
+    assert_eq!(term_hits(&source, "zephyr"), vec![document(2)]);
+    assert!(term_hits(&source, "beta").is_empty());
+}
+
+#[test]
+fn deleting_and_prepending_documents_keeps_untouched_ordinals() {
+    let original = vec![
+        (document(1), vec![("name".into(), "alpha".into())]),
+        (document(2), vec![("name".into(), "beta".into())]),
+        (document(3), vec![("name".into(), "gamma".into())]),
+    ];
+    let mut source =
+        TantivySource::build(&state_for(original, [1; 32]), Limits::default()).expect("projection");
+    let without_middle = vec![
+        (document(1), vec![("name".into(), "alpha".into())]),
+        (document(3), vec![("name".into(), "gamma".into())]),
+    ];
+    source
+        .maintain(
+            &state_for(without_middle, [2; 32]),
+            OverlayLimits::default(),
+        )
+        .expect("delete");
+    assert!(term_hits(&source, "beta").is_empty());
+    let with_predecessor = vec![
+        (document(1), vec![("name".into(), "alpha".into())]),
+        (document(3), vec![("name".into(), "gamma".into())]),
+        (document(4), vec![("name".into(), "delta".into())]),
+    ];
+    source
+        .maintain(
+            &state_for(with_predecessor, [3; 32]),
+            OverlayLimits::default(),
+        )
+        .expect("append");
+    let edited = vec![
+        (document(1), vec![("name".into(), "alpaca".into())]),
+        (document(3), vec![("name".into(), "gamma".into())]),
+        (document(4), vec![("name".into(), "delta".into())]),
+    ];
+    source
+        .maintain(&state_for(edited, [4; 32]), OverlayLimits::default())
+        .expect("edit survivor");
+    assert!(term_hits(&source, "alpha").is_empty());
+    assert!(term_hits(&source, "beta").is_empty());
+    assert_eq!(term_hits(&source, "alpaca"), vec![document(1)]);
+    assert_eq!(term_hits(&source, "gamma"), vec![document(3)]);
+    assert_eq!(term_hits(&source, "delta"), vec![document(4)]);
+}
+
+#[test]
+fn an_edit_past_the_budget_leaves_the_projection_unchanged() {
+    let original = vec![
+        (document(1), vec![("name".into(), "alpha".into())]),
+        (document(2), vec![("name".into(), "beta".into())]),
+    ];
+    let current = state_for(original, [1; 32]);
+    let mut source = TantivySource::build(&current, Limits::default()).expect("projection");
+    let before = source.indexed_postings();
+    let replaced = vec![
+        (document(1), vec![("name".into(), "kappa".into())]),
+        (document(2), vec![("name".into(), "lambda".into())]),
+    ];
+    let mut budget = OverlayLimits::default();
+    budget.max_changed_documents = 1;
+    let outcome = source
+        .maintain(&state_for(replaced, [2; 32]), budget)
+        .expect("budget");
+    assert_eq!(outcome, MaintainOutcome::RebuildRequired);
+    assert_eq!(source.indexed_postings(), before);
+    assert_eq!(term_hits(&source, "alpha"), vec![document(1)]);
+    assert!(term_hits(&source, "kappa").is_empty());
+    let query = Query::new(vec!["alpha".into()], Limits::default()).expect("query");
+    LexicalSource::fetch(
+        &source,
+        &QueryRequest {
+            binding: current.binding(),
+            query,
+            cursor: None,
+            limit: 8,
+        },
+    )
+    .expect("old binding still serves");
+}
+
+#[test]
+fn a_different_workspace_requires_a_rebuild() {
+    let documents = vec![(document(1), vec![("name".into(), "alpha".into())])];
+    let current = state_for(documents.clone(), [1; 32]);
+    let mut source = TantivySource::build(&current, Limits::default()).expect("projection");
+    let (mut binding, coverage) = binding(&documents);
+    binding = binding.with_frontier(Frontier::from_value(&[2; 32]));
+    binding.workspace = workspace_alt();
+    let next = DocumentState::new(binding, coverage, documents, Limits::default())
+        .expect("other workspace");
+    assert_ne!(
+        next.binding().workspace,
+        current.binding().workspace,
+        "alternate workspace collapsed onto the fixture workspace"
+    );
+    let outcome = source
+        .maintain(&next, OverlayLimits::default())
+        .expect("workspace fence");
+    assert_eq!(outcome, MaintainOutcome::RebuildRequired);
+    assert_eq!(term_hits(&source, "alpha"), vec![document(1)]);
+}
+
+fn workspace_alt() -> WorkspaceRoot {
+    WorkspaceManifest::from_versions(
+        1,
+        Vec::new(),
+        Vec::new(),
+        Authority::from_value(&[8; 32]),
+        authorized_coverage(&[5; 32]),
+    )
+    .expect("alternate workspace")
+    .root()
 }

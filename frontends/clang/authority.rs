@@ -95,7 +95,8 @@ impl ClangProject {
         let selected = database
             .as_ref()
             .and_then(|commands| commands.args_for(&self.entry));
-        let defaults = default_arguments(&self.entry);
+        let cpp_package = package_prefers_cpp(&self.root);
+        let defaults = default_arguments(&self.entry, cpp_package);
         let selected = selected.as_deref().unwrap_or(&defaults);
         system_includes::args()
             .into_iter()
@@ -182,16 +183,73 @@ fn checked_file(path: &Path) -> Result<PathBuf, ClangAuthorityError> {
 /// bytes) were handed `-std=c11`, which the driver rejects with the fatal
 /// `invalid argument '-std=c11' not allowed with 'C++'` before a single
 /// declaration is visited, and `clang_parseTranslationUnit2` reports that
-/// rejection as `CXError_ASTReadError`. `.h` stays in the C arm on purpose:
-/// it is genuinely ambiguous (C projects and C++ projects both use it), and
-/// the C default matches libclang's own extension inference for it.
-fn default_arguments(path: &Path) -> Vec<String> {
-    if matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some("cc" | "cpp" | "cxx" | "C" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "mm")
-    ) {
+/// rejection as `CXError_ASTReadError`. `.h` stays in the C arm on purpose
+/// when the package is C-only: it is genuinely ambiguous (C projects and C++
+/// projects both use it), and the C default matches libclang's own extension
+/// inference for it. A `.h` next to C++ sources, or in a header-only tree whose
+/// headers look like C++, uses the C++ arm instead.
+fn default_arguments(path: &Path, cpp_package: bool) -> Vec<String> {
+    if prefers_cpp(path, cpp_package) {
         vec!["-std=c++17".to_owned(), "-x".to_owned(), "c++".to_owned()]
     } else {
         vec!["-std=c11".to_owned()]
     }
+}
+
+fn prefers_cpp(path: &Path, cpp_package: bool) -> bool {
+    is_cpp_source(path) || is_cpp_header(path) || (is_c_header(path) && cpp_package)
+}
+
+fn package_prefers_cpp(root: &Path) -> bool {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if is_cpp_source(&path)
+                || is_cpp_header(&path)
+                || (is_c_header(&path) && header_looks_like_cpp(&path))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_cpp_source(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("cc" | "cpp" | "cxx" | "C" | "c++" | "mm")
+    )
+}
+
+fn is_cpp_header(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("hpp" | "hxx" | "hh" | "h++" | "H")
+    )
+}
+
+fn is_c_header(path: &Path) -> bool {
+    matches!(path.extension().and_then(|extension| extension.to_str()), Some("h"))
+}
+
+/// C++ tokens that are not C. A comment that mentions `class` can false-trigger;
+/// a header-only C library that only uses `struct` does not.
+fn header_looks_like_cpp(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    let head: String = text.chars().take(64 * 1024).collect();
+    ["namespace ", "namespace\t", "template<", "template <", "constexpr", "nullptr"]
+        .iter()
+        .any(|token| head.contains(token))
+        || head.contains("class ")
 }

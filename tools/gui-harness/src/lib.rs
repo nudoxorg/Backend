@@ -14,8 +14,11 @@ mod design_contract;
 mod diff;
 mod input;
 mod journey;
+pub mod script;
 mod semantics;
+pub mod session;
 mod state;
+pub mod storm;
 
 mod gpui_driver;
 
@@ -51,6 +54,9 @@ pub use input::{
     modifiers, position,
 };
 pub use journey::{VisibleJourney, VisibleJourneyStep};
+pub use script::{Act, Button, Event, Mods, Script, ScriptError};
+pub use session::{Drawn, PlayedFrame, Quiet, Session, SessionOptions, Timeline, play};
+pub use storm::{Rng, Vocabulary};
 pub use semantics::{
     SEMANTIC_SCHEMA, SemanticAnnouncement, SemanticBounds, SemanticError, SemanticNode,
     SemanticProbe, SemanticRelations, SemanticRole, SemanticSource, SemanticState, changed_pixels,

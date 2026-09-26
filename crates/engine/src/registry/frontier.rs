@@ -12,32 +12,24 @@ use blake3::Hasher;
 use super::PackageCoordinate;
 use super::owner::{AcquisitionError, AcquisitionReceipt, PublishedPackage};
 
-pub(super) fn validate_receipt_catalog(
-    catalog: &BTreeMap<PackageCoordinate, PublishedPackage>,
-    forge_associations: &BTreeMap<[u8; 32], backend_library::RegistryForgeAssociation>,
-    receipt: &AcquisitionReceipt,
-    maximum: usize,
+fn validate_coordinates_increasing<'a>(
+    coordinates: impl IntoIterator<Item = &'a PackageCoordinate>,
 ) -> Result<(), AcquisitionError> {
-    if receipt
-        .packages
-        .windows(2)
-        .any(|pair| pair[0].coordinate >= pair[1].coordinate)
-    {
-        return Err(AcquisitionError::CorruptJournal);
-    }
-    let mut additional = 0usize;
-    for package in &receipt.packages {
-        if !valid_forge_source_ids(package, forge_associations) {
+    let mut previous: Option<&PackageCoordinate> = None;
+    for coordinate in coordinates {
+        if previous.is_some_and(|prev| prev >= coordinate) {
             return Err(AcquisitionError::CorruptJournal);
         }
-        match catalog.get(&package.coordinate) {
-            Some(existing) if existing.artifact != package.artifact => {
-                return Err(AcquisitionError::CorruptJournal);
-            }
-            Some(_) => {}
-            None => additional = additional.checked_add(1).ok_or(AcquisitionError::Bounds)?,
-        }
+        previous = Some(coordinate);
     }
+    Ok(())
+}
+
+fn validate_catalog_overrun(
+    catalog: &BTreeMap<PackageCoordinate, PublishedPackage>,
+    additional: usize,
+    maximum: usize,
+) -> Result<(), AcquisitionError> {
     let total = catalog
         .len()
         .checked_add(additional)
@@ -51,6 +43,29 @@ pub(super) fn validate_receipt_catalog(
     Ok(())
 }
 
+pub(super) fn validate_receipt_catalog(
+    catalog: &BTreeMap<PackageCoordinate, PublishedPackage>,
+    forge_associations: &BTreeMap<[u8; 32], backend_library::RegistryForgeAssociation>,
+    receipt: &AcquisitionReceipt,
+    maximum: usize,
+) -> Result<(), AcquisitionError> {
+    validate_coordinates_increasing(receipt.packages.iter().map(|package| &package.coordinate))?;
+    let mut additional = 0usize;
+    for package in &receipt.packages {
+        if !valid_forge_source_ids(package, forge_associations) {
+            return Err(AcquisitionError::CorruptJournal);
+        }
+        match catalog.get(&package.coordinate) {
+            Some(existing) if existing.artifact != package.artifact => {
+                return Err(AcquisitionError::CorruptJournal);
+            }
+            Some(_) => {}
+            None => additional = additional.checked_add(1).ok_or(AcquisitionError::Bounds)?,
+        }
+    }
+    validate_catalog_overrun(catalog, additional, maximum)
+}
+
 /// Checks the catalog capacity and ordering of a feed page before archive
 /// staging begins. This keeps a measured catalog overrun ahead of archive I/O,
 /// so an otherwise valid page cannot fail with an unrelated archive result.
@@ -59,29 +74,14 @@ pub(super) fn validate_page_catalog(
     packages: &[super::RemotePackage],
     maximum: usize,
 ) -> Result<(), AcquisitionError> {
-    if packages
-        .windows(2)
-        .any(|pair| pair[0].coordinate >= pair[1].coordinate)
-    {
-        return Err(AcquisitionError::CorruptJournal);
-    }
+    validate_coordinates_increasing(packages.iter().map(|package| &package.coordinate))?;
     let mut additional = 0usize;
     for package in packages {
         if !catalog.contains_key(&package.coordinate) {
             additional = additional.checked_add(1).ok_or(AcquisitionError::Bounds)?;
         }
     }
-    let total = catalog
-        .len()
-        .checked_add(additional)
-        .ok_or(AcquisitionError::Bounds)?;
-    if total > maximum {
-        return Err(AcquisitionError::Overrun {
-            measured: u64::try_from(total).map_err(|_| AcquisitionError::Bounds)?,
-            limit: u64::try_from(maximum).map_err(|_| AcquisitionError::Bounds)?,
-        });
-    }
-    Ok(())
+    validate_catalog_overrun(catalog, additional, maximum)
 }
 
 pub(super) fn prepare_receipt_facts(
@@ -493,7 +493,209 @@ pub(super) fn valid_forge_source_ids(
 
 #[cfg(test)]
 mod forge_frontier_tests {
+    use std::sync::Arc;
+
+    use crate::acquisition::RawArchiveObjectId;
+    use crate::effects::effect_key;
+    use backend_advisory::AdvisoryPackageDto;
+
+    use crate::registry::owner::AcquisitionReceipt;
+    use crate::registry::transport::ArchiveIntegrity;
+    use crate::registry::{
+        CanonicalFeedV1, FeedCursor, ProvenanceDigest, PublishedArtifactClaim, RegistryEcosystem,
+        RegistryId, ReleaseFacts, RemotePackage, RemoteRegistry, admit_registry_coordinate,
+    };
+
     use super::*;
+
+    fn test_coordinate(index: u8) -> PackageCoordinate {
+        PackageCoordinate::parse(format!("pkg:cargo/catalog-{index}@1.0.0")).expect("coordinate")
+    }
+
+    fn test_native_metadata() -> backend_library::RegistryNativeMetadata {
+        backend_library::RegistryNativeMetadata::unavailable(
+            RegistryEcosystem::Cargo,
+            "test fixture",
+        )
+    }
+
+    fn test_facts() -> ReleaseFacts {
+        let metadata = test_native_metadata();
+        ReleaseFacts::default().with_native_metadata(metadata.identity().expect("test metadata"))
+    }
+
+    fn unavailable_dependency_facts()
+    -> backend_library::DependencyFacts<Box<[backend_library::PackageDependencyRecord]>> {
+        backend_library::DependencyFacts::Unavailable(
+            backend_library::ProductText::new("test dependency metadata unavailable")
+                .expect("bounded test dependency reason"),
+        )
+    }
+
+    fn test_artifact(seed: u8) -> PublishedArtifactClaim {
+        PublishedArtifactClaim::from_journal([seed; 32])
+    }
+
+    fn minimal_published_package(
+        coordinate: PackageCoordinate,
+        artifact: PublishedArtifactClaim,
+    ) -> PublishedPackage {
+        let registry = admit_registry_coordinate(&coordinate).expect("registry");
+        PublishedPackage {
+            coordinate,
+            registry,
+            artifact,
+            raw_object: RawArchiveObjectId::from_bytes(b"archive"),
+            bytes: 7,
+            provenance: ProvenanceDigest::from_authenticated_feed([3; 32]),
+            upstream_integrity: [4; 32],
+            facts: test_facts(),
+            native_metadata: test_native_metadata(),
+            forge_source_ids: Box::new([]),
+            advisory: AdvisoryPackageDto::unknown(),
+            dependency_facts: unavailable_dependency_facts(),
+        }
+    }
+
+    fn minimal_remote_package(coordinate: PackageCoordinate) -> RemotePackage {
+        RemotePackage {
+            coordinate,
+            integrity: ArchiveIntegrity::Canonical([5; 32]),
+            provenance: ProvenanceDigest::from_authenticated_feed([6; 32]),
+            facts: test_facts(),
+            native_metadata: test_native_metadata(),
+            advisory: None,
+            dependency_facts: unavailable_dependency_facts(),
+            archive_url: Arc::from("http://127.0.0.1:9/archive"),
+        }
+    }
+
+    fn minimal_receipt(packages: Vec<PublishedPackage>) -> AcquisitionReceipt {
+        let registry = RegistryId::from_bytes([1; 32]);
+        let cursor = FeedCursor::<RemoteRegistry, CanonicalFeedV1>::genesis(registry);
+        AcquisitionReceipt {
+            effect: effect_key(b"catalog-test"),
+            base: cursor,
+            target: cursor,
+            packages,
+            facts_root: [0; 32],
+        }
+    }
+
+    fn catalog_with(coordinates: &[u8]) -> BTreeMap<PackageCoordinate, PublishedPackage> {
+        coordinates
+            .iter()
+            .map(|index| {
+                let coordinate = test_coordinate(*index);
+                let package = minimal_published_package(coordinate.clone(), test_artifact(*index));
+                (coordinate, package)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn catalog_capacity_rejects_unsorted_coordinates() {
+        let catalog = BTreeMap::new();
+        let first = test_coordinate(1);
+        let second = test_coordinate(2);
+        let coordinates = [&second, &first];
+        assert!(matches!(
+            validate_coordinates_increasing(coordinates.iter().copied()),
+            Err(AcquisitionError::CorruptJournal)
+        ));
+
+        let receipt = minimal_receipt(vec![
+            minimal_published_package(second.clone(), test_artifact(2)),
+            minimal_published_package(first.clone(), test_artifact(1)),
+        ]);
+        assert!(matches!(
+            validate_receipt_catalog(&catalog, &BTreeMap::new(), &receipt, 8),
+            Err(AcquisitionError::CorruptJournal)
+        ));
+
+        let packages = [
+            minimal_remote_package(second.clone()),
+            minimal_remote_package(first.clone()),
+        ];
+        assert!(matches!(
+            validate_page_catalog(&catalog, &packages, 8),
+            Err(AcquisitionError::CorruptJournal)
+        ));
+    }
+
+    #[test]
+    fn catalog_capacity_accepts_existing_and_rejects_overrun() {
+        const MAXIMUM: usize = 2;
+        let existing = test_coordinate(1);
+        let newcomer = test_coordinate(3);
+        let catalog = catalog_with(&[1, 2]);
+        let artifact = catalog.get(&existing).expect("existing").artifact;
+
+        let receipt_existing =
+            minimal_receipt(vec![minimal_published_package(existing.clone(), artifact)]);
+        assert!(
+            validate_receipt_catalog(&catalog, &BTreeMap::new(), &receipt_existing, MAXIMUM)
+                .is_ok()
+        );
+
+        let receipt_new = minimal_receipt(vec![minimal_published_package(
+            newcomer.clone(),
+            test_artifact(3),
+        )]);
+        let receipt_overrun =
+            validate_receipt_catalog(&catalog, &BTreeMap::new(), &receipt_new, MAXIMUM);
+        assert!(matches!(
+            receipt_overrun,
+            Err(AcquisitionError::Overrun {
+                measured: 3,
+                limit: 2,
+            })
+        ));
+
+        let page_existing = [minimal_remote_package(existing.clone())];
+        assert!(validate_page_catalog(&catalog, &page_existing, MAXIMUM).is_ok());
+
+        let page_new = [minimal_remote_package(newcomer.clone())];
+        let page_overrun = validate_page_catalog(&catalog, &page_new, MAXIMUM);
+        assert!(matches!(
+            page_overrun,
+            Err(AcquisitionError::Overrun {
+                measured: 3,
+                limit: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn receipt_artifact_mismatch_precedes_catalog_overrun() {
+        const MAXIMUM: usize = 2;
+        let catalog = catalog_with(&[1, 2]);
+        let existing = test_coordinate(1);
+        let newcomer = test_coordinate(3);
+        let receipt = minimal_receipt(vec![
+            minimal_published_package(existing.clone(), test_artifact(99)),
+            minimal_published_package(newcomer, test_artifact(3)),
+        ]);
+        assert!(matches!(
+            validate_receipt_catalog(&catalog, &BTreeMap::new(), &receipt, MAXIMUM),
+            Err(AcquisitionError::CorruptJournal)
+        ));
+    }
+
+    #[test]
+    fn catalog_capacity_accepts_first_coordinate_on_empty_catalog() {
+        let catalog = BTreeMap::new();
+        let coordinate = test_coordinate(1);
+
+        let receipt = minimal_receipt(vec![minimal_published_package(
+            coordinate.clone(),
+            test_artifact(1),
+        )]);
+        assert!(validate_receipt_catalog(&catalog, &BTreeMap::new(), &receipt, 4).is_ok());
+
+        let packages = [minimal_remote_package(coordinate.clone())];
+        assert!(validate_page_catalog(&catalog, &packages, 4).is_ok());
+    }
 
     #[test]
     fn facts_root_is_order_independent_and_updates_one_persistent_delta() {

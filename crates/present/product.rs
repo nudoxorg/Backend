@@ -203,7 +203,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Advisory(advisory) => advisory_view(advisory),
         SurfaceReply::Dependents(metadata) => metadata_view("dependents", metadata),
         SurfaceReply::Dependencies(facts) => dependency_view("dependencies", facts),
-        SurfaceReply::Owner(metadata) => metadata_view("owner", metadata),
+        SurfaceReply::Owner(metadata) => owner_view(metadata),
         SurfaceReply::SemanticVersions(records) => ProductView::rows(
             "semantic-versions",
             records.iter().map(semantic_row).collect(),
@@ -290,6 +290,30 @@ fn append(tags: &[String], extra: String) -> Box<[String]> {
     let mut all = tags.to_vec();
     all.push(extra);
     all.into_boxed_slice()
+}
+
+fn owner_view(metadata: &RegistryMetadata<Box<[RegistryPackageRecord]>>) -> ProductView {
+    match metadata {
+        RegistryMetadata::Recorded(records) => {
+            ProductView::rows("owner", records.iter().map(owner_row).collect())
+        }
+        RegistryMetadata::NotRecorded(reason) => metadata_view("owner", metadata),
+    }
+}
+
+fn owner_row(record: &RegistryPackageRecord) -> ProductRecord {
+    if matches!(
+        &record.coordinate,
+        backend_library::PackageReference::Local(_)
+    ) && record.coordinate.as_str().contains("::")
+    {
+        return ProductRecord::new(
+            record.name.as_str(),
+            Some(record.coordinate.as_str().to_owned()),
+            vec![format!("{:?}", record.ecosystem).to_lowercase(), "indexed file".to_owned()],
+        );
+    }
+    registry_row(record)
 }
 
 fn metadata_view(
@@ -588,6 +612,9 @@ fn semantic_row(record: &SemanticVersionRecord) -> ProductRecord {
         format!("{} artifact(s)", record.artifacts),
         format!("{} semantic byte(s)", record.semantic_bytes),
     ];
+    if let PackageReference::Purl(coordinate) = &record.package {
+        tags.push(format!("version {}", coordinate.version()));
+    }
     tags.push(if record.complete {
         "complete".to_owned()
     } else {
@@ -631,6 +658,9 @@ fn project_row(record: &ProjectRecord) -> ProductRecord {
     if let Some(lockfile) = record.lockfile.as_ref() {
         tags.push(format!("lockfile {}", lockfile.as_str()));
     }
+    for name in record.member_manifest_names.iter() {
+        tags.push(format!("member {}", name.as_str()));
+    }
     ProductRecord::new(
         record.name.as_str().to_owned(),
         Some(record.name.as_str().to_owned()),
@@ -648,6 +678,12 @@ fn tree_row(record: &TreeNodeRecord) -> ProductRecord {
     }
     if record.active {
         tags.push("active".to_owned());
+    }
+    if let TreeSubject::Declaration(_) = &record.subject {
+        if let Some((name, path)) = record.title.as_str().split_once(" · ") {
+            tags.push(format!("name {name}"));
+            tags.push(format!("path {path}"));
+        }
     }
     ProductRecord::new(
         format!("{} · {}", record.title.as_str(), subject_text(&record.subject)),
@@ -667,7 +703,22 @@ const fn opener_name(opener: &TreeOpener) -> &'static str {
 fn subject_text(subject: &TreeSubject) -> String {
     match subject {
         TreeSubject::Package(package) => format!("package {}", package.as_str()),
-        TreeSubject::Declaration(text) => format!("declaration {}", text.as_str()),
+        TreeSubject::Declaration(text) => {
+            if let Some((name, path)) = text.as_str().split_once("::").and_then(|(_, rest)| {
+                rest.rsplit_once("::").map(|(path, name)| {
+                    (
+                        name.to_owned(),
+                        path.rsplit_once(':')
+                            .map_or(path, |(path_without_line, _)| path_without_line)
+                            .to_owned(),
+                    )
+                })
+            }) {
+                format!("declaration {name} at {path}")
+            } else {
+                format!("declaration {}", text.as_str())
+            }
+        }
         TreeSubject::Explore(query) => query.as_ref().map_or_else(
             || "explore".to_owned(),
             |query| format!("explore {}", query.as_str()),
@@ -678,7 +729,10 @@ fn subject_text(subject: &TreeSubject) -> String {
 }
 
 fn package_title(package: &PackageReference) -> String {
-    package.as_str().to_owned()
+    match package {
+        PackageReference::Purl(url) => url.lineage_name().to_owned(),
+        PackageReference::Local(label) => label.as_str().to_owned(),
+    }
 }
 
 fn operand(package: &PackageReference) -> String {

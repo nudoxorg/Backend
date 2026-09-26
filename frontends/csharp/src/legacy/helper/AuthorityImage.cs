@@ -352,26 +352,58 @@ internal static class AuthorityImage
             }
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()) AddReference(model, node, 1, node.Expression);
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>()) AddReference(model, node, 2, node.Type);
-            foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberAccessExpressionSyntax>()) AddReference(model, node, 3, node.Name);
-            // A bare identifier resolving to a field is a compiler-proved
-            // reference even without a member-access receiver: `count`,
-            // `count = 5`, `count++`. The read/write split keeps the two
-            // classes the helper can prove; a compound assignment or an
-            // increment both reads and writes and keeps the write class, the
-            // state-changing half. Member-access names are the member-access
-            // sweep's rows, and a site Roslyn cannot resolve keeps no row:
-            // locals and parameters are not fields, so an unresolved or
-            // non-field name has no honest target here.
+            foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberAccessExpressionSyntax>())
+            {
+                var symbol = model.GetSymbolInfo(node).Symbol;
+                if (symbol is IMethodSymbol
+                    && !IsInvocationCallee(node)
+                    && !InsideNameOf(node))
+                    AddReference(model, node, 8, node.Name);
+                else if (symbol is IFieldSymbol { IsConst: true })
+                    AddReference(model, node, IsFieldWrite(node) ? (byte)7 : (byte)6, node.Name);
+                else
+                    AddReference(model, node, 3, node.Name);
+            }
+            foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberBindingExpressionSyntax>())
+            {
+                if (model.GetSymbolInfo(node).Symbol is IMethodSymbol
+                    && !IsInvocationCallee(node)
+                    && !InsideNameOf(node))
+                    AddReference(model, node, 8, node.Name);
+            }
+            // A bare identifier resolving to a field or a non-indexer property
+            // is a compiler-proved reference even without a member-access
+            // receiver: `count`, `count = 5`, `count++`. The read/write split
+            // keeps the two classes the helper can prove; a compound assignment
+            // or an increment both reads and writes and keeps the write class,
+            // the state-changing half. Member-access names are the
+            // member-access sweep's rows, and a site Roslyn cannot resolve
+            // keeps no row: locals and parameters are not fields or
+            // properties, so an unresolved or non-field/non-property name has
+            // no honest target here.
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>())
             {
                 if (node.Parent is MemberAccessExpressionSyntax) continue;
-                if (model.GetSymbolInfo(node).Symbol is not IFieldSymbol) continue;
-                var write = (node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node)
-                    || node.Parent.IsKind(SyntaxKind.PreIncrementExpression)
-                    || node.Parent.IsKind(SyntaxKind.PostIncrementExpression)
-                    || node.Parent.IsKind(SyntaxKind.PreDecrementExpression)
-                    || node.Parent.IsKind(SyntaxKind.PostDecrementExpression);
-                AddReference(model, node, write ? (byte)7 : (byte)6, node);
+                if (model.GetSymbolInfo(node).Symbol is not (IFieldSymbol or IPropertySymbol { IsIndexer: false })) continue;
+                var symbol = model.GetSymbolInfo(node).Symbol;
+                var write = IsFieldWrite(node);
+                byte tag;
+                if (symbol is IFieldSymbol { IsConst: true })
+                    tag = write ? (byte)7 : (byte)6;
+                else if (ResolveTarget(symbol) == Absent)
+                    tag = (byte)3;
+                else
+                    tag = write ? (byte)7 : (byte)6;
+                AddReference(model, node, tag, node);
+            }
+            foreach (var node in tree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                if (node.Parent is MemberAccessExpressionSyntax) continue;
+                if (node.Parent is MemberBindingExpressionSyntax) continue;
+                if (IsInvocationCallee(node)) continue;
+                if (InsideNameOf(node)) continue;
+                if (model.GetSymbolInfo(node).Symbol is IMethodSymbol)
+                    AddReference(model, node, 8, node);
             }
             foreach (var info in infos)
             {
@@ -400,12 +432,105 @@ internal static class AuthorityImage
             }
         }
 
+        private static bool IsInvocationCallee(SyntaxNode node)
+        {
+            var current = node;
+            while (true)
+            {
+                if (current.Parent is ParenthesizedExpressionSyntax paren && paren.Expression == current)
+                {
+                    current = paren;
+                    continue;
+                }
+                if (current.Parent is ConditionalAccessExpressionSyntax access && access.WhenNotNull == current)
+                {
+                    current = access;
+                    continue;
+                }
+                break;
+            }
+            return current.Parent is InvocationExpressionSyntax invocation && invocation.Expression == current;
+        }
+
+        private static bool InsideNameOf(SyntaxNode node)
+        {
+            foreach (var ancestor in node.Ancestors().OfType<InvocationExpressionSyntax>())
+            {
+                if (ancestor.Expression is IdentifierNameSyntax id && id.Identifier.Text == "nameof")
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool IsFieldWrite(SyntaxNode node) =>
+            (node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node)
+            || node.Parent.IsKind(SyntaxKind.PreIncrementExpression)
+            || node.Parent.IsKind(SyntaxKind.PostIncrementExpression)
+            || node.Parent.IsKind(SyntaxKind.PreDecrementExpression)
+            || node.Parent.IsKind(SyntaxKind.PostDecrementExpression);
+
         private void AddReference(SemanticModel model, SyntaxNode node, byte tag, SyntaxNode spellingNode)
         {
             var ownerNode = node.Ancestors().FirstOrDefault(syntaxMap.ContainsKey);
             if (ownerNode is null || !syntaxMap.TryGetValue(ownerNode, out var ownerRow)) return;
-            var target = ResolveTarget(model.GetSymbolInfo(node).Symbol);
-            var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spellingNode.ToString())); Put(row, 12, TreeFileAtom()); var s = Span(spellingNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+            var symbol = model.GetSymbolInfo(node).Symbol;
+            var target = ResolveTarget(symbol);
+            var spanNode = spellingNode;
+            var spelling = spellingNode.ToString();
+            if (tag == 1 && target == Absent
+                && symbol is IMethodSymbol method
+                && method.ContainingType is not null)
+            {
+                var methodName = method.Name;
+                if (!string.IsNullOrEmpty(methodName)
+                    && TryQualifiedMemberSpelling(method.ContainingType, methodName, out var qualified))
+                {
+                    spelling = qualified;
+                    spanNode = InvocationMethodNameNode(node) ?? spellingNode;
+                }
+            }
+            else if (target == Absent
+                && symbol is IFieldSymbol or IPropertySymbol or IEventSymbol
+                && symbol.ContainingType is not null
+                && tag is 3 or 6 or 7)
+            {
+                var memberName = symbol.Name;
+                if (!string.IsNullOrEmpty(memberName)
+                    && TryQualifiedMemberSpelling(symbol.ContainingType, memberName, out var qualified))
+                    spelling = qualified;
+            }
+            var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spelling)); Put(row, 12, TreeFileAtom()); var s = Span(spanNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+        }
+
+        private static bool TryQualifiedMemberSpelling(INamedTypeSymbol containingType, string memberName, out string spelling)
+        {
+            var typeDisplay = containingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            if (typeDisplay.StartsWith("global::", StringComparison.Ordinal))
+                typeDisplay = typeDisplay["global::".Length..];
+            typeDisplay = typeDisplay.Replace('+', '.');
+            if (string.IsNullOrEmpty(typeDisplay))
+            {
+                spelling = string.Empty;
+                return false;
+            }
+            spelling = typeDisplay + "." + memberName;
+            return true;
+        }
+
+        private static SyntaxNode InvocationMethodNameNode(SyntaxNode node)
+        {
+            if (node is not InvocationExpressionSyntax invocation)
+                return node;
+            var expression = invocation.Expression;
+            while (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            return expression switch
+            {
+                MemberAccessExpressionSyntax memberAccess => memberAccess.Name,
+                MemberBindingExpressionSyntax memberBinding => memberBinding.Name,
+                IdentifierNameSyntax identifier => identifier,
+                _ => expression,
+            };
         }
 
         private uint ResolveTarget(ISymbol? symbol)

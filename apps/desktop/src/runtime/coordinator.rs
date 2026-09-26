@@ -21,6 +21,7 @@ struct InflightRequest {
 
 /// Runtime events observed by the UI entity graph.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // short-lived, drained once per wake
 pub enum RuntimeEvent {
     /// A new immutable snapshot was accepted.
     SnapshotChanged(Arc<AppSnapshot>),
@@ -90,7 +91,7 @@ impl DesktopRuntime {
             match effect {
                 Effect::Engine(command) => self.submit(command),
                 Effect::Persist => {
-                    events.push(RuntimeEvent::PersistRequested(Arc::clone(&self.snapshot)))
+                    events.push(RuntimeEvent::PersistRequested(Arc::clone(&self.snapshot)));
                 }
                 Effect::Cancel(request) => events.extend(self.cancel(request)),
                 Effect::CancelAll => events.extend(self.cancel_all()),
@@ -99,6 +100,7 @@ impl DesktopRuntime {
         events
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per engine command, kept flat
     fn submit(&mut self, command: EngineCommand) {
         let (request, engine_request, basis, cancel) = match command {
             EngineCommand::ReadLocalPackage {
@@ -341,14 +343,20 @@ impl DesktopRuntime {
         self.actor.queued_events()
     }
 
-    /// Returns whether the UI should keep a frame budget alive.
+    /// Returns whether any engine work is in flight or waiting to be drained.
     ///
-    /// Engine responses are delivered through the same GPUI event loop as
-    /// animation frames. The shell requests frames while a request is
-    /// in-flight, then stops as soon as the queue and request set are empty.
+    /// Diagnostic only: the UI never requests frames on this. Results wake
+    /// the owner through [`Self::take_wake`], so an idle window with a
+    /// long-running request schedules no frame at all.
     #[must_use]
-    pub fn needs_frame(&self) -> bool {
+    pub fn has_pending_work(&self) -> bool {
         !self.inflight.is_empty() || self.actor.queued_events() != 0
+    }
+
+    /// Takes the wake signal the actor raises after delivering each result.
+    /// The owning entity awaits it in one task and calls [`Self::poll`].
+    pub fn take_wake(&mut self) -> Option<super::wake::WakeReceiver> {
+        self.actor.take_wake()
     }
 
     fn retire_lane(&mut self, request: RequestId, lane: Option<CoalesceKey>) {

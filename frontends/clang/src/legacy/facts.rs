@@ -421,6 +421,9 @@ pub enum ReferenceTarget {
         /// cross-fragment resolution must validate the two rather than assume
         /// they agree.
         file: Option<SymbolIdentity>,
+        /// Index into the collector's `project_paths` when the declaring file
+        /// lives under the compilation root as a `/`-separated UTF-8 path.
+        path: Option<u32>,
     },
     /// libclang did not resolve the target cursor to a USR identity.
     Unresolved,
@@ -506,6 +509,8 @@ pub struct ClangFacts<'scratch> {
     pub includes: &'scratch [IncludeFact],
     /// Prefix of caller override-authority slots.
     pub overrides: &'scratch [OverrideFact],
+    /// Compilation-root-relative paths for foreign targets, owned until `finish`.
+    pub project_paths: Vec<Box<str>>,
 }
 
 /// Retained bytes for one filled declaration lane, excluding its slice descriptor.

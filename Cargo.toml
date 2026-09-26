@@ -106,3 +106,8 @@ strip = "symbols"
 
 [patch.crates-io]
 gpui_ce_components = { path = "vendor/gpui_ce_components" }
+# Deterministic-clock patches: every animation reads the executor clock
+# (`TestClock` headless). See vendor/gpui-ce/NUDOX-PATCHES.md.
+gpui-ce = { path = "vendor/gpui-ce" }
+gpui_ce_components_base = { path = "vendor/gpui_ce_components_base" }
+gpui_ce_macos = { path = "vendor/gpui_ce_macos" }

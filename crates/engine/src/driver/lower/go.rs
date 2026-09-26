@@ -35,10 +35,12 @@
 //! two blank same-typed carriers in one signature never frame identical
 //! coordinate-free identities. Receiver spelling and pointer-receiver bits
 //! have no
-//! `GoFacts` cell and stay image-only. Foreign method-set entries, module
-//! metadata, exact constant values, and receiver spellings remain
-//! image-only; local method-set entries and package rows are projected
-//! below.
+//! `GoFacts` cell and stay image-only. Module metadata, exact constant
+//! values, and receiver spellings remain image-only. An interface method-set
+//! row is projected onto that interface when its owner is the interface
+//! type row, including a method declared in another package or the
+//! universe; a name already contributed by an explicit method is not
+//! emitted twice. Package rows are projected below.
 //!
 //! Interface-satisfaction edges — Go's structural implements relation,
 //! proved by the oracle across the whole loaded module — project as
@@ -887,10 +889,11 @@ const DEPTH_LIMIT: usize = 64;
 /// unavailable, and for an anonymous embedded interface term.
 const UNNAMED: &[u8] = b"_";
 
-/// Bounded width of the positional absent-name table. A signature's carrier
-/// facts are themselves bounded by the lane's type-child width, far below
-/// this, so every representable signature position has a spelling.
-const ABSENT_NAME_LIMIT: usize = 128;
+/// Bounded width of the positional absent-name table. A signature carrier
+/// is bounded by the fact-child lane (255), so every representable position
+/// has its own spelling. Past the table the name falls back to `_`, which
+/// would collide with another blank of the same type.
+const ABSENT_NAME_LIMIT: usize = 256;
 
 /// Coordinate-free spellings for absent parameter and result names, indexed
 /// by the carrier's position inside its signature. Position zero keeps the
@@ -946,6 +949,23 @@ fn absent_name(index: usize) -> &'static [u8] {
         Some(slot) => &slot[..absent_name_len(index)],
         None => UNNAMED,
     }
+}
+
+
+/// Whether one Go identifier does not bind at its declaration site.
+fn is_unbound_name(name: &[u8]) -> bool {
+    name.is_empty() || name == b"_"
+}
+
+/// Authority-proven discriminator for one unbound declaration whose display
+/// spelling would otherwise collide with a sibling at the same scope.
+fn unbound_discriminator(index: usize) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"compiler.go.unbound-declaration.v1\0");
+    hash.update((index as u64).to_le_bytes());
+    let mut discriminator = [0_u8; 16];
+    discriminator.copy_from_slice(&hash.finalize()[..16]);
+    discriminator
 }
 
 /// `PrimitiveShape::Integer` wire cell.
@@ -1028,6 +1048,7 @@ pub(crate) fn collect<'source>(
             DeclarationKind::Alias => {}
         }
     }
+    go.unresolved_cgo()?;
     // Pass three: declarations excluded by build constraints.
     go.constraints()?;
     // Pass four: documentation fragments.
@@ -1231,6 +1252,17 @@ struct AnonymousMemo {
     coordinate: u32,
 }
 
+/// Same-package declaration name, resolved for reference rows naming a
+/// package-level symbol.
+struct NameKey<'source> {
+    package: &'source [u8],
+    name: &'source [u8],
+    ordinal: u32,
+    /// True only on version-6 images when the owning named type declares in
+    /// a sibling source file (`name_span` present and not digest-bound).
+    cross_file: bool,
+}
+
 /// One same-package member target: the (package, receiver type, member)
 /// spelling of a declared method or field plus its pushed fact ordinal, so
 /// reference rows naming members through their receiver type resolve to
@@ -1242,6 +1274,9 @@ struct MemberKey<'source> {
     member: &'source [u8],
     ordinal: u32,
     is_field: bool,
+    /// True only on version-6 images when the owning named type declares in
+    /// a sibling source file (`name_span` present and not digest-bound).
+    cross_file: bool,
 }
 
 /// The two-pass Go projector over one validated authority image.
@@ -1255,7 +1290,7 @@ struct Projector<'x, 'source> {
     /// Lane ordinal per image member row index.
     member_ordinals: Vec<Option<u32>>,
     /// Declared names to already-pushed fact ordinals.
-    names: Vec<(&'source [u8], &'source [u8], u32)>,
+    names: Vec<NameKey<'source>>,
     /// Memoized anonymous-context coordinates per image type row. Entries are
     /// valid only for the current declaration transaction and are replaced
     /// when the next owner reaches the same image coordinate.
@@ -1292,15 +1327,149 @@ impl<'x, 'source> Projector<'x, 'source> {
 
     /// Records one pushed declaration name for later resolution.
     fn record_name(&mut self, package: &'source [u8], name: &'source [u8], ordinal: u32) {
-        self.names.push((package, name, ordinal));
+        self.record_name_with_cross_file(package, name, ordinal, false);
+    }
+
+    /// Records one pushed declaration name, marking sibling-file types so
+    /// type-reference rows keep the package import-path key the join layer
+    /// matches.
+    fn record_name_with_cross_file(
+        &mut self,
+        package: &'source [u8],
+        name: &'source [u8],
+        ordinal: u32,
+        cross_file: bool,
+    ) {
+        self.names.push(NameKey {
+            package,
+            name,
+            ordinal,
+            cross_file,
+        });
     }
 
     /// Resolves one declared name to its pushed fact ordinal.
     fn lookup(&self, package: &[u8], name: &[u8]) -> Option<u32> {
         self.names
             .iter()
-            .find(|(known_package, known, _)| *known_package == package && *known == name)
-            .map(|(_, _, ordinal)| *ordinal)
+            .find(|key| key.package == package && key.name == name)
+            .map(|key| key.ordinal)
+    }
+
+    /// Resolves one package-level type spelling to a local fact. Types whose
+    /// declaration positively lives in a sibling file (version-6 `name_span`
+    /// without the digest-bound flag) stay unresolved here so the occurrence
+    /// keeps the package import-path key the join layer matches.
+    fn local_type_target(
+        &self,
+        package: &[u8],
+        name: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let ordinal = self.lookup(package, name)?;
+        let cross_file = self
+            .names
+            .iter()
+            .find(|key| key.ordinal == ordinal)
+            .is_some_and(|key| key.cross_file);
+        if cross_file {
+            return None;
+        }
+        Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
+    }
+
+    /// Resolves one package-level constant spelling to a local fact.
+    /// Constants whose declaration positively lives in a sibling file
+    /// (version-6 `name_span` without the digest-bound flag) stay unresolved
+    /// here so the occurrence keeps the package import-path key the join
+    /// layer matches.
+    fn local_const_target(
+        &self,
+        package: &[u8],
+        name: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let ordinal = self.lookup(package, name)?;
+        let cross_file = self
+            .names
+            .iter()
+            .find(|key| key.ordinal == ordinal)
+            .is_some_and(|key| key.cross_file);
+        if cross_file {
+            return None;
+        }
+        Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
+    }
+
+    /// Resolves one package-level variable spelling to a local fact.
+    /// Variables whose declaration positively lives in a sibling file
+    /// (version-6 `name_span` without the digest-bound flag) stay unresolved
+    /// here so the occurrence keeps the package import-path key the join
+    /// layer matches.
+    fn local_var_target(
+        &self,
+        package: &[u8],
+        name: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let ordinal = self.lookup(package, name)?;
+        let cross_file = self
+            .names
+            .iter()
+            .find(|key| key.ordinal == ordinal)
+            .is_some_and(|key| key.cross_file);
+        if cross_file {
+            return None;
+        }
+        Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
+    }
+
+    /// True when a version-6 declaration positively lives in a sibling file
+    /// of the digest-bound compile source. Version-5 rows carry no `name_span`
+    /// and must not be treated as cross-file.
+    fn cross_file_type(declaration: &Declaration<'source>) -> bool {
+        declaration.name_span.is_some() && !declaration.bound
+    }
+
+    /// Reports whether one unqualified identifier already names a declaration
+    /// row in the authority image.
+    fn image_declared(&self, name: &[u8]) -> Result<bool, GoCollectError> {
+        for index in 0..self.image.declaration_count() {
+            let declaration = self
+                .image
+                .declaration(index)
+                .map_err(GoCollectError::Image)?;
+            if declaration.name == name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Emits one package-level alias per unresolved-cgo name whose
+    /// unqualified identifier is not already a declaration in this image.
+    fn unresolved_cgo(&mut self) -> Result<(), GoCollectError> {
+        for index in 0..self.image.unresolved_cgo_count() {
+            let spelling = self
+                .image
+                .unresolved_cgo(index)
+                .map_err(GoCollectError::Image)?;
+            let unqualified = match spelling.iter().rposition(|byte| *byte == b'.') {
+                Some(index) => &spelling[index + 1..],
+                None => spelling,
+            };
+            if self.image_declared(unqualified)? {
+                continue;
+            }
+            let fact = RootType::leaf(unknown_record(TypeReason::UnresolvedExternal, Some(spelling)))
+                .attach(SemanticFact::new(
+                    EntityKind::Alias,
+                    spelling,
+                    constructor(EntityKind::Alias),
+                ));
+            let ordinal = push(self.facts, fact)?;
+            self.facts
+                .mark_parentage_root(ordinal)
+                .map_err(|fault| lane_terminal_ordinal(ordinal, spelling.len(), fault))?;
+        }
+        Ok(())
     }
 
     /// Resolves one receiver-qualified member spelling to its pushed fact
@@ -1317,6 +1486,32 @@ impl<'x, 'source> Projector<'x, 'source> {
                 key.package == package && key.type_name == type_name && key.member == member
             })
             .map(|key| (key.ordinal, key.is_field))
+    }
+
+    /// Resolves one receiver-qualified member to a local fact. Fields whose
+    /// owning type positively declares in a sibling file (version-6
+    /// `name_span` without the digest-bound flag) stay unresolved here so
+    /// the occurrence keeps the package import-path key the join layer
+    /// matches. Unset version-5 bound defaults keep the historical local
+    /// resolution.
+    fn local_member_target(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        member: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let (ordinal, is_field) = self.lookup_member(package, recv_type, member)?;
+        if is_field {
+            let cross_file = self
+                .members
+                .iter()
+                .find(|key| key.ordinal == ordinal)
+                .is_some_and(|key| key.cross_file);
+            if cross_file {
+                return None;
+            }
+        }
+        Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
     }
 
     /// Records one image declaration's primary-source facts: its fact's
@@ -1412,7 +1607,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             .mark_parentage_root(ordinal)
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_name_with_cross_file(
+            declaration.package,
+            declaration.name,
+            ordinal,
+            Self::cross_file_type(declaration),
+        );
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
@@ -1483,6 +1683,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     type_ordinal,
                     declaration.package,
                     declaration.name,
+                    Self::cross_file_type(declaration),
                 )?,
                 TypeRowKind::Interface => self.interface_methods(
                     &row,
@@ -1526,6 +1727,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method.name,
                 ordinal,
                 is_field: false,
+                cross_file: false,
             });
             methods.push(ordinal);
             method_names.push(method.name);
@@ -1540,8 +1742,11 @@ impl<'x, 'source> Projector<'x, 'source> {
                 .image
                 .method_set(method_set_index)
                 .map_err(GoCollectError::Image)?;
-            if usize::try_from(method_set.owner).is_ok_and(|owner| owner != index)
-                || method_set.package != declaration.package
+            // Owner is the interface type-row index, not the declaration
+            // index. The declaring package may be this package, a foreign
+            // import path, or empty (universe); the name still belongs to
+            // this interface's method set.
+            if declaration.type_root != Some(method_set.owner)
                 || method_names.contains(&method_set.name)
             {
                 continue;
@@ -1557,6 +1762,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method_set.name,
                 ordinal,
                 is_field: false,
+                cross_file: false,
             });
             methods.push(ordinal);
             method_names.push(method_set.name);
@@ -1635,7 +1841,9 @@ impl<'x, 'source> Projector<'x, 'source> {
         owner: u32,
         package: &'source [u8],
         type_name: &'source [u8],
+        cross_file: bool,
     ) -> Result<(), GoCollectError> {
+        let mut field_index = 0usize;
         for member_index in member_run(row) {
             let member = self
                 .image
@@ -1645,11 +1853,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                 continue;
             }
             let root = self.root(member.type_root, TypeReason::OracleGap)?;
-            let fact = root.attach(SemanticFact::new(
+            let mut fact = root.attach(SemanticFact::new(
                 EntityKind::Field,
                 member.name,
                 LEAF_PRODUCT,
             ));
+            if is_unbound_name(member.name) {
+                fact = fact.with_identity_discriminator(unbound_discriminator(field_index));
+            }
+            field_index += 1;
             let ordinal = push(self.facts, fact)?;
             self.facts
                 .attach_parent(ordinal, owner)
@@ -1660,6 +1872,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: true,
+                cross_file,
             });
             fields.push(ordinal);
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1702,6 +1915,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: false,
+                cross_file: false,
             });
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1768,7 +1982,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 observed: self.facts.type_parameter_len as u64,
             })
         })?;
-        let fact = root
+        let mut fact = root
             .attach(SemanticFact::new(kind, declaration.name, constructor(kind)))
             .with_extension(EmissionExtension::Go(GoFacts {
                 signature: GoSignature {
@@ -1784,12 +1998,26 @@ impl<'x, 'source> Projector<'x, 'source> {
                 constant_group,
                 constant_flags,
             }));
+        if declaration.kind == DeclarationKind::Static && is_unbound_name(declaration.name) {
+            fact = fact.with_identity_discriminator(unbound_discriminator(index));
+        }
         let ordinal = push(self.facts, fact)?;
         self.facts
             .mark_parentage_root(ordinal)
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.package, declaration.name, ordinal);
+        if !is_unbound_name(declaration.name) {
+            if kind == EntityKind::Constant || kind == EntityKind::Static {
+                self.record_name_with_cross_file(
+                    declaration.package,
+                    declaration.name,
+                    ordinal,
+                    Self::cross_file_type(declaration),
+                );
+            } else {
+                self.record_name(declaration.package, declaration.name, ordinal);
+            }
+        }
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
@@ -1978,13 +2206,19 @@ impl<'x, 'source> Projector<'x, 'source> {
                 };
                 foreign_target(reference_index, package, row.target, EntityKind::Module)?
             } else if row.target_package.is_empty() {
-                let local = self
-                    .lookup(owner_package, row.target)
-                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    .or_else(|| {
-                        self.lookup_member(owner_package, row.recv_type, row.target)
-                            .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    });
+                let local = if row.target_class == ReferenceTargetClass::Type {
+                    self.local_type_target(owner_package, row.target)
+                } else if row.target_class == ReferenceTargetClass::Const {
+                    self.local_const_target(owner_package, row.target)
+                } else if row.target_class == ReferenceTargetClass::Var {
+                    self.local_var_target(owner_package, row.target)
+                } else {
+                    self.lookup(owner_package, row.target)
+                        .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                }
+                .or_else(|| {
+                    self.local_member_target(owner_package, row.recv_type, row.target)
+                });
                 match local {
                     Some(target) => target,
                     None => {
@@ -2001,12 +2235,22 @@ impl<'x, 'source> Projector<'x, 'source> {
                     }
                 }
             } else {
-                foreign_target(
-                    reference_index,
-                    row.target_package,
-                    row.target,
-                    foreign_entity_kind(row.target_class),
-                )?
+                let local = self
+                    .lookup(row.target_package, row.target)
+                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                    .or_else(|| {
+                        self.lookup_member(row.target_package, row.recv_type, row.target)
+                            .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                    });
+                match local {
+                    Some(target) => target,
+                    None => foreign_target(
+                        reference_index,
+                        row.target_package,
+                        row.target,
+                        foreign_entity_kind(row.target_class),
+                    )?,
+                }
             };
             let span = RelSpan::new(row.relative.0, row.relative.1)
                 .map_err(|fault| match fault {
@@ -3378,6 +3622,7 @@ mod tests {
         constraints: Vec<ConstraintF>,
         satisfactions: Vec<SatisfactionF>,
         children: Vec<u32>,
+        unresolved_cgo_cells: Vec<Cell>,
         signature_parameter_names: Vec<(u32, u32, Cell)>,
     }
 
@@ -3666,14 +3911,29 @@ mod tests {
         }
 
         fn method_set(&mut self, owner: u32, name: &[u8], type_root: Option<u32>) {
+            self.method_set_from(owner, name, type_root, PACKAGE);
+        }
+
+        fn method_set_from(
+            &mut self,
+            owner: u32,
+            name: &[u8],
+            type_root: Option<u32>,
+            package: &[u8],
+        ) {
             let name = self.atom(name);
-            let package = self.atom(PACKAGE);
+            let package = self.atom(package);
             self.method_sets.push(MethodSetF {
                 owner,
                 name,
                 type_root,
                 package,
             });
+        }
+
+        fn unresolved_cgo(&mut self, name: &[u8]) {
+            let cell = self.atom(name);
+            self.unresolved_cgo_cells.push(cell);
         }
 
         fn declaration(&mut self, kind: u8, name: &[u8], type_root: Option<u32>) -> usize {
@@ -3995,6 +4255,11 @@ mod tests {
                 children.extend_from_slice(&target.to_le_bytes());
                 children.extend_from_slice(&0_u32.to_le_bytes());
             }
+            let mut unresolved_cgo = Vec::new();
+            for row in &self.unresolved_cgo_cells {
+                unresolved_cgo.extend_from_slice(&row.offset.to_le_bytes());
+                unresolved_cgo.extend_from_slice(&row.length.to_le_bytes());
+            }
             // The fixture has no resolved module metadata.  Keep the module
             // plane absent, as required by its zero header count; packages
             // therefore begin immediately after satisfactions.
@@ -4128,6 +4393,7 @@ mod tests {
                 signature_parameters,
                 method_sets,
                 children,
+                unresolved_cgo,
                 self.atom_bytes.clone(),
             ];
             let counts = [
@@ -4166,6 +4432,7 @@ mod tests {
             image[120..124].copy_from_slice(&package_count.to_le_bytes());
             image[124..128].copy_from_slice(&count(sections[11].len() / 28)?.to_le_bytes());
             image[128..132].copy_from_slice(&count(sections[12].len() / 24)?.to_le_bytes());
+            image[132..136].copy_from_slice(&count(self.unresolved_cgo_cells.len())?.to_le_bytes());
             let mut digest = Sha256::new();
             digest.update(IMAGE_DOMAIN);
             digest.update(&image[..52]);
@@ -4607,6 +4874,22 @@ mod tests {
         Ok(())
     }
 
+    /// A signature of 129 same-typed blanks used to collapse every position
+    /// past 127 onto `_` and duplicate. Position 128 keeps the spelling `_128`.
+    #[test]
+    fn a_wide_blank_signature_keeps_distinct_positional_names() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let parameters = vec![int; 129];
+        let wide = fix.func(&parameters, &[], false);
+        fix.declaration(KIND_FUNC, b"Wide", Some(wide));
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        entity_of(&view, b"_")?;
+        entity_of(&view, b"_128")?;
+        Ok(())
+    }
+
     #[test]
     fn signatures_commit_carriers_results_and_variadic_flag() -> Result<(), TestError> {
         let mut fix = Fixture::new();
@@ -4748,13 +5031,13 @@ mod tests {
             let authority = fix.start_row(ROW_INTERFACE);
             fix.declarations[owner].type_root = Some(authority);
             for index in 0..count {
-                let name = format!("M{index:03}");
-                fix.method_set(owner as u32, name.as_bytes(), None);
+                let name = format!("M{index:04}");
+                fix.method_set(authority, name.as_bytes(), None);
             }
             fix
         };
 
-        for count in 33..=MAX_REF_LIST_ELEMENTS {
+        for count in [33, 255, 256] {
             let legal = fixture(count);
             let bytes = lower(&legal, b"package demo\ntype Authority struct{}\n")?;
             let view = FragmentView::validate(&bytes)?;
@@ -4768,6 +5051,62 @@ mod tests {
                 != count
             {
                 return Err(TestError::Missing("method-set declarations through width"));
+            }
+        }
+
+        let mut foreign = Fixture::new();
+        let box_decl = foreign.declaration(KIND_TYPE, b"Box", None);
+        let box_row = foreign.start_row(ROW_INTERFACE);
+        foreign.declarations[box_decl].type_root = Some(box_row);
+        let read_sig = foreign.func(&[], &[], false);
+        let error_sig = foreign.func(&[], &[], false);
+        foreign.method_set_from(box_row, b"Error", Some(error_sig), b"");
+        foreign.method_set_from(box_row, b"Read", Some(read_sig), b"io");
+        let foreign_bytes = lower(&foreign, b"package demo\n")?;
+        let foreign_view = FragmentView::validate(&foreign_bytes)?;
+        let box_entity = entity_of(&foreign_view, b"Box")?;
+        let box_facts = go_extension(&foreign_view, box_entity.index())?;
+        let promoted = pooled_list(
+            &foreign_view,
+            backend_semantic::ir::ExtensionPoolListLane::Entities,
+            box_facts.method_set.raw,
+        )?;
+        if promoted.len() != 2 {
+            return Err(TestError::Missing("promoted method set width"));
+        }
+        let mut promoted_names = Vec::new();
+        for ordinal in promoted {
+            let mut found = None;
+            for entity in foreign_view.entities() {
+                if entity.entity.index() == usize::try_from(ordinal).map_err(TestError::from)? {
+                    let atom = foreign_view
+                        .atoms()
+                        .nth(usize::try_from(entity.name.raw).map_err(TestError::from)?)
+                        .ok_or(TestError::Missing("promoted atom"))?;
+                    if entity.kind != EntityKind::Function {
+                        return Err(TestError::Missing("promoted method kind"));
+                    }
+                    found = Some(atom.bytes.to_vec());
+                }
+            }
+            promoted_names.push(found.ok_or(TestError::Missing("promoted entity"))?);
+        }
+        if promoted_names != [b"Error".to_vec(), b"Read".to_vec()] {
+            return Err(TestError::Missing("foreign and universe method names"));
+        }
+        let ir = lower_ir(&foreign, b"package demo\n")?;
+        let box_id = ir
+            .items()
+            .find(|item| item.name() == b"Box")
+            .ok_or(TestError::Missing("box item"))?
+            .id();
+        for name in [b"Error".as_slice(), b"Read".as_slice()] {
+            let method = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(TestError::Missing("promoted item"))?;
+            if method.parent() != Some(box_id) {
+                return Err(TestError::Missing("promoted method parent"));
             }
         }
 
@@ -5168,6 +5507,63 @@ mod tests {
         Ok(())
     }
 
+    /// Same-typed blanks share a structural variant. Only the positional
+    /// discriminator keeps them from collapsing to one identity.
+    fn distinct_identities(
+        ir: &backend_semantic::ir::Ir,
+        kind: EntityKind,
+        name: &[u8],
+    ) -> Result<(), TestError> {
+        let mut identities = Vec::new();
+        for item in ir.items() {
+            if item.kind() == kind && item.name() == name {
+                identities.push(item.version().identity());
+            }
+        }
+        if identities.len() != 2 {
+            return Err(TestError::Missing("two same-typed blank declarations"));
+        }
+        if identities[0] == identities[1] {
+            return Err(TestError::Missing("blank declarations must not share one identity"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_blank_struct_fields_do_not_share_one_identity() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let pad = fix.declaration(KIND_TYPE, b"Pad", None);
+        let struct_row = fix.start_row(ROW_STRUCT);
+        fix.field(struct_row, b"_", Some(int));
+        fix.field(struct_row, b"Keep", Some(int));
+        fix.field(struct_row, b"_", Some(int));
+        fix.declarations[pad].type_root = Some(struct_row);
+        let ir = lower_ir(&fix, b"package pad\n")?;
+        distinct_identities(&ir, EntityKind::Field, b"_")?;
+        let mut keep = 0usize;
+        for item in ir.items() {
+            if item.kind() == EntityKind::Field && item.name() == b"Keep" {
+                keep += 1;
+            }
+        }
+        if keep != 1 {
+            return Err(TestError::Missing("named field stays one declaration"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_blank_package_vars_do_not_share_one_identity() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        fix.declaration(KIND_VAR, b"_", Some(int));
+        fix.declaration(KIND_VAR, b"Keep", Some(int));
+        fix.declaration(KIND_VAR, b"_", Some(int));
+        let ir = lower_ir(&fix, b"package blank\n")?;
+        distinct_identities(&ir, EntityKind::Static, b"_")
+    }
+
     /// A source may spell several carriers with Go's blank identifier, exactly
     /// as go-cmp's `filter(_ *state, _ reflect.Type, _, _ reflect.Value)`
     /// does. Each blank takes its positional spelling, so four same-typed
@@ -5333,6 +5729,55 @@ mod tests {
         if collect(b"package demo\n", &image, &mut facts).is_ok() {
             return Err(TestError::Missing("unresolved satisfaction rejection"));
         }
+        Ok(())
+    }
+
+    /// A reference row naming another package in this image must still
+    /// resolve to the declared fact when that package is loaded, not fold
+    /// to a foreign key that discards the proven local binding.
+    #[test]
+    fn cross_package_reference_to_declared_name_resolves_locally() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let pour = fix.declaration(KIND_FUNC, b"Pour", None);
+        let extra_package = fix.atom(b"example.com/demo/extra");
+        let _extra = fix.declaration(KIND_TYPE, b"Extra", None);
+        fix.declarations[1].package = extra_package;
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.declarations[use_fn].package = extra_package;
+        fix.reference_typed(
+            u32::try_from(use_fn).map_err(TestError::from)?,
+            b"",
+            b"Pour",
+            PACKAGE,
+            40,
+            44,
+            0,
+            0,
+            b"",
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let pour_entity = entity_of(&view, b"Pour")?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let call = occurrences
+            .next()
+            .ok_or(TestError::Missing("cross-package call"))??;
+        if call.owner != use_entity
+            || call.occurrence.target != OccurrenceTarget::Local(pour_entity)
+            || call.occurrence.kind != ReferenceKind::FunctionCall
+            || call.occurrence.confidence != OccurrenceConfidence::Oracle
+            || call.occurrence.span.start != 40
+            || call.occurrence.span.end != 44
+        {
+            return Err(TestError::Missing("local cross-package function call"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact cross-package occurrences"));
+        }
+        let _ = pour;
         Ok(())
     }
 
@@ -5715,6 +6160,43 @@ mod tests {
             != 1
         {
             return Err(TestError::Missing("ungrouped value atom"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_cgo_plane_projects_foreign_names() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        fix.declaration(KIND_TYPE, b"Conn", None);
+        fix.unresolved_cgo(b"C.sqlite3");
+        fix.unresolved_cgo(b"example.com/cgo.Conn");
+        let source = b"package cgo\n";
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let conn_count = view
+            .entities()
+            .filter(|entity| {
+                usize::try_from(entity.name.raw)
+                    .ok()
+                    .and_then(|index| view.atoms().nth(index))
+                    .is_some_and(|atom| atom.bytes == b"Conn")
+            })
+            .count();
+        if conn_count != 1 {
+            return Err(TestError::Missing("exactly one Conn entity"));
+        }
+        let sqlite = row_for_name(&view, b"C.sqlite3")?;
+        if entity_kind_of(&view, b"C.sqlite3")? != EntityKind::Alias
+            || sqlite.record.tag != SemanticTypeTag::Unknown
+            || sqlite.record.payload0 != TypeReason::UnresolvedExternal as u32
+            || sqlite.record.text != Some(b"C.sqlite3".as_slice())
+        {
+            return Err(TestError::Missing("foreign cgo alias type"));
+        }
+        if entity_of(&view, b"example.com/cgo.Conn").is_ok() {
+            return Err(TestError::Missing(
+                "duplicate Conn must not project from unresolved cgo plane",
+            ));
         }
         Ok(())
     }

@@ -172,6 +172,33 @@ fn cpp_header_entry_defaults_to_cxx_arguments_and_flag_first_shape() -> Result<(
     Ok(())
 }
 
+/// A `.h` entry in a C++ package receives C++ arguments because the tree
+/// already contains C++ sources.
+#[test]
+fn h_entry_in_cpp_package_defaults_to_cxx_arguments() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|_| TestError::Profile)?;
+    let root = dir.path().join("pkg-root");
+    std::fs::create_dir_all(root.join("include")).map_err(|_| TestError::Profile)?;
+    std::fs::create_dir_all(root.join("src")).map_err(|_| TestError::Profile)?;
+    std::fs::write(root.join("src/main.cpp"), b"int main() { return 0; }\n")
+        .map_err(|_| TestError::Profile)?;
+    let header = root.join("include/pkg.h");
+    std::fs::write(&header, b"").map_err(|_| TestError::Profile)?;
+    let project = backend_frontend_clang::ClangProject::open(&root, &header)
+        .map_err(|_| TestError::Profile)?;
+    let arguments = project.arguments();
+
+    assert!(
+        arguments.ends_with(&[
+            "-std=c++17".to_owned(),
+            "-x".to_owned(),
+            "c++".to_owned(),
+        ]),
+        "a .h entry in a C++ package must default to explicit C++ arguments: {arguments:?}"
+    );
+    Ok(())
+}
+
 /// An ambiguous `.h` entry keeps the C default: libclang infers C from that
 /// extension, and C projects legitimately select `.h` entries.
 #[test]

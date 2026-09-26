@@ -32,8 +32,8 @@ pub use contracts::{
 };
 pub use delta::{CandidateChange, CandidateDelta, CandidateState};
 pub use http::{
-    ApiKey, HttpProviderError, QdrantHttpClient, QdrantHttpConfig, QdrantHttpSource,
-    QdrantMutationReceipt,
+    ApiKey, CoordinateWrite, HttpProviderError, PointResidence, QdrantHttpClient, QdrantHttpConfig,
+    QdrantHttpSource, QdrantMutationReceipt, ResidentDocument, ResidentMutationReceipt,
 };
 pub use identity::{
     Authority, AuthoritySchema, Binding, CandidateId, CandidateRelation, Frontier, FrontierSchema,

@@ -17,6 +17,12 @@ impl semantic::AnnSource for OfflineSource {
 }
 
 pub(super) fn selected_view() -> (backend_engine::WorkspaceRoot, backend_engine::ViewRoot) {
+    selected_view_with_first_label("alpha exact")
+}
+
+fn selected_view_with_first_label(
+    first_label: &str,
+) -> (backend_engine::WorkspaceRoot, backend_engine::ViewRoot) {
     let head = crate::builtin::genesis().expect("genesis");
     let (base, _) = crate::builtin::initial_view().expect("initial view");
     let capability = crate::builtin::test_builtin_view_capability().expect("capability");
@@ -26,7 +32,7 @@ pub(super) fn selected_view() -> (backend_engine::WorkspaceRoot, backend_engine:
         RowId::Symbol(backend_engine::symbol_key("alpha::exact")),
         base.basis(),
         package,
-        "alpha exact",
+        first_label,
     )
     .with_signature("fn alpha()")
     .with_document(vec![Fragment::Text("first candidate".to_owned())]);
@@ -61,10 +67,19 @@ pub(super) fn semantic_evidence(
     workspace: backend_engine::WorkspaceRoot,
     view: &backend_engine::ViewRoot,
 ) -> backend_extension_trustfall::SemanticQueryCorpus {
+    semantic_evidence_marked(workspace, view, [7; 32])
+}
+
+fn semantic_evidence_marked(
+    workspace: backend_engine::WorkspaceRoot,
+    view: &backend_engine::ViewRoot,
+    marker: [u8; 32],
+) -> backend_extension_trustfall::SemanticQueryCorpus {
     let package = backend_engine::package_key("pkg");
     let project = RowId::Package(package).stable_key();
-    let profile =
-        backend_semantic::vocabulary::LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2021);
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2021,
+    );
     let facts = view
         .rows()
         .iter()
@@ -76,7 +91,7 @@ pub(super) fn semantic_evidence(
             } else {
                 backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
                     backend_extension_trustfall::StructuralFallbackEvidence::new(
-                        package, profile, [7; 32], [8; 32],
+                        package, profile, marker, [8; 32],
                     ),
                 )
             };
@@ -333,6 +348,198 @@ fn local_search_excludes_only_the_synthetic_result_slot() {
     );
 }
 
+#[test]
+fn qualified_owner_search_finds_the_named_method() {
+    let head = crate::builtin::genesis().expect("genesis");
+    let (base, _) = crate::builtin::initial_view().expect("initial view");
+    let capability = crate::builtin::test_builtin_view_capability().expect("capability");
+    let workspace = head.root();
+    let package = backend_engine::package_key("pkg");
+
+    let service_id = backend_engine::symbol_key("pkg::Service");
+    let workout_service_id = backend_engine::symbol_key("pkg::WorkoutService");
+    let update_ws_id = backend_engine::symbol_key("pkg::WorkoutService::update");
+    let set_note_id = backend_engine::symbol_key("pkg::WorkoutService::setNote");
+    let other_service_id = backend_engine::symbol_key("pkg::OtherService");
+    let update_os_id = backend_engine::symbol_key("pkg::OtherService::update");
+
+    let project = Row::new(RowId::Package(package), base.basis(), "pkg");
+    let service = Row::in_package(RowId::Symbol(service_id), base.basis(), package, "pkg::Service")
+        .with_kind(backend_engine::DeclarationKind::Module);
+    let workout_service = Row::in_package(
+        RowId::Symbol(workout_service_id),
+        base.basis(),
+        package,
+        "pkg::WorkoutService",
+    )
+    .with_kind(backend_engine::DeclarationKind::Class)
+    .with_parent(service_id);
+    let update_ws = Row::in_package(
+        RowId::Symbol(update_ws_id),
+        base.basis(),
+        package,
+        "pkg::WorkoutService::update",
+    )
+    .with_kind(backend_engine::DeclarationKind::Function)
+    .with_parent(workout_service_id);
+    let set_note = Row::in_package(
+        RowId::Symbol(set_note_id),
+        base.basis(),
+        package,
+        "pkg::WorkoutService::setNote",
+    )
+    .with_kind(backend_engine::DeclarationKind::Function)
+    .with_parent(workout_service_id);
+    let other_service = Row::in_package(
+        RowId::Symbol(other_service_id),
+        base.basis(),
+        package,
+        "pkg::OtherService",
+    )
+    .with_kind(backend_engine::DeclarationKind::Class);
+    let update_os = Row::in_package(
+        RowId::Symbol(update_os_id),
+        base.basis(),
+        package,
+        "pkg::OtherService::update",
+    )
+    .with_kind(backend_engine::DeclarationKind::Function)
+    .with_parent(other_service_id);
+
+    let view = backend_engine::ViewRoot::new_checked(
+        base.recipe(),
+        base.basis(),
+        base.frontier(),
+        vec![
+            project.clone(),
+            service.clone(),
+            workout_service.clone(),
+            update_ws.clone(),
+            set_note.clone(),
+            other_service.clone(),
+            update_os.clone(),
+        ],
+        vec![ViewCoverage::Complete],
+        capability,
+    )
+    .expect("selected view");
+
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2021,
+    );
+    let project_id = RowId::Package(package).stable_key();
+    let fact = |row: &Row, parent: Option<RowId>| {
+        let evidence = if row.id == RowId::Package(package) {
+            backend_extension_trustfall::SemanticQueryEvidence::Package(
+                backend_extension_trustfall::PackageScopeEvidence::new(package),
+            )
+        } else {
+            backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
+                backend_extension_trustfall::StructuralFallbackEvidence::new(
+                    package, profile, [7; 32], [8; 32],
+                ),
+            )
+        };
+        backend_extension_trustfall::SemanticQueryFact::new(
+            evidence,
+            backend_extension_trustfall::SemanticQueryPresentation {
+                id: row.id.stable_key(),
+                kind: row
+                    .kind
+                    .map_or("project", backend_engine::DeclarationKind::name)
+                    .to_owned(),
+                coordinate: row.label.clone(),
+                name: row.label.rsplit("::").next().unwrap_or(&row.label).to_owned(),
+                signature: None,
+                documentation: String::new(),
+                score: None,
+                project: (row.id != RowId::Package(package)).then(|| project_id.clone()),
+                parent: parent.map(|id| id.stable_key()),
+                related: Box::new([]),
+            },
+        )
+    };
+    let facts = vec![
+        fact(&project, None),
+        fact(&service, None),
+        fact(&workout_service, Some(RowId::Symbol(service_id))),
+        fact(&update_ws, Some(RowId::Symbol(workout_service_id))),
+        fact(&set_note, Some(RowId::Symbol(workout_service_id))),
+        fact(&other_service, None),
+        fact(&update_os, Some(RowId::Symbol(other_service_id))),
+    ];
+    let evidence =
+        backend_extension_trustfall::SemanticQueryCorpus::admit(workspace, facts).expect("typed evidence");
+
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view,
+        crate::builtin::admitted_coverage().expect("coverage"),
+        evidence,
+    )
+    .expect("coordinator");
+
+    let search = |text: &str| -> (Vec<RowId>, usize) {
+        let answer = coordinator
+            .search_local(LocalQuery::prefix(text, 10).expect("query"))
+            .expect("local search");
+        (
+            answer
+                .rows
+                .into_iter()
+                .map(|ranked| ranked.row.id)
+                .collect(),
+            answer.total_matches,
+        )
+    };
+
+    let workout_update = RowId::Symbol(update_ws_id);
+    let other_update = RowId::Symbol(update_os_id);
+    let set_note_row = RowId::Symbol(set_note_id);
+
+    let query = LocalQuery::prefix("WorkoutService.update", 10).expect("query");
+    assert_eq!(query.lexical().terms, vec!["update"]);
+    let (ids, total) = search("WorkoutService.update");
+    assert_eq!(ids, vec![workout_update]);
+    assert_eq!(total, 1);
+
+    let (ids, total) = search("WorkoutService::update");
+    assert_eq!(ids, vec![workout_update]);
+    assert_eq!(total, 1);
+
+    let (ids, total) = search("OtherService.update");
+    assert_eq!(ids, vec![other_update]);
+    assert_eq!(total, 1);
+
+    let (ids, total) = search("Missing.update");
+    assert_eq!(ids, Vec::<RowId>::new());
+    assert_eq!(total, 0);
+
+    let (ids, total) = search("WorkoutService.upd");
+    assert_eq!(ids, vec![workout_update]);
+    assert_eq!(total, 1);
+
+    let (ids, total) = search("WorkoutService.setNote");
+    assert_eq!(ids, vec![set_note_row]);
+    assert_eq!(total, 1);
+
+    let (ids, total) = search("update");
+    let mut update_ids = ids;
+    update_ids.sort();
+    let mut expected_updates = vec![other_update, workout_update];
+    expected_updates.sort();
+    assert_eq!(update_ids, expected_updates);
+    assert_eq!(total, 2);
+
+    let (ids, total) = search("Service.WorkoutService.update");
+    assert_eq!(ids, vec![workout_update]);
+    assert_eq!(total, 1);
+
+    let (ids, total) = search("Other.WorkoutService.update");
+    assert_eq!(ids, Vec::<RowId>::new());
+    assert_eq!(total, 0);
+}
+
 fn recipe() -> semantic::EmbeddingRecipe {
     semantic::EmbeddingRecipe {
         model: semantic::ModelVersion::from_value(&[8; 32]),
@@ -507,4 +714,94 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
         expected
     );
     assert_eq!(outage.lanes[2].coverage, CoverageBasis::Unavailable);
+}
+
+#[test]
+fn evidence_only_refresh_rebinds_the_resident_lexical_index() {
+    let (workspace, view) = selected_view();
+    let coverage = crate::builtin::admitted_coverage().expect("coverage");
+    let mut owner = SearchSnapshotOwner::default();
+    owner
+        .select(
+            workspace,
+            view.clone(),
+            coverage,
+            semantic_evidence(workspace, &view),
+        )
+        .expect("cold snapshot");
+    assert_eq!(owner.projection_builds(), 1);
+    owner
+        .select(
+            workspace,
+            view.clone(),
+            coverage,
+            semantic_evidence_marked(workspace, &view, [9; 32]),
+        )
+        .expect("rebound snapshot");
+    assert_eq!(
+        owner.maintenance(),
+        Some(local::SnapshotMaintenance::Rebound)
+    );
+    assert_eq!(owner.projection_builds(), 1);
+    let marked = semantic_evidence_marked(workspace, &view, [9; 32]);
+    let answer = owner
+        .select(workspace, view, coverage, marked)
+        .expect("reused rebound")
+        .search_local(LocalQuery::prefix("alphabet", 4).expect("query"))
+        .expect("search");
+    assert_eq!(answer.total_matches, 1);
+    assert_eq!(answer.rows[0].row.label, "alphabet prefix");
+    assert_eq!(
+        owner.maintenance(),
+        Some(local::SnapshotMaintenance::Reused)
+    );
+    assert_eq!(owner.projection_builds(), 1);
+}
+
+#[test]
+fn one_renamed_symbol_rewrites_only_that_lexical_document() {
+    let (workspace, view) = selected_view();
+    let coverage = crate::builtin::admitted_coverage().expect("coverage");
+    let mut owner = SearchSnapshotOwner::default();
+    let evidence = semantic_evidence(workspace, &view);
+    owner
+        .select(workspace, view, coverage, evidence)
+        .expect("cold snapshot");
+    let (workspace, renamed) = selected_view_with_first_label("zephyr marker");
+    let evidence = semantic_evidence(workspace, &renamed);
+    owner
+        .select(workspace, renamed.clone(), coverage, evidence.clone())
+        .expect("revised snapshot");
+    assert_eq!(
+        owner.maintenance(),
+        Some(local::SnapshotMaintenance::Revised {
+            rewritten_documents: 1
+        })
+    );
+    assert_eq!(owner.projection_builds(), 1);
+    owner
+        .select(workspace, renamed.clone(), coverage, evidence.clone())
+        .expect("reused revision");
+    assert_eq!(
+        owner.maintenance(),
+        Some(local::SnapshotMaintenance::Reused)
+    );
+    assert_eq!(owner.projection_builds(), 1);
+    let coordinator = owner
+        .select(workspace, renamed, coverage, evidence)
+        .expect("search snapshot");
+    let renamed_hit = coordinator
+        .search_local(LocalQuery::prefix("zephyr", 4).expect("query"))
+        .expect("renamed search");
+    assert_eq!(renamed_hit.total_matches, 1);
+    assert_eq!(renamed_hit.rows[0].row.label, "zephyr marker");
+    let sibling = coordinator
+        .search_local(LocalQuery::prefix("alphabet", 4).expect("query"))
+        .expect("sibling search");
+    assert_eq!(sibling.total_matches, 1);
+    assert_eq!(sibling.rows[0].row.label, "alphabet prefix");
+    let retired = coordinator
+        .search_local(LocalQuery::prefix("exact", 4).expect("query"))
+        .expect("retired token");
+    assert_eq!(retired.total_matches, 0);
 }

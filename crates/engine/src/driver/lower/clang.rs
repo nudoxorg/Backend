@@ -74,8 +74,9 @@ use backend_semantic::ir::{
     ClangFacts as WireClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
     DeclarationFamilyId, DeclarationIdentity, DocFragmentInput, DocLinkTarget, EntityId,
     EntityKind, ExternalFragmentId, ForeignKey, ForeignOrigin, NominalRef, Occurrence,
-    OccurrenceConfidence, OccurrenceTarget, ProductChildRole, ReferenceKind as LaneReferenceKind,
-    RelSpan, SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, StableRef,
+    OccurrenceConfidence, OccurrenceTarget, PackageLineage, ProductChildRole,
+    ReferenceKind as LaneReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
+    SemanticTypeTag, StableRef,
     TypeParameterListId, TypeReason, TypeWidth, VariantFingerprint,
 };
 use backend_semantic::vocabulary::{LanguageProfile, LoweringUnsupported};
@@ -833,11 +834,13 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 });
                 if let Some(earlier) = earlier {
                     winner = None;
+                    let earlier_declaration = self.declaration(earlier);
                     let becomes_definition = declaration.definition == DefinitionState::Definition
-                        && self
-                            .declaration(earlier)
+                        && earlier_declaration
                             .is_some_and(|known| known.definition == DefinitionState::Declaration);
-                    if becomes_definition {
+                    let named_over_stub = declaration.name.is_some()
+                        && earlier_declaration.is_some_and(foreign_value_authority_stub);
+                    if becomes_definition || named_over_stub {
                         *self
                             .representative
                             .get_mut(earlier)
@@ -1039,9 +1042,16 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 | DeclarationKind::TypeAlias
                 | DeclarationKind::Template
                 | DeclarationKind::Namespace => {}
-                DeclarationKind::Enumerator => self.push_enumerator(index)?,
+                DeclarationKind::Enumerator => {
+                    if declaration.name.is_some() {
+                        self.push_enumerator(index)?;
+                    }
+                }
                 DeclarationKind::Field => self.push_typed_member(index, EntityKind::Field)?,
                 DeclarationKind::Variable => {
+                    if declaration.name.is_none() {
+                        continue;
+                    }
                     // Block-scope variables share their function's parentage
                     // but not its block scope: two same-named same-typed
                     // locals in different blocks of one function would mint
@@ -1776,7 +1786,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         }
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::CQualified);
         record.payload0 = qualifiers;
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects one builtin row onto its exact width, signedness, and shape
@@ -1941,7 +1951,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     coordinate => children.push((coordinate, None)),
                 }
             }
-            return Ok(self.finish_row(SemanticTypeRecord::leaf(SemanticTypeTag::Apply), children));
+            return self.finish_row(SemanticTypeRecord::leaf(SemanticTypeTag::Apply), children);
         }
         if let Some(spelling) = self
             .template_parameters
@@ -2017,7 +2027,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
         };
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects an Objective-C block pointer without collapsing it into the
@@ -2037,7 +2047,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         };
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
         record.payload0 = SHAPE_C_BLOCK_POINTER;
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects a C++ reference category over its referent. This path never
@@ -2060,7 +2070,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
         };
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects a C++ member pointer with ordered owner then member type.
@@ -2142,7 +2152,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         };
         let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
         record.payload0 = SHAPE_CXX_MEMBER_POINTER;
-        Ok(self.finish_row(record, vec![(owner, None), (member, None)]))
+        self.finish_row(record, vec![(owner, None), (member, None)])
     }
 
     /// Projects one array row with a typed fixed extent or an explicit
@@ -2169,7 +2179,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             UNHOSTABLE => return Ok(gap()),
             coordinate => coordinate,
         };
-        Ok(self.finish_row(record, vec![(child, None)]))
+        self.finish_row(record, vec![(child, None)])
     }
 
     /// Projects one function type: the structural `FunctionPointer` row over
@@ -2210,7 +2220,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         if has_result {
             record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
         }
-        Ok(self.finish_row(record, children))
+        self.finish_row(record, children)
     }
 
     /// The relation of one direct edge, for ordered signature projections.
@@ -2262,24 +2272,28 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             .map_err(|fault| lane_terminal(self.facts, 0, fault))
     }
 
-    /// Finishes one compound row over its ordered children, folding to the
-    /// typed gap when the children exceed the row's bounded child width —
-    /// never a partial, lying row.
+    /// Finishes one compound row over its ordered children. A row wider than
+    /// the type-child lane is a typed capacity fault, never an oracle gap
+    /// and never a partial row.
     fn finish_row(
         &self,
         record: SemanticTypeRecord<'source>,
         children: Vec<(u32, Option<&'source [u8]>)>,
-    ) -> Projected<'source> {
+    ) -> Result<Projected<'source>, ClangCollectError> {
         if children.len() > MAX_TYPE_CHILDREN {
-            return gap();
+            return Err(lane_terminal(self.facts, 0, FactFault::TypeChildCapacity));
         }
         let mut projected = Projected::leaf(record);
         for (target, name) in children {
             if projected.child(target, name).is_none() {
-                return gap();
+                return Err(lane_terminal(
+                    self.facts,
+                    name.map_or(0, <[u8]>::len),
+                    FactFault::TypeChildCapacity,
+                ));
             }
         }
-        projected
+        Ok(projected)
     }
 
     /// Projects one anonymous record: its named member fields are pushed as
@@ -2350,7 +2364,11 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 continue;
             };
             if projected.child(ordinal, Some(member_name)).is_none() {
-                return Ok(gap());
+                return Err(lane_terminal(
+                    self.facts,
+                    member_name.len(),
+                    FactFault::TypeChildCapacity,
+                ));
             }
         }
         Ok(projected)
@@ -2500,15 +2518,159 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let Ok(written) = self.slice(reference.span) else {
                 continue;
             };
+            let Some(owner_span) = self.owner_span(owner) else {
+                continue;
+            };
+            let Some(span) = owner_relative_span(owner_span, reference.span) else {
+                continue;
+            };
+            let member_field = (reference.kind == ReferenceKind::Member)
+                .then(|| member_field_name_bytes(self.source, reference.span, written))
+                .flatten()
+                .map(|name_bytes| {
+                    (
+                        name_bytes,
+                        member_field_name_span(self.source, reference.span, written),
+                    )
+                });
+            if matches!(
+                reference.kind,
+                ReferenceKind::Call | ReferenceKind::Type | ReferenceKind::Template
+            ) || member_field.is_some()
+            {
+                if let ReferenceTarget::Foreign {
+                    path: Some(slot), ..
+                } = reference.target
+                {
+                    if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
+                        if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
+                            let (name_bytes, site_span) = match reference.kind {
+                                ReferenceKind::Call => (
+                                    member_call_callee_name(self.source, reference.span)
+                                        .unwrap_or(written),
+                                    member_call_callee_span(self.source, reference.span)
+                                        .unwrap_or(reference.span),
+                                ),
+                                ReferenceKind::Type | ReferenceKind::Template => (
+                                    type_reference_name_bytes(written).unwrap_or(written),
+                                    type_reference_name_span(self.source, reference.span, written),
+                                ),
+                                ReferenceKind::Member => member_field.expect("member field"),
+                                _ => unreachable!(),
+                            };
+                            let Some(span) = owner_relative_span(owner_span, site_span) else {
+                                continue;
+                            };
+                            let entity_kind = match reference.kind {
+                                ReferenceKind::Call => Some(EntityKind::Function),
+                                ReferenceKind::Type | ReferenceKind::Template => {
+                                    Some(EntityKind::Record)
+                                }
+                                ReferenceKind::Member => Some(EntityKind::Field),
+                                _ => unreachable!(),
+                            };
+                            if let Ok(name) = core::str::from_utf8(name_bytes) {
+                                self.facts
+                                    .push_owned_package_occurrence(
+                                        owner,
+                                        ECOSYSTEM,
+                                        package_path.as_ref(),
+                                        name,
+                                        name,
+                                        entity_kind,
+                                        lane_reference_kind(reference.kind),
+                                        OccurrenceConfidence::Oracle,
+                                        span,
+                                    )
+                                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            if reference.kind == ReferenceKind::Value {
+                if let ReferenceTarget::Foreign {
+                    identity,
+                    path: Some(slot),
+                    ..
+                } = reference.target
+                {
+                    if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
+                        if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
+                            let entity_kind = self
+                                .authority
+                                .declarations
+                                .iter()
+                                .find(|declaration| declaration.identity == Some(identity))
+                                .and_then(|declaration| match declaration.kind {
+                                    DeclarationKind::Variable => Some(EntityKind::Static),
+                                    DeclarationKind::Enumerator => Some(EntityKind::Variant),
+                                    DeclarationKind::Function | DeclarationKind::Method => {
+                                        Some(EntityKind::Function)
+                                    }
+                                    DeclarationKind::Constructor
+                                    | DeclarationKind::Destructor => None,
+                                    _ => None,
+                                });
+                            if let Some(entity_kind) = entity_kind {
+                                if let Some(ordinal) = self.ordinal_of(identity) {
+                                    self.facts
+                                        .push_occurrence(
+                                            owner,
+                                            Occurrence {
+                                                target: OccurrenceTarget::Local(
+                                                    EntityId::new(ordinal),
+                                                ),
+                                                kind: lane_reference_kind(reference.kind),
+                                                confidence: OccurrenceConfidence::Oracle,
+                                                span,
+                                            },
+                                        )
+                                        .map_err(|fault| {
+                                            lane_terminal(&self.facts, 0, fault)
+                                        })?;
+                                    continue;
+                                }
+                                if is_source_identifier(written) {
+                                    if let Ok(name) = core::str::from_utf8(written) {
+                                        self.facts
+                                            .push_owned_package_occurrence(
+                                                owner,
+                                                ECOSYSTEM,
+                                                package_path.as_ref(),
+                                                name,
+                                                name,
+                                                Some(entity_kind),
+                                                lane_reference_kind(reference.kind),
+                                                OccurrenceConfidence::Oracle,
+                                                span,
+                                            )
+                                            .map_err(|fault| {
+                                                lane_terminal(&self.facts, 0, fault)
+                                            })?;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let target = match reference.target {
                 ReferenceTarget::Local(identity) => match self.ordinal_of(identity) {
                     Some(ordinal) => Some((
                         OccurrenceTarget::Local(EntityId::new(ordinal)),
                         OccurrenceConfidence::Oracle,
                     )),
-                    None => None,
+                    // Block-scope variables are not admitted as declaration
+                    // facts, but the authority still proves the reference
+                    // site. Keep the written spelling at index confidence
+                    // instead of dropping the occurrence.
+                    None => foreign_universe(written, reference.kind)
+                        .map(|target| (target, OccurrenceConfidence::Index)),
                 },
-                ReferenceTarget::Foreign { identity, file } => {
+                ReferenceTarget::Foreign { identity, file, .. } => {
                     let target = match file {
                         Some(file) => stable_foreign_target(identity, file),
                         None => system_fragment_target(identity),
@@ -2519,12 +2681,6 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     .map(|target| (target, OccurrenceConfidence::Index)),
             };
             let Some((target, confidence)) = target else {
-                continue;
-            };
-            let Some(owner_span) = self.owner_span(owner) else {
-                continue;
-            };
-            let Some(span) = owner_relative_span(owner_span, reference.span) else {
                 continue;
             };
             self.facts
@@ -2582,13 +2738,73 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         Ok(())
     }
 
-    /// Resolves only an authority-proved owner.  Containment is not ownership:
-    /// attaching an unowned libclang reference to the innermost declaration
-    /// would fabricate a relation and an invalid relative span.
+    /// Resolves the innermost pushed declaration that owns one reference.
+    /// libclang's semantic parent of a use site is often a block-scope
+    /// variable or parameter the lane never admits as a declaration fact, so
+    /// the walk climbs the authority's owner chain until it reaches a pushed
+    /// row whose span contains the reference (typically the enclosing
+    /// function) instead of fabricating a span on an absent parent. When the
+    /// authority leaves the owner cell empty — macro expansions name no
+    /// semantic parent — the innermost executable whose span contains the
+    /// reference site supplies the owner; file-scope initializers stay
+    /// unowned because no executable wraps them.
     fn reference_owner(&self, reference: &ReferenceFact) -> Option<u32> {
-        reference
-            .owner
-            .and_then(|identity| self.ordinal_of(identity))
+        let mut current = reference.owner;
+        while let Some(identity) = current {
+            if let Some(ordinal) = self.ordinal_of(identity) {
+                if self.owner_span_covers(ordinal, reference.span) {
+                    return Some(ordinal);
+                }
+            }
+            current = self
+                .authority
+                .declarations
+                .iter()
+                .find(|declaration| declaration.identity == Some(identity))
+                .and_then(|declaration| declaration.owner);
+        }
+        self.executable_owner_containing(reference.span)
+    }
+
+    /// True when one pushed owner's authority span contains a reference site.
+    fn owner_span_covers(&self, owner: u32, reference: SourceSpan) -> bool {
+        self.owner_span(owner)
+            .is_some_and(|owner_span| span_contains(owner_span, reference))
+    }
+
+    /// The innermost pushed executable whose authority span contains one
+    /// reference site. Used only when libclang leaves the owner cell empty.
+    fn executable_owner_containing(&self, reference: SourceSpan) -> Option<u32> {
+        let mut best: Option<(u32, u32)> = None;
+        for (index, ordinal) in self.ordinals.iter().enumerate() {
+            let Some(ordinal) = *ordinal else {
+                continue;
+            };
+            let Some(declaration) = self.authority.declarations.get(index) else {
+                continue;
+            };
+            if !matches!(
+                declaration.kind,
+                DeclarationKind::Function
+                    | DeclarationKind::Method
+                    | DeclarationKind::Constructor
+                    | DeclarationKind::Destructor
+            ) {
+                continue;
+            }
+            if !span_contains(declaration.span, reference) {
+                continue;
+            }
+            let extent = declaration
+                .span
+                .end
+                .checked_sub(declaration.span.start)
+                .unwrap_or(u32::MAX);
+            if best.is_none_or(|(_, best_extent)| extent < best_extent) {
+                best = Some((ordinal, extent));
+            }
+        }
+        best.map(|(ordinal, _)| ordinal)
     }
 
     /// Resolves a foreign override target to its stable cross-fragment key when
@@ -2672,6 +2888,20 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         }
         Ok(())
     }
+}
+
+/// True when one declaration row was minted by foreign value-authority
+/// collection for a cross-header value reference. The row carries identity
+/// and kind only and must never win representative election over a named
+/// main-source declaration.
+const fn foreign_value_authority_stub(declaration: &DeclarationFact) -> bool {
+    declaration.name.is_none()
+        && declaration.span.start == 0
+        && declaration.span.end == 0
+        && matches!(
+            declaration.kind,
+            DeclarationKind::Function | DeclarationKind::Method
+        )
 }
 
 /// Builds one honest cross-fragment reference from an authority-proved USR and
@@ -2763,6 +2993,236 @@ fn include_spelling_span<'source>(
             end: include.span.start + (open_at as u32 + 1 + relative as u32),
         },
     ))
+}
+
+/// Borrows the type-name identifier when a type-reference span still carries
+/// a specifier prefix such as `struct Name`. When the span is already one
+/// identifier token, returns it unchanged.
+fn type_reference_name_bytes<'source>(written: &'source [u8]) -> Option<&'source [u8]> {
+    if written.is_empty() {
+        return None;
+    }
+    if written
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Some(written);
+    }
+    for prefix in [
+        b"struct".as_slice(),
+        b"class",
+        b"enum",
+        b"union",
+        b"typename",
+    ] {
+        if written.len() <= prefix.len() || !written.starts_with(prefix) {
+            continue;
+        }
+        let rest = written.get(prefix.len()..)?;
+        let skip = rest.iter().take_while(|byte| byte.is_ascii_whitespace()).count();
+        let ident = rest.get(skip..)?;
+        let name_len = ident
+            .iter()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+            .count();
+        if name_len > 0 {
+            return ident.get(..name_len);
+        }
+    }
+    None
+}
+
+/// Narrows one type-reference span to the identifier token inside it.
+fn type_reference_name_span(source: &[u8], span: SourceSpan, written: &[u8]) -> SourceSpan {
+    let Some(name) = type_reference_name_bytes(written) else {
+        return span;
+    };
+    let offset = name.as_ptr() as usize - source.as_ptr() as usize;
+    match (
+        u32::try_from(offset),
+        u32::try_from(offset + name.len()),
+    ) {
+        (Ok(start), Ok(end)) if start >= span.start && end <= span.end => SourceSpan { start, end },
+        _ => span,
+    }
+}
+
+/// When libclang maps a C++ member call to `CallExpr` but leaves the reference
+/// span on the receiver, the callee token still lives in the main-source bytes
+/// immediately after that span as `.name(` or `->name(`.
+fn member_call_callee_span(source: &[u8], span: SourceSpan) -> Option<SourceSpan> {
+    let tail_start = usize::try_from(span.end).ok()?;
+    let tail = source.get(tail_start..)?;
+    let (prefix_len, rest) = if let Some(rest) = tail.strip_prefix(b".") {
+        (1, rest)
+    } else if let Some(rest) = tail.strip_prefix(b"->") {
+        (2, rest)
+    } else {
+        return None;
+    };
+    let name_len = rest
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .count();
+    if name_len == 0 {
+        return None;
+    }
+    let after_name = rest.get(name_len..)?;
+    let next = after_name
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())?;
+    if *next != b'(' {
+        return None;
+    }
+    let start = tail_start.checked_add(prefix_len)?;
+    let end = start.checked_add(name_len)?;
+    Some(SourceSpan {
+        start: u32::try_from(start).ok()?,
+        end: u32::try_from(end).ok()?,
+    })
+}
+
+/// Borrows the callee identifier of one member call when the authority span
+/// names the receiver instead of the method.
+fn member_call_callee_name<'source>(
+    source: &'source [u8],
+    span: SourceSpan,
+) -> Option<&'source [u8]> {
+    let callee = member_call_callee_span(source, span)?;
+    source.get(
+        usize::try_from(callee.start).ok()?..usize::try_from(callee.end).ok()?,
+    )
+}
+
+/// Maximum bytes after a member-access authority span to recover a field name
+/// from the receiver tail. Keeps the scan on the immediate access, not a later
+/// field in the same statement.
+const MEMBER_FIELD_SCAN_WINDOW: usize = 32;
+
+/// True when one borrowed slice is a single source identifier token.
+fn is_source_identifier(bytes: &[u8]) -> bool {
+    !bytes.is_empty()
+        && !bytes[0].is_ascii_digit()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
+/// Narrows one member-access span to the field-name identifier. When the
+/// authority span already names the field token, returns it unchanged. When
+/// libclang leaves the span on the receiver, recovers `.field` or `->field`
+/// from the bytes immediately after that span.
+fn member_field_name_span(source: &[u8], span: SourceSpan, written: &[u8]) -> SourceSpan {
+    if member_access_is_call_tail(source, span) {
+        return span;
+    }
+    if is_source_identifier(written) {
+        return span;
+    }
+    member_field_name_span_after_receiver(source, span).unwrap_or(span)
+}
+
+/// Borrows the field identifier of one member access when the authority span
+/// already names the field, or when it names the receiver and the field token
+/// follows immediately as `.name` or `->name` that is not a call. Call-shaped
+/// tails and receiver misses never fall back to the receiver spelling.
+fn member_field_name_bytes<'source>(
+    source: &'source [u8],
+    span: SourceSpan,
+    written: &'source [u8],
+) -> Option<&'source [u8]> {
+    if member_access_is_call_tail(source, span) {
+        return None;
+    }
+    if is_source_identifier(written) {
+        return Some(written);
+    }
+    member_field_name_span_after_receiver(source, span).and_then(|field| {
+        source.get(
+            usize::try_from(field.start).ok()?..usize::try_from(field.end).ok()?,
+        )
+    })
+}
+
+/// True when a member-access span is immediately followed by a call argument
+/// list, including `receiver.method(` and `receiver->method(` when libclang
+/// leaves the span on the receiver. libclang also emits a `Member` reference on
+/// the callee name of `receiver.method(...)`, which must stay on the default
+/// projection so the paired `Call` occurrence carries the package key.
+fn member_access_is_call_tail(source: &[u8], span: SourceSpan) -> bool {
+    let tail_start = usize::try_from(span.end).ok();
+    let tail = tail_start.and_then(|start| source.get(start..));
+    let Some(tail) = tail else {
+        return false;
+    };
+    if matches!(
+        tail.iter().find(|byte| !byte.is_ascii_whitespace()),
+        Some(b'(')
+    ) {
+        return true;
+    }
+    member_receiver_call_shape(tail)
+}
+
+/// True when one tail begins with `.name(` or `->name(`.
+fn member_receiver_call_shape(tail: &[u8]) -> bool {
+    let rest = if let Some(rest) = tail.strip_prefix(b".") {
+        rest
+    } else if let Some(rest) = tail.strip_prefix(b"->") {
+        rest
+    } else {
+        return false;
+    };
+    let name_len = rest
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .count();
+    if name_len == 0 {
+        return false;
+    }
+    let Some(after_name) = rest.get(name_len..) else {
+        return false;
+    };
+    matches!(
+        after_name.iter().find(|byte| !byte.is_ascii_whitespace()),
+        Some(b'(')
+    )
+}
+
+/// When libclang maps a field read to the receiver, the field token still
+/// lives in the main-source bytes immediately after that span as `.name` or
+/// `->name`, and the next non-whitespace byte must not be `(`.
+fn member_field_name_span_after_receiver(source: &[u8], span: SourceSpan) -> Option<SourceSpan> {
+    let tail_start = usize::try_from(span.end).ok()?;
+    let window_end = tail_start.saturating_add(MEMBER_FIELD_SCAN_WINDOW).min(source.len());
+    let tail = source.get(tail_start..window_end)?;
+    let (prefix_len, rest) = if let Some(rest) = tail.strip_prefix(b".") {
+        (1, rest)
+    } else if let Some(rest) = tail.strip_prefix(b"->") {
+        (2, rest)
+    } else {
+        return None;
+    };
+    let name_len = rest
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+        .count();
+    if name_len == 0 {
+        return None;
+    }
+    let after_name = rest.get(name_len..)?;
+    let next = after_name
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())?;
+    if *next == b'(' {
+        return None;
+    }
+    let start = tail_start.checked_add(prefix_len)?;
+    let end = start.checked_add(name_len)?;
+    Some(SourceSpan {
+        start: u32::try_from(start).ok()?,
+        end: u32::try_from(end).ok()?,
+    })
 }
 
 /// Projects an absolute reference span onto its owner's span start. The
@@ -2952,7 +3412,7 @@ mod tests {
     };
     use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
-        FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
+        ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
         SourceIdentity,
     };
     use backend_semantic::vocabulary::{
@@ -3624,9 +4084,9 @@ mod tests {
         Ok(())
     }
 
-    /// A cross-file project closure resolves a project-local header reference to
-    /// a stable fragment keyed on the package-relative header path, and a system
-    /// header reference to the fixed system fragment without faulting.
+    /// A cross-file project closure resolves a project-local header call to a
+    /// package foreign key on the header path and callee token, and a system
+    /// header call to the fixed system fragment without faulting.
     #[test]
     fn project_closure_resolves_local_and_system_references() -> Result<(), TestError> {
         let root = unique_temp_project()?;
@@ -3648,26 +4108,65 @@ mod tests {
         let bytes =
             lower_with_authority(LanguageProfile::C(CStandard::C11), Some(&project), source)?;
         let view = FragmentView::validate(&bytes)?;
-        let rows = occurrences(&view)?;
+        let use_fn = entity_of(&view, b"use", EntityKind::Function)?;
         let system_fragment = match super::system_fragment_target(SymbolIdentity { bytes: [0; 16] })
         {
             OccurrenceTarget::Stable(stable) => stable.fragment,
             _ => return Err(TestError::Missing("system fragment")),
         };
-        let mut local = false;
-        let mut system = false;
-        for row in &rows {
-            let OccurrenceTarget::Stable(stable) = row.occurrence.target else {
+        let printf_start = source
+            .windows(6)
+            .position(|window| window == b"printf")
+            .ok_or(TestError::Absent)?;
+        let mut header_call = false;
+        let mut printf_stable = false;
+        for row in occurrences(&view)? {
+            if row.owner != use_fn {
                 continue;
-            };
-            if stable.fragment == system_fragment {
-                system = true;
-            } else {
-                local = true;
+            }
+            if row.occurrence.kind != backend_semantic::ir::ReferenceKind::FunctionCall {
+                continue;
+            }
+            match row.occurrence.target {
+                OccurrenceTarget::Foreign(key) => {
+                    let ForeignOrigin::Package(lineage) = key.origin else {
+                        return Err(TestError::Missing("package foreign origin"));
+                    };
+                    if lineage.ecosystem != "c" || lineage.name != "include/decl.h" {
+                        return Err(TestError::Missing("c:include/decl.h package"));
+                    }
+                    if key.path != "declared_in_header" || key.display != "declared_in_header" {
+                        return Err(TestError::Missing("declared_in_header path"));
+                    }
+                    if key.kind != Some(EntityKind::Function) {
+                        return Err(TestError::Missing("function entity kind"));
+                    }
+                    if row.occurrence.confidence
+                        != backend_semantic::ir::OccurrenceConfidence::Oracle
+                    {
+                        return Err(TestError::Missing("oracle confidence"));
+                    }
+                    header_call = true;
+                }
+                OccurrenceTarget::Stable(stable) => {
+                    if stable.fragment != system_fragment {
+                        return Err(TestError::Missing("unexpected stable fragment"));
+                    }
+                    let owner_start = source
+                        .windows(b"int use".len())
+                        .position(|window| window == b"int use")
+                        .ok_or(TestError::Absent)?;
+                    if row.occurrence.span.start
+                        == u32::try_from(printf_start - owner_start).map_err(|_| TestError::Tail)?
+                    {
+                        printf_stable = true;
+                    }
+                }
+                _ => {}
             }
         }
-        if !local || !system {
-            return Err(TestError::Missing("local and system stable references"));
+        if !header_call || !printf_stable {
+            return Err(TestError::Missing("header foreign call and printf stable"));
         }
         Ok(())
     }
@@ -4001,6 +4500,101 @@ mod tests {
         .is_some()
         {
             return Err(TestError::Missing("escaping rejection"));
+        }
+        Ok(())
+    }
+
+    /// A macro expansion inside a function body targets the pushed macro row
+    /// at oracle confidence rather than disappearing when libclang leaves the
+    /// reference owner cell empty.
+    #[test]
+    fn macro_use_inside_a_function_targets_the_pushed_macro_row() -> Result<(), TestError> {
+        let source = b"#define LIMIT 100\nint use_macro(void) { return LIMIT; }\n";
+        let bytes = lower(source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let function = entity_of(&view, b"use_macro", EntityKind::Function)?;
+        let macro_row = entity_of(&view, b"LIMIT", EntityKind::Macro)?;
+        let use_site = source
+            .windows(5)
+            .rposition(|window| window == b"LIMIT")
+            .ok_or(TestError::Absent)?;
+        let owner_start = source
+            .windows(b"int use_macro".len())
+            .position(|window| window == b"int use_macro")
+            .ok_or(TestError::Absent)?;
+        let mut found = false;
+        for row in occurrences(&view)? {
+            if row.owner != function {
+                continue;
+            }
+            let OccurrenceTarget::Local(target) = row.occurrence.target else {
+                continue;
+            };
+            if target != macro_row {
+                continue;
+            }
+            found = true;
+            if row.occurrence.kind != backend_semantic::ir::ReferenceKind::MacroInvocation {
+                return Err(TestError::Missing("macro-invocation kind"));
+            }
+            if row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Oracle {
+                return Err(TestError::Missing("oracle confidence"));
+            }
+            if row.occurrence.span.start
+                != u32::try_from(use_site - owner_start).map_err(|_| TestError::Tail)?
+            {
+                return Err(TestError::Missing("owner-relative name extent"));
+            }
+        }
+        if !found {
+            return Err(TestError::Absent);
+        }
+        Ok(())
+    }
+
+    /// A block-scope local is not a pushed declaration fact, but its use
+    /// inside the owning function still carries the written spelling at index
+    /// confidence rather than disappearing from the occurrence lane.
+    #[test]
+    fn block_local_variable_use_keeps_its_written_spelling() -> Result<(), TestError> {
+        let source = b"int use_local(void) {\n    int local = 42;\n    return local;\n}\n";
+        let bytes = lower(source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let function = entity_of(&view, b"use_local", EntityKind::Function)?;
+        let use_site = source
+            .windows(5)
+            .rposition(|window| window == b"local")
+            .ok_or(TestError::Absent)?;
+        let owner_start = source
+            .windows(b"int use_local".len())
+            .position(|window| window == b"int use_local")
+            .ok_or(TestError::Absent)?;
+        let mut found = false;
+        for row in occurrences(&view)? {
+            if row.owner != function {
+                continue;
+            }
+            let OccurrenceTarget::Foreign(key) = row.occurrence.target else {
+                continue;
+            };
+            if key.path != "local" || key.display != "local" {
+                continue;
+            }
+            found = true;
+            if row.occurrence.kind != backend_semantic::ir::ReferenceKind::VariableUse {
+                return Err(TestError::Missing("variable-use kind"));
+            }
+            if row.occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Index {
+                return Err(TestError::Missing("index confidence"));
+            }
+            if row.occurrence.span.start
+                != u32::try_from(use_site - owner_start).map_err(|_| TestError::Tail)?
+            {
+                return Err(TestError::Missing("owner-relative name extent"));
+            }
+        }
+        if !found {
+            return Err(TestError::Absent);
         }
         Ok(())
     }

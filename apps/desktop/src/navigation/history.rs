@@ -128,6 +128,7 @@ mod tests {
             package: PackageId::new(value).expect("package"),
             lane: PackageLane::Overview,
             selected: None,
+            at: None,
         })
     }
 

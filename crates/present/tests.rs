@@ -701,6 +701,30 @@ fn the_shelf_states_readiness_for_every_project() {
 }
 
 #[test]
+fn an_empty_graph_names_the_missing_edges() {
+    let list = RecordList::new(
+        "/abs/pkg::session.h:1::Session",
+        CoverageLine::new(&[Coverage::Complete], Some(0)),
+        Vec::<Record>::new(),
+    )
+    .with_empty_reason("no graph edges at this coordinate; the authority recorded none");
+    let rendered = crate::render::markdown::records(&list, None);
+    assert!(
+        rendered.contains("no graph edges at this coordinate"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("no declaration matches"),
+        "{rendered}"
+    );
+    let wire = answer_value(&Answer::Records(Box::new(list)));
+    assert_eq!(
+        wire["empty_reason"],
+        "no graph edges at this coordinate; the authority recorded none"
+    );
+}
+
+#[test]
 fn the_answer_tag_never_overwrites_a_fact_the_payload_already_carries() {
     // The first spelling of this tag was `kind`, and a page already has one:
     // its declaration kind. The tag won, `"kind": "function"` silently became

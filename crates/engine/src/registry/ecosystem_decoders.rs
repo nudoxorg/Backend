@@ -9,6 +9,7 @@ use backend_library::{
     DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
     PackageDependencyRecord, PackageDependencyTarget, PackageReference, ProductText,
     RegistryNativeObservation, RegistryNativeVulnerability, admit_dependency_rows,
+    collapse_dependency_rows, dependency_optional,
 };
 use quick_xml::{events::Event, reader::Reader};
 use serde_json::Value;
@@ -761,6 +762,105 @@ impl EcosystemAdapter {
             .map_err(|_| TransportFailure::Protocol)
     }
 
+    /// JSON API document for one simple-index version.
+    ///
+    /// The simple index authenticates files. `requires_dist` lives on the
+    /// per-version JSON API, so dependency admission fetches only the versions
+    /// on the current page.
+    pub(crate) fn pypi_json_url(&self, version: &str) -> String {
+        format!(
+            "{}/pypi/{}/{}/json",
+            self.endpoint.url().trim_end_matches('/'),
+            super::normalized_pypi_name(self.package_name()),
+            component(version),
+        )
+    }
+
+    /// Admits `info.requires_dist` from one PyPI JSON API document.
+    ///
+    /// A missing or null field is unknown metadata. An array is the complete
+    /// declared set, including an empty set. Extras markers are optional
+    /// edges; the requirement text keeps the original PEP 508 spelling.
+    pub(crate) fn pypi_requires_dist(
+        &self,
+        bytes: &[u8],
+        source: &super::PackageCoordinate,
+        provenance: &[u8],
+    ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+        let root: Value = serde_json::from_slice(bytes).map_err(|_| TransportFailure::Protocol)?;
+        let info = root
+            .get("info")
+            .and_then(Value::as_object)
+            .ok_or(TransportFailure::Protocol)?;
+        let name = info
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(TransportFailure::Protocol)?;
+        if super::normalized_pypi_name(name) != super::normalized_pypi_name(self.package_name()) {
+            return Err(TransportFailure::Protocol);
+        }
+        let version = info
+            .get("version")
+            .and_then(Value::as_str)
+            .ok_or(TransportFailure::Protocol)?;
+        if version != source.version() {
+            return Err(TransportFailure::Protocol);
+        }
+        let Some(requires) = info.get("requires_dist") else {
+            return Ok(DependencyFacts::Unknown(
+                ProductText::new("PyPI JSON API omits requires_dist")
+                    .map_err(|_| TransportFailure::Protocol)?,
+            ));
+        };
+        if requires.is_null() {
+            return Ok(DependencyFacts::Unknown(
+                ProductText::new("PyPI JSON API omits requires_dist")
+                    .map_err(|_| TransportFailure::Protocol)?,
+            ));
+        }
+        let requires = requires.as_array().ok_or(TransportFailure::Protocol)?;
+        let limit = backend_library::MAX_PACKAGE_GRAPH_ROWS;
+        if requires.len() > limit {
+            return Err(TransportFailure::Overrun {
+                measured: u64::try_from(requires.len()).map_err(|_| TransportFailure::Bounds)?,
+                limit: u64::try_from(limit).map_err(|_| TransportFailure::Bounds)?,
+            });
+        }
+        let mut rows = Vec::with_capacity(requires.len());
+        let mut seen = BTreeSet::new();
+        for requirement in requires {
+            let requirement = requirement
+                .as_str()
+                .ok_or(TransportFailure::Protocol)?
+                .trim();
+            if requirement.is_empty() {
+                return Err(TransportFailure::Protocol);
+            }
+            let name = pypi_requirement_name(requirement)?;
+            let extra = pypi_requirement_is_extra(requirement);
+            let row = dependency_record(
+                source,
+                backend_semantic::vocabulary::RegistryEcosystem::Pypi,
+                name,
+                requirement,
+                if extra {
+                    DependencyScope::Optional
+                } else {
+                    DependencyScope::Runtime
+                },
+                extra,
+                provenance,
+            )?;
+            if !seen.insert(row.facts_version) {
+                return Err(TransportFailure::Protocol);
+            }
+            rows.push(row);
+        }
+        Ok(DependencyFacts::Known(
+            admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        ))
+    }
+
     pub(crate) fn maven_dependencies(
         &self,
         bytes: &[u8],
@@ -1151,6 +1251,11 @@ impl EcosystemAdapter {
         let digest = *blake3::hash(provenance).as_bytes();
         let mut rows = Vec::with_capacity(module.requires.len());
         for requirement in &module.requires {
+            let scope = if requirement.indirect {
+                DependencyScope::Development
+            } else {
+                DependencyScope::Runtime
+            };
             let target = PackageDependencyTarget::new(
                 backend_semantic::vocabulary::RegistryEcosystem::Golang,
                 requirement.module.clone(),
@@ -1161,7 +1266,7 @@ impl EcosystemAdapter {
             rows.push(PackageDependencyRecord::new(
                 source.clone(),
                 target,
-                DependencyScope::Runtime,
+                scope,
                 false,
                 DependencyEvidence {
                     authority: DependencyAuthority::RegistryMetadata,
@@ -1171,7 +1276,8 @@ impl EcosystemAdapter {
             ));
         }
         Ok(DependencyFacts::Known(
-            admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+            admit_dependency_rows(collapse_dependency_rows(rows))
+                .map_err(|_| TransportFailure::Protocol)?,
         ))
     }
 
@@ -1572,7 +1678,7 @@ fn cargo_dependencies(
             Some("normal") | None => DependencyScope::Runtime,
             Some(_) => return Err(TransportFailure::Protocol),
         };
-        let optional = strict_bool(value, "optional")?.unwrap_or(false);
+        let optional = dependency_optional(scope, strict_bool(value, "optional")?.unwrap_or(false));
         rows.push(dependency_record(
             source,
             backend_semantic::vocabulary::RegistryEcosystem::Cargo,
@@ -1584,7 +1690,8 @@ fn cargo_dependencies(
         )?);
     }
     Ok(DependencyFacts::Known(
-        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        admit_dependency_rows(collapse_dependency_rows(rows))
+            .map_err(|_| TransportFailure::Protocol)?,
     ))
 }
 
@@ -1594,11 +1701,11 @@ fn npm_dependencies(
     provenance: &[u8],
 ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
     let mut rows = Vec::new();
-    for (field_name, scope, optional) in [
-        ("dependencies", DependencyScope::Runtime, false),
-        ("optionalDependencies", DependencyScope::Optional, true),
-        ("peerDependencies", DependencyScope::Peer, false),
-        ("devDependencies", DependencyScope::Development, true),
+    for (field_name, scope) in [
+        ("dependencies", DependencyScope::Runtime),
+        ("optionalDependencies", DependencyScope::Optional),
+        ("peerDependencies", DependencyScope::Peer),
+        ("devDependencies", DependencyScope::Development),
     ] {
         let Some(raw_values) = row.get(field_name) else {
             continue;
@@ -1611,6 +1718,7 @@ fn npm_dependencies(
                     .map_err(|_| TransportFailure::Bounds)?,
             });
         }
+        let declared_optional = matches!(scope, DependencyScope::Optional);
         for (name, requirement) in values {
             let requirement = requirement.as_str().ok_or(TransportFailure::Protocol)?;
             rows.push(dependency_record(
@@ -1619,7 +1727,7 @@ fn npm_dependencies(
                 name,
                 requirement,
                 scope,
-                optional,
+                dependency_optional(scope, declared_optional),
                 provenance,
             )?);
         }
@@ -1635,7 +1743,8 @@ fn npm_dependencies(
         ));
     }
     Ok(DependencyFacts::Known(
-        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        admit_dependency_rows(collapse_dependency_rows(rows))
+            .map_err(|_| TransportFailure::Protocol)?,
     ))
 }
 
@@ -1651,7 +1760,7 @@ fn nuget_dependencies(
         ));
     };
     let groups = groups.as_array().ok_or(TransportFailure::Protocol)?;
-    let mut rows = Vec::new();
+    let mut rows: Vec<(String, String)> = Vec::new();
     for group in groups {
         let Some(dependencies) = group.get("dependencies") else {
             // NuGet permits a target-framework group with no dependencies.
@@ -1669,7 +1778,26 @@ fn nuget_dependencies(
                 .get("range")
                 .and_then(Value::as_str)
                 .ok_or(TransportFailure::Protocol)?;
-            rows.push(dependency_record(
+            // NuGet repeats one package across target frameworks. The shared
+            // graph keeps a single edge per package id. The same range is one
+            // fact; two ranges cannot be collapsed without dropping a
+            // framework-specific requirement.
+            if let Some((_, existing)) = rows
+                .iter()
+                .find(|(seen, _)| seen.eq_ignore_ascii_case(name))
+            {
+                if existing != requirement {
+                    return Err(TransportFailure::Protocol);
+                }
+                continue;
+            }
+            rows.push((name.to_owned(), requirement.to_owned()));
+        }
+    }
+    let records = rows
+        .iter()
+        .map(|(name, requirement)| {
+            dependency_record(
                 source,
                 backend_semantic::vocabulary::RegistryEcosystem::Nuget,
                 name,
@@ -1677,12 +1805,491 @@ fn nuget_dependencies(
                 DependencyScope::Runtime,
                 false,
                 provenance,
-            )?);
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(DependencyFacts::Known(
+        admit_dependency_rows(records).map_err(|_| TransportFailure::Protocol)?,
+    ))
+}
+
+fn pypi_requirement_name(requirement: &str) -> Result<&str, TransportFailure> {
+    let end = requirement
+        .find(|character: char| {
+            character.is_whitespace()
+                || matches!(character, '[' | ';' | '<' | '>' | '=' | '!' | '~' | '@')
+        })
+        .unwrap_or(requirement.len());
+    let name = &requirement[..end];
+    if name.is_empty()
+        || !name
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphanumeric())
+        || !name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        })
+    {
+        return Err(TransportFailure::Protocol);
+    }
+    Ok(name)
+}
+
+fn pypi_requirement_is_extra(requirement: &str) -> bool {
+    let Some((_, marker)) = requirement.split_once(';') else {
+        return false;
+    };
+    let bytes = marker.as_bytes();
+    let mut index = 0;
+    let mut quoted = false;
+    let mut quote = b'"';
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if quoted {
+            if byte == quote {
+                quoted = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' || byte == b'\'' {
+            quoted = true;
+            quote = byte;
+            index += 1;
+            continue;
+        }
+        if marker[index..].starts_with("extra") {
+            let before = index == 0 || !is_marker_identifier_byte(bytes[index - 1]);
+            let after = index + 5;
+            let after_boundary = after >= bytes.len() || !is_marker_identifier_byte(bytes[after]);
+            if before && after_boundary {
+                let rest = marker[after..].trim_start();
+                if rest.starts_with("===")
+                    || rest.starts_with("==")
+                    || rest.starts_with("!=")
+                    || rest.starts_with("~=")
+                    || rest.starts_with("<=")
+                    || rest.starts_with(">=")
+                    || rest.starts_with('<')
+                    || rest.starts_with('>')
+                    || rest.starts_with("in")
+                    || rest.starts_with("not")
+                {
+                    return true;
+                }
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+fn is_marker_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+pub(crate) fn conan_dependency_facts(
+    source: &super::PackageCoordinate,
+    recipe: &str,
+    python: bool,
+    provenance: &[u8],
+) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, TransportFailure> {
+    let rows = if python {
+        match conan_python_requirements(recipe)? {
+            ConanPythonRequirements::Dynamic => {
+                return Ok(DependencyFacts::Unavailable(
+                    ProductText::new(
+                        "Conan Python recipe requirements are not literal declarations",
+                    )
+                    .map_err(|_| TransportFailure::Protocol)?,
+                ));
+            }
+            ConanPythonRequirements::Undeclared => {
+                return Ok(DependencyFacts::Unavailable(
+                    ProductText::new("Conan Python recipe does not declare literal requirements")
+                        .map_err(|_| TransportFailure::Protocol)?,
+                ));
+            }
+            ConanPythonRequirements::Known(rows) => rows,
+        }
+    } else {
+        conan_text_requirements(recipe)?
+    };
+    if rows.len() > super::MAX_NATIVE_RELEASES {
+        return Err(TransportFailure::Overrun {
+            measured: u64::try_from(rows.len()).map_err(|_| TransportFailure::Bounds)?,
+            limit: u64::try_from(super::MAX_NATIVE_RELEASES)
+                .map_err(|_| TransportFailure::Bounds)?,
+        });
+    }
+    let records = rows
+        .into_iter()
+        .map(|(name, requirement, scope)| {
+            dependency_record(
+                source,
+                backend_semantic::vocabulary::RegistryEcosystem::Cpp,
+                &name,
+                &requirement,
+                scope,
+                false,
+                provenance,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(DependencyFacts::Known(
+        admit_dependency_rows(collapse_dependency_rows(records))
+            .map_err(|_| TransportFailure::Protocol)?,
+    ))
+}
+
+enum ConanPythonRequirements {
+    Known(Vec<(String, String, DependencyScope)>),
+    Dynamic,
+    Undeclared,
+}
+
+fn conan_text_requirements(
+    recipe: &str,
+) -> Result<Vec<(String, String, DependencyScope)>, TransportFailure> {
+    let mut scope = None;
+    let mut rows = Vec::new();
+    for line in recipe.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.is_empty() {
+            continue;
+        }
+        if let Some(section) = code
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            scope = match section.trim() {
+                "requires" => Some(DependencyScope::Runtime),
+                "tool_requires" | "build_requires" => Some(DependencyScope::Build),
+                "test_requires" => Some(DependencyScope::Development),
+                _ => None,
+            };
+            continue;
+        }
+        let Some(scope) = scope else {
+            continue;
+        };
+        let token = code.split_whitespace().next().unwrap_or("");
+        let reference = token.split(':').next().unwrap_or(token);
+        let (name, requirement) = split_conan_reference(reference)?;
+        rows.push((name, requirement, scope));
+    }
+    Ok(rows)
+}
+
+fn conan_python_requirements(recipe: &str) -> Result<ConanPythonRequirements, TransportFailure> {
+    let bytes = recipe.as_bytes();
+    let mut index = 0usize;
+    let mut rows = Vec::new();
+    let mut dynamic = false;
+    let mut declared = false;
+    while index < bytes.len() {
+        if bytes[index] == b'#' {
+            index = skip_conan_line(bytes, index);
+            continue;
+        }
+        if bytes[index].is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+        if starts_with_bytes(bytes, index, b"\"\"\"") || starts_with_bytes(bytes, index, b"'''") {
+            let quote = if bytes[index] == b'"' {
+                b"\"\"\""
+            } else {
+                b"'''"
+            };
+            index = skip_conan_marker(bytes, index + 3, quote).unwrap_or(bytes.len());
+            continue;
+        }
+        if bytes[index] == b'"' || bytes[index] == b'\'' {
+            index = skip_conan_quoted(bytes, index).unwrap_or(bytes.len());
+            continue;
+        }
+        if is_conan_ident_start(bytes[index])
+            && (index == 0 || !is_conan_ident_continue(bytes[index - 1]))
+        {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_conan_ident_continue(bytes[index]) {
+                index += 1;
+            }
+            let word = &recipe[start..index];
+            if word == "self" {
+                let method_at = skip_conan_space(bytes, index);
+                if method_at < bytes.len() && bytes[method_at] == b'.' {
+                    let name_at = skip_conan_space(bytes, method_at + 1);
+                    let name_end = conan_ident_end(bytes, name_at);
+                    let method = &recipe[name_at..name_end];
+                    let scope = conan_python_scope(method);
+                    let paren_at = skip_conan_space(bytes, name_end);
+                    if let Some(scope) = scope
+                        && paren_at < bytes.len()
+                        && bytes[paren_at] == b'('
+                    {
+                        declared = true;
+                        match conan_python_call(recipe, paren_at)? {
+                            ConanCall::Literal(reference, next) => {
+                                let (name, requirement) = split_conan_reference(&reference)?;
+                                rows.push((name, requirement, scope));
+                                index = next;
+                                continue;
+                            }
+                            ConanCall::Dynamic(next) => {
+                                dynamic = true;
+                                index = next;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            if conan_python_scope(word).is_some() {
+                let eq_at = skip_conan_space(bytes, index);
+                if eq_at < bytes.len()
+                    && bytes[eq_at] == b'='
+                    && !starts_with_bytes(bytes, eq_at, b"==")
+                {
+                    declared = true;
+                    match conan_python_assignment(recipe, eq_at + 1)? {
+                        ConanAssignment::Literals(references, next) => {
+                            let scope = conan_python_scope(word).expect("scope");
+                            for reference in references {
+                                let (name, requirement) = split_conan_reference(&reference)?;
+                                rows.push((name, requirement, scope));
+                            }
+                            index = next;
+                            continue;
+                        }
+                        ConanAssignment::Dynamic(next) => {
+                            dynamic = true;
+                            index = next;
+                            continue;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        index += 1;
+    }
+    if dynamic {
+        return Ok(ConanPythonRequirements::Dynamic);
+    }
+    if !declared {
+        return Ok(ConanPythonRequirements::Undeclared);
+    }
+    Ok(ConanPythonRequirements::Known(rows))
+}
+
+enum ConanCall {
+    Literal(String, usize),
+    Dynamic(usize),
+}
+
+enum ConanAssignment {
+    Literals(Vec<String>, usize),
+    Dynamic(usize),
+}
+
+fn conan_python_scope(method: &str) -> Option<DependencyScope> {
+    match method {
+        "requires" => Some(DependencyScope::Runtime),
+        "tool_requires" | "build_requires" => Some(DependencyScope::Build),
+        "test_requires" => Some(DependencyScope::Development),
+        _ => None,
+    }
+}
+
+fn conan_python_call(recipe: &str, paren_at: usize) -> Result<ConanCall, TransportFailure> {
+    let bytes = recipe.as_bytes();
+    let value_at = skip_conan_space(bytes, paren_at + 1);
+    if value_at >= bytes.len() {
+        return Ok(ConanCall::Dynamic(bytes.len()));
+    }
+    if bytes[value_at] == b'"' || bytes[value_at] == b'\'' {
+        let Some((literal, next)) = read_conan_literal(recipe, value_at) else {
+            return Ok(ConanCall::Dynamic(bytes.len()));
+        };
+        let end = skip_conan_call(bytes, paren_at).unwrap_or(bytes.len());
+        let _ = next;
+        return Ok(ConanCall::Literal(literal, end));
+    }
+    Ok(ConanCall::Dynamic(
+        skip_conan_call(bytes, paren_at).unwrap_or(bytes.len()),
+    ))
+}
+
+fn conan_python_assignment(
+    recipe: &str,
+    after_eq: usize,
+) -> Result<ConanAssignment, TransportFailure> {
+    let bytes = recipe.as_bytes();
+    let value_at = skip_conan_space(bytes, after_eq);
+    if value_at >= bytes.len() {
+        return Ok(ConanAssignment::Dynamic(bytes.len()));
+    }
+    if bytes[value_at] == b'"' || bytes[value_at] == b'\'' {
+        let Some((literal, next)) = read_conan_literal(recipe, value_at) else {
+            return Ok(ConanAssignment::Dynamic(bytes.len()));
+        };
+        return Ok(ConanAssignment::Literals(vec![literal], next));
+    }
+    if bytes[value_at] == b'(' {
+        let mut references = Vec::new();
+        let mut index = value_at + 1;
+        loop {
+            index = skip_conan_space(bytes, index);
+            if index >= bytes.len() {
+                return Ok(ConanAssignment::Dynamic(bytes.len()));
+            }
+            if bytes[index] == b')' {
+                return Ok(ConanAssignment::Literals(references, index + 1));
+            }
+            if bytes[index] == b',' {
+                index += 1;
+                continue;
+            }
+            if bytes[index] == b'"' || bytes[index] == b'\'' {
+                let Some((literal, next)) = read_conan_literal(recipe, index) else {
+                    return Ok(ConanAssignment::Dynamic(bytes.len()));
+                };
+                references.push(literal);
+                index = next;
+                continue;
+            }
+            return Ok(ConanAssignment::Dynamic(
+                skip_conan_call(bytes, value_at).unwrap_or(bytes.len()),
+            ));
         }
     }
-    Ok(DependencyFacts::Known(
-        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
-    ))
+    Ok(ConanAssignment::Dynamic(skip_conan_line(bytes, value_at)))
+}
+
+fn split_conan_reference(reference: &str) -> Result<(String, String), TransportFailure> {
+    let Some((name, requirement)) = reference.split_once('/') else {
+        return Err(TransportFailure::Protocol);
+    };
+    if name.is_empty()
+        || requirement.is_empty()
+        || requirement.chars().any(char::is_whitespace)
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'.' | b'-'))
+    {
+        return Err(TransportFailure::Protocol);
+    }
+    Ok((name.to_owned(), requirement.to_owned()))
+}
+
+fn is_conan_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_conan_ident_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn conan_ident_end(bytes: &[u8], start: usize) -> usize {
+    let mut index = start;
+    while index < bytes.len() && is_conan_ident_continue(bytes[index]) {
+        index += 1;
+    }
+    index
+}
+
+fn skip_conan_space(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    index
+}
+
+fn skip_conan_line(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && bytes[index] != b'\n' {
+        index += 1;
+    }
+    index
+}
+
+fn starts_with_bytes(bytes: &[u8], index: usize, marker: &[u8]) -> bool {
+    bytes.get(index..index + marker.len()) == Some(marker)
+}
+
+fn skip_conan_marker(bytes: &[u8], mut index: usize, marker: &[u8]) -> Option<usize> {
+    while index + marker.len() <= bytes.len() {
+        if starts_with_bytes(bytes, index, marker) {
+            return Some(index + marker.len());
+        }
+        index += 1;
+    }
+    None
+}
+
+fn skip_conan_quoted(bytes: &[u8], start: usize) -> Option<usize> {
+    let quote = bytes[start];
+    let mut index = start + 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == quote {
+            return Some(index + 1);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn read_conan_literal(recipe: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = recipe.as_bytes();
+    let quote = bytes[start];
+    let mut index = start + 1;
+    let mut literal = String::new();
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            if index + 1 >= bytes.len() {
+                return None;
+            }
+            literal.push(char::from(bytes[index + 1]));
+            index += 2;
+            continue;
+        }
+        if bytes[index] == quote {
+            return Some((literal, index + 1));
+        }
+        if bytes[index] == b'\n' {
+            return None;
+        }
+        literal.push(char::from(bytes[index]));
+        index += 1;
+    }
+    None
+}
+
+fn skip_conan_call(bytes: &[u8], paren_at: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut index = paren_at;
+    while index < bytes.len() {
+        if bytes[index] == b'"' || bytes[index] == b'\'' {
+            index = skip_conan_quoted(bytes, index)?;
+            continue;
+        }
+        if bytes[index] == b'(' {
+            depth += 1;
+        } else if bytes[index] == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index + 1);
+            }
+        }
+        index += 1;
+    }
+    None
 }
 
 fn dependency_record(
@@ -2246,4 +2853,95 @@ fn optional_text(node: Option<&XmlNode>) -> Option<String> {
     node.map(XmlNode::text_value)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::PackageCoordinate;
+    use super::{TransportFailure, cargo_dependencies, npm_dependencies};
+    use backend_library::{DependencyFacts, DependencyScope};
+
+    fn cargo_coordinate() -> PackageCoordinate {
+        PackageCoordinate::parse("pkg:cargo/demo@1.0.0").expect("coordinate")
+    }
+
+    fn npm_coordinate() -> PackageCoordinate {
+        PackageCoordinate::parse("pkg:npm/demo@1.0.0").expect("coordinate")
+    }
+
+    #[test]
+    fn cargo_dev_and_normal_same_name_stays_runtime() {
+        let row = serde_json::json!({
+            "deps": [
+                {"name": "serde", "req": "^1", "kind": "dev"},
+                {"name": "serde", "req": "^1", "kind": "normal"},
+            ]
+        });
+        let facts = cargo_dependencies(&cargo_coordinate(), &row, b"provenance").expect("decode");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "serde");
+        assert_eq!(rows[0].scope, DependencyScope::Runtime);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn cargo_dev_only_stays_development_and_optional_false() {
+        let row = serde_json::json!({
+            "deps": [
+                {"name": "serde", "req": "^1", "kind": "dev"},
+            ]
+        });
+        let facts = cargo_dependencies(&cargo_coordinate(), &row, b"provenance").expect("decode");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].scope, DependencyScope::Development);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn cargo_unknown_kind_returns_protocol_error() {
+        let row = serde_json::json!({
+            "deps": [{"name": "serde", "req": "^1", "kind": "mystery"}]
+        });
+        assert!(matches!(
+            cargo_dependencies(&cargo_coordinate(), &row, b"provenance"),
+            Err(TransportFailure::Protocol)
+        ));
+    }
+
+    #[test]
+    fn npm_dev_dependencies_vitest_is_development_optional_false() {
+        let row = serde_json::json!({
+            "devDependencies": {"vitest": "^1.0.0"}
+        });
+        let facts = npm_dependencies(&npm_coordinate(), &row, b"provenance").expect("decode");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "vitest");
+        assert_eq!(rows[0].scope, DependencyScope::Development);
+        assert!(!rows[0].optional);
+    }
+
+    #[test]
+    fn npm_name_in_dependencies_and_dev_dependencies_stays_runtime() {
+        let row = serde_json::json!({
+            "dependencies": {"lodash": "^4.0.0"},
+            "devDependencies": {"lodash": "^4.0.0"},
+        });
+        let facts = npm_dependencies(&npm_coordinate(), &row, b"provenance").expect("decode");
+        let DependencyFacts::Known(rows) = facts else {
+            panic!("expected known dependency facts");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "lodash");
+        assert_eq!(rows[0].scope, DependencyScope::Runtime);
+        assert!(!rows[0].optional);
+    }
 }

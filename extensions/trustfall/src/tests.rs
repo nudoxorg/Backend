@@ -291,6 +291,36 @@ fn compiler_external_edge_is_typed_scoped_and_queryable() {
     assert_ne!(first.row_id(), second.row_id());
 }
 
+#[test]
+fn referenced_by_is_the_reverse_of_related() {
+    let package = backend_library::package_key("demo");
+    let corpus =
+        compiler_external_corpus(package, [7; 32], [7; 32]).expect("same-image compiler edge");
+    let (cancellation, _) = SemanticQueryCancellation::new();
+    let request = SemanticQueryRequest::admit_page(
+        corpus,
+        "{ ExternalTarget { name @filter(op: \"=\", value: [\"$selected\"]) referencedBy { name @output } } }",
+        BTreeMap::from([("selected".to_owned(), "external target".into())]),
+        0,
+        8,
+        cancellation,
+    )
+    .expect("impact query");
+    let events = futures_executor::block_on(
+        execute_semantic_query(request)
+            .expect("Trustfall query")
+            .collect::<Vec<_>>(),
+    );
+    let row = events
+        .iter()
+        .find_map(|event| match event {
+            SemanticQueryEvent::Row(row) => Some(row.row()),
+            SemanticQueryEvent::Terminal(_) => None,
+        })
+        .expect("impact row");
+    assert_eq!(row.get("name"), Some(&"source".into()));
+}
+
 fn structural_facts(count: usize) -> Vec<SemanticQueryFact> {
     let package = backend_library::package_key("large-graph");
     let project = backend_library::RowId::Package(package).stable_key();

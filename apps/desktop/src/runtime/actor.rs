@@ -1,6 +1,7 @@
 //! Background engine/client actor.
 
 use super::mailbox::{CoalesceKey, Coalescible, CoalescingMailbox, PushResult};
+use super::wake::{WakeReceiver, WakeSender, wake_channel};
 use crate::core::{ErrorValue, LocalProjectId, VersionedRoot};
 use crate::model::local_package::{LocalPackage, LocalPackageLoader};
 use crate::model::snapshot::{DeltaId, ObjectId, PackageSummary, ProjectState};
@@ -75,7 +76,7 @@ pub enum EngineRequest {
         cancel: CancellationToken,
     },
     /// Submit one project to the canonical service index command while the
-    /// shared ProjectIngest receipt transport is unavailable.
+    /// shared `ProjectIngest` receipt transport is unavailable.
     IndexProject {
         /// Request identity retained until the owner replies.
         request: RequestId,
@@ -307,6 +308,9 @@ impl Coalescible for EngineEvent {
 /// Synchronous client implementation executed only on the worker thread.
 pub trait EngineClient: Send + 'static {
     /// Executes one typed request. This method may block the worker, never the UI.
+    ///
+    /// # Errors
+    /// Returns the typed [`EngineFault`] the producer or transport reported.
     fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault>;
 }
 
@@ -317,6 +321,10 @@ pub struct EngineActor {
     events: CoalescingMailbox<EngineEvent>,
     join: Option<JoinHandle<()>>,
     local_join: Option<JoinHandle<()>>,
+    /// Wakes the UI after every delivered event; closed on shutdown.
+    wake: WakeSender,
+    /// The UI half, taken once by the entity that drains events.
+    wake_receiver: Option<WakeReceiver>,
 }
 
 /// Failure to create the dedicated worker thread.
@@ -327,7 +335,12 @@ pub struct ActorStartError {
 }
 
 impl ActorStartError {
-    fn from_spawn(error: std::io::Error) -> Self {
+    /// Bounds one thread-spawn failure into a typed error.
+    pub(crate) fn from_spawn_error(error: &std::io::Error) -> Self {
+        Self::from_spawn(error)
+    }
+
+    fn from_spawn(error: &std::io::Error) -> Self {
         let mut message = error.to_string();
         if message.len() > 256 {
             let mut end = 256;
@@ -366,6 +379,9 @@ impl std::fmt::Debug for EngineActor {
 
 impl EngineActor {
     /// Starts a worker with bounded request and result mailboxes.
+    ///
+    /// # Errors
+    /// Returns [`ActorStartError`] when a worker thread cannot start.
     pub fn start(client: impl EngineClient, capacity: usize) -> Result<Self, ActorStartError> {
         Self::start_with_loader(client, capacity, LocalPackageLoader::default())
     }
@@ -385,28 +401,35 @@ impl EngineActor {
         let mailbox = CoalescingMailbox::new(capacity);
         let local = CoalescingMailbox::new(capacity);
         let events = CoalescingMailbox::new(capacity);
+        let (wake, wake_receiver) = wake_channel();
         let worker_mailbox = mailbox.clone();
         let worker_events = events.clone();
+        let worker_wake = wake.clone();
         let join = thread::Builder::new()
             .name("nudox-engine-actor".to_owned())
-            .spawn(move || run_actor(Box::new(client), worker_mailbox, worker_events))
-            .map_err(ActorStartError::from_spawn)?;
+            .spawn(move || {
+                run_actor(Box::new(client), &worker_mailbox, &worker_events, &worker_wake);
+            })
+            .map_err(|error| ActorStartError::from_spawn(&error))?;
         let local_mailbox = local.clone();
         let local_events = events.clone();
+        let local_wake = wake.clone();
         let local_join = thread::Builder::new()
             .name("nudox-local-reads".to_owned())
-            .spawn(move || run_local_reads(&loader, &local_mailbox, &local_events));
+            .spawn(move || run_local_reads(&loader, &local_mailbox, &local_events, &local_wake));
         let mut actor = Self {
             mailbox,
             local,
             events,
             join: Some(join),
             local_join: None,
+            wake,
+            wake_receiver: Some(wake_receiver),
         };
         match local_join {
             Ok(join) => actor.local_join = Some(join),
             // Dropping the actor closes and joins the producer lane.
-            Err(error) => return Err(ActorStartError::from_spawn(error)),
+            Err(error) => return Err(ActorStartError::from_spawn(&error)),
         }
         Ok(actor)
     }
@@ -423,11 +446,13 @@ impl EngineActor {
     }
 
     /// Submits without waiting for worker capacity.
+    #[must_use]
     pub fn try_submit(&self, request: EngineRequest) -> PushResult<EngineRequest> {
         self.try_submit_coalesced(request)
     }
 
     /// Submits using the request's coalescing key.
+    #[must_use]
     pub fn try_submit_coalesced(&self, request: EngineRequest) -> PushResult<EngineRequest> {
         let key = request.coalesce_key();
         let result = self.mailbox.try_push(request, key);
@@ -443,6 +468,7 @@ impl EngineActor {
     }
 
     /// Drains currently available events without waiting.
+    #[must_use]
     pub fn drain_events(&self) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         while let Some(event) = self.events.try_recv() {
@@ -455,6 +481,13 @@ impl EngineActor {
     #[must_use]
     pub fn queued_events(&self) -> usize {
         self.events.len()
+    }
+
+    /// Takes the UI half of the event wake signal. The owner awaits it in one
+    /// task and drains [`Self::drain_events`] when it resolves, so no frame is
+    /// requested while work is merely in flight.
+    pub fn take_wake(&mut self) -> Option<WakeReceiver> {
+        self.wake_receiver.take()
     }
 
     /// Requests worker shutdown and joins it from the owning shutdown phase.
@@ -471,6 +504,7 @@ impl EngineActor {
         self.mailbox.close();
         self.local.close();
         self.events.close();
+        self.wake.close();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -488,8 +522,9 @@ impl Drop for EngineActor {
 
 fn run_actor(
     mut client: Box<dyn EngineClient>,
-    mailbox: CoalescingMailbox<EngineRequest>,
-    events: CoalescingMailbox<EngineEvent>,
+    mailbox: &CoalescingMailbox<EngineRequest>,
+    events: &CoalescingMailbox<EngineEvent>,
+    wake: &WakeSender,
 ) {
     let mut newest: Option<VersionedRoot> = None;
     while let Some(request) = mailbox.recv() {
@@ -509,6 +544,7 @@ fn run_actor(
             ) {
                 break;
             }
+            wake.wake();
             continue;
         }
         if !index_lane && newest.is_some_and(|known| basis.is_older_authority(known)) {
@@ -523,6 +559,7 @@ fn run_actor(
             ) {
                 break;
             }
+            wake.wake();
             continue;
         }
         if !index_lane && newest.is_none_or(|known| known.is_older_authority(basis)) {
@@ -546,6 +583,7 @@ fn run_actor(
         if !events.push_wait(event, key) {
             break;
         }
+        wake.wake();
     }
 }
 
@@ -557,6 +595,7 @@ fn run_local_reads(
     loader: &LocalPackageLoader,
     mailbox: &CoalescingMailbox<LocalRead>,
     events: &CoalescingMailbox<EngineEvent>,
+    wake: &WakeSender,
 ) {
     while let Some(read) = mailbox.recv() {
         let lane = read.coalesce_key();
@@ -583,6 +622,7 @@ fn run_local_reads(
         if !events.push_wait(event, lane) {
             break;
         }
+        wake.wake();
     }
 }
 
@@ -601,11 +641,11 @@ mod tests {
 
     #[test]
     fn actor_spawn_failure_is_reported_as_a_typed_bounded_error() {
-        let error = ActorStartError::from_spawn(std::io::Error::other("thread spawn failed"));
+        let error = ActorStartError::from_spawn(&std::io::Error::other("thread spawn failed"));
         assert_eq!(error.message(), "thread spawn failed");
 
         let long = "x".repeat(1_024);
-        let bounded = ActorStartError::from_spawn(std::io::Error::other(long));
+        let bounded = ActorStartError::from_spawn(&std::io::Error::other(long));
         assert!(bounded.message().len() <= 256);
     }
 }

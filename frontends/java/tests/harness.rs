@@ -219,6 +219,63 @@ fn legacy_yield_fails_release21_then_java8_alternate_succeeds_with_exact_image()
     assert_eq!(image.source_digest(), expected);
 }
 
+/// A source file that imports a package not on the source or class path must
+/// fail as an unresolved dependency graph. `javac` still runs at full
+/// strictness — the package is not sealed with the import erased.
+#[test]
+fn a_missing_import_is_dependencies_unresolved_not_a_sealed_package() {
+    let (jdk, harness) = authority();
+    let root = std::env::temp_dir().join(format!(
+        "nudox-java-missing-dep-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    let src_dir = root.join("com/example/app");
+    fs::create_dir_all(&src_dir).expect("tmpdir");
+    fs::write(
+        src_dir.join("App.java"),
+        r#"package com.example.app;
+import com.google.common.base.Preconditions;
+public final class App {
+    public String greet(String name) { return Preconditions.checkNotNull(name); }
+}
+"#,
+    )
+    .expect("source");
+    let source = b"package com.example.app;\nimport com.google.common.base.Preconditions;\npublic final class App {\n    public String greet(String name) { return Preconditions.checkNotNull(name); }\n}\n";
+    let sources = [JavaSource {
+        name: Path::new("com/example/app/App.java"),
+        bytes: source,
+    }];
+    let request = HarnessRequest {
+        sources: &sources,
+        classpath: &[],
+        release: JavaRelease::Java21,
+    };
+    let mut output = Vec::new();
+    let error = harness
+        .image(&jdk, request, &mut output)
+        .expect_err("a missing guava import must not seal");
+    let _ = fs::remove_dir_all(&root);
+    let HarnessError::UnresolvedDependencies {
+        packages, stderr, ..
+    } = error
+    else {
+        panic!("missing dependency packages must be UnresolvedDependencies, not a weakened compile");
+    };
+    assert!(
+        packages.contains("com.google.common.base"),
+        "the missing package must be named: {packages}"
+    );
+    assert!(
+        stderr.contains("not weakened"),
+        "the error must say the compiler was not relaxed: {stderr}"
+    );
+}
+
 #[test]
 fn missing_dependency_with_yield_alternates_retains_both_compilation_attempts() {
     let (jdk, harness) = authority();

@@ -431,16 +431,48 @@ impl ConfiguredQdrant {
             return Err(RemoteConfigError::IncompleteCoverage);
         }
         let envelope = ProjectionEnvelope::for_recipe(self.recipe)?.admit(documents.len())?;
+        let writes = documents
+            .iter()
+            .map(|document| document.write)
+            .collect::<Vec<_>>();
+        let rows = documents
+            .iter()
+            .map(|document| document.row)
+            .collect::<Vec<_>>();
         let vectors = self.admit_documents(coordinator, documents)?;
         let (binding, facts) =
             vector_facts(coordinator, coverage, self.recipe, &vectors, envelope)?;
+        let mut residences = Vec::with_capacity(rows.len());
+        let mut seen = BTreeSet::new();
+        for row in rows {
+            let residence = qdrant::PointResidence::for_row(
+                coordinator.corpus.workspace,
+                binding.recipe,
+                &row.stable_key(),
+            )
+            .map_err(RemoteConfigError::Provider)?;
+            if !seen.insert(residence) {
+                return Err(RemoteConfigError::StaleRow);
+            }
+            residences.push(residence);
+        }
+        let resident = residences
+            .iter()
+            .zip(vectors.iter())
+            .zip(writes)
+            .map(|((residence, document), write)| qdrant::ResidentDocument {
+                residence: *residence,
+                write,
+                document,
+            })
+            .collect::<Vec<_>>();
         let base = qdrant::AnnBase::from_facts(&facts, qdrant::SearchQuality::Exact, envelope.0)
             .map_err(RemoteConfigError::Extension)?;
         self.client
             .ensure_collection()
             .map_err(RemoteConfigError::Provider)?;
         self.client
-            .upsert(binding, &vectors)
+            .upsert_resident(binding, &resident)
             .map_err(RemoteConfigError::Provider)?;
         let source = self
             .client
@@ -452,11 +484,7 @@ impl ConfiguredQdrant {
         Ok(ActiveQdrant {
             recipe: self.recipe,
             index,
-            ids: vectors
-                .iter()
-                .map(|vector| vector.point().id())
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
+            residences: residences.into_boxed_slice(),
         })
     }
 
@@ -488,12 +516,25 @@ impl ConfiguredQdrant {
     }
 
     fn retire_pending(&mut self) -> Result<(), RemoteConfigError> {
-        if let Some(retired) = self.retired.as_ref() {
+        let Some(retired) = self.retired.as_ref() else {
+            return Ok(());
+        };
+        let live = self
+            .active
+            .as_ref()
+            .map(|active| active.residences.iter().copied().collect::<BTreeSet<_>>());
+        let stale = retired
+            .residences
+            .iter()
+            .copied()
+            .filter(|residence| live.as_ref().is_none_or(|live| !live.contains(residence)))
+            .collect::<Vec<_>>();
+        if !stale.is_empty() {
             self.client
-                .delete(retired.binding, &retired.ids)
+                .delete_residences(retired.workspace, retired.recipe, &stale)
                 .map_err(RemoteConfigError::Provider)?;
-            self.retired = None;
         }
+        self.retired = None;
         Ok(())
     }
 
@@ -528,9 +569,15 @@ impl ConfiguredQdrant {
                 pending.insert(identity, Arc::clone(&coordinates));
                 coordinates
             };
+            let write = if self.document_embeddings.contains_key(&identity) {
+                qdrant::CoordinateWrite::Hold
+            } else {
+                qdrant::CoordinateWrite::Replace
+            };
             embedded.push(QdrantDocument {
                 row: document.row,
                 coordinates,
+                write,
             });
         }
         self.document_embeddings
@@ -944,13 +991,15 @@ pub struct QdrantDocument {
     pub row: RowId,
     /// Finite coordinates produced under the configured document treatment.
     pub coordinates: Arc<[f32]>,
+    /// Whether these coordinates may replace a vector already stored for the row.
+    pub write: qdrant::CoordinateWrite,
 }
 
 /// Verified live Qdrant source paired with exact local vector facts.
 pub struct ActiveQdrant {
     recipe: qdrant::EmbeddingRecipe,
     index: qdrant::VectorIndex<qdrant::QdrantHttpSource>,
-    ids: Box<[qdrant::CandidateId]>,
+    residences: Box<[qdrant::PointResidence]>,
 }
 
 impl ActiveQdrant {
@@ -963,9 +1012,11 @@ impl ActiveQdrant {
     }
 
     fn into_retired(self) -> RetiredQdrant {
+        let binding = self.index.binding();
         RetiredQdrant {
-            binding: self.index.binding(),
-            ids: self.ids,
+            workspace: binding.workspace,
+            recipe: binding.recipe,
+            residences: self.residences,
         }
     }
 
@@ -990,8 +1041,9 @@ impl ActiveQdrant {
 }
 
 struct RetiredQdrant {
-    binding: qdrant::Binding,
-    ids: Box<[qdrant::CandidateId]>,
+    workspace: backend_version::WorkspaceRoot,
+    recipe: qdrant::Recipe,
+    residences: Box<[qdrant::PointResidence]>,
 }
 
 fn optional(name: &'static str) -> Result<Option<String>, RemoteConfigError> {
@@ -1272,6 +1324,7 @@ mod tests {
             .map(|document| QdrantDocument {
                 row: document.row,
                 coordinates: Arc::from([1.0, 0.0]),
+                write: qdrant::CoordinateWrite::Hold,
             })
             .collect::<Vec<_>>();
         let (endpoint, server) = qdrant_fixture(documents.len(), target_index);
@@ -1348,7 +1401,339 @@ mod tests {
         );
         assert_eq!(stale.lanes[2].freshness, Freshness::Stale);
         assert_eq!(stale.lanes[2].coverage, CoverageBasis::Unavailable);
-        server.join().expect("fixture server");
+        let lines = server.join().expect("fixture server");
+        assert_eq!(
+            request_kinds(&lines),
+            ["get", "get", "retrieve", "put", "count", "query", "query"]
+        );
+    }
+
+    #[test]
+    fn http_projection_rejects_a_short_point_count() {
+        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
+        let (endpoint, server) = serve_projection(ProjectionScript {
+            requests: 5,
+            expected_points: documents.len(),
+            selected_point: 0,
+            count_offset: -1,
+            swap_query_id: false,
+            corrupt_coordinate: false,
+        });
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: None,
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        let expected_points = u64::try_from(documents.len()).expect("point count");
+        let error = match configured.activate(&coordinator, coverage, documents) {
+            Ok(_active) => panic!("short count must not activate"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            RemoteConfigError::Provider(qdrant::HttpProviderError::IncompleteProjection {
+                expected,
+                observed,
+            }) if expected == expected_points && observed == expected_points - 1
+        ));
+        let lines = server.join().expect("fixture server");
+        assert_eq!(
+            request_kinds(&lines),
+            ["get", "get", "retrieve", "put", "count"]
+        );
+    }
+
+    #[test]
+    fn http_query_rejects_a_payload_that_names_a_different_point() {
+        let (coordinator, coverage, documents, target_index, recipe) = http_projection_inputs();
+        let (endpoint, server) = serve_projection(ProjectionScript {
+            requests: 6,
+            expected_points: documents.len(),
+            selected_point: target_index,
+            count_offset: 0,
+            swap_query_id: true,
+            corrupt_coordinate: false,
+        });
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: None,
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        let active = configured
+            .activate(&coordinator, coverage, documents)
+            .expect("count still matches");
+        let query = qdrant::QueryVector::new(recipe, vec![1.0, 0.0]).expect("query vector");
+        let error = active
+            .index
+            .search_embedding(&query, 4, qdrant::Limits::default())
+            .expect_err("swapped id");
+        assert!(matches!(
+            error,
+            qdrant::AdapterError::Provider(qdrant::HttpProviderError::BindingMismatch)
+        ));
+        let lines = server.join().expect("fixture server");
+        assert_eq!(
+            request_kinds(&lines),
+            ["get", "get", "retrieve", "put", "count", "query"]
+        );
+    }
+
+    #[test]
+    fn second_http_activation_skips_the_put_when_coordinates_match() {
+        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
+        let (endpoint, server) = serve_projection(ProjectionScript {
+            requests: 9,
+            expected_points: documents.len(),
+            selected_point: 0,
+            count_offset: 0,
+            swap_query_id: false,
+            corrupt_coordinate: false,
+        });
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: None,
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        configured
+            .activate(&coordinator, coverage, documents.clone())
+            .expect("first projection");
+        configured
+            .activate(&coordinator, coverage, documents)
+            .expect("unchanged projection");
+        let lines = server.join().expect("fixture server");
+        assert_eq!(
+            request_kinds(&lines),
+            [
+                "get", "get", "retrieve", "put", "count", "get", "get", "retrieve", "count"
+            ]
+        );
+    }
+
+    #[test]
+    fn second_http_activation_rejects_a_rewritten_coordinate() {
+        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
+        let (endpoint, server) = serve_projection(ProjectionScript {
+            requests: 8,
+            expected_points: documents.len(),
+            selected_point: 0,
+            count_offset: 0,
+            swap_query_id: false,
+            corrupt_coordinate: true,
+        });
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: None,
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        configured
+            .activate(&coordinator, coverage, documents.clone())
+            .expect("first projection");
+        let error = match configured.activate(&coordinator, coverage, documents) {
+            Ok(_active) => panic!("rewritten coordinate must not activate"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            RemoteConfigError::Provider(qdrant::HttpProviderError::ImmutableVector)
+        ));
+        let lines = server.join().expect("fixture server");
+        assert_eq!(
+            request_kinds(&lines),
+            [
+                "get", "get", "retrieve", "put", "count", "get", "get", "retrieve"
+            ]
+        );
+    }
+
+    #[test]
+    fn adding_a_row_rebinds_resident_payloads_and_writes_one_vector() {
+        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
+        let (workspace, view) = super::super::tests::selected_view();
+        let kept = documents.len();
+        let (endpoint, server) = serve_resident(11);
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: None,
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        configured
+            .activate(&coordinator, coverage, documents.clone())
+            .expect("first projection");
+        let extra_id = RowId::Symbol(backend_engine::symbol_key("next::generation"));
+        let mut next_rows = view.rows().to_vec();
+        next_rows.push(Row::new(extra_id, view.basis(), "next generation"));
+        let next_view = backend_engine::ViewRoot::new_checked(
+            view.recipe(),
+            view.basis(),
+            view.frontier(),
+            next_rows,
+            view.coverage().to_vec(),
+            view.capability().expect("view capability"),
+        )
+        .expect("next view");
+        let next_evidence = super::super::tests::semantic_evidence(workspace, &next_view);
+        let next = QueryCoordinator::new(workspace, next_view, coverage, next_evidence)
+            .expect("next coordinator");
+        let mut next_documents = documents;
+        next_documents.push(QdrantDocument {
+            row: extra_id,
+            coordinates: Arc::from([0.0, 1.0]),
+            write: qdrant::CoordinateWrite::Hold,
+        });
+        configured
+            .activate(&next, coverage, next_documents)
+            .expect("rebound projection");
+        let events = server.join().expect("fixture server");
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            [
+                "get", "get", "retrieve", "put", "count", "get", "get", "retrieve", "put",
+                "payload", "count"
+            ]
+        );
+        assert_eq!(events[3].points, kept);
+        assert!(events[3].carries_vector);
+        assert!(events[3].bytes > 0);
+        assert_eq!(events[8].points, 1);
+        assert!(events[8].carries_vector);
+        assert!(events[8].bytes > 0);
+        assert!(events[8].bytes < events[3].bytes);
+        assert_eq!(events[9].points, kept);
+        assert!(!events[9].carries_vector);
+        assert!(events[9].bytes > 0);
+    }
+
+    #[test]
+    fn dropping_a_row_deletes_only_that_residence() {
+        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
+        assert!(
+            documents.len() > 1,
+            "the fixture view has more than one document"
+        );
+        let (workspace, view) = super::super::tests::selected_view();
+        let (endpoint, server) = serve_resident(11);
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let mut configured = ConfiguredQdrant {
+            client,
+            recipe,
+            producer: None,
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            active: None,
+            retired: None,
+        };
+        let first = configured
+            .activate(&coordinator, coverage, documents.clone())
+            .expect("first projection");
+        let removed = documents.last().expect("document").row;
+        let kept_documents = documents
+            .iter()
+            .filter(|document| document.row != removed)
+            .cloned()
+            .collect::<Vec<_>>();
+        let kept_rows = view
+            .rows()
+            .iter()
+            .filter(|row| row.id != removed)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next_view = backend_engine::ViewRoot::new_checked(
+            view.recipe(),
+            view.basis(),
+            view.frontier(),
+            kept_rows,
+            view.coverage().to_vec(),
+            view.capability().expect("view capability"),
+        )
+        .expect("smaller view");
+        let next_evidence = super::super::tests::semantic_evidence(workspace, &next_view);
+        let next = QueryCoordinator::new(workspace, next_view, coverage, next_evidence)
+            .expect("next coordinator");
+        let second = configured
+            .activate(&next, coverage, kept_documents)
+            .expect("rebound survivors");
+        configured.retired = Some(first.into_retired());
+        configured.active = Some(second);
+        configured.retire_pending().expect("delete the dropped row");
+        let events = server.join().expect("fixture server");
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            [
+                "get", "get", "retrieve", "put", "count", "get", "get", "retrieve", "payload",
+                "count", "delete"
+            ]
+        );
+        assert_eq!(events[8].points, documents.len() - 1);
+        assert!(!events[8].carries_vector);
+        assert!(events[8].bytes > 0);
+        assert_eq!(events[10].points, 1);
+        assert!(events[10].bytes > 0);
+    }
+
+    fn http_projection_inputs() -> (
+        QueryCoordinator,
+        CoverageWitness,
+        Vec<QdrantDocument>,
+        usize,
+        qdrant::EmbeddingRecipe,
+    ) {
+        let (workspace, view) = super::super::tests::selected_view();
+        let coverage = crate::builtin::admitted_coverage().expect("coverage");
+        let evidence = super::super::tests::semantic_evidence(workspace, &view);
+        let coordinator =
+            QueryCoordinator::new(workspace, view, coverage, evidence).expect("coordinator");
+        let target_index = coordinator
+            .semantic_documents()
+            .iter()
+            .position(|document| document.text.contains("semantic-only"))
+            .expect("semantic document");
+        let documents = coordinator
+            .semantic_documents()
+            .iter()
+            .map(|document| QdrantDocument {
+                row: document.row,
+                coordinates: Arc::from([1.0, 0.0]),
+                write: qdrant::CoordinateWrite::Hold,
+            })
+            .collect::<Vec<_>>();
+        (
+            coordinator,
+            coverage,
+            documents,
+            target_index,
+            test_recipe(),
+        )
     }
 
     #[test]
@@ -1379,13 +1764,9 @@ mod tests {
             .row;
         let candidate = coordinator.semantic_candidate(row).expect("candidate");
         let recipe = test_recipe();
-        let vector = qdrant::DocumentVector::new(recipe, candidate, vec![1.0, 0.0])
-            .expect("document vector");
-        let envelope = ProjectionEnvelope::for_recipe(recipe)
-            .and_then(|envelope| envelope.admit(1))
-            .expect("projection envelope");
-        let (binding, _) = vector_facts(&coordinator, coverage, recipe, &[vector], envelope)
-            .expect("vector binding");
+        let residence =
+            qdrant::PointResidence::for_row(workspace, recipe.version(), &row.stable_key())
+                .expect("residence");
         let client =
             qdrant::QdrantHttpClient::new(test_transport(format!("http://{address}")), recipe)
                 .expect("HTTP client");
@@ -1397,8 +1778,9 @@ mod tests {
             document_embeddings: BTreeMap::new(),
             active: None,
             retired: Some(RetiredQdrant {
-                binding,
-                ids: vec![candidate].into_boxed_slice(),
+                workspace,
+                recipe: recipe.version(),
+                residences: vec![residence].into_boxed_slice(),
             }),
         };
 
@@ -1470,53 +1852,237 @@ mod tests {
         }
     }
 
-    fn qdrant_fixture(
-        expected_points: usize,
-        selected_point: usize,
-    ) -> (String, thread::JoinHandle<()>) {
+    struct ResidentEvent {
+        kind: &'static str,
+        points: usize,
+        bytes: usize,
+        carries_vector: bool,
+    }
+
+    fn serve_resident(requests: usize) -> (String, thread::JoinHandle<Vec<ResidentEvent>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
         let address = listener.local_addr().expect("fixture address");
         let metadata =
             r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
         let server = thread::spawn(move || {
-            let mut projected_point = None;
-            for request_index in 0..6 {
+            let mut stored = std::collections::HashMap::<String, serde_json::Value>::new();
+            let mut events = Vec::with_capacity(requests);
+            for _ in 0..requests {
                 let (mut stream, _) = listener.accept().expect("fixture connection");
                 let request = read_request(&mut stream);
-                if request_index == 2 {
-                    let body_start = request
-                        .windows(4)
-                        .position(|window| window == b"\r\n\r\n")
-                        .map(|offset| offset + 4)
-                        .expect("upsert body separator");
+                let header_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .expect("HTTP header");
+                let header = std::str::from_utf8(&request[..header_end]).expect("HTTP header");
+                let first = header.lines().next().expect("request line");
+                let body = &request[header_end + 4..];
+                let carries_vector = body.windows(8).any(|window| window == b"\"vector\"");
+                let (kind, points, response) = if first.starts_with("GET ") {
+                    ("get", 0, metadata.to_owned())
+                } else if first.starts_with("PUT ") && first.contains("/points") {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("upsert JSON");
+                    let points = value["points"].as_array().cloned().unwrap_or_default();
+                    let count = points.len();
+                    for point in points {
+                        let id = point["id"].as_str().expect("point id").to_owned();
+                        stored.insert(id, point);
+                    }
+                    (
+                        "put",
+                        count,
+                        r#"{"result":{"status":"completed"}}"#.to_owned(),
+                    )
+                } else if first.contains("/points/batch") {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("payload JSON");
+                    let mut count = 0_usize;
+                    for operation in value["operations"].as_array().into_iter().flatten() {
+                        let payload = operation["set_payload"]["payload"].clone();
+                        for id in operation["set_payload"]["points"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                        {
+                            let id = id.as_str().expect("point id");
+                            let point = stored.get_mut(id).expect("resident point");
+                            point["payload"] = payload.clone();
+                            count += 1;
+                        }
+                    }
+                    (
+                        "payload",
+                        count,
+                        r#"{"result":{"status":"completed"}}"#.to_owned(),
+                    )
+                } else if first.contains("/points/count") {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("count JSON");
+                    let matched = stored
+                        .values()
+                        .filter(|point| payload_matches_filter(point, &value["filter"]))
+                        .count();
+                    (
+                        "count",
+                        matched,
+                        serde_json::json!({"result": {"count": matched}}).to_string(),
+                    )
+                } else if first.contains("/points/delete") {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("delete JSON");
+                    let ids = value["points"].as_array().cloned().unwrap_or_default();
+                    for id in &ids {
+                        stored.remove(id.as_str().expect("point id"));
+                    }
+                    (
+                        "delete",
+                        ids.len(),
+                        r#"{"result":{"status":"completed"}}"#.to_owned(),
+                    )
+                } else if first.contains("/points") {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("retrieve JSON");
+                    let points = value["ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|id| id.as_str())
+                        .filter_map(|id| {
+                            let mut point = stored.get(id)?.clone();
+                            if let Some(object) = point.as_object_mut() {
+                                object.remove("vector");
+                            }
+                            Some(point)
+                        })
+                        .collect::<Vec<_>>();
+                    (
+                        "retrieve",
+                        points.len(),
+                        serde_json::json!({"result": points}).to_string(),
+                    )
+                } else {
+                    panic!("unexpected Qdrant request: {first}");
+                };
+                events.push(ResidentEvent {
+                    kind,
+                    points,
+                    bytes: body.len(),
+                    carries_vector,
+                });
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    response.len()
+                )
+                .expect("fixture response");
+            }
+            events
+        });
+        (format!("http://{address}"), server)
+    }
+
+    fn payload_matches_filter(point: &serde_json::Value, filter: &serde_json::Value) -> bool {
+        filter["must"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|condition| {
+                let key = condition["key"].as_str().unwrap_or("");
+                let expected = condition["match"]["value"].as_str().unwrap_or("");
+                point["payload"][key].as_str() == Some(expected)
+            })
+    }
+
+    fn qdrant_fixture(
+        expected_points: usize,
+        selected_point: usize,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
+        serve_projection(ProjectionScript {
+            requests: 7,
+            expected_points,
+            selected_point,
+            count_offset: 0,
+            swap_query_id: false,
+            corrupt_coordinate: false,
+        })
+    }
+
+    struct ProjectionScript {
+        requests: usize,
+        expected_points: usize,
+        selected_point: usize,
+        count_offset: i64,
+        swap_query_id: bool,
+        corrupt_coordinate: bool,
+    }
+
+    fn serve_projection(script: ProjectionScript) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+        let address = listener.local_addr().expect("fixture address");
+        let metadata =
+            r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
+        let server = thread::spawn(move || {
+            let mut lines = Vec::with_capacity(script.requests);
+            let mut captured = Vec::new();
+            for _ in 0..script.requests {
+                let (mut stream, _) = listener.accept().expect("fixture connection");
+                let request = read_request(&mut stream);
+                let header = std::str::from_utf8(&request).expect("HTTP header");
+                let first = header.lines().next().expect("request line").to_owned();
+                lines.push(first.clone());
+                let body_start = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|offset| offset + 4)
+                    .unwrap_or(request.len());
+                let body = if first.starts_with("GET ") {
+                    metadata.to_owned()
+                } else if first.starts_with("PUT ") {
                     let value: serde_json::Value = serde_json::from_slice(&request[body_start..])
                         .expect("upsert request JSON");
-                    projected_point = value["points"].as_array().and_then(|points| {
-                        points.get(selected_point).map(|point| {
-                            serde_json::json!({
-                                "id": point["id"].clone(),
-                                "payload": point["payload"].clone()
-                            })
+                    captured = value["points"]
+                        .as_array()
+                        .map(|points| {
+                            points
+                                .iter()
+                                .map(|point| {
+                                    serde_json::json!({
+                                        "id": point["id"].clone(),
+                                        "payload": point["payload"].clone()
+                                    })
+                                })
+                                .collect()
                         })
-                    });
-                }
-                let owned;
-                let body = match request_index {
-                    0 | 1 => metadata,
-                    2 => r#"{"result":{"status":"completed"}}"#,
-                    3 => {
-                        owned =
-                            serde_json::json!({"result": {"count": expected_points}}).to_string();
-                        &owned
+                        .unwrap_or_default();
+                    r#"{"result":{"status":"completed"}}"#.to_owned()
+                } else if first.contains("/points/count") {
+                    let count = i64::try_from(script.expected_points)
+                        .expect("point count")
+                        .saturating_add(script.count_offset);
+                    serde_json::json!({"result": {"count": count}}).to_string()
+                } else if first.contains("/points/batch") {
+                    r#"{"result":{"status":"completed"}}"#.to_owned()
+                } else if first.contains("/points/query") {
+                    let mut point = captured
+                        .get(script.selected_point)
+                        .cloned()
+                        .expect("query follows the upsert");
+                    if script.swap_query_id {
+                        point["id"] = serde_json::json!("not-the-payload-id");
                     }
-                    4 | 5 => {
-                        owned = serde_json::json!({
-                            "result": { "points": [projected_point.clone().expect("upsert point")] }
-                        })
-                        .to_string();
-                        &owned
+                    serde_json::json!({"result": {"points": [point]}}).to_string()
+                } else if first.contains("/points") {
+                    let mut points = captured.iter().cloned().collect::<Vec<_>>();
+                    if script.corrupt_coordinate {
+                        for point in &mut points {
+                            point["payload"]["coordinate_key"] =
+                                serde_json::json!("rewritten-coordinate");
+                        }
                     }
-                    _ => unreachable!(),
+                    serde_json::json!({"result": points}).to_string()
+                } else {
+                    panic!("unexpected Qdrant request: {first}");
                 };
                 write!(
                     stream,
@@ -1525,8 +2091,34 @@ mod tests {
                 )
                 .expect("fixture response");
             }
+            lines
         });
         (format!("http://{address}"), server)
+    }
+
+    fn request_kinds(lines: &[String]) -> Vec<&'static str> {
+        lines
+            .iter()
+            .map(|line| {
+                if line.starts_with("GET ") {
+                    "get"
+                } else if line.starts_with("PUT ") {
+                    "put"
+                } else if line.contains("/points/count") {
+                    "count"
+                } else if line.contains("/points/batch") {
+                    "payload"
+                } else if line.contains("/points/query") {
+                    "query"
+                } else if line.contains("/points/delete") {
+                    "delete"
+                } else if line.contains("/points") {
+                    "retrieve"
+                } else {
+                    "other"
+                }
+            })
+            .collect()
     }
 
     fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {

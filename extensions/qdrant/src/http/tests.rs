@@ -30,6 +30,22 @@ fn test_recipe() -> EmbeddingRecipe {
     }
 }
 
+fn upsert_test_recipe() -> EmbeddingRecipe {
+    EmbeddingRecipe {
+        normalization: EmbeddingNormalization::None,
+        ..test_recipe()
+    }
+}
+
+fn upsert_binding() -> Binding {
+    use crate::Frontier;
+
+    let recipe = upsert_test_recipe();
+    let (mut binding, _) = crate::tests::binding(&[]);
+    binding.recipe = recipe.version();
+    binding.with_frontier(Frontier::from_value(&[3; 32]))
+}
+
 fn test_config(endpoint: String) -> QdrantHttpConfig {
     QdrantHttpConfig {
         endpoint,
@@ -91,7 +107,7 @@ fn physical_point_identity_is_scoped_by_the_complete_binding() {
     assert_ne!(first, second);
     assert_eq!(first.0.len(), 36);
     assert_eq!(first.0.bytes().filter(|byte| *byte == b'-').count(), 4);
-    let payload = PointPayload::for_candidate(binding, candidate);
+    let payload = PointPayload::for_candidate(binding, candidate, &[0.25, -0.5]);
     assert_eq!(payload.candidate(), Some(candidate));
     assert!(payload.matches_binding(binding));
     assert!(!payload.matches_binding(next));
@@ -173,4 +189,623 @@ fn collection_probe_retries_and_redacts_authenticated_configuration() {
     .expect("client");
     client.ensure_collection().expect("verified collection");
     server.join().expect("server");
+}
+
+#[test]
+fn coordinate_key_is_stable_for_identical_bits_and_changes_with_one_bit_flip() {
+    let values = vec![0.25_f32, -0.5];
+    let first = coordinate_key(&values);
+    let second = coordinate_key(&values);
+    assert_eq!(first, second);
+
+    let mut flipped = values.clone();
+    flipped[0] = f32::from_bits(values[0].to_bits() ^ 1);
+    assert_ne!(first, coordinate_key(&flipped));
+}
+
+#[test]
+fn coordinate_disposition_classifies_legacy_missing_and_matching_keys() {
+    assert_eq!(
+        coordinate_disposition("expected", None),
+        CoordinateDisposition::Due
+    );
+    assert_eq!(
+        coordinate_disposition("expected", Some("")),
+        CoordinateDisposition::Due
+    );
+    assert_eq!(
+        coordinate_disposition("expected", Some("expected")),
+        CoordinateDisposition::Unchanged
+    );
+    assert_eq!(
+        coordinate_disposition("expected", Some("other")),
+        CoordinateDisposition::Conflict
+    );
+}
+
+#[test]
+fn point_payload_coordinate_key_round_trips_and_defaults_for_legacy_json() {
+    use crate::Frontier;
+
+    let (binding, _) = crate::tests::binding(&[]);
+    let binding = binding.with_frontier(Frontier::from_value(&[3; 32]));
+    let candidate = CandidateId::new(7).expect("candidate");
+    let payload = PointPayload::for_candidate(binding, candidate, &[0.25, -0.5]);
+    assert!(!payload.coordinate_key.is_empty());
+
+    let encoded = serde_json::to_string(&payload).expect("encode payload");
+    assert!(encoded.contains("coordinate_key"));
+
+    let decoded: PointPayload = serde_json::from_str(&encoded).expect("decode payload");
+    assert_eq!(decoded, payload);
+
+    let legacy = r#"{
+        "workspace":"00",
+        "root":"00",
+        "recipe":"00",
+        "authority":"00",
+        "read_manifest":"00",
+        "frontier":"00",
+        "candidate":"0000000000000007"
+    }"#;
+    let legacy_payload: PointPayload = serde_json::from_str(legacy).expect("legacy payload");
+    assert!(legacy_payload.coordinate_key.is_empty());
+}
+
+#[test]
+fn upsert_skips_put_when_retrieved_coordinate_key_matches() {
+    let binding = upsert_binding();
+    let candidate = CandidateId::new(7).expect("candidate");
+    let values = vec![0.25_f32, -0.5];
+    let document = DocumentVector::new(upsert_test_recipe(), candidate, values.clone())
+        .expect("document vector");
+    let physical_id = PhysicalPointId::for_candidate(binding, candidate);
+    let payload = PointPayload::for_candidate(binding, candidate, &values);
+    let retrieve_body = serde_json::json!({
+        "result": [{
+            "id": physical_id.0,
+            "payload": payload,
+        }]
+    })
+    .to_string();
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection");
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).expect("request byte");
+            request.push(byte[0]);
+        }
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            retrieve_body.len(),
+            retrieve_body
+        )
+        .expect("response");
+    });
+
+    let client = QdrantHttpClient::new(
+        test_config(format!("http://{address}")),
+        upsert_test_recipe(),
+    )
+    .expect("client");
+    let receipt = client
+        .upsert(binding, std::slice::from_ref(&document))
+        .expect("upsert");
+    assert_eq!(
+        receipt,
+        QdrantMutationReceipt {
+            points: 0,
+            batches: 0,
+        }
+    );
+    server.join().expect("server");
+}
+
+#[test]
+fn upsert_puts_missing_points_after_empty_retrieve() {
+    let binding = upsert_binding();
+    let candidate = CandidateId::new(7).expect("candidate");
+    let document = DocumentVector::new(upsert_test_recipe(), candidate, vec![0.25_f32, -0.5])
+        .expect("document vector");
+    let retrieve_body = r#"{"result":[]}"#;
+    let put_body = r#"{"result":{"status":"completed"}}"#;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let server = thread::spawn(move || {
+        for (index, body) in [retrieve_body, put_body].into_iter().enumerate() {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).expect("request byte");
+                request.push(byte[0]);
+            }
+            let text = String::from_utf8(request).expect("HTTP request");
+            if index == 1 {
+                assert!(text.starts_with("PUT "));
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("response");
+        }
+    });
+
+    let client = QdrantHttpClient::new(
+        test_config(format!("http://{address}")),
+        upsert_test_recipe(),
+    )
+    .expect("client");
+    let receipt = client
+        .upsert(binding, std::slice::from_ref(&document))
+        .expect("upsert");
+    assert_eq!(
+        receipt,
+        QdrantMutationReceipt {
+            points: 1,
+            batches: 1,
+        }
+    );
+    server.join().expect("server");
+}
+
+struct DeltaScript {
+    requests: usize,
+    corrupt_after_put: bool,
+}
+
+fn serve_delta(script: DeltaScript) -> (String, thread::JoinHandle<Vec<(&'static str, usize)>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let server = thread::spawn(move || {
+        let mut stored = std::collections::HashMap::<String, serde_json::Value>::new();
+        let mut transcript = Vec::with_capacity(script.requests);
+        for _ in 0..script.requests {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let (header, body) = read_http(&mut stream);
+            let first = header.lines().next().expect("request line");
+            let (kind, put_points, response) =
+                if first.starts_with("POST ") && first.contains("/points/batch") {
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body).expect("payload JSON");
+                    let mut count = 0_usize;
+                    for operation in request["operations"].as_array().into_iter().flatten() {
+                        let payload = operation["set_payload"]["payload"].clone();
+                        for id in operation["set_payload"]["points"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|id| id.as_str())
+                        {
+                            let Some(point) = stored.get_mut(id) else {
+                                continue;
+                            };
+                            point["payload"] = payload.clone();
+                            count += 1;
+                        }
+                    }
+                    (
+                        "payload",
+                        count,
+                        r#"{"result":{"status":"completed"}}"#.to_owned(),
+                    )
+                } else if first.starts_with("POST ") {
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body).expect("retrieve JSON");
+                    let points = request["ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|id| id.as_str())
+                        .filter_map(|id| stored.get(id).cloned())
+                        .collect::<Vec<_>>();
+                    (
+                        "retrieve",
+                        0,
+                        serde_json::json!({"result": points}).to_string(),
+                    )
+                } else if first.starts_with("PUT ") {
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body).expect("upsert JSON");
+                    let points = request["points"].as_array().cloned().unwrap_or_default();
+                    let count = points.len();
+                    for mut point in points {
+                        let Some(id) = point["id"].as_str().map(str::to_owned) else {
+                            continue;
+                        };
+                        if script.corrupt_after_put {
+                            point["payload"]["coordinate_key"] =
+                                serde_json::json!("rewritten-coordinate");
+                        }
+                        stored.insert(id, point);
+                    }
+                    (
+                        "put",
+                        count,
+                        r#"{"result":{"status":"completed"}}"#.to_owned(),
+                    )
+                } else {
+                    panic!("unexpected Qdrant request: {first}");
+                };
+            transcript.push((kind, put_points));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .expect("response");
+        }
+        transcript
+    });
+    (format!("http://{address}"), server)
+}
+
+fn read_http(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
+    let mut request = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !request.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).expect("request byte");
+        request.push(byte[0]);
+    }
+    let header = String::from_utf8(request).expect("HTTP header");
+    let content_length = header
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then_some(value.trim())
+        })
+        .and_then(|length| length.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut body = vec![0_u8; content_length];
+    stream.read_exact(&mut body).expect("request body");
+    (header, body)
+}
+
+#[test]
+fn upsert_rejects_a_rewritten_coordinate_without_another_put() {
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("document vector");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 3,
+        corrupt_after_put: true,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    let cold = client
+        .upsert(binding, std::slice::from_ref(&document))
+        .expect("cold upsert");
+    assert_eq!(
+        cold,
+        QdrantMutationReceipt {
+            points: 1,
+            batches: 1,
+        }
+    );
+    let error = client
+        .upsert(binding, std::slice::from_ref(&document))
+        .expect_err("rewritten coordinate");
+    assert!(matches!(error, HttpProviderError::ImmutableVector));
+    let transcript = server.join().expect("server");
+    assert_eq!(transcript, [("retrieve", 0), ("put", 1), ("retrieve", 0)]);
+}
+
+#[test]
+fn upsert_writes_only_the_point_missing_from_retrieve() {
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let present = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("present vector");
+    let missing = DocumentVector::new(
+        recipe,
+        CandidateId::new(8).expect("candidate"),
+        vec![0.5, 0.25],
+    )
+    .expect("missing vector");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 4,
+        corrupt_after_put: false,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    let cold = client
+        .upsert(binding, std::slice::from_ref(&present))
+        .expect("cold upsert");
+    assert_eq!(cold.points, 1);
+    let delta = client
+        .upsert(binding, &[present, missing])
+        .expect("delta upsert");
+    assert_eq!(
+        delta,
+        QdrantMutationReceipt {
+            points: 1,
+            batches: 1,
+        }
+    );
+    let transcript = server.join().expect("server");
+    assert_eq!(
+        transcript,
+        [("retrieve", 0), ("put", 1), ("retrieve", 0), ("put", 1)]
+    );
+}
+
+#[test]
+fn residence_identity_survives_a_frontier_move_and_changes_with_the_row() {
+    use crate::Frontier;
+
+    let binding = upsert_binding();
+    let residence =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let mut moved = binding;
+    moved.frontier = Frontier::from_value(&[9; 32]);
+    let stable = PhysicalPointId::for_residence(binding.workspace, binding.recipe, residence);
+    assert_eq!(
+        stable,
+        PhysicalPointId::for_residence(moved.workspace, moved.recipe, residence)
+    );
+    let other =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:beta").expect("other");
+    assert_ne!(
+        stable,
+        PhysicalPointId::for_residence(binding.workspace, binding.recipe, other)
+    );
+    let other_recipe = crate::Recipe::from_value(&[9; 32]);
+    assert_ne!(
+        stable,
+        PhysicalPointId::for_residence(binding.workspace, other_recipe, residence)
+    );
+    assert!(PointResidence::for_row(binding.workspace, binding.recipe, "").is_err());
+}
+
+#[test]
+fn resident_upsert_rejects_a_duplicated_row_before_network_io() {
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let residence =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("document");
+    let resident = ResidentDocument {
+        residence,
+        write: CoordinateWrite::Hold,
+        document: &document,
+    };
+    let client = QdrantHttpClient::new(test_config("http://127.0.0.1:1".to_owned()), recipe)
+        .expect("client");
+    let error = client
+        .upsert_resident(binding, &[resident, resident])
+        .expect_err("duplicate residence");
+    assert!(matches!(error, HttpProviderError::BindingMismatch));
+}
+
+#[test]
+fn resident_frontier_rebind_writes_payload_and_keeps_the_vector() {
+    use crate::Frontier;
+
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let residence =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("document");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 4,
+        corrupt_after_put: false,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    let cold = client
+        .upsert_resident(
+            binding,
+            &[ResidentDocument {
+                residence,
+                write: CoordinateWrite::Replace,
+                document: &document,
+            }],
+        )
+        .expect("cold upsert");
+    assert_eq!(
+        cold,
+        ResidentMutationReceipt {
+            vectors: 1,
+            payloads: 0,
+            unchanged: 0,
+            batches: 1,
+        }
+    );
+    let mut moved = binding;
+    moved.frontier = Frontier::from_value(&[9; 32]);
+    let reminted = DocumentVector::new(
+        recipe,
+        CandidateId::new(99).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("reminted");
+    let warm = client
+        .upsert_resident(
+            moved,
+            &[ResidentDocument {
+                residence,
+                write: CoordinateWrite::Hold,
+                document: &reminted,
+            }],
+        )
+        .expect("payload rebind");
+    assert_eq!(
+        warm,
+        ResidentMutationReceipt {
+            vectors: 0,
+            payloads: 1,
+            unchanged: 0,
+            batches: 1,
+        }
+    );
+    let transcript = server.join().expect("server");
+    assert_eq!(
+        transcript,
+        [("retrieve", 0), ("put", 1), ("retrieve", 0), ("payload", 1)]
+    );
+}
+
+#[test]
+fn resident_hold_rejects_a_rewritten_coordinate_before_any_write() {
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let residence =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("row");
+    let document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("document");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 3,
+        corrupt_after_put: true,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    client
+        .upsert_resident(
+            binding,
+            &[ResidentDocument {
+                residence,
+                write: CoordinateWrite::Hold,
+                document: &document,
+            }],
+        )
+        .expect("cold upsert");
+    let error = client
+        .upsert_resident(
+            binding,
+            &[ResidentDocument {
+                residence,
+                write: CoordinateWrite::Hold,
+                document: &document,
+            }],
+        )
+        .expect_err("rewritten coordinate");
+    assert!(matches!(error, HttpProviderError::ImmutableVector));
+    let transcript = server.join().expect("server");
+    assert_eq!(transcript, [("retrieve", 0), ("put", 1), ("retrieve", 0)]);
+}
+
+#[test]
+fn resident_replace_rewrites_one_vector_and_rebinds_the_sibling() {
+    use crate::Frontier;
+
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let alpha =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:alpha").expect("alpha");
+    let beta =
+        PointResidence::for_row(binding.workspace, binding.recipe, "symbol:beta").expect("beta");
+    let alpha_document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("alpha");
+    let beta_document = DocumentVector::new(
+        recipe,
+        CandidateId::new(8).expect("candidate"),
+        vec![0.5, 0.25],
+    )
+    .expect("beta");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 5,
+        corrupt_after_put: false,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    client
+        .upsert_resident(
+            binding,
+            &[
+                ResidentDocument {
+                    residence: alpha,
+                    write: CoordinateWrite::Replace,
+                    document: &alpha_document,
+                },
+                ResidentDocument {
+                    residence: beta,
+                    write: CoordinateWrite::Replace,
+                    document: &beta_document,
+                },
+            ],
+        )
+        .expect("cold upsert");
+    let mut moved = binding;
+    moved.frontier = Frontier::from_value(&[9; 32]);
+    let revised = DocumentVector::new(
+        recipe,
+        CandidateId::new(70).expect("candidate"),
+        vec![0.75, -0.25],
+    )
+    .expect("revised");
+    let sibling = DocumentVector::new(
+        recipe,
+        CandidateId::new(80).expect("candidate"),
+        vec![0.5, 0.25],
+    )
+    .expect("sibling");
+    let delta = client
+        .upsert_resident(
+            moved,
+            &[
+                ResidentDocument {
+                    residence: alpha,
+                    write: CoordinateWrite::Replace,
+                    document: &revised,
+                },
+                ResidentDocument {
+                    residence: beta,
+                    write: CoordinateWrite::Hold,
+                    document: &sibling,
+                },
+            ],
+        )
+        .expect("mixed revision");
+    assert_eq!(
+        delta,
+        ResidentMutationReceipt {
+            vectors: 1,
+            payloads: 1,
+            unchanged: 0,
+            batches: 2,
+        }
+    );
+    let transcript = server.join().expect("server");
+    assert_eq!(
+        transcript,
+        [
+            ("retrieve", 0),
+            ("put", 2),
+            ("retrieve", 0),
+            ("put", 1),
+            ("payload", 1)
+        ]
+    );
 }

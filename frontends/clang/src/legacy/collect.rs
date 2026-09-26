@@ -141,6 +141,7 @@ struct Collector<'unit, 'scratch> {
     includes: usize,
     overrides: usize,
     parameters: Vec<StashedParameter>,
+    project_paths: Vec<Box<str>>,
     cancellation: Option<&'unit AtomicBool>,
     failure: Option<CollectError>,
 }
@@ -163,6 +164,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             includes: 0,
             overrides: 0,
             parameters: Vec::new(),
+            project_paths: Vec::new(),
             cancellation,
             failure: None,
         }
@@ -266,6 +268,16 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
             self.scratch.declarations[..self.declarations]
                 .iter()
                 .position(|fact| fact.identity == Some(identity))
+        });
+        // A name-less foreign value-authority row exists only so a later
+        // value reference can read declaration kind across a header. It must
+        // never become the slot a main-source definition overwrites.
+        let existing = existing.and_then(|index| {
+            if foreign_value_authority_stub(&self.scratch.declarations[index]) {
+                None
+            } else {
+                Some(index)
+            }
         });
         if existing.is_some_and(|index| {
             !TranslationUnit::is_definition(cursor)
@@ -403,12 +415,68 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 .filter(|name| name.end > name.start)
                 .unwrap_or(extent),
         };
+        if kind == ReferenceKind::Value {
+            self.ensure_foreign_value_authority(cursor)?;
+        }
         let target = self.reference_target(TranslationUnit::referenced(cursor))?;
         self.push_reference(ReferenceFact {
             kind,
             span,
             owner: TranslationUnit::semantic_parent(cursor),
             target,
+        })
+    }
+
+    /// Retains one foreign variable, enumerator, function, or method authority
+    /// row when a value reference resolves across a project header. The row
+    /// carries identity and kind only; it is not a main-source declaration
+    /// fact and never becomes a pushed entity.
+    fn ensure_foreign_value_authority(&mut self, cursor: CXCursor) -> Result<(), CollectError> {
+        let referenced = TranslationUnit::referenced(cursor);
+        if TranslationUnit::is_null_cursor(referenced) {
+            return Ok(());
+        }
+        if self.unit.is_local(referenced)? {
+            return Ok(());
+        }
+        let kind = declaration_kind(TranslationUnit::cursor_kind(referenced));
+        if !matches!(
+            kind,
+            DeclarationKind::Variable
+                | DeclarationKind::Enumerator
+                | DeclarationKind::Function
+                | DeclarationKind::Method
+        ) {
+            return Ok(());
+        }
+        let Some(identity) = TranslationUnit::cursor_identity(referenced) else {
+            return Ok(());
+        };
+        if self.scratch.declarations[..self.declarations]
+            .iter()
+            .any(|fact| fact.identity == Some(identity))
+        {
+            return Ok(());
+        }
+        let id = DeclarationId {
+            raw: u32::try_from(self.declarations).map_err(|_| CollectError::SlotOrdinalTooLarge {
+                lane: ScratchLane::Declarations,
+                observed: self.declarations,
+            })?,
+        };
+        self.push_declaration(DeclarationFact {
+            id,
+            kind,
+            definition: DefinitionState::Declaration,
+            virtuality: MethodVirtuality::NonVirtual,
+            identity: Some(identity),
+            span: SourceSpan { start: 0, end: 0 },
+            name: None,
+            owner: None,
+            documentation: None,
+            storage: StorageClass::None,
+            type_root: None,
+            enum_underlying: None,
         })
     }
 
@@ -588,7 +656,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
     }
 
     /// Resolves one referenced cursor into a local, foreign, or exact unresolved fact.
-    fn reference_target(&self, cursor: CXCursor) -> Result<ReferenceTarget, CollectError> {
+    fn reference_target(&mut self, cursor: CXCursor) -> Result<ReferenceTarget, CollectError> {
         if TranslationUnit::is_null_cursor(cursor) {
             return Ok(ReferenceTarget::Unresolved);
         }
@@ -598,9 +666,19 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
         if self.unit.is_local(cursor)? {
             Ok(ReferenceTarget::Local(identity))
         } else {
+            let path = self
+                .unit
+                .cursor_relative_path(cursor)
+                .and_then(|relative| {
+                    backend_semantic::ir::PackageLineage::new("c", &relative).ok()?;
+                    let slot = u32::try_from(self.project_paths.len()).ok()?;
+                    self.project_paths.push(relative.into_boxed_str());
+                    Some(slot)
+                });
             Ok(ReferenceTarget::Foreign {
                 identity,
                 file: self.unit.cursor_file_identity(cursor),
+                path,
             })
         }
     }
@@ -767,6 +845,7 @@ impl<'unit, 'scratch> Collector<'unit, 'scratch> {
                 self.overrides,
                 ScratchLane::Overrides,
             )?,
+            project_paths: self.project_paths,
         })
     }
 }
@@ -808,6 +887,20 @@ fn push<Fact>(
         capacity: slots.len(),
     })?;
     Ok(())
+}
+
+/// True when one declaration row was minted by
+/// [`Collector::ensure_foreign_value_authority`] for a cross-header value
+/// reference. The row carries identity and kind only and must never be
+/// upgraded into a named main-source declaration.
+const fn foreign_value_authority_stub(fact: &DeclarationFact) -> bool {
+    fact.name.is_none()
+        && fact.span.start == 0
+        && fact.span.end == 0
+        && matches!(
+            fact.kind,
+            DeclarationKind::Function | DeclarationKind::Method
+        )
 }
 
 /// Borrows an initialized prefix while retaining an impossible internal discrepancy as typed data.

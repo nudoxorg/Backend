@@ -15,11 +15,12 @@ use backend_engine::driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{
-    DecodedOccurrence, DecodedTypeFact, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
-    OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
+    DecodedOccurrence, DecodedTypeFact, DocFragmentInput, EntityId, EntityKind, ForeignOrigin,
+    FragmentView, ItemKind, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape, ReferenceKind,
+    SemanticTypeTag, TypeReason, TypeWidth,
 };
 use backend_frontend_typescript::legacy::{
-    Checker, MappedModifier as CheckerMappedModifier, Report, TypeTree,
+    Checker, MappedModifier as CheckerMappedModifier, Reference, Report, TypeTree,
 };
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -167,6 +168,93 @@ fn fact<'a>(view: &'a FragmentView<'a>, owner: u32) -> DecodedTypeFact<'a> {
 }
 fn occurrences<'a>(view: &'a FragmentView<'a>) -> Vec<DecodedOccurrence<'a>> {
     view.occurrences().into_iter().flatten().flatten().collect()
+}
+
+fn token_span(source: &[u8], needle: &[u8]) -> (u32, u32) {
+    let start = source
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .unwrap_or_else(|| panic!("missing token {needle:?}"));
+    (
+        u32::try_from(start).unwrap(),
+        u32::try_from(start + needle.len()).unwrap(),
+    )
+}
+
+fn recover_site_bytes<'a>(
+    source: &'a [u8],
+    owner_decl_start: u32,
+    occurrence: &DecodedOccurrence<'a>,
+) -> &'a [u8] {
+    let abs_start = owner_decl_start + occurrence.occurrence.span.start;
+    let abs_end = owner_decl_start + occurrence.occurrence.span.end;
+    &source[abs_start as usize..abs_end as usize]
+}
+
+fn property_token(source: &[u8], prefix: &[u8], token: &[u8]) -> u32 {
+    property_token_nth(source, prefix, token, 0)
+}
+
+fn property_token_nth(source: &[u8], prefix: &[u8], token: &[u8], index: usize) -> u32 {
+    let needle = [prefix, token].concat();
+    let mut at = 0;
+    for occurrence in 0..=index {
+        let start = source[at..]
+            .windows(needle.len())
+            .position(|window| window == needle.as_slice())
+            .map(|offset| at + offset)
+            .unwrap_or_else(|| panic!("missing property token {prefix:?}.{token:?} #{index}"));
+        if occurrence == index {
+            return u32::try_from(start + prefix.len()).unwrap();
+        }
+        at = start + 1;
+    }
+    unreachable!()
+}
+
+fn entity_decl_start(
+    source: &'static [u8],
+    authority: Option<&Report>,
+    owner: u32,
+) -> u32 {
+    let default = report(source);
+    let authority = authority.unwrap_or(&default);
+    let compiled = try_lower(source, Some(authority)).expect("lower for owner source span");
+    compiled
+        .ir
+        .items()
+        .find(|item| item.id().raw == owner)
+        .and_then(|item| item.source())
+        .expect("owner declaration source span")
+        .start()
+}
+
+fn assert_property_token_site(
+    source: &'static [u8],
+    authority: Option<&Report>,
+    occurrence: &DecodedOccurrence<'_>,
+    token: &[u8],
+    token_start: u32,
+) {
+    let owner_decl_start = entity_decl_start(source, authority, occurrence.owner.raw);
+    assert_eq!(
+        recover_site_bytes(source, owner_decl_start, occurrence),
+        token,
+        "recovered site bytes must equal the property token"
+    );
+    assert_eq!(
+        owner_decl_start + occurrence.occurrence.span.start,
+        token_start,
+        "absolute property token start must match the independently located token"
+    );
+}
+
+fn entities_named(view: &FragmentView<'_>, name: &[u8], kind: EntityKind) -> Vec<u32> {
+    entities(view)
+        .into_iter()
+        .filter(|(_, n, k)| n == name && *k == kind)
+        .map(|(id, _, _)| id)
+        .collect()
 }
 
 fn ir_tag_shape(ir: &backend_semantic::ir::Ir, id: backend_semantic::ir::TypeId) -> (SemanticTypeTag, u8) {
@@ -353,6 +441,26 @@ fn jsdoc_commits_text_code_and_local_link_fragments() {
     );
     assert!(v.docs().is_some());
 }
+#[test]
+fn a_jsdoc_line_with_seventeen_code_tags_keeps_every_tag() {
+    let mut source = b"/** ".to_vec();
+    for index in 0..17 {
+        source.extend_from_slice(format!("{{@code {index}}} ").as_bytes());
+    }
+    source.extend_from_slice(b"*/\nexport interface Wide {}\n");
+    let source: &'static [u8] = Box::leak(source.into_boxed_slice());
+    let view = view(source, None);
+    let mut docs = view.docs().expect("docs");
+    let mut codes = 0_usize;
+    while let Some(fact) = docs.next() {
+        let fact = fact.expect("doc fact");
+        if matches!(fact.fragment, DocFragmentInput::Code(_)) {
+            codes += 1;
+        }
+    }
+    assert_eq!(codes, 17);
+}
+
 #[test]
 fn absent_jsdoc_commits_no_documentation_section() {
     let v = view(b"export interface Plain {}", None);
@@ -753,12 +861,357 @@ fn package_module_bases_stay_honestly_syntactic() {
 }
 #[test]
 fn checker_only_property_call_targets_the_exact_member() {
-    let v=view(b"export class Box { tick(): number { return 1; } } export const box = new Box(); export const t = box.tick();",None);
-    assert!(
+    const SOURCE: &[u8] = b"export class Box { tick(): number { return 1; } } export const box = new Box(); export const t = box.tick();";
+    let v = view(SOURCE, None);
+    let tick_property_start = property_token(SOURCE, b"box.", b"tick");
+    let tick_call = occurrences(&v)
+        .into_iter()
+        .find(|o| {
+            o.occurrence.kind == ReferenceKind::FunctionCall
+                && recover_site_bytes(
+                    SOURCE,
+                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    o,
+                ) == b"tick"
+        })
+        .expect("box.tick() must be a FunctionCall on the tick property token");
+    match tick_call.occurrence.target {
+        OccurrenceTarget::Foreign(ref key) => {
+            assert_eq!(key.path, "tick");
+            assert_eq!(key.display, "tick");
+            assert_eq!(
+                tick_call.occurrence.confidence,
+                OccurrenceConfidence::Syntactic
+            );
+        }
+        OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
+            panic!("box.tick() must stay a syntactic foreign property call")
+        }
+    }
+    assert_eq!(tick_call.owner.raw, named(&v, b"t").0);
+    assert_property_token_site(SOURCE, None, &tick_call, b"tick", tick_property_start);
+    assert_eq!(
         occurrences(&v)
             .iter()
-            .any(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+            .filter(|o| {
+                o.occurrence.kind == ReferenceKind::FunctionCall
+                    && recover_site_bytes(
+                        SOURCE,
+                        entity_decl_start(SOURCE, None, o.owner.raw),
+                        o,
+                    ) == b"tick"
+            })
+            .count(),
+        1,
+        "box.tick() must be the sole property-call site on tick"
     );
+}
+
+#[test]
+fn this_field_read_targets_the_enclosing_class_field() {
+    const SOURCE: &[u8] =
+        b"export class Point { score: number; read(): number { return this.score; } }";
+    let v = view(SOURCE, None);
+    let (score_field, _) = named(&v, b"score");
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_field))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+}
+
+#[test]
+fn nested_same_name_field_inside_type_literal_does_not_shadow_class_member() {
+    const SOURCE: &[u8] = b"export class Point { score: number; meta: { score: string }; read(): number { return this.score; } }";
+    let v = view(SOURCE, None);
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let point_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(point_score))
+    );
+    assert_ne!(site.occurrence.target, OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_fields[1])));
+    assert!(!matches!(site.occurrence.target, OccurrenceTarget::Foreign(_)));
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+}
+
+#[test]
+fn nested_same_name_field_inside_nested_class_does_not_shadow_class_member() {
+    const SOURCE: &[u8] = b"export class Point { score: number; host(): void { class Inner { score: number; } } read(): number { return this.score; } }";
+    let v = view(SOURCE, None);
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let point_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(point_score))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+}
+
+#[test]
+fn this_field_read_stays_inside_its_enclosing_class() {
+    const SOURCE: &[u8] = b"export class Point { score: number; read(): number { return this.score; } } export class Other { score: number; read(): number { return this.score; } }";
+    let v = view(SOURCE, None);
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 2);
+    let other_read = read_owners[1];
+    let other_score = score_fields[1];
+    let other_score_token_start = property_token_nth(SOURCE, b"this.", b"score", 1);
+    let other_read_site = occurrences(&v)
+        .into_iter()
+        .find(|o| o.owner.raw == other_read)
+        .expect("Other.read must own the FieldAccess");
+    assert_eq!(
+        other_read_site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(other_score))
+    );
+    assert_property_token_site(
+        SOURCE,
+        None,
+        &other_read_site,
+        b"score",
+        other_score_token_start,
+    );
+}
+
+#[test]
+fn this_method_call_targets_the_enclosing_class_method() {
+    const SOURCE: &[u8] = b"export class Client { send(): number { return this.send(); } }";
+    let v = view(SOURCE, None);
+    let (send_method, _) = named(&v, b"send");
+    let send_token_start = property_token(SOURCE, b"this.", b"send");
+    let calls: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect();
+    assert_eq!(calls.len(), 1);
+    let site = &calls[0];
+    assert_eq!(site.owner.raw, send_method);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(send_method))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"send", send_token_start);
+    assert!(
+        !occurrences(&v).iter().any(|o| {
+            o.occurrence.kind == ReferenceKind::FieldAccess
+                && matches!(
+                    o.occurrence.target,
+                    OccurrenceTarget::Local(entity) if entity.raw == send_method
+                )
+        })
+    );
+}
+
+#[test]
+fn chained_builtin_call_stays_foreign_while_this_field_is_local() {
+    const SOURCE: &[u8] =
+        b"export class Chain { score: number; widen(): string { return this.score.toFixed(); } }";
+    let v = view(SOURCE, None);
+    let (score_field, _) = named(&v, b"score");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field = occurrences(&v)
+        .into_iter()
+        .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .expect("local FieldAccess of score");
+    assert_eq!(
+        field.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_field))
+    );
+    assert_property_token_site(SOURCE, None, &field, b"score", score_token_start);
+    let _to_fixed_start = property_token(SOURCE, b"score.", b"toFixed");
+    let to_fixed = occurrences(&v)
+        .into_iter()
+        .find(|o| {
+            o.occurrence.kind == ReferenceKind::FunctionCall
+                && recover_site_bytes(
+                    SOURCE,
+                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    o,
+                ) == b"toFixed"
+        })
+        .expect("foreign FunctionCall of toFixed");
+    match to_fixed.occurrence.target {
+        OccurrenceTarget::Foreign(ref key) => assert_eq!(key.path, "toFixed"),
+        OccurrenceTarget::Local(_) => panic!("toFixed must not resolve locally"),
+        OccurrenceTarget::Stable(_) => panic!("toFixed must not target a stable ref"),
+    }
+    assert_eq!(
+        to_fixed.occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
+}
+
+#[test]
+fn foreign_receiver_field_access_stays_syntactic() {
+    const SOURCE: &[u8] = b"export class Point { missing: number; } export function loose(obj: Point): number { return obj.missing; }";
+    let v = view(SOURCE, None);
+    let (point_field, _) = named(&v, b"missing");
+    let missing_token_start = property_token(SOURCE, b"obj.", b"missing");
+    let site = occurrences(&v)
+        .into_iter()
+        .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .expect("foreign FieldAccess of missing");
+    match site.occurrence.target {
+        OccurrenceTarget::Foreign(ref key) => assert_eq!(key.path, "missing"),
+        OccurrenceTarget::Local(entity) => {
+            panic!("obj.missing must not bind locally to {entity:?}, field is {point_field}")
+        }
+        OccurrenceTarget::Stable(_) => panic!("obj.missing must not target a stable ref"),
+    }
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_property_token_site(SOURCE, None, &site, b"missing", missing_token_start);
+}
+
+#[test]
+fn checker_resolved_property_access_is_not_duplicated() {
+    const SOURCE: &[u8] =
+        b"export class Point { score: number; read(): number { return this.score; } }";
+    let field_name_start = token_span(SOURCE, b"score:").0;
+    let use_token = SOURCE
+        .windows(b"score".len())
+        .enumerate()
+        .filter(|(index, _)| {
+            SOURCE[*index..].starts_with(b"score; }")
+                && SOURCE.get(..*index).is_some_and(|prefix| prefix.ends_with(b"this."))
+        })
+        .map(|(index, _)| u32::try_from(index).unwrap())
+        .next()
+        .expect("this.score token");
+    let mut authority = report(SOURCE);
+    authority.references = Box::new([Reference {
+        start: use_token,
+        end: use_token + u32::try_from(b"score".len()).unwrap(),
+        target_start: Some(field_name_start),
+        target_end: Some(field_name_start + u32::try_from(b"score".len()).unwrap()),
+        module: None,
+        name: None,
+        overload_index: None,
+        is_field: false,
+        is_enum_member: false,
+    }]);
+    let v = view(SOURCE, Some(&authority));
+    let (score_field, _) = named(&v, b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| {
+            o.occurrence.kind == ReferenceKind::FieldAccess
+                && recover_site_bytes(
+                    SOURCE,
+                    entity_decl_start(SOURCE, Some(&authority), o.owner.raw),
+                    o,
+                ) == b"score"
+        })
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_field))
+    );
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Oracle
+    );
+}
+#[test]
+fn cross_file_method_call_is_an_oracle_package_call() {
+    const SOURCE: &[u8] = b"import { WorkoutService } from \"./workout.service\";
+export function sync(service: WorkoutService) { service.setNote(); }
+export function group(service: WorkoutService) { const bound = service.setNote; }
+";
+    let mut r = report(SOURCE);
+    r.references = Box::new([
+        Reference {
+            start: 108,
+            end: 115,
+            target_start: None,
+            target_end: None,
+            module: Some("./workout.service".into()),
+            name: Some("setNote".into()),
+            overload_index: None,
+            is_field: false,
+            is_enum_member: false,
+        },
+        Reference {
+            start: 192,
+            end: 199,
+            target_start: None,
+            target_end: None,
+            module: Some("./workout.service".into()),
+            name: Some("setNote".into()),
+            overload_index: None,
+            is_field: false,
+            is_enum_member: false,
+        },
+    ]);
+    let v = view(SOURCE, Some(&r));
+    let occs = occurrences(&v);
+    let call_occ = occs
+        .iter()
+        .find(|o| o.occurrence.span.start == 49 && o.occurrence.span.end == 56)
+        .expect("call occurrence");
+    assert_eq!(call_occ.occurrence.kind, ReferenceKind::FunctionCall);
+    assert_eq!(call_occ.occurrence.confidence, OccurrenceConfidence::Oracle);
+    let OccurrenceTarget::Foreign(key) = call_occ.occurrence.target else {
+        panic!("expected foreign call target");
+    };
+    let ForeignOrigin::Package(lineage) = key.origin else {
+        panic!("expected package origin");
+    };
+    assert_eq!(lineage.name, "./workout.service");
+    assert_eq!(key.path, "setNote");
+    assert_eq!(key.display, "setNote");
+
+    let value_occ = occs
+        .iter()
+        .find(|o| o.occurrence.span.start == 16 && o.occurrence.span.end == 23)
+        .expect("value occurrence");
+    assert_eq!(value_occ.occurrence.kind, ReferenceKind::VariableUse);
+    assert_eq!(value_occ.occurrence.confidence, OccurrenceConfidence::Oracle);
+    let OccurrenceTarget::Foreign(key) = value_occ.occurrence.target else {
+        panic!("expected foreign value target");
+    };
+    let ForeignOrigin::Package(lineage) = key.origin else {
+        panic!("expected package origin");
+    };
+    assert_eq!(lineage.name, "./workout.service");
+    assert_eq!(key.path, "setNote");
+    assert_eq!(key.display, "setNote");
 }
 #[test]
 fn genuinely_unresolvable_names_stay_honestly_external() {
@@ -1305,11 +1758,11 @@ fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
         }
     }
 
-    // 64 is the un-folded boundary; 65/130 exercise one fold; 4097 exercises
-    // two folds (65 chunks of 64). A wrong fold would truncate, reorder, or
-    // produce a linear-depth chain on any of these.
+    // 255 is the un-folded type-child boundary; 256 exercises one fold;
+    // 4097 exercises a wide single level of 255-wide chunks. A wrong fold
+    // would truncate, reorder, or produce a deep chain on any of these.
     for operator in [" | ", " & "] {
-        for count in [64_usize, 65, 130, 4097] {
+        for count in [255_usize, 256, 4097] {
             let label = format!("operator={operator:?} count={count}");
             let source: &'static [u8] = Box::leak(build_source(operator, count).into_boxed_slice());
             let authority = report(source);
@@ -1329,4 +1782,531 @@ fn wide_syntactic_associative_fold_keeps_members_ordered_and_shallow() {
             assert!(max_depth <= 4, "{label} max_depth={max_depth}");
         }
     }
+}
+
+fn parameter_count(view: &FragmentView<'_>, name: &[u8]) -> usize {
+    entities(view)
+        .into_iter()
+        .filter(|(_, entity_name, kind)| entity_name == name && *kind == EntityKind::Parameter)
+        .count()
+}
+
+#[test]
+fn a_type_with_sixty_five_parameters_keeps_every_parameter() {
+    let mut params = String::new();
+    for index in 0..65 {
+        if index != 0 {
+            params.push_str(", ");
+        }
+        params.push_str(&format!("T{index}"));
+    }
+    let source = format!("export type Wide<{params}> = T0;\n");
+    let source: &'static [u8] = Box::leak(source.into_bytes().into_boxed_slice());
+    let view = view(source, None);
+    assert_eq!(parameter_count(&view, b"T0"), 1);
+    assert_eq!(parameter_count(&view, b"T64"), 1);
+}
+
+#[test]
+fn nested_function_types_declare_each_parameter_binding() {
+    const SOURCE: &[u8] = b"export interface Bag { read: (left: number) => void; write: (left: string) => void; }\nexport type Call = (mid: number) => void;\n";
+    let view = view(SOURCE, None);
+    assert_eq!(
+        parameter_count(&view, b"left"),
+        2,
+        "each field function keeps its own left"
+    );
+    assert_eq!(
+        parameter_count(&view, b"mid"),
+        1,
+        "a top-level function type parameter is declared"
+    );
+}
+
+#[test]
+fn mapped_name_type_and_initializer_bindings_are_declared() {
+    const SOURCE: &[u8] = b"export type Bag = { [Key in string as ((left: number) => void)]: number };\nexport const call = (null as (right: number) => void)!;\n";
+    let view = view(SOURCE, None);
+    assert_eq!(parameter_count(&view, b"left"), 1);
+    assert_eq!(parameter_count(&view, b"right"), 1);
+    let bag = named(&view, b"Bag");
+    let mapped = fact(&view, bag.0);
+    assert_eq!(mapped.record.tag, SemanticTypeTag::Mapped);
+    assert_eq!(
+        mapped.record.children.length,
+        3,
+        "mapped type keeps its as clause"
+    );
+}
+
+#[test]
+fn parameter_defaults_declare_nested_function_bindings() {
+    const SOURCE: &[u8] = b"export function take(cb = null as (left: number) => void): void {}\nexport function held(cb: (right: number) => void = null as (mid: number) => void): void {}\n";
+    let view = view(SOURCE, None);
+    assert_eq!(parameter_count(&view, b"left"), 1);
+    assert_eq!(parameter_count(&view, b"right"), 1);
+    assert_eq!(parameter_count(&view, b"mid"), 1);
+}
+
+#[test]
+fn constructor_assignments_declare_nested_function_bindings() {
+    const SOURCE: &[u8] = b"export class Bag {\n  constructor() {\n    this.read = null as (left: number) => void;\n    { this.bang = (null as (nested: number) => void)!; }\n    try {} catch { this.catchBind = null as (caught: number) => void; }\n  }\n  set() { this.write = null satisfies (mid: number) => void; }\n}\n";
+    let view = view(SOURCE, None);
+    assert_eq!(parameter_count(&view, b"left"), 1);
+    assert_eq!(parameter_count(&view, b"nested"), 1);
+    assert_eq!(parameter_count(&view, b"caught"), 1);
+    assert_eq!(parameter_count(&view, b"mid"), 1);
+}
+
+#[test]
+fn catch_binding_use_is_a_local_static() {
+    const SOURCE: &[u8] = b"export const value = 1;
+export function probe(): void {
+  try {
+  } catch (err) {
+    err;
+    value;
+  }
+}
+";
+    let v = view(SOURCE, None);
+    let err_entities: Vec<_> = entities(&v)
+        .into_iter()
+        .filter(|(_, name, _)| name == b"err")
+        .collect();
+    assert_eq!(err_entities.len(), 1);
+    assert_eq!(err_entities[0].2, EntityKind::Static);
+    assert!(
+        !entities(&v)
+            .iter()
+            .any(|(_, name, kind)| name == b"err" && *kind == EntityKind::Parameter)
+    );
+    let (probe_id, _) = named(&v, b"probe");
+    let (err_id, _) = named(&v, b"err");
+    let (value_id, _) = named(&v, b"value");
+    let var_uses: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|row| row.occurrence.kind == ReferenceKind::VariableUse)
+        .collect();
+    assert_eq!(var_uses.len(), 2);
+    let err_use = var_uses
+        .iter()
+        .find(|row| {
+            row.occurrence.target
+                == OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(err_id))
+        })
+        .expect("err use");
+    assert_eq!(err_use.owner.raw, probe_id);
+    assert_eq!(err_use.occurrence.confidence, OccurrenceConfidence::Index);
+    let value_use = var_uses
+        .iter()
+        .find(|row| {
+            row.occurrence.target
+                == OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(value_id))
+        })
+        .expect("value use");
+    assert_eq!(value_use.owner.raw, probe_id);
+    assert_eq!(value_use.occurrence.confidence, OccurrenceConfidence::Index);
+}
+
+#[test]
+fn catch_binding_destructure_stays_unpublished() {
+    const SOURCE: &[u8] = b"export function probe(): void {
+  try {
+  } catch ({ message }) {
+    message;
+  }
+}
+";
+    let v = view(SOURCE, None);
+    assert!(
+        !entities(&v)
+            .iter()
+            .any(|(_, name, _)| name == b"message")
+    );
+    assert!(
+        !occurrences(&v)
+            .iter()
+            .any(|row| row.occurrence.kind == ReferenceKind::VariableUse)
+    );
+}
+
+#[test]
+fn enum_member_value_use_targets_that_enum() {
+    const SOURCE: &[u8] = b"export enum Color { Red = 1 }\nexport enum Other { Red = 2 }\nexport function pick(c: Color): boolean { return c === Color.Red; }\n";
+    let view = view(SOURCE, None);
+    let (color_id, color_kind) = named(&view, b"Color");
+    let (other_id, other_kind) = named(&view, b"Other");
+    let (pick_id, pick_kind) = named(&view, b"pick");
+    assert_eq!(color_kind, EntityKind::Enum);
+    assert_eq!(other_kind, EntityKind::Enum);
+    assert_eq!(pick_kind, EntityKind::Function);
+    let field_accesses: Vec<_> = occurrences(&view)
+        .into_iter()
+        .filter(|row| row.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_accesses.len(), 1);
+    let row = &field_accesses[0];
+    assert_eq!(row.owner.raw, pick_id);
+    assert_eq!(row.occurrence.confidence, OccurrenceConfidence::Index);
+    let OccurrenceTarget::Local(variant_id) = row.occurrence.target else {
+        panic!("enum member use must target a local variant");
+    };
+    let variant_row = entities(&view)
+        .into_iter()
+        .find(|(id, _, _)| *id == variant_id.raw)
+        .expect("variant entity");
+    assert_eq!(variant_row.1, b"Red");
+    assert_eq!(variant_row.2, EntityKind::Variant);
+    assert_eq!(
+        fact(&view, variant_id.raw).record.nominal,
+        Some(backend_semantic::ir::NominalRef::Local(
+            backend_semantic::ir::EntityId::new(color_id)
+        ))
+    );
+    assert_ne!(
+        fact(&view, variant_id.raw).record.nominal,
+        Some(backend_semantic::ir::NominalRef::Local(
+            backend_semantic::ir::EntityId::new(other_id)
+        ))
+    );
+}
+
+#[test]
+fn catch_binding_repeated_name_still_lowers() {
+    const SOURCE: &[u8] = b"export function probe(): void {
+  try {} catch (err) { err; }
+  try {} catch (err) { err; }
+}
+";
+    let v = view(SOURCE, None);
+    let var_uses: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|row| row.occurrence.kind == ReferenceKind::VariableUse)
+        .collect();
+    assert_eq!(var_uses.len(), 2);
+    for row in &var_uses {
+        let OccurrenceTarget::Local(target) = row.occurrence.target else {
+            panic!("expected Local target, got {:?}", row.occurrence.target);
+        };
+        let (_, name, kind) = entities(&v)
+            .into_iter()
+            .find(|(id, _, _)| *id == target.raw)
+            .expect("local target names a published entity");
+        assert_eq!(name, b"err");
+        assert_eq!(kind, EntityKind::Static);
+    }
+}
+
+#[test]
+fn enum_member_missing_name_does_not_invent_a_variant() {
+    const SOURCE: &[u8] = b"export enum Color { Red = 1 }\nexport function pick(): void { Color.missing; }\n";
+    let view = view(SOURCE, None);
+    assert!(
+        !entities(&view)
+            .iter()
+            .any(|(_, name, _)| name == b"missing")
+    );
+    assert!(
+        occurrences(&view).iter().all(|row| {
+            if row.occurrence.kind != ReferenceKind::FieldAccess {
+                return true;
+            }
+            !matches!(row.occurrence.target, OccurrenceTarget::Local(_))
+        }),
+        "a missing enum member stays off every published variant"
+    );
+}
+
+#[test]
+fn enum_member_non_enum_receiver_is_not_a_variant() {
+    const SOURCE: &[u8] = b"export function pick(box: { tick: number }): number { return box.tick; }\n";
+    let view = view(SOURCE, None);
+    assert!(
+        occurrences(&view).iter().all(|row| {
+            let OccurrenceTarget::Local(target) = row.occurrence.target else {
+                return true;
+            };
+            entities(&view)
+                .into_iter()
+                .find(|(id, _, _)| *id == target.raw)
+                .is_none_or(|(_, _, kind)| kind != EntityKind::Variant)
+        }),
+        "a non-enum property read does not retarget an enum variant"
+    );
+}
+
+#[test]
+fn function_value_reference_is_a_call_not_a_read() {
+    const SOURCE: &[u8] = b"export function parse(raw: string): number { return raw.length; }
+export function use(items: string[]): number[] {
+  const bound = parse;
+  return items.map(parse);
+}
+export function direct(raw: string): number { return parse(raw); }
+export function typed(value: typeof parse): number { return 0; }
+const count = 1;
+const alias = count;
+const arrow = (raw: string) => raw.length;
+export function viaArrow(items: string[]): string[] { return items.map(arrow); }
+export function directArrow(raw: string): number { return arrow(raw); }
+const wrapped = (() => 1);
+export function viaWrapped(items: number[]): number[] { return items.map(wrapped); }
+let rebound = () => 1;
+export function viaRebound(items: number[]): number[] { return items.map(rebound); }
+export function viaAliasParse(items: string[]): string[] {
+  const alias = parse;
+  return items.map(alias);
+}
+const namedFn = function localFn() { return 1; };
+export function viaNamed(items: number[]): number[] { return items.map(namedFn); }
+const cast = (() => 1) as () => number;
+export function viaCast(items: number[]): number[] { return items.map(cast); }
+const bang = (() => 1)!;
+export function viaBang(items: number[]): number[] { return items.map(bang); }
+";
+    let view = view(SOURCE, None);
+    let parse_id = EntityId::new(named(&view, b"parse").0);
+    let bound_id = named(&view, b"bound").0;
+    let use_id = named(&view, b"use").0;
+    let direct_id = named(&view, b"direct").0;
+    let typed_id = named(&view, b"typed").0;
+    let alias_id = named(&view, b"alias").0;
+    let alias_parse_binding_id = entities(&view)
+        .into_iter()
+        .filter(|(id, name, _)| name == b"alias" && *id != alias_id)
+        .map(|(id, _, _)| id)
+        .next()
+        .expect("function-local alias binding");
+    let count_id = EntityId::new(named(&view, b"count").0);
+    let via_arrow_id = named(&view, b"viaArrow").0;
+    let arrow_id = EntityId::new(named(&view, b"arrow").0);
+    let direct_arrow_id = named(&view, b"directArrow").0;
+    let wrapped_id = EntityId::new(named(&view, b"wrapped").0);
+    let via_wrapped_id = named(&view, b"viaWrapped").0;
+    let rebound_id = EntityId::new(named(&view, b"rebound").0);
+    let via_rebound_id = named(&view, b"viaRebound").0;
+    let via_alias_parse_id = named(&view, b"viaAliasParse").0;
+    let named_fn_id = EntityId::new(named(&view, b"namedFn").0);
+    let via_named_id = named(&view, b"viaNamed").0;
+    let cast_id = EntityId::new(named(&view, b"cast").0);
+    let via_cast_id = named(&view, b"viaCast").0;
+    let bang_id = EntityId::new(named(&view, b"bang").0);
+    let via_bang_id = named(&view, b"viaBang").0;
+
+    let owner_start = |name: &[u8]| {
+        SOURCE
+            .windows(name.len())
+            .position(|window| window == name)
+            .expect("owner declaration name")
+    };
+    let site_start = |site: &[u8], token: &[u8]| {
+        let site_at = SOURCE
+            .windows(site.len())
+            .position(|window| window == site)
+            .expect("reference site");
+        let offset = site
+            .windows(token.len())
+            .position(|window| window == token)
+            .expect("token inside site");
+        site_at + offset
+    };
+    let relative = |owner: &[u8], site: &[u8], token: &[u8]| {
+        u32::try_from(site_start(site, token) - owner_start(owner)).expect("owner-relative span")
+    };
+
+    let rows = occurrences(&view);
+    let parse_calls = rows
+        .iter()
+        .filter(|row| {
+            row.occurrence.kind == ReferenceKind::FunctionCall
+                && row.occurrence.target == OccurrenceTarget::Local(parse_id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(parse_calls.len(), 4, "parse has four function-value/call sites");
+
+    let alias_parse_init = parse_calls
+        .iter()
+        .filter(|row| row.owner.raw == alias_parse_binding_id)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"alias = parse", b"const alias = parse", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(alias_parse_init.len(), 1, "const alias = parse is one call");
+    assert_eq!(
+        alias_parse_init[0].occurrence.span.end,
+        alias_parse_init[0].occurrence.span.start + 5
+    );
+
+    let bound_call = parse_calls
+        .iter()
+        .filter(|row| row.owner.raw == bound_id)
+        .filter(|row| {
+            row.occurrence.span.start == relative(b"bound", b"const bound = parse", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bound_call.len(), 1, "bound = parse is one call");
+    assert_eq!(bound_call[0].occurrence.span.end, bound_call[0].occurrence.span.start + 5);
+
+    let map_call = parse_calls
+        .iter()
+        .filter(|row| row.owner.raw == use_id)
+        .filter(|row| {
+            row.occurrence.span.start == relative(b"function use", b"items.map(parse)", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(map_call.len(), 1, "items.map(parse) is one call");
+    assert_eq!(map_call[0].occurrence.span.end, map_call[0].occurrence.span.start + 5);
+    assert_ne!(
+        (bound_call[0].owner.raw, bound_call[0].occurrence.span.start),
+        (map_call[0].owner.raw, map_call[0].occurrence.span.start),
+        "bound and map parse spans differ"
+    );
+
+    let direct_call = parse_calls
+        .iter()
+        .filter(|row| row.owner.raw == direct_id)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function direct", b"parse(raw)", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(direct_call.len(), 1, "parse(raw) is one call not two");
+    assert_eq!(direct_call[0].occurrence.span.end, direct_call[0].occurrence.span.start + 5);
+
+    let typeof_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == typed_id)
+        .filter(|row| {
+            row.occurrence.span.start == relative(b"function typed", b"typeof parse", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(typeof_rows.len(), 1, "typeof parse emits one row");
+    assert_eq!(typeof_rows[0].occurrence.kind, ReferenceKind::TypeReference);
+
+    let alias_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == alias_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(count_id))
+        .filter(|row| {
+            row.occurrence.span.start == relative(b"alias", b"const alias = count", b"count")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(alias_rows.len(), 1, "alias = count emits one row");
+    assert_eq!(alias_rows[0].occurrence.kind, ReferenceKind::VariableUse);
+
+    let arrow_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_arrow_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(arrow_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaArrow", b"items.map(arrow)", b"arrow")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(arrow_call.len(), 1, "items.map(arrow) is one call");
+    assert_eq!(arrow_call[0].occurrence.span.end, arrow_call[0].occurrence.span.start + 5);
+
+    let direct_arrow_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == direct_arrow_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(arrow_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function directArrow", b"arrow(raw)", b"arrow")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(direct_arrow_call.len(), 1, "arrow(raw) is one call not two");
+    assert_eq!(
+        direct_arrow_call[0].occurrence.span.end,
+        direct_arrow_call[0].occurrence.span.start + 5
+    );
+
+    let wrapped_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_wrapped_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(wrapped_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaWrapped", b"items.map(wrapped)", b"wrapped")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(wrapped_call.len(), 1, "items.map(wrapped) is one call");
+    assert_eq!(wrapped_call[0].occurrence.span.end, wrapped_call[0].occurrence.span.start + 7);
+
+    let rebound_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_rebound_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(rebound_id))
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaRebound", b"items.map(rebound)", b"rebound")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rebound_rows.len(), 1, "items.map(rebound) emits one row");
+    assert_eq!(rebound_rows[0].occurrence.kind, ReferenceKind::VariableUse);
+
+    let alias_parse_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_alias_parse_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(EntityId::new(alias_parse_binding_id)))
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaAliasParse", b"items.map(alias)", b"alias")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(alias_parse_rows.len(), 1, "items.map(alias) through parse alias emits one row");
+    assert_eq!(alias_parse_rows[0].occurrence.kind, ReferenceKind::VariableUse);
+
+    let named_fn_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_named_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(named_fn_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaNamed", b"items.map(namedFn)", b"namedFn")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(named_fn_call.len(), 1, "items.map(namedFn) is one call");
+    assert_eq!(
+        named_fn_call[0].occurrence.span.end,
+        named_fn_call[0].occurrence.span.start + u32::try_from(b"namedFn".len()).expect("namedFn len")
+    );
+
+    let cast_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_cast_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(cast_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaCast", b"items.map(cast)", b"cast")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cast_call.len(), 1, "items.map(cast) is one call");
+    assert_eq!(
+        cast_call[0].occurrence.span.end,
+        cast_call[0].occurrence.span.start + u32::try_from(b"cast".len()).expect("cast len")
+    );
+
+    let bang_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_bang_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(bang_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaBang", b"items.map(bang)", b"bang")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bang_call.len(), 1, "items.map(bang) is one call");
+    assert_eq!(
+        bang_call[0].occurrence.span.end,
+        bang_call[0].occurrence.span.start + u32::try_from(b"bang".len()).expect("bang len")
+    );
 }

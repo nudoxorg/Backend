@@ -1,14 +1,17 @@
 //! Durable typed owner for follows, projects, and the shared session tree.
 
 use backend_engine::{
-    DeclarationRecord, DependencyFacts, ForgeManifestRecord, ForgePackageFact, ForgePackageRecord,
-    ForgeRepositoryMetadataRecord, PackageDependencyRecord, PackageDependencySourceFacts,
-    PackageReference, ProductText, ProductTreeNodeId as TreeNodeId, ProjectId, ProjectName,
-    ProjectRecord, ProjectSelector, RegistryMetadata, RegistryPackageRecord, ReleaseRecord, RowId,
-    SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject,
-    ViewRoot,
+    DeclarationRecord, DependencyFacts, DependencyScope, PackageDependencyRecord,
+    PackageDependencySourceFacts, PackageReference, ProductText, ProductTreeNodeId as TreeNodeId,
+    ProjectId, ProjectName, ProjectRecord, ProjectSelector, RegistryMetadata,
+    RegistryPackageRecord, ReleaseRecord, RowId, SemanticGenerationId, SemanticLanguageProfile,
+    SemanticVersionRecord, SubscriptionRecord, SurfaceCommand, SurfaceReply, TreeNodeRecord,
+    TreeOpener, TreeSubject, ViewRoot,
 };
-use backend_library::{CommandMutation, command_spec};
+use backend_library::{
+    AdvisoryPackageDto, CommandMutation, Fragment, RegistryDownloadCount, RegistryEcosystem,
+    RegistryFactAvailability, RegistryNativeMetadata, RegistryReleaseStanding, Row, command_spec,
+};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -56,6 +59,12 @@ pub(super) struct ProductState {
 }
 
 impl ProductState {
+    pub(super) fn workspace_path(&self) -> Result<&Path, String> {
+        self.path
+            .parent()
+            .ok_or_else(|| "product state path has no parent workspace".to_owned())
+    }
+
     pub(super) fn open(path: PathBuf) -> Result<Self, String> {
         let state = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -79,12 +88,13 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         dependency_facts: &[PackageDependencySourceFacts],
+        workspace: Option<&Path>,
     ) -> Result<SurfaceReply, String> {
         command.admit().map_err(|error| error.to_string())?;
         match command_spec(command.id()).mutation {
             CommandMutation::Read => {
                 let (reply, changed) =
-                    self.execute_admitted(command, view, catalog, dependency_facts)?;
+                    self.execute_admitted(command, view, catalog, dependency_facts, workspace)?;
                 if changed {
                     return Err("read command attempted to mutate product state".to_owned());
                 }
@@ -97,7 +107,7 @@ impl ProductState {
                     state: self.state.clone(),
                 };
                 let (reply, changed) =
-                    pending.execute_admitted(command, view, catalog, dependency_facts)?;
+                    pending.execute_admitted(command, view, catalog, dependency_facts, workspace)?;
                 reply.admit(reply.id()).map_err(|error| error.to_string())?;
                 if changed {
                     pending.commit()?;
@@ -114,6 +124,7 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         dependency_facts: &[PackageDependencySourceFacts],
+        workspace: Option<&Path>,
     ) -> Result<(SurfaceReply, bool), String> {
         let (reply, changed) = match command {
             SurfaceCommand::Advisory {
@@ -141,30 +152,34 @@ impl ProductState {
                 return Err("references require compiler publication authority".to_owned());
             }
             SurfaceCommand::Explore { query, limit } => (
-                SurfaceReply::Explored(catalog_page(catalog, query.as_ref(), limit)),
+                SurfaceReply::Explored(explore_page(
+                    view,
+                    catalog,
+                    query.as_ref(),
+                    limit,
+                )?),
                 false,
             ),
             SurfaceCommand::IndexSearch { query, limit } => (
-                SurfaceReply::IndexSearch(catalog_page(catalog, Some(&query), limit)),
+                SurfaceReply::IndexSearch(index_search_page(view, catalog, Some(&query), limit)?),
                 false,
             ),
             SurfaceCommand::Package { package } => {
-                (SurfaceReply::Package(packages(catalog, &package)), false)
+                (SurfaceReply::Package(package_page(view, catalog, &package)?), false)
             }
-            SurfaceCommand::ForgeAdd { coordinate } => (
-                SurfaceReply::ForgePackageAdded(forge_unavailable(&coordinate)),
-                false,
-            ),
-            SurfaceCommand::ForgeReference { coordinate } => (
-                SurfaceReply::ForgePackageReferenced(forge_unavailable(&coordinate)),
-                false,
-            ),
+            SurfaceCommand::ForgeAdd { .. } | SurfaceCommand::ForgeReference { .. } => {
+                return Err(
+                    "forge acquisition authority is not configured in this owner".to_owned(),
+                );
+            }
             SurfaceCommand::Dependencies { package } => (
                 SurfaceReply::Dependencies(dependencies(dependency_facts, &package)?),
                 false,
             ),
             SurfaceCommand::PackageVersions { package } => (
-                SurfaceReply::PackageVersions(versions(catalog, &package)),
+                SurfaceReply::PackageVersions(package_versions(
+                    view, catalog, &package, workspace,
+                )?),
                 false,
             ),
             SurfaceCommand::SemanticVersions { .. }
@@ -173,21 +188,20 @@ impl ProductState {
                     "semantic version history requires compiler publication authority".to_owned(),
                 );
             }
-            SurfaceCommand::PackageProfile { package } => (profile(catalog, &package), false),
+            SurfaceCommand::PackageProfile { package } => {
+                (profile(view, catalog, &package, workspace)?, false)
+            }
             SurfaceCommand::Dependents { package } => (
                 SurfaceReply::Dependents(dependents(catalog, dependency_facts, &package)?),
                 false,
             ),
-            SurfaceCommand::Owner { owner } => (
-                SurfaceReply::Owner(RegistryMetadata::NotRecorded(
-                    ProductText::new(format!(
-                        "the configured feed does not record publisher facts for {}",
-                        owner.as_str()
-                    ))
-                    .map_err(|e| e.to_string())?,
-                )),
-                false,
-            ),
+            SurfaceCommand::Owner { owner } => {
+                let workspace = self.workspace_path()?;
+                (
+                    SurfaceReply::Owner(owner_page(view, catalog, workspace, &owner)?),
+                    false,
+                )
+            }
             SurfaceCommand::Subscribe { package, project } => (
                 SurfaceReply::Subscribed(self.subscribe(package, project.as_ref())?),
                 true,
@@ -200,15 +214,21 @@ impl ProductState {
                 false,
             ),
             SurfaceCommand::Releases { mark_seen } => (
-                SurfaceReply::Releases(self.releases(catalog, mark_seen)),
+                SurfaceReply::Releases(self.releases(view, catalog, mark_seen, workspace)?),
                 mark_seen,
             ),
             SurfaceCommand::Projects => (
-                SurfaceReply::Projects(self.state.projects.clone().into_boxed_slice()),
+                SurfaceReply::Projects(enrich_projects(
+                    &self.state.projects,
+                    view,
+                    workspace,
+                )?),
                 false,
             ),
             SurfaceCommand::ProjectCreate { name, lockfile } => (
-                SurfaceReply::ProjectCreated(self.create_project(name, lockfile)?),
+                SurfaceReply::ProjectCreated(
+                    enrich_project(self.create_project(name, lockfile)?, view, workspace)?,
+                ),
                 true,
             ),
             SurfaceCommand::ProjectDelete { project } => (
@@ -216,15 +236,27 @@ impl ProductState {
                 true,
             ),
             SurfaceCommand::ProjectAdd { project, package } => (
-                SurfaceReply::ProjectAdded(self.change_member(&project, package, true)?),
+                SurfaceReply::ProjectAdded(enrich_project(
+                    self.change_member(&project, package, true)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::ProjectRemove { project, package } => (
-                SurfaceReply::ProjectRemoved(self.change_member(&project, package, false)?),
+                SurfaceReply::ProjectRemoved(enrich_project(
+                    self.change_member(&project, package, false)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::ProjectSync { project } => (
-                SurfaceReply::ProjectSynced(self.sync_project(&project)?),
+                SurfaceReply::ProjectSynced(enrich_project(
+                    self.sync_project(&project)?,
+                    view,
+                    workspace,
+                )?),
                 true,
             ),
             SurfaceCommand::Tree => (SurfaceReply::Tree(self.current_tree()), false),
@@ -234,7 +266,7 @@ impl ProductState {
                 title,
                 opener,
             } => (
-                SurfaceReply::TreeOpened(self.open_tree(subject, parent, title, opener)?),
+                SurfaceReply::TreeOpened(self.open_tree(view, subject, parent, title, opener)?),
                 true,
             ),
             SurfaceCommand::TreeClose { node, branch } => (
@@ -308,15 +340,24 @@ impl ProductState {
 
     fn releases(
         &mut self,
+        view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         mark_seen: bool,
-    ) -> Box<[ReleaseRecord]> {
+        workspace: Option<&Path>,
+    ) -> Result<Box<[ReleaseRecord]>, String> {
         let mut result = Vec::new();
         for subscription in &mut self.state.subscriptions {
-            let mut matches = catalog
-                .iter()
-                .filter(|row| package_matches(&subscription.package, row))
-                .collect::<Vec<_>>();
+            let indexed =
+                indexed_package_records(view, &subscription.package, workspace)?;
+            let mut matches = if indexed.is_empty() {
+                catalog
+                    .iter()
+                    .filter(|row| package_matches(&subscription.package, row))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                indexed
+            };
             matches.sort_by(|a, b| b.version.cmp(&a.version));
             for row in &matches {
                 if subscription.seen.as_ref() != Some(&row.version) {
@@ -334,7 +375,7 @@ impl ProductState {
         if result.len() > backend_engine::MAX_PRODUCT_ROWS {
             result.truncate(backend_engine::MAX_PRODUCT_ROWS);
         }
-        result.into_boxed_slice()
+        Ok(result.into_boxed_slice())
     }
 
     fn create_project(
@@ -365,6 +406,7 @@ impl ProductState {
             name,
             lockfile,
             members: Box::new([]),
+            member_manifest_names: Box::new([]),
         };
         self.state.projects.push(project.clone());
         Ok(project)
@@ -428,11 +470,13 @@ impl ProductState {
 
     fn open_tree(
         &mut self,
+        view: &ViewRoot,
         subject: TreeSubject,
         parent: Option<TreeNodeId>,
         title: Option<ProductText>,
         opener: TreeOpener,
     ) -> Result<TreeNodeRecord, String> {
+        let (subject, title) = resolve_tree_subject(view, subject, title)?;
         if parent.is_some_and(|parent| !self.state.tree.iter().any(|row| row.id == parent)) {
             return Err("tree parent does not exist".to_owned());
         }
@@ -456,7 +500,6 @@ impl ProductState {
         for row in &mut self.state.tree {
             row.active = false;
         }
-        let title = title.unwrap_or_else(|| subject_title(&subject));
         let row = TreeNodeRecord {
             id,
             parent,
@@ -497,38 +540,6 @@ impl ProductState {
     }
 }
 
-fn forge_unavailable(coordinate: &ProductText) -> ForgePackageRecord {
-    let reason =
-        ProductText::from_static("forge acquisition authority is not configured in this owner");
-    let unavailable_text = || ForgePackageFact::<ProductText>::Unavailable(reason.clone());
-    let unavailable_topics = || ForgePackageFact::<Box<[ProductText]>>::Unavailable(reason.clone());
-    let unavailable_number = || ForgePackageFact::<u64>::Unavailable(reason.clone());
-    let owner = ProductText::from_static("unknown");
-    let repository = ProductText::from_static("unknown");
-    let unavailable_metadata = ForgeRepositoryMetadataRecord {
-        owner: unavailable_text(),
-        description: unavailable_text(),
-        license: unavailable_text(),
-        readme: unavailable_text(),
-        topics: unavailable_topics(),
-        stars: unavailable_number(),
-        forks: unavailable_number(),
-    };
-    ForgePackageRecord {
-        coordinate: coordinate.clone(),
-        provider: ProductText::from_static("unknown"),
-        owner,
-        repository,
-        revision: coordinate.clone(),
-        subdir: None,
-        commit: unavailable_text(),
-        tree: unavailable_text(),
-        metadata: unavailable_metadata,
-        manifests: Box::new([] as [ForgeManifestRecord; 0]),
-        source: unavailable_text(),
-    }
-}
-
 fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -548,7 +559,12 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
                     RowId::Object(id) => id.to_bytes(),
                 }),
                 signature: row
-                    .and_then(|value| value.signature.as_deref())
+                    .and_then(|value| {
+                        value
+                            .excerpt
+                            .text()
+                            .or(value.signature.as_deref())
+                    })
                     .map(ProductText::new)
                     .transpose()
                     .map_err(|e| e.to_string())?,
@@ -556,6 +572,475 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
         })
         .collect::<Result<Vec<_>, String>>()
         .map(Vec::into_boxed_slice)
+}
+
+fn owner_page(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    workspace: &Path,
+    query: &ProductText,
+) -> Result<RegistryMetadata<Box<[RegistryPackageRecord]>>, String> {
+    let needle = query.as_str();
+    let mut records = Vec::new();
+    let mut seen = BTreeSet::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Symbol(_)) {
+            continue;
+        }
+        let (name, path) = declaration_identity(row)?;
+        if name != needle {
+            continue;
+        }
+        let project_root = row
+            .label
+            .split_once("::")
+            .map(|(project, _)| project)
+            .ok_or_else(|| format!("declaration row {} has no owning project", row.label))?;
+        let source_root =
+            super::local_manifest::indexed_package_source_root(project_root, workspace)?;
+        let package_record = super::local_manifest::local_registry_record(&source_root)?;
+        if !seen.insert(package_record.coordinate.as_str().to_owned()) {
+            continue;
+        }
+        let file = RegistryPackageRecord {
+            coordinate: PackageReference::Local(
+                ProductText::new(format!("{project_root}::{path}"))
+                    .map_err(|error| error.to_string())?,
+            ),
+            ecosystem: package_record.ecosystem,
+            name: ProductText::new(path.clone()).map_err(|error| error.to_string())?,
+            version: ProductText::new(path).map_err(|error| error.to_string())?,
+            bytes: 0,
+            standing: RegistryReleaseStanding::Available,
+            downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+            facts_version: [0; 32],
+            native_metadata_version: package_record.native_metadata_version,
+            native_metadata: package_record.native_metadata.clone(),
+            forge_sources: Box::new([]),
+            advisory: AdvisoryPackageDto::unknown(),
+        };
+        records.push(package_record);
+        if seen.insert(file.coordinate.as_str().to_owned()) {
+            records.push(file);
+        }
+    }
+    if records.is_empty() {
+        let registry = catalog
+            .iter()
+            .filter(|record| record.name.as_str() == needle)
+            .cloned()
+            .collect::<Vec<_>>();
+        if registry.is_empty() {
+            return Ok(RegistryMetadata::NotRecorded(
+                ProductText::new(format!(
+                    "no indexed declaration or registry publisher named {}",
+                    needle
+                ))
+                .map_err(|error| error.to_string())?,
+            ));
+        }
+        return Ok(RegistryMetadata::Recorded(registry.into_boxed_slice()));
+    }
+    Ok(RegistryMetadata::Recorded(records.into_boxed_slice()))
+}
+
+fn explore_page(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    query: Option<&ProductText>,
+    limit: u16,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    if let Some(query_text) = query
+        && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
+    {
+        return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
+    }
+    let registry = catalog_page(catalog, query, limit);
+    if !registry.is_empty() {
+        return Ok(registry);
+    }
+    if let Some(query_text) = query
+        && let Some(project_root) = indexed_project_for_query(view, query_text.as_str())
+    {
+        return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
+    }
+    Ok(registry)
+}
+
+fn indexed_project_for_query(view: &ViewRoot, query: &str) -> Option<String> {
+    for row in view.rows() {
+        if matches!(row.id, RowId::Package(_)) && row.label == query {
+            return Some(row.label.clone());
+        }
+    }
+    view.rows().iter().find_map(|row| {
+        row.label
+            .split_once("::")
+            .and_then(|(project, _)| (project == query).then(|| project.to_owned()))
+    })
+}
+
+fn indexed_explore_page(
+    view: &ViewRoot,
+    project_root: &str,
+    query: &str,
+    limit: u16,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let prefix = format!("{project_root}::");
+    let filter = query.to_ascii_lowercase();
+    let mut records = Vec::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Symbol(_)) || !row.label.starts_with(&prefix) {
+            continue;
+        }
+        if query != project_root
+            && !row.label.to_ascii_lowercase().contains(&filter)
+            && !row
+                .label
+                .rsplit("::")
+                .next()
+                .is_some_and(|name| name.to_ascii_lowercase().contains(&filter))
+        {
+            continue;
+        }
+        records.push(declaration_explore_record(row)?);
+        if records.len() >= usize::from(limit) {
+            break;
+        }
+    }
+    Ok(records.into_boxed_slice())
+}
+
+fn declaration_identity(row: &Row) -> Result<(String, String), String> {
+    let name = row
+        .label
+        .rsplit("::")
+        .next()
+        .ok_or_else(|| format!("declaration row {} has no symbol name", row.label))?;
+    let path = row
+        .source
+        .captured()
+        .map(|location| location.path().to_owned())
+        .or_else(|| {
+            row.label
+                .split_once("::")
+                .and_then(|(_, rest)| rest.rsplit_once("::"))
+                .map(|(path, _)| path)
+                .map(|path| {
+                    path.rsplit_once(':')
+                        .map_or(path, |(path_without_line, _)| path_without_line)
+                        .to_owned()
+                })
+        })
+        .ok_or_else(|| format!("declaration row {} has no source path", row.label))?;
+    Ok((name.to_owned(), path))
+}
+
+fn declaration_explore_record(row: &Row) -> Result<RegistryPackageRecord, String> {
+    let (name, path) = declaration_identity(row)?;
+    Ok(RegistryPackageRecord {
+        coordinate: PackageReference::Local(
+            ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
+        ),
+        ecosystem: RegistryEcosystem::Cargo,
+        name: ProductText::new(name).map_err(|error| error.to_string())?,
+        version: ProductText::new(path).map_err(|error| error.to_string())?,
+        bytes: 0,
+        standing: RegistryReleaseStanding::Available,
+        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+        facts_version: [0; 32],
+        native_metadata_version: RegistryNativeMetadata::unavailable(
+            RegistryEcosystem::Cargo,
+            "indexed declaration",
+        )
+        .identity()
+        .map_err(|error| error.to_string())?,
+        native_metadata: RegistryNativeMetadata::unavailable(
+            RegistryEcosystem::Cargo,
+            "indexed declaration",
+        ),
+        forge_sources: Box::new([]),
+        advisory: AdvisoryPackageDto::unknown(),
+    })
+}
+
+fn resolve_tree_subject(
+    view: &ViewRoot,
+    subject: TreeSubject,
+    title: Option<ProductText>,
+) -> Result<(TreeSubject, ProductText), String> {
+    match subject {
+        TreeSubject::Declaration(text) => {
+            let coordinate = text.as_str();
+            let row = view
+                .rows()
+                .iter()
+                .find(|row| matches!(row.id, RowId::Symbol(_)) && row.label == coordinate)
+                .ok_or_else(|| format!("declaration {coordinate} is not indexed"))?;
+            let (name, path) = declaration_identity(row)?;
+            Ok((
+                TreeSubject::Declaration(
+                    ProductText::new(row.label.clone()).map_err(|error| error.to_string())?,
+                ),
+                ProductText::new(format!("{name} · {path}"))
+                    .map_err(|error| error.to_string())?,
+            ))
+        }
+        other => Ok((
+            other.clone(),
+            title.unwrap_or_else(|| subject_title(&other)),
+        )),
+    }
+}
+
+fn index_search_page(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    query: Option<&ProductText>,
+    limit: u16,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let mut records = catalog_page(catalog, query, limit).into_vec();
+    let needle = query.map_or("", ProductText::as_str);
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Symbol(_)) || !row_matches_index_query(row, needle) {
+            continue;
+        }
+        records.push(declaration_explore_record(row)?);
+        if records.len() >= usize::from(limit) {
+            break;
+        }
+    }
+    Ok(records.into_boxed_slice())
+}
+
+fn row_matches_index_query(row: &Row, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let filter = query.to_ascii_lowercase();
+    if row.label.to_ascii_lowercase().contains(&filter) {
+        return true;
+    }
+    if row
+        .label
+        .rsplit("::")
+        .next()
+        .is_some_and(|name| name.to_ascii_lowercase().contains(&filter))
+    {
+        return true;
+    }
+    if row
+        .signature
+        .as_deref()
+        .is_some_and(|signature| signature.to_ascii_lowercase().contains(&filter))
+    {
+        return true;
+    }
+    if row
+        .excerpt
+        .text()
+        .is_some_and(|excerpt| excerpt.to_ascii_lowercase().contains(&filter))
+    {
+        return true;
+    }
+    row.document.iter().any(|fragment| {
+        let text = match fragment {
+            Fragment::Text(value) | Fragment::Code(value) => value.as_str(),
+            Fragment::Link { label, .. } => label.as_str(),
+            Fragment::Break => return false,
+        };
+        text.to_ascii_lowercase().contains(&filter)
+    })
+}
+
+pub(crate) fn indexed_semantic_versions(
+    view: &ViewRoot,
+    package: &PackageReference,
+    workspace: Option<&Path>,
+) -> Result<Box<[SemanticVersionRecord]>, String> {
+    let mut versions = Vec::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        let project_root = if Path::new(&row.label).is_dir() {
+            PathBuf::from(&row.label)
+        } else if row.label.starts_with("pkg:") {
+            let source = PackageReference::parse(&row.label).map_err(|error| error.to_string())?;
+            if !package_matches(package, &stub_registry_record(source)) {
+                continue;
+            }
+            registry_project_root(view, &row.label, workspace)?
+        } else {
+            continue;
+        };
+        let Some(manifest) = super::local_manifest::read_local_manifest(&project_root)? else {
+            return Err(format!(
+                "indexed package {} has no supported manifest",
+                project_root.display()
+            ));
+        };
+        if !package_matches(package, &manifest.record) {
+            continue;
+        }
+        let PackageReference::Purl(coordinate) = manifest.record.coordinate.clone() else {
+            continue;
+        };
+        let profile = SemanticLanguageProfile::new(manifest.profile);
+        let facts_version = manifest.record.facts_version;
+        let bytes = manifest.record.bytes;
+        versions.push(SemanticVersionRecord {
+            package: manifest.record.coordinate,
+            coordinate,
+            profile,
+            generation: SemanticGenerationId::new(facts_version),
+            generation_root: facts_version,
+            dependency_set: facts_version,
+            manifest: facts_version,
+            artifacts: 1,
+            semantic_bytes: u32::try_from(bytes)
+                .map_err(|_| "indexed manifest byte count overflow".to_owned())?,
+            complete: false,
+            selected: true,
+        });
+    }
+    Ok(versions.into_boxed_slice())
+}
+
+fn indexed_package_records(
+    view: &ViewRoot,
+    package: &PackageReference,
+    workspace: Option<&Path>,
+) -> Result<Vec<RegistryPackageRecord>, String> {
+    let mut records = Vec::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        if Path::new(&row.label).is_dir() {
+            let project_root = Path::new(&row.label);
+            let manifest = super::local_manifest::require_local_manifest(project_root)?;
+            if package_matches(package, &manifest.record) {
+                records.push(manifest.record);
+            }
+            continue;
+        }
+        if !row.label.starts_with("pkg:") {
+            continue;
+        }
+        let source = PackageReference::parse(&row.label).map_err(|error| error.to_string())?;
+        if !package_matches(package, &stub_registry_record(source)) {
+            continue;
+        }
+        let root = registry_project_root(view, &row.label, workspace)?;
+        records.push(super::local_manifest::local_registry_record(&root)?);
+    }
+    Ok(records)
+}
+
+fn registry_project_root(
+    view: &ViewRoot,
+    project_label: &str,
+    workspace: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let expected = PackageReference::parse(project_label).map_err(|error| error.to_string())?;
+    let prefix = format!("{project_label}::");
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Symbol(_)) || !row.label.starts_with(&prefix) {
+            continue;
+        }
+        if let Some(location) = row.source.captured() {
+            let mut dir = Path::new(location.path());
+            while let Some(parent) = dir.parent() {
+                if let Some(manifest) = super::local_manifest::read_local_manifest(dir)? {
+                    if package_matches(&expected, &manifest.record) {
+                        return Ok(dir.to_path_buf());
+                    }
+                }
+                dir = parent;
+            }
+        }
+    }
+    if let Some(workspace) = workspace {
+        return registry_staging_root(workspace, &expected);
+    }
+    Err(format!(
+        "indexed package {project_label} has no captured source path"
+    ))
+}
+
+fn registry_staging_root(
+    workspace: &Path,
+    package: &PackageReference,
+) -> Result<PathBuf, String> {
+    let version = match package {
+        PackageReference::Purl(coordinate) => coordinate.version(),
+        PackageReference::Local(_) => "",
+    };
+    let staging = workspace.join("registry-staging");
+    if !staging.is_dir() {
+        return Err(format!(
+            "registry staging is absent for {}",
+            package.as_str()
+        ));
+    }
+    for entry in fs::read_dir(&staging).map_err(|error| error.to_string())? {
+        let path = entry
+            .map_err(|error| error.to_string())?
+            .path()
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !path.is_dir()
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
+        if let Some(root) =
+            super::local_manifest::staged_manifest_root(&path, version, package.as_str())?
+        {
+            return Ok(root);
+        }
+    }
+    Err(format!(
+        "indexed package {} has no staged registry manifest",
+        package.as_str()
+    ))
+}
+
+fn stub_registry_record(coordinate: PackageReference) -> RegistryPackageRecord {
+    let (ecosystem, name, version) = match &coordinate {
+        PackageReference::Purl(url) => (
+            url.package_type().registry().unwrap_or(RegistryEcosystem::Cargo),
+            ProductText::new(url.lineage_name()).map_err(|error| error.to_string()),
+            ProductText::new(url.version()).map_err(|error| error.to_string()),
+        ),
+        PackageReference::Local(label) => (
+            RegistryEcosystem::Cargo,
+            Ok(label.clone()),
+            ProductText::new("0.0.0").map_err(|error| error.to_string()),
+        ),
+    };
+    let name = name.expect("indexed package name is admissible");
+    let version = version.expect("indexed package version is admissible");
+    let ecosystem = ecosystem;
+    let native_metadata = RegistryNativeMetadata::unavailable(ecosystem, "indexed package");
+    RegistryPackageRecord {
+        coordinate,
+        ecosystem,
+        name,
+        version,
+        bytes: 0,
+        standing: RegistryReleaseStanding::Available,
+        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+        facts_version: [0; 32],
+        native_metadata_version: native_metadata.identity().unwrap_or([0; 32]),
+        native_metadata,
+        forge_sources: Box::new([]),
+        advisory: AdvisoryPackageDto::unknown(),
+    }
 }
 
 fn catalog_page(
@@ -582,6 +1067,63 @@ fn catalog_page(
 fn package_matches(package: &PackageReference, row: &RegistryPackageRecord) -> bool {
     &row.coordinate == package || row.name.as_str() == package.as_str()
 }
+
+fn enrich_projects(
+    projects: &[ProjectRecord],
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<Box<[ProjectRecord]>, String> {
+    projects
+        .iter()
+        .cloned()
+        .map(|project| enrich_project(project, view, workspace))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn enrich_project(
+    project: ProjectRecord,
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<ProjectRecord, String> {
+    let member_manifest_names = project
+        .members
+        .iter()
+        .map(|member| member_manifest_name(member, view, workspace))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
+    Ok(ProjectRecord {
+        member_manifest_names,
+        ..project
+    })
+}
+
+fn member_manifest_name(
+    member: &PackageReference,
+    view: &ViewRoot,
+    workspace: Option<&Path>,
+) -> Result<ProductText, String> {
+    match member {
+        PackageReference::Local(label) => {
+            let project_root = Path::new(label.as_str());
+            if !project_root.is_dir() {
+                return Err(format!(
+                    "project member {} is not a local manifest path",
+                    label.as_str()
+                ));
+            }
+            let manifest = super::local_manifest::require_local_manifest(project_root)?;
+            Ok(manifest.record.name)
+        }
+        PackageReference::Purl(_) => {
+            let records = indexed_package_records(view, member, workspace)?;
+            let record = records
+                .first()
+                .ok_or_else(|| format!("project member {} is not indexed", member.as_str()))?;
+            Ok(record.name.clone())
+        }
+    }
+}
 fn packages(
     catalog: &[RegistryPackageRecord],
     package: &PackageReference,
@@ -593,6 +1135,50 @@ fn packages(
         .collect::<Vec<_>>()
         .into_boxed_slice()
 }
+
+fn package_page(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    package: &PackageReference,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let records = packages(catalog, package);
+    if !records.is_empty() {
+        return Ok(records);
+    }
+    if let PackageReference::Local(label) = package {
+        let project_root = Path::new(label.as_str());
+        if project_root.is_dir()
+            && let Some(manifest) = super::local_manifest::read_local_manifest(project_root)?
+        {
+            return Ok(Box::new([manifest.record]));
+        }
+    }
+    let PackageReference::Purl(_) = package else {
+        return Err(format!(
+            "package {} is not recorded in the registry catalog",
+            package.as_str()
+        ));
+    };
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        let project_root = Path::new(&row.label);
+        if !project_root.is_dir() {
+            continue;
+        }
+        let Some(manifest) = super::local_manifest::read_local_manifest(project_root)? else {
+            continue;
+        };
+        if &manifest.record.coordinate == package {
+            return Ok(Box::new([manifest.record]));
+        }
+    }
+    Err(format!(
+        "package {} does not match any indexed local manifest",
+        package.as_str()
+    ))
+}
 fn versions(
     catalog: &[RegistryPackageRecord],
     package: &PackageReference,
@@ -601,12 +1187,86 @@ fn versions(
     rows.sort_by(|a, b| b.version.cmp(&a.version));
     rows.into_boxed_slice()
 }
-fn profile(catalog: &[RegistryPackageRecord], package: &PackageReference) -> SurfaceReply {
-    let rows = versions(catalog, package);
-    SurfaceReply::PackageProfile {
+
+fn indexed_package_coordinates(
+    view: &ViewRoot,
+    workspace: &Path,
+) -> Result<BTreeSet<String>, String> {
+    let mut coordinates = BTreeSet::new();
+    for row in view.rows() {
+        if !matches!(row.id, RowId::Package(_)) {
+            continue;
+        }
+        if row.label.starts_with("pkg:") {
+            coordinates.insert(row.label.clone());
+            continue;
+        }
+        let source_root =
+            super::local_manifest::indexed_package_source_root(&row.label, workspace)?;
+        let manifest = super::local_manifest::require_local_manifest(&source_root)?;
+        coordinates.insert(manifest.record.coordinate.as_str().to_owned());
+    }
+    Ok(coordinates)
+}
+
+fn version_matches(package: &PackageReference, row: &RegistryPackageRecord) -> bool {
+    if package_matches(package, row) {
+        return true;
+    }
+    match package {
+        PackageReference::Purl(query) => row.name.as_str() == query.lineage_name(),
+        PackageReference::Local(_) => false,
+    }
+}
+
+fn indexed_catalog_versions(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    workspace: &Path,
+    package: &PackageReference,
+) -> Result<Vec<RegistryPackageRecord>, String> {
+    let indexed = indexed_package_coordinates(view, workspace)?;
+    Ok(catalog
+        .iter()
+        .filter(|row| version_matches(package, row))
+        .filter(|row| indexed.contains(row.coordinate.as_str()))
+        .cloned()
+        .collect())
+}
+
+fn package_versions(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    package: &PackageReference,
+    workspace: Option<&Path>,
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let indexed = indexed_package_records(view, package, workspace)?;
+    let mut rows = if !indexed.is_empty() {
+        indexed
+    } else if let Some(workspace) = workspace {
+        let from_catalog = indexed_catalog_versions(view, catalog, workspace, package)?;
+        if from_catalog.is_empty() {
+            return Ok(versions(catalog, package));
+        }
+        from_catalog
+    } else {
+        return Ok(versions(catalog, package));
+    };
+    rows.sort_by(|a, b| b.version.cmp(&a.version));
+    Ok(rows.into_boxed_slice())
+}
+
+fn profile(
+    view: &ViewRoot,
+    catalog: &[RegistryPackageRecord],
+    package: &PackageReference,
+    workspace: Option<&Path>,
+) -> Result<SurfaceReply, String> {
+    let rows = package_versions(view, catalog, package, workspace)?;
+    Ok(SurfaceReply::PackageProfile {
         latest: rows.first().cloned(),
         versions: rows.len() as u64,
-    }
+    })
 }
 fn dependencies(
     facts: &[PackageDependencySourceFacts],
@@ -651,7 +1311,10 @@ fn dependents(
         match value {
             DependencyFacts::Known(rows) => {
                 if rows.iter().any(|row| {
-                    Some(row.target.ecosystem) == ecosystem
+                    matches!(
+                        row.scope,
+                        DependencyScope::Runtime | DependencyScope::Optional
+                    ) && Some(row.target.ecosystem) == ecosystem
                         && row.target.name.as_str() == target.lineage_name()
                         && row
                             .target
@@ -672,14 +1335,52 @@ fn dependents(
             return Ok(RegistryMetadata::NotRecorded(reason));
         }
     }
-    Ok(RegistryMetadata::Recorded(
-        catalog
-            .iter()
-            .filter(|record| sources.contains(&record.coordinate))
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    ))
+    let mut records = catalog
+        .iter()
+        .filter(|record| sources.contains(&record.coordinate))
+        .cloned()
+        .collect::<Vec<_>>();
+    for source in sources {
+        if records.iter().any(|record| record.coordinate == source) {
+            continue;
+        }
+        records.push(local_manifest_registry_record(&source)?);
+    }
+    Ok(RegistryMetadata::Recorded(records.into_boxed_slice()))
+}
+
+fn local_manifest_registry_record(
+    source: &PackageReference,
+) -> Result<RegistryPackageRecord, String> {
+    let PackageReference::Purl(coordinate) = source else {
+        return Err(format!(
+            "local manifest dependents require a pinned package URL, not {}",
+            source.as_str()
+        ));
+    };
+    let ecosystem = coordinate.package_type().registry().ok_or_else(|| {
+        format!(
+            "local manifest dependents require a registry ecosystem for {}",
+            source.as_str()
+        )
+    })?;
+    let native_metadata = RegistryNativeMetadata::unavailable(ecosystem, "local manifest");
+    Ok(RegistryPackageRecord {
+        coordinate: source.clone(),
+        ecosystem,
+        name: ProductText::new(coordinate.lineage_name()).map_err(|error| error.to_string())?,
+        version: ProductText::new(coordinate.version()).map_err(|error| error.to_string())?,
+        bytes: 0,
+        standing: RegistryReleaseStanding::Available,
+        downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+        facts_version: [0; 32],
+        native_metadata_version: native_metadata
+            .identity()
+            .map_err(|error| error.to_string())?,
+        native_metadata,
+        forge_sources: Box::new([]),
+        advisory: AdvisoryPackageDto::unknown(),
+    })
 }
 fn subject_title(subject: &TreeSubject) -> ProductText {
     let text = match subject {
@@ -721,7 +1422,10 @@ fn parse_lockfile(path: &Path) -> Result<Box<[PackageReference]>, String> {
         } else if let Some(value) = line.strip_prefix("version = ")
             && let Some(name) = name.take()
         {
-            rows.insert(format!("{name}@{}", value.trim_matches(['\"', '\'', ','])));
+            rows.insert(format!(
+                "pkg:cargo/{name}@{}",
+                value.trim_matches(['\"', '\'', ','])
+            ));
         } else if let Some((name, version)) = line.split_once("==") {
             rows.insert(format!("{name}@{version}"));
         } else if let Some(value) = line.strip_prefix("require ")
@@ -743,6 +1447,14 @@ fn parse_lockfile(path: &Path) -> Result<Box<[PackageReference]>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backend_engine::{
+        AdvisoryPackageDto, DependencyAuthority, DependencyEvidence, DependencyFacts,
+        DependencyScope, PackageDependencyRecord, PackageDependencyTarget, PackageReference,
+        RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability, RegistryMetadata,
+        RegistryPackageRecord, RegistryReleaseStanding,
+    };
+    use backend_library::RegistryNativeMetadata;
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -778,13 +1490,96 @@ mod tests {
         }
     }
 
+    fn registry_row(coordinate: &str, name: &str) -> RegistryPackageRecord {
+        let native_metadata =
+            RegistryNativeMetadata::unavailable(RegistryEcosystem::Cargo, "dependents test");
+        RegistryPackageRecord {
+            coordinate: PackageReference::parse(coordinate).expect("coordinate"),
+            ecosystem: RegistryEcosystem::Cargo,
+            name: ProductText::new(name).expect("name"),
+            version: ProductText::new("1.0.0").expect("version"),
+            bytes: 0,
+            standing: RegistryReleaseStanding::Available,
+            downloads: RegistryDownloadCount::Unavailable(RegistryFactAvailability::Unsupported),
+            facts_version: [0; 32],
+            native_metadata_version: native_metadata.identity().expect("identity"),
+            native_metadata,
+            forge_sources: Box::new([]),
+            advisory: AdvisoryPackageDto::unknown(),
+        }
+    }
+
+    fn dependency_edge(
+        source: &str,
+        scope: DependencyScope,
+        frontier: u8,
+    ) -> (
+        PackageReference,
+        DependencyFacts<Box<[PackageDependencyRecord]>>,
+    ) {
+        let source = PackageReference::parse(source).expect("source");
+        let target = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target");
+        let row = PackageDependencyRecord::new(
+            source.clone(),
+            PackageDependencyTarget::new(
+                RegistryEcosystem::Cargo,
+                "target-lib",
+                "^1",
+                Some(target),
+            )
+            .expect("target"),
+            scope,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [frontier; 32],
+                provenance: [frontier + 1; 32],
+            },
+        );
+        (source, DependencyFacts::Known(vec![row].into_boxed_slice()))
+    }
+
+    #[test]
+    fn dependents_counts_only_runtime_and_optional_scopes() {
+        let target = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target");
+        let catalog = [
+            registry_row("pkg:cargo/runtime-src@1.0.0", "runtime-src"),
+            registry_row("pkg:cargo/dev-src@1.0.0", "dev-src"),
+            registry_row("pkg:cargo/build-src@1.0.0", "build-src"),
+            registry_row("pkg:cargo/peer-src@1.0.0", "peer-src"),
+            registry_row("pkg:cargo/optional-src@1.0.0", "optional-src"),
+        ];
+        let facts = [
+            dependency_edge("pkg:cargo/runtime-src@1.0.0", DependencyScope::Runtime, 1),
+            dependency_edge("pkg:cargo/dev-src@1.0.0", DependencyScope::Development, 2),
+            dependency_edge("pkg:cargo/build-src@1.0.0", DependencyScope::Build, 3),
+            dependency_edge("pkg:cargo/peer-src@1.0.0", DependencyScope::Peer, 4),
+            dependency_edge("pkg:cargo/optional-src@1.0.0", DependencyScope::Optional, 5),
+        ];
+        let result = dependents(&catalog, &facts, &target).expect("dependents");
+        let RegistryMetadata::Recorded(rows) = result else {
+            panic!("expected recorded dependents");
+        };
+        let coordinates = rows
+            .iter()
+            .map(|row| row.coordinate.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            coordinates,
+            BTreeSet::from([
+                "pkg:cargo/runtime-src@1.0.0",
+                "pkg:cargo/optional-src@1.0.0",
+            ])
+        );
+    }
+
     #[test]
     fn committed_state_reopens_at_the_exact_epoch() {
         let root = fixture("reopen");
         let path = root.join("product-state.json");
         let mut state = ProductState::open(path.clone()).expect("open empty state");
         let reply = state
-            .execute(create("Nudox"), &view(), &[], &[])
+            .execute(create("Nudox"), &view(), &[], &[], None)
             .expect("create project");
         assert!(matches!(reply, SurfaceReply::ProjectCreated(_)));
         assert_eq!(state.state.epoch, 1);
@@ -803,7 +1598,7 @@ mod tests {
         let path = root.join("product-state.json");
         let mut state = ProductState::open(path.clone()).expect("open empty state");
         state
-            .execute(create("Canonical"), &view(), &[], &[])
+            .execute(create("Canonical"), &view(), &[], &[], None)
             .expect("create project");
         fs::write(root.join(".product-state.json.9.9.tmp"), b"partial")
             .expect("interrupted sibling");
@@ -837,7 +1632,7 @@ mod tests {
         let before = state.state.clone();
         assert!(
             state
-                .execute(create("Unpublished"), &view(), &[], &[])
+                .execute(create("Unpublished"), &view(), &[], &[], None)
                 .is_err()
         );
         assert_eq!(state.state, before);

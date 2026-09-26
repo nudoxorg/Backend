@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use sha2::{Digest, Sha256};
 
 use backend_frontend_typescript::legacy::{
-    AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
+    AstKind, AuthorityError, BoundReference, Checker, CheckerIndex, GetSpan,
     MappedModifier as CheckerMappedModifier, NodeId, Origin, OxcModule, ReferenceFlags, Semantic,
     Span, SymbolFlags, SymbolId, SyntaxMappedModifier, TemplatePart, TypeTree, Utf8Span,
     syntax_mapped_modifier, with_analysis, with_analysis_declaration,
@@ -35,12 +35,6 @@ use crate::driver::{
     types::{FactFault, FactRejection, LoweringUnsupported},
 };
 
-/// Bound of one declaration's staged type-parameter rows; a source with more
-/// generic parameters on one declaration is a typed lane rejection. Real
-/// declaration files carry wide overload signatures (Hono's handler interface
-/// and Remeda's combinators exceed the former 16-row bound), so the staged
-/// bound must admit every declared generic the pooled lane can hold.
-const MAX_DECL_TYPE_PARAMETERS: usize = 64;
 /// Recursion bound for type-expression lowering; deeper expressions are
 /// honestly unknown with [`TypeReason::TruncatedAtDepthLimit`].
 const MAX_TYPE_DEPTH: u8 = 24;
@@ -48,8 +42,6 @@ const MAX_TYPE_DEPTH: u8 = 24;
 const UNSET: u32 = u32::MAX;
 /// The closed foreign ecosystem every unresolved TypeScript name lives in.
 const NPM_ECOSYSTEM: &str = "npm";
-/// Bound of staged JSDoc segments on one comment line.
-const MAX_JSDOC_SEGMENTS: usize = 16;
 
 /// Exact direct-authority rejection while borrowing OXC declaration facts.
 #[derive(Debug)]
@@ -230,41 +222,25 @@ struct TypeParamRow {
     default: Option<Span>,
 }
 
-/// Bounded staging for one declaration's generic parameters.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Staging for one declaration's generic parameters. The pooled
+/// type-parameter lane is the capacity; this list is not a second cap.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TypeParamRows {
-    rows: [TypeParamRow; MAX_DECL_TYPE_PARAMETERS],
-    len: usize,
+    rows: Vec<TypeParamRow>,
 }
 
 impl TypeParamRows {
-    const fn new() -> Self {
-        Self {
-            rows: [TypeParamRow {
-                name: Span::new(0, 0),
-                constraint: None,
-                default: None,
-            }; MAX_DECL_TYPE_PARAMETERS],
-            len: 0,
-        }
+    fn new() -> Self {
+        Self { rows: Vec::new() }
     }
 
-    /// Stages one row; a source declaring more generics on one declaration
-    /// than the staged bound is the typed lane rejection the bounded
-    /// extension-pool lane would raise anyway.
     fn push(&mut self, row: TypeParamRow) -> Result<(), TypeScriptCollectError> {
-        match self.rows.get_mut(self.len) {
-            Some(slot) => {
-                *slot = row;
-                self.len += 1;
-                Ok(())
-            }
-            None => Err(fault(FactFault::TypeParameterCapacity)),
-        }
+        self.rows.push(row);
+        Ok(())
     }
 
     fn iter(&self) -> impl Iterator<Item = &TypeParamRow> {
-        self.rows.iter().take(self.len)
+        self.rows.iter()
     }
 }
 
@@ -275,6 +251,7 @@ impl TypeParamRows {
 struct ParamRow {
     name: Span,
     annotation: Option<Span>,
+    default: Option<Span>,
     flags: u8,
 }
 
@@ -293,6 +270,7 @@ impl ParamRows {
             rows: [ParamRow {
                 name: Span::new(0, 0),
                 annotation: None,
+                default: None,
                 flags: 0,
             }; MAX_FACT_CHILDREN + 1],
             len: 0,
@@ -486,6 +464,8 @@ struct Projector<'x, 'report, 'source> {
     facts_by_name: HashMap<&'source [u8], Vec<u32>>,
     /// First registered fact ordinal per binding-name span start.
     fact_at_name: HashMap<u32, u32>,
+    /// Variable-binding initializer span per pushed constant or static fact.
+    binding_init_spans: HashMap<u32, Option<Span>>,
     /// Synthetic (unregistered) type-expression facts per exact spelling,
     /// consulted only for hash-consing an identical anonymous embodiment.
     synthetic_by_name: HashMap<&'source [u8], Vec<u32>>,
@@ -615,6 +595,30 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// exactly there.
     fn fact_at_name_start(&self, start: u32) -> Option<u32> {
         self.fact_at_name.get(&start).copied()
+    }
+
+    /// Resolves one source position to the innermost enclosing function
+    /// whose declaring span still contains it.
+    fn enclosing_function_owner(&self, position: u32) -> Option<u32> {
+        let length = coordinate(self.facts.len()).ok()?;
+        let mut best: Option<(u32, u32)> = None;
+        for ordinal in 0..length {
+            let index = usize::try_from(ordinal).ok()?;
+            if self.fact_kinds.get(index).copied() != Some(EntityKind::Function) {
+                continue;
+            }
+            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if start != UNSET
+                && end != UNSET
+                && start <= position
+                && position < end
+                && best.is_none_or(|(known, _)| start >= known)
+            {
+                best = Some((start, ordinal));
+            }
+        }
+        best.map(|(_, ordinal)| ordinal)
     }
 
     /// Resolves one source position to the innermost pushed fact whose
@@ -816,6 +820,117 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         false
     }
 
+    /// Reports whether one resolved symbol is a `const` binding initialized
+    /// by a function or arrow expression, not an alias or destructuring
+    /// pattern.
+    fn is_const_callable_value(&self, symbol: SymbolId, symbol_flags: SymbolFlags) -> bool {
+        if !symbol_flags.contains(SymbolFlags::ConstVariable) {
+            return false;
+        }
+        let nodes = self.semantic.nodes();
+        let scoping = self.semantic.scoping();
+        let declared = nodes.get_node(scoping.symbol_declaration(symbol));
+        let declarator = match declared.kind() {
+            AstKind::VariableDeclarator(declarator) => declarator,
+            AstKind::BindingIdentifier(_) => {
+                let parent = nodes.get_node(nodes.parent_id(declared.id()));
+                match parent.kind() {
+                    AstKind::VariableDeclarator(declarator) => declarator,
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        };
+        if !declarator.id.is_binding_identifier() {
+            return false;
+        }
+        let Some(init) = declarator.init.as_ref() else {
+            return false;
+        };
+        let init_span = init.span();
+        self.initializer_is_callable(init_span.start, init_span.end, 0)
+    }
+
+    /// Peels only parenthesized and TypeScript assertion wrappers, then
+    /// reports whether the initializer is a function or arrow expression.
+    fn initializer_is_callable(&self, start: u32, end: u32, depth: u8) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Some(kind) = self.ast_kind_at_exact_span(start, end) else {
+            return false;
+        };
+        if let Some(parenthesized) = kind.as_parenthesized_expression() {
+            let inner = parenthesized.expression.span();
+            return self.initializer_is_callable(inner.start, inner.end, depth.saturating_add(1));
+        }
+        if let Some(cast) = kind.as_ts_as_expression() {
+            let inner = cast.expression.span();
+            return self.initializer_is_callable(inner.start, inner.end, depth.saturating_add(1));
+        }
+        if let Some(satisfied) = kind.as_ts_satisfies_expression() {
+            let inner = satisfied.expression.span();
+            return self.initializer_is_callable(inner.start, inner.end, depth.saturating_add(1));
+        }
+        if let Some(non_null) = kind.as_ts_non_null_expression() {
+            let inner = non_null.expression.span();
+            return self.initializer_is_callable(inner.start, inner.end, depth.saturating_add(1));
+        }
+        kind.as_arrow_function_expression().is_some() || kind.as_function().is_some()
+    }
+
+    /// Reports whether `span` names the property of a static (non-computed,
+    /// non-private) member expression in callee position of a call or `new`.
+    fn is_member_call_position(&self, span: Span) -> bool {
+        let nodes = self.semantic.nodes();
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if (known.start, known.end) != (span.start, span.end) {
+                break;
+            }
+            let member_id = match self.static_member_for_property(*node_id, span) {
+                Some(member_id) => member_id,
+                None => continue,
+            };
+            let member_span = nodes.get_node(member_id).kind().span();
+            let parent = nodes.get_node(nodes.parent_id(member_id)).kind();
+            if let Some(call) = parent.as_call_expression()
+                && call.callee.span() == member_span
+            {
+                return true;
+            }
+            if let Some(construction) = parent.as_new_expression()
+                && construction.callee.span() == member_span
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns the static member node when `span` names its property.
+    fn static_member_for_property(&self, node_id: NodeId, span: Span) -> Option<NodeId> {
+        let nodes = self.semantic.nodes();
+        let kind = nodes.get_node(node_id).kind();
+        if let Some(member) = kind.as_static_member_expression()
+            && member.property.span() == span
+        {
+            return Some(node_id);
+        }
+        if kind.as_identifier_name().is_some() {
+            let parent_id = nodes.parent_id(node_id);
+            let parent = nodes.get_node(parent_id).kind();
+            if let Some(member) = parent.as_static_member_expression()
+                && member.property.span() == span
+            {
+                return Some(parent_id);
+            }
+        }
+        None
+    }
+
     /// Pushes one fact per staged generic parameter so uses of the parameter
     /// inside the declaration resolve to a `TypeVar` fact.
     fn push_type_parameter_facts(
@@ -904,6 +1019,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let ordinal = self.push(fact)?;
             self.register(ordinal, row.name, row.name, EntityKind::Parameter)?;
             self.claim_staged_members(member_base, ordinal);
+            if let Some(default) = row.default {
+                self.declare_expression_bindings(default.start, default.end, 0)?;
+            }
             if let Some(slot) = ordinals.get_mut(index) {
                 *slot = ordinal;
             }
@@ -1381,12 +1499,24 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         best.map(|(_, ordinal)| ordinal)
     }
 
+    /// True when two variable-binding initializer spans are the same proven
+    /// source extent, including both being absent.
+    fn binding_init_spans_match(left: Option<Span>, right: Option<Span>) -> bool {
+        match (left, right) {
+            (None, None) => true,
+            (Some(left), Some(right)) => left.start == right.start && left.end == right.end,
+            _ => false,
+        }
+    }
+
     /// Finds an earlier registered fact of `kind` and exact `name` bytes in
     /// the same lexical scope whose row is byte-identical this bare row (same
-    /// record, no children). Such rows are indistinguishable in the flattened
+    /// record, no children) and whose initializer matches when the kind is a
+    /// variable binding. Such rows are indistinguishable in the flattened
     /// lane, so the first is reused instead of minting a rejected twin.
     /// Structurally distinct same-name declarations (overloads, differently
-    /// typed block variables) never match and stay distinct.
+    /// typed block variables, or bindings with different initializers) never
+    /// match and stay distinct.
     fn merged_simple_declaration(
         &self,
         kind: EntityKind,
@@ -1394,6 +1524,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         declaration: Span,
         record: SemanticTypeRecord<'source>,
         _child_count: u8,
+        init_span: Option<Span>,
     ) -> Option<u32> {
         let candidates = self
             .facts_by_name
@@ -1422,6 +1553,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 continue;
             }
             if self.enclosing_registered_owner(decl_start, Some(ordinal)) != owner {
+                continue;
+            }
+            if matches!(kind, EntityKind::Constant | EntityKind::Static)
+                && !Self::binding_init_spans_match(
+                    self.binding_init_spans.get(&ordinal).copied().flatten(),
+                    init_span,
+                )
+            {
                 continue;
             }
             return Some(ordinal);
@@ -1727,6 +1866,436 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.synthetic_cells_fact(fallback_name, TypeCells::unknown(TypeReason::Unannotated))
     }
 
+    /// Declares one formal parameter as a `Parameter` fact when the binding
+    /// site is not already registered, then walks its annotation for nested
+    /// function bindings.
+    fn declare_formal_parameter_binding(
+        &mut self,
+        name_span: Span,
+        annotation: Option<Span>,
+        flags: u8,
+        depth: u8,
+    ) -> Result<(), TypeScriptCollectError> {
+        if self.text_span(name_span).is_some_and(|name| name == "this") {
+            return Ok(());
+        }
+        if self.fact_at_name_start(name_span.start).is_none() {
+            let mut params = ParamRows::new();
+            params.push(ParamRow {
+                name: name_span,
+                annotation,
+                default: None,
+                flags,
+            })?;
+            self.push_parameter_facts(&params)?;
+        }
+        if let Some(span) = annotation {
+            self.declare_bindings_in_span(span.start, span.end, depth.saturating_add(1))?;
+        }
+        Ok(())
+    }
+
+    /// Walks one expression span and declares bindings reachable through
+    /// `satisfies`, `as`, and non-null assertions on the initializer plane.
+    fn declare_expression_bindings(
+        &mut self,
+        start: u32,
+        end: u32,
+        depth: u8,
+    ) -> Result<(), TypeScriptCollectError> {
+        if depth > MAX_TYPE_DEPTH {
+            return Ok(());
+        }
+        let span = Span::new(start, end);
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        let last = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) <= (span.start, span.end));
+        for (_, node_id) in self.node_index[first..last].iter() {
+            let kind = self.semantic.nodes().get_node(*node_id).kind();
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                let inner = parenthesized.expression.span();
+                return self.declare_expression_bindings(inner.start, inner.end, depth);
+            }
+            if let Some(non_null) = kind.as_ts_non_null_expression() {
+                let inner = non_null.expression.span();
+                self.declare_expression_bindings(inner.start, inner.end, depth)?;
+                return Ok(());
+            }
+            if let Some(satisfied) = kind.as_ts_satisfies_expression() {
+                let inner = satisfied.expression.span();
+                self.declare_expression_bindings(inner.start, inner.end, depth)?;
+                let ty = satisfied.type_annotation.span();
+                return self.declare_bindings_in_span(ty.start, ty.end, depth.saturating_add(1));
+            }
+            if let Some(cast) = kind.as_ts_as_expression() {
+                let ty = cast.type_annotation.span();
+                self.declare_bindings_in_span(ty.start, ty.end, depth.saturating_add(1))?;
+                let inner = cast.expression.span();
+                return self.declare_expression_bindings(inner.start, inner.end, depth);
+            }
+            if let Some(cast) = kind.as_ts_type_assertion() {
+                let ty = cast.type_annotation.span();
+                self.declare_bindings_in_span(ty.start, ty.end, depth.saturating_add(1))?;
+                let inner = cast.expression.span();
+                return self.declare_expression_bindings(inner.start, inner.end, depth);
+            }
+        }
+        Ok(())
+    }
+
+    fn ast_kind_at_exact_span(&self, start: u32, end: u32) -> Option<AstKind<'x>> {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= start);
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > start {
+                break;
+            }
+            if known.start == start && known.end == end {
+                return Some(self.semantic.nodes().get_node(*node_id).kind());
+            }
+        }
+        None
+    }
+
+    /// Walks one assignment-expression span, peeling parenthesized wrappers,
+    /// and declares nested function bindings on the right-hand side.
+    fn declare_assignment_bindings_in_assignment_expression_span(
+        &mut self,
+        start: u32,
+        end: u32,
+    ) -> Result<(), TypeScriptCollectError> {
+        let span = Span::new(start, end);
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        let last = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) <= (span.start, span.end));
+        for (_, node_id) in self.node_index[first..last].iter() {
+            let kind = self.semantic.nodes().get_node(*node_id).kind();
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                let inner = parenthesized.expression.span();
+                return self.declare_assignment_bindings_in_assignment_expression_span(
+                    inner.start,
+                    inner.end,
+                );
+            }
+            if let Some(assignment) = kind.as_assignment_expression() {
+                let right = assignment.right.span();
+                return self.declare_expression_bindings(right.start, right.end, 0);
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns nested statement spans reached from one statement during
+    /// assignment-binding walks.
+    fn assignment_binding_nested_statement_spans(kind: AstKind<'_>) -> Vec<Span> {
+        match kind {
+            AstKind::BlockStatement(block) => block
+                .body
+                .iter()
+                .map(|statement| statement.span())
+                .collect(),
+            AstKind::IfStatement(branch) => {
+                let mut spans = vec![branch.consequent.span()];
+                if let Some(alternate) = branch.alternate.as_ref() {
+                    spans.push(alternate.span());
+                }
+                spans
+            }
+            AstKind::WhileStatement(statement) => vec![statement.body.span()],
+            AstKind::DoWhileStatement(statement) => vec![statement.body.span()],
+            AstKind::ForStatement(statement) => vec![statement.body.span()],
+            AstKind::ForInStatement(statement) => vec![statement.body.span()],
+            AstKind::ForOfStatement(statement) => vec![statement.body.span()],
+            AstKind::LabeledStatement(statement) => vec![statement.body.span()],
+            AstKind::WithStatement(statement) => vec![statement.body.span()],
+            AstKind::TryStatement(try_statement) => {
+                let mut spans = vec![try_statement.block.span()];
+                if let Some(handler) = try_statement.handler.as_ref() {
+                    spans.push(handler.body.span());
+                }
+                if let Some(finalizer) = try_statement.finalizer.as_ref() {
+                    spans.push(finalizer.span());
+                }
+                spans
+            }
+            AstKind::SwitchStatement(switch_statement) => switch_statement
+                .cases
+                .iter()
+                .flat_map(|case| case.consequent.iter())
+                .map(|statement| statement.span())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Walks one statement span for assignment right-hand sides that carry
+    /// nested function bindings, including nested blocks.
+    fn declare_assignment_bindings_in_statement_span(
+        &mut self,
+        start: u32,
+        end: u32,
+    ) -> Result<(), TypeScriptCollectError> {
+        let Some(kind) = self.ast_kind_at_exact_span(start, end) else {
+            return Ok(());
+        };
+        if let AstKind::ExpressionStatement(expression) = kind {
+            let expression_span = expression.expression.span();
+            return self.declare_assignment_bindings_in_assignment_expression_span(
+                expression_span.start,
+                expression_span.end,
+            );
+        }
+        for span in Self::assignment_binding_nested_statement_spans(kind) {
+            self.declare_assignment_bindings_in_statement_span(span.start, span.end)?;
+        }
+        Ok(())
+    }
+
+    /// Declares every function-binding name reachable inside one type span.
+    fn declare_bindings_in_span(
+        &mut self,
+        start: u32,
+        end: u32,
+        depth: u8,
+    ) -> Result<(), TypeScriptCollectError> {
+        if depth > MAX_TYPE_DEPTH {
+            return Ok(());
+        }
+        let span = Span::new(start, end);
+        let next_depth = depth.saturating_add(1);
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        let last = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) <= (span.start, span.end));
+        for (_, node_id) in self.node_index[first..last].iter() {
+            let kind = self.semantic.nodes().get_node(*node_id).kind();
+            if let Some(parenthesized) = kind.as_ts_parenthesized_type() {
+                let inner = parenthesized.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+            if let Some(optional) = kind.as_ts_optional_type() {
+                let inner = optional.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+            if let Some(rest) = kind.as_ts_rest_type() {
+                let inner = rest.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+            if let Some(union) = kind.as_ts_union_type() {
+                for member in union.types.iter() {
+                    let member_span = member.span();
+                    self.declare_bindings_in_span(
+                        member_span.start,
+                        member_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(intersection) = kind.as_ts_intersection_type() {
+                for member in intersection.types.iter() {
+                    let member_span = member.span();
+                    self.declare_bindings_in_span(
+                        member_span.start,
+                        member_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(tuple) = kind.as_ts_tuple_type() {
+                for element in tuple.element_types.iter() {
+                    let element_span = element.span();
+                    self.declare_bindings_in_span(
+                        element_span.start,
+                        element_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(literal) = kind.as_ts_type_literal() {
+                for member in literal.members.iter() {
+                    let member_span = member.span();
+                    self.declare_bindings_in_span(
+                        member_span.start,
+                        member_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(function_type) = kind.as_ts_function_type() {
+                for parameter in function_type.params.items.iter() {
+                    let annotation = parameter
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span());
+                    let flags = if parameter.optional {
+                        SemanticTypeChild::FLAG_OPTIONAL
+                    } else {
+                        0
+                    };
+                    self.declare_formal_parameter_binding(
+                        parameter.pattern.span(),
+                        annotation,
+                        flags,
+                        next_depth,
+                    )?;
+                    if let Some(init) = parameter.initializer.as_ref() {
+                        let init_span = init.span();
+                        self.declare_expression_bindings(
+                            init_span.start,
+                            init_span.end,
+                            next_depth,
+                        )?;
+                    }
+                }
+                if let Some(rest) = function_type.params.rest.as_ref() {
+                    let annotation = rest
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span());
+                    self.declare_formal_parameter_binding(
+                        rest.rest.span(),
+                        annotation,
+                        SemanticTypeChild::FLAG_REST,
+                        next_depth,
+                    )?;
+                }
+                let returned = function_type.return_type.type_annotation.span();
+                self.declare_bindings_in_span(returned.start, returned.end, next_depth)?;
+                return Ok(());
+            }
+            if let Some(reference) = kind.as_ts_type_reference() {
+                if let Some(arguments) = reference.type_arguments.as_ref() {
+                    for argument in arguments.params.iter() {
+                        let argument_span = argument.span();
+                        self.declare_bindings_in_span(
+                            argument_span.start,
+                            argument_span.end,
+                            next_depth,
+                        )?;
+                    }
+                }
+                return Ok(());
+            }
+            if let Some(mapped) = kind.as_ts_mapped_type() {
+                let constraint = mapped.constraint.span();
+                self.declare_bindings_in_span(constraint.start, constraint.end, next_depth)?;
+                if let Some(name_type) = mapped.name_type.as_ref() {
+                    let name_span = name_type.span();
+                    self.declare_bindings_in_span(name_span.start, name_span.end, next_depth)?;
+                }
+                if let Some(value) = mapped.type_annotation.as_ref() {
+                    let value_span = value.span();
+                    self.declare_bindings_in_span(value_span.start, value_span.end, next_depth)?;
+                }
+                return Ok(());
+            }
+            if let Some(conditional) = kind.as_ts_conditional_type() {
+                let check = conditional.check_type.span();
+                let extends = conditional.extends_type.span();
+                let true_branch = conditional.true_type.span();
+                let false_branch = conditional.false_type.span();
+                self.declare_bindings_in_span(check.start, check.end, next_depth)?;
+                self.declare_bindings_in_span(extends.start, extends.end, next_depth)?;
+                self.declare_bindings_in_span(true_branch.start, true_branch.end, next_depth)?;
+                self.declare_bindings_in_span(false_branch.start, false_branch.end, next_depth)?;
+                return Ok(());
+            }
+            if let Some(array) = kind.as_ts_array_type() {
+                let element = array.element_type.span();
+                return self.declare_bindings_in_span(element.start, element.end, next_depth);
+            }
+            if let Some(operator) = kind.as_ts_type_operator() {
+                let inner = operator.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+            if let Some(template) = kind.as_ts_template_literal_type() {
+                for substitution in template.types.iter() {
+                    let substitution_span = substitution.span();
+                    self.declare_bindings_in_span(
+                        substitution_span.start,
+                        substitution_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(infer) = kind.as_ts_infer_type() {
+                if let Some(constraint) = infer.type_parameter.constraint.as_ref() {
+                    let constraint_span = constraint.span();
+                    self.declare_bindings_in_span(
+                        constraint_span.start,
+                        constraint_span.end,
+                        next_depth,
+                    )?;
+                }
+                if let Some(default) = infer.type_parameter.default.as_ref() {
+                    let default_span = default.span();
+                    self.declare_bindings_in_span(
+                        default_span.start,
+                        default_span.end,
+                        next_depth,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(signature) = kind.as_ts_call_signature_declaration() {
+                for parameter in signature.params.items.iter() {
+                    if let Some(annotation) = parameter.type_annotation.as_ref() {
+                        let inner = annotation.type_annotation.span();
+                        self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                    }
+                }
+                if let Some(returned) = signature.return_type.as_ref() {
+                    let inner = returned.type_annotation.span();
+                    self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                }
+                return Ok(());
+            }
+            if let Some(property) = kind.as_ts_property_signature() {
+                if let Some(annotation) = property.type_annotation.as_ref() {
+                    let inner = annotation.type_annotation.span();
+                    return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+                }
+                return Ok(());
+            }
+            if let Some(method) = kind.as_ts_method_signature() {
+                for parameter in method.params.items.iter() {
+                    if let Some(annotation) = parameter.type_annotation.as_ref() {
+                        let inner = annotation.type_annotation.span();
+                        self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                    }
+                }
+                if let Some(returned) = method.return_type.as_ref() {
+                    let inner = returned.type_annotation.span();
+                    self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                }
+                return Ok(());
+            }
+            if let Some(index_signature) = kind.as_ts_index_signature() {
+                for parameter in index_signature.parameters.iter() {
+                    let inner = parameter.type_annotation.type_annotation.span();
+                    self.declare_bindings_in_span(inner.start, inner.end, next_depth)?;
+                }
+                let inner = index_signature.type_annotation.type_annotation.span();
+                return self.declare_bindings_in_span(inner.start, inner.end, next_depth);
+            }
+        }
+        Ok(())
+    }
+
     /// Lowers one type expression for direct application to the fact being
     /// declared (an annotation position, not a child position). A resolved
     /// type parameter stays a `TypeVar` naming it; any other resolved fact
@@ -1737,6 +2306,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         end: u32,
         depth: u8,
     ) -> Result<TypeCells<'source>, TypeScriptCollectError> {
+        self.declare_bindings_in_span(start, end, depth)?;
         match self.lower_type(start, end, depth)? {
             TypeOutcome::Existing(fact) => {
                 let index = usize::try_from(fact).map_err(|_| lane_rejection())?;
@@ -1765,6 +2335,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         end: u32,
         depth: u8,
     ) -> Result<u32, TypeScriptCollectError> {
+        self.declare_bindings_in_span(start, end, depth)?;
         let member_base = self.staged_members.len();
         match self.lower_type(start, end, depth)? {
             TypeOutcome::Existing(fact) => Ok(fact),
@@ -2413,6 +2984,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -2467,6 +3039,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -2481,6 +3054,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -2524,6 +3098,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -2538,6 +3113,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -2635,6 +3211,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             facts_by_name: HashMap::new(),
             fact_at_name: HashMap::new(),
+            binding_init_spans: HashMap::new(),
             synthetic_by_name: HashMap::new(),
             owner_index: Vec::new(),
             owner_ancestor: Vec::new(),
@@ -2658,7 +3235,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Runs the ordered projection: the self-nominal declaration pass, the
     /// alias/member/signature/variable pass, the checker computed pass, the
     /// narrowing pass, the reference pass, the checker-only reference pass,
-    /// then the documentation pass.
+    /// the enum-member pass, the static property-access pass, then the
+    /// documentation pass.
     fn run(&mut self) -> Result<(), TypeScriptCollectError> {
         self.pass_declarations()?;
         self.pass_members()?;
@@ -2666,6 +3244,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.pass_narrowings()?;
         self.pass_references()?;
         self.pass_checker_references()?;
+        self.pass_enum_member_accesses()?;
+        self.pass_property_accesses()?;
         self.pass_docs()?;
         self.pass_parentage()?;
         Ok(())
@@ -2836,6 +3416,29 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     id.span,
                     &rows,
                 )?;
+                for element in class.body.body.iter() {
+                    let element_span = element.span();
+                    let Some(element_kind) =
+                        self.ast_kind_at_exact_span(element_span.start, element_span.end)
+                    else {
+                        continue;
+                    };
+                    let Some(method) = element_kind.as_method_definition() else {
+                        continue;
+                    };
+                    if self.text_span(method.key.span()) != Some("constructor") {
+                        continue;
+                    }
+                    if let Some(body) = method.value.body.as_ref() {
+                        for statement in body.statements.iter() {
+                            let statement_span = statement.span();
+                            self.declare_assignment_bindings_in_statement_span(
+                                statement_span.start,
+                                statement_span.end,
+                            )?;
+                        }
+                    }
+                }
             } else if let Some(enumeration) = kind.as_ts_enum_declaration() {
                 self.push_self_nominal(
                     EntityKind::Enum,
@@ -2963,6 +3566,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         declaration_span,
                         record,
                         0,
+                        None,
                     )
                     .is_some()
                 {
@@ -3004,6 +3608,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3018,6 +3623,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -3053,30 +3659,96 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 let extension = self.extension(type_parameter_start)?;
                 let record = cells.record;
                 let child_count = cells.len;
-                let fact = with_cells(
+                let init_span = declarator.init.as_ref().map(|init| init.span());
+                let mut fact = with_cells(
                     SemanticFact::new(entity_kind, name_bytes, LEAF_PRODUCT)
                         .with_extension(extension),
                     cells,
                 );
                 // A block-scope redeclaration the flattened lane cannot
-                // distinguish from an earlier one (`const value` in two
-                // sibling blocks) is byte-identical at the row level. The
-                // first row owns the binding; occurrences resolve to it.
-                if child_count == 0
-                    && self
-                        .merged_simple_declaration(
-                            entity_kind,
-                            name_bytes,
-                            declaration_span,
-                            record,
-                            0,
-                        )
-                        .is_some()
-                {
-                    continue;
+                // distinguish from an earlier one (`const value = 1` in two
+                // sibling blocks) is byte-identical at the row level and
+                // carries the same initializer. The first row owns the
+                // binding; occurrences of either spelling resolve to it.
+                if child_count == 0 {
+                    if let Some(ordinal) = self.merged_simple_declaration(
+                        entity_kind,
+                        name_bytes,
+                        declaration_span,
+                        record,
+                        0,
+                        init_span,
+                    ) {
+                        self.fact_at_name.insert(name_span.start, ordinal);
+                        continue;
+                    }
+                }
+                let twins = self.indistinguishable_signature_twins(declaration_span, &fact);
+                if twins > 0 {
+                    let mut hash = Sha256::new();
+                    hash.update(b"compiler.typescript.binding-twin.v1\0");
+                    hash.update(twins.to_le_bytes());
+                    let mut discriminator = [0_u8; 16];
+                    discriminator.copy_from_slice(&hash.finalize()[..16]);
+                    fact = fact.with_identity_discriminator(discriminator);
                 }
                 let ordinal = self.push(fact)?;
                 self.register(ordinal, declaration_span, name_span, entity_kind)?;
+                if matches!(entity_kind, EntityKind::Constant | EntityKind::Static) {
+                    self.binding_init_spans.insert(ordinal, init_span);
+                }
+                self.claim_staged_members(member_base, ordinal);
+                if let Some(init) = declarator.init.as_ref() {
+                    let init_span = init.span();
+                    self.declare_expression_bindings(init_span.start, init_span.end, 0)?;
+                }
+            } else if let Some(parameter) = kind.as_catch_parameter() {
+                if !parameter.pattern.is_binding_identifier() {
+                    continue;
+                }
+                let name_span = parameter.pattern.span();
+                if self.fact_at_name_start(name_span.start).is_some() {
+                    continue;
+                }
+                let name_bytes =
+                    self.slice_span(name_span)
+                        .ok_or(TypeScriptCollectError::Span {
+                            start: name_span.start,
+                            end: name_span.end,
+                        })?;
+                let entity_kind = self.declarator_kind(name_span.start);
+                let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let member_base = self.staged_members.len();
+                let cells = match parameter.type_annotation.as_ref() {
+                    Some(annotation) => {
+                        let inner = annotation.type_annotation.span();
+                        self.owner_cells(inner.start, inner.end, 0)?
+                    }
+                    None => TypeCells::unknown(TypeReason::Unannotated),
+                };
+                let extension = self.extension(type_parameter_start)?;
+                let record = cells.record;
+                let child_count = cells.len;
+                let fact = with_cells(
+                    SemanticFact::new(entity_kind, name_bytes, LEAF_PRODUCT)
+                        .with_extension(extension),
+                    cells,
+                );
+                if child_count == 0 {
+                    if let Some(ordinal) = self.merged_simple_declaration(
+                        entity_kind,
+                        name_bytes,
+                        declaration_span,
+                        record,
+                        0,
+                        None,
+                    ) {
+                        self.fact_at_name.insert(name_span.start, ordinal);
+                        continue;
+                    }
+                }
+                let ordinal = self.push(fact)?;
+                self.register(ordinal, name_span, name_span, entity_kind)?;
                 self.claim_staged_members(member_base, ordinal);
             } else if let Some(property) = kind.as_ts_property_signature() {
                 if self.fact_at_name_start(property.key.span().start).is_some() {
@@ -3142,6 +3814,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3208,6 +3881,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 let ordinal = self.push(fact)?;
                 self.register(ordinal, declaration_span, key_span, EntityKind::Field)?;
                 self.claim_staged_members(member_base, ordinal);
+                if let Some(value) = definition.value.as_ref() {
+                    let value_span = value.span();
+                    self.declare_expression_bindings(value_span.start, value_span.end, 0)?;
+                }
             } else if let Some(definition) = kind.as_method_definition() {
                 let key_span = definition.key.span();
                 if self.fact_at_name_start(key_span.start).is_some() {
@@ -3235,6 +3912,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3254,6 +3932,15 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     result,
                     definition.r#static,
                 )?;
+                if let Some(body) = value.body.as_ref() {
+                    for statement in body.statements.iter() {
+                        let statement_span = statement.span();
+                        self.declare_assignment_bindings_in_statement_span(
+                            statement_span.start,
+                            statement_span.end,
+                        )?;
+                    }
+                }
             } else if let Some(signature) = kind.as_ts_call_signature_declaration() {
                 // A call signature inside an anonymous object literal was
                 // already embodied while that literal lowered (its member
@@ -3290,6 +3977,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3304,6 +3992,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -3347,6 +4036,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: parameter.initializer.as_ref().map(|init| init.span()),
                         flags: if parameter.optional {
                             SemanticTypeChild::FLAG_OPTIONAL
                         } else {
@@ -3361,6 +4051,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             .type_annotation
                             .as_ref()
                             .map(|annotation| annotation.type_annotation.span()),
+                        default: None,
                         flags: SemanticTypeChild::FLAG_REST,
                     })?;
                 }
@@ -3593,8 +4284,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     }
 
     /// Commits one reference fact, resolving its target through OXC's symbol
-    /// when one exists and its category from the reference flags and call
-    /// position.
+    /// when one exists and its category from the reference flags, call
+    /// position, and—when the resolved symbol is a function declaration or
+    /// expression—value use that is neither a type query nor write-only.
     fn push_reference(
         &mut self,
         owner: u32,
@@ -3605,6 +4297,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let kind = if flags.is_type() {
             ReferenceKind::TypeReference
         } else if self.is_call_position(span) {
+            ReferenceKind::FunctionCall
+        } else if let Some((symbol, symbol_flags)) = symbol
+            && !flags.is_value_as_type()
+            && !flags.is_write_only()
+            && (symbol_flags.is_function() || self.is_const_callable_value(symbol, symbol_flags))
+        {
             ReferenceKind::FunctionCall
         } else {
             ReferenceKind::VariableUse
@@ -3754,7 +4452,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(module) = resolved.module else {
             return Ok(None);
         };
-        if let Some(key) = self.checker_foreign_key(span, module, resolved.name)? {
+        if let Some(key) = self.checker_foreign_key(span, module, resolved.name, None)? {
             return Ok(Some((
                 OccurrenceTarget::Foreign(key),
                 OccurrenceConfidence::Oracle,
@@ -3785,6 +4483,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         span: Span,
         module: &str,
         name: Option<&str>,
+        member_kind: Option<EntityKind>,
     ) -> Result<Option<ForeignKey<'source>>, TypeScriptCollectError> {
         let spelled_module = self.spelled_in_source(module.as_bytes());
         let site = self.text_span(span).ok_or(TypeScriptCollectError::Span {
@@ -3794,9 +4493,26 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if site.is_empty() {
             return Ok(None);
         }
-        let display = name
-            .and_then(|name| self.spelled_in_source(name.as_bytes()))
-            .unwrap_or(site);
+        let (path, display, kind) = match member_kind {
+            Some(member_kind) => {
+                let Some(name) = name else {
+                    return Ok(None);
+                };
+                let Some(path) = self
+                    .spelled_in_source(name.as_bytes())
+                    .filter(|path| !path.is_empty())
+                else {
+                    return Ok(None);
+                };
+                (path, path, Some(member_kind))
+            }
+            None => {
+                let display = name
+                    .and_then(|name| self.spelled_in_source(name.as_bytes()))
+                    .unwrap_or(site);
+                (site, display, None)
+            }
+        };
         let origin = match spelled_module {
             Some(module) => ForeignOrigin::Package(
                 package_lineage_for_module(module).map_err(|cause| lineage_fault(cause, span))?,
@@ -3805,7 +4521,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 ecosystem: NPM_ECOSYSTEM,
             },
         };
-        ForeignKey::new(origin, site, display, None)
+        ForeignKey::new(origin, path, display, kind)
             .map(Some)
             .map_err(|cause| foreign_fault(cause, span))
     }
@@ -3829,16 +4545,249 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if self.occurrence_covers(reference.span)? {
                 continue;
             }
-            let Some(owner) = self.owning_fact(reference.span.start) else {
+            let span = Span::new(reference.span.start, reference.span.end);
+            if reference.is_enum_member
+                && reference.overload_index.is_none()
+                && !self.is_member_call_position(span)
+            {
+                continue;
+            }
+            let Some(mut owner) = self.owning_fact(reference.span.start) else {
                 continue;
             };
             let Some((target, confidence, kind)) = self.checker_only_target(reference)? else {
                 continue;
             };
-            let span = Span::new(reference.span.start, reference.span.end);
+            if kind == ReferenceKind::FieldAccess
+                && matches!(
+                    target,
+                    OccurrenceTarget::Foreign(ForeignKey {
+                        kind: Some(EntityKind::Field),
+                        ..
+                    })
+                )
+            {
+                if let Some(function) = self.enclosing_function_owner(reference.span.start) {
+                    owner = function;
+                }
+            }
             self.commit_occurrence(owner, span, kind, target, confidence)?;
         }
         Ok(())
+    }
+
+    /// Pass six-and-a-half: every `Enum.Member` value use whose object is a
+    /// resolved enum binding becomes one `FieldAccess` occurrence on the
+    /// member token, targeting the variant declared inside that enum.
+    /// Checker-only and OXC reference rows that already name the member span
+    /// are left alone; every other static member site stays absent.
+    fn pass_enum_member_accesses(&mut self) -> Result<(), TypeScriptCollectError> {
+        let nodes = self.semantic.nodes();
+        for node in nodes.iter() {
+            let kind = node.kind();
+            let Some(member) = kind.as_static_member_expression() else {
+                continue;
+            };
+            let property_span = member.property.span();
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let object_span = member.object.span();
+            let Some(identifier_span) =
+                self.peel_object_identifier_span(object_span.start, object_span.end)
+            else {
+                continue;
+            };
+            let property_bytes = self
+                .slice_span(property_span)
+                .ok_or(TypeScriptCollectError::Span {
+                    start: property_span.start,
+                    end: property_span.end,
+                })?;
+            if let Some(enum_fact) = self.enum_fact_for_identifier_span(identifier_span) {
+                let Some(variant) = self.variant_in_enum(enum_fact, property_bytes) else {
+                    continue;
+                };
+                self.commit_occurrence(
+                    owner,
+                    property_span,
+                    ReferenceKind::FieldAccess,
+                    OccurrenceTarget::Local(EntityId::new(variant)),
+                    OccurrenceConfidence::Index,
+                )?;
+                continue;
+            }
+            if let Some(target) = self.cross_file_enum_member_target(
+                identifier_span,
+                property_span,
+                property_bytes,
+            )? {
+                self.commit_occurrence(
+                    owner,
+                    property_span,
+                    ReferenceKind::FieldAccess,
+                    target,
+                    OccurrenceConfidence::Oracle,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves one imported-enum `Enum.Member` site to an oracle package key
+    /// naming the member declaration in the spelled import module.
+    fn cross_file_enum_member_target(
+        &self,
+        object_identifier_span: Span,
+        property_span: Span,
+        property_bytes: &[u8],
+    ) -> Result<Option<OccurrenceTarget<'source>>, TypeScriptCollectError> {
+        if !self.is_import_binding_span(object_identifier_span) {
+            return Ok(None);
+        }
+        let Some(checker) = self.checker.as_ref() else {
+            return Ok(None);
+        };
+        let resolved = checker.reference_at(Utf8Span {
+            start: property_span.start,
+            end: property_span.end,
+        });
+        let Some(resolved) = resolved else {
+            return Ok(None);
+        };
+        if !resolved.is_enum_member || resolved.target.is_some() {
+            return Ok(None);
+        }
+        let Some(module) = resolved.module else {
+            return Ok(None);
+        };
+        let Some(name) = resolved.name else {
+            return Ok(None);
+        };
+        if name.as_bytes() != property_bytes {
+            return Ok(None);
+        }
+        let object_resolved = checker.reference_at(Utf8Span {
+            start: object_identifier_span.start,
+            end: object_identifier_span.end,
+        });
+        if !object_resolved.is_some_and(|object| object.module == Some(module)) {
+            return Ok(None);
+        }
+        self.checker_foreign_key(
+            property_span,
+            module,
+            Some(name),
+            Some(EntityKind::Variant),
+        )
+        .map(|key| key.map(OccurrenceTarget::Foreign))
+    }
+
+    /// Reports whether one identifier use resolves to an import binding.
+    fn is_import_binding_span(&self, identifier_span: Span) -> bool {
+        let scoping = self.semantic.scoping();
+        let nodes = self.semantic.nodes();
+        for symbol in scoping.symbol_ids() {
+            if !scoping
+                .symbol_flags(symbol)
+                .intersects(SymbolFlags::Import | SymbolFlags::TypeImport)
+            {
+                continue;
+            }
+            for reference_id in scoping.get_resolved_reference_ids(symbol) {
+                let reference = scoping.get_reference(*reference_id);
+                let span = nodes.get_node(reference.node_id()).kind().span();
+                if span.start == identifier_span.start && span.end == identifier_span.end {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Peels one or more parenthesized wrappers and returns the span of the
+    /// innermost identifier reference, if any.
+    fn peel_object_identifier_span(&self, start: u32, end: u32) -> Option<Span> {
+        let mut span = Span::new(start, end);
+        loop {
+            let Some(kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
+                return None;
+            };
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                span = parenthesized.expression.span();
+                continue;
+            }
+            if kind.as_identifier_reference().is_some() {
+                return Some(span);
+            }
+            return None;
+        }
+    }
+
+    /// Resolves one identifier use through OXC's resolved references to the
+    /// published enum fact of its binding, when that binding is an enum.
+    fn enum_fact_for_identifier_span(&self, identifier_span: Span) -> Option<u32> {
+        let scoping = self.semantic.scoping();
+        let nodes = self.semantic.nodes();
+        for symbol in scoping.symbol_ids() {
+            for reference_id in scoping.get_resolved_reference_ids(symbol) {
+                let reference = scoping.get_reference(*reference_id);
+                let span = nodes.get_node(reference.node_id()).kind().span();
+                if span.start != identifier_span.start || span.end != identifier_span.end {
+                    continue;
+                }
+                let binding_start = scoping.symbol_span(symbol).start;
+                let Some(fact) = self.fact_at_name_start(binding_start) else {
+                    return None;
+                };
+                let index = usize::try_from(fact).ok()?;
+                if self.fact_kinds.get(index) == Some(&EntityKind::Enum) {
+                    return Some(fact);
+                }
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Resolves the single variant with `name` declared inside `enum_fact`,
+    /// or `None` when zero or more than one such variant is published.
+    fn variant_in_enum(&self, enum_fact: u32, name: &[u8]) -> Option<u32> {
+        let enum_index = usize::try_from(enum_fact).ok()?;
+        let enum_start = *self.decl_starts.get(enum_index)?;
+        let enum_end = *self.decl_ends.get(enum_index)?;
+        if enum_start == UNSET || enum_end == UNSET {
+            return None;
+        }
+        let Some(candidates) = self.facts_by_name.get(name) else {
+            return None;
+        };
+        let mut matched: Option<u32> = None;
+        for &candidate in candidates {
+            let index = usize::try_from(candidate).ok()?;
+            if self.fact_kinds.get(index) != Some(&EntityKind::Variant) {
+                continue;
+            }
+            let decl_start = *self.decl_starts.get(index)?;
+            let decl_end = *self.decl_ends.get(index)?;
+            if decl_start == UNSET || decl_end == UNSET {
+                continue;
+            }
+            if decl_start < enum_start || decl_end > enum_end {
+                continue;
+            }
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(candidate);
+        }
+        matched
     }
 
     /// Reports whether a committed occurrence already names the exact
@@ -3885,7 +4834,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         )>,
         TypeScriptCollectError,
     > {
-        let call = reference.overload_index.is_some();
+        let span = Span::new(reference.span.start, reference.span.end);
+        let member_call = self.is_member_call_position(span);
+        let call = reference.overload_index.is_some() || member_call;
         if let Some(target) = reference.target {
             let Some(fact) = self.fact_at_name_start(target.start) else {
                 return Ok(None);
@@ -3901,25 +4852,183 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 kind,
             )));
         }
-        if let Some(module) = reference.module
-            && let Some(key) = self.checker_foreign_key(
-                Span::new(reference.span.start, reference.span.end),
-                module,
-                reference.name,
-            )?
-        {
-            let kind = if call {
-                ReferenceKind::FunctionCall
+        if let Some(module) = reference.module {
+            let member_kind = if reference.is_field && !call {
+                Some(EntityKind::Field)
             } else {
-                ReferenceKind::VariableUse
+                None
             };
-            return Ok(Some((
-                OccurrenceTarget::Foreign(key),
-                OccurrenceConfidence::Oracle,
-                kind,
-            )));
+            if let Some(key) = self.checker_foreign_key(span, module, reference.name, member_kind)?
+            {
+                let kind = if call {
+                    ReferenceKind::FunctionCall
+                } else if member_kind == Some(EntityKind::Field) {
+                    ReferenceKind::FieldAccess
+                } else {
+                    ReferenceKind::VariableUse
+                };
+                return Ok(Some((
+                    OccurrenceTarget::Foreign(key),
+                    OccurrenceConfidence::Oracle,
+                    kind,
+                )));
+            }
         }
         Ok(None)
+    }
+
+    /// Pass seven: static member property tokens OXC never binds. Each site
+    /// names only the property identifier span; checker-resolved sites are
+    /// left untouched when [`occurrence_covers`] already owns that span.
+    fn pass_property_accesses(&mut self) -> Result<(), TypeScriptCollectError> {
+        let nodes = self.semantic.nodes();
+        for node in nodes.iter() {
+            let Some(member) = node.kind().as_static_member_expression() else {
+                continue;
+            };
+            let property_span = member.property.span;
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let parent = nodes.get_node(nodes.parent_id(node.id())).kind();
+            let kind = if parent
+                .as_call_expression()
+                .is_some_and(|call| call.callee.span() == member.span)
+            {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::FieldAccess
+            };
+            let (target, confidence) = if Self::is_this_receiver(AstKind::from_expression(
+                &member.object,
+            )) {
+                self.this_property_target(property_span, kind)?
+            } else {
+                self.syntactic_property_target(property_span)?
+            };
+            self.commit_occurrence(owner, property_span, kind, target, confidence)?;
+        }
+        Ok(())
+    }
+
+    /// Reports whether one expression is `this`, peeling one parenthesized
+    /// wrapper when the source wrote `(this)`.
+    fn is_this_receiver(kind: AstKind<'_>) -> bool {
+        if kind.as_this_expression().is_some() {
+            return true;
+        }
+        kind.as_parenthesized_expression()
+            .and_then(|wrapped| {
+                AstKind::from_expression(&wrapped.expression).as_this_expression()
+            })
+            .is_some()
+    }
+
+    /// Resolves the innermost pushed class record whose declaring span
+    /// contains `position`.
+    fn enclosing_record(&self, position: u32) -> Option<u32> {
+        let length = self.facts.len;
+        let mut best: Option<(u32, u32)> = None;
+        for index in 0..length {
+            let ordinal = coordinate(index).ok()?;
+            if self.fact_kinds.get(index).copied() != Some(EntityKind::Record) {
+                continue;
+            }
+            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if start != UNSET
+                && end != UNSET
+                && start <= position
+                && position < end
+                && best.is_none_or(|(known, _)| start >= known)
+            {
+                best = Some((start, ordinal));
+            }
+        }
+        best.map(|(_, ordinal)| ordinal)
+    }
+
+    /// Resolves one `this.property` site through the enclosing class when
+    /// exactly one same-name member of the expected kind lives there.
+    fn this_property_target(
+        &self,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let Some(class) = self.enclosing_record(property_span.start) else {
+            return self.syntactic_property_target(property_span);
+        };
+        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        let expected_kind = match kind {
+            ReferenceKind::FunctionCall => EntityKind::Function,
+            ReferenceKind::FieldAccess => EntityKind::Field,
+            _ => return self.syntactic_property_target(property_span),
+        };
+        let candidates = self
+            .facts_by_name
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        let mut matched = None;
+        for ordinal in candidates {
+            let Some(index) = usize::try_from(ordinal).ok() else {
+                continue;
+            };
+            if self.fact_kinds.get(index).copied() != Some(expected_kind) {
+                continue;
+            }
+            let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            if decl_start == UNSET
+                || self.enclosing_registered_owner(decl_start, Some(ordinal)) != Some(class)
+            {
+                continue;
+            }
+            if matched.is_some() {
+                return self.syntactic_property_target(property_span);
+            }
+            matched = Some(ordinal);
+        }
+        match matched {
+            Some(fact) => Ok((
+                OccurrenceTarget::Local(EntityId::new(fact)),
+                OccurrenceConfidence::Index,
+            )),
+            None => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Builds the honest npm-universe foreign key for one unresolved property
+    /// token, borrowing the exact source spelling as path and display.
+    fn syntactic_property_target(
+        &self,
+        span: Span,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let name = self.text_span(span).ok_or(TypeScriptCollectError::Span {
+            start: span.start,
+            end: span.end,
+        })?;
+        let key = ForeignKey::new(
+            ForeignOrigin::Universe {
+                ecosystem: NPM_ECOSYSTEM,
+            },
+            name,
+            name,
+            None,
+        )
+        .map_err(|cause| foreign_fault(cause, span))?;
+        Ok((
+            OccurrenceTarget::Foreign(key),
+            OccurrenceConfidence::Syntactic,
+        ))
     }
 
     /// Resolves one type-reference name through the checker's report when
@@ -4080,41 +5189,29 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(())
     }
 
-    /// Stages one JSDoc line's bounded fragment run and commits it after the
-    /// inter-line soft break.
+    /// Stages one JSDoc line and commits it after the inter-line soft break.
+    /// The doc lane's own capacity is the only bound; a line is not truncated.
     fn push_jsdoc_line(
         &mut self,
         owner: u32,
         line: &'source [u8],
         leading_break: bool,
     ) -> Result<bool, TypeScriptCollectError> {
-        let mut staged = [DocFragmentInput::SoftBreak; MAX_JSDOC_SEGMENTS];
-        let mut len = 0_usize;
-        let mut overflow = false;
+        let mut staged = Vec::new();
         let mut cursor = 0_usize;
         loop {
             let Some((at, is_link)) = earliest_inline_tag(line, cursor) else {
                 if let Some(rest) = line.get(cursor..)
                     && !rest.is_empty()
                 {
-                    stage_fragment(
-                        &mut staged,
-                        &mut len,
-                        &mut overflow,
-                        DocFragmentInput::Text(rest),
-                    );
+                    staged.push(DocFragmentInput::Text(rest));
                 }
                 break;
             };
             if let Some(before) = line.get(cursor..at)
                 && !before.is_empty()
             {
-                stage_fragment(
-                    &mut staged,
-                    &mut len,
-                    &mut overflow,
-                    DocFragmentInput::Text(before),
-                );
+                staged.push(DocFragmentInput::Text(before));
             }
             let content_start = at + TAG_WIDTH;
             match find_sub(line, b"}", content_start) {
@@ -4129,7 +5226,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         } else {
                             DocFragmentInput::Code(inner)
                         };
-                        stage_fragment(&mut staged, &mut len, &mut overflow, fragment);
+                        staged.push(fragment);
                     }
                     cursor = close + 1;
                 }
@@ -4137,23 +5234,13 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     if let Some(rest) = line.get(cursor..)
                         && !rest.is_empty()
                     {
-                        stage_fragment(
-                            &mut staged,
-                            &mut len,
-                            &mut overflow,
-                            DocFragmentInput::Text(rest),
-                        );
+                        staged.push(DocFragmentInput::Text(rest));
                     }
                     break;
                 }
             }
         }
-        if overflow {
-            // A JSDoc line with more segments than the staged bound cannot be
-            // emitted without truncation, which the lane forbids.
-            return Err(fault(FactFault::DocCapacity));
-        }
-        if len == 0 {
+        if staged.is_empty() {
             return Ok(false);
         }
         if leading_break {
@@ -4161,8 +5248,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 .push_doc(owner, DocFragmentInput::SoftBreak)
                 .map_err(fault)?;
         }
-        for fragment in staged.iter().take(len) {
-            self.facts.push_doc(owner, *fragment).map_err(fault)?;
+        for fragment in staged {
+            self.facts.push_doc(owner, fragment).map_err(fault)?;
         }
         Ok(true)
     }
@@ -5086,6 +6173,8 @@ mod lane_tests {
                 module: Some("hono".to_owned()),
                 name: Some("Context".to_owned()),
                 overload_index: None,
+                is_field: false,
+                is_enum_member: false,
             }],
         )
     }
@@ -5168,6 +6257,78 @@ mod lane_tests {
         }
         if !found {
             return Err(LaneError::Missing("unresolved foreign occurrence"));
+        }
+        Ok(())
+    }
+
+    /// Different initializers keep sibling block bindings distinct: both
+    /// `const value` facts publish, and a use inside the second block
+    /// targets the second binding's own ordinal.
+    #[test]
+    fn merged_block_redeclaration_uses_keep_their_written_spelling() -> Result<(), LaneError> {
+        let source = "export function probe(): void {\n    {\n        const value = 1;\n    }\n    {\n        const value = 2;\n        value;\n    }\n}\n";
+        let view = lower_fragment(source, None)?;
+        let probe = {
+            let mut ordinal = None;
+            for entity in view.entities() {
+                if entity.kind != EntityKind::Function {
+                    continue;
+                }
+                let atom_index = usize::try_from(entity.name.raw)?;
+                let Some(atom) = view.atoms().nth(atom_index) else {
+                    continue;
+                };
+                if atom.bytes == b"probe".as_slice() {
+                    ordinal = Some(entity.entity.raw);
+                    break;
+                }
+            }
+            ordinal.ok_or(LaneError::Missing("probe function fact"))?
+        };
+        let mut values = Vec::new();
+        for entity in view.entities() {
+            if entity.kind != EntityKind::Constant {
+                continue;
+            }
+            let atom_index = usize::try_from(entity.name.raw)?;
+            let Some(atom) = view.atoms().nth(atom_index) else {
+                continue;
+            };
+            if atom.bytes == b"value".as_slice() {
+                values.push(entity.entity.raw);
+            }
+        }
+        if values.len() != 2 {
+            return Err(LaneError::Missing("two distinct value constants"));
+        }
+        let second_value = values[1];
+        let mut found = false;
+        for row in view
+            .occurrences()
+            .ok_or(LaneError::Missing("occurrence plane"))?
+        {
+            let row = row.map_err(LaneError::from)?;
+            let occurrence = row.occurrence;
+            if row.owner.raw != probe {
+                continue;
+            }
+            if occurrence.kind != backend_semantic::ir::ReferenceKind::VariableUse {
+                continue;
+            }
+            if occurrence.target
+                != backend_semantic::ir::OccurrenceTarget::Local(
+                    backend_semantic::ir::EntityId::new(second_value),
+                )
+            {
+                continue;
+            }
+            found = true;
+            if occurrence.confidence != backend_semantic::ir::OccurrenceConfidence::Index {
+                return Err(LaneError::Missing("index confidence"));
+            }
+        }
+        if !found {
+            return Err(LaneError::Missing("second-block value use occurrence"));
         }
         Ok(())
     }
@@ -5274,22 +6435,6 @@ fn checker_literal(
 
 /// Byte width of the `@code`/`@link` inline-tag headers.
 const TAG_WIDTH: usize = 6;
-
-/// Stages one JSDoc fragment, marking overflow past the bounded segment lane.
-fn stage_fragment<'source>(
-    staged: &mut [DocFragmentInput<'source>; MAX_JSDOC_SEGMENTS],
-    len: &mut usize,
-    overflow: &mut bool,
-    fragment: DocFragmentInput<'source>,
-) {
-    match staged.get_mut(*len) {
-        Some(slot) => {
-            *slot = fragment;
-            *len += 1;
-        }
-        None => *overflow = true,
-    }
-}
 
 /// Finds the earliest `{@link ...}` or `{@code ...}` tag header at or after
 /// `from`, returning its position and whether it is a link.

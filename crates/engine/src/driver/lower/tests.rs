@@ -3,10 +3,11 @@
 //! bytes, every fact admission rejection must retain the exact offending fact
 //! and cause, and an empty fact set must retain its exact current schema form.
 use backend_semantic::ir::{
-    AtomListId, BuildError, ConcreteType, Confidence, CorePayloadHash, EntityAuthorityFacts,
-    EntityId, EntityKind, EntityVersion, FactAvailability, FragmentView, NominalRef, Occurrence,
-    PackageLineage, ParentageAuthority, PrepareError, PreparedFragment, PythonFacts,
-    PythonParameterKind, ReopenedTypeParameterList, RustFacts, RustOwnership, SemanticCoreReader,
+    AtomListId, BuildError, ConcreteType, Confidence, CorePayloadHash, DecodedOccurrence,
+    EntityAuthorityFacts, EntityId, EntityKind, EntityVersion, FactAvailability, ForeignOrigin,
+    FragmentView, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PackageLineage,
+    ParentageAuthority, PrepareError, PreparedFragment, PythonFacts, PythonParameterKind,
+    ReferenceKind, ReopenedTypeParameterList, RelSpan, RustFacts, RustOwnership, SemanticCoreReader,
     SemanticImageView, SemanticReader, SemanticTypeChild, SemanticTypeFault, SemanticTypeRecord,
     SemanticTypeTag, SourceIdentity, TypeExpr, TypeHeader, TypePairPayload, TypeParameterListId,
     TypeQuadPayload, TypeTriplePayload, VariadicForm, Visibility, encode_full_semantic_image,
@@ -22,7 +23,8 @@ use thiserror::Error;
 use super::{
     AdmissionFault, EmissionExtension, FactFault, FactSet, MAX_ANONYMOUS_TYPE_ROWS,
     MAX_EMISSION_DOC_FRAGMENTS, MAX_EMISSION_FACTS, MAX_EMISSION_OCCURRENCES, MAX_EXTENSION_ATOMS,
-    MAX_FACT_CHILDREN, MAX_REF_LISTS, MAX_TYPE_PARAMETERS, RejectedFact, SemanticFact,
+    MAX_FACT_CHILDREN, MAX_REF_LISTS, MAX_TYPE_CHILDREN, MAX_TYPE_PARAMETERS,
+    PRODUCT_CHILD_POOL_STRIDE, RejectedFact, SemanticFact,
 };
 use crate::driver::types::{ParentageState, SourceSpanFact};
 
@@ -346,6 +348,163 @@ fn capacity_pending_plan() -> FactSet<'static> {
     plan.anonymous_rows = 1;
     plan.computed_rows = 1;
     FactSet::with_plan(plan)
+}
+
+#[test]
+fn c_occurrences_pass_the_declaration_ceiling() -> Result<(), TestError> {
+    let source_len = MAX_EMISSION_FACTS + 8_192;
+    let plan = super::ResourcePlan::for_source(
+        LanguageProfile::C(backend_semantic::vocabulary::CStandard::C23),
+        source_len,
+    );
+    if plan.occurrences <= MAX_EMISSION_FACTS {
+        return Err(TestError::Rejected {
+            fact: plan.occurrences,
+            name_len: 0,
+            cause: FactFault::OccurrenceCapacity,
+        });
+    }
+    let mut facts = FactSet::with_plan(plan);
+    push_pending_seed(&mut facts)?;
+    let occurrence = Occurrence {
+        target: backend_semantic::ir::OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+            origin: backend_semantic::ir::ForeignOrigin::Universe {
+                ecosystem: "c",
+            },
+            path: "header.h",
+            display: "symbol",
+            kind: None,
+        }),
+        kind: backend_semantic::ir::ReferenceKind::VariableUse,
+        confidence: backend_semantic::ir::OccurrenceConfidence::Syntactic,
+        span: backend_semantic::ir::RelSpan { start: 0, end: 0 },
+    };
+    for _ in 0..=MAX_EMISSION_FACTS {
+        facts
+            .push_occurrence(0, occurrence)
+            .map_err(|cause| rejected(RejectedFact {
+                fact: 0,
+                name: b"symbol",
+                cause,
+            }))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn owned_package_occurrence_admits_the_real_module_path() -> Result<(), TestError> {
+    let mut facts = pending_plan();
+    push_pending_seed(&mut facts)?;
+    facts
+        .push(
+            SemanticFact::new(
+                EntityKind::Function,
+                b"drive",
+                SemanticProductConstructor::PRODUCT,
+            ),
+        )
+        .map_err(rejected)?;
+    facts
+        .push_owned_package_occurrence(
+            1,
+            "cargo",
+            "src/service",
+            "set_note",
+            "set_note",
+            Some(EntityKind::Function),
+            ReferenceKind::MethodCall,
+            OccurrenceConfidence::Oracle,
+            RelSpan { start: 0, end: 8 },
+        )
+        .map_err(lane_fault)?;
+    let bytes = write(&facts)?;
+    let view = FragmentView::validate(&bytes)?;
+    let mut cursor = view.occurrences().ok_or(TestError::Tail)?;
+    let DecodedOccurrence { occurrence, .. } = cursor
+        .next()
+        .ok_or(TestError::Tail)?
+        .map_err(|_| TestError::Tail)?;
+    let OccurrenceTarget::Foreign(key) = occurrence.target else {
+        return Err(TestError::Tail);
+    };
+    let ForeignOrigin::Package(lineage) = key.origin else {
+        return Err(TestError::Tail);
+    };
+    if lineage.ecosystem != "cargo" || lineage.name != "src/service" {
+        return Err(TestError::Tail);
+    }
+    if key.path != "set_note" || key.display != "set_note" {
+        return Err(TestError::Tail);
+    }
+    owned_topology_projection(&facts)?;
+    Ok(())
+}
+
+#[test]
+fn wide_anonymous_type_row_keeps_sixty_five_children() -> Result<(), TestError> {
+    let mut plan = super::ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), 0);
+    plan.facts = 2;
+    plan.anonymous_rows = 1;
+    plan.anonymous_type_children = MAX_TYPE_CHILDREN;
+    let mut facts = FactSet::with_plan(plan);
+    push_pending_seed(&mut facts)?;
+    let width = 65;
+    for _ in 0..width {
+        facts.anonymous_type_child(0, None, 0).map_err(lane_fault)?;
+    }
+    let row = facts
+        .intern_anonymous_type_row(0, SemanticTypeRecord::leaf(SemanticTypeTag::Tuple))
+        .map_err(lane_fault)?;
+    if facts.staged_type_child_count(row) != Some(width) {
+        return Err(TestError::Tail);
+    }
+    let mut overflow = FactSet::with_plan(plan);
+    push_pending_seed(&mut overflow)?;
+    for _ in 0..MAX_TYPE_CHILDREN {
+        overflow
+            .anonymous_type_child(0, None, 0)
+            .map_err(lane_fault)?;
+    }
+    match overflow.anonymous_type_child(0, None, 0) {
+        Err(FactFault::TypeChildCapacity) => Ok(()),
+        Err(cause) => Err(lane_fault(cause)),
+        Ok(()) => Err(TestError::UnexpectedPush),
+    }
+}
+
+#[test]
+fn wide_product_keeps_sixty_five_children() -> Result<(), TestError> {
+    let mut plan = super::ResourcePlan::for_source(LanguageProfile::Rust(RustEdition::Rust2024), 0);
+    plan.facts = 3;
+    plan.product_children = MAX_FACT_CHILDREN;
+    let mut facts = FactSet::with_plan(plan);
+    push_pending_seed(&mut facts)?;
+    let mut wide = SemanticFact::new(
+        EntityKind::Record,
+        b"wide",
+        SemanticProductConstructor::PRODUCT,
+    );
+    for _ in 0..65 {
+        wide = wide.child(ProductChildRole::ProductMember, 0);
+    }
+    facts.push(wide).map_err(rejected)?;
+    let mut overflow = SemanticFact::new(
+        EntityKind::Record,
+        b"overflow",
+        SemanticProductConstructor::PRODUCT,
+    );
+    for _ in 0..=MAX_FACT_CHILDREN {
+        overflow = overflow.child(ProductChildRole::ProductMember, 0);
+    }
+    match facts.push(overflow) {
+        Err(RejectedFact {
+            name: b"overflow",
+            cause: FactFault::ChildCapacity,
+            ..
+        }) => Ok(()),
+        Err(failure) => Err(rejected(failure)),
+        Ok(_) => Err(TestError::UnexpectedPush),
+    }
 }
 
 fn push_pending_seed(facts: &mut FactSet<'static>) -> Result<(), TestError> {
@@ -850,10 +1009,10 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
         Ok(_) => return Err(TestError::UnexpectedPush),
     }
 
-    // The exact maximal lane admits with every fact after the first carrying
-    // the full ordered child count targeting the first fact. One fact with
-    // more children than the bounded child lane is the exact typed truncation
-    // rejection while the lane still has room.
+    // The pool admits every fact after the first at the stride. One row may
+    // still name [`MAX_FACT_CHILDREN`] children; filling every fact to that
+    // width would exceed the pooled ceiling. One fact with more children
+    // than the per-row lane is the exact typed truncation rejection.
     let mut maximal = FactSet::new();
     let mut overflowing_child = SemanticFact::new(
         EntityKind::Record,
@@ -879,7 +1038,7 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
             SemanticProductConstructor::PRODUCT,
         );
         if ordinal > 0 {
-            for _ in 0..MAX_FACT_CHILDREN {
+            for _ in 0..PRODUCT_CHILD_POOL_STRIDE {
                 fact = fact.child(ProductChildRole::ProductMember, 0);
             }
         }
@@ -986,10 +1145,9 @@ fn bounded_fact_and_child_lanes_reject_overflow_and_admit_the_exact_bound() -> R
 
     // The maximal lane writes one complete validated fragment within the
     // conservation reservation, with its exact entity count committed.
-    // The raised lane's exact eight-child product payload is larger than the
-    // former 64 KiB fixture; retain the same untouched-tail proof with ample
-    // caller-owned output scratch.
-    let mut output = vec![0xa5_u8; 8 * 1024 * 1024];
+    // Occurrences now run to four times the declaration ceiling, so the
+    // former 8 MiB scratch is no longer enough for this full lane.
+    let mut output = vec![0xa5_u8; 16 * 1024 * 1024];
     let length = super::admit(
         &maximal,
         identity()?,

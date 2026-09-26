@@ -2,8 +2,8 @@
 //!
 //! Each test drives one real `stretchr`-class width (the measured `pflag`
 //! `FlagSet` 220 and `testify` `Assertions` 146 method sets) plus the exact
-//! `MAX_REF_LIST_ELEMENTS` boundary (255 admitted, 256 a typed
-//! `ListCapacity` terminal) from synthesized source through the Go oracle
+//! `MAX_REF_LIST_ELEMENTS` boundary (256 admitted; the old `u8` width of 255
+//! is no longer the ceiling) from synthesized source through the Go oracle
 //! image and `compile_semantic`, and then asserts the projected method set
 //! carries the exact declared method names and count. An unprovisioned host
 //! (no `NUDOX_GO_CORPUS_DIR`) records a typed, printed skip; it never fails
@@ -76,8 +76,6 @@ enum Error {
         observed: String,
         expected: String,
     },
-    #[error("expected a typed ListCapacity terminal, observed {0}")]
-    ExpectedCapacityTerminal(String),
 }
 
 /// Typed fleet-provisioning outcome. A missing `NUDOX_GO_CORPUS_DIR` means
@@ -295,9 +293,6 @@ fn wide_struct_with_255_pointer_methods_keeps_the_complete_method_set() -> Resul
 }
 
 #[test]
-fn wide_struct_with_256_pointer_methods_is_a_typed_list_capacity_terminal() -> Result<(), Error> {
-    provisioned(|| match wide_method_set(256) {
-        Err(Error::Projection(GoProjectionFault::ListCapacity { .. })) => Ok(()),
-        other => Err(Error::ExpectedCapacityTerminal(format!("{other:?}"))),
-    })
+fn wide_struct_with_256_pointer_methods_keeps_the_complete_method_set() -> Result<(), Error> {
+    provisioned(|| wide_method_set(256))
 }

@@ -1057,6 +1057,13 @@ pub struct ProjectRecord {
     pub lockfile: Option<ProductText>,
     /// Pinned members in canonical order.
     pub members: Box<[PackageReference]>,
+    /// Indexed Cargo manifest names for members, parallel to `members`.
+    #[serde(default = "empty_product_text_box")]
+    pub member_manifest_names: Box<[ProductText]>,
+}
+
+fn empty_product_text_box() -> Box<[ProductText]> {
+    Box::new([])
 }
 
 /// One shared session-tree node.

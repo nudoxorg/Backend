@@ -42,7 +42,11 @@
 //!   and paths with a static target land `Local` or foreign at oracle
 //!   confidence; positions the oracle could not resolve stay at syntactic
 //!   confidence, and every span is relative to the innermost owning
-//!   declaration.
+//!   declaration. A method rust-analyzer resolved into another project-local
+//!   file is a cargo package key whose name is that file's module path, not a
+//!   universe key of the method token. A path call resolved to a function in
+//!   another project-local file is a cargo package key of that module, with
+//!   the function's name as path and display.
 //! - Macro invocation spellings travel in each owning declaration's Rust
 //!   extension row. A `macro_rules!` definition commits its own closed
 //!   `Macro` row — leaf product, honest unannotated record — exactly as the
@@ -62,9 +66,9 @@
 //! | bound | typed reason | behavior at overflow |
 //! |---|---|---|
 //! | `MAX_TYPE_DEPTH` (16) | `TruncatedAtDepthLimit` | retain an unknown row with that reason |
-//! | `MAX_COMPOUND_CHILDREN` (8) | `NoIrRepresentation`, or enclosing `OracleGap` without a written shape | retain spelling when available; otherwise retain the gap row |
+//! | `MAX_COMPOUND_CHILDREN` (the type-child lane, 255) | `NoIrRepresentation`, or enclosing `OracleGap` without a written shape | retain spelling when available; otherwise retain the gap row |
 //! | `MAX_DEDUPED_FOREIGN_ROWS` (512) | `NoSupportedDeclaration` | a distinct foreign spelling beyond the cap rejects exactly |
-//! | `TUPLE_FIELD_NAMES` (16 entries) | positional-name fold | positions beyond 15 are not materialized by the module walk |
+//! | `TUPLE_FIELD_NAMES` (256 positional spellings) | positional-name fold | a tuple field whose index has no spelling is not materialized |
 //! | computed rows (`MAX_COMPUTED_TYPE_ROWS`, 32768) | `ComputedRowCapacity` | a proven let-initializer or method-call result type beyond the cap is dropped, never truncated into a fabricated row |
 
 use std::{collections::HashMap, vec::Vec};
@@ -76,7 +80,7 @@ use backend_frontend_rust::legacy::{
 };
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
-    ExternalFragmentId, ForeignKey, ForeignOrigin,
+    ExternalFragmentId, ForeignKey, ForeignOrigin, PackageLineage,
     ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape,
     ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
@@ -104,9 +108,10 @@ const INTEGER_WIDTH_SHIFT: u32 = 1;
 /// Bound of the recursive declared-type walk; deeper positions fold to the
 /// lane's exact `TruncatedAtDepthLimit` reason instead of unbounded recursion.
 const MAX_TYPE_DEPTH: usize = 16;
-/// Maximum pooled children of one compound row or fact record; positions
-/// beyond it fold to the honest gap reason instead of a lane rejection.
-const MAX_COMPOUND_CHILDREN: usize = 8;
+/// Maximum children of one compound row. This is the shared type-child lane,
+/// not a separate Rust fold. A tuple, callable, or application inside the
+/// lane keeps every child; only a row past the lane still folds.
+const MAX_COMPOUND_CHILDREN: usize = super::MAX_TYPE_CHILDREN;
 /// Maximum entries of the anonymous foreign-leaf row dedup table. Measured
 /// against the real corpus demand: a fixture crate root re-exports whole
 /// dependency surfaces (`itertools`'s written re-export list alone names
@@ -125,6 +130,8 @@ const CARGO_ECOSYSTEM: &str = "cargo";
 const SELF_NAME: &[u8] = b"self";
 /// Fallback binding name for a parameter whose pattern spells no identifier.
 const PARAM_FALLBACK_NAME: &[u8] = b"param";
+/// Synthetic owner of module-level `use` items in a crate-root source file.
+const CRATE_FILE_OWNER_NAME: &[u8] = b"crate";
 
 /// Exact direct-authority rejection while rust-analyzer HIR is borrowed.
 ///
@@ -269,11 +276,59 @@ struct Decl<'source> {
 }
 
 /// Canonical positional names of tuple fields, exactly the spellings Rust
-/// itself uses for `.0`-style access.
-const TUPLE_FIELD_NAMES: [&[u8]; 16] = [
-    b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9", b"10", b"11", b"12", b"13", b"14",
-    b"15",
-];
+/// itself uses for `.0`-style access. The table covers every `u8` index so
+/// a tuple struct wider than sixteen fields keeps those fields.
+const TUPLE_FIELD_NAME_LIMIT: usize = 256;
+
+const fn tuple_field_name_table() -> (
+    [u8; 1024],
+    [u16; TUPLE_FIELD_NAME_LIMIT],
+    [u16; TUPLE_FIELD_NAME_LIMIT],
+) {
+    let mut bytes = [0_u8; 1024];
+    let mut starts = [0_u16; TUPLE_FIELD_NAME_LIMIT];
+    let mut ends = [0_u16; TUPLE_FIELD_NAME_LIMIT];
+    let mut at = 0_usize;
+    let mut index = 0_usize;
+    while index < TUPLE_FIELD_NAME_LIMIT {
+        starts[index] = at as u16;
+        let mut value = index;
+        let mut digits = [0_u8; 3];
+        let mut count = 0_usize;
+        if value == 0 {
+            digits[0] = b'0';
+            count = 1;
+        } else {
+            while value > 0 {
+                digits[count] = b'0' + (value % 10) as u8;
+                value /= 10;
+                count += 1;
+            }
+        }
+        let mut cursor = count;
+        while cursor > 0 {
+            cursor -= 1;
+            bytes[at] = digits[cursor];
+            at += 1;
+        }
+        ends[index] = at as u16;
+        index += 1;
+    }
+    (bytes, starts, ends)
+}
+
+const TUPLE_FIELD_NAME_TABLE: (
+    [u8; 1024],
+    [u16; TUPLE_FIELD_NAME_LIMIT],
+    [u16; TUPLE_FIELD_NAME_LIMIT],
+) = tuple_field_name_table();
+
+fn tuple_field_name(index: usize) -> Option<&'static [u8]> {
+    let (bytes, starts, ends) = &TUPLE_FIELD_NAME_TABLE;
+    let start = usize::from(*starts.get(index)?);
+    let end = usize::from(*ends.get(index)?);
+    bytes.get(start..end)
+}
 
 /// One pushed declaration row with the coordinates every later phase needs.
 struct Row<'source> {
@@ -282,6 +337,11 @@ struct Row<'source> {
     span: ByteSpan,
     /// The row's Rust extension facts as pushed, before macros attach.
     extension: RustFacts,
+    /// True for the synthetic crate-root file owner pushed only to host
+    /// orphan module-level imports. Parentage ignores these rows so every
+    /// real declaration stays a root when nothing else strictly contains it;
+    /// occurrence ownership still treats them as the fallback file owner.
+    file_owner: bool,
 }
 
 /// One macro invocation site with its written spelling and call span.
@@ -448,6 +508,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.emit_type_roots(&declarations)?;
         self.emit_members(&declarations)?;
         self.emit_reexports()?;
+        self.rebuild_owner_order();
+        self.emit_crate_file_owner()?;
         self.rebuild_owner_order();
         self.emit_parentage()?;
         self.attach_macros()?;
@@ -644,16 +706,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                         continue;
                     };
                     let index = field.index();
-                    let Some(name) = TUPLE_FIELD_NAMES.get(usize::from(index)) else {
+                    let Some(name) = tuple_field_name(usize::from(index)) else {
                         continue;
                     };
-                    if field.name(self.database).as_str().as_bytes() != *name {
+                    if field.name(self.database).as_str().as_bytes() != name {
                         // A named expansion field whose projected name is
                         // unavailable is not a positional field. Keeping it
                         // would mint a false `.0`-style declaration.
                         continue;
                     }
-                    *name
+                    name
                 }
             };
             let expanded = authority.is_macro_expansion(&syntax);
@@ -1214,7 +1276,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             let semantic = receiver.ty(self.database);
             let lowered = self.lower_pending_type(&semantic, None, MAX_TYPE_DEPTH)?;
             let ownership = receiver_ownership(receiver.access(self.database));
-            let ordinal = self.push_parameter(SELF_NAME, lowered, ownership)?;
+            let ordinal = self.push_parameter(SELF_NAME, lowered, ownership, None)?;
             parameter_ordinals.push(ordinal);
             signature_children.push(ordinal);
         }
@@ -1235,7 +1297,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             );
             let lowered = self.lower_pending_type(&semantic, anchor.as_ref(), MAX_TYPE_DEPTH)?;
             let ownership = parameter_ownership(self.database, &semantic);
-            let ordinal = self.push_parameter(name, lowered, ownership)?;
+            let wildcard = name == b"_";
+            let ordinal = self.push_parameter(name, lowered, ownership, wildcard.then_some(position))?;
             parameter_ordinals.push(ordinal);
             signature_children.push(ordinal);
         }
@@ -1301,12 +1364,16 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         name: &'source [u8],
         lowered: Lowered<'source>,
         ownership: RustOwnership,
+        wildcard_position: Option<usize>,
     ) -> Result<u32, RustAuthorityError> {
         let mut fact = SemanticFact::new(EntityKind::Parameter, name, LEAF_PRODUCT)
             .typed(lowered.record)
             .with_extension(EmissionExtension::Rust(self.empty_extension(ownership)?));
         for target in lowered.children {
             fact = fact.type_child(target, None, 0);
+        }
+        if let Some(position) = wildcard_position {
+            fact = fact.with_identity_discriminator(wildcard_param_discriminator(position));
         }
         coordinate(push(self.facts, fact)?)
     }
@@ -1315,14 +1382,15 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// pattern spells one, otherwise the analyzer's own parameter name found
     /// in the source text, otherwise the static fallback binding name. A
     /// wildcard pattern binds nothing, so two same-typed `_` parameters would
-    /// otherwise mint byte-identical siblings; such a position keeps the
-    /// lane's canonical positional spelling (the same spellings Rust uses for
-    /// tuple fields) so a repeated wildcard stays distinct.
+    /// otherwise mint byte-identical siblings; the display name stays `_` and
+    /// the positional index is carried in the identity discriminator so a
+    /// wildcard cannot collide with a parameter the source actually named
+    /// `_0`.
     fn parameter_name(
         &self,
         written: Option<&ast::Param>,
         hir_name: Option<ra_ap_hir::Name>,
-        position: usize,
+        _position: usize,
     ) -> &'source [u8] {
         if let Some(param) = written {
             if let Some(pattern) = param.pat() {
@@ -1332,10 +1400,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 {
                     return bytes;
                 }
-                if matches!(&pattern, ast::Pat::WildcardPat(_))
-                    && let Some(name) = TUPLE_FIELD_NAMES.get(position)
-                {
-                    return name;
+                if matches!(&pattern, ast::Pat::WildcardPat(_)) {
+                    return b"_";
                 }
                 if let Ok(bytes) = self.bytes_of_node(pattern.syntax()) {
                     return bytes;
@@ -2010,7 +2076,9 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     /// exact written spelling as an explicit `NoIrRepresentation` unknown.
     fn generic_type_bound_target(&mut self, bound: &ast::Type) -> Result<u32, RustAuthorityError> {
         match self.trait_bound_constraint(bound)? {
-            TraitBoundTarget::Committed(ordinal) => return Ok(ordinal),
+            TraitBoundTarget::Committed(ordinal) => {
+                return self.lower_trait_bound_application(bound, ordinal, MAX_TYPE_DEPTH - 1);
+            },
             TraitBoundTarget::Foreign => {
                 let spelling = self.bytes_of_node(bound.syntax())?;
                 let record = self.unresolved_record_with(Some(spelling));
@@ -2056,6 +2124,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             name: self.name_of(declaration)?,
             span: declaration.span,
             extension,
+            file_owner: false,
         });
         match &declaration.definition {
             RustDefinition::Field(field) => self.fields.push((*field, ordinal)),
@@ -2143,10 +2212,111 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.owner_order[..low].iter().rev().find_map(|index| {
             let row = &self.rows[*index];
             (row.ordinal != ordinal
+                && !row.file_owner
                 && span.end <= row.span.end
                 && (row.span.start < span.start || span.end < row.span.end))
                 .then_some(row.ordinal)
         })
+    }
+
+    /// True when this authority's selected source file is the crate root module.
+    fn is_source_crate_root(&self) -> bool {
+        self.authority
+            .semantics
+            .hir_file_to_module_def(self.authority.source_file)
+            .is_some_and(|module| module.is_crate_root(self.database))
+    }
+
+    /// True when at least one top-level import path has no owning declaration
+    /// row yet — the module-level `use` gap the synthetic file owner closes.
+    fn has_orphan_module_import(&self) -> bool {
+        let authority = self.authority;
+        for path in authority.top_level_paths() {
+            let span = match path
+                .segments()
+                .last()
+                .and_then(|segment| segment.name_ref())
+                .and_then(|name| authority.span(name.syntax()).ok())
+            {
+                Some(span) => span,
+                None => continue,
+            };
+            let kind = match authority.resolve_path(&path) {
+                Some((resolution, _)) => reference_kind(&path, &resolution),
+                None => unresolved_reference_kind(&path),
+            };
+            if kind == ReferenceKind::Import && self.owner_of(span).is_none() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Pushes one synthetic crate-root module row spanning the whole source
+    /// buffer when orphan module-level imports need an owner. Parentage
+    /// ignores the row; occurrence ownership does not.
+    fn emit_crate_file_owner(&mut self) -> Result<(), RustAuthorityError> {
+        if !self.is_source_crate_root() {
+            return Ok(());
+        }
+        // `scoped_names` keys use `SemanticKind`, not `EntityKind`.
+        if self
+            .scoped_names
+            .contains(&(None, SemanticKind::Module as u8, CRATE_FILE_OWNER_NAME.to_vec()))
+        {
+            return Ok(());
+        }
+        if !self.has_orphan_module_import() {
+            return Ok(());
+        }
+        let end = u32::try_from(self.source.len()).map_err(|_| admission())?;
+        let span = ByteSpan { start: 0, end };
+        let extension = self.empty_extension(RustOwnership::Value)?;
+        let fact = SemanticFact::new(
+            EntityKind::Module,
+            CRATE_FILE_OWNER_NAME,
+            SemanticProductConstructor::PRODUCT,
+        )
+        .with_visibility(backend_semantic::ir::Visibility::Private)
+        .with_extension(EmissionExtension::Rust(extension));
+        let ordinal = coordinate(push(self.facts, fact)?)?;
+        let staged = StagedSourceSpan::new(span.start, span.end).ok_or_else(admission)?;
+        self.facts
+            .attach_source_span(ordinal, staged)
+            .map_err(|fault| parentage_fault(ordinal, CRATE_FILE_OWNER_NAME.len(), fault))?;
+        let range = self
+            .facts
+            .type_parameter_range(extension.where_clauses.raw)
+            .map_err(|_| admission())?;
+        let free_range = self
+            .facts
+            .free_predicate_range(extension.free_predicates.raw)
+            .map_err(|_| admission())?;
+        let slot = usize::try_from(ordinal).map_err(|_| admission())?;
+        self.facts
+            .attach_extension_with_type_parameters(
+                slot,
+                EmissionExtension::Rust(extension),
+                range,
+            )
+            .map_err(|_| admission())?;
+        self.facts
+            .set_free_predicate_range(slot, &EmissionExtension::Rust(extension), free_range)
+            .map_err(|_| admission())?;
+        // `scoped_names` keys use `SemanticKind`, not `EntityKind`.
+        self.scoped_names.insert((
+            None,
+            SemanticKind::Module as u8,
+            CRATE_FILE_OWNER_NAME.to_vec(),
+        ));
+        self.rows.push(Row {
+            ordinal,
+            name: CRATE_FILE_OWNER_NAME,
+            span,
+            extension,
+            file_owner: true,
+        });
+        Ok(())
     }
 
     /// Binds lexical parentage from declaration spans after every row
@@ -2353,10 +2523,23 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         if let Some(trait_) = semantic.as_dyn_trait() {
             let written = self.written_type_name(anchor);
             return match self.ordinal_of_trait(trait_) {
-                Some(ordinal) => Ok(Lowered {
-                    record: SemanticTypeRecord::leaf(SemanticTypeTag::DynTrait),
-                    children: vec![ordinal],
-                }),
+                Some(ordinal) => {
+                    let bound_ty = written_trait_bounds(anchor)
+                        .first()
+                        .and_then(|bound| bound.ty());
+                    let target = match bound_ty {
+                        Some(bound_ty) => self.lower_trait_bound_application(
+                            &bound_ty,
+                            ordinal,
+                            depth - 1,
+                        )?,
+                        None => ordinal,
+                    };
+                    Ok(Lowered {
+                        record: SemanticTypeRecord::leaf(SemanticTypeTag::DynTrait),
+                        children: vec![target],
+                    })
+                }
                 None => Ok(Lowered::leaf(self.unresolved_record_with(written))),
             };
         }
@@ -2536,23 +2719,13 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     ) -> Result<Lowered<'source>, RustAuthorityError> {
         let written = self.written_type_name(anchor);
         let Some(ordinal) = self.ordinal_of_adt(adt) else {
-            // A foreign named type rust-analyzer resolved (`Option`, `Box`,
-            // any dependency ADT) is an external nominal over its defining
-            // crate module, displayed by its exact written spelling; only a
-            // position with no written spelling keeps the gap row. An
-            // applied foreign type still commits its application structure:
-            // the base row followed by one hosted row per written argument.
-            let typed_arguments: Vec<ra_ap_hir::Type<'_>> = arguments
-                .iter()
-                .filter_map(|argument| argument.as_ref())
-                .cloned()
-                .take(written_type_argument_count(anchor))
-                .collect();
             let base_record = self.foreign_adt_record(adt, written);
-            if typed_arguments.is_empty() {
+            let argument_children =
+                self.lower_written_application_arguments(arguments, anchor, depth)?;
+            if argument_children.is_empty() {
                 return Ok(Lowered::leaf(base_record));
             }
-            if typed_arguments.len() + 1 > MAX_COMPOUND_CHILDREN {
+            if argument_children.len() + 1 > MAX_COMPOUND_CHILDREN {
                 return Ok(Lowered::leaf(match written {
                     Some(text) => unknown_record(TypeReason::NoIrRepresentation, Some(text)),
                     None => unknown_record(TypeReason::OracleGap, None),
@@ -2562,45 +2735,204 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 return Ok(self.folded_rowless(anchor));
             };
             let mut children = vec![base];
-            for (position, argument) in typed_arguments.iter().enumerate() {
-                match self.lower_target(argument, child_anchor(anchor, position), depth - 1)? {
-                    Some(target) => children.push(target),
-                    None => return Ok(self.folded_rowless(anchor)),
-                }
-            }
+            children.extend(argument_children);
             return Ok(Lowered {
                 record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
                 children,
             });
         };
-        let typed_arguments: Vec<ra_ap_hir::Type<'_>> = arguments
-            .iter()
-            .filter_map(|argument| argument.as_ref())
-            .cloned()
-            .take(written_type_argument_count(anchor))
-            .collect();
-        if typed_arguments.is_empty() {
+        let argument_children = self.lower_written_application_arguments(arguments, anchor, depth)?;
+        if argument_children.is_empty() {
             let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Nominal);
             record.nominal = Some(NominalRef::Local(EntityId::new(ordinal)));
             return Ok(Lowered::leaf(record));
         }
-        if typed_arguments.len() + 1 > MAX_COMPOUND_CHILDREN {
+        if argument_children.len() + 1 > MAX_COMPOUND_CHILDREN {
             return Ok(Lowered::leaf(match written {
                 Some(text) => unknown_record(TypeReason::NoIrRepresentation, Some(text)),
                 None => unknown_record(TypeReason::OracleGap, None),
             }));
         }
         let mut children = vec![ordinal];
-        for (position, argument) in typed_arguments.iter().enumerate() {
-            match self.lower_target(argument, child_anchor(anchor, position), depth - 1)? {
-                Some(target) => children.push(target),
-                None => return Ok(self.folded_rowless(anchor)),
-            }
-        }
+        children.extend(argument_children);
         Ok(Lowered {
             record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
             children,
         })
+    }
+
+    /// Lowers every written generic argument on one application anchor,
+    /// including associated bindings, const arguments, and lifetimes.
+    fn lower_written_application_arguments(
+        &mut self,
+        arguments: &[Option<ra_ap_hir::Type<'_>>],
+        anchor: Option<&ast::Type>,
+        depth: usize,
+    ) -> Result<Vec<u32>, RustAuthorityError> {
+        let written_count = written_generic_argument_count(anchor);
+        if written_count == 0 {
+            return Ok(Vec::new());
+        }
+        let hir_type_arguments: Vec<ra_ap_hir::Type<'_>> = arguments
+            .iter()
+            .filter_map(|argument| argument.as_ref())
+            .cloned()
+            .collect();
+        let mut hir_cursor = 0usize;
+        let mut children = Vec::with_capacity(written_count);
+        for position in 0..written_count {
+            let Some(generic_argument) = generic_argument_at(anchor, position) else {
+                return Ok(Vec::new());
+            };
+            let target = match generic_argument {
+                ast::GenericArg::TypeArg(_) => {
+                    let Some(hir_argument) = hir_type_arguments.get(hir_cursor) else {
+                        return Ok(Vec::new());
+                    };
+                    hir_cursor += 1;
+                    self.lower_target(
+                        hir_argument,
+                        type_argument_anchor(anchor, position),
+                        depth - 1,
+                    )?
+                }
+                other => {
+                    let lowered = self.lower_written_generic_argument(other, depth - 1)?;
+                    self.host(lowered, anchor)?
+                }
+            };
+            match target {
+                Some(target) => children.push(target),
+                None => return Ok(Vec::new()),
+            }
+        }
+        Ok(children)
+    }
+
+    /// Lowers one non-`TypeArg` generic argument from its written syntax.
+    fn lower_written_generic_argument(
+        &mut self,
+        argument: ast::GenericArg,
+        depth: usize,
+    ) -> Result<Lowered<'source>, RustAuthorityError> {
+        match argument {
+            ast::GenericArg::AssocTypeArg(binding) => {
+                let name = binding
+                    .name_ref()
+                    .and_then(|name| self.bytes_of_node(name.syntax()).ok());
+                let value = if let Some(ty) = binding.ty() {
+                    match self.authority.semantics.resolve_type(&ty) {
+                        Some(semantic) => self.lower_type(&semantic, Some(&ty), depth)?,
+                        None => Lowered::leaf(unknown_record(TypeReason::OracleGap, None)),
+                    }
+                } else if let Some(konst) = binding
+                    .const_arg()
+                    .and_then(|argument| argument.expr())
+                {
+                    self.const_argument_lowered(self.bytes_of_node(konst.syntax()).ok())
+                } else {
+                    Lowered::leaf(unknown_record(TypeReason::OracleGap, None))
+                };
+                let Some(target) = self.host(value, binding.ty().as_ref())? else {
+                    return Ok(Lowered::leaf(unknown_record(TypeReason::OracleGap, None)));
+                };
+                Ok(self.assoc_binding_lowered(name, target))
+            }
+            ast::GenericArg::ConstArg(konst) => {
+                let text = konst
+                    .expr()
+                    .and_then(|expr| self.bytes_of_node(expr.syntax()).ok());
+                Ok(self.const_argument_lowered(text))
+            }
+            ast::GenericArg::LifetimeArg(lifetime) => {
+                let text = lifetime
+                    .lifetime()
+                    .and_then(|lifetime| self.bytes_of_node(lifetime.syntax()).ok());
+                Ok(self.lifetime_argument_lowered(text))
+            }
+            ast::GenericArg::TypeArg(type_argument) => {
+                if let Some(ty) = type_argument.ty() {
+                    match self.authority.semantics.resolve_type(&ty) {
+                        Some(semantic) => self.lower_type(&semantic, Some(&ty), depth),
+                        None => Ok(Lowered::leaf(unknown_record(TypeReason::OracleGap, None))),
+                    }
+                } else {
+                    Ok(Lowered::leaf(unknown_record(TypeReason::OracleGap, None)))
+                }
+            }
+        }
+    }
+
+    /// `Item = u8` is not `Item = String`, and neither is a bare `Iterator`.
+    fn assoc_binding_lowered(
+        &self,
+        name: Option<&'source [u8]>,
+        value: u32,
+    ) -> Lowered<'source> {
+        let Some(name) = name else {
+            return Lowered::leaf(unknown_record(TypeReason::OracleGap, None));
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::QualifiedPath);
+        record.text = Some(name);
+        Lowered {
+            record,
+            children: vec![value],
+        }
+    }
+
+    /// `Foo<N>` and `Foo<M>` stay distinct even when the const is not a type.
+    fn const_argument_lowered(&self, text: Option<&'source [u8]>) -> Lowered<'source> {
+        let Some(text) = text else {
+            return Lowered::leaf(unknown_record(TypeReason::OracleGap, None));
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TypeVar);
+        record.text = Some(text);
+        Lowered::leaf(record)
+    }
+
+    /// A lifetime generic argument keeps its exact written spelling.
+    fn lifetime_argument_lowered(&self, text: Option<&'source [u8]>) -> Lowered<'source> {
+        let Some(text) = text else {
+            return Lowered::leaf(unknown_record(TypeReason::OracleGap, None));
+        };
+        let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Inferred);
+        record.text = Some(text);
+        Lowered::leaf(record)
+    }
+
+    /// Lowers one committed trait bound with its written generic arguments.
+    fn lower_trait_bound_application(
+        &mut self,
+        bound: &ast::Type,
+        trait_ordinal: u32,
+        depth: usize,
+    ) -> Result<u32, RustAuthorityError> {
+        let argument_children =
+            self.lower_written_application_arguments(&[], Some(bound), depth)?;
+        if argument_children.is_empty() {
+            return Ok(trait_ordinal);
+        }
+        if argument_children.len() + 1 > MAX_COMPOUND_CHILDREN {
+            return self
+                .host(
+                    Lowered::leaf(unknown_record(
+                        TypeReason::NoIrRepresentation,
+                        self.bytes_of_node(bound.syntax()).ok(),
+                    )),
+                    Some(bound),
+                )?
+                .ok_or_else(unsupported_generic);
+        }
+        let mut children = vec![trait_ordinal];
+        children.extend(argument_children);
+        self.host(
+            Lowered {
+                record: SemanticTypeRecord::leaf(SemanticTypeTag::Apply),
+                children,
+            },
+            Some(bound),
+        )?
+        .ok_or_else(unsupported_generic)
     }
 
     /// Lowers one `impl Trait` position over its local bound rows; any bound
@@ -2620,10 +2952,22 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 None => unknown_record(TypeReason::OracleGap, None),
             }));
         }
+        let written_bounds = written_trait_bounds(anchor);
         let mut children = Vec::new();
-        for trait_ in bounds {
+        for (index, trait_) in bounds.into_iter().enumerate() {
             match self.ordinal_of_trait(trait_) {
-                Some(ordinal) => children.push(ordinal),
+                Some(ordinal) => {
+                    let bound_ty = written_bounds.get(index).and_then(|bound| bound.ty());
+                    let target = match bound_ty {
+                        Some(bound_ty) => self.lower_trait_bound_application(
+                            &bound_ty,
+                            ordinal,
+                            MAX_TYPE_DEPTH - 1,
+                        )?,
+                        None => ordinal,
+                    };
+                    children.push(target);
+                }
                 None => {
                     return Ok(Lowered::leaf(self.unresolved_record_with(written)));
                 }
@@ -2633,6 +2977,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             record: SemanticTypeRecord::leaf(SemanticTypeTag::ImplTrait),
             children,
         })
+
     }
 
     /// Lowers one generic-parameter use: the implicit trait `Self` stays a
@@ -2829,6 +3174,38 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 continue;
             }
             emitted_method_spans.push(span);
+            if let Some(function) = call.target {
+                let definition = ra_ap_hir::ModuleDef::from(function);
+                if self.ordinal_of_definition(&definition).is_none()
+                    && let Some(package_path) =
+                        authority.cross_file_method_package_path(function)
+                    && let Some(owner) = self.owner_of(span)
+                {
+                    let owner_span = self
+                        .rows
+                        .iter()
+                        .find(|row| row.ordinal == owner)
+                        .map(|row| row.span)
+                        .ok_or_else(admission)?;
+                    let written = self.bytes_of(span)?;
+                    let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                    let relative = relative_span(span, owner_span)?;
+                    self.facts
+                        .push_owned_package_occurrence(
+                            owner,
+                            CARGO_ECOSYSTEM,
+                            &package_path,
+                            name,
+                            name,
+                            Some(EntityKind::Function),
+                            ReferenceKind::MethodCall,
+                            OccurrenceConfidence::Oracle,
+                            relative,
+                        )
+                        .map_err(|_| admission())?;
+                    continue;
+                }
+            }
             let definition = call.target.map(ra_ap_hir::ModuleDef::from);
             // A dispatch the oracle resolved is oracle tier; a method call
             // rust-analyzer could not resolve stays syntactic confidence
@@ -2843,15 +3220,89 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             )?;
         }
         let accesses: Vec<RustFieldAccess> = authority.field_accesses().collect();
+        let mut emitted_field_spans = Vec::new();
         for access in &accesses {
             let Some(name) = access.syntax.name_ref() else {
                 continue;
             };
             let span = authority.span(name.syntax())?;
+            if emitted_field_spans.contains(&span) {
+                continue;
+            }
+            emitted_field_spans.push(span);
+            if let Some(field) = access.target {
+                if self.ordinal_of_field(&field).is_none()
+                    && let Some(package_path) = authority.cross_file_field_package_path(field)
+                    && let Some(owner) = self.owner_of(span)
+                {
+                    let owner_span = self
+                        .rows
+                        .iter()
+                        .find(|row| row.ordinal == owner)
+                        .map(|row| row.span)
+                        .ok_or_else(admission)?;
+                    let written = self.bytes_of(span)?;
+                    let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                    let relative = relative_span(span, owner_span)?;
+                    self.facts
+                        .push_owned_package_occurrence(
+                            owner,
+                            CARGO_ECOSYSTEM,
+                            &package_path,
+                            name,
+                            name,
+                            Some(EntityKind::Field),
+                            ReferenceKind::FieldAccess,
+                            OccurrenceConfidence::Oracle,
+                            relative,
+                        )
+                        .map_err(|_| admission())?;
+                    continue;
+                }
+            }
             let confidence = occurrence_confidence(access.target.is_some());
             let target = access
                 .target
                 .map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
+            self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
+        }
+        for (span, target) in self.macro_field_accesses()? {
+            if emitted_field_spans.contains(&span) {
+                continue;
+            }
+            emitted_field_spans.push(span);
+            if let Some(field) = target {
+                if self.ordinal_of_field(&field).is_none()
+                    && let Some(package_path) = authority.cross_file_field_package_path(field)
+                    && let Some(owner) = self.owner_of(span)
+                {
+                    let owner_span = self
+                        .rows
+                        .iter()
+                        .find(|row| row.ordinal == owner)
+                        .map(|row| row.span)
+                        .ok_or_else(admission)?;
+                    let written = self.bytes_of(span)?;
+                    let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                    let relative = relative_span(span, owner_span)?;
+                    self.facts
+                        .push_owned_package_occurrence(
+                            owner,
+                            CARGO_ECOSYSTEM,
+                            &package_path,
+                            name,
+                            name,
+                            Some(EntityKind::Field),
+                            ReferenceKind::FieldAccess,
+                            OccurrenceConfidence::Oracle,
+                            relative,
+                        )
+                        .map_err(|_| admission())?;
+                    continue;
+                }
+            }
+            let confidence = occurrence_confidence(target.is_some());
+            let target = target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
             self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
         }
         let paths: Vec<_> = authority.top_level_paths().collect();
@@ -2884,6 +3335,140 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 Some(_) => OccurrenceConfidence::Oracle,
                 None => OccurrenceConfidence::Syntactic,
             };
+            if kind == ReferenceKind::FunctionCall
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(function)) =
+                    resolution
+                && self
+                    .ordinal_of_definition(&ra_ap_hir::ModuleDef::Function(*function))
+                    .is_none()
+                && let Some(package_path) = authority.cross_file_method_package_path(*function)
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(EntityKind::Function),
+                        ReferenceKind::FunctionCall,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
+            if matches!(kind, ReferenceKind::TypeReference | ReferenceKind::Import)
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(definition) = resolution
+                && self.ordinal_of_definition(definition).is_none()
+                && let Some(package_path) = authority.cross_file_type_package_path(*definition)
+                && let Some(entity_kind) = package_entity_kind(*definition)
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(entity_kind),
+                        kind,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
+            if kind == ReferenceKind::VariableUse
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(function)) =
+                    resolution
+                && self
+                    .ordinal_of_definition(&ra_ap_hir::ModuleDef::Function(*function))
+                    .is_none()
+                && let Some(package_path) = authority.cross_file_method_package_path(*function)
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(EntityKind::Function),
+                        ReferenceKind::VariableUse,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
+            if kind == ReferenceKind::VariableUse
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(definition) = resolution
+                && self.ordinal_of_definition(definition).is_none()
+                && let Some(entity_kind) = value_package_entity_kind(*definition)
+                && let Some(package_path) = authority
+                    .cross_file_type_package_path(*definition)
+                    .or_else(|| authority.cross_file_value_package_path(*definition))
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(entity_kind),
+                        ReferenceKind::VariableUse,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
             self.emit_one_occurrence(
                 span,
                 kind,
@@ -2904,6 +3489,46 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             )?;
         }
         Ok(())
+    }
+
+    /// Streams field accesses discovered through macro expansion. A macro
+    /// argument is a token tree in the source file; descending each token
+    /// reaches the expanded `FieldExpr` rust-analyzer inferred and projects
+    /// the written field identifier back onto this source buffer.
+    fn macro_field_accesses(
+        &self,
+    ) -> Result<Vec<(ByteSpan, Option<ra_ap_hir::Field>)>, RustAuthorityError> {
+        let authority = self.authority;
+        let mut accesses = Vec::new();
+        for macro_call in authority.macro_calls() {
+            let Some(token_tree) = macro_call.token_tree() else {
+                continue;
+            };
+            for token in token_tree
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|element| element.into_token())
+            {
+                for descended in authority.semantics.descend_into_macros_no_opaque(token, false) {
+                    let Some(syntax) = descended
+                        .value
+                        .parent()
+                        .and_then(|node| node.ancestors().find_map(ast::FieldExpr::cast))
+                    else {
+                        continue;
+                    };
+                    let Some(name) = syntax.name_ref() else {
+                        continue;
+                    };
+                    let Ok(Some(projected_span)) = authority.projected_span(name.syntax()) else {
+                        continue;
+                    };
+                    let target = authority.resolve_field_target(&syntax);
+                    accesses.push((projected_span, target));
+                }
+            }
+        }
+        Ok(accesses)
     }
 
     /// Emits one occurrence fact, resolving the target through the pushed
@@ -3083,6 +3708,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 name,
                 span: self.authority.span(reexport.item.syntax())?,
                 extension,
+                file_owner: false,
             });
         }
         Ok(())
@@ -3252,48 +3878,80 @@ fn written_binding_type(syntax: &SyntaxNode) -> Option<ast::Type> {
 /// Extracts the written child anchor at one position of a parent anchor,
 /// or `None` when the parent shape does not match the HIR position.
 fn child_anchor(anchor: Option<&ast::Type>, position: usize) -> Option<ast::Type> {
-    let anchor = anchor?;
-    match anchor {
-        ast::Type::PathType(path_type) => {
-            let arguments = path_type
-                .path()?
-                .segment()?
-                .generic_arg_list()?
-                .generic_args();
-            arguments
-                .filter_map(|argument| match argument {
-                    ast::GenericArg::TypeArg(type_argument) => type_argument.ty(),
-                    _ => None,
-                })
-                .nth(position)
-        }
+    type_argument_anchor(anchor, position).or_else(|| match anchor? {
         ast::Type::RefType(reference) => (position == 0).then(|| reference.ty()).flatten(),
         ast::Type::PtrType(pointer) => (position == 0).then(|| pointer.ty()).flatten(),
         ast::Type::ArrayType(array) => (position == 0).then(|| array.ty()).flatten(),
         ast::Type::SliceType(slice) => (position == 0).then(|| slice.ty()).flatten(),
         ast::Type::TupleType(tuple) => tuple.fields().nth(position),
         _ => None,
+    })
+}
+
+/// Borrows the written `TypeArg` anchor at one generic-argument position.
+fn type_argument_anchor(anchor: Option<&ast::Type>, position: usize) -> Option<ast::Type> {
+    match generic_argument_at(anchor, position)? {
+        ast::GenericArg::TypeArg(type_argument) => type_argument.ty(),
+        ast::GenericArg::AssocTypeArg(binding) => binding.ty(),
+        _ => None,
     }
 }
 
-/// Counts only written type arguments. HIR also supplies defaulted type
-/// arguments (for example `Box`'s allocator), which are not children of the
-/// written application row.
-fn written_type_argument_count(anchor: Option<&ast::Type>) -> usize {
-    let Some(ast::Type::PathType(path_type)) = anchor else {
+/// Returns the written generic argument at one position of a path application.
+fn generic_argument_at(anchor: Option<&ast::Type>, position: usize) -> Option<ast::GenericArg> {
+    let anchor = anchor?;
+    let ast::Type::PathType(path_type) = anchor else {
+        return None;
+    };
+    path_type
+        .path()?
+        .segment()?
+        .generic_arg_list()?
+        .generic_args()
+        .nth(position)
+}
+
+/// Counts every written generic argument, including associated bindings,
+/// const arguments, and lifetimes.
+fn written_generic_argument_count(anchor: Option<&ast::Type>) -> usize {
+    let Some(anchor) = anchor else {
+        return 0;
+    };
+    let ast::Type::PathType(path_type) = anchor else {
         return 0;
     };
     path_type
         .path()
         .and_then(|path| path.segment())
         .and_then(|segment| segment.generic_arg_list())
-        .map(|arguments| {
-            arguments
-                .generic_args()
-                .filter(|argument| matches!(argument, ast::GenericArg::TypeArg(_)))
-                .count()
-        })
+        .map(|arguments| arguments.generic_args().count())
         .unwrap_or(0)
+}
+
+/// Borrows the written trait bounds behind one `impl Trait` or `dyn Trait`
+/// anchor in source order.
+fn written_trait_bounds(anchor: Option<&ast::Type>) -> Vec<ast::TypeBound> {
+    match anchor {
+        Some(ast::Type::ImplTraitType(impl_trait)) => impl_trait
+            .type_bound_list()
+            .map(|bounds| bounds.bounds().collect())
+            .unwrap_or_default(),
+        Some(ast::Type::DynTraitType(dyn_trait)) => dyn_trait
+            .type_bound_list()
+            .map(|bounds| bounds.bounds().collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Keeps repeated wildcard parameters distinct while their display name stays `_`.
+fn wildcard_param_discriminator(position: usize) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"compiler.rust.wildcard-param.v1\0");
+    hash.update((position as u64).to_le_bytes());
+    let mut discriminator = [0_u8; 16];
+    discriminator.copy_from_slice(&hash.finalize()[..16]);
+    discriminator
 }
 
 /// Extracts the written anchor of one callable parameter or return position.
@@ -3479,6 +4137,36 @@ const fn path_definition(resolution: &ra_ap_hir::PathResolution) -> Option<ra_ap
     match resolution {
         ra_ap_hir::PathResolution::Def(module_def) => Some(*module_def),
         _ => None,
+    }
+}
+
+/// Maps one cross-file package-retargetable const, static, or enum variant
+/// onto the entity lattice.
+const fn value_package_entity_kind(definition: ra_ap_hir::ModuleDef) -> Option<EntityKind> {
+    match definition {
+        ra_ap_hir::ModuleDef::Const(_) => Some(EntityKind::Constant),
+        ra_ap_hir::ModuleDef::Static(_) => Some(EntityKind::Static),
+        ra_ap_hir::ModuleDef::EnumVariant(_) => Some(EntityKind::Variant),
+        _ => None,
+    }
+}
+
+/// Maps one cross-file package-retargetable definition onto the entity lattice.
+const fn package_entity_kind(definition: ra_ap_hir::ModuleDef) -> Option<EntityKind> {
+    match definition {
+        ra_ap_hir::ModuleDef::Adt(ra_ap_hir::Adt::Struct(_) | ra_ap_hir::Adt::Union(_)) => {
+            Some(EntityKind::Record)
+        }
+        ra_ap_hir::ModuleDef::Adt(ra_ap_hir::Adt::Enum(_)) => Some(EntityKind::Enum),
+        ra_ap_hir::ModuleDef::Trait(_) => Some(EntityKind::Trait),
+        ra_ap_hir::ModuleDef::TypeAlias(_) => Some(EntityKind::Alias),
+        ra_ap_hir::ModuleDef::Module(_) => Some(EntityKind::Module),
+        ra_ap_hir::ModuleDef::Function(_)
+        | ra_ap_hir::ModuleDef::EnumVariant(_)
+        | ra_ap_hir::ModuleDef::Const(_)
+        | ra_ap_hir::ModuleDef::Static(_)
+        | ra_ap_hir::ModuleDef::BuiltinType(_)
+        | ra_ap_hir::ModuleDef::Macro(_) => None,
     }
 }
 
@@ -4313,6 +5001,35 @@ mod tests {
         Ok(())
     }
 
+    /// A function-pointer parameter with nine arguments used to fold the
+    /// whole pointer once the compound walk passed eight children. The
+    /// pointer stays a function row with one child per argument.
+    #[test]
+    fn a_nine_argument_fn_pointer_keeps_every_argument() -> Result<(), TestError> {
+        let view = lower(
+            "pub fn probe(value: fn(u8, u8, u8, u8, u8, u8, u8, u8, u8)) {}\n",
+        )?;
+        let parameter = fact_of(&view, b"value", EntityKind::Parameter)?;
+        let row = row_for_entity(&view, parameter)?;
+        let children = local_type_children(&view, row.record)?;
+        if row.record.tag != SemanticTypeTag::FunctionPointer || children.len() != 9 {
+            return Err(TestError::Missing("nine-argument function pointer"));
+        }
+        Ok(())
+    }
+
+    /// A seventeen-field tuple struct used to drop `.16` because only sixteen
+    /// positional spellings existed. The last field is a real declaration.
+    #[test]
+    fn a_seventeen_field_tuple_struct_keeps_the_last_field() -> Result<(), TestError> {
+        let view = lower(
+            "pub struct Wide(pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8, pub u8);\n",
+        )?;
+        fact_of(&view, b"0", EntityKind::Field)?;
+        fact_of(&view, b"16", EntityKind::Field)?;
+        Ok(())
+    }
+
     /// Tuple-struct fields are HIR fields the written tree does not cast;
     /// they commit under their canonical positional names with exact cells.
     #[test]
@@ -4436,6 +5153,176 @@ mod tests {
         }
         if !verified {
             return Err(TestError::Missing("name-extent occurrence site"));
+        }
+        Ok(())
+    }
+
+    /// `Iterator<Item = u8>` and `Iterator<Item = String>` are different
+    /// bounds, and `Foo<false>` is not `Foo<true>`.
+    #[test]
+    fn associated_bindings_and_const_args_stay_distinct() -> Result<(), TestError> {
+        let view = lower(
+            "pub trait Iter { type Item; }\npub fn a<T: Iter<Item = u8>>() {}\npub fn b<T: Iter<Item = String>>() {}\npub struct Foo<const B: bool>;\npub fn c(_: Foo<false>) {}\npub fn d(_: Foo<true>) {}\n",
+        )?;
+        let rows = rows(&view)?;
+        let mut item_bindings = Vec::new();
+        for row in &rows {
+            if row.record.tag != SemanticTypeTag::QualifiedPath
+                || row.record.text != Some(b"Item".as_slice())
+                || row.record.children.length != 1
+            {
+                continue;
+            }
+            item_bindings.push(local_type_children(&view, row.record)?);
+        }
+        if item_bindings.len() < 2 {
+            return Err(TestError::Missing("two associated Item bindings"));
+        }
+        if item_bindings[0] == item_bindings[1] {
+            return Err(TestError::Missing(
+                "Iterator<Item = u8> and Iterator<Item = String> must differ",
+            ));
+        }
+        let parameter_application = |name: &[u8]| -> Result<Vec<backend_semantic::ir::TypeId>, TestError> {
+            let function = row_for_entity(&view, fact_of(&view, name, EntityKind::Function)?)?;
+            let parameter = local_type_children(&view, function.record)?
+                .first()
+                .and_then(|target| rows.get(target.index()))
+                .ok_or(TestError::Missing("parameter row"))?;
+            if parameter.record.tag != SemanticTypeTag::Apply
+                || parameter.record.children.length != 2
+            {
+                return Err(TestError::Missing("const generic application structure"));
+            }
+            local_type_children(&view, parameter.record)
+        };
+        if parameter_application(b"c")? == parameter_application(b"d")? {
+            return Err(TestError::Missing("Foo<false> and Foo<true> must differ"));
+        }
+        Ok(())
+    }
+
+    /// `impl Iter<Item = u8>` must keep the binding a type-argument-only walk drops.
+    #[test]
+    fn impl_trait_associated_bindings_stay_distinct() -> Result<(), TestError> {
+        let view = lower(
+            "pub trait Iter { type Item; }\npub fn a(_: impl Iter<Item = u8>) {}\npub fn b(_: impl Iter<Item = String>) {}\n",
+        )?;
+        let rows = rows(&view)?;
+        let mut bindings = Vec::new();
+        for row in &rows {
+            if row.record.tag != SemanticTypeTag::QualifiedPath
+                || row.record.text != Some(b"Item".as_slice())
+                || row.record.children.length != 1
+            {
+                continue;
+            }
+            bindings.push(local_type_children(&view, row.record)?);
+        }
+        if bindings.len() < 2 {
+            return Err(TestError::Missing("two impl Trait Item bindings"));
+        }
+        if bindings[0] == bindings[1] {
+            return Err(TestError::Missing(
+                "impl Iter<Item = u8> and impl Iter<Item = String> must differ",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A field access inside a macro argument is authority-proven through
+    /// macro descent even though the written tree parses the argument as a
+    /// token tree. The occurrence keeps the invocation-site field spelling,
+    /// its owning function, and the resolved local field target.
+    #[test]
+    fn macro_field_accesses_commit_oracle_local_field_occurrences() -> Result<(), TestError> {
+        let source = "macro_rules! access_field {\n    ($e:expr, $f:ident) => {\n        $e.$f\n    };\n}\n\npub struct Panel {\n    pub score: u8,\n}\n\npub fn read(panel: &Panel) -> u8 {\n    access_field!(panel, score)\n}\n";
+        let view = lower(source)?;
+        let read = fact_of(&view, b"read", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let occurrences = occurrences(&view)?;
+        let field_accesses = occurrences
+            .iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing("exactly one macro field access occurrence"));
+        }
+        let access = field_accesses[0];
+        if access.0 != read {
+            return Err(TestError::Missing("field access owned by read"));
+        }
+        if access.1.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.1.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for macro field access",
+            ));
+        }
+        let name_at = source
+            .find("access_field!(panel, score)")
+            .ok_or(TestError::Missing("macro invocation in fixture source"))?
+            + "access_field!(panel, ".len();
+        let ir = owned_ir(source)?;
+        let mut verified = false;
+        for (_, occurrence) in ir.link_occurrences() {
+            let Some(link) = ir.link(occurrence.link) else {
+                continue;
+            };
+            if link.kind != backend_semantic::ir::LinkKind::Reads {
+                continue;
+            }
+            let Some(site) = occurrence.source else {
+                continue;
+            };
+            let start = usize::try_from(site.start())?;
+            let end = usize::try_from(site.end())?;
+            if source.as_bytes().get(start..end) != Some(b"score") {
+                continue;
+            }
+            verified = true;
+            if start != name_at {
+                return Err(TestError::Missing("field access at invocation spelling"));
+            }
+            let backend_semantic::ir::LinkTarget::Local(target) = link.target else {
+                return Err(TestError::Missing("local field link target"));
+            };
+            if ir.item(target).is_none_or(|item| item.name() != b"score") {
+                return Err(TestError::Missing("score field link target"));
+            }
+        }
+        if !verified {
+            return Err(TestError::Missing("invocation-site field access spelling"));
+        }
+        Ok(())
+    }
+
+    /// A direct field access whose receiver is a macro call is already emitted
+    /// by the syntax walk; macro descent must not emit the same projected
+    /// field-name span again.
+    #[test]
+    fn macro_receiver_field_accesses_emit_once() -> Result<(), TestError> {
+        let source = "macro_rules! identity {\n    ($e:expr) => {\n        $e\n    };\n}\n\npub struct Panel {\n    pub score: u8,\n}\n\npub fn read(panel: &Panel) -> u8 {\n    identity!(panel).score\n}\n";
+        let view = lower(source)?;
+        let read = fact_of(&view, b"read", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing("exactly one field access occurrence"));
+        }
+        let (owner, access) = field_accesses[0];
+        if owner != read {
+            return Err(TestError::Missing("field access owned by read"));
+        }
+        if access.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for macro-receiver access",
+            ));
         }
         Ok(())
     }
