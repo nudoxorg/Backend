@@ -925,6 +925,49 @@ fn push_dotted_module_paths(
     }
 }
 
+fn is_go_import_specifier(specifier: &str) -> bool {
+    !specifier.is_empty()
+        && !specifier.starts_with('.')
+        && specifier.contains('/')
+        && !specifier.contains("::")
+        && !specifier.split('/').any(|segment| segment.is_empty())
+}
+
+fn go_import_parent_matches_suffix(parent: &str, suffix: &str) -> bool {
+    parent == suffix || parent.ends_with(&format!("/{suffix}"))
+}
+
+fn push_go_import_paths(
+    specifier: &str,
+    project_paths: &BTreeSet<String>,
+    resolved: &mut BTreeSet<String>,
+) {
+    if !is_go_import_specifier(specifier) {
+        return;
+    }
+    let segments = specifier.split('/').collect::<Vec<_>>();
+    for suffix_len in (1..=segments.len()).rev() {
+        let suffix = segments[segments.len() - suffix_len..].join("/");
+        let mut matched = false;
+        for path in project_paths {
+            if !path.ends_with(".go") {
+                continue;
+            }
+            let parent = Path::new(path)
+                .parent()
+                .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if go_import_parent_matches_suffix(&parent, &suffix) {
+                resolved.insert(path.clone());
+                matched = true;
+            }
+        }
+        if matched {
+            return;
+        }
+    }
+}
+
 pub(crate) fn resolve_specifier_paths(
     specifier: &str,
     caller_path: &str,
@@ -973,6 +1016,7 @@ pub(crate) fn resolve_specifier_paths(
         }
     }
     push_dotted_module_paths(specifier, project_paths, &mut resolved);
+    push_go_import_paths(specifier, project_paths, &mut resolved);
     resolved
 }
 

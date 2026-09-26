@@ -2272,6 +2272,379 @@ mod project_call_tests {
         Ok(())
     }
 
+    fn go_import_foreign_call_fixture(foreign_key: u8) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"example.com/gymbro/workout",
+            path_specifier: None,
+            display: b"SetNote",
+            foreign_key,
+            link_kind: LinkKind::Calls,
+        }
+    }
+
+    fn go_import_foreign_call_fixture_with_package(
+        package_specifier: &'static [u8],
+        foreign_key: u8,
+    ) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier,
+            path_specifier: None,
+            display: b"SetNote",
+            foreign_key,
+            link_kind: LinkKind::Calls,
+        }
+    }
+
+    #[test]
+    fn project_call_go_import_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/workout/service.go",
+            1,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.go",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(go_import_foreign_call_fixture(60)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/workout/service.go", 1, "SetNote", fixture_version(1)),
+                ("weeks.go", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["src/workout/service.go", "weeks.go"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, sync_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected syncWorkout to call SetNote semantic row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_go_import_retarget_incoming_from_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/workout/service.go",
+            1,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.go",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(go_import_foreign_call_fixture(61)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/workout/service.go", 1, "SetNote", fixture_version(1)),
+                ("weeks.go", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            set_note_id,
+            true,
+            &project_paths(&["src/workout/service.go", "weeks.go"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if !relations
+            .iter()
+            .any(|relation| relation.from == sync_id && relation.to == set_note_id)
+        {
+            return Err(format!(
+                "expected incoming edge from syncWorkout, got {relations:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_go_import_longest_suffix_wins() -> Result<(), String> {
+        let package = package_key("fixture");
+        let real_bytes = project_call_image(
+            "example.com/gymbro/workout/real.go",
+            1,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let decoy_bytes = project_call_image(
+            "workout/decoy.go",
+            3,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.go",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(go_import_foreign_call_fixture(62)),
+        )?;
+        let real_identity = fixture_version(1).identity();
+        let decoy_identity = fixture_version(3).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                (
+                    "example.com/gymbro/workout/real.go",
+                    1,
+                    "SetNote",
+                    fixture_version(1),
+                ),
+                ("weeks.go", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let real_id = RowId::Symbol(semantic_symbol(package, real_identity));
+        let decoy_id = RowId::Symbol(semantic_symbol(package, decoy_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&real_bytes, &decoy_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&[
+                "example.com/gymbro/workout/real.go",
+                "workout/decoy.go",
+                "weeks.go",
+            ]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, sync_id);
+        if targets != vec![real_id] {
+            return Err(format!(
+                "expected syncWorkout to call real.go SetNote row, got {targets:?}"
+            ));
+        }
+        if targets.contains(&decoy_id) {
+            return Err("longest import suffix must not retarget to workout/decoy.go".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_go_import_notworkout_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "notworkout/service.go",
+            1,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.go",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(go_import_foreign_call_fixture(63)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("notworkout/service.go", 1, "SetNote", fixture_version(1)),
+                ("weeks.go", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["notworkout/service.go", "weeks.go"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("notworkout/service.go must not satisfy example.com/gymbro/workout".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_go_import_subdir_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "workout/sub/service.go",
+            1,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.go",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(go_import_foreign_call_fixture(64)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/sub/service.go", 1, "SetNote", fixture_version(1)),
+                ("weeks.go", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["workout/sub/service.go", "weeks.go"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("workout/sub/service.go must not satisfy suffix workout".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_go_import_ambiguous_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let root_service_bytes = project_call_image(
+            "workout/service.go",
+            1,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let other_service_bytes = project_call_image(
+            "other/workout/service.go",
+            3,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.go",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(go_import_foreign_call_fixture(65)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service.go", 1, "SetNote", fixture_version(1)),
+                ("weeks.go", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&root_service_bytes, &other_service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["workout/service.go", "other/workout/service.go", "weeks.go"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("ambiguous go import suffix must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_go_import_empty_segment_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/workout/service.go",
+            1,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.go",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(go_import_foreign_call_fixture_with_package(b"example.com//workout", 66)),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/workout/service.go", 1, "SetNote", fixture_version(1)),
+                ("weeks.go", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let sync_id = RowId::Symbol(semantic_symbol(package, sync_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, sync_identity),
+            sync_id,
+            false,
+            &project_paths(&["src/workout/service.go", "weeks.go"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, sync_id).contains(&set_note_id) {
+            return Err("empty import segment must not retarget to SetNote".to_owned());
+        }
+        Ok(())
+    }
+
     fn analyze_source(path: &str, source: &str) -> Result<Arc<[backend_compile::SourceDeclaration]>, String> {
         Ok(
             backend_frontend_typescript::syntax_frontend()
@@ -2975,6 +3348,63 @@ mod project_call_tests {
                     "invalid dotted path produced {sync_site_facts} sync-site facts"
                 ));
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_go_import_retarget_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/workout/service.go",
+            1,
+            b"SetNote",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.go",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(go_import_foreign_call_fixture(67)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/workout/service.go", 1, "SetNote", fixture_version(1)),
+                ("weeks.go", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&service_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["src/workout/service.go", "weeks.go"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        let fact = &facts[0];
+        if fact.site != semantic_symbol(package, sync_identity) {
+            return Err("go import retarget site is not syncWorkout".to_owned());
+        }
+        if fact.relation != backend_engine::SemanticLinkKind::Calls {
+            return Err(format!("go import retarget relation is {:?}", fact.relation));
+        }
+        let expected_target = semantic_declaration_identity(set_note_identity);
+        if !matches!(
+            &fact.target,
+            backend_engine::SemanticLinkTarget::Local { declaration }
+                if *declaration == expected_target
+        ) {
+            return Err("go import retarget target is not SetNote".to_owned());
         }
         Ok(())
     }
