@@ -679,21 +679,7 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
     for (m, module) in world.modules.iter().enumerate() {
         package_modules[module.pkg as usize].push(m as u32);
     }
-    let mut mod_index: HashMap<(u32, u32), usize> = HashMap::new();
-    let mut module_edges: Vec<Rollup> = Vec::new();
-    for e in &world.item_edges {
-        let (ma, mb) = (nodes[e.from as usize].module, nodes[e.to as usize].module);
-        if ma == mb {
-            continue;
-        }
-        if let Some(&k) = mod_index.get(&(ma, mb)) {
-            module_edges[k].weight += e.weight;
-            module_edges[k].rel |= e.rel;
-        } else {
-            mod_index.insert((ma, mb), module_edges.len());
-            module_edges.push(Rollup { from: ma, to: mb, rel: e.rel, weight: e.weight });
-        }
-    }
+    let (module_edges, package_edges) = level_edges(world);
     let mut mod_local = vec![u32::MAX; n_mod];
     for list in &package_modules {
         for (k, &m) in list.iter().enumerate() {
@@ -746,21 +732,6 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
     let pr: Vec<f32> = placed.iter().map(|s| s.1).collect();
 
     // ---- level 0: packages in the world
-    let mut pkg_index: HashMap<(u32, u32), usize> = HashMap::new();
-    let mut package_edges: Vec<Rollup> = Vec::new();
-    for e in &module_edges {
-        let (pa, pb) = (world.modules[e.from as usize].pkg, world.modules[e.to as usize].pkg);
-        if pa == pb {
-            continue;
-        }
-        if let Some(&k) = pkg_index.get(&(pa, pb)) {
-            package_edges[k].weight += e.weight;
-            package_edges[k].rel |= e.rel;
-        } else {
-            pkg_index.insert((pa, pb), package_edges.len());
-            package_edges.push(Rollup { from: pa, to: pb, rel: e.rel, weight: e.weight });
-        }
-    }
     let mut world_bodies: Vec<Body> = (0..n_pkg)
         .map(|p| Body {
             r: f64::from(pr[p]) + 10.0,
@@ -877,6 +848,111 @@ fn compute(world: &World, key: [u8; 32]) -> Layout {
     }
 }
 
+/// Item edges rolled up to modules, then modules to packages (first-seen
+/// order, self-edges dropped), as `layout.mjs` `modEdges` / `pkgEdges`.
+#[must_use]
+pub fn level_edges(world: &World) -> (Vec<Rollup>, Vec<Rollup>) {
+    let roll = |pairs: &mut dyn Iterator<Item = (u32, u32, Rollup)>| {
+        let mut index: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut out: Vec<Rollup> = Vec::new();
+        for (a, b, e) in pairs {
+            if a == b {
+                continue;
+            }
+            if let Some(&k) = index.get(&(a, b)) {
+                out[k].weight += e.weight;
+                out[k].rel |= e.rel;
+            } else {
+                index.insert((a, b), out.len());
+                out.push(Rollup { from: a, to: b, rel: e.rel, weight: e.weight });
+            }
+        }
+        out
+    };
+    let nodes = &world.nodes;
+    let modules = roll(&mut world
+        .item_edges
+        .iter()
+        .map(|e| (nodes[e.from as usize].module, nodes[e.to as usize].module, *e)));
+    let packages = roll(&mut modules
+        .iter()
+        .map(|e| (world.modules[e.from as usize].pkg, world.modules[e.to as usize].pkg, *e)));
+    (modules, packages)
+}
+
+impl Layout {
+    /// A layout from positions computed elsewhere (the prototype's
+    /// `world.js`, for side-by-side comparison of the renderer alone):
+    /// shells are recovered from the members' radii and angles, as app.js
+    /// does.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn from_positions(
+        world: &World,
+        x: Vec<f32>,
+        y: Vec<f32>,
+        r: Vec<f32>,
+        modules: Vec<Territory>,
+        packages: Vec<Territory>,
+    ) -> Self {
+        let nn = world.len();
+        let mut module_items: Vec<Vec<NodeId>> = vec![Vec::new(); world.modules.len()];
+        for &it in &world.items {
+            module_items[world.nodes[it as usize].module as usize].push(it);
+        }
+        for list in &mut module_items {
+            list.sort_by(|&a, &b| world.importance[b as usize].total_cmp(&world.importance[a as usize]));
+        }
+        let mut package_modules: Vec<Vec<u32>> = vec![Vec::new(); world.packages.len()];
+        for (m, module) in world.modules.iter().enumerate() {
+            package_modules[module.pkg as usize].push(m as u32);
+        }
+        let mut shells = Vec::new();
+        let mut shell_off = vec![0_u32; nn + 1];
+        let mut shell_members = Vec::new();
+        for i in 0..nn as u32 {
+            shell_off[i as usize] = shells.len() as u32;
+            let kids = world.kids(i);
+            if kids.is_empty() {
+                continue;
+            }
+            let (cx, cy) = (x[i as usize], y[i as usize]);
+            let mut by: std::collections::BTreeMap<i64, Vec<NodeId>> = std::collections::BTreeMap::new();
+            for &j in kids {
+                let d = (x[j as usize] - cx).hypot(y[j as usize] - cy);
+                by.entry((d * 20.0).round() as i64).or_default().push(j);
+            }
+            for (key, mut list) in by {
+                let angle = |j: NodeId| (y[j as usize] - cy).atan2(x[j as usize] - cx);
+                list.sort_by(|&a, &b| angle(a).total_cmp(&angle(b)));
+                let start = shell_members.len() as u32;
+                shell_members.extend(&list);
+                #[allow(clippy::cast_precision_loss)]
+                shells.push(Shell { r: key as f32 / 20.0, start, len: list.len() as u32 });
+            }
+        }
+        shell_off[nn] = shells.len() as u32;
+        let (module_edges, package_edges) = level_edges(world);
+        let bounds = packages.iter().fold(Box2::EMPTY, |b, t| b.union(t.bounds));
+        Self {
+            x,
+            y,
+            r,
+            modules,
+            packages,
+            module_items,
+            package_modules,
+            shells,
+            shell_off,
+            shell_members,
+            module_edges,
+            package_edges,
+            bounds,
+            key: [0; 32],
+        }
+    }
+}
+
 type Pending = Arc<(Mutex<Option<Arc<Layout>>>, std::sync::Condvar)>;
 
 /// Layouts by content hash, shared by every window (computed once each).
@@ -939,3 +1015,9 @@ pub fn cached(world: Arc<World>, cx: &gpui::App) -> gpui::Task<Arc<Layout>> {
 
 #[cfg(test)]
 mod tests;
+
+/// Test worlds shared by the graph's tests.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    pub(crate) use super::tests::synthetic;
+}

@@ -85,10 +85,20 @@ pub(crate) fn synthetic(packages: u32, seed: u64) -> World {
     }
 }
 
-/// The real workspace, when the prototype's fixture is checked out.
+/// The real workspace. A missing file fails the test (a moved fixture must
+/// not pass silently) unless `NUDOX_ALLOW_MISSING_WORLD=1`, which skips it
+/// loudly.
 pub(crate) fn fixture() -> Option<World> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Nudox-Design-System/v4/graph/world.json");
-    let bytes = std::fs::read(path).ok()?;
+    let Ok(bytes) = std::fs::read(&path) else {
+        assert!(
+            std::env::var_os("NUDOX_ALLOW_MISSING_WORLD").is_some_and(|v| v == "1"),
+            "world.json absent at {} (set NUDOX_ALLOW_MISSING_WORLD=1 to skip)",
+            path.display()
+        );
+        eprintln!("SKIPPED: world.json absent at {}", path.display());
+        return None;
+    };
     match World::from_json(&bytes) {
         Ok(world) => Some(world),
         Err(error) => panic!("world.json: {error}"),
@@ -340,10 +350,11 @@ fn the_cache_computes_once_per_content_hash() {
 /// graph::layout -- --nocapture`).
 #[test]
 fn the_real_workspace_lays_out_cleanly() {
+    let parse = std::time::Instant::now();
     let Some(world) = fixture() else {
-        eprintln!("world.json not found; skipped");
         return;
     };
+    let parsed = parse.elapsed();
     let started = std::time::Instant::now();
     let layout = compute(&world, key(&world));
     let took = started.elapsed();
@@ -360,12 +371,13 @@ fn the_real_workspace_lays_out_cleanly() {
         .map(|t| t.x.hypot(t.y) + t.r)
         .fold(0.0_f32, f32::max);
     eprintln!(
-        "layout: {} nodes, {} items, {} item edges, {} module edges, {} package edges, world radius {radius:.0}, {:.1} ms",
+        "layout: {} nodes, {} items, {} item edges, {} module edges, {} package edges, world radius {radius:.0}, {:.1} ms (world.json parse + model {:.1} ms)",
         world.len(),
         world.items.len(),
         world.item_edges.len(),
         layout.module_edges.len(),
         layout.package_edges.len(),
-        took.as_secs_f64() * 1000.0
+        took.as_secs_f64() * 1000.0,
+        parsed.as_secs_f64() * 1000.0
     );
 }
