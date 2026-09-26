@@ -1419,8 +1419,12 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
             assert!(cursor.root() == root.root());
             assert!(root.root() == recovered_root || root.root() == new_root);
         }
+        // The reset arrives either as a paged reset or as a snapshot page;
+        // without a lease the client refuses both (build 2402 saw the
+        // second), and either way the recovery is the same re-hydration.
         Err(backend_client::ClientError::Protocol(reason))
-            if reason.contains("durable snapshot lease") =>
+            if reason.contains("durable snapshot lease")
+                || reason.contains("externally admitted coverage capability") =>
         {
             let (root, cursor) = reconnected_subscription
                 .bootstrap_root()
