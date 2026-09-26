@@ -48,5 +48,10 @@ name = "manifest_residence"
 path = "benches/manifest_residence.rs"
 harness = false
 
+[[bench]]
+name = "search_corpus"
+path = "benches/search_corpus.rs"
+harness = false
+
 [lints]
 workspace = true

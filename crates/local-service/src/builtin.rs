@@ -1160,6 +1160,14 @@ pub fn measure_manifest_residence() {
     local_manifest::measure_manifest_residence();
 }
 
+/// Times admitting a typed search corpus against reusing the resident one.
+///
+/// Fixture rows are built before the timer. The printed line is the release
+/// measurement for a repeated search over an unchanged workspace.
+pub fn measure_search_corpus() {
+    query::measure_search_corpus();
+}
+
 /// Starts the compiled locald profile. It does all startup work before the
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]

@@ -198,6 +198,35 @@ fn search_snapshot_owner_reuses_the_exact_published_selection() {
 }
 
 #[test]
+fn shared_corpus_builds_once_and_survives_a_failed_rebuild() {
+    let (workspace, view) = selected_view();
+    let evidence = semantic_evidence(workspace, &view);
+    let mut owner = SearchSnapshotOwner::default();
+    let Err("missing") = owner.shared_corpus(workspace, || Err("missing")) else {
+        panic!("a failed build must surface");
+    };
+    assert_eq!(owner.corpus_builds(), 0);
+    let mut builds = 0u64;
+    let first = owner
+        .shared_corpus(workspace, || {
+            builds += 1;
+            Ok::<_, &str>(evidence.clone())
+        })
+        .expect("admit");
+    let second = owner
+        .shared_corpus(workspace, || {
+            builds += 1;
+            Err("must not rebuild a resident workspace")
+        })
+        .expect("reuse");
+    assert_eq!(builds, 1);
+    assert_eq!(owner.corpus_builds(), 1);
+    assert_eq!(first.evidence_digest(), evidence.evidence_digest());
+    assert_eq!(second.evidence_digest(), first.evidence_digest());
+    assert_eq!(second.facts().len(), first.facts().len());
+}
+
+#[test]
 fn semantic_candidate_identity_is_scoped_to_the_immutable_view() {
     let (workspace, _) = selected_view();
     let row = RowId::Symbol(backend_engine::symbol_key("same-declaration"));
