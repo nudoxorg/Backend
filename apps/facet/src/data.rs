@@ -22,6 +22,7 @@ pub(crate) mod gallery;
 pub mod live;
 pub mod mosaic;
 pub mod progress;
+pub mod release;
 pub mod rose;
 pub mod spatial;
 pub mod spell;
@@ -31,7 +32,7 @@ pub mod text;
 #[cfg(test)]
 mod tests;
 
-pub use caps::{Caps, Has, caps};
+pub use caps::{Caps, Has, Slot, caps};
 pub use comb::{Comb, CombOrientation, FileComb, FileUses, Tick, TickInk, TickTone, comb, fcomb};
 pub use compass::{
     ArmLight, Compass, CompassBar, CompassSize, Dir, Directions, arm_length, compass, compass_bar,
