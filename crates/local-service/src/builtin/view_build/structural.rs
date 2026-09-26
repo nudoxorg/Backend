@@ -1453,7 +1453,7 @@ pub(crate) fn structural_reference_facts(
     Ok(facts)
 }
 
-fn structural_symbol_identity(
+pub(crate) fn structural_symbol_identity(
     symbol: backend_engine::SymbolKey,
 ) -> backend_engine::SemanticDeclarationIdentity {
     let bytes = symbol.as_bytes();
@@ -1466,7 +1466,7 @@ fn structural_symbol_identity(
     backend_engine::SemanticDeclarationIdentity { family, variant }
 }
 
-fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize, usize)> {
+pub(crate) fn structural_call_span(excerpt: &str, callee: &str) -> Option<(usize, usize)> {
     let scan_from = structural_body_start(excerpt).unwrap_or(0);
     let body = &excerpt[scan_from..];
     let needle = format!("{callee}(");

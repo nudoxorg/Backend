@@ -7,7 +7,9 @@ use super::super::{
     WireCertificate, WireClaim, WorkspaceModel, activate_semantic_publication, ingest, projection,
     publish_builtin_view,
 };
-use super::snapshot::{semantic_confidence, semantic_declaration_identity, semantic_link_kind};
+use super::snapshot::{
+    semantic_confidence, semantic_declaration_identity, semantic_link_evidence, semantic_link_kind,
+};
 use backend_engine::application::{DocumentationSession, LocalCompilerClient};
 use backend_engine::builtin::{ProductSemanticPublicationRecord, SemanticPublicationCoverage};
 use backend_semantic::ir::{
@@ -574,6 +576,200 @@ fn project_semantic_graph_relations(
     )
 }
 
+fn reference_fact_has_site_and_relation(
+    facts: &[backend_engine::ReferenceFact],
+    site: backend_engine::SymbolKey,
+    relation: backend_engine::SemanticLinkKind,
+) -> bool {
+    facts
+        .iter()
+        .any(|fact| fact.site == site && fact.relation == relation)
+}
+
+fn project_reference_facts_from_bytes(
+    images: &[&[u8]],
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    target_symbol: backend_engine::SymbolKey,
+    project_paths: &BTreeSet<String>,
+    structural_pairs: &[(String, String)],
+) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
+    let mut facts = Vec::new();
+    for bytes in images {
+        append_reference_facts(package, bytes, target_symbol, &mut facts)?;
+    }
+    let callable_index = ProjectCallableIndex::build_from_bytes(images)?;
+    let target_row_id = backend_engine::RowId::Symbol(target_symbol);
+    for bytes in images {
+        let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
+            BuiltinModelError(format!("reopen semantic references image: {error}"))
+        })?;
+        let caller_path = view_build::compiled_source_path(&image)?;
+        let session = DocumentationSession::new(&image);
+        for source in session.canonical_entities() {
+            let source = source.map_err(|error| {
+                BuiltinModelError(format!("read semantic references caller: {error}"))
+            })?;
+            let caller_symbol = super::super::view_build::semantic_symbol(
+                package,
+                source.entity.version.identity(),
+            );
+            if view
+                .row(backend_engine::RowId::Symbol(caller_symbol))
+                .is_none()
+            {
+                continue;
+            }
+            for (_, link) in image.links_from(source.entity.id) {
+                if !matches!(link.kind, LinkKind::Calls | LinkKind::MethodCall) {
+                    continue;
+                }
+                let LinkTarget::External(external) = link.target else {
+                    continue;
+                };
+                let Some(identity) = foreign_package_call_retarget(
+                    &image,
+                    external,
+                    &caller_path,
+                    project_paths,
+                    &callable_index,
+                )?
+                else {
+                    continue;
+                };
+                let retargeted_symbol =
+                    super::super::view_build::semantic_symbol(package, identity);
+                if retargeted_symbol != target_symbol {
+                    continue;
+                }
+                if view
+                    .row(backend_engine::RowId::Symbol(retargeted_symbol))
+                    .is_none()
+                {
+                    continue;
+                }
+                let relation = semantic_link_kind(link.kind);
+                if reference_fact_has_site_and_relation(&facts, caller_symbol, relation) {
+                    continue;
+                }
+                facts.push(backend_engine::ReferenceFact {
+                    site: caller_symbol,
+                    target: backend_engine::SemanticLinkTarget::Local {
+                        declaration: semantic_declaration_identity(identity),
+                    },
+                    relation,
+                    evidence: semantic_link_evidence(&image, link)?,
+                });
+                if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+                    return Err(BuiltinModelError(
+                        "semantic references exceed the bounded result contract".to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+    let target_row = view.row(target_row_id).ok_or_else(|| {
+        BuiltinModelError("references target is absent from the selected view".to_owned())
+    })?;
+    let target_name = target_row
+        .label
+        .rsplit("::")
+        .next()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            BuiltinModelError("references target has no declaration name".to_owned())
+        })?;
+    let target_identity = view_build::structural_symbol_identity(target_symbol);
+    for (caller_coordinate, callee_coordinate) in structural_pairs {
+        let Some(callee_id) =
+            view_build::view_row_for_structural_coordinate(view, package, callee_coordinate)
+        else {
+            continue;
+        };
+        if callee_id != target_row_id {
+            continue;
+        }
+        let Some(caller_id) =
+            view_build::view_row_for_structural_coordinate(view, package, caller_coordinate)
+        else {
+            continue;
+        };
+        let caller_row = view.row(caller_id).ok_or_else(|| {
+            BuiltinModelError("structural references site is absent from the view".to_owned())
+        })?;
+        let backend_engine::RowId::Symbol(caller_symbol) = caller_row.id else {
+            return Err(BuiltinModelError(
+                "structural references site is not a declaration row".to_owned(),
+            ));
+        };
+        if reference_fact_has_site_and_relation(
+            &facts,
+            caller_symbol,
+            backend_engine::SemanticLinkKind::Calls,
+        ) {
+            continue;
+        }
+        let (start, end) = caller_row
+            .excerpt
+            .text()
+            .and_then(|excerpt| view_build::structural_call_span(excerpt, target_name))
+            .map(|(start, end)| {
+                (
+                    u32::try_from(start).unwrap_or(u32::MAX),
+                    u32::try_from(end).unwrap_or(u32::MAX),
+                )
+            })
+            .unwrap_or((0, target_name.len().min(u32::MAX as usize) as u32));
+        let source = match caller_row.source.captured() {
+            Some(location) => Some(backend_engine::SemanticSourceSpan {
+                file: backend_engine::ProductText::new(location.path()).map_err(|error| {
+                    BuiltinModelError(format!("structural references path: {error:?}"))
+                })?,
+                start,
+                end,
+            }),
+            None => None,
+        };
+        facts.push(backend_engine::ReferenceFact {
+            site: caller_symbol,
+            target: backend_engine::SemanticLinkTarget::Local {
+                declaration: target_identity,
+            },
+            relation: backend_engine::SemanticLinkKind::Calls,
+            evidence: backend_engine::SemanticLinkEvidence {
+                confidence: backend_engine::SemanticConfidence::Syntactic,
+                source,
+            },
+        });
+        if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+            return Err(BuiltinModelError(
+                "semantic references exceed the bounded result contract".to_owned(),
+            ));
+        }
+    }
+    facts.sort_by(|left, right| {
+        left.evidence
+            .source
+            .as_ref()
+            .map(|span| (span.file.as_str(), span.start, span.end))
+            .cmp(
+                &right
+                    .evidence
+                    .source
+                    .as_ref()
+                    .map(|span| (span.file.as_str(), span.start, span.end)),
+            )
+            .then_with(|| left.site.to_bytes().cmp(&right.site.to_bytes()))
+    });
+    facts.dedup();
+    if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
+        return Err(BuiltinModelError(
+            "semantic references exceed the bounded result contract".to_owned(),
+        ));
+    }
+    Ok(facts)
+}
+
 /// Answers "where is this declaration used" from the semantic occurrence
 /// plane.
 ///
@@ -616,7 +812,8 @@ pub(super) fn execute_references(
         .map_err(|error| {
             BuiltinModelError(format!("open semantic references relation: {error}"))
         })?;
-    let mut facts = Vec::new();
+    let mut activations = Vec::new();
+    let mut image_slots = Vec::<(usize, usize)>::new();
     let mut publication_found = false;
     let mut after = None;
     loop {
@@ -638,8 +835,10 @@ pub(super) fn execute_references(
             };
             publication_found = true;
             let activated = activate_semantic_publication(compiler, key, *claim)?;
-            for bytes in activated.images() {
-                append_reference_facts(package, bytes.as_ref(), target_symbol, &mut facts)?;
+            let activation_index = activations.len();
+            activations.push(activated);
+            for image_index in 0..activations[activation_index].images().len() {
+                image_slots.push((activation_index, image_index));
             }
         }
         let Some(next) = page.next().cloned() else {
@@ -650,23 +849,27 @@ pub(super) fn execute_references(
     if !publication_found {
         return execute_structural_references(daemon, target);
     }
-    // Deterministic order by source position, then site; the bound is the
-    // same bounded result contract every product reply obeys.
-    facts.sort_by(|left, right| {
-        left.evidence
-            .source
-            .as_ref()
-            .map(|span| (span.file.as_str(), span.start, span.end))
-            .cmp(
-                &right
-                    .evidence
-                    .source
-                    .as_ref()
-                    .map(|span| (span.file.as_str(), span.start, span.end)),
-            )
-            .then_with(|| left.site.to_bytes().cmp(&right.site.to_bytes()))
-    });
-    facts.dedup();
+    let sources = read_indexed_sources(&snapshot)?;
+    let project_paths = project_paths_for_package(&sources, package);
+    let bytes = image_slots
+        .iter()
+        .map(|(activation_index, image_index)| {
+            activations[*activation_index].images()[*image_index].as_ref()
+        })
+        .collect::<Vec<_>>();
+    let pairs = if package_indexed_in_sources(&sources, package) {
+        view_build::structural_call_coordinate_pairs(&sources, package)?
+    } else {
+        Vec::new()
+    };
+    let facts = project_reference_facts_from_bytes(
+        &bytes,
+        view,
+        package,
+        target_symbol,
+        &project_paths,
+        &pairs,
+    )?;
     let references = library.references(target, &facts).map_err(|error| {
         BuiltinModelError(format!("project references through the catalog: {error}"))
     })?;
@@ -796,7 +999,9 @@ fn append_reference_facts(
 }
 #[cfg(test)]
 mod project_call_tests {
+    use super::project_reference_facts_from_bytes;
     use super::project_semantic_graph_relations_from_bytes;
+    use super::super::snapshot::semantic_declaration_identity;
     use super::super::super::view_build::{
         semantic_coordinate, semantic_symbol, structural_call_coordinate_pairs,
         structural_call_graph_relations_mapped,
@@ -807,7 +1012,8 @@ mod project_call_tests {
         BorrowedTree, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityVersion,
         ExternalDeclarationIdentity, ExternalTarget, FactAvailability, ForeignDeclarationId,
         ForeignExternalTarget, ForeignTargetOrigin, IrBuilder, ItemKind, LinkKind,
-        OccurrenceAuthorityFacts, ParentageAuthority, SourceIdentity, TreeEntityId, TreeItemInput,
+        OccurrenceAuthorityFacts, ParentageAuthority, SourceIdentity, SourceSpan, TreeEntityId,
+        TreeItemInput,
         TreeLinkInput, TreeLinkTarget, VariantAvailability, VariantFingerprint, Visibility,
         encode_full_semantic_image, full_semantic_image_len,
     };
@@ -822,6 +1028,7 @@ mod project_call_tests {
         package_specifier: &'static [u8],
         display: &'static [u8],
         foreign_key: u8,
+        link_kind: LinkKind,
     }
 
     fn fixture_version(identity: u8) -> EntityVersion {
@@ -904,7 +1111,7 @@ mod project_call_tests {
             links.push(TreeLinkInput {
                 from: entity_id,
                 target: TreeLinkTarget::External(external),
-                kind: LinkKind::Calls,
+                kind: foreign_call.link_kind,
                 confidence: backend_semantic::ir::Confidence::Compiler,
                 authority: OccurrenceAuthorityFacts {
                     source: FactAvailability::Unavailable,
@@ -1106,6 +1313,7 @@ mod project_call_tests {
                 package_specifier: b"./apply-set",
                 display: b"entriesFromItems",
                 foreign_key: 9,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let entries_identity = fixture_version(1).identity();
@@ -1158,6 +1366,7 @@ mod project_call_tests {
                 package_specifier: b"./apply-set",
                 display: b"entriesFromItems",
                 foreign_key: 9,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let entries_identity = fixture_version(1).identity();
@@ -1219,6 +1428,7 @@ mod project_call_tests {
                 package_specifier: b"./apply-set",
                 display: b"entriesFromItems",
                 foreign_key: 9,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let sync_identity = fixture_version(2).identity();
@@ -1267,6 +1477,7 @@ mod project_call_tests {
                 package_specifier: b"lodash",
                 display: b"entriesFromItems",
                 foreign_key: 10,
+                link_kind: LinkKind::Calls,
             }),
         )?;
         let sync_identity = fixture_version(2).identity();
@@ -1389,6 +1600,482 @@ mod project_call_tests {
         }
         if targets.contains(&other_set_note_id) {
             return Err("unimported OtherService.setNote must not appear".to_owned());
+        }
+        Ok(())
+    }
+
+    fn local_call_image_with_span() -> Result<(Vec<u8>, EntityVersion, EntityVersion), String> {
+        const CALL_PATH: &str = "local.ts";
+        let caller_version = fixture_version(11);
+        let callee_version = fixture_version(12);
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[11]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, CALL_PATH)
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [
+            TreeItemInput {
+                name: b"caller",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"callee",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: authority(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let path_atom = (0..64)
+            .map(backend_semantic::ir::AtomId::new)
+            .find(|id| {
+                ir.atom(*id)
+                    .is_some_and(|bytes| bytes == CALL_PATH.as_bytes())
+            })
+            .ok_or("the fixture source path is absent from its own atom table")?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, CALL_PATH)
+            .map_err(|error| error.to_string())?;
+        let links = [TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::Local(TreeEntityId::new(1)),
+            kind: LinkKind::Calls,
+            confidence: backend_semantic::ir::Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Captured,
+            },
+            source: SourceSpan::new(path_atom, 12, 24),
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[caller_version, callee_version],
+                items: &items,
+                links: &links,
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok((bytes, caller_version, callee_version))
+    }
+
+    #[test]
+    fn project_references_foreign_retarget_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let apply_bytes = project_call_image(
+            "apply-set.ts",
+            1,
+            b"entriesFromItems",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.ts",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(ForeignCallFixture {
+                package_specifier: b"./apply-set",
+                display: b"entriesFromItems",
+                foreign_key: 9,
+                link_kind: LinkKind::Calls,
+            }),
+        )?;
+        let entries_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("apply-set.ts", 1, "entriesFromItems", fixture_version(1)),
+                ("weeks.ts", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&apply_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, entries_identity),
+            &project_paths(&["apply-set.ts", "weeks.ts"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        let fact = &facts[0];
+        if fact.site != semantic_symbol(package, sync_identity) {
+            return Err("foreign retarget site is not syncWorkout".to_owned());
+        }
+        if fact.relation != backend_engine::SemanticLinkKind::Calls {
+            return Err(format!("foreign retarget relation is {:?}", fact.relation));
+        }
+        let expected_target = semantic_declaration_identity(entries_identity);
+        if !matches!(
+            &fact.target,
+            backend_engine::SemanticLinkTarget::Local { declaration }
+                if *declaration == expected_target
+        ) {
+            return Err("foreign retarget target is not entriesFromItems".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_foreign_ambiguous_emits_nothing() -> Result<(), String> {
+        let package = package_key("fixture");
+        let apply_bytes = project_call_image(
+            "apply-set.ts",
+            1,
+            b"entriesFromItems",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let duplicate_apply_bytes = project_call_image(
+            "apply-set.ts",
+            3,
+            b"entriesFromItems",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.ts",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(ForeignCallFixture {
+                package_specifier: b"./apply-set",
+                display: b"entriesFromItems",
+                foreign_key: 9,
+                link_kind: LinkKind::Calls,
+            }),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let entries_identity = fixture_version(1).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("apply-set.ts", 1, "entriesFromItems", fixture_version(1)),
+                ("weeks.ts", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&apply_bytes, &duplicate_apply_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, entries_identity),
+            &project_paths(&["apply-set.ts", "weeks.ts"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        let sync_symbol = semantic_symbol(package, sync_identity);
+        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
+        if sync_site_facts != 0 {
+            return Err(format!(
+                "ambiguous foreign target produced {sync_site_facts} sync-site facts"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_foreign_lodash_emits_nothing() -> Result<(), String> {
+        let package = package_key("fixture");
+        let apply_bytes = project_call_image(
+            "apply-set.ts",
+            1,
+            b"entriesFromItems",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.ts",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(ForeignCallFixture {
+                package_specifier: b"lodash",
+                display: b"entriesFromItems",
+                foreign_key: 10,
+                link_kind: LinkKind::Calls,
+            }),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let entries_identity = fixture_version(1).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("apply-set.ts", 1, "entriesFromItems", fixture_version(1)),
+                ("weeks.ts", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&apply_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, entries_identity),
+            &project_paths(&["apply-set.ts", "weeks.ts"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        let sync_symbol = semantic_symbol(package, sync_identity);
+        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
+        if sync_site_facts != 0 {
+            return Err(format!(
+                "lodash import produced {sync_site_facts} sync-site facts"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_reads_are_not_callers() -> Result<(), String> {
+        let package = package_key("fixture");
+        let apply_bytes = project_call_image(
+            "apply-set.ts",
+            1,
+            b"entriesFromItems",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.ts",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(ForeignCallFixture {
+                package_specifier: b"./apply-set",
+                display: b"entriesFromItems",
+                foreign_key: 9,
+                link_kind: LinkKind::Reads,
+            }),
+        )?;
+        let sync_identity = fixture_version(2).identity();
+        let entries_identity = fixture_version(1).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("apply-set.ts", 1, "entriesFromItems", fixture_version(1)),
+                ("weeks.ts", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&apply_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, entries_identity),
+            &project_paths(&["apply-set.ts", "weeks.ts"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        let sync_symbol = semantic_symbol(package, sync_identity);
+        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
+        if sync_site_facts != 0 {
+            return Err(format!(
+                "Reads foreign link produced {sync_site_facts} sync-site facts"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_structural_union_names_the_importer() -> Result<(), String> {
+        let package = package_key("fixture");
+        let workout = analyze_source(
+            "workout.service.ts",
+            "export class WorkoutService { setNote() {} }\n",
+        )?;
+        let other = analyze_source(
+            "other.service.ts",
+            "export class OtherService { setNote() {} }\n",
+        )?;
+        let weeks = analyze_source(
+            "weeks.ts",
+            "import { WorkoutService } from \"./workout.service\";\nexport class Weeks { service!: WorkoutService; sync() { this.service.setNote(); } }\n",
+        )?;
+        let sources = indexed_sources(&[
+            ("workout.service.ts", workout),
+            ("other.service.ts", other),
+            ("weeks.ts", weeks),
+        ])?;
+        let set_note_identity = fixture_version(4).identity();
+        let sync_identity = fixture_version(5).identity();
+        let other_set_note_symbol = semantic_symbol(package, fixture_version(6).identity());
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout.service.ts", 1, "setNote", fixture_version(4)),
+                ("other.service.ts", 1, "setNote", fixture_version(6)),
+                ("weeks.ts", 2, "sync", fixture_version(5)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let pairs = structural_call_coordinate_pairs(&sources, package).map_err(|e| e.to_string())?;
+        let facts = project_reference_facts_from_bytes(
+            &[],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["workout.service.ts", "other.service.ts", "weeks.ts"]),
+            &pairs,
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one structural reference fact, got {}", facts.len()));
+        }
+        let fact = &facts[0];
+        if fact.site != semantic_symbol(package, sync_identity) {
+            return Err("structural union site is not sync".to_owned());
+        }
+        if fact.relation != backend_engine::SemanticLinkKind::Calls {
+            return Err(format!("structural union relation is {:?}", fact.relation));
+        }
+        if fact.evidence.confidence != backend_engine::SemanticConfidence::Syntactic {
+            return Err(format!(
+                "structural union confidence is {:?}",
+                fact.evidence.confidence
+            ));
+        }
+        if fact.site == other_set_note_symbol {
+            return Err("unimported OtherService.setNote must not be the site".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_structural_does_not_duplicate_semantic_site() -> Result<(), String> {
+        let package = package_key("fixture");
+        let (bytes, caller_version, callee_version) = local_call_image_with_span()?;
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("local.ts", 1, "caller", caller_version),
+                ("local.ts", 2, "callee", callee_version),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let pairs = vec![
+            (
+                "fixture::local.ts:1::caller".to_owned(),
+                "fixture::local.ts:2::callee".to_owned(),
+            ),
+        ];
+        let facts = project_reference_facts_from_bytes(
+            &[&bytes],
+            &view,
+            package,
+            semantic_symbol(package, callee_version.identity()),
+            &project_paths(&["local.ts"]),
+            &pairs,
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!(
+                "semantic and structural union must emit one fact, got {}",
+                facts.len()
+            ));
+        }
+        let fact = &facts[0];
+        if fact.evidence.confidence != backend_engine::SemanticConfidence::Compiler {
+            return Err(format!(
+                "deduplicated reference confidence is {:?}",
+                fact.evidence.confidence
+            ));
+        }
+        let span = fact
+            .evidence
+            .source
+            .as_ref()
+            .ok_or("semantic occurrence lost its captured span")?;
+        if (span.start, span.end) != (12, 24) {
+            return Err(format!("span is {}..{}", span.start, span.end));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_unindexed_package_does_not_error() -> Result<(), String> {
+        let package = package_key("fixture");
+        let apply_bytes = project_call_image(
+            "apply-set.ts",
+            1,
+            b"entriesFromItems",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let weeks_bytes = project_call_image(
+            "weeks.ts",
+            2,
+            b"syncWorkout",
+            TreeEntityId::new(0),
+            Some(ForeignCallFixture {
+                package_specifier: b"./apply-set",
+                display: b"entriesFromItems",
+                foreign_key: 9,
+                link_kind: LinkKind::Calls,
+            }),
+        )?;
+        let entries_identity = fixture_version(1).identity();
+        let sync_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("apply-set.ts", 1, "entriesFromItems", fixture_version(1)),
+                ("weeks.ts", 2, "syncWorkout", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&apply_bytes, &weeks_bytes],
+            &view,
+            package,
+            semantic_symbol(package, entries_identity),
+            &project_paths(&["apply-set.ts", "weeks.ts"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        if facts[0].site != semantic_symbol(package, sync_identity) {
+            return Err("unindexed foreign retarget site is not syncWorkout".to_owned());
         }
         Ok(())
     }

@@ -18,8 +18,8 @@ pub(super) use semantic::{ProjectedRows, StructuralSites, rows_for_indexed_sourc
 pub(crate) use semantic::compiled_source_path;
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
-    structural_call_graph_relations_mapped, structural_reference_facts,
-    view_row_for_structural_coordinate,
+    structural_call_graph_relations_mapped, structural_call_span, structural_reference_facts,
+    structural_symbol_identity, view_row_for_structural_coordinate,
 };
 
 use query::append_structural_query_facts;
