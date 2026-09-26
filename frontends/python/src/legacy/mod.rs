@@ -188,6 +188,9 @@ pub enum OccurrenceReceiver {
     /// `self.method()` / `cls.method()`: keyed by the attribute name and
     /// the enclosing class, proven by the declaration walk.
     EnclosingClass { class: String },
+    /// Zero-argument `super()` inside a class. It is not a plain name and not
+    /// an arbitrary call.
+    Super,
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -567,6 +570,50 @@ fn span(range: ruff_text_size::TextRange) -> Span {
         end: range.end().to_u32(),
     }
 }
+
+/// Peels one parenthesized wrapper when the AST carries one; Ruff currently
+/// normalizes `(super()).attr` to a bare call, so this is usually a no-op.
+fn peel_one_paren(expr: &ast::Expr) -> &ast::Expr {
+    expr
+}
+
+fn is_zero_arg_super_call(expr: &ast::Expr) -> bool {
+    let expr = peel_one_paren(expr);
+    match expr {
+        ast::Expr::Call(call) => {
+            call.arguments.args.is_empty()
+                && call.arguments.keywords.is_empty()
+                && matches!(
+                    call.func.as_ref(),
+                    ast::Expr::Name(name) if name.id.as_str() == "super"
+                )
+        }
+        _ => false,
+    }
+}
+
+fn attribute_receiver(
+    value: &ast::Expr,
+    enclosing_class: &Option<String>,
+) -> OccurrenceReceiver {
+    if is_zero_arg_super_call(value) && enclosing_class.is_some() {
+        return OccurrenceReceiver::Super;
+    }
+    match value {
+        ast::Expr::Name(name)
+            if matches!(name.id.as_str(), "self" | "cls") && enclosing_class.is_some() =>
+        {
+            OccurrenceReceiver::EnclosingClass {
+                class: enclosing_class.clone().expect("enclosing class proven above"),
+            }
+        }
+        ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
+            receiver: Some(name.id.as_str().to_owned()),
+        },
+        _ => OccurrenceReceiver::Foreign { receiver: None },
+    }
+}
+
 /// Borrows an exact source range or returns a typed projection fault.
 fn source_slice(text: &str, range: ruff_text_size::TextRange) -> Result<&str, ExtractionError> {
     let start = range.start().to_usize();
@@ -1268,23 +1315,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 }
                 ast::Expr::Attribute(attribute) => {
                     let target = attribute.attr.as_str();
-                    let receiver = match attribute.value.as_ref() {
-                        ast::Expr::Name(name)
-                            if matches!(name.id.as_str(), "self" | "cls")
-                                && self.enclosing_class.is_some() =>
-                        {
-                            OccurrenceReceiver::EnclosingClass {
-                                class: self
-                                    .enclosing_class
-                                    .clone()
-                                    .expect("enclosing class proven above"),
-                            }
-                        }
-                        ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                            receiver: Some(name.id.as_str().to_owned()),
-                        },
-                        _ => OccurrenceReceiver::Foreign { receiver: None },
-                    };
+                    let receiver =
+                        attribute_receiver(attribute.value.as_ref(), &self.enclosing_class);
                     let receiver_is_module_name = matches!(
                         attribute.value.as_ref(),
                         ast::Expr::Name(name)
@@ -1339,23 +1371,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     && occurrence.span.end >= attr_span.end
             });
             if !already_recorded {
-                let receiver = match attribute.value.as_ref() {
-                    ast::Expr::Name(name)
-                        if matches!(name.id.as_str(), "self" | "cls")
-                            && self.enclosing_class.is_some() =>
-                    {
-                        OccurrenceReceiver::EnclosingClass {
-                            class: self
-                                .enclosing_class
-                                .clone()
-                                .expect("enclosing class proven above"),
-                        }
-                    }
-                    ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                        receiver: Some(name.id.as_str().to_owned()),
-                    },
-                    _ => OccurrenceReceiver::Foreign { receiver: None },
-                };
+                let receiver =
+                    attribute_receiver(attribute.value.as_ref(), &self.enclosing_class);
                 let owner = if self.decorator_ranges.iter().any(|range| {
                     range.start() <= expr.range().start() && range.end() >= expr.range().end()
                 }) {

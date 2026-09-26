@@ -523,6 +523,123 @@ fn universe_field_access<'a>(
     Ok(matches[0])
 }
 
+fn function_decl_start(
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    name: &[u8],
+) -> Result<u32, TestError> {
+    let mut matches: Vec<u32> = Vec::new();
+    for declaration in &module.declarations {
+        if declaration.kind == DeclarationKind::Function && declaration.name.as_bytes() == name {
+            matches.push(declaration.span.start);
+        }
+    }
+    if matches.len() != 1 {
+        return Err(TestError::Falsified("function declaration start not unique"));
+    }
+    Ok(matches[0])
+}
+
+fn recover_site_bytes<'a>(
+    source: &'a [u8],
+    owner_decl_start: u32,
+    occurrence: &backend_semantic::ir::DecodedOccurrence<'a>,
+) -> Result<&'a [u8], TestError> {
+    let start = owner_decl_start + occurrence.occurrence.span.start;
+    let end = owner_decl_start + occurrence.occurrence.span.end;
+    let start = usize::try_from(start).map_err(|_| TestError::Falsified("site start"))?;
+    let end = usize::try_from(end).map_err(|_| TestError::Falsified("site end"))?;
+    source
+        .get(start..end)
+        .ok_or(TestError::Falsified("site bytes out of range"))
+}
+
+fn assert_site_spelling<'a>(
+    source: &'a [u8],
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    owner_name: &[u8],
+    occurrence: &backend_semantic::ir::DecodedOccurrence<'a>,
+    spelling: &[u8],
+) -> Result<(), TestError> {
+    let owner_start = function_decl_start(module, owner_name)?;
+    let site = recover_site_bytes(source, owner_start, occurrence)?;
+    if site != spelling {
+        return Err(TestError::Falsified("recovered site bytes mismatch"));
+    }
+    Ok(())
+}
+
+fn assert_no_local_target(
+    rows: &[backend_semantic::ir::DecodedOccurrence<'_>],
+    owner: EntityId,
+    kind: ReferenceKind,
+    decoy: EntityId,
+) -> Result<(), TestError> {
+    for row in rows.iter().filter(|row| row.owner == owner && row.occurrence.kind == kind) {
+        if matches!(
+            row.occurrence.target,
+            OccurrenceTarget::Local(target) if target == decoy
+        ) {
+            return Err(TestError::Falsified("reader owned a decoy local target"));
+        }
+    }
+    Ok(())
+}
+
+fn pin_local_field_access<'a>(
+    source: &'a [u8],
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    decoded: &FragmentView<'a>,
+    atoms: &[&[u8]],
+    rows: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner_name: &[u8],
+    winner: EntityId,
+    decoy: Option<EntityId>,
+    spelling: &[u8],
+) -> Result<(), TestError> {
+    let owner = entity_ordinal(decoded, atoms, owner_name, EntityKind::Function)?;
+    let row = local_field_access(rows, owner, winner)?;
+    if let Some(decoy) = decoy {
+        assert_no_local_target(rows, owner, ReferenceKind::FieldAccess, decoy)?;
+    }
+    assert_site_spelling(source, module, owner_name, row, spelling)?;
+    Ok(())
+}
+
+fn pin_local_method_call<'a>(
+    source: &'a [u8],
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    decoded: &FragmentView<'a>,
+    atoms: &[&[u8]],
+    rows: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner_name: &[u8],
+    winner: EntityId,
+    decoy: Option<EntityId>,
+    spelling: &[u8],
+) -> Result<(), TestError> {
+    let owner = entity_ordinal(decoded, atoms, owner_name, EntityKind::Function)?;
+    let row = local_method_call(rows, owner, winner)?;
+    if let Some(decoy) = decoy {
+        assert_no_local_target(rows, owner, ReferenceKind::MethodCall, decoy)?;
+    }
+    assert_site_spelling(source, module, owner_name, row, spelling)?;
+    Ok(())
+}
+
+fn pin_universe_field_access<'a>(
+    source: &'a [u8],
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    decoded: &FragmentView<'a>,
+    atoms: &[&[u8]],
+    rows: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner_name: &[u8],
+    spelling: &str,
+) -> Result<(), TestError> {
+    let owner = entity_ordinal(decoded, atoms, owner_name, EntityKind::Function)?;
+    let row = universe_field_access(rows, owner, spelling)?;
+    assert_site_spelling(source, module, owner_name, row, spelling.as_bytes())?;
+    Ok(())
+}
+
 #[test]
 fn python_inherited_field_read_resolves_to_base() -> Result<(), TestError> {
     let source = b"class Base:\n    note: str\n\nclass Child(Base):\n    def read(self):\n        return self.note\n";
@@ -854,5 +971,292 @@ fn python_enclosing_class_imported_only_base_stays_universe() -> Result<(), Test
     let rows = occurrences(&decoded)?;
     let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
     universe_field_access(&rows, read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn python_super_field_read_resolves_to_base() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Base:\n    note: str\n\nclass Child(Base):\n    def read(self):\n        return super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    if base_note == other_note {
+        return Err(TestError::Falsified("Base.note and Other.note are one field"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        base_note,
+        Some(other_note),
+        b"note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_super_field_read_two_level_chain() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Grand:\n    note: str\n\nclass Mid(Grand):\n    pass\n\nclass Child(Mid):\n    def read(self):\n        return super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let grand_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Grand", b"note")?;
+    let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    if grand_note == other_note {
+        return Err(TestError::Falsified("Grand.note and Other.note are one field"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        grand_note,
+        Some(other_note),
+        b"note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_super_method_call_skips_child_override() -> Result<(), TestError> {
+    let source = b"class Other:\n    def set_note(self):\n        pass\n\nclass Base:\n    def set_note(self):\n        pass\n\nclass Child(Base):\n    def set_note(self):\n        pass\n    def read(self):\n        super().set_note()\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"set_note")?;
+    let child_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"set_note")?;
+    let other_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"set_note")?;
+    if base_set_note == child_set_note || base_set_note == other_set_note {
+        return Err(TestError::Falsified("set_note ordinals are not distinct"));
+    }
+    pin_local_method_call(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        base_set_note,
+        Some(child_set_note),
+        b"set_note",
+    )?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    assert_no_local_target(&rows, read, ReferenceKind::MethodCall, other_set_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_super_method_value_resolves_to_base() -> Result<(), TestError> {
+    let source = b"class Other:\n    def note(self):\n        pass\n\nclass Base:\n    def note(self):\n        pass\n\nclass Child(Base):\n    def note(self):\n        pass\n    def read(self):\n        return super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let child_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    if base_note == child_note {
+        return Err(TestError::Falsified("Base.note and Child.note are one method"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        base_note,
+        Some(child_note),
+        b"note",
+    )?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    for row in rows
+        .iter()
+        .filter(|row| row.owner == read && row.occurrence.kind == ReferenceKind::MethodCall)
+    {
+        let spelling_note = matches!(
+            &row.occurrence.target,
+            OccurrenceTarget::Foreign(key) if key.display == "note"
+        ) || matches!(
+            row.occurrence.target,
+            OccurrenceTarget::Local(target) if target == base_note || target == child_note
+        );
+        if spelling_note {
+            return Err(TestError::Falsified(
+                "super().note produced a MethodCall owned by read",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn python_super_field_wins_over_child_method() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Base:\n    note: str\n\nclass Child(Base):\n    def note(self):\n        pass\n    def read(self):\n        return super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let child_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    if base_field == child_method {
+        return Err(TestError::Falsified("Base field and Child method share one ordinal"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        base_field,
+        Some(child_method),
+        b"note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_super_child_field_does_not_hide_base_method() -> Result<(), TestError> {
+    let source = b"class Other:\n    def note(self):\n        pass\n\nclass Base:\n    def note(self):\n        pass\n\nclass Child(Base):\n    note: str\n    def read(self):\n        return super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let child_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    if base_method == child_field {
+        return Err(TestError::Falsified("Base method and Child field share one ordinal"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        base_method,
+        Some(child_field),
+        b"note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_super_ambiguous_bases_stays_universe() -> Result<(), TestError> {
+    let source = b"class Left:\n    note: str\n\nclass Right:\n    note: str\n\nclass Child(Left, Right):\n    def read(self):\n        return super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
+    let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if left_note == right_note {
+        return Err(TestError::Falsified("Left.note and Right.note are one field"));
+    }
+    pin_universe_field_access(source, &module, &decoded, &atoms, &rows, b"read", "note")?;
+    Ok(())
+}
+
+#[test]
+fn python_super_imported_only_base_stays_universe() -> Result<(), TestError> {
+    let source = b"from workout.service import WorkoutService\n\nclass Child(WorkoutService):\n    def read(self):\n        return super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    pin_universe_field_access(source, &module, &decoded, &atoms, &rows, b"read", "note")?;
+    Ok(())
+}
+
+#[test]
+fn python_super_explicit_form_stays_universe() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Base:\n    note: str\n\nclass Child(Base):\n    def read(self):\n        return super(Base, self).note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    pin_universe_field_access(source, &module, &decoded, &atoms, &rows, b"read", "note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    assert_no_local_target(&rows, read, ReferenceKind::FieldAccess, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_obj_super_call_stays_universe() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Base:\n    note: str\n\nclass Child(Base):\n    def read(self, obj):\n        return obj.super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    pin_universe_field_access(source, &module, &decoded, &atoms, &rows, b"read", "note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    assert_no_local_target(&rows, read, ReferenceKind::FieldAccess, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_super_generic_base_resolves_to_base() -> Result<(), TestError> {
+    let source = b"class Other:\n    note: str\n\nclass Base:\n    note: str\n\nclass Child(Base[int]):\n    def read(self):\n        return super().note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    if base_note == other_note {
+        return Err(TestError::Falsified("Base.note and Other.note are one field"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        base_note,
+        Some(other_note),
+        b"note",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn python_self_field_read_still_binds_child_override() -> Result<(), TestError> {
+    let source = b"class Base:\n    note: str\n\nclass Child(Base):\n    note: str\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let child_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if child_note == base_note {
+        return Err(TestError::Falsified("Child.note and Base.note are one field"));
+    }
+    pin_local_field_access(
+        source,
+        &module,
+        &decoded,
+        &atoms,
+        &rows,
+        b"read",
+        child_note,
+        Some(base_note),
+        b"note",
+    )?;
     Ok(())
 }

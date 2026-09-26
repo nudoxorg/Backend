@@ -1917,6 +1917,43 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     }
                 }
             }
+            OccurrenceReceiver::Super => {
+                let confidence = match checked {
+                    Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                    _ => OccurrenceConfidence::Index,
+                };
+                if occurrence.kind == OccurrenceKind::AttributeRead {
+                    if let Some(class_index) = self.innermost_enclosing_class_index(occurrence) {
+                        if let Some(ordinal) = self.super_attribute_read(occurrence, class_index) {
+                            return Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence,
+                            )));
+                        }
+                    }
+                    Ok(Some((
+                        foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
+                        OccurrenceConfidence::Index,
+                    )))
+                } else if let Some(class_index) = self.innermost_enclosing_class_index(occurrence) {
+                    if let Some(ordinal) = self.super_method_call(occurrence, class_index) {
+                        Ok(Some((
+                            OccurrenceTarget::Local(EntityId::new(ordinal)),
+                            confidence,
+                        )))
+                    } else {
+                        Ok(Some((
+                            foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                            OccurrenceConfidence::Index,
+                        )))
+                    }
+                } else {
+                    Ok(Some((
+                        foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                        OccurrenceConfidence::Index,
+                    )))
+                }
+            }
             OccurrenceReceiver::Foreign { receiver } => {
                 if occurrence.kind == OccurrenceKind::AttributeRead {
                     if let Some(receiver) = receiver {
@@ -2031,6 +2068,54 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 )))
             }
         }
+    }
+
+    /// The innermost live class whose extent contains the occurrence site.
+    fn innermost_enclosing_class_index(&self, occurrence: &OccurrenceFact) -> Option<usize> {
+        let mut best: Option<(usize, u32)> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Class
+                || !self.live[index]
+                || !span_contains(declaration.span, occurrence.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            if best.map_or(true, |(_, span_area)| area < span_area) {
+                best = Some((index, area));
+            }
+        }
+        best.map(|(index, _)| index)
+    }
+
+    /// Resolves one `super().attr` read by walking same-file bases only.
+    /// Fields are decided first; ambiguous fields stay unresolved without
+    /// consulting methods.
+    fn super_attribute_read(
+        &self,
+        occurrence: &OccurrenceFact,
+        class_index: usize,
+    ) -> Option<u32> {
+        let attribute_bytes = occurrence.target.as_bytes();
+        match self.inherited_member_status(class_index, DeclarationKind::Field, attribute_bytes) {
+            InheritedMemberStatus::Unique(ordinal) => return Some(ordinal),
+            InheritedMemberStatus::Ambiguous => return None,
+            InheritedMemberStatus::Absent => {}
+        }
+        match self.inherited_member_status(class_index, DeclarationKind::Function, attribute_bytes)
+        {
+            InheritedMemberStatus::Unique(ordinal) => Some(ordinal),
+            InheritedMemberStatus::Ambiguous | InheritedMemberStatus::Absent => None,
+        }
+    }
+
+    /// Resolves one `super().method()` call by walking same-file bases only.
+    fn super_method_call(&self, occurrence: &OccurrenceFact, class_index: usize) -> Option<u32> {
+        self.inherited_member_ordinal(
+            class_index,
+            DeclarationKind::Function,
+            occurrence.target.as_bytes(),
+        )
     }
 
     /// The innermost live class declaration with the recorded class name whose
