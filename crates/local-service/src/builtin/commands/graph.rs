@@ -14,6 +14,7 @@ use std::sync::mpsc;
 fn execute_graph_query(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
+    snapshots: &mut super::super::query::SearchSnapshotOwner,
     request: &backend_engine::GraphQueryRequest,
 ) -> Result<backend_engine::GraphQueryPage, BuiltinModelError> {
     let owner_cursor = daemon.engine().daemon().library().cursor();
@@ -36,7 +37,10 @@ fn execute_graph_query(
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = super::super::read_indexed_sources(&snapshot)?;
-    let corpus = super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources)?;
+    let workspace = snapshot.root();
+    let corpus = snapshots.shared_corpus(workspace, || {
+        super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources)
+    })?;
     let (cancellation, control) = backend_extension_trustfall::SemanticQueryCancellation::new();
     let query = backend_extension_trustfall::SemanticQueryRequest::admit_page(
         corpus,
@@ -210,8 +214,10 @@ pub(super) fn execute_search(
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let coverage = super::super::admitted_coverage()?;
     let sources = super::super::read_indexed_sources(&snapshot)?;
-    let semantic_evidence =
-        super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources)?;
+    let workspace = snapshot.root();
+    let semantic_evidence = snapshots.shared_corpus(workspace, || {
+        super::super::view_build::semantic_query_corpus(&snapshot, compiler, &sources)
+    })?;
     let coordinator = snapshots
         .select(
             snapshot.root(),
@@ -245,11 +251,12 @@ pub(super) fn execute_search(
 pub(super) fn execute_certified_graph_query(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
+    snapshots: &mut super::super::query::SearchSnapshotOwner,
     request: &backend_engine::GraphQueryRequest,
     base: Option<WireCertificate>,
 ) -> Result<(CommandReply, Option<WireCertificate>), BuiltinModelError> {
     let command = Command::GraphQuery(request.clone());
-    let reply = execute_graph_query(daemon, compiler, request).map_or_else(
+    let reply = execute_graph_query(daemon, compiler, snapshots, request).map_or_else(
         |error| {
             CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
                 error.to_string(),

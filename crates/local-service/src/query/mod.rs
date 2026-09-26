@@ -22,5 +22,10 @@ pub use remote::{
 };
 pub use semantic::{CompositionPolicy, SemanticAcceleration, SemanticError};
 
+/// Times admitting a typed search corpus against reusing the resident one.
+pub(super) fn measure_search_corpus() {
+    local::measure_search_corpus();
+}
+
 #[cfg(test)]
 mod tests;

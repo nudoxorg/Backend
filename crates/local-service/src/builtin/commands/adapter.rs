@@ -92,7 +92,13 @@ impl CommandAdapter {
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
             Command::Related(query) => self.graph(daemon, query, certificate, true),
             Command::GraphQuery(request) => {
-                execute_certified_graph_query(daemon, &self.compiler, &request, certificate)
+                execute_certified_graph_query(
+                    daemon,
+                    &self.compiler,
+                    &mut self.search_snapshots,
+                    &request,
+                    certificate,
+                )
             }
             Command::Surface(surface) => self.surface(daemon, surface, request_id),
             command => self.standard(daemon, &command, certificate),

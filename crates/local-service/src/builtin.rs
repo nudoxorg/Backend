@@ -948,6 +948,13 @@ pub(crate) fn compose_owner(
     Ok(daemon.into_owner_with_admission(command, NoCompletionAdmission, replication))
 }
 
+/// Times admitting a typed search corpus against reusing the resident one.
+///
+/// Fixture rows are built before the timer. The printed line is the release
+/// measurement for a repeated search over an unchanged workspace.
+pub fn measure_search_corpus() {
+    query::measure_search_corpus();
+}
 /// Starts the compiled locald profile. It does all startup work before the
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]
