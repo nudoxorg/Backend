@@ -855,6 +855,58 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         kind.as_arrow_function_expression().is_some() || kind.as_function().is_some()
     }
 
+    /// Reports whether `span` names the property of a static (non-computed,
+    /// non-private) member expression in callee position of a call or `new`.
+    fn is_member_call_position(&self, span: Span) -> bool {
+        let nodes = self.semantic.nodes();
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| (known.start, known.end) < (span.start, span.end));
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if (known.start, known.end) != (span.start, span.end) {
+                break;
+            }
+            let member_id = match self.static_member_for_property(*node_id, span) {
+                Some(member_id) => member_id,
+                None => continue,
+            };
+            let member_span = nodes.get_node(member_id).kind().span();
+            let parent = nodes.get_node(nodes.parent_id(member_id)).kind();
+            if let Some(call) = parent.as_call_expression()
+                && call.callee.span() == member_span
+            {
+                return true;
+            }
+            if let Some(construction) = parent.as_new_expression()
+                && construction.callee.span() == member_span
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns the static member node when `span` names its property.
+    fn static_member_for_property(&self, node_id: NodeId, span: Span) -> Option<NodeId> {
+        let nodes = self.semantic.nodes();
+        let kind = nodes.get_node(node_id).kind();
+        if let Some(member) = kind.as_static_member_expression()
+            && member.property.span() == span
+        {
+            return Some(node_id);
+        }
+        if kind.as_identifier_name().is_some() {
+            let parent_id = nodes.parent_id(node_id);
+            let parent = nodes.get_node(parent_id).kind();
+            if let Some(member) = parent.as_static_member_expression()
+                && member.property.span() == span
+            {
+                return Some(parent_id);
+            }
+        }
+        None
+    }
+
     /// Pushes one fact per staged generic parameter so uses of the parameter
     /// inside the declaration resolve to a `TypeVar` fact.
     fn push_type_parameter_facts(
@@ -4659,7 +4711,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 reference.name,
             )?
         {
-            let kind = if call {
+            let span = Span::new(reference.span.start, reference.span.end);
+            let kind = if call || self.is_member_call_position(span) {
                 ReferenceKind::FunctionCall
             } else {
                 ReferenceKind::VariableUse
