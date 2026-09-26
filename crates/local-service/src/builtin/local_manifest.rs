@@ -881,6 +881,23 @@ fn strip_xml_comments(text: &str) -> Result<String, String> {
     Ok(stripped)
 }
 
+#[path = "local_manifest_dependencies.rs"]
+mod dependencies;
+
+/// Reads outgoing dependency facts from one indexed local manifest.
+///
+/// `Cargo.toml` stays authoritative. Other ecosystems are read only when Cargo
+/// is absent. A directory with no provable package identity contributes no facts.
+///
+/// # Errors
+///
+/// Returns an error when a present manifest declares a malformed dependency.
+pub(crate) fn local_dependency_facts(
+    project_root: &Path,
+) -> Result<Option<PackageDependencySourceFacts>, String> {
+    dependencies::local_dependency_facts(project_root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
