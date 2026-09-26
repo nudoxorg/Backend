@@ -7,13 +7,14 @@
 # the GitHub default branch (canonical), which carries this formula:
 #
 #   brew tap nudoxorg/backend https://github.com/nudoxorg/Backend.git
-#   brew install nudoxorg/backend/backend-mcp
-#   mkdir -p "$(brew --prefix)/etc"
-#   printf '%s\n' /absolute/path/to/project > "$(brew --prefix)/etc/backend-mcp.project"
+#   brew install --HEAD nudoxorg/backend/backend-mcp
 #   brew services start backend-mcp
 #
 # The service listens on http://127.0.0.1:8741/mcp. The bearer token is
 # created on first start at $(brew --prefix)/etc/backend-mcp.token.
+# Add a project by calling backend.index with its absolute path. No project
+# file is required. Daemon state stays in $(brew --prefix)/var/lib/backend-mcp.
+# The v0.2.0 bottle is an older binary; --HEAD builds the session tool list.
 # backend-mcp and backend-locald are installed as siblings; the MCP process
 # finds the daemon beside its own executable.
 
@@ -59,18 +60,17 @@ class BackendMcp < Formula
 
   def caveats
     <<~EOS
-      Write the absolute project path to index, one line, no quotes:
-        #{etc}/backend-mcp.project
-      First start creates the bearer token:
-        #{etc}/backend-mcp.token
       Start the loopback MCP service:
         brew services start backend-mcp
       Endpoint: http://127.0.0.1:8741/mcp
+      First start creates the bearer token:
+        #{etc}/backend-mcp.token
       Authorization: Bearer $(cat #{etc}/backend-mcp.token)
 
-      HTTP mode does not index on startup. Call the backend.index tool
-      (or backend.packages) after initialize. State is written to
-      <project>/.backend/v2, which this product ignores on later scans.
+      HTTP mode does not index on startup. After initialize, call
+      backend.index with the absolute project path. That adds the package.
+      backend.packages lists the shelf. Daemon state stays in
+      #{var}/lib/backend-mcp.
     EOS
   end
 
@@ -89,20 +89,28 @@ class BackendMcp < Formula
       set -euo pipefail
       etc_dir="#{etc}"
       opt_bin="#{opt_bin}"
+      state_dir="#{var}/lib/backend-mcp"
       project_file="${BACKEND_MCP_PROJECT_FILE:-$etc_dir/backend-mcp.project}"
       token_file="${BACKEND_MCP_TOKEN_FILE:-$etc_dir/backend-mcp.token}"
       bind="${BACKEND_MCP_HTTP:-127.0.0.1:8741}"
+      mkdir -p "$state_dir"
 
-      if [[ -z "${BACKEND_MCP_PROJECT:-}" ]]; then
-        if [[ ! -f "$project_file" ]]; then
-          echo "backend-mcp-service: write the project path to $project_file" >&2
+      # backend.index admits the directory. A project path only sets the
+      # default used when that tool is called without a path argument.
+      project_args=()
+      if [[ -n "${BACKEND_MCP_PROJECT:-}" ]]; then
+        if [[ ! -d "$BACKEND_MCP_PROJECT" ]]; then
+          echo "backend-mcp-service: project is not a directory: $BACKEND_MCP_PROJECT" >&2
           exit 1
         fi
+        project_args=(--project "$BACKEND_MCP_PROJECT")
+      elif [[ -f "$project_file" ]]; then
         IFS= read -r BACKEND_MCP_PROJECT < "$project_file"
-      fi
-      if [[ ! -d "$BACKEND_MCP_PROJECT" ]]; then
-        echo "backend-mcp-service: project is not a directory: $BACKEND_MCP_PROJECT" >&2
-        exit 1
+        if [[ ! -d "$BACKEND_MCP_PROJECT" ]]; then
+          echo "backend-mcp-service: project is not a directory: $BACKEND_MCP_PROJECT" >&2
+          exit 1
+        fi
+        project_args=(--project "$BACKEND_MCP_PROJECT")
       fi
 
       if [[ -z "${BACKEND_MCP_TOKEN:-}" ]]; then
@@ -116,7 +124,7 @@ class BackendMcp < Formula
       fi
       export BACKEND_MCP_TOKEN
 
-      exec "$opt_bin/backend-mcp" --http "$bind" --project "$BACKEND_MCP_PROJECT"
+      exec "$opt_bin/backend-mcp" --http "$bind" --workspace "$state_dir" "${project_args[@]}"
     SH
   end
 
