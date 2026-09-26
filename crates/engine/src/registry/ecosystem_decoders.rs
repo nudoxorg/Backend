@@ -1760,7 +1760,7 @@ fn nuget_dependencies(
         ));
     };
     let groups = groups.as_array().ok_or(TransportFailure::Protocol)?;
-    let mut rows = Vec::new();
+    let mut rows: Vec<(String, String)> = Vec::new();
     for group in groups {
         let Some(dependencies) = group.get("dependencies") else {
             // NuGet permits a target-framework group with no dependencies.
@@ -1778,7 +1778,26 @@ fn nuget_dependencies(
                 .get("range")
                 .and_then(Value::as_str)
                 .ok_or(TransportFailure::Protocol)?;
-            rows.push(dependency_record(
+            // NuGet repeats one package across target frameworks. The shared
+            // graph keeps a single edge per package id. The same range is one
+            // fact; two ranges cannot be collapsed without dropping a
+            // framework-specific requirement.
+            if let Some((_, existing)) = rows
+                .iter()
+                .find(|(seen, _)| seen.eq_ignore_ascii_case(name))
+            {
+                if existing != requirement {
+                    return Err(TransportFailure::Protocol);
+                }
+                continue;
+            }
+            rows.push((name.to_owned(), requirement.to_owned()));
+        }
+    }
+    let records = rows
+        .iter()
+        .map(|(name, requirement)| {
+            dependency_record(
                 source,
                 backend_semantic::vocabulary::RegistryEcosystem::Nuget,
                 name,
@@ -1786,11 +1805,11 @@ fn nuget_dependencies(
                 DependencyScope::Runtime,
                 false,
                 provenance,
-            )?);
-        }
-    }
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(DependencyFacts::Known(
-        admit_dependency_rows(rows).map_err(|_| TransportFailure::Protocol)?,
+        admit_dependency_rows(records).map_err(|_| TransportFailure::Protocol)?,
     ))
 }
 
