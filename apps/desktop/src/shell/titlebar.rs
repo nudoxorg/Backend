@@ -5,16 +5,15 @@
 //! 1100 effective px older beads go, below 760 only "here" remains and
 //! fills, below 520 the icon buttons go.
 
-use super::focus::{Target, Targets, Zone};
+use super::focus::{Target, Targets};
 use super::kit::{keycap, text};
 use super::region::{Links, Region, RegionCore};
 use super::thread::{self, Bead, Here, Mark};
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
-use crate::navigation::{Intent, OrbitRoute, Route};
+use crate::navigation::{Intent, OrbitRoute, Route, View};
 use crate::runtime::store::{Branch, DataStore};
 use facet::icons::{self, Icon, IconSize, KindSize};
-use facet::motion::Motion;
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
@@ -30,7 +29,6 @@ pub(crate) struct Titlebar {
     core: RegionCore,
     links: Links,
     pub(crate) targets: Targets,
-    motion: Motion,
 }
 
 impl Titlebar {
@@ -38,8 +36,7 @@ impl Titlebar {
         Self {
             core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Settings]),
             links,
-            targets: Targets::default(),
-            motion: Motion::new(),
+            targets: Targets::named("titlebar"),
         }
     }
 
@@ -135,6 +132,15 @@ impl Render for Titlebar {
             );
         }
 
+        // The altimeter's slot is the view switch (§8.4): Graph · Page · Code,
+        // only the active view named.
+        // (Below 760 only "here" remains, the switch included: G and ⌘. still work.)
+        if let Some(active) = view_of(snapshot.route())
+            && reach != Reach::HereOnly
+        {
+            left = left.child(self.view_switch(active, &measure, palette, keys));
+        }
+
         let center = if orbit {
             self.ask_field(&measure, palette, keys, cx)
         } else {
@@ -166,7 +172,7 @@ impl Render for Titlebar {
             }
         }
 
-        let glow = self.targets.glow(&self.motion, &measure);
+        let glow = self.targets.glow(&measure);
         div()
             .id("titlebar")
             .relative()
@@ -244,9 +250,9 @@ impl Titlebar {
             source: None,
         });
         let color: Hsla = match bead.mark {
-            Mark::Kind(kind) if ahead => facet::icons::Kind::hue(kind, palette),
+            Mark::Kind(kind) if ahead => icons::Kind::hue(kind, palette),
             Mark::Kind(kind) => {
-                let mut hue = facet::icons::Kind::hue(kind, palette);
+                let mut hue = icons::Kind::hue(kind, palette);
                 hue.alpha *= 0.85;
                 hue
             }
@@ -261,7 +267,8 @@ impl Titlebar {
                     .id(id)
                     .relative()
                     .flex_none()
-                    .size(side + measure.space(Space::Tight) * 2.0)
+                    // The diamond is 12 px; its hit target is never under 24.
+                    .size((side + measure.space(Space::Tight) * 2.0).max(px(24.0 * measure.scale())))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -312,7 +319,8 @@ impl Titlebar {
             .child(
                 text(ty::MONO_ROW, measure, palette.ink0)
                     .font_weight(gpui::FontWeight(600.0))
-                    .flex_none()
+                    .flex_shrink_0()
+                    .when_narrow(reach == Reach::HereOnly)
                     .child(here.name.clone()),
             )
             .child(
@@ -394,6 +402,79 @@ impl Titlebar {
     }
 }
 
+/// The view a place shows, when it is a declaration or the world graph.
+fn view_of(route: &Route) -> Option<View> {
+    match route {
+        Route::Symbol(route) => Some(route.view),
+        Route::World => Some(View::Graph),
+        Route::Orbit(_) | Route::Package(_) => None,
+    }
+}
+
+impl Titlebar {
+    fn view_switch(&mut self, active: View, measure: &Measure, palette: &Palette, keys: bool) -> AnyElement {
+        let mut row = div().flex().items_center().gap(measure.space(Space::Hair));
+        for view in [View::Graph, View::Page, View::Code] {
+            let on = view == active;
+            let id: SharedString = format!("view-{}", view.as_str()).into();
+            let name = match view {
+                View::Graph => "Graph",
+                View::Page => "Page",
+                View::Code => "Code",
+            };
+            let icon = match view {
+                View::Graph => Icon::Orbit,
+                View::Page => Icon::Book,
+                View::Code => Icon::File,
+            };
+            let links = self.links.clone();
+            let act: super::focus::Act = Rc::new(move |window, cx| {
+                match view {
+                    View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
+                    View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
+                    View::Graph => {
+                        if !super::bodies::graph::is_graph(links.snapshot(cx).route()) {
+                            links.dispatch(Intent::SetView(View::Graph), cx);
+                        }
+                    }
+                }
+            });
+            self.targets.push(Target {
+                id: id.clone(),
+                label: name.into(),
+                act: Rc::clone(&act),
+                peek: None,
+                source: None,
+            });
+            let cap = match view {
+                View::Graph => super::keys::cap(super::keys::Command::Graph),
+                View::Page | View::Code => super::keys::cap(super::keys::Command::CodePage),
+            };
+            let ink = if on { palette.ink0 } else { palette.ink3 };
+            let mut face = div()
+                .id(id.clone())
+                .relative()
+                .h(px(28.0 * measure.scale()))
+                .min_w(px(24.0 * measure.scale()))
+                .px(measure.space(Space::Snug))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(measure.space(Space::Snug))
+                .child(icons::ui(icon, IconSize::S14, ink).size(measure.icon(14.0)))
+                .on_click(move |_: &ClickEvent, window, cx| act(window, cx));
+            if on {
+                face = face.child(text(ty::DEPTH, measure, palette.ink0).child(name));
+            }
+            if keys && !on {
+                face = face.children(keycap(true, cap, measure));
+            }
+            row = row.child(self.targets.track(id, face));
+        }
+        row.into_any_element()
+    }
+}
+
 fn strand(measure: &Measure, color: Hsla, dashed: bool) -> AnyElement {
     let width = px(14.0 * measure.scale());
     if dashed {
@@ -409,6 +490,19 @@ fn strand(measure: &Measure, color: Hsla, dashed: bool) -> AnyElement {
     }
 }
 
+/// A name that may shrink (with an ellipsis) when the capsule is all there is.
+trait WhenNarrow: Styled + Sized {
+    fn when_narrow(self, narrow: bool) -> Self {
+        if narrow {
+            self.flex_shrink(1.0).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis()
+        } else {
+            self
+        }
+    }
+}
+
+impl<E: Styled> WhenNarrow for E {}
+
 /// `flex_1` only when asked, so the capsule fills only in "here only" mode.
 trait WhenFlex: Styled + Sized {
     fn when_flex(self, flex: bool) -> Self {
@@ -418,5 +512,3 @@ trait WhenFlex: Styled + Sized {
 
 impl<E: Styled> WhenFlex for E {}
 
-/// The zone this region answers for.
-pub(crate) const ZONE: Zone = Zone::Titlebar;

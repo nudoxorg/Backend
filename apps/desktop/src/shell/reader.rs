@@ -22,12 +22,12 @@ use crate::model::pages::PageKey;
 use crate::navigation::{Overlay, Route, View};
 use crate::runtime::store::{Branch, DataStore, StoreEvent};
 use facet::motion::presence::{Act, Entry, Extent};
-use facet::motion::{Keys, Motion, Pose, Presence};
+use facet::motion::{Keys, Pose, Presence};
 use facet::tokens::motion;
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Room, Space};
 use gpui::{
-    Context, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle,
+    AppContext as _, Context, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle,
     SharedString, StatefulInteractiveElement, Styled, Window, div, point, px,
 };
 
@@ -40,9 +40,11 @@ pub(crate) const GUTTER: f32 = 34.0;
 
 /// Which way the last route change moved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Way {
+pub enum Way {
     /// Deeper: the page rises.
     Down,
+    /// Graph to page: the page rises while its focused gem morphs.
+    GraphPage,
     /// Shallower: the page settles from above.
     Up,
     /// Same depth: the page slides in.
@@ -55,9 +57,12 @@ pub(crate) enum Way {
 /// The reader region.
 pub(crate) struct Reader {
     core: RegionCore,
+    map: Option<Entity<bodies::graph::Map>>,
+    map_presence: Presence,
+    graph_arriving: bool,
+    graph_source: Option<crate::model::pages::SymbolRef>,
     links: Links,
     pub(crate) targets: Targets,
-    motion: Motion,
     hover: HoverIntent,
     scroll: ScrollHandle,
     lens: Lens,
@@ -84,8 +89,11 @@ impl Reader {
                 &[Branch::Route, Branch::Overlay, Branch::Workspace, Branch::Settings],
             ),
             links,
-            targets: Targets::default(),
-            motion: Motion::new(),
+            map: None,
+            map_presence: Presence::new("reader.graph"),
+            graph_arriving: false,
+            graph_source: None,
+            targets: Targets::named("reader"),
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
             lens: Lens::Reference,
@@ -104,6 +112,51 @@ impl Reader {
             said: Vec::new(),
             hero: Vec::new(),
         }
+    }
+
+    pub(crate) fn graph_ready(&self, cx: &gpui::App) -> bool {
+        self.map.as_ref().is_none_or(|map| map.read(cx).ready(cx))
+    }
+
+    pub(crate) fn graph_report(&self, cx: &gpui::App) -> String {
+        self.map.as_ref().map_or_else(|| "not mounted".into(), |map| map.read(cx).report(cx))
+    }
+
+    #[cfg(feature = "visual-harness")]
+    pub(crate) fn graph_state(&self, cx: &gpui::App) -> facet::gallery::json::Json {
+        self.map.as_ref().map_or(facet::gallery::json::Json::Null, |map| map.read(cx).inspection(cx))
+    }
+
+    pub(crate) fn reset_world(&mut self, cx: &mut Context<Self>) {
+        if let Some(map) = &self.map { map.update(cx, |map, cx| map.reset_world(cx)); }
+    }
+
+    pub(crate) fn graph_focused(&self, cx: &gpui::App) -> bool {
+        self.map.as_ref().is_some_and(|map| map.read(cx).focused(cx))
+    }
+
+    pub(crate) fn open_graph_current(&mut self, target: bodies::graph::OpenView, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(map) = &self.map { map.update(cx, |map, cx| map.open_current(target, window, cx)); }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn graph_entity(&self, cx: &gpui::App) -> Option<Entity<facet::graph::GraphView>> {
+        self.map.as_ref().and_then(|map| map.read(cx).graph_entity())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn graph_gem_morphing(&self, cx: &gpui::App) -> bool {
+        self.map.as_ref().is_some_and(|map| map.read(cx).gem_morphing())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn graph_find_state(&self, window: &Window, cx: &gpui::App) -> (bool, bool) {
+        self.map.as_ref().map_or((false, false), |map| map.read(cx).find_state(window, cx))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn focus_graph_node(&mut self, node: facet::graph::NodeId, cx: &mut Context<Self>) {
+        if let Some(map) = &self.map { map.update(cx, |map, cx| map.focus_node(node, cx)); }
     }
 
     pub(crate) const fn renders(&self) -> u64 {
@@ -162,7 +215,7 @@ impl Reader {
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>) {
         let view_switch = overlay == self.overlay && self.route.same_place(next);
         let way = if view_switch {
-            Way::View
+            if bodies::graph::is_graph(&self.route) && !bodies::graph::is_graph(next) { Way::GraphPage } else { Way::View }
         } else {
             match (self.route.depth(), next.depth()) {
                 (Some(from), Some(to)) if to > from => Way::Down,
@@ -174,6 +227,8 @@ impl Reader {
         if let Some(current) = self.places.last_mut() {
             current.lens = self.lens;
         }
+        self.graph_arriving = !bodies::graph::is_graph(&self.route) && bodies::graph::is_graph(next);
+        self.graph_source = if self.overlay.is_none() { immediate_page_source(&self.route, next) } else { None };
         self.route = next.clone();
         self.overlay = overlay;
         self.descents = self.descents.wrapping_add(1);
@@ -273,7 +328,7 @@ struct Layout {
 /// How a page arrives, by the way the reader moved.
 fn enter_act(way: Way, scale: f32) -> Act {
     let from = match way {
-        Way::Down => Pose {
+        Way::Down | Way::GraphPage => Pose {
             y: 24.0 * scale,
             sx: 0.985,
             sy: 0.985,
@@ -299,6 +354,7 @@ fn enter_act(way: Way, scale: f32) -> Act {
     };
     let duration = match way {
         Way::View => motion::QUICK,
+        Way::GraphPage => std::time::Duration::from_millis(460),
         Way::Down | Way::Up | Way::Across => motion::EMPH,
     };
     Act {
@@ -306,6 +362,20 @@ fn enter_act(way: Way, scale: f32) -> Act {
         pose: Keys::owned(duration, vec![(0.0, from), (1.0, Pose::REST)], motion::GLIDE),
         room: Keys::owned(duration, vec![(0.0, Extent::FULL), (1.0, Extent::FULL)], motion::GLIDE),
     }
+}
+
+fn graph_enter() -> Act {
+    let duration = std::time::Duration::from_millis(460);
+    Act { duration,
+        pose: Keys::owned(duration, vec![(0.0, Pose { opacity: 0.0, ..Pose::REST }), (1.0, Pose::REST)], motion::GLIDE),
+        room: Keys::owned(duration, vec![(0.0, Extent::FULL), (1.0, Extent::FULL)], motion::GLIDE) }
+}
+
+fn graph_exit() -> Act {
+    let duration = std::time::Duration::from_millis(460);
+    Act { duration,
+        pose: Keys::owned(duration, vec![(0.0, Pose::REST), (1.0, Pose { y: -24.0, opacity: 0.0, ..Pose::REST })], motion::GLIDE),
+        room: Keys::owned(duration, vec![(0.0, Extent::FULL), (1.0, Extent::FULL)], motion::GLIDE) }
 }
 
 /// How the page being replaced leaves: it fades as it steps back, quickly,
@@ -346,6 +416,15 @@ impl Region for Reader {
     }
 }
 
+/// Only an immediately preceding page of this exact typed declaration owns
+/// an incoming hero. Code, overlays and another graph have no page endpoint.
+fn immediate_page_source(previous: &Route, next: &Route) -> Option<crate::model::pages::SymbolRef> {
+    if !matches!(previous, Route::Symbol(crate::navigation::SymbolRoute { view: View::Page, .. }))
+        || !bodies::graph::is_graph(next) { return None; }
+    let previous = route_symbol(previous)?;
+    (route_symbol(next).as_ref() == Some(&previous)).then_some(previous)
+}
+
 /// The page keys the reader draws for a snapshot's place.
 pub(crate) fn reader_keys(snapshot: &AppSnapshot) -> Vec<PageKey> {
     place_keys(snapshot.route(), snapshot.overlay())
@@ -374,6 +453,7 @@ impl Reader {
         let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
         let leaves = {
             let mut ctx = Ctx {
+                active: current,
                 measure: layout.folio_measure,
                 note: if layout.wide { Measure::new(layout.margin, facet) } else { layout.folio_measure },
                 palette,
@@ -424,6 +504,49 @@ impl Render for Reader {
         let facet = cx.facet();
         let palette = facet.palette();
         let snapshot = self.links.snapshot(cx);
+        if bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none() {
+            let map = self.map.get_or_insert_with(|| {
+                let links = self.links.clone();
+                cx.new(|cx| bodies::graph::Map::new(links, window, cx))
+            }).clone();
+            let source = self.graph_source.take();
+            map.update(cx, |map, cx| map.show(snapshot.route(), source.as_ref(), window, cx));
+            self.said = vec!["Graph fixture · pages resolve through your local index".into()];
+            self.hero.clear();
+            let items = self.map_presence.sync_entries([Entry::new("graph").enter(graph_enter()).exit(graph_exit())], window, cx);
+            // The outgoing page lifts over the incoming map, inert. Retarget
+            // its exit once; repeated frames never restart a departure.
+            if self.graph_arriving {
+                if let Some(previous) = self.places.iter().rev().find(|place| !bodies::graph::is_graph(&place.route)) {
+                    self.pages.sync_entries([Entry::new(("place", previous.key)).exit(graph_exit())], window, cx);
+                }
+                self.graph_arriving = false;
+            }
+            let pages = self.pages.sync_entries([], window, cx);
+            let mut root = div().relative().size_full().text_color(palette.ink1.hsla())
+                .font_family(facet::fonts::family(ty::BODY))
+                .children(items.iter().map(|item| item.slot(div().size_full().child(map.clone()))));
+            let pad = measure.fluid(22.0, 40.0);
+            let content = (self.core.width() - pad * 2.0).max(px(0.0));
+            let folio = px(FOLIO * measure.scale()).min(content);
+            let layout = Layout { folio, beside: px(0.0), content, wide: false, gutter: px(0.0),
+                margin: px(0.0), measure, folio_measure: Measure::new(folio, &facet) };
+            let places = self.places.clone();
+            for item in &pages {
+                if let Some(place) = places.iter().find(|place| item.key == ElementId::from(("place", place.key))) {
+                    let body = self.body(place, false, &snapshot, &layout, &facet, cx);
+                    root = root.child(div().absolute().top_0().left_0().right_0().bottom_0()
+                        .px(pad).pt(measure.fluid(22.0, 56.0)).flex().justify_center()
+                        .child(item.slot(body)).occlude());
+                }
+            }
+            let current = self.places.last().map(|place| place.key);
+            self.places.retain(|place| Some(place.key) == current || pages.iter().any(|item|
+                item.key == ElementId::from(("place", place.key))));
+            return root;
+        }
+        if let Some(map) = &self.map { map.update(cx, |map, cx| map.suspend(window, cx)); }
+        let leaving_graph = self.map_presence.sync_entries([], window, cx);
         let width = self.core.width();
         let pad = measure.fluid(22.0, 40.0);
         let content = (width - pad * 2.0).max(px(0.0));
@@ -487,13 +610,14 @@ impl Render for Reader {
             );
         }
 
-        let glow = self.targets.glow(&self.motion, &measure);
+        let glow = self.targets.glow(&measure);
         div()
             .relative()
             .size_full()
             .child(
                 div()
                     .id("reader-scroll")
+                    .debug_selector(|| "reader-scroll".to_owned())
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
@@ -506,6 +630,11 @@ impl Render for Reader {
                             .child(stack),
                     ),
             )
+            .children(self.map.as_ref().into_iter().flat_map(|map| leaving_graph.iter().map(move |item| {
+                div().absolute().top_0().left_0().right_0().bottom_0()
+                    .child(item.slot(div().size_full().child(map.clone()))).occlude()
+            })))
+            .child(super::kit::scroll_probe("reader-scroll", self.scroll.clone()))
             .child(glow)
             .text_color(palette.ink1.hsla())
             .font_family(facet::fonts::family(ty::BODY))

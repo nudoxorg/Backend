@@ -68,7 +68,7 @@ pub(crate) const CONTEXT: &str = "NudoxShell";
 
 /// A command the table binds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum Command {
+pub(crate) enum Command {
     /// J / ↓.
     FocusNext,
     /// K / ↑.
@@ -123,7 +123,7 @@ pub enum Command {
 
 /// Where a row listens.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Scope {
+pub(crate) enum Scope {
     /// Anywhere in the shell, including text inputs (⌘ chords, Esc).
     Shell,
     /// Outside text inputs (plain letters and arrows).
@@ -132,7 +132,7 @@ pub enum Scope {
 
 /// One row of the table.
 #[derive(Clone, Copy, Debug)]
-pub struct Key {
+pub(crate) struct Key {
     /// The command.
     pub command: Command,
     /// GPUI keystroke spelling (`secondary` is ⌘ on macOS, Ctrl elsewhere).
@@ -156,7 +156,7 @@ const fn key(command: Command, chord: &'static str, cap: &'static str, scope: Sc
 }
 
 /// The table. The first row for a command is its primary chord (its cap).
-pub const TABLE: &[Key] = &[
+pub(crate) const TABLE: &[Key] = &[
     key(Command::FocusNext, "j", "J", Scope::Plain, "walk focus down"),
     key(Command::FocusNext, "down", "↓", Scope::Plain, "walk focus down"),
     key(Command::FocusPrev, "k", "K", Scope::Plain, "walk focus up"),
@@ -192,7 +192,7 @@ pub const TABLE: &[Key] = &[
 
 /// The cap a command shows (its first row).
 #[must_use]
-pub fn cap(command: Command) -> &'static str {
+pub(crate) fn cap(command: Command) -> &'static str {
     TABLE
         .iter()
         .find(|key| key.command == command)
@@ -200,9 +200,13 @@ pub fn cap(command: Command) -> &'static str {
 }
 
 fn binding(key: &Key) -> KeyBinding {
-    let context = Some(match key.scope {
-        Scope::Shell => "NudoxShell",
-        Scope::Plain => "NudoxShell && !Input",
+    let graph_owns = matches!(key.command,
+        Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape);
+    let context = Some(match (key.scope, graph_owns) {
+        (Scope::Shell, true) => "NudoxShell && !Graph",
+        (Scope::Plain, true) => "NudoxShell && !Input && !Graph",
+        (Scope::Shell, false) => "NudoxShell",
+        (Scope::Plain, false) => "NudoxShell && !Input",
     });
     let chord = key.chord;
     match key.command {

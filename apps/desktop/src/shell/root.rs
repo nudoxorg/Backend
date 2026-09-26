@@ -7,9 +7,10 @@
 //! held modifiers re-render only the region they belong to.
 
 use super::ask::Ask;
+use super::bodies::graph::OpenView;
 use super::facet_sync::{Surroundings, facet_for};
 use super::system;
-use super::float::{Floats, Peek};
+use facet::overlay::float;
 use super::focus::{Target, Zone};
 use super::frame::{Frame, FrameInput, KSPINE, SHELF, ShelfMode};
 use super::hints::{HintMode, Step};
@@ -22,7 +23,7 @@ use super::shelf::Shelf;
 use super::status::Status;
 use super::thread::route_symbol;
 use super::titlebar::Titlebar;
-use super::kit;
+use super::{kit, peeks};
 use crate::model::pages::PageKey;
 use crate::model::ZoomStep;
 use crate::navigation::{Intent, Overlay, Route, RouteDepth, SettingsPage, View};
@@ -79,7 +80,10 @@ pub struct Shell {
     hold: RevealHold,
     hold_timer: Option<Task<()>>,
     hints: Option<HintMode>,
-    floats: Floats,
+    /// The page the keyboard peek shows (Space), while its card is open.
+    peeking: Option<PageKey>,
+    /// How many peeks are pinned (the pins column exists only for pins).
+    pinned: usize,
     ask_open: bool,
     ask_trail: bool,
     /// The system's appearance and text size, and the window's display.
@@ -104,8 +108,8 @@ impl Shell {
             shell: cx.entity().downgrade(),
         };
         let titlebar = new_region(&links, cx, |store| Titlebar::new(links.clone(), store));
-        let shelf = new_region(&links, cx, |store| Shelf::new(links.clone(), store));
-        let shelf_over = new_region(&links, cx, |store| Shelf::new(links.clone(), store));
+        let shelf = new_region(&links, cx, |store| Shelf::new("shelf", links.clone(), store));
+        let shelf_over = new_region(&links, cx, |store| Shelf::new("shelf-over", links.clone(), store));
         let reader = new_region(&links, cx, |store| Reader::new(links.clone(), store));
         let status = new_region(&links, cx, |store| Status::new(links.clone(), store));
         let pins = new_region(&links, cx, |store| Pins::new(links.clone(), store));
@@ -177,7 +181,8 @@ impl Shell {
             hold: RevealHold::default(),
             hold_timer: None,
             hints: None,
-            floats: Floats::default(),
+            peeking: None,
+            pinned: 0,
             ask_open: false,
             ask_trail: false,
             around: Surroundings {
@@ -198,6 +203,40 @@ impl Shell {
     #[must_use]
     pub const fn graph(&self) -> &UiEntityGraph {
         &self.graph
+    }
+
+    /// Fixture world loading is part of the capture's real I/O quiet gate.
+    #[must_use]
+    pub fn graph_ready(&self, cx: &App) -> bool { self.reader.read(cx).graph_ready(cx) }
+
+    /// The retained map's actual node count, focus and camera.
+    #[must_use]
+    pub fn graph_report(&self, cx: &App) -> String { self.reader.read(cx).graph_report(cx) }
+
+    #[cfg(feature = "visual-harness")]
+    pub fn graph_state(&self, cx: &App) -> facet::gallery::json::Json {
+        self.reader.read(cx).graph_state(cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn focus_graph_node(&mut self, node: facet::graph::NodeId, cx: &mut Context<Self>) {
+        self.reader.update(cx, |reader, cx| reader.focus_graph_node(node, cx));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn graph_entity(&self, cx: &App) -> Option<Entity<facet::graph::GraphView>> { self.reader.read(cx).graph_entity(cx) }
+
+    #[cfg(test)]
+    pub(crate) fn graph_gem_morphing(&self, cx: &App) -> bool { self.reader.read(cx).graph_gem_morphing(cx) }
+
+    #[cfg(test)]
+    pub(crate) fn graph_find_state(&self, window: &Window, cx: &App) -> (bool, bool) {
+        self.reader.read(cx).graph_find_state(window, cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn titlebar_target_bounds(&self, id: &str, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(_, bounds)| bounds)
     }
 
     /// Render counters of the root and every region.
@@ -259,7 +298,7 @@ impl Shell {
     /// Whether Ask, a peek, or hint mode is open.
     #[must_use]
     pub fn transients(&self) -> (bool, bool, bool) {
-        (self.ask_open, self.floats.top().is_some(), self.hints.is_some())
+        (self.ask_open, self.peeking.is_some(), self.hints.is_some())
     }
 
     /// Subscribes `notified` to every view the window draws (the root and
@@ -347,7 +386,12 @@ impl Shell {
             }
             StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
             StoreEvent::Snapshot(Branch::Route) => {
-                let mut closed = self.floats.step_back();
+                if !super::bodies::graph::is_graph(self.links.snapshot(cx).route()) {
+                    self.focus.focus(window, cx);
+                }
+                // Navigation closes what floats (pins stay).
+                let mut closed = float::close_all(window, cx);
+                closed |= self.peeking.take().is_some();
                 closed |= self.hints.take().is_some();
                 if self.shelf_over_open {
                     self.shelf_over_open = false;
@@ -359,7 +403,8 @@ impl Shell {
                 self.sync_overlay(window, cx);
             }
             StoreEvent::Resource(key) => {
-                if self.floats.top().is_some_and(|peek| &peek.key == key) {
+                // The open card reads the store each frame: redraw it.
+                if self.peeking.as_ref() == Some(key) {
                     cx.notify();
                 }
             }
@@ -447,8 +492,10 @@ impl Shell {
 
     /// J/K: the focus walks inside the active zone (only that region
     /// re-renders; the glow springs to the next target).
-    pub fn walk(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.floats.step_back() {
+    pub fn walk(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(key) = self.peeking.take() {
+            // The keyboard's peek belongs to where the keyboard stood.
+            float::close(&peeks::float_key(&key), window, cx);
             cx.notify();
         }
         if self.with_zone(cx, |targets| targets.walk(delta)) {
@@ -508,13 +555,15 @@ impl Shell {
         }
     }
 
-    /// Space: peek the focused target; Space on an open peek pins it.
-    fn peek(&mut self, cx: &mut Context<Self>) {
-        if self.floats.top().is_some() {
-            let pinned = self.floats.pin_top(self.links.store.read(cx));
-            if pinned {
-                let pins = self.floats.pins().to_vec();
-                self.pins.update(cx, |region, cx| region.set_pins(&pins, cx));
+    /// Space: peek the focused target (W-Float's layer, keyboard: no delay);
+    /// Space on an open peek pins it.
+    fn peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(key) = self.peeking.clone()
+            && peeks::is_open(&key, window, cx)
+        {
+            if float::pin_top(window, cx) {
+                self.peeking = None;
+                self.sync_pins(window, cx);
             }
             cx.notify();
             return;
@@ -525,24 +574,33 @@ impl Shell {
         let Some(key) = target.peek.clone() else {
             return;
         };
-        let anchor = self.with_zone(cx, |targets| targets.focused_bounds());
-        let Some(anchor) = anchor else {
+        let Some(anchor) = self.with_zone(cx, |targets| targets.focused_bounds()) else {
             return;
         };
         self.links.store.update(cx, |store, cx| {
             store.ensure(key.clone(), cx);
         });
-        self.floats.open(Peek {
-            key,
-            anchor,
-            label: target.label,
-        });
+        let request = peeks::request(key.clone(), target.label, anchor, self.links.store.clone());
+        float::open(request, window, cx);
+        self.peeking = Some(key);
         cx.notify();
+    }
+
+    /// Re-reads the pins from the float layer (the pins column exists only
+    /// while something is pinned).
+    fn sync_pins(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let pinned = float::pins(window, cx).len();
+        if pinned != self.pinned {
+            self.pinned = pinned;
+            self.pins.update(cx, |_, cx| cx.notify());
+            cx.notify();
+        }
     }
 
     /// S: the focused declaration's code. On the page's own declaration it
     /// is a view switch (the entry is replaced); on another one it goes there.
-    fn peel(&mut self, cx: &mut Context<Self>) {
+    fn peel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         let own = route_symbol(snapshot.route());
         let symbol = self.current(cx).and_then(|target| target.source).or_else(|| own.clone());
@@ -570,21 +628,35 @@ impl Shell {
         }
     }
 
-    /// G: the graph — this declaration's, or the whole world's; again: back
-    /// to the page.
-    fn toggle_graph(&mut self, cx: &mut Context<Self>) {
+    /// All graph-to-declaration commands use the visible graph selection.
+    fn open_graph_view(&mut self, target: OpenView, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let snapshot = self.links.snapshot(cx);
+        if super::bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none() {
+            self.reader.update(cx, |reader, cx| reader.open_graph_current(target, window, cx));
+            return true;
+        }
+        false
+    }
+
+    /// G enters the graph, or opens the graph's current symbol page.
+    fn toggle_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reader.read(cx).graph_focused(cx) && self.open_graph_view(OpenView::Page, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         let intent = match snapshot.route() {
-            Route::Symbol(route) if route.view == View::Graph => Intent::SetView(View::Page),
+            Route::Symbol(route) if route.view == View::Graph => Intent::Navigate(snapshot.route().with_view(View::Page).expect("symbol view")),
             Route::Symbol(_) => Intent::SetView(View::Graph),
             Route::World => Intent::Back,
-            Route::Orbit(_) | Route::Package(_) => Intent::Navigate(Route::World),
+            Route::Orbit(_) | Route::Package(_) => {
+                self.reader.update(cx, |reader, cx| reader.reset_world(cx));
+                Intent::Navigate(Route::World)
+            },
         };
         self.links.dispatch(intent, cx);
     }
 
     /// ⌘.: a declaration's code ↔ its page.
-    fn code_page(&mut self, cx: &mut Context<Self>) {
+    fn code_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open_graph_view(OpenView::Code, window, cx) { return; }
         let snapshot = self.links.snapshot(cx);
         if let Route::Symbol(route) = snapshot.route() {
             let view = if route.view == View::Code { View::Page } else { View::Code };
@@ -655,11 +727,19 @@ impl Shell {
     }
 
     /// Esc: the topmost transient closes, one per press.
-    fn escape(&mut self, cx: &mut Context<Self>) {
-        if self.hints.take().is_some() || self.floats.step_back() {
+    fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hints.take().is_some() {
             cx.notify();
             return;
         }
+        if float::step_back(window, cx) {
+            if self.peeking.as_ref().is_some_and(|key| !peeks::is_open(key, window, cx)) {
+                self.peeking = None;
+            }
+            cx.notify();
+            return;
+        }
+        self.peeking = None;
         let overlay = self.links.snapshot(cx).overlay();
         if overlay.is_some() {
             self.links.dispatch(Intent::DismissOverlay, cx);
@@ -686,11 +766,13 @@ impl Shell {
 
     /// ⌘1–⌘4: Orbit, the package, the page, the code. The last two are
     /// views of the declaration you are on, not places.
-    fn depth(&mut self, depth: RouteDepth, cx: &mut Context<Self>) {
+    fn depth(&mut self, depth: RouteDepth, window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route();
         match depth {
             RouteDepth::Page | RouteDepth::Source => {
+                let target = if depth == RouteDepth::Page { OpenView::Page } else { OpenView::Code };
+                if self.open_graph_view(target, window, cx) { return; }
                 if matches!(route, Route::Symbol(_)) {
                     let view = if depth == RouteDepth::Page { View::Page } else { View::Code };
                     self.links.dispatch(Intent::SetView(view), cx);
@@ -781,12 +863,46 @@ fn run(act: super::focus::Act, window: &mut Window, cx: &mut App) {
     window.defer(cx, move |window, cx| act(window, cx));
 }
 
+impl Shell {
+    /// Publishes the transient layers as the float stack the harness checks
+    /// (unique keys, at most one of each, nothing left once settled).
+    fn publish_stack(&self, cx: &mut App) {
+        let ask = self.ask_open;
+        let hints = self.hints.as_ref().map(HintMode::remaining);
+        facet::probe::record_stack(cx, move || {
+            let entry = |key: String, kind: &str, pinned: bool| facet::probe::StackEntry {
+                key,
+                kind: kind.to_owned(),
+                parent: None,
+                phase: facet::probe::StackPhase::Open,
+                pinned,
+                bounds: None,
+            };
+            // Peeks and pins are W-Float's layer's own entries; the shell
+            // adds its transients: Ask and hint mode.
+            let mut entries = Vec::new();
+            if ask {
+                entries.push(entry("ask".to_owned(), "dialog", false));
+            }
+            if let Some(count) = hints {
+                entries.push(entry(format!("hints:{count}"), "hints", false));
+            }
+            facet::probe::StackSample {
+                layer: "shell".to_owned(),
+                entries,
+            }
+        });
+    }
+}
+
 fn is_dark(appearance: WindowAppearance) -> bool {
     matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The probe ledger describes one painted frame.
+        facet::probe::draw_started(cx);
         self.renders = self.renders.saturating_add(1);
         let facet = cx.facet();
         let palette = facet.palette();
@@ -799,9 +915,13 @@ impl Render for Shell {
             shelf_open: snapshot.settings().shelf_open,
             zen: self.zen,
             shelf_width: self.shelf_width,
-            pinned: !self.floats.pins().is_empty(),
+            pinned: self.pinned > 0,
         });
         self.frame = Some(frame);
+        // The status bar grows a line when the address's name has to wrap;
+        // sized here from the same fit the bar sets, in the same frame.
+        let (address, address_role) = super::status::address_lines(&snapshot, viewport.width, cx);
+        let status_height = super::status::height(address.len(), &address_role, frame.status);
         // Structural changes animate (the shelf becoming a spine, the pins
         // column arriving); a window drag inside one mode tracks directly,
         // because the targets do not move.
@@ -842,6 +962,7 @@ impl Render for Shell {
 
         let mut root = div()
             .id("shell")
+            .debug_selector(|| "shell-root".to_owned())
             .relative()
             .size_full()
             .overflow_hidden()
@@ -850,11 +971,11 @@ impl Render for Shell {
             .font_family(facet::fonts::family(facet::tokens::ty::BODY))
             .track_focus(&self.focus)
             .key_context(context)
-            .on_action(cx.listener(|shell, _: &keys::FocusNext, _, cx| shell.walk(1, cx)))
-            .on_action(cx.listener(|shell, _: &keys::FocusPrev, _, cx| shell.walk(-1, cx)))
+            .on_action(cx.listener(|shell, _: &keys::FocusNext, window, cx| shell.walk(1, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::FocusPrev, window, cx| shell.walk(-1, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::Activate, window, cx| shell.activate(window, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Peek, _, cx| shell.peek(cx)))
-            .on_action(cx.listener(|shell, _: &keys::PeelSource, _, cx| shell.peel(cx)))
+            .on_action(cx.listener(|shell, _: &keys::Peek, window, cx| shell.peek(window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.peel(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::HintMode, _, cx| shell.hint_mode(cx)))
             .on_action(cx.listener(|shell, _: &keys::Ask, _, cx| shell.open_ask(false, cx)))
             .on_action(cx.listener(|shell, _: &keys::Back, _, cx| shell.links.dispatch(Intent::Back, cx)))
@@ -867,13 +988,13 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::ToggleShelf, _, cx| shell.toggle_shelf(cx)))
             .on_action(cx.listener(|shell, _: &keys::NextZone, _, cx| shell.cycle_zone(true, cx)))
             .on_action(cx.listener(|shell, _: &keys::PrevZone, _, cx| shell.cycle_zone(false, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Escape, _, cx| shell.escape(cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, _, cx| shell.depth(RouteDepth::Orbit, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthPackage, _, cx| shell.depth(RouteDepth::Package, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthPage, _, cx| shell.depth(RouteDepth::Page, cx)))
-            .on_action(cx.listener(|shell, _: &keys::DepthCode, _, cx| shell.depth(RouteDepth::Source, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Graph, _, cx| shell.toggle_graph(cx)))
-            .on_action(cx.listener(|shell, _: &keys::CodePage, _, cx| shell.code_page(cx)))
+            .on_action(cx.listener(|shell, _: &keys::Escape, window, cx| shell.escape(window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::DepthOrbit, window, cx| shell.depth(RouteDepth::Orbit, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::DepthPackage, window, cx| shell.depth(RouteDepth::Package, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::DepthPage, window, cx| shell.depth(RouteDepth::Page, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| shell.depth(RouteDepth::Source, window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.toggle_graph(window, cx)))
+            .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.code_page(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.zoom(ZoomStep::In, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.zoom(ZoomStep::Out, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)))
@@ -900,7 +1021,7 @@ impl Render for Shell {
                     .child(body)
                     .child(measured(
                         &self.status,
-                        StyleRefinement::default().w_full().h(px(frame.status)).flex_none(),
+                        StyleRefinement::default().w_full().h(px(status_height)).flex_none(),
                     )),
             );
         if over || over_x > -frame.shelf_body + 0.5 {
@@ -910,18 +1031,29 @@ impl Render for Shell {
                 div()
                     .absolute()
                     .top(px(frame.titlebar))
-                    .bottom(px(frame.status))
+                    .bottom(px(status_height))
                     .left(px(over_x))
                     .w(px(frame.shelf_body))
                     .bg(palette.g2)
                     .child(measured(&self.shelf_over, StyleRefinement::default().size_full())),
             );
         }
-        let store = self.links.store.read(cx);
-        let float = self.floats.layer(viewport, store, cx);
+        // A peek the layer closed by itself (pointer, click outside) is over.
+        if let Some(key) = self.peeking.clone()
+            && !peeks::is_open(&key, window, cx)
+        {
+            self.peeking = None;
+        }
+        let pinned = float::pins(window, cx).len();
+        if pinned != self.pinned {
+            self.pinned = pinned;
+            self.pins.update(cx, |_, cx| cx.notify());
+        }
+        self.publish_stack(cx);
+        let float = float::layer(window, cx);
         root.children(self.ask_layer(cx))
             .children(self.hint_layer(cx))
-            .children(float)
+            .child(float)
     }
 }
 
