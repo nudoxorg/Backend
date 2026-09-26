@@ -834,11 +834,13 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 });
                 if let Some(earlier) = earlier {
                     winner = None;
+                    let earlier_declaration = self.declaration(earlier);
                     let becomes_definition = declaration.definition == DefinitionState::Definition
-                        && self
-                            .declaration(earlier)
+                        && earlier_declaration
                             .is_some_and(|known| known.definition == DefinitionState::Declaration);
-                    if becomes_definition {
+                    let named_over_stub = declaration.name.is_some()
+                        && earlier_declaration.is_some_and(foreign_value_authority_stub);
+                    if becomes_definition || named_over_stub {
                         *self
                             .representative
                             .get_mut(earlier)
@@ -2604,13 +2606,32 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                 .and_then(|declaration| match declaration.kind {
                                     DeclarationKind::Variable => Some(EntityKind::Static),
                                     DeclarationKind::Enumerator => Some(EntityKind::Variant),
-                                    DeclarationKind::Function
-                                    | DeclarationKind::Method
-                                    | DeclarationKind::Constructor
+                                    DeclarationKind::Function | DeclarationKind::Method => {
+                                        Some(EntityKind::Function)
+                                    }
+                                    DeclarationKind::Constructor
                                     | DeclarationKind::Destructor => None,
                                     _ => None,
                                 });
                             if let Some(entity_kind) = entity_kind {
+                                if let Some(ordinal) = self.ordinal_of(identity) {
+                                    self.facts
+                                        .push_occurrence(
+                                            owner,
+                                            Occurrence {
+                                                target: OccurrenceTarget::Local(
+                                                    EntityId::new(ordinal),
+                                                ),
+                                                kind: lane_reference_kind(reference.kind),
+                                                confidence: OccurrenceConfidence::Oracle,
+                                                span,
+                                            },
+                                        )
+                                        .map_err(|fault| {
+                                            lane_terminal(&self.facts, 0, fault)
+                                        })?;
+                                    continue;
+                                }
                                 if is_source_identifier(written) {
                                     if let Ok(name) = core::str::from_utf8(written) {
                                         self.facts
@@ -2867,6 +2888,20 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
         }
         Ok(())
     }
+}
+
+/// True when one declaration row was minted by foreign value-authority
+/// collection for a cross-header value reference. The row carries identity
+/// and kind only and must never win representative election over a named
+/// main-source declaration.
+const fn foreign_value_authority_stub(declaration: &DeclarationFact) -> bool {
+    declaration.name.is_none()
+        && declaration.span.start == 0
+        && declaration.span.end == 0
+        && matches!(
+            declaration.kind,
+            DeclarationKind::Function | DeclarationKind::Method
+        )
 }
 
 /// Builds one honest cross-fragment reference from an authority-proved USR and
