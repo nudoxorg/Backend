@@ -43,6 +43,10 @@ use crate::server::schema::{
     GRAPH_SCHEMA, NEIGHBORS_QUERY, SEMANTIC_GRAPH_SCHEMA, SEMANTIC_NEIGHBORS_QUERY,
 };
 
+mod adapter;
+
+use adapter::{BorrowedGraphAdapter, BorrowedSemanticAdapter};
+
 const ENTITY_HALF_BITS: u32 = 16;
 static PARSED_GRAPH_SCHEMA: OnceLock<Result<Schema, TrustfallUpstreamDiagnostic>> = OnceLock::new();
 static PARSED_NEIGHBORS_QUERY: OnceLock<Result<Arc<IndexedQuery>, TrustfallUpstreamDiagnostic>> =
@@ -317,7 +321,7 @@ impl<'image, 'cancel, 'bytes: 'image> SemanticTrustfallGraph<'image, 'cancel, 'b
         }
         let schema = parsed_semantic_schema()?;
         let query = parsed_semantic_query(schema)?;
-        let adapter = Arc::new(BorrowedSemanticAdapter { image: self.image });
+        let adapter = Arc::new(BorrowedSemanticAdapter::new(self.image));
         let arguments = Arc::new(source_arguments(source));
         let rows = interpret_ir_async(adapter, query, arguments).map_err(|cause| {
             TrustfallGraphError::UpstreamRejected {
@@ -661,10 +665,7 @@ impl<'view> TrustfallGraph<'view> {
 
         let schema = parsed_schema()?;
         let query = parsed_query(schema)?;
-        let adapter = Arc::new(BorrowedGraphAdapter {
-            view: self.view,
-            schema,
-        });
+        let adapter = Arc::new(BorrowedGraphAdapter::new(self.view, schema));
         let arguments = Arc::new(source_arguments(source));
         let rows = match interpret_ir(adapter, query, arguments) {
             Ok(rows) => rows,
@@ -820,290 +821,6 @@ fn argument_diagnostic(cause: QueryArgumentsError) -> TrustfallArgumentDiagnosti
         QueryArgumentsError::UnusedArguments(_) => TrustfallArgumentDiagnostic::Unused,
         QueryArgumentsError::ArgumentTypeError(..) => TrustfallArgumentDiagnostic::Type,
         QueryArgumentsError::MultipleErrors(_) => TrustfallArgumentDiagnostic::Multiple,
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum GraphVertex {
-    Entity(EntityId),
-    Neighbor {
-        entity: EntityId,
-        partition: PartitionId,
-    },
-}
-
-impl Typename for GraphVertex {
-    fn typename(&self) -> &'static str {
-        match self {
-            Self::Entity(_) => "Entity",
-            Self::Neighbor { .. } => "Neighbor",
-        }
-    }
-}
-
-#[derive(Debug)]
-struct BorrowedGraphAdapter<'view, 'schema> {
-    view: &'view ValidatedGraphView<'view>,
-    schema: &'schema Schema,
-}
-
-impl<'view> Adapter<'view> for BorrowedGraphAdapter<'view, '_> {
-    type Vertex = GraphVertex;
-
-    fn resolve_starting_vertices(
-        &self,
-        edge_name: &Arc<str>,
-        _parameters: &EdgeParameters,
-        _resolve_info: &ResolveInfo,
-    ) -> VertexIterator<'view, Self::Vertex> {
-        if edge_name.as_ref() != "Entities" {
-            return Box::new(core::iter::empty());
-        }
-        Box::new(
-            self.view
-                .rows
-                .iter()
-                .flat_map(|row| row.edges)
-                .enumerate()
-                .filter_map(|(edge_index, edge)| {
-                    let is_first_source = self
-                        .view
-                        .rows
-                        .iter()
-                        .flat_map(|row| row.edges)
-                        .take(edge_index)
-                        .all(|previous| previous.source != edge.source);
-                    is_first_source.then_some(GraphVertex::Entity(edge.source))
-                }),
-        )
-    }
-
-    fn resolve_property<Vertex: AsVertex<Self::Vertex> + 'view>(
-        &self,
-        contexts: ContextIterator<'view, Vertex>,
-        type_name: &Arc<str>,
-        property_name: &Arc<str>,
-        _resolve_info: &ResolveInfo,
-    ) -> ContextOutcomeIterator<'view, Vertex, FieldValue> {
-        if property_name.as_ref() == "__typename" {
-            return resolve_typename(contexts, self.schema, type_name);
-        }
-        match property_name.as_ref() {
-            "high" => resolve_property_with(contexts, |vertex| match vertex {
-                GraphVertex::Entity(entity) => FieldValue::Int64(i64::from(entity_high(*entity))),
-                GraphVertex::Neighbor { .. } => FieldValue::Null,
-            }),
-            "low" => resolve_property_with(contexts, |vertex| match vertex {
-                GraphVertex::Entity(entity) => FieldValue::Int64(i64::from(entity_low(*entity))),
-                GraphVertex::Neighbor { .. } => FieldValue::Null,
-            }),
-            "entityHigh" => resolve_property_with(contexts, |vertex| match vertex {
-                GraphVertex::Neighbor { entity, .. } => {
-                    FieldValue::Int64(i64::from(entity_high(*entity)))
-                }
-                GraphVertex::Entity(_) => FieldValue::Null,
-            }),
-            "entityLow" => resolve_property_with(contexts, |vertex| match vertex {
-                GraphVertex::Neighbor { entity, .. } => {
-                    FieldValue::Int64(i64::from(entity_low(*entity)))
-                }
-                GraphVertex::Entity(_) => FieldValue::Null,
-            }),
-            "partition" => resolve_property_with(contexts, |vertex| match vertex {
-                GraphVertex::Neighbor { partition, .. } => {
-                    FieldValue::Int64(i64::from(partition.raw))
-                }
-                GraphVertex::Entity(_) => FieldValue::Null,
-            }),
-            _ => resolve_property_with(contexts, |_| FieldValue::Null),
-        }
-    }
-
-    fn resolve_neighbors<Vertex: AsVertex<Self::Vertex> + 'view>(
-        &self,
-        contexts: ContextIterator<'view, Vertex>,
-        _type_name: &Arc<str>,
-        edge_name: &Arc<str>,
-        _parameters: &EdgeParameters,
-        _resolve_info: &ResolveEdgeInfo,
-    ) -> ContextOutcomeIterator<'view, Vertex, VertexIterator<'view, Self::Vertex>> {
-        if edge_name.as_ref() != "neighbors" {
-            return resolve_neighbors_with(contexts, |_| Box::new(core::iter::empty()));
-        }
-        resolve_neighbors_with(contexts, |vertex| match *vertex {
-            GraphVertex::Entity(source) => Box::new(
-                self.view
-                    .rows
-                    .iter()
-                    .flat_map(|row| row.edges)
-                    .filter(move |edge| edge.source == source)
-                    .map(|edge| GraphVertex::Neighbor {
-                        entity: edge.target,
-                        partition: edge.partition,
-                    }),
-            ),
-            GraphVertex::Neighbor { .. } => Box::new(core::iter::empty()),
-        })
-    }
-
-    fn resolve_coercion<Vertex: AsVertex<Self::Vertex> + 'view>(
-        &self,
-        contexts: ContextIterator<'view, Vertex>,
-        _type_name: &Arc<str>,
-        _coerce_to_type: &Arc<str>,
-        _resolve_info: &ResolveInfo,
-    ) -> ContextOutcomeIterator<'view, Vertex, bool> {
-        resolve_coercion_with(contexts, |_| false)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum SemanticVertex {
-    Entity(EntityId),
-    Link {
-        entity: EntityId,
-        kind: LinkKind,
-        confidence: Confidence,
-    },
-}
-
-#[derive(Clone, Copy)]
-enum SemanticProperty {
-    SourceHigh,
-    SourceLow,
-    EntityHigh,
-    EntityLow,
-    Kind,
-    Confidence,
-    Unknown,
-}
-
-impl SemanticProperty {
-    const fn from_name(name: &str) -> Self {
-        match name.as_bytes() {
-            b"high" => Self::SourceHigh,
-            b"low" => Self::SourceLow,
-            b"entityHigh" => Self::EntityHigh,
-            b"entityLow" => Self::EntityLow,
-            b"kind" => Self::Kind,
-            b"confidence" => Self::Confidence,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl Typename for SemanticVertex {
-    fn typename(&self) -> &'static str {
-        match self {
-            Self::Entity(_) => "SemanticEntity",
-            Self::Link { .. } => "SemanticLink",
-        }
-    }
-}
-
-struct BorrowedSemanticAdapter<'view, 'bytes> {
-    image: &'view SemanticImageView<'bytes>,
-}
-
-impl<'view, 'bytes: 'view> AsyncBasicAdapter<'view> for BorrowedSemanticAdapter<'view, 'bytes> {
-    type Vertex = SemanticVertex;
-
-    fn resolve_starting_vertices(
-        &self,
-        edge_name: &str,
-        _parameters: &EdgeParameters,
-    ) -> AsyncNeighborStream<'view, Self::Vertex> {
-        if edge_name != "Entities" {
-            return Box::pin(stream::empty());
-        }
-        Box::pin(stream::iter(
-            self.image
-                .canonical_entities()
-                .map(|entity| SemanticVertex::Entity(entity.id)),
-        ))
-    }
-
-    fn resolve_property<Vertex: AsVertex<Self::Vertex> + 'view>(
-        &self,
-        contexts: AsyncContextStream<'view, Vertex>,
-        _type_name: &str,
-        property_name: &str,
-    ) -> AsyncContextOutcomeStream<'view, Vertex, FieldValue> {
-        let property = SemanticProperty::from_name(property_name);
-        async_helpers::resolve_property_with(contexts, move |vertex| match property {
-            SemanticProperty::SourceHigh => match vertex {
-                SemanticVertex::Entity(entity) => {
-                    FieldValue::Int64(i64::from(entity_high(*entity)))
-                }
-                SemanticVertex::Link { .. } => FieldValue::Null,
-            },
-            SemanticProperty::SourceLow => match vertex {
-                SemanticVertex::Entity(entity) => FieldValue::Int64(i64::from(entity_low(*entity))),
-                SemanticVertex::Link { .. } => FieldValue::Null,
-            },
-            SemanticProperty::EntityHigh => match vertex {
-                SemanticVertex::Link { entity, .. } => {
-                    FieldValue::Int64(i64::from(entity_high(*entity)))
-                }
-                SemanticVertex::Entity(_) => FieldValue::Null,
-            },
-            SemanticProperty::EntityLow => match vertex {
-                SemanticVertex::Link { entity, .. } => {
-                    FieldValue::Int64(i64::from(entity_low(*entity)))
-                }
-                SemanticVertex::Entity(_) => FieldValue::Null,
-            },
-            SemanticProperty::Kind => match vertex {
-                SemanticVertex::Link { kind, .. } => {
-                    FieldValue::Int64(i64::from(link_kind_code(*kind)))
-                }
-                SemanticVertex::Entity(_) => FieldValue::Null,
-            },
-            SemanticProperty::Confidence => match vertex {
-                SemanticVertex::Link { confidence, .. } => {
-                    FieldValue::Int64(i64::from(confidence_code(*confidence)))
-                }
-                SemanticVertex::Entity(_) => FieldValue::Null,
-            },
-            SemanticProperty::Unknown => FieldValue::Null,
-        })
-    }
-
-    fn resolve_neighbors<Vertex: AsVertex<Self::Vertex> + 'view>(
-        &self,
-        contexts: AsyncContextStream<'view, Vertex>,
-        _type_name: &str,
-        edge_name: &str,
-        _parameters: &EdgeParameters,
-    ) -> AsyncContextOutcomeStream<'view, Vertex, AsyncNeighborStream<'view, Self::Vertex>> {
-        if edge_name != "outgoing" {
-            return async_helpers::resolve_neighbors_with(contexts, |_| Box::pin(stream::empty()));
-        }
-        let image = self.image;
-        async_helpers::resolve_neighbors_with(contexts, move |vertex| match *vertex {
-            SemanticVertex::Entity(source) => Box::pin(stream::iter(
-                image.links_from(source).filter_map(|(_, link)| {
-                    let LinkTarget::Local(entity) = link.target else {
-                        return None;
-                    };
-                    Some(SemanticVertex::Link {
-                        entity,
-                        kind: link.kind,
-                        confidence: link.confidence,
-                    })
-                }),
-            )),
-            SemanticVertex::Link { .. } => Box::pin(stream::empty()),
-        })
-    }
-
-    fn resolve_coercion<Vertex: AsVertex<Self::Vertex> + 'view>(
-        &self,
-        contexts: AsyncContextStream<'view, Vertex>,
-        _type_name: &str,
-        _coerce_to_type: &str,
-    ) -> AsyncContextOutcomeStream<'view, Vertex, bool> {
-        async_helpers::resolve_coercion_with(contexts, |_| false)
     }
 }
 
@@ -1321,13 +1038,7 @@ mod tests {
         let view = ValidatedGraphView::try_new(authority, &rows).expect("valid graph facts");
         let schema = Schema::parse(GRAPH_SCHEMA).expect("fixed graph schema");
 
-        check_adapter_invariants(
-            &schema,
-            BorrowedGraphAdapter {
-                view: &view,
-                schema: &schema,
-            },
-        );
+        check_adapter_invariants(&schema, BorrowedGraphAdapter::new(&view, &schema));
     }
 
     #[test]
