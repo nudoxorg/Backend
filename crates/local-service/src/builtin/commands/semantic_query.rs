@@ -2655,6 +2655,213 @@ mod project_call_tests {
         }
     }
 
+    fn rust_function_foreign_call_fixture(foreign_key: u8) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"src/service",
+            path_specifier: None,
+            display: b"set_note",
+            foreign_key,
+            link_kind: LinkKind::Calls,
+        }
+    }
+
+    #[test]
+    fn project_call_rust_function_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/service.rs",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/lib.rs",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            Some(rust_function_foreign_call_fixture(79)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let drive_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/service.rs", 1, "set_note", fixture_version(1)),
+                ("src/lib.rs", 2, "drive", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let drive_id = RowId::Symbol(semantic_symbol(package, drive_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, drive_identity),
+            drive_id,
+            false,
+            &project_paths(&["src/service.rs", "src/lib.rs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, drive_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected drive to call set_note semantic row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_rust_function_mod_rs_retarget_links_callee_semantic_row() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/service/mod.rs",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/lib.rs",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            Some(rust_function_foreign_call_fixture(80)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let drive_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/service/mod.rs", 1, "set_note", fixture_version(1)),
+                ("src/lib.rs", 2, "drive", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let drive_id = RowId::Symbol(semantic_symbol(package, drive_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, drive_identity),
+            drive_id,
+            false,
+            &project_paths(&["src/service/mod.rs", "src/lib.rs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let targets = relation_targets(&relations, drive_id);
+        if targets != vec![set_note_id] {
+            return Err(format!(
+                "expected drive to call src/service/mod.rs set_note row, got {targets:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_call_rust_function_extra_stays_external() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/service_extra.rs",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/lib.rs",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            Some(rust_function_foreign_call_fixture(81)),
+        )?;
+        let drive_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/service_extra.rs", 1, "set_note", fixture_version(1)),
+                ("src/lib.rs", 2, "drive", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let drive_id = RowId::Symbol(semantic_symbol(package, drive_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, fixture_version(1).identity()));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, drive_identity),
+            drive_id,
+            false,
+            &project_paths(&["src/service_extra.rs", "src/lib.rs"]),
+        )
+        .map_err(|error| error.to_string())?;
+        if relation_targets(&relations, drive_id).contains(&set_note_id) {
+            return Err("src/service_extra.rs must not satisfy src/service".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn project_references_rust_function_retarget_names_the_caller() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes = project_call_image(
+            "src/service.rs",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            None,
+        )?;
+        let caller_bytes = project_call_image(
+            "src/lib.rs",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            Some(rust_function_foreign_call_fixture(82)),
+        )?;
+        let set_note_identity = fixture_version(1).identity();
+        let drive_identity = fixture_version(2).identity();
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("src/service.rs", 1, "set_note", fixture_version(1)),
+                ("src/lib.rs", 2, "drive", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let facts = project_reference_facts_from_bytes(
+            &[&service_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            &project_paths(&["src/service.rs", "src/lib.rs"]),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if facts.len() != 1 {
+            return Err(format!("expected one reference fact, got {}", facts.len()));
+        }
+        let fact = &facts[0];
+        if fact.site != semantic_symbol(package, drive_identity) {
+            return Err("rust function retarget site is not drive".to_owned());
+        }
+        if fact.relation != backend_engine::SemanticLinkKind::Calls {
+            return Err(format!("rust function retarget relation is {:?}", fact.relation));
+        }
+        let expected_target = semantic_declaration_identity(set_note_identity);
+        if !matches!(
+            &fact.target,
+            backend_engine::SemanticLinkTarget::Local { declaration }
+                if *declaration == expected_target
+        ) {
+            return Err("rust function retarget target is not set_note".to_owned());
+        }
+        Ok(())
+    }
+
     #[test]
     fn project_call_rust_module_retarget_links_callee_semantic_row() -> Result<(), String> {
         let package = package_key("fixture");

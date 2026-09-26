@@ -550,7 +550,8 @@ impl<'analysis> RustAuthority<'analysis> {
 
     /// Rust module path of one resolved method's defining source file when it
     /// lives in another project-local file (`src/service` for both
-    /// `src/service.rs` and `src/service/mod.rs`).
+    /// `src/service.rs` and `src/service/mod.rs`). Free functions use the same
+    /// module path as methods.
     #[must_use]
     pub fn cross_file_method_package_path(&self, function: Function) -> Option<String> {
         let source = self.semantics.source(function)?;

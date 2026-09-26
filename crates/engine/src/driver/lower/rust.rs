@@ -44,7 +44,9 @@
 //!   confidence, and every span is relative to the innermost owning
 //!   declaration. A method rust-analyzer resolved into another project-local
 //!   file is a cargo package key whose name is that file's module path, not a
-//!   universe key of the method token.
+//!   universe key of the method token. A path call resolved to a function in
+//!   another project-local file is a cargo package key of that module, with
+//!   the function's name as path and display.
 //! - Macro invocation spellings travel in each owning declaration's Rust
 //!   extension row. A `macro_rules!` definition commits its own closed
 //!   `Macro` row — leaf product, honest unannotated record — exactly as the
@@ -3162,6 +3164,40 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 Some(_) => OccurrenceConfidence::Oracle,
                 None => OccurrenceConfidence::Syntactic,
             };
+            if kind == ReferenceKind::FunctionCall
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(function)) =
+                    resolution
+                && self
+                    .ordinal_of_definition(&ra_ap_hir::ModuleDef::Function(*function))
+                    .is_none()
+                && let Some(package_path) = authority.cross_file_method_package_path(*function)
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(EntityKind::Function),
+                        ReferenceKind::FunctionCall,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
             self.emit_one_occurrence(
                 span,
                 kind,
