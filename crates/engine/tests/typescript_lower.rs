@@ -1122,6 +1122,7 @@ fn checker_resolved_property_access_is_not_duplicated() {
         module: None,
         name: None,
         overload_index: None,
+        is_field: false,
     }]);
     let v = view(SOURCE, Some(&authority));
     let (score_field, _) = named(&v, b"score");
@@ -1162,6 +1163,7 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
             module: Some("./workout.service".into()),
             name: Some("setNote".into()),
             overload_index: None,
+            is_field: false,
         },
         Reference {
             start: 192,
@@ -1171,6 +1173,7 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
             module: Some("./workout.service".into()),
             name: Some("setNote".into()),
             overload_index: None,
+            is_field: false,
         },
     ]);
     let v = view(SOURCE, Some(&r));
