@@ -435,16 +435,19 @@ impl gpui::Element for Shared {
                     painted.owner.as_ref() != Some(owner)
                         && now.saturating_duration_since(painted.at) <= RECENT
                 })
-                .map(|painted| painted.bounds);
-            // A newcomer (no state yet) morphs from the departing paint; a
-            // returning element keeps its morph.
+                .map(|painted| (painted.bounds, painted.owner.is_none()));
+            // A canvas handoff is explicit intent, even when the destination
+            // retained its element state. Ordinary returning elements keep
+            // their live morph. Prepaint claims the source for this owner,
+            // so the explicit handoff is consumed exactly once.
             self.morph = window.with_element_state::<State, _>(owner, |state, _| {
-                let state = state.unwrap_or(State {
-                    morph: departing
+                let newcomer = state.is_none();
+                let mut state = state.unwrap_or_default();
+                if newcomer || departing.is_some_and(|(_, canvas)| canvas) {
+                    state.morph = departing
                         .filter(|_| !reduced)
-                        .map(|from| Morph { from, start: now }),
-                    laid: None,
-                });
+                        .map(|(from, _)| Morph { from, start: now });
+                }
                 (state.morph, state)
             });
         }
@@ -823,6 +826,62 @@ mod tests {
             assert_eq!(centre(&frame(cx, &seen), "page.gem"), (90.0, 318.0, 12.0));
             cx.executor().advance_clock(Duration::from_millis(700));
             cx.run_until_parked();
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
+        }
+
+        #[gpui::test]
+        fn a_retained_target_consumes_each_explicit_handoff_once(cx: &mut TestAppContext) {
+            let seen: Seen = Rc::default();
+            let (page, cx) = cx.add_window_view({
+                let seen = Rc::clone(&seen);
+                |_, _| Page { seen }
+            });
+            cx.update(|_, cx| reset_epoch(cx));
+            assert_eq!(
+                centre(&frame(cx, &seen), "page.gem"),
+                (336.0, 236.0, 72.0),
+                "destination was really mounted at rest"
+            );
+            let seed =
+                |x, y| Bounds::new(gpui::point(px(x), px(y)), gpui::size(px(12.0), px(12.0)));
+            let first = seed(84.0, 312.0);
+            cx.update(|window, cx| super::super::remember("gem", first, window, cx));
+            page.update(cx, |_, cx| cx.notify());
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (90.0, 318.0, 12.0));
+            // Every frame follows the original 620ms schedule. Reusing the
+            // state cannot restart from the previous frame's own paint.
+            for elapsed in [40_u64, 80, 120] {
+                cx.executor().advance_clock(Duration::from_millis(40));
+                cx.run_until_parked();
+                let actual = centre(&frame(cx, &seen), "page.gem");
+                let t = GLIDE.ease(elapsed as f32 / 620.0);
+                let expected = (
+                    90.0 + (336.0 - 90.0) * t,
+                    318.0 + (236.0 - 318.0) * t,
+                    12.0 + (72.0 - 12.0) * t,
+                );
+                assert!(
+                    (actual.0 - expected.0).abs() < 0.05
+                        && (actual.1 - expected.1).abs() < 0.05
+                        && (actual.2 - expected.2).abs() < 0.05,
+                    "at {elapsed}ms: {actual:?} vs {expected:?}"
+                );
+            }
+            // A second explicit source interrupts this retained target; its
+            // first frame is the newly supplied actual canvas rectangle.
+            let second = seed(404.0, 92.0);
+            cx.update(|window, cx| super::super::remember("gem", second, window, cx));
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (410.0, 98.0, 12.0));
+            cx.executor().advance_clock(Duration::from_millis(700));
+            cx.run_until_parked();
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
+            // Re-seeding a retained target also honors reduced motion.
+            cx.update(|window, cx| {
+                let mut facet = crate::theme::Facet::default();
+                facet.reduced_motion = true;
+                cx.set_global(facet);
+                super::super::remember("gem", first, window, cx);
+            });
             assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
         }
 

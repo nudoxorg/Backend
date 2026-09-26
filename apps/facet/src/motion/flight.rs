@@ -232,17 +232,10 @@ pub struct GraphPath {
     metric: Path,
     travel: Travel,
     apex: f64,
-    split: f64,
-    rise: f64,
-    fall: f64,
+    log_ratio: f64,
+    lift: f64,
     normal: (f64, f64),
     bend: f64,
-    blend: f64,
-}
-
-fn smooth(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * t * (10.0 + t * (-15.0 + 6.0 * t))
 }
 
 impl GraphPath {
@@ -273,24 +266,19 @@ impl GraphPath {
             + normal.1 * (context.y - (from.y + to.y) / 2.0);
         let bend = (0.3 * guide / apex).clamp(-limit, limit) * (3.0 * distance / apex).min(1.0);
         let rise = (apex / from.w).ln();
-        let fall = (to.w / apex).ln();
-        let split = if rise <= 1e-12 {
-            0.0
-        } else if fall.abs() <= 1e-12 {
-            1.0
-        } else {
-            (rise / (rise + fall.abs())).clamp(0.22, 0.78)
-        };
+        let fall = (apex / to.w).ln();
+        // The concave log-width arch has one apex, exactly at the selected
+        // altitude. Its nonnegative lens sits above geometric endpoint
+        // interpolation, which itself bounds the harmonic screen path.
+        let lift = (rise + fall) / 4.0 + (rise * fall).sqrt() / 2.0;
         Self {
             metric,
             travel,
             apex,
-            split,
-            rise,
-            fall,
+            log_ratio: (to.w / from.w).ln(),
+            lift,
             normal,
             bend,
-            blend: 0.02 * from.w.min(to.w),
         }
     }
 
@@ -321,23 +309,15 @@ impl GraphPath {
         if matches!(self.travel, Travel::Reframe) {
             return Camera::new(x, y, harmonic);
         }
-        let planned = if p <= self.split {
-            from.w * (self.rise * smooth(p / self.split)).exp()
+        let lens = 4.0 * self.lift * p * (1.0 - p);
+        // Evaluate from the nearer endpoint to retain narrow landing
+        // precision, without a soft-max blend that can introduce extra
+        // zoom turns. The clock leaves and lands at C2 rest.
+        let w = if p <= 0.5 {
+            from.w * (p * self.log_ratio + lens).exp()
         } else {
-            self.apex * (self.fall * smooth((p - self.split) / (1.0 - self.split))).exp()
+            to.w * ((p - 1.0) * self.log_ratio + lens).exp()
         };
-        // C2 positive part keeps the scenic lens above its projective base.
-        // A lens may pull a landmark toward the centre, never amplify it.
-        let delta = planned - harmonic;
-        let extra = if delta <= 0.0 {
-            0.0
-        } else if delta >= self.blend {
-            delta
-        } else {
-            let u = delta / self.blend;
-            self.blend * u.powi(3) * (6.0 + u * (-8.0 + 3.0 * u))
-        };
-        let w = harmonic + extra;
         let arc = w * self.bend * 4.0 * p * (1.0 - p);
         Camera::new(x + self.normal.0 * arc, y + self.normal.1 * arc, w)
     }
@@ -888,17 +868,19 @@ fn step_with(
     pacing: Pacing,
     travel: Option<Travel>,
 ) -> (Shot, Option<Trip>) {
-    // Where it is now, and how fast.
-    let (current, velocity) = match *state {
-        State::Still(camera) => (camera, (0.0, 0.0, 0.0)),
-        State::Flying(trip) if trip.done(now) => (trip.route.end(), (0.0, 0.0, 0.0)),
-        State::Flying(trip) => (trip.sample(now), trip.velocity(now)),
-        State::Fading { to, .. } => (to, (0.0, 0.0, 0.0)),
-    };
     if target_of(state) != target
         || matches!(state, State::Flying(trip) if trip.route.travel() != travel)
         || (reduced && matches!(state, State::Flying(_)))
     {
+        // Only a changed destination needs the inherited derivative. An
+        // ordinary frame samples its route once below, with no unused
+        // finite-difference samples or duplicate momentum response.
+        let (current, velocity) = match *state {
+            State::Still(camera) => (camera, (0.0, 0.0, 0.0)),
+            State::Flying(trip) if trip.done(now) => (trip.route.end(), (0.0, 0.0, 0.0)),
+            State::Flying(trip) => (trip.sample(now), trip.velocity(now)),
+            State::Fading { to, .. } => (to, (0.0, 0.0, 0.0)),
+        };
         *state = if reduced {
             State::Fading {
                 from: current,

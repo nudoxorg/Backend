@@ -348,8 +348,8 @@ fn contextual_route_has_pinned_lift_single_signed_bend_and_exact_landing() {
     assert_eq!(focus.apex, 1200.0);
     assert_eq!(focus.normal, (0.0, 1.0));
     assert!((focus.bend - 0.075).abs() < 1e-15);
-    let split = 12.0_f64.ln() / (12.0_f64.ln() + 30.0_f64.ln());
-    assert!((focus.split - split).abs() < 1e-15);
+    // Independent pinned maximum of the concave log-width arch.
+    let split = 0.4608437861426786;
     let apex = focus.at_t(split);
     assert!((apex.w - 1200.0).abs() < 1e-9);
     assert!((apex.y - 90.0 * 4.0 * split * (1.0 - split)).abs() < 1e-9);
@@ -601,6 +601,63 @@ fn contextual_state_is_cadence_invariant_and_never_restarts_after_landing() {
                     assert!(matches!(state, State::Still(_)));
                 }
             }
+        }
+    }
+}
+
+/// Native interrupt trace escaped focus twice at2400/2520ms. Its old
+/// below-max lens blend rebounded82.4965→82.2248→82.4237 near rest. These
+/// independently pinned endpoint scales cover the exact small-gap region;
+/// every 16ms clock phase uses the unchanged probe continuity allowance.
+#[test]
+fn interrupted_small_lens_has_no_blend_rebound_and_truthful_frame_velocity() {
+    use super::{GraphPath, Travel, plan_travel};
+    let at = Instant::now();
+    let target = Camera::new(-7.7217, 3.0701, 82.4353);
+    for width in [62.7522, 63.2092, 70.0, 82.4] {
+        let from = Camera::new(-13.3482, 8.553, width);
+        let route = GraphPath::new(from, target, Travel::Survey(target));
+        let mut previous = width;
+        for index in 0..=1000 {
+            let camera = route.at_t(f64::from(index) / 1000.0);
+            assert!(
+                camera.w >= previous - 1e-11,
+                "uncarried lens reversed near landing: {previous}→{}",
+                camera.w
+            );
+            assert!(camera.w <= target.w + 1e-11);
+            previous = camera.w;
+        }
+        for log_velocity in [0.0, 0.8, 0.9, 1.0, -1.0] {
+            let trip = plan_travel(
+                from,
+                (-96.53, 47.0, log_velocity),
+                target,
+                at,
+                Pacing::GRAPH_TRAVEL,
+                Travel::Survey(target),
+            );
+            for phase in 0..16 {
+                let mut time = f64::from(phase) / 1000.0;
+                while time + 0.016 <= trip.duration.as_secs_f64() {
+                    let before = trip.at(time);
+                    let after = trip.at(time + 0.016);
+                    let v0 = trip.velocity(at + Duration::from_secs_f64(time)).2 * before.w;
+                    let v1 = trip.velocity(at + Duration::from_secs_f64(time + 0.016)).2 * after.w;
+                    let allowed = 1.5 * v0.abs().max(v1.abs()) * 0.016
+                        + 0.02 * (target.w - before.w).abs()
+                        + 0.001;
+                    assert!(
+                        (after.w - before.w).abs() <= allowed + 1e-8,
+                        "phase{phase} w{width} carry{log_velocity} at{time}: {}→{} exceeds truthful velocity{v0}/{v1}, allowed{allowed}",
+                        before.w,
+                        after.w
+                    );
+                    time += 0.016;
+                }
+            }
+            assert_eq!(trip.sample(at + trip.duration), target);
+            assert_eq!(trip.velocity(at + trip.duration), (0.0, 0.0, 0.0));
         }
     }
 }
