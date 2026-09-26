@@ -37,6 +37,50 @@ pub fn drive() {
 }
 "#;
 
+const CROSS_FILE_MACRO_LIB: &str = r#"macro_rules! read_field {
+    ($e:expr, $f:ident) => {
+        $e.$f
+    };
+}
+mod service;
+pub fn drive(item: service::Workout) {
+    read_field!(item, note);
+}
+"#;
+
+const SAME_FILE_MACRO_LIB: &str = r#"macro_rules! read_field {
+    ($e:expr, $f:ident) => {
+        $e.$f
+    };
+}
+pub struct Workout { pub note: u8 }
+pub fn local(item: Workout) {
+    read_field!(item, note);
+}
+"#;
+
+const UNRESOLVED_MACRO_LIB: &str = r#"macro_rules! read_field {
+    ($e:expr, $f:ident) => {
+        $e.$f
+    };
+}
+mod service;
+pub fn drive(item: service::Workout) {
+    read_field!(item, missing);
+}
+"#;
+
+const MACRO_FN_CALL_LIB: &str = r#"macro_rules! call_fn {
+    ($f:path) => {
+        $f
+    };
+}
+mod service;
+pub fn drive() {
+    let _f = call_fn!(service::set_note);
+}
+"#;
+
 struct Lane<'a> {
     view: FragmentView<'a>,
     occurrences: Vec<DecodedOccurrence<'a>>,
@@ -412,6 +456,162 @@ fn variable_read_does_not_retarget_to_package_field() -> Result<(), String> {
         })
     {
         return Err("variable read must not retarget to a package field key".to_owned());
+    }
+    Ok(())
+}
+
+fn macro_project_root(service: &str, lib: &str) -> Result<PathBuf, String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-macro-field-{nonce}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"macro_field_read_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/service.rs"), service).map_err(|error| error.to_string())?;
+    fs::write(root.join("src/lib.rs"), lib).map_err(|error| error.to_string())?;
+    Ok(root)
+}
+
+fn package_field_read<'a>(
+    lane: &'a Lane<'a>,
+    package: &str,
+    path: &str,
+) -> Result<&'a backend_semantic::ir::Occurrence<'a>, String> {
+    let reads = package_field_reads(lane)
+        .into_iter()
+        .filter(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.ecosystem == "cargo"
+                && lineage.name == package
+                && key.path == path
+                && key.display == path
+                && key.kind == Some(EntityKind::Field)
+        })
+        .collect::<Vec<_>>();
+    if reads.len() != 1 {
+        return Err(format!(
+            "expected exactly one retargeted {path} field read in {package}, got {}",
+            reads.len()
+        ));
+    }
+    Ok(reads[0])
+}
+
+#[test]
+fn cross_file_macro_field_read_retargets_to_defining_module_path() -> Result<(), String> {
+    let root = macro_project_root(SERVICE, CROSS_FILE_MACRO_LIB)?;
+    let bytes = compile_source(&root, "src/lib.rs", CROSS_FILE_MACRO_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+    let read = package_field_read(&lane, "src/service", "note")?;
+    if read.kind != ReferenceKind::FieldAccess {
+        return Err("retargeted macro field read must be a field access".to_owned());
+    }
+    if read.confidence != OccurrenceConfidence::Oracle {
+        return Err("retargeted macro field read must be oracle confidence".to_owned());
+    }
+    Ok(())
+}
+
+#[test]
+fn same_file_macro_field_read_stays_local() -> Result<(), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-same-file-macro-field-{nonce}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"same_file_macro_field_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/lib.rs"), SAME_FILE_MACRO_LIB).map_err(|error| error.to_string())?;
+    let bytes = compile_source(&root, "src/lib.rs", SAME_FILE_MACRO_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+    let read = lane
+        .occurrences
+        .iter()
+        .map(|row| &row.occurrence)
+        .find(|occurrence| {
+            occurrence.confidence == OccurrenceConfidence::Oracle
+                && occurrence.kind == ReferenceKind::FieldAccess
+                && matches!(occurrence.target, OccurrenceTarget::Local(_))
+        })
+        .ok_or("oracle local macro note field read absent")?;
+    if matches!(
+        read.target,
+        OccurrenceTarget::Foreign(backend_semantic::ir::ForeignKey {
+            origin: backend_semantic::ir::ForeignOrigin::Package(_),
+            ..
+        })
+    ) {
+        return Err("same-file macro note field read must not use a package key".to_owned());
+    }
+    Ok(())
+}
+
+#[test]
+fn unresolved_macro_field_read_stays_non_package() -> Result<(), String> {
+    let root = macro_project_root(SERVICE, UNRESOLVED_MACRO_LIB)?;
+    let bytes = compile_source(&root, "src/lib.rs", UNRESOLVED_MACRO_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+    if package_field_reads(&lane)
+        .into_iter()
+        .any(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.name == "src/service" && key.kind == Some(EntityKind::Field)
+        })
+    {
+        return Err("unresolved macro field read must not retarget to a package field key".to_owned());
+    }
+    Ok(())
+}
+
+#[test]
+fn macro_function_call_does_not_retarget_to_package_field() -> Result<(), String> {
+    let root = macro_project_root("pub fn set_note() {}\n", MACRO_FN_CALL_LIB)?;
+    let bytes = compile_source(&root, "src/lib.rs", MACRO_FN_CALL_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+    if package_field_reads(&lane)
+        .into_iter()
+        .any(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.name == "src/service" && key.kind == Some(EntityKind::Field)
+        })
+    {
+        return Err("macro function call must not retarget to a package field key".to_owned());
     }
     Ok(())
 }
