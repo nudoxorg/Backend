@@ -315,6 +315,92 @@ fn set_note_in_owner<'a>(
     })
 }
 
+fn field_access_in_owner<'a>(
+    occurrences: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner: u32,
+) -> Result<&'a backend_semantic::ir::DecodedOccurrence<'a>, TestError> {
+    let matches: Vec<_> = occurrences
+        .iter()
+        .filter(|row| row.owner.raw == owner && row.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    if matches.len() != 1 {
+        return Err(TestError::Falsified("expected exactly one FieldAccess in owner"));
+    }
+    Ok(matches[0])
+}
+
+fn decode_occurrences(
+    fragment: &[u8],
+) -> Result<(FragmentView<'_>, Vec<&[u8]>, Vec<backend_semantic::ir::DecodedOccurrence<'_>>), TestError>
+{
+    let decoded = FragmentView::validate(fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let mut occurrences: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
+    if let Some(mut cursor) = decoded.occurrences() {
+        for row in cursor.by_ref() {
+            occurrences.push(row.map_err(|_| TestError::Falsified("occurrence decode"))?);
+        }
+    }
+    Ok((decoded, atoms, occurrences))
+}
+
+fn assert_foreign_package_field(
+    target: &OccurrenceTarget<'_>,
+    path: &str,
+    display: &str,
+    lineage: &str,
+) -> Result<(), TestError> {
+    match target {
+        OccurrenceTarget::Foreign(key) => {
+            if key.path != path {
+                return Err(TestError::Falsified("foreign package path mismatch"));
+            }
+            if key.display != display {
+                return Err(TestError::Falsified("foreign package display mismatch"));
+            }
+            if key.kind != Some(EntityKind::Field) {
+                return Err(TestError::Falsified("foreign package kind is not Field"));
+            }
+            if !matches!(
+                key.origin,
+                ForeignOrigin::Package(package)
+                    if package.ecosystem == "pypi" && package.name == lineage
+            ) {
+                return Err(TestError::Falsified("foreign package lineage mismatch"));
+            }
+            Ok(())
+        }
+        OccurrenceTarget::Local(_) => Err(TestError::Falsified("expected foreign package target")),
+        OccurrenceTarget::Stable(_) => Err(TestError::Falsified("expected foreign package target")),
+    }
+}
+
+fn assert_universe_field(
+    target: &OccurrenceTarget<'_>,
+    path: &str,
+    display: &str,
+) -> Result<(), TestError> {
+    match target {
+        OccurrenceTarget::Foreign(key) => {
+            if key.path != path {
+                return Err(TestError::Falsified("universe field path mismatch"));
+            }
+            if key.display != display {
+                return Err(TestError::Falsified("universe field display mismatch"));
+            }
+            if key.kind != Some(EntityKind::Field) {
+                return Err(TestError::Falsified("universe field kind is not Field"));
+            }
+            if !matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" }) {
+                return Err(TestError::Falsified("universe field ecosystem is not pypi"));
+            }
+            Ok(())
+        }
+        OccurrenceTarget::Local(_) => Err(TestError::Falsified("expected universe field target")),
+        OccurrenceTarget::Stable(_) => Err(TestError::Falsified("expected universe field target")),
+    }
+}
+
 #[test]
 fn annotated_receiver_call_uses_the_imported_or_local_class() -> Result<(), TestError> {
     const ANNOTATED_SOURCE: &[u8] = b"\
@@ -518,6 +604,171 @@ def paired(service: Pair):
             "paired set_note is not an honest universe foreign method key",
         ));
     }
+
+    fs::remove_dir_all(&work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn annotated_receiver_attribute_read_uses_the_imported_or_local_class() -> Result<(), TestError> {
+    const ANNOTATED_SOURCE: &[u8] = b"\
+from workout.service import WorkoutService
+
+class LocalService:
+    def set_note(self):
+        return 1
+
+def sync(service: WorkoutService):
+    bound = service.set_note
+
+def local(service: LocalService):
+    bound = service.set_note
+
+def plain(service):
+    seen = service.set_note
+";
+
+    const FIELD_SOURCE: &[u8] = b"\
+class LocalService:
+    note = 1
+
+def read(service: LocalService):
+    seen = service.note
+";
+
+    const AMBIGUOUS_SOURCE: &[u8] = b"\
+from workout.service import Service
+from other.place import Service
+
+def sync(service: Service):
+    seen = service.set_note
+";
+
+    const PAIRED_SOURCE: &[u8] = b"\
+class Pair:
+    def set_note(self):
+        return 1
+    class Inner:
+        def set_note(self):
+            return 2
+
+def paired(service: Pair):
+    seen = service.set_note
+";
+
+    const MIXED_SOURCE: &[u8] = b"\
+class Both:
+    note = 1
+    def note(self):
+        return 2
+
+def mixed(service: Both):
+    seen = service.note
+";
+
+    let executable = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("python3"))
+                .find(|candidate| candidate.is_file())
+        })
+        .ok_or(TestError::MissingPython)?;
+    let version = Command::new(&executable)
+        .arg("--version")
+        .output()
+        .map_err(TestError::Tool)?;
+    let version_bytes = if version.stdout.is_empty() {
+        version.stderr.as_slice()
+    } else {
+        version.stdout.as_slice()
+    };
+    let toolchain = ResolvedToolchain::from_version(NativeTool::Python, &executable, version_bytes)
+        .map_err(|_| TestError::Resolve)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(TestError::Clock)?
+        .as_nanos();
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-annotated-attr-read-{nonce}-{}-{}",
+        std::process::id(),
+        fixture_sequence()
+    ));
+    fs::create_dir_all(&work).map_err(|source| TestError::Io("create scratch", source))?;
+    let cancelled = AtomicBool::new(false);
+
+    let annotated_fragment =
+        compile_python_fragment(ANNOTATED_SOURCE, &work, &toolchain, &cancelled)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&annotated_fragment)?;
+
+    let sync_owner = entity_ordinal_by_name(&decoded, &atoms, b"sync", EntityKind::Function)?;
+    let local_owner = entity_ordinal_by_name(&decoded, &atoms, b"local", EntityKind::Function)?;
+    let plain_owner = entity_ordinal_by_name(&decoded, &atoms, b"plain", EntityKind::Function)?;
+    let set_note_method =
+        entity_ordinal_by_name(&decoded, &atoms, b"set_note", EntityKind::Function)?;
+
+    let sync_read = field_access_in_owner(&occurrences, sync_owner)?;
+    assert_foreign_package_field(&sync_read.occurrence.target, "workout.service", "set_note", "workout")?;
+
+    let local_read = field_access_in_owner(&occurrences, local_owner)?;
+    match &local_read.occurrence.target {
+        OccurrenceTarget::Local(target) if target.raw == set_note_method => {}
+        _ => return Err(TestError::Falsified("local attribute read target mismatch")),
+    }
+
+    let plain_read = field_access_in_owner(&occurrences, plain_owner)?;
+    assert_universe_field(&plain_read.occurrence.target, "set_note", "set_note")?;
+
+    let field_fragment = compile_python_fragment(FIELD_SOURCE, &work, &toolchain, &cancelled)?;
+    let (field_decoded, field_atoms, field_occurrences) = decode_occurrences(&field_fragment)?;
+    let read_owner =
+        entity_ordinal_by_name(&field_decoded, &field_atoms, b"read", EntityKind::Function)?;
+    let note_field = entity_ordinal_by_name(&field_decoded, &field_atoms, b"note", EntityKind::Field)?;
+    let field_read = field_access_in_owner(&field_occurrences, read_owner)?;
+    match &field_read.occurrence.target {
+        OccurrenceTarget::Local(target) if target.raw == note_field => {}
+        _ => return Err(TestError::Falsified("field attribute read target mismatch")),
+    }
+
+    let ambiguous_fragment =
+        compile_python_fragment(AMBIGUOUS_SOURCE, &work, &toolchain, &cancelled)?;
+    let (ambiguous_decoded, ambiguous_atoms, ambiguous_occurrences) =
+        decode_occurrences(&ambiguous_fragment)?;
+    let ambiguous_sync =
+        entity_ordinal_by_name(&ambiguous_decoded, &ambiguous_atoms, b"sync", EntityKind::Function)?;
+    let ambiguous_read = field_access_in_owner(&ambiguous_occurrences, ambiguous_sync)?;
+    assert_foreign_package_field(
+        &ambiguous_read.occurrence.target,
+        "workout.service",
+        "set_note",
+        "workout",
+    )?;
+    match &ambiguous_read.occurrence.target {
+        OccurrenceTarget::Foreign(key) if key.path == "other.place" => {
+            return Err(TestError::Falsified("ambiguous import resolved through other.place"));
+        }
+        _ => {}
+    }
+
+    let paired_fragment =
+        compile_python_fragment(PAIRED_SOURCE, &work, &toolchain, &cancelled)?;
+    let (paired_decoded, paired_atoms, paired_occurrences) = decode_occurrences(&paired_fragment)?;
+    let paired_owner =
+        entity_ordinal_by_name(&paired_decoded, &paired_atoms, b"paired", EntityKind::Function)?;
+    let paired_read = field_access_in_owner(&paired_occurrences, paired_owner)?;
+    if matches!(&paired_read.occurrence.target, OccurrenceTarget::Local(_)) {
+        return Err(TestError::Falsified("paired attribute read must not be local"));
+    }
+    assert_universe_field(&paired_read.occurrence.target, "set_note", "set_note")?;
+
+    let mixed_fragment = compile_python_fragment(MIXED_SOURCE, &work, &toolchain, &cancelled)?;
+    let (mixed_decoded, mixed_atoms, mixed_occurrences) = decode_occurrences(&mixed_fragment)?;
+    let mixed_owner =
+        entity_ordinal_by_name(&mixed_decoded, &mixed_atoms, b"mixed", EntityKind::Function)?;
+    let mixed_read = field_access_in_owner(&mixed_occurrences, mixed_owner)?;
+    if matches!(&mixed_read.occurrence.target, OccurrenceTarget::Local(_)) {
+        return Err(TestError::Falsified("mixed attribute read must not be local"));
+    }
+    assert_universe_field(&mixed_read.occurrence.target, "note", "note")?;
 
     fs::remove_dir_all(&work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
