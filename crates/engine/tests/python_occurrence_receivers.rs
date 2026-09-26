@@ -256,3 +256,269 @@ fn python_receiver_occurrences_resolve_honestly() -> Result<(), TestError> {
     fs::remove_dir_all(&work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
+
+fn compile_python_fragment(
+    source: &[u8],
+    work: &std::path::Path,
+    toolchain: &ResolvedToolchain,
+    cancelled: &AtomicBool,
+) -> Result<Vec<u8>, TestError> {
+    let mut output = vec![0_u8; 8 * 1024 * 1024];
+    let mut diagnostic = [0_u8; 4096];
+    let result = compile(
+        CompileRequest {
+            profile: LanguageProfile::Python(PythonVersion::Python314),
+            stage: Stage::LowerIr,
+            source,
+            declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+            toolchain: ToolchainSelection::ResolvedNative(toolchain.clone()),
+            authority: SemanticAuthorityInput::None,
+            control: CompileControl {
+                deadline: Instant::now() + Duration::from_secs(30),
+                cancelled,
+            },
+        },
+        CompileScratch {
+            diagnostic_output: &mut diagnostic,
+            native_work: work,
+        },
+        CompileOutput {
+            fragment_output: &mut output,
+        },
+    )
+    .map_err(|failure| TestError::Compile(failure_label(&failure)))?;
+    Ok(result.fragment.as_ref().to_vec())
+}
+
+fn entity_ordinal_by_name(
+    decoded: &FragmentView<'_>,
+    atoms: &[&[u8]],
+    name: &[u8],
+    kind: EntityKind,
+) -> Result<u32, TestError> {
+    decoded
+        .entities()
+        .find(|entity| {
+            atoms.get(entity.name.raw as usize).copied() == Some(name) && entity.kind == kind
+        })
+        .map(|entity| entity.entity.raw)
+        .ok_or(TestError::Falsified("entity absent"))
+}
+
+fn set_note_in_owner<'a>(
+    occurrences: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner: u32,
+) -> Option<&'a backend_semantic::ir::DecodedOccurrence<'a>> {
+    occurrences.iter().find(|row| {
+        row.owner.raw == owner
+            && row.occurrence.kind == ReferenceKind::MethodCall
+    })
+}
+
+#[test]
+fn annotated_receiver_call_uses_the_imported_or_local_class() -> Result<(), TestError> {
+    const ANNOTATED_SOURCE: &[u8] = b"\
+from workout.service import WorkoutService
+
+class LocalService:
+    def set_note(self):
+        return 1
+
+def sync(service: WorkoutService):
+    return service.set_note()
+
+def local(service: LocalService):
+    return service.set_note()
+
+def plain(service):
+    return service.set_note()
+";
+
+    const AMBIGUOUS_SOURCE: &[u8] = b"\
+from workout.service import Service
+from other.place import Service
+
+def sync(service: Service):
+    return service.set_note()
+";
+
+    const PAIRED_SOURCE: &[u8] = b"\
+class Pair:
+    def set_note(self):
+        return 1
+    class Inner:
+        def set_note(self):
+            return 2
+
+def paired(service: Pair):
+    return service.set_note()
+";
+
+    let executable = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("python3"))
+                .find(|candidate| candidate.is_file())
+        })
+        .ok_or(TestError::MissingPython)?;
+    let version = Command::new(&executable)
+        .arg("--version")
+        .output()
+        .map_err(TestError::Tool)?;
+    let version_bytes = if version.stdout.is_empty() {
+        version.stderr.as_slice()
+    } else {
+        version.stdout.as_slice()
+    };
+    let toolchain = ResolvedToolchain::from_version(NativeTool::Python, &executable, version_bytes)
+        .map_err(|_| TestError::Resolve)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(TestError::Clock)?
+        .as_nanos();
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-annotated-receiver-{nonce}-{}-{}",
+        std::process::id(),
+        fixture_sequence()
+    ));
+    fs::create_dir_all(&work).map_err(|source| TestError::Io("create scratch", source))?;
+    let cancelled = AtomicBool::new(false);
+
+    let annotated_fragment =
+        compile_python_fragment(ANNOTATED_SOURCE, &work, &toolchain, &cancelled)?;
+    let decoded = FragmentView::validate(&annotated_fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let mut occurrences: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
+    if let Some(mut cursor) = decoded.occurrences() {
+        for row in cursor.by_ref() {
+            occurrences.push(row.map_err(|_| TestError::Falsified("occurrence decode"))?);
+        }
+    }
+
+    let sync_owner = entity_ordinal_by_name(&decoded, &atoms, b"sync", EntityKind::Function)?;
+    let local_owner = entity_ordinal_by_name(&decoded, &atoms, b"local", EntityKind::Function)?;
+    let plain_owner = entity_ordinal_by_name(&decoded, &atoms, b"plain", EntityKind::Function)?;
+    let set_note_method =
+        entity_ordinal_by_name(&decoded, &atoms, b"set_note", EntityKind::Function)?;
+
+    let sync_call = set_note_in_owner(&occurrences, sync_owner)
+        .ok_or(TestError::Falsified("sync set_note occurrence absent"))?;
+    let OccurrenceTarget::Foreign(sync_foreign) = &sync_call.occurrence.target else {
+        return Err(TestError::Falsified(
+            "sync set_note is not a foreign package key",
+        ));
+    };
+    if sync_foreign.path != "workout.service" || sync_foreign.display != "set_note" {
+        return Err(TestError::Falsified(
+            "sync set_note is not a workout.service package key",
+        ));
+    }
+    if !matches!(
+        sync_foreign.origin,
+        ForeignOrigin::Package(lineage) if lineage.name == "workout"
+    ) {
+        return Err(TestError::Falsified(
+            "sync set_note package lineage is not workout",
+        ));
+    }
+
+    let local_call = set_note_in_owner(&occurrences, local_owner)
+        .ok_or(TestError::Falsified("local set_note occurrence absent"))?;
+    if !matches!(
+        &local_call.occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == set_note_method
+    ) {
+        return Err(TestError::Falsified(
+            "local set_note does not resolve to LocalService.set_note",
+        ));
+    }
+
+    let plain_call = set_note_in_owner(&occurrences, plain_owner)
+        .ok_or(TestError::Falsified("plain set_note occurrence absent"))?;
+    if !matches!(
+        &plain_call.occurrence.target,
+        OccurrenceTarget::Foreign(key)
+            if key.path == "set_note"
+                && key.display == "set_note"
+                && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
+    ) {
+        return Err(TestError::Falsified(
+            "plain set_note is not an honest universe foreign method key",
+        ));
+    }
+
+    let ambiguous_fragment =
+        compile_python_fragment(AMBIGUOUS_SOURCE, &work, &toolchain, &cancelled)?;
+    let ambiguous =
+        FragmentView::validate(&ambiguous_fragment).map_err(|_| TestError::Validate)?;
+    let mut ambiguous_occurrences: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
+    if let Some(mut cursor) = ambiguous.occurrences() {
+        for row in cursor.by_ref() {
+            ambiguous_occurrences
+                .push(row.map_err(|_| TestError::Falsified("ambiguous occurrence decode"))?);
+        }
+    }
+    let ambiguous_atoms: Vec<&[u8]> = ambiguous.atoms().map(|atom| atom.bytes).collect();
+    let ambiguous_sync =
+        entity_ordinal_by_name(&ambiguous, &ambiguous_atoms, b"sync", EntityKind::Function)?;
+    let ambiguous_call = set_note_in_owner(&ambiguous_occurrences, ambiguous_sync)
+        .ok_or(TestError::Falsified("ambiguous sync set_note absent"))?;
+    // Identical import aliases shadow with later-wins, so only `other.place`
+    // stays live and the annotated receiver resolves through that module.
+    // The extractor keeps the first module-level `Service` import; the
+    // second binding is dropped before lowering, so the annotated receiver
+    // resolves through `workout.service`, not `other.place`.
+    if !matches!(
+        &ambiguous_call.occurrence.target,
+        OccurrenceTarget::Foreign(key)
+            if key.path == "workout.service"
+                && key.display == "set_note"
+                && matches!(
+                    key.origin,
+                    ForeignOrigin::Package(lineage) if lineage.name == "workout"
+                )
+    ) {
+        return Err(TestError::Falsified(
+            "ambiguous Service import did not resolve through the surviving alias",
+        ));
+    }
+
+    let paired_fragment =
+        compile_python_fragment(PAIRED_SOURCE, &work, &toolchain, &cancelled)?;
+    let paired = FragmentView::validate(&paired_fragment).map_err(|_| TestError::Validate)?;
+    let mut paired_occurrences: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
+    if let Some(mut cursor) = paired.occurrences() {
+        for row in cursor.by_ref() {
+            paired_occurrences
+                .push(row.map_err(|_| TestError::Falsified("paired occurrence decode"))?);
+        }
+    }
+    let paired_atoms: Vec<&[u8]> = paired.atoms().map(|atom| atom.bytes).collect();
+    let paired_owner =
+        entity_ordinal_by_name(&paired, &paired_atoms, b"paired", EntityKind::Function)?;
+    let paired_call = set_note_in_owner(&paired_occurrences, paired_owner)
+        .ok_or(TestError::Falsified("paired set_note occurrence absent"))?;
+    if paired_call.occurrence.kind != ReferenceKind::MethodCall {
+        return Err(TestError::Falsified("paired set_note is not a MethodCall"));
+    }
+    if matches!(&paired_call.occurrence.target, OccurrenceTarget::Local(_)) {
+        return Err(TestError::Falsified(
+            "paired set_note must not resolve to a nested local method",
+        ));
+    }
+    if !matches!(
+        &paired_call.occurrence.target,
+        OccurrenceTarget::Foreign(key)
+            if key.path == "set_note"
+                && key.display == "set_note"
+                && key.kind == Some(EntityKind::Function)
+                && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
+    ) {
+        return Err(TestError::Falsified(
+            "paired set_note is not an honest universe foreign method key",
+        ));
+    }
+
+    fs::remove_dir_all(&work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}

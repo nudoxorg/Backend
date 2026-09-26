@@ -2002,6 +2002,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         };
                         return Ok(Some((target, confidence)));
                     }
+                    if let Some(resolved) =
+                        self.annotated_receiver_target(occurrence, receiver, checked)?
+                    {
+                        return Ok(Some(resolved));
+                    }
                 }
                 Ok(Some((
                     foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
@@ -2054,10 +2059,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
         method.map(|(_, ordinal)| ordinal)
     }
 
-    /// The lane ordinal of the live field one widened `self`/`cls` attribute
-    /// read resolves to: the innermost live field declaration with the
-    /// attribute's spelling inside the innermost live class declaration
-    /// with the recorded class's name whose extent contains the read site.
     fn enclosing_field(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
         let class_bytes = class.as_bytes();
         let attribute_bytes = occurrence.target.as_bytes();
@@ -2148,6 +2149,135 @@ impl<'a, 'source> Emitter<'a, 'source> {
             if declaration.kind != DeclarationKind::Field
                 || declaration.name.as_bytes() != attribute_bytes
                 || !self.live[index]
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
+    /// Resolves one plain-name receiver through its parameter annotation when
+    /// the import-binding arm did not apply: a unique live class yields the
+    /// unique method inside that class; a unique live import alias yields the
+    /// alias statement's package key. Every ambiguous or unproven case keeps
+    /// today's universe key by returning `None`.
+    fn annotated_receiver_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        receiver: &str,
+        checked: Option<&SymbolOutcome>,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        let function_index = match self.enclosing_function_index(occurrence) {
+            Some(index) => index,
+            None => return Ok(None),
+        };
+        let function = &self.module.declarations[function_index];
+        let type_name = match receiver_annotation_name(function, receiver) {
+            Some(name) => name,
+            None => return Ok(None),
+        };
+        let candidates = self.live_class_or_alias_indices(type_name);
+        if candidates.len() != 1 {
+            return Ok(None);
+        }
+        let index = candidates[0];
+        let declaration = &self.module.declarations[index];
+        match declaration.kind {
+            DeclarationKind::Class => {
+                let Some(ordinal) = self.method_in_class(occurrence, declaration.span) else {
+                    return Ok(None);
+                };
+                let confidence = match checked {
+                    Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                    _ => OccurrenceConfidence::Index,
+                };
+                Ok(Some((
+                    OccurrenceTarget::Local(EntityId::new(ordinal)),
+                    confidence,
+                )))
+            }
+            DeclarationKind::Alias => {
+                let module_span = match alias_import_module_span(self.source, declaration.span) {
+                    Some(span) => span,
+                    None => return Ok(None),
+                };
+                let module_spelling = self.slice(module_span)?;
+                let binding = self.slice(occurrence.span)?;
+                let binding = core::str::from_utf8(binding).map_err(|_| {
+                    PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+                        start: occurrence.span.start,
+                        end: occurrence.span.end,
+                    })
+                })?;
+                let target = foreign_package(module_spelling, binding, module_span)?;
+                let confidence = match checked {
+                    Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
+                    _ => OccurrenceConfidence::Index,
+                };
+                Ok(Some((target, confidence)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The declaration index of the innermost live function whose name equals
+    /// `occurrence.owner` and whose span contains the call site.
+    fn enclosing_function_index(&self, occurrence: &OccurrenceFact) -> Option<usize> {
+        let owner_bytes = occurrence.owner.as_bytes();
+        let mut best: Option<(Span, usize)> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Function
+                || declaration.name.as_bytes() != owner_bytes
+                || !self.live[index]
+                || !span_contains(declaration.span, occurrence.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let occupied = best.map_or(true, |(span, _)| area < span.end - span.start);
+            if occupied {
+                best = Some((declaration.span, index));
+            }
+        }
+        best.map(|(_, index)| index)
+    }
+
+    /// Live class and import-alias declaration indices sharing one name.
+    fn live_class_or_alias_indices(&self, name: &str) -> Vec<usize> {
+        let name_bytes = name.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter(|(index, declaration)| {
+                self.live[*index]
+                    && matches!(
+                        declaration.kind,
+                        DeclarationKind::Class | DeclarationKind::Alias
+                    )
+                    && declaration.name.as_bytes() == name_bytes
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The lane ordinal of the sole live method with the attribute spelling
+    /// inside `class_span`, or `None` when zero or more than one match.
+    fn method_in_class(&self, occurrence: &OccurrenceFact, class_span: Span) -> Option<u32> {
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut matches = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Function
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+                || !span_contains(class_span, declaration.span)
             {
                 continue;
             }
@@ -2520,6 +2650,101 @@ fn is_receiver_parameter(receiver: ReceiverKind, name: &str) -> bool {
     }
 }
 
+/// The non-receiver parameter whose name equals `receiver`, when its
+/// annotation is a plain undotted name.
+fn receiver_annotation_name<'a>(
+    declaration: &'a DeclarationFact,
+    receiver: &str,
+) -> Option<&'a str> {
+    for parameter in &declaration.parameters {
+        if is_receiver_parameter(declaration.receiver, &parameter.name) {
+            continue;
+        }
+        if parameter.name != receiver {
+            continue;
+        }
+        return match &parameter.annotation {
+            Annotation::Name { name, .. } if !name.contains('.') => Some(name.as_str()),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// Borrowed source span of the module path in one import alias statement.
+fn alias_import_module_span(source: &[u8], statement: Span) -> Option<Span> {
+    let raw = source.get(statement.start as usize..statement.end as usize)?;
+    let (lo, hi) = trim_ascii_bounds(raw);
+    if lo >= hi {
+        return None;
+    }
+    let stmt = raw.get(lo..hi)?;
+    let base = statement.start + lo as u32;
+    if stmt.starts_with(b"from ") {
+        let rest = stmt.get(5..)?;
+        let (rlo, rhi) = trim_ascii_bounds(rest);
+        if rlo >= rhi {
+            return None;
+        }
+        let rest = rest.get(rlo..rhi)?;
+        let rest_base = base + 5 + rlo as u32;
+        let import_pos = rest
+            .windows(8)
+            .position(|window| window == b" import ")?;
+        let module = rest.get(..import_pos)?;
+        let (mlo, mhi) = trim_ascii_bounds(module);
+        if mlo >= mhi {
+            return None;
+        }
+        let module = module.get(mlo..mhi)?;
+        if module.is_empty() || module[0] == b'.' || module.contains(&b'\n') {
+            return None;
+        }
+        return Some(Span {
+            start: rest_base + mlo as u32,
+            end: rest_base + mhi as u32,
+        });
+    }
+    if stmt.starts_with(b"import ") {
+        let rest = stmt.get(7..)?;
+        let (rlo, rhi) = trim_ascii_bounds(rest);
+        if rlo >= rhi {
+            return None;
+        }
+        let rest = rest.get(rlo..rhi)?;
+        let rest_base = base + 7 + rlo as u32;
+        let mut parts: Vec<&[u8]> = Vec::new();
+        for part in rest.split(|byte: &u8| byte.is_ascii_whitespace()) {
+            if !part.is_empty() {
+                parts.push(part);
+            }
+        }
+        if parts.len() != 3 || parts[1] != b"as" {
+            return None;
+        }
+        let module = parts[0];
+        if module.is_empty() || module[0] == b'.' || module.contains(&b'\n') {
+            return None;
+        }
+        return Some(Span {
+            start: rest_base,
+            end: rest_base + module.len() as u32,
+        });
+    }
+    None
+}
+
+const fn trim_ascii_bounds(bytes: &[u8]) -> (usize, usize) {
+    let mut start = 0;
+    while start < bytes.len() && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    (start, end)
+}
 
 fn collect_import_bindings(source: &str, module_name: &str) -> (HashMap<String, String>, HashSet<String>) {
     let is_package = module_name.ends_with("__init__");
