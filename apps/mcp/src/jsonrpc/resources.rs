@@ -54,9 +54,14 @@ to *find* coordinates and `backend.document` is the way to read them.
 ## edges from a row
 
 `project`, `parent`, `children`, `related`, `referencedBy`, `sameProject`.
-`related` walks outward inside one package. `referencedBy` is that edge in
-reverse, still inside the package: a stable ref to another package stays an
-external node and is not joined across publications. An edge that may be
+`related` walks outward. A call, a type reference, an import, or a field read
+of a declaration in this same project lands on that declaration, including
+another file, including when the field read's declaring type and field name
+match one field this project publishes. Variable reads do not. `referencedBy` is that edge reversed, so
+the declaration names its callers and mention sites across files. A stable reference
+into another publication stays an external node and is not joined. Any other
+foreign target stays an external node; when the compiler recorded a display
+spelling, that spelling is the node's name. An edge that may be
 empty needs `@optional`, or its row is dropped.
 
 ## worked queries

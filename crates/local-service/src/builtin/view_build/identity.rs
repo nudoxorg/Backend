@@ -86,7 +86,7 @@ pub(crate) fn semantic_symbol(
     backend_engine::symbol_key(&semantic_identity(package, identity))
 }
 
-pub(super) fn semantic_coordinate(
+pub(crate) fn semantic_coordinate(
     project: &str,
     identity: DeclarationIdentity,
     name: &str,
@@ -130,7 +130,7 @@ pub(super) fn query_package_id(package: backend_engine::PackageKey) -> String {
     RowId::Package(package).stable_key()
 }
 
-pub(super) fn query_semantic_id(
+pub(crate) fn query_semantic_id(
     package: backend_engine::PackageKey,
     identity: DeclarationIdentity,
 ) -> String {

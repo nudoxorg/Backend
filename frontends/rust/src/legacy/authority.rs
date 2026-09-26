@@ -12,7 +12,7 @@ use std::{
 };
 
 use backend_semantic::vocabulary::RustEdition;
-use ra_ap_base_db::{EditionedFileId, all_crates};
+use ra_ap_base_db::{EditionedFileId, SourceDatabase, all_crates};
 use ra_ap_hir::{
     Adt, AssocItem, Const, EnumVariant, Field, FieldSource, Function, HasSource, Impl, Macro,
     Module, ModuleDef, PathResolution, Semantics, Static, Trait, TypeAlias, TypeInfo,
@@ -546,6 +546,99 @@ impl<'analysis> RustAuthority<'analysis> {
                 receive(text.trim_start());
             }
         }
+    }
+
+    /// Rust module path of one resolved method's defining source file when it
+    /// lives in another project-local file (`src/service` for both
+    /// `src/service.rs` and `src/service/mod.rs`). Free functions use the same
+    /// module path as methods.
+    #[must_use]
+    pub fn cross_file_method_package_path(&self, function: Function) -> Option<String> {
+        let source = self.semantics.source(function)?;
+        self.cross_file_package_path_from_syntax(source.value.syntax())
+    }
+
+    /// Rust module path of one resolved named field when it lives in another
+    /// project-local file. Named struct fields share the same `src/...` path
+    /// rules as types and functions.
+    #[must_use]
+    pub fn cross_file_field_package_path(&self, field: Field) -> Option<String> {
+        let source = self.semantics.source(field)?;
+        self.cross_file_package_path_from_syntax(source.value.syntax())
+    }
+
+    /// Rust module path of one resolved type or module definition when it lives
+    /// in another project-local file. Structs, unions, enums, traits, type
+    /// aliases, and modules share the same `src/...` path rules as functions.
+    #[must_use]
+    pub fn cross_file_type_package_path(&self, definition: ModuleDef) -> Option<String> {
+        match definition {
+            ModuleDef::Adt(adt) => {
+                let source = self.semantics.source(adt)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            ModuleDef::Trait(trait_) => {
+                let source = self.semantics.source(trait_)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            ModuleDef::TypeAlias(alias) => {
+                let source = self.semantics.source(alias)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            ModuleDef::Module(module) => module
+                .as_source_file_id(self.database)
+                .and_then(|file_id| self.cross_file_package_path_from_file(file_id)),
+            ModuleDef::Function(_)
+            | ModuleDef::EnumVariant(_)
+            | ModuleDef::Const(_)
+            | ModuleDef::Static(_)
+            | ModuleDef::BuiltinType(_)
+            | ModuleDef::Macro(_) => None,
+        }
+    }
+
+    fn cross_file_package_path_from_syntax(
+        &self,
+        syntax: &ra_ap_syntax::SyntaxNode,
+    ) -> Option<String> {
+        let range = self.semantics.original_range(syntax);
+        if range.file_id == self.source_file {
+            return None;
+        }
+        self.cross_file_package_path_from_file(range.file_id)
+    }
+
+    fn cross_file_package_path_from_file(
+        &self,
+        file_id: EditionedFileId,
+    ) -> Option<String> {
+        if file_id == self.source_file {
+            return None;
+        }
+        let db = self.database;
+        let file_id = file_id.file_id(db);
+        let source_root_id = db.file_source_root(file_id).source_root_id(db);
+        let source_root = db.source_root(source_root_id).source_root(db);
+        if source_root.is_library {
+            return None;
+        }
+        let vfs_path = source_root.path_for_file(&file_id)?;
+        let abs_path = vfs_path.as_path()?.as_str();
+        let marker = "/src/";
+        let pos = abs_path.rfind(marker)?;
+        let mut path = abs_path[pos + 1..].to_string();
+        if path.ends_with(".rs") {
+            path.truncate(path.len() - 3);
+        }
+        if let Some(stripped) = path.strip_suffix("/mod") {
+            if !stripped.is_empty() {
+                path = stripped.to_string();
+            }
+        }
+        if path.is_empty() || path.contains('\\') || path.contains(':') {
+            return None;
+        }
+        Some(path)
     }
 
     /// Maps a resolved HIR definition to an original local coordinate or explicit foreign state.

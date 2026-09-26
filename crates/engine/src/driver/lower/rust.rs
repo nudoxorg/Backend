@@ -42,7 +42,11 @@
 //!   and paths with a static target land `Local` or foreign at oracle
 //!   confidence; positions the oracle could not resolve stay at syntactic
 //!   confidence, and every span is relative to the innermost owning
-//!   declaration.
+//!   declaration. A method rust-analyzer resolved into another project-local
+//!   file is a cargo package key whose name is that file's module path, not a
+//!   universe key of the method token. A path call resolved to a function in
+//!   another project-local file is a cargo package key of that module, with
+//!   the function's name as path and display.
 //! - Macro invocation spellings travel in each owning declaration's Rust
 //!   extension row. A `macro_rules!` definition commits its own closed
 //!   `Macro` row — leaf product, honest unannotated record — exactly as the
@@ -76,7 +80,7 @@ use backend_frontend_rust::legacy::{
 };
 use backend_semantic::ir::{
     AtomListId, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ExternalEntityRef,
-    ExternalFragmentId, ForeignKey, ForeignOrigin,
+    ExternalFragmentId, ForeignKey, ForeignOrigin, PackageLineage,
     ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape,
     ProductChildRole, ReferenceKind, RelSpan, RustFacts, RustOwnership, SemanticProductConstructor,
     SemanticTypeRecord, SemanticTypeTag, TypeParameterListId, TypeReason, TypeWidth,
@@ -126,6 +130,8 @@ const CARGO_ECOSYSTEM: &str = "cargo";
 const SELF_NAME: &[u8] = b"self";
 /// Fallback binding name for a parameter whose pattern spells no identifier.
 const PARAM_FALLBACK_NAME: &[u8] = b"param";
+/// Synthetic owner of module-level `use` items in a crate-root source file.
+const CRATE_FILE_OWNER_NAME: &[u8] = b"crate";
 
 /// Exact direct-authority rejection while rust-analyzer HIR is borrowed.
 ///
@@ -331,6 +337,11 @@ struct Row<'source> {
     span: ByteSpan,
     /// The row's Rust extension facts as pushed, before macros attach.
     extension: RustFacts,
+    /// True for the synthetic crate-root file owner pushed only to host
+    /// orphan module-level imports. Parentage ignores these rows so every
+    /// real declaration stays a root when nothing else strictly contains it;
+    /// occurrence ownership still treats them as the fallback file owner.
+    file_owner: bool,
 }
 
 /// One macro invocation site with its written spelling and call span.
@@ -497,6 +508,8 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.emit_type_roots(&declarations)?;
         self.emit_members(&declarations)?;
         self.emit_reexports()?;
+        self.rebuild_owner_order();
+        self.emit_crate_file_owner()?;
         self.rebuild_owner_order();
         self.emit_parentage()?;
         self.attach_macros()?;
@@ -2111,6 +2124,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             name: self.name_of(declaration)?,
             span: declaration.span,
             extension,
+            file_owner: false,
         });
         match &declaration.definition {
             RustDefinition::Field(field) => self.fields.push((*field, ordinal)),
@@ -2198,10 +2212,111 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.owner_order[..low].iter().rev().find_map(|index| {
             let row = &self.rows[*index];
             (row.ordinal != ordinal
+                && !row.file_owner
                 && span.end <= row.span.end
                 && (row.span.start < span.start || span.end < row.span.end))
                 .then_some(row.ordinal)
         })
+    }
+
+    /// True when this authority's selected source file is the crate root module.
+    fn is_source_crate_root(&self) -> bool {
+        self.authority
+            .semantics
+            .hir_file_to_module_def(self.authority.source_file)
+            .is_some_and(|module| module.is_crate_root(self.database))
+    }
+
+    /// True when at least one top-level import path has no owning declaration
+    /// row yet — the module-level `use` gap the synthetic file owner closes.
+    fn has_orphan_module_import(&self) -> bool {
+        let authority = self.authority;
+        for path in authority.top_level_paths() {
+            let span = match path
+                .segments()
+                .last()
+                .and_then(|segment| segment.name_ref())
+                .and_then(|name| authority.span(name.syntax()).ok())
+            {
+                Some(span) => span,
+                None => continue,
+            };
+            let kind = match authority.resolve_path(&path) {
+                Some((resolution, _)) => reference_kind(&path, &resolution),
+                None => unresolved_reference_kind(&path),
+            };
+            if kind == ReferenceKind::Import && self.owner_of(span).is_none() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Pushes one synthetic crate-root module row spanning the whole source
+    /// buffer when orphan module-level imports need an owner. Parentage
+    /// ignores the row; occurrence ownership does not.
+    fn emit_crate_file_owner(&mut self) -> Result<(), RustAuthorityError> {
+        if !self.is_source_crate_root() {
+            return Ok(());
+        }
+        // `scoped_names` keys use `SemanticKind`, not `EntityKind`.
+        if self
+            .scoped_names
+            .contains(&(None, SemanticKind::Module as u8, CRATE_FILE_OWNER_NAME.to_vec()))
+        {
+            return Ok(());
+        }
+        if !self.has_orphan_module_import() {
+            return Ok(());
+        }
+        let end = u32::try_from(self.source.len()).map_err(|_| admission())?;
+        let span = ByteSpan { start: 0, end };
+        let extension = self.empty_extension(RustOwnership::Value)?;
+        let fact = SemanticFact::new(
+            EntityKind::Module,
+            CRATE_FILE_OWNER_NAME,
+            SemanticProductConstructor::PRODUCT,
+        )
+        .with_visibility(backend_semantic::ir::Visibility::Private)
+        .with_extension(EmissionExtension::Rust(extension));
+        let ordinal = coordinate(push(self.facts, fact)?)?;
+        let staged = StagedSourceSpan::new(span.start, span.end).ok_or_else(admission)?;
+        self.facts
+            .attach_source_span(ordinal, staged)
+            .map_err(|fault| parentage_fault(ordinal, CRATE_FILE_OWNER_NAME.len(), fault))?;
+        let range = self
+            .facts
+            .type_parameter_range(extension.where_clauses.raw)
+            .map_err(|_| admission())?;
+        let free_range = self
+            .facts
+            .free_predicate_range(extension.free_predicates.raw)
+            .map_err(|_| admission())?;
+        let slot = usize::try_from(ordinal).map_err(|_| admission())?;
+        self.facts
+            .attach_extension_with_type_parameters(
+                slot,
+                EmissionExtension::Rust(extension),
+                range,
+            )
+            .map_err(|_| admission())?;
+        self.facts
+            .set_free_predicate_range(slot, &EmissionExtension::Rust(extension), free_range)
+            .map_err(|_| admission())?;
+        // `scoped_names` keys use `SemanticKind`, not `EntityKind`.
+        self.scoped_names.insert((
+            None,
+            SemanticKind::Module as u8,
+            CRATE_FILE_OWNER_NAME.to_vec(),
+        ));
+        self.rows.push(Row {
+            ordinal,
+            name: CRATE_FILE_OWNER_NAME,
+            span,
+            extension,
+            file_owner: true,
+        });
+        Ok(())
     }
 
     /// Binds lexical parentage from declaration spans after every row
@@ -3059,6 +3174,38 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 continue;
             }
             emitted_method_spans.push(span);
+            if let Some(function) = call.target {
+                let definition = ra_ap_hir::ModuleDef::from(function);
+                if self.ordinal_of_definition(&definition).is_none()
+                    && let Some(package_path) =
+                        authority.cross_file_method_package_path(function)
+                    && let Some(owner) = self.owner_of(span)
+                {
+                    let owner_span = self
+                        .rows
+                        .iter()
+                        .find(|row| row.ordinal == owner)
+                        .map(|row| row.span)
+                        .ok_or_else(admission)?;
+                    let written = self.bytes_of(span)?;
+                    let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                    let relative = relative_span(span, owner_span)?;
+                    self.facts
+                        .push_owned_package_occurrence(
+                            owner,
+                            CARGO_ECOSYSTEM,
+                            &package_path,
+                            name,
+                            name,
+                            Some(EntityKind::Function),
+                            ReferenceKind::MethodCall,
+                            OccurrenceConfidence::Oracle,
+                            relative,
+                        )
+                        .map_err(|_| admission())?;
+                    continue;
+                }
+            }
             let definition = call.target.map(ra_ap_hir::ModuleDef::from);
             // A dispatch the oracle resolved is oracle tier; a method call
             // rust-analyzer could not resolve stays syntactic confidence
@@ -3083,6 +3230,36 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 continue;
             }
             emitted_field_spans.push(span);
+            if let Some(field) = access.target {
+                if self.ordinal_of_field(&field).is_none()
+                    && let Some(package_path) = authority.cross_file_field_package_path(field)
+                    && let Some(owner) = self.owner_of(span)
+                {
+                    let owner_span = self
+                        .rows
+                        .iter()
+                        .find(|row| row.ordinal == owner)
+                        .map(|row| row.span)
+                        .ok_or_else(admission)?;
+                    let written = self.bytes_of(span)?;
+                    let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                    let relative = relative_span(span, owner_span)?;
+                    self.facts
+                        .push_owned_package_occurrence(
+                            owner,
+                            CARGO_ECOSYSTEM,
+                            &package_path,
+                            name,
+                            name,
+                            Some(EntityKind::Field),
+                            ReferenceKind::FieldAccess,
+                            OccurrenceConfidence::Oracle,
+                            relative,
+                        )
+                        .map_err(|_| admission())?;
+                    continue;
+                }
+            }
             let confidence = occurrence_confidence(access.target.is_some());
             let target = access
                 .target
@@ -3128,6 +3305,72 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 Some(_) => OccurrenceConfidence::Oracle,
                 None => OccurrenceConfidence::Syntactic,
             };
+            if kind == ReferenceKind::FunctionCall
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(function)) =
+                    resolution
+                && self
+                    .ordinal_of_definition(&ra_ap_hir::ModuleDef::Function(*function))
+                    .is_none()
+                && let Some(package_path) = authority.cross_file_method_package_path(*function)
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(EntityKind::Function),
+                        ReferenceKind::FunctionCall,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
+            if matches!(kind, ReferenceKind::TypeReference | ReferenceKind::Import)
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(definition) = resolution
+                && self.ordinal_of_definition(definition).is_none()
+                && let Some(package_path) = authority.cross_file_type_package_path(*definition)
+                && let Some(entity_kind) = package_entity_kind(*definition)
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(entity_kind),
+                        kind,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
             self.emit_one_occurrence(
                 span,
                 kind,
@@ -3367,6 +3610,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 name,
                 span: self.authority.span(reexport.item.syntax())?,
                 extension,
+                file_owner: false,
             });
         }
         Ok(())
@@ -3795,6 +4039,25 @@ const fn path_definition(resolution: &ra_ap_hir::PathResolution) -> Option<ra_ap
     match resolution {
         ra_ap_hir::PathResolution::Def(module_def) => Some(*module_def),
         _ => None,
+    }
+}
+
+/// Maps one cross-file package-retargetable definition onto the entity lattice.
+const fn package_entity_kind(definition: ra_ap_hir::ModuleDef) -> Option<EntityKind> {
+    match definition {
+        ra_ap_hir::ModuleDef::Adt(ra_ap_hir::Adt::Struct(_) | ra_ap_hir::Adt::Union(_)) => {
+            Some(EntityKind::Record)
+        }
+        ra_ap_hir::ModuleDef::Adt(ra_ap_hir::Adt::Enum(_)) => Some(EntityKind::Enum),
+        ra_ap_hir::ModuleDef::Trait(_) => Some(EntityKind::Trait),
+        ra_ap_hir::ModuleDef::TypeAlias(_) => Some(EntityKind::Alias),
+        ra_ap_hir::ModuleDef::Module(_) => Some(EntityKind::Module),
+        ra_ap_hir::ModuleDef::Function(_)
+        | ra_ap_hir::ModuleDef::EnumVariant(_)
+        | ra_ap_hir::ModuleDef::Const(_)
+        | ra_ap_hir::ModuleDef::Static(_)
+        | ra_ap_hir::ModuleDef::BuiltinType(_)
+        | ra_ap_hir::ModuleDef::Macro(_) => None,
     }
 }
 

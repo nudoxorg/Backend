@@ -404,8 +404,65 @@ internal static class AuthorityImage
         {
             var ownerNode = node.Ancestors().FirstOrDefault(syntaxMap.ContainsKey);
             if (ownerNode is null || !syntaxMap.TryGetValue(ownerNode, out var ownerRow)) return;
-            var target = ResolveTarget(model.GetSymbolInfo(node).Symbol);
-            var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spellingNode.ToString())); Put(row, 12, TreeFileAtom()); var s = Span(spellingNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+            var symbol = model.GetSymbolInfo(node).Symbol;
+            var target = ResolveTarget(symbol);
+            var spanNode = spellingNode;
+            var spelling = spellingNode.ToString();
+            if (tag == 1 && target == Absent
+                && symbol is IMethodSymbol method
+                && method.ContainingType is not null)
+            {
+                var methodName = method.Name;
+                if (!string.IsNullOrEmpty(methodName)
+                    && TryQualifiedMemberSpelling(method.ContainingType, methodName, out var qualified))
+                {
+                    spelling = qualified;
+                    spanNode = InvocationMethodNameNode(node) ?? spellingNode;
+                }
+            }
+            else if (target == Absent
+                && symbol is IFieldSymbol or IPropertySymbol or IEventSymbol
+                && symbol is not IFieldSymbol { IsConst: true }
+                && symbol.ContainingType is not null
+                && tag is 3 or 6 or 7)
+            {
+                var memberName = symbol.Name;
+                if (!string.IsNullOrEmpty(memberName)
+                    && TryQualifiedMemberSpelling(symbol.ContainingType, memberName, out var qualified))
+                    spelling = qualified;
+            }
+            var row = new byte[28]; Put(row, 0, ownerRow); Put(row, 4, target); Put(row, 8, Atom(spelling)); Put(row, 12, TreeFileAtom()); var s = Span(spanNode); Put(row, 16, s.Start); Put(row, 20, s.End); row[24] = tag; references.Add(row);
+        }
+
+        private static bool TryQualifiedMemberSpelling(INamedTypeSymbol containingType, string memberName, out string spelling)
+        {
+            var typeDisplay = containingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            if (typeDisplay.StartsWith("global::", StringComparison.Ordinal))
+                typeDisplay = typeDisplay["global::".Length..];
+            typeDisplay = typeDisplay.Replace('+', '.');
+            if (string.IsNullOrEmpty(typeDisplay))
+            {
+                spelling = string.Empty;
+                return false;
+            }
+            spelling = typeDisplay + "." + memberName;
+            return true;
+        }
+
+        private static SyntaxNode InvocationMethodNameNode(SyntaxNode node)
+        {
+            if (node is not InvocationExpressionSyntax invocation)
+                return node;
+            var expression = invocation.Expression;
+            while (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            return expression switch
+            {
+                MemberAccessExpressionSyntax memberAccess => memberAccess.Name,
+                MemberBindingExpressionSyntax memberBinding => memberBinding.Name,
+                IdentifierNameSyntax identifier => identifier,
+                _ => expression,
+            };
         }
 
         private uint ResolveTarget(ISymbol? symbol)

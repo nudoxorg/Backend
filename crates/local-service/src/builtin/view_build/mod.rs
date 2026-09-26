@@ -6,15 +6,30 @@
 //! coverage fall back to the tree-sitter baseline, and a stale publication
 //! answers semantic and typed stale rather than being silently replaced.
 
+mod call_join;
 mod identity;
 mod query;
 mod semantic;
 mod structural;
 
+pub(crate) use call_join::{
+    ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
+    foreign_namespace_field_retarget, foreign_package_call_retarget,
+    foreign_package_field_retarget, foreign_package_mention_retarget, join_project_call,
+    join_project_field, join_project_mention, project_paths_for_package,
+};
+
+pub(crate) use identity::query_semantic_id;
 pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
+pub(crate) use identity::semantic_coordinate;
 pub(super) use query::semantic_query_corpus;
 pub(super) use semantic::{ProjectedRows, StructuralSites, rows_for_indexed_sources};
-pub(crate) use structural::{structural_call_graph_relations, structural_reference_facts};
+pub(crate) use semantic::compiled_source_path;
+pub(crate) use structural::{
+    resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
+    structural_call_graph_relations_mapped, structural_call_span, structural_reference_facts,
+    structural_symbol_identity, view_row_for_structural_coordinate,
+};
 
 use query::append_structural_query_facts;
 use semantic::{ProfileStalePaths, SourceRowProjection};
@@ -62,15 +77,21 @@ fn semantic_profile_is_complete(
 }
 
 #[cfg(test)]
+mod csharp_field_namespace_join;
+
+#[cfg(test)]
 mod tests {
     use super::super::initial_view;
     use super::super::{FileLane, IndexedProject, SemanticFreshness, StructuralCause};
     use super::ProfileStalePaths;
     use super::{
         STALE_NOTE, SourceRowProjection, StructuralParent, StructuralProjectionPlan,
-        append_structural_query_facts, semantic_profile_is_complete, structural_excerpt_calls,
+        append_structural_query_facts, semantic_profile_is_complete, structural_call_graph_relations,
+        structural_excerpt_calls,
     };
-    use backend_engine::{Row, RowId, package_key, product_source_file_key, symbol_key};
+    use backend_engine::{
+        Row, RowId, ViewRoot, package_key, product_source_file_key, symbol_key,
+    };
     use backend_semantic::ir::{
         BorrowedTree, CorePayloadHash, DeclarationFamilyId, DeclarationIdentity,
         EntityAuthorityFacts, EntityVersion, FactAvailability, IrBuilder, ItemKind,
@@ -1412,6 +1433,604 @@ pub fn execute() {}
     #[test]
     fn the_stale_note_is_stable() {
         assert!(STALE_NOTE.contains("stale semantic image"));
+    }
+
+    fn analyze_source(
+        language: backend_engine::SourceLanguage,
+        path: &str,
+        source: &str,
+    ) -> Result<Arc<[backend_compile::SourceDeclaration]>, String> {
+        match language {
+            backend_engine::SourceLanguage::TypeScript => Ok(
+                backend_frontend_typescript::syntax_frontend()
+                    .map_err(|error| error.to_string())?
+                    .analyze(std::path::Path::new(path), source.as_bytes())
+                    .map_err(|error| error.to_string())?
+                    .declarations()
+                    .clone(),
+            ),
+            backend_engine::SourceLanguage::Rust => Ok(
+                backend_frontend_rust::syntax_frontend()
+                    .map_err(|error| error.to_string())?
+                    .analyze(std::path::Path::new(path), source.as_bytes())
+                    .map_err(|error| error.to_string())?
+                    .declarations()
+                    .clone(),
+            ),
+            backend_engine::SourceLanguage::Python => Ok(
+                backend_frontend_python::syntax_frontend()
+                    .map_err(|error| error.to_string())?
+                    .analyze(std::path::Path::new(path), source.as_bytes())
+                    .map_err(|error| error.to_string())?
+                    .declarations()
+                    .clone(),
+            ),
+            _ => Err(format!("unsupported cross-file test language: {language:?}")),
+        }
+    }
+
+    fn cross_file_sources(
+        files: &[(&str, backend_engine::SourceLanguage, Arc<[backend_compile::SourceDeclaration]>)],
+    ) -> Result<(super::super::IndexedSources, backend_engine::PackageKey), String> {
+        let package = package_key("fixture");
+        let project_key = package.to_bytes();
+        let mut file_records = Vec::new();
+        let mut file_keys = Vec::new();
+        for (path, language, declarations) in files {
+            let file_key = product_source_file_key(project_key, *path);
+            let record = super::super::ProductSourceRecord::file(
+                project_key,
+                *path,
+                *language,
+                [1; 32],
+                [2; 32],
+                declarations.clone(),
+            )?;
+            file_keys.push(file_key);
+            file_records.push((file_key, record));
+        }
+        file_keys.sort();
+        file_records.sort_by_key(|(file_key, _)| *file_key);
+        Ok((
+            super::super::IndexedSources {
+                projects: BTreeMap::from([(
+                    project_key,
+                    IndexedProject {
+                        package,
+                        label: "fixture".to_owned(),
+                        files: Arc::from(file_keys),
+                    },
+                )]),
+                files: file_records,
+            },
+            package,
+        ))
+    }
+
+    fn cross_file_view(
+        sources: &super::super::IndexedSources,
+    ) -> Result<(ViewRoot, Vec<Row>), String> {
+        let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+        let structural_plan =
+            StructuralProjectionPlan::of(sources, &BTreeSet::new()).map_err(|error| error.to_string())?;
+        let targets = super::SemanticTargets::default();
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            256,
+            &targets,
+            &structural_plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|error| error.to_string())?;
+        for (key, file) in &sources.files {
+            projection
+                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+                .map_err(|error| error.to_string())?;
+        }
+        let rows = projection.finish(Vec::new()).map_err(|error| error.to_string())?;
+        let capability = super::super::test_builtin_view_capability().map_err(|error| error.to_string())?;
+        let view = ViewRoot::new_checked(
+            initial.recipe(),
+            initial.basis(),
+            initial.frontier(),
+            rows.clone(),
+            vec![backend_engine::ViewCoverage::Complete],
+            capability,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        Ok((view, rows))
+    }
+
+    fn row_for_coordinate(rows: &[Row], coordinate: &str) -> Result<RowId, String> {
+        rows.iter()
+            .find(|row| row.label == coordinate)
+            .map(|row| row.id)
+            .ok_or_else(|| format!("missing row for coordinate {coordinate}"))
+    }
+
+    fn calls_relations(
+        view: &ViewRoot,
+        sources: &super::super::IndexedSources,
+        package: backend_engine::PackageKey,
+        source_id: RowId,
+        include_incoming: bool,
+    ) -> Result<Vec<backend_engine::GraphRelation>, String> {
+        Ok(
+            structural_call_graph_relations(view, sources, package, source_id, include_incoming)
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default(),
+        )
+    }
+
+    fn assert_single_calls_target(
+        view: &ViewRoot,
+        sources: &super::super::IndexedSources,
+        package: backend_engine::PackageKey,
+        from: RowId,
+        to_coordinate: &str,
+        rows: &[Row],
+        include_incoming: bool,
+    ) -> Result<(), String> {
+        let to = row_for_coordinate(rows, to_coordinate)?;
+        let relations = calls_relations(view, sources, package, from, include_incoming)?;
+        if relations.len() != 1 {
+            return Err(format!(
+                "expected exactly one Calls relation, got {relations:?}"
+            ));
+        }
+        let relation = &relations[0];
+        if relation.relation != backend_library::SemanticLinkKind::Calls {
+            return Err(format!("expected Calls relation, got {relation:?}"));
+        }
+        if relation.to != to {
+            return Err(format!(
+                "expected target {to_coordinate}, got relation {relation:?}"
+            ));
+        }
+        if !include_incoming && relation.from != from {
+            return Err(format!("expected outgoing from {from:?}, got {relation:?}"));
+        }
+        Ok(())
+    }
+
+    fn assert_no_calls_target(
+        view: &ViewRoot,
+        sources: &super::super::IndexedSources,
+        package: backend_engine::PackageKey,
+        from: RowId,
+        to_coordinate: &str,
+        rows: &[Row],
+    ) -> Result<(), String> {
+        let to = row_for_coordinate(rows, to_coordinate)?;
+        let relations = calls_relations(view, sources, package, from, false)?;
+        if relations.iter().any(|relation| relation.to == to) {
+            return Err(format!(
+                "unexpected Calls edge to {to_coordinate}: {relations:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_typescript_named_import() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\nexport function entriesFromWeekSet() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { entriesFromItems } from \"./apply-set\";\nexport function syncWorkout() { entriesFromItems(); }\n",
+        )?;
+        let decoy = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "decoy.ts",
+            "export function rogue() { entriesFromItems(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+            ("decoy.ts", backend_engine::SourceLanguage::TypeScript, decoy),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
+        let target = "fixture::apply-set.ts:1::entriesFromItems";
+        assert_single_calls_target(&view, &sources, package, sync, target, &rows, false)?;
+        let callee = row_for_coordinate(&rows, target)?;
+        let incoming = calls_relations(&view, &sources, package, callee, true)?;
+        if incoming.len() != 1 || incoming[0].from != sync {
+            return Err(format!("expected incoming call from syncWorkout, got {incoming:?}"));
+        }
+        let rogue = row_for_coordinate(&rows, "fixture::decoy.ts:1::rogue")?;
+        assert_no_calls_target(&view, &sources, package, rogue, target, &rows)?;
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_typescript_alias_import() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\nexport function otherFn() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { entriesFromItems as items } from \"./apply-set\";\nexport function syncWorkout() { items(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::apply-set.ts:1::entriesFromItems",
+            &rows,
+            false,
+        )?;
+        assert_no_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::apply-set.ts:2::otherFn",
+            &rows,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_typescript_imported_class_method() -> Result<(), String> {
+        let workout = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "workout.service.ts",
+            "export class WorkoutService { setNote() {} }\n",
+        )?;
+        let other = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "other.service.ts",
+            "export class OtherService { setNote() {} }\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { WorkoutService } from \"./workout.service\";\nexport class Weeks { service!: WorkoutService; sync() { this.service.setNote(); } }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("workout.service.ts", backend_engine::SourceLanguage::TypeScript, workout),
+            ("other.service.ts", backend_engine::SourceLanguage::TypeScript, other),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::workout.service.ts:1::setNote",
+            &rows,
+            false,
+        )?;
+        assert_no_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::other.service.ts:1::setNote",
+            &rows,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_typescript_ambiguous_imported_class_method() -> Result<(), String> {
+        let workout = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "workout.service.ts",
+            "export class WorkoutService { setNote() {} }\n",
+        )?;
+        let other = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "other.service.ts",
+            "export class OtherService { setNote() {} }\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { WorkoutService } from \"./workout.service\";\nimport { OtherService } from \"./other.service\";\nexport class Weeks { service!: WorkoutService; sync() { this.service.setNote(); } }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("workout.service.ts", backend_engine::SourceLanguage::TypeScript, workout),
+            ("other.service.ts", backend_engine::SourceLanguage::TypeScript, other),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:3::sync")?;
+        assert_no_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::workout.service.ts:1::setNote",
+            &rows,
+        )?;
+        assert_no_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::other.service.ts:1::setNote",
+            &rows,
+        )?;
+        let relations = calls_relations(&view, &sources, package, sync, false)?;
+        if !relations.is_empty() {
+            return Err(format!("ambiguous import must emit no Calls edges: {relations:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_typescript_property_name_does_not_matter() -> Result<(), String> {
+        let workout = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "workout.service.ts",
+            "export class WorkoutService { setNote() {} }\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { WorkoutService } from \"./workout.service\";\nexport class Weeks { svc!: WorkoutService; sync() { svc.setNote(); } }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("workout.service.ts", backend_engine::SourceLanguage::TypeScript, workout),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::workout.service.ts:1::setNote",
+            &rows,
+            false,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_typescript_type_only_import_skipped() -> Result<(), String> {
+        let workout = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "workout.service.ts",
+            "export class WorkoutService { setNote() {} }\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import type { WorkoutService } from \"./workout.service\";\nexport class Weeks { workoutService!: WorkoutService; sync() { this.workoutService.setNote(); } }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("workout.service.ts", backend_engine::SourceLanguage::TypeScript, workout),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
+        let relations = calls_relations(&view, &sources, package, sync, false)?;
+        if !relations.is_empty() {
+            return Err(format!("type-only import must not create Calls edges: {relations:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_same_file_unchanged() -> Result<(), String> {
+        let source = r#"
+pub fn parse_config() -> Result<String, String> { Ok(String::new()) }
+pub fn run_app() -> Result<String, String> { parse_config() }
+pub fn decoy_mention() { let _ = "parse_config("; }
+"#;
+        let declarations = analyze_source(
+            backend_engine::SourceLanguage::Rust,
+            "src/main.rs",
+            source,
+        )?;
+        let (sources, package) = cross_file_sources(&[(
+            "src/main.rs",
+            backend_engine::SourceLanguage::Rust,
+            declarations,
+        )])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let run_app = row_for_coordinate(&rows, "fixture::src/main.rs:3::run_app")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            run_app,
+            "fixture::src/main.rs:2::parse_config",
+            &rows,
+            false,
+        )?;
+        assert_no_calls_target(
+            &view,
+            &sources,
+            package,
+            run_app,
+            "fixture::src/main.rs:4::decoy_mention",
+            &rows,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_rust_use_path() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::Rust,
+            "src/apply.rs",
+            "pub fn entries_from_items() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::Rust,
+            "src/weeks.rs",
+            "use crate::apply::entries_from_items;\npub fn sync_week() { entries_from_items(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("src/apply.rs", backend_engine::SourceLanguage::Rust, apply),
+            ("src/weeks.rs", backend_engine::SourceLanguage::Rust, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::src/weeks.rs:2::sync_week")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::src/apply.rs:1::entries_from_items",
+            &rows,
+            false,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_python_from_import() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::Python,
+            "apply_set.py",
+            "def entries_from_items():\n    pass\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::Python,
+            "weeks.py",
+            "from apply_set import entries_from_items\n\ndef sync_week():\n    entries_from_items()\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply_set.py", backend_engine::SourceLanguage::Python, apply),
+            ("weeks.py", backend_engine::SourceLanguage::Python, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.py:3::sync_week")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::apply_set.py:1::entries_from_items",
+            &rows,
+            false,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_typescript_namespace_qualifier() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import * as apply from \"./apply-set\";\nexport function syncWorkout() { apply.entriesFromItems(); }\nexport function bare() { entriesFromItems(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::apply-set.ts:1::entriesFromItems",
+            &rows,
+            false,
+        )?;
+        let bare = row_for_coordinate(&rows, "fixture::weeks.ts:3::bare")?;
+        let relations = calls_relations(&view, &sources, package, bare, false)?;
+        if !relations.is_empty() {
+            return Err(format!("bare call without import must not link cross-file: {relations:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_earlier_punctuation_does_not_qualify() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { entriesFromItems } from \"./apply-set\";\nexport function sync(file: { name: number }): Record<string, number> {\n  const nested = obj.inner.prop;\n  const label = \"a::b\";\n  const file = { name: 1 };\n  entriesFromItems();\n}\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::sync")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            sync,
+            "fixture::apply-set.ts:1::entriesFromItems",
+            &rows,
+            false,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_call_namespace_not_poisoned_by_earlier_property() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import * as apply from \"./apply-set\";\nexport function bare() { const obj = { apply: 1 }; entriesFromItems(); }\nexport function qualified() { apply.entriesFromItems(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let bare = row_for_coordinate(&rows, "fixture::weeks.ts:2::bare")?;
+        let relations = calls_relations(&view, &sources, package, bare, false)?;
+        if !relations.is_empty() {
+            return Err(format!(
+                "bare call must not link through an earlier property mention: {relations:?}"
+            ));
+        }
+        let qualified = row_for_coordinate(&rows, "fixture::weeks.ts:3::qualified")?;
+        assert_single_calls_target(
+            &view,
+            &sources,
+            package,
+            qualified,
+            "fixture::apply-set.ts:1::entriesFromItems",
+            &rows,
+            false,
+        )?;
+        Ok(())
     }
 
     #[test]

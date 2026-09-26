@@ -74,8 +74,9 @@ use backend_semantic::ir::{
     ClangFacts as WireClangFacts, ClangLayout, ClangQualifiers, ClangStorageClass,
     DeclarationFamilyId, DeclarationIdentity, DocFragmentInput, DocLinkTarget, EntityId,
     EntityKind, ExternalFragmentId, ForeignKey, ForeignOrigin, NominalRef, Occurrence,
-    OccurrenceConfidence, OccurrenceTarget, ProductChildRole, ReferenceKind as LaneReferenceKind,
-    RelSpan, SemanticProductConstructor, SemanticTypeRecord, SemanticTypeTag, StableRef,
+    OccurrenceConfidence, OccurrenceTarget, PackageLineage, ProductChildRole,
+    ReferenceKind as LaneReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeRecord,
+    SemanticTypeTag, StableRef,
     TypeParameterListId, TypeReason, TypeWidth, VariantFingerprint,
 };
 use backend_semantic::vocabulary::{LanguageProfile, LoweringUnsupported};
@@ -2508,6 +2509,39 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
             let Ok(written) = self.slice(reference.span) else {
                 continue;
             };
+            let Some(owner_span) = self.owner_span(owner) else {
+                continue;
+            };
+            let Some(span) = owner_relative_span(owner_span, reference.span) else {
+                continue;
+            };
+            if reference.kind == ReferenceKind::Call {
+                if let ReferenceTarget::Foreign {
+                    path: Some(slot), ..
+                } = reference.target
+                {
+                    if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
+                        if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
+                            if let Ok(name) = core::str::from_utf8(written) {
+                                self.facts
+                                    .push_owned_package_occurrence(
+                                        owner,
+                                        ECOSYSTEM,
+                                        package_path.as_ref(),
+                                        name,
+                                        name,
+                                        Some(EntityKind::Function),
+                                        lane_reference_kind(reference.kind),
+                                        OccurrenceConfidence::Oracle,
+                                        span,
+                                    )
+                                    .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
             let target = match reference.target {
                 ReferenceTarget::Local(identity) => match self.ordinal_of(identity) {
                     Some(ordinal) => Some((
@@ -2521,7 +2555,7 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     None => foreign_universe(written, reference.kind)
                         .map(|target| (target, OccurrenceConfidence::Index)),
                 },
-                ReferenceTarget::Foreign { identity, file } => {
+                ReferenceTarget::Foreign { identity, file, .. } => {
                     let target = match file {
                         Some(file) => stable_foreign_target(identity, file),
                         None => system_fragment_target(identity),
@@ -2532,12 +2566,6 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                     .map(|target| (target, OccurrenceConfidence::Index)),
             };
             let Some((target, confidence)) = target else {
-                continue;
-            };
-            let Some(owner_span) = self.owner_span(owner) else {
-                continue;
-            };
-            let Some(span) = owner_relative_span(owner_span, reference.span) else {
                 continue;
             };
             self.facts
@@ -3025,7 +3053,7 @@ mod tests {
     };
     use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
-        FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
+        ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
         SourceIdentity,
     };
     use backend_semantic::vocabulary::{
@@ -3697,9 +3725,9 @@ mod tests {
         Ok(())
     }
 
-    /// A cross-file project closure resolves a project-local header reference to
-    /// a stable fragment keyed on the package-relative header path, and a system
-    /// header reference to the fixed system fragment without faulting.
+    /// A cross-file project closure resolves a project-local header call to a
+    /// package foreign key on the header path and callee token, and a system
+    /// header call to the fixed system fragment without faulting.
     #[test]
     fn project_closure_resolves_local_and_system_references() -> Result<(), TestError> {
         let root = unique_temp_project()?;
@@ -3721,26 +3749,65 @@ mod tests {
         let bytes =
             lower_with_authority(LanguageProfile::C(CStandard::C11), Some(&project), source)?;
         let view = FragmentView::validate(&bytes)?;
-        let rows = occurrences(&view)?;
+        let use_fn = entity_of(&view, b"use", EntityKind::Function)?;
         let system_fragment = match super::system_fragment_target(SymbolIdentity { bytes: [0; 16] })
         {
             OccurrenceTarget::Stable(stable) => stable.fragment,
             _ => return Err(TestError::Missing("system fragment")),
         };
-        let mut local = false;
-        let mut system = false;
-        for row in &rows {
-            let OccurrenceTarget::Stable(stable) = row.occurrence.target else {
+        let printf_start = source
+            .windows(6)
+            .position(|window| window == b"printf")
+            .ok_or(TestError::Absent)?;
+        let mut header_call = false;
+        let mut printf_stable = false;
+        for row in occurrences(&view)? {
+            if row.owner != use_fn {
                 continue;
-            };
-            if stable.fragment == system_fragment {
-                system = true;
-            } else {
-                local = true;
+            }
+            if row.occurrence.kind != backend_semantic::ir::ReferenceKind::FunctionCall {
+                continue;
+            }
+            match row.occurrence.target {
+                OccurrenceTarget::Foreign(key) => {
+                    let ForeignOrigin::Package(lineage) = key.origin else {
+                        return Err(TestError::Missing("package foreign origin"));
+                    };
+                    if lineage.ecosystem != "c" || lineage.name != "include/decl.h" {
+                        return Err(TestError::Missing("c:include/decl.h package"));
+                    }
+                    if key.path != "declared_in_header" || key.display != "declared_in_header" {
+                        return Err(TestError::Missing("declared_in_header path"));
+                    }
+                    if key.kind != Some(EntityKind::Function) {
+                        return Err(TestError::Missing("function entity kind"));
+                    }
+                    if row.occurrence.confidence
+                        != backend_semantic::ir::OccurrenceConfidence::Oracle
+                    {
+                        return Err(TestError::Missing("oracle confidence"));
+                    }
+                    header_call = true;
+                }
+                OccurrenceTarget::Stable(stable) => {
+                    if stable.fragment != system_fragment {
+                        return Err(TestError::Missing("unexpected stable fragment"));
+                    }
+                    let owner_start = source
+                        .windows(b"int use".len())
+                        .position(|window| window == b"int use")
+                        .ok_or(TestError::Absent)?;
+                    if row.occurrence.span.start
+                        == u32::try_from(printf_start - owner_start).map_err(|_| TestError::Tail)?
+                    {
+                        printf_stable = true;
+                    }
+                }
+                _ => {}
             }
         }
-        if !local || !system {
-            return Err(TestError::Missing("local and system stable references"));
+        if !header_call || !printf_stable {
+            return Err(TestError::Missing("header foreign call and printf stable"));
         }
         Ok(())
     }

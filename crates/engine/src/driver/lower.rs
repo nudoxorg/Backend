@@ -25,9 +25,10 @@ use backend_semantic::ir::{
     AtomInput, CanonicalDataError, DataFacts, DataOutput, DataResourceBudget, DataScratch,
     DocFactInput, DocFragmentInput, DocLinkTarget, EntityKind, EntityRecord, ExtensionPoolsLane,
     ExtensionRefList, ExtensionSectionInput, ExtensionSectionPlane, ExtensionTypeParameter,
-    ExtensionTypeParameterRange, Occurrence, OccurrenceInput, OccurrenceLane, PrepareError,
-    PreparedFragment, RecipeFact, SourceIdentity, TypeFactInput, TypeFactLane, TypeNode,
-    WriteError, canonicalize_data_with_budget,
+    ExtensionTypeParameterRange, ForeignKey, ForeignOrigin, Occurrence, OccurrenceConfidence,
+    OccurrenceInput, OccurrenceLane, OccurrenceTarget, PackageLineage, PrepareError,
+    PreparedFragment, RecipeFact, ReferenceKind, RelSpan, SourceIdentity, TypeFactInput,
+    TypeFactLane, TypeNode, WriteError, canonicalize_data_with_budget,
 };
 use backend_semantic::vocabulary::ProjectionFactLane;
 use core::mem::size_of;
@@ -714,7 +715,12 @@ pub(super) struct FactSet<'source> {
     computed_rows: usize,
     computed_children_total: usize,
     computed_child_pending: u8,
+    foreign_text: Vec<Box<str>>,
+    occurrence_package_slot: Box<[Option<u32>]>,
 }
+
+/// Staging package name for owned cross-file keys before overlay.
+const OWNED_PACKAGE_STAGING: &str = "owned";
 
 /// An explicit transaction-local type-parameter range.  The public semantic
 /// ID is dense only after admission; a bare staging start is ambiguous when
@@ -1071,6 +1077,8 @@ impl<'source> FactSet<'source> {
             computed_rows: 0,
             computed_children_total: 0,
             computed_child_pending: 0,
+            foreign_text: Vec::new(),
+            occurrence_package_slot: vec![None; plan.occurrences].into_boxed_slice(),
         }
     }
 
@@ -2181,6 +2189,106 @@ impl<'source> FactSet<'source> {
         Ok(())
     }
 
+    /// Appends one occurrence whose cargo package name is owned until admit.
+    pub(super) fn push_owned_package_occurrence(
+        &mut self,
+        owner: u32,
+        ecosystem: &'source str,
+        package: &str,
+        path: &'source str,
+        display: &'source str,
+        entity_kind: Option<EntityKind>,
+        kind: ReferenceKind,
+        confidence: OccurrenceConfidence,
+        span: RelSpan,
+    ) -> Result<(), FactFault> {
+        if PackageLineage::new(ecosystem, package).is_err() {
+            return Err(FactFault::EmptyName);
+        }
+        if self.occurrence_len == self.plan.occurrences
+            || self.foreign_text.len() >= self.plan.occurrences
+        {
+            return Err(FactFault::OccurrenceCapacity);
+        }
+        let staging_lineage = match PackageLineage::new(ecosystem, OWNED_PACKAGE_STAGING) {
+            Ok(lineage) => lineage,
+            Err(_) => return Err(FactFault::EmptyName),
+        };
+        let key = match ForeignKey::new(
+            ForeignOrigin::Package(staging_lineage),
+            path,
+            display,
+            entity_kind,
+        ) {
+            Ok(key) => key,
+            Err(_) => return Err(FactFault::EmptyName),
+        };
+        // Own the module path before the occurrence is visible. A later
+        // rejection drops that string so the staging name `owned` cannot be
+        // admitted without a slot.
+        let slot = match u32::try_from(self.foreign_text.len()) {
+            Ok(slot) => slot,
+            Err(_) => return Err(FactFault::OccurrenceCapacity),
+        };
+        self.foreign_text.push(package.to_owned().into_boxed_str());
+        if let Err(fault) = self.push_occurrence(
+            owner,
+            Occurrence {
+                target: OccurrenceTarget::Foreign(key),
+                kind,
+                confidence,
+                span,
+            },
+        ) {
+            self.foreign_text.pop();
+            return Err(fault);
+        }
+        self.occurrence_package_slot[self.occurrence_len - 1] = Some(slot);
+        Ok(())
+    }
+
+    fn materialize_occurrence<'a>(
+        &'a self,
+        index: usize,
+    ) -> Result<Occurrence<'a>, (u32, usize)> {
+        if index >= self.occurrence_len {
+            return Err((0, self.foreign_text.len()));
+        }
+        let Some(slot) = self.occurrence_package_slot[index] else {
+            return Ok(self.occurrences[index]);
+        };
+        let stored = self.occurrences[index];
+        let OccurrenceTarget::Foreign(stored_key) = stored.target else {
+            return Err((slot, self.foreign_text.len()));
+        };
+        let ForeignOrigin::Package(staging_lineage) = stored_key.origin else {
+            return Err((slot, self.foreign_text.len()));
+        };
+        let package_text = match self.foreign_text.get(slot as usize) {
+            Some(text) => text.as_ref(),
+            None => return Err((slot, self.foreign_text.len())),
+        };
+        let lineage = match PackageLineage::new(staging_lineage.ecosystem, package_text) {
+            Ok(lineage) => lineage,
+            Err(_) => return Err((slot, self.foreign_text.len())),
+        };
+        let key = match ForeignKey::new(
+            ForeignOrigin::Package(lineage),
+            stored_key.path,
+            stored_key.display,
+            stored_key.kind,
+        ) {
+            Ok(key) => key,
+            Err(_) => return Err((slot, self.foreign_text.len())),
+        };
+        Ok(Occurrence {
+            target: OccurrenceTarget::Foreign(key),
+            kind: stored.kind,
+            confidence: stored.confidence,
+            span: stored.span,
+        })
+    }
+
     /// Appends one documentation fragment owned by an already-pushed fact
     /// ordinal.
     pub(super) fn push_doc(
@@ -2761,7 +2869,12 @@ impl<'source> FactSet<'source> {
         let mut links = Vec::with_capacity(self.occurrence_len);
         for index in 0..self.occurrence_len {
             let owner = self.occurrence_owners[index];
-            let occurrence = self.occurrences[index];
+            let occurrence = self.materialize_occurrence(index).map_err(|_| {
+                backend_semantic::ir::BuildError::Dangling {
+                    space: backend_semantic::ir::SemanticSpace::Entity,
+                    raw: u32::try_from(index).unwrap_or(u32::MAX),
+                }
+            })?;
             let source = occurrence_source_span(self, source_file, owner, occurrence.span)?;
             links.push(TreeLinkInput {
                 from: backend_semantic::ir::TreeEntityId::new(owner),
@@ -5354,9 +5467,21 @@ pub(super) fn admit<'source, 'output>(
         .iter()
         .enumerate()
     {
+        let occurrence = facts.materialize_occurrence(index).map_err(
+            |(slot, stored)| {
+                // An owned package slot outside the text lane is an unbound
+                // staging coordinate, reported through the extension-atom fault
+                // so the public compile-failure enum stays unchanged.
+                AdmissionFault::ExtensionAtom {
+                    row: index,
+                    provisional: slot,
+                    atom_count: stored,
+                }
+            },
+        )?;
         occurrence_inputs[index] = OccurrenceInput {
             owner: backend_semantic::ir::EntityId::new(*owner),
-            occurrence: facts.occurrences[index],
+            occurrence,
         };
     }
     let occurrence_lane = OccurrenceLane {
