@@ -207,8 +207,10 @@ fn linux_desktop_opens_captures_and_closes_a_real_window() {
     let png = rendered_capture(&window, &screenshot, &log);
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "capture is not PNG");
 
+    // `windowquit` sends the close request a user's click sends;
+    // `windowclose` would destroy the window out from under the app.
     let closed = Command::new("xdotool")
-        .args(["windowclose", &window])
+        .args(["windowquit", &window])
         .env("DISPLAY", DISPLAY)
         .status()
         .expect("request desktop window close");
