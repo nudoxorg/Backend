@@ -180,6 +180,18 @@ impl AcquisitionService {
             .collect()
     }
 
+    /// Catalog generation of the durable owner.
+    ///
+    /// This is a counter, not a clone of the catalog. Callers reuse a
+    /// projection while the value is unchanged.
+    #[must_use]
+    pub fn catalog_generation(&self) -> u64 {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog_generation()
+    }
+
     /// Joins the normalized forge lineage facts for one borrowed publication.
     /// The association table remains owned by the registry journal; this
     /// method only clones the bounded surface projection.

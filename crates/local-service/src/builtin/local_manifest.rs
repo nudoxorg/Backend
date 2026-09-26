@@ -883,6 +883,15 @@ fn strip_xml_comments(text: &str) -> Result<String, String> {
 
 #[path = "local_manifest_dependencies.rs"]
 mod dependencies;
+#[path = "local_manifest_residence.rs"]
+mod residence;
+
+pub(crate) use residence::LocalManifestResidence;
+
+/// Times local manifest parsing against a byte-identical refresh.
+pub(super) fn measure_manifest_residence() {
+    residence::measure_manifest_residence();
+}
 
 /// Reads outgoing dependency facts from one indexed local manifest.
 ///

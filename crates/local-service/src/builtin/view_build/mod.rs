@@ -27,7 +27,9 @@ pub(crate) use identity::query_semantic_id;
 pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(crate) use identity::semantic_coordinate;
 pub(super) use query::semantic_query_corpus;
-pub(super) use semantic::{ProjectedRows, StructuralSites, rows_for_indexed_sources};
+pub(super) use semantic::{
+    ForeignPublication, ProjectedRows, StructuralSites, rows_for_indexed_sources,
+};
 pub(crate) use semantic::compiled_source_path;
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
@@ -38,6 +40,38 @@ pub(crate) use structural::{
 use query::append_structural_query_facts;
 use semantic::{ProfileStalePaths, SourceRowProjection};
 use structural::{StructuralParent, StructuralProjectionPlan};
+
+/// Builds the structural declaration plan and drops it. Benchmarks time this.
+pub(super) fn project_structural_plan(
+    sources: &super::IndexedSources,
+) -> Result<(), super::BuiltinModelError> {
+    StructuralProjectionPlan::of(sources, &std::collections::BTreeSet::new()).map(|_| ())
+}
+
+/// Plans structural rows for `only` these files and drops the plan.
+///
+/// The type index still walks every file in `sources`.
+pub(super) fn project_structural_files(
+    sources: &super::IndexedSources,
+    only: &std::collections::BTreeSet<[u8; 32]>,
+) -> Result<(), super::BuiltinModelError> {
+    StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only).map(|_| ())
+}
+
+/// Projects structural rows for `only` these files.
+///
+/// A parent coordinate planned in this call wins. Otherwise `resident_labels`
+/// supplies the symbol already published for that coordinate.
+pub(super) fn rows_for_structural_files(
+    initial: &backend_engine::ViewRoot,
+    sources: &super::IndexedSources,
+    only: &std::collections::BTreeSet<[u8; 32]>,
+    resident_labels: &std::collections::BTreeMap<String, backend_engine::SymbolKey>,
+) -> Result<Vec<backend_engine::Row>, super::BuiltinModelError> {
+    let plan =
+        StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only)?;
+    semantic::rows_for_changed_structural_files(initial, sources, &plan, resident_labels)
+}
 
 const MAX_SEMANTIC_TYPE_DEPTH: usize = 256;
 const MAX_SEMANTIC_SIGNATURE_BYTES: usize = 16 * 1024;
