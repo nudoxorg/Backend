@@ -28,8 +28,8 @@ impl std::ops::Deref for StoredSnapshot {
     }
 }
 
-const PROJECTS: usize = 32;
-const FILES_PER_PROJECT: usize = 64;
+const PROJECTS: usize = 8;
+const FILES_PER_PROJECT: usize = 8;
 const DECLARATIONS_PER_FILE: usize = 4;
 
 /// Times a full source-relation page against a resident corpus hit.
@@ -39,6 +39,10 @@ const DECLARATIONS_PER_FILE: usize = 4;
 /// admission a search uses when that workspace is already resident, and its
 /// prepare closure must not run. Image reopen and the structural plan are not
 /// in either timer.
+///
+/// The checked head inlines this relation into its closure. Eight projects of
+/// eight files admit. Eight projects of ten files are rejected, so the fixture
+/// stays at the shape that still pages.
 #[allow(clippy::expect_used, clippy::print_stdout)]
 pub(super) fn measure_search_source_page() {
     const SAMPLES: usize = 32;
@@ -324,6 +328,28 @@ mod tests {
             error.to_string(),
             "project record does not match its canonical coordinate"
         );
+    }
+
+    #[test]
+    fn eight_projects_of_eight_files_page_and_ten_files_do_not_inline() {
+        let declarations = shared_declarations(4).expect("declarations");
+        let stored = snapshot_holding(8, 8, &declarations).expect("8x8");
+        let sources = super::super::read_indexed_sources(&stored).expect("page");
+        assert_eq!(sources.projects.len(), 8);
+        assert_eq!(sources.files.len(), 64);
+        assert!(sources.files.iter().all(|(_, record)| {
+            record.file_fields().is_some_and(|file| {
+                file.declarations.len() == 4
+                    && file
+                        .declarations
+                        .first()
+                        .is_some_and(|declaration| declaration.name() == "item0")
+            })
+        }));
+        let Err(error) = snapshot_holding(8, 10, &declarations) else {
+            panic!("eight projects of ten files must not inline into the checked closure");
+        };
+        assert_eq!(error.to_string(), "Corrupt");
     }
 
     #[test]
