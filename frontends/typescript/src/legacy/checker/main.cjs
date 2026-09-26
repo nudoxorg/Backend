@@ -151,6 +151,11 @@ function spelledSpecifierFor(originFile) {
   return found;
 }
 
+/** Reports whether one foreign declaration is a class or interface field. */
+function isFieldOrigin(origin) {
+  return ts.isPropertyDeclaration(origin) || ts.isPropertySignature(origin);
+}
+
 const MAX_TREE_DEPTH = 16;
 
 /** Builds one structured tree for the checker's exact type. */
@@ -553,6 +558,9 @@ function emitReference(node) {
       const index = group.indexOf(resolved.declaration);
       if (index >= 0) entry.overloadIndex = index;
     }
+  }
+  if (origin && isFieldOrigin(origin) && parent && ts.isPropertyAccessExpression(parent) && parent.name === node) {
+    entry.isField = true;
   }
   references.push(entry);
 }

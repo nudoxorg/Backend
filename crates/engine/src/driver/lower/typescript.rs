@@ -597,6 +597,30 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.fact_at_name.get(&start).copied()
     }
 
+    /// Resolves one source position to the innermost enclosing function
+    /// whose declaring span still contains it.
+    fn enclosing_function_owner(&self, position: u32) -> Option<u32> {
+        let length = coordinate(self.facts.len()).ok()?;
+        let mut best: Option<(u32, u32)> = None;
+        for ordinal in 0..length {
+            let index = usize::try_from(ordinal).ok()?;
+            if self.fact_kinds.get(index).copied() != Some(EntityKind::Function) {
+                continue;
+            }
+            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+            if start != UNSET
+                && end != UNSET
+                && start <= position
+                && position < end
+                && best.is_none_or(|(known, _)| start >= known)
+            {
+                best = Some((start, ordinal));
+            }
+        }
+        best.map(|(_, ordinal)| ordinal)
+    }
+
     /// Resolves one source position to the innermost pushed fact whose
     /// declaring span contains it.
     fn owning_fact(&self, position: u32) -> Option<u32> {
@@ -4427,7 +4451,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(module) = resolved.module else {
             return Ok(None);
         };
-        if let Some(key) = self.checker_foreign_key(span, module, resolved.name)? {
+        if let Some(key) = self.checker_foreign_key(span, module, resolved.name, false)? {
             return Ok(Some((
                 OccurrenceTarget::Foreign(key),
                 OccurrenceConfidence::Oracle,
@@ -4458,6 +4482,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         span: Span,
         module: &str,
         name: Option<&str>,
+        field: bool,
     ) -> Result<Option<ForeignKey<'source>>, TypeScriptCollectError> {
         let spelled_module = self.spelled_in_source(module.as_bytes());
         let site = self.text_span(span).ok_or(TypeScriptCollectError::Span {
@@ -4467,9 +4492,23 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if site.is_empty() {
             return Ok(None);
         }
-        let display = name
-            .and_then(|name| self.spelled_in_source(name.as_bytes()))
-            .unwrap_or(site);
+        let (path, display, kind) = if field {
+            let Some(name) = name else {
+                return Ok(None);
+            };
+            let Some(path) = self
+                .spelled_in_source(name.as_bytes())
+                .filter(|path| !path.is_empty())
+            else {
+                return Ok(None);
+            };
+            (path, path, Some(EntityKind::Field))
+        } else {
+            let display = name
+                .and_then(|name| self.spelled_in_source(name.as_bytes()))
+                .unwrap_or(site);
+            (site, display, None)
+        };
         let origin = match spelled_module {
             Some(module) => ForeignOrigin::Package(
                 package_lineage_for_module(module).map_err(|cause| lineage_fault(cause, span))?,
@@ -4478,7 +4517,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 ecosystem: NPM_ECOSYSTEM,
             },
         };
-        ForeignKey::new(origin, site, display, None)
+        ForeignKey::new(origin, path, display, kind)
             .map(Some)
             .map_err(|cause| foreign_fault(cause, span))
     }
@@ -4502,12 +4541,25 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if self.occurrence_covers(reference.span)? {
                 continue;
             }
-            let Some(owner) = self.owning_fact(reference.span.start) else {
+            let Some(mut owner) = self.owning_fact(reference.span.start) else {
                 continue;
             };
             let Some((target, confidence, kind)) = self.checker_only_target(reference)? else {
                 continue;
             };
+            if kind == ReferenceKind::FieldAccess
+                && matches!(
+                    target,
+                    OccurrenceTarget::Foreign(ForeignKey {
+                        kind: Some(EntityKind::Field),
+                        ..
+                    })
+                )
+            {
+                if let Some(function) = self.enclosing_function_owner(reference.span.start) {
+                    owner = function;
+                }
+            }
             let span = Span::new(reference.span.start, reference.span.end);
             self.commit_occurrence(owner, span, kind, target, confidence)?;
         }
@@ -4688,7 +4740,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         )>,
         TypeScriptCollectError,
     > {
-        let call = reference.overload_index.is_some();
+        let span = Span::new(reference.span.start, reference.span.end);
+        let member_call = self.is_member_call_position(span);
+        let call = reference.overload_index.is_some() || member_call;
         if let Some(target) = reference.target {
             let Some(fact) = self.fact_at_name_start(target.start) else {
                 return Ok(None);
@@ -4704,24 +4758,22 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 kind,
             )));
         }
-        if let Some(module) = reference.module
-            && let Some(key) = self.checker_foreign_key(
-                Span::new(reference.span.start, reference.span.end),
-                module,
-                reference.name,
-            )?
-        {
-            let span = Span::new(reference.span.start, reference.span.end);
-            let kind = if call || self.is_member_call_position(span) {
-                ReferenceKind::FunctionCall
-            } else {
-                ReferenceKind::VariableUse
-            };
-            return Ok(Some((
-                OccurrenceTarget::Foreign(key),
-                OccurrenceConfidence::Oracle,
-                kind,
-            )));
+        if let Some(module) = reference.module {
+            let field = reference.is_field && !call;
+            if let Some(key) = self.checker_foreign_key(span, module, reference.name, field)? {
+                let kind = if call {
+                    ReferenceKind::FunctionCall
+                } else if field {
+                    ReferenceKind::FieldAccess
+                } else {
+                    ReferenceKind::VariableUse
+                };
+                return Ok(Some((
+                    OccurrenceTarget::Foreign(key),
+                    OccurrenceConfidence::Oracle,
+                    kind,
+                )));
+            }
         }
         Ok(None)
     }
@@ -4774,8 +4826,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         }
         kind.as_parenthesized_expression()
             .and_then(|wrapped| {
-                AstKind::from_expression(&wrapped.expression)
-                    .as_this_expression()
+                AstKind::from_expression(&wrapped.expression).as_this_expression()
             })
             .is_some()
     }
@@ -6023,6 +6074,7 @@ mod lane_tests {
                 module: Some("hono".to_owned()),
                 name: Some("Context".to_owned()),
                 overload_index: None,
+                is_field: false,
             }],
         )
     }
