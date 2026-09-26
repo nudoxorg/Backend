@@ -48,6 +48,7 @@ import com.sun.source.tree.CompoundAssignmentTree;
 import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.IdentifierTree;
 import com.sun.source.tree.ImportTree;
+import com.sun.source.tree.MemberReferenceTree;
 import com.sun.source.tree.MemberSelectTree;
 import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.MethodTree;
@@ -159,6 +160,211 @@ private final Trees trees;
 				.equals(sourceBinding.toAbsolutePath().normalize());
 		} catch (RuntimeException failure) {
 			return false;
+		}
+	}
+
+	// Raw UTF-16 start of one member-reference name token inside javac's
+	// resolved extent, or -1 when the suffix cannot be proven. Targets are
+	// never chosen here; a failed trim emits no row.
+	private long memberReferenceNameStart(
+		CompilationUnitTree unit,
+		CharSequence source,
+		MemberReferenceTree reference,
+		String decodedName
+	) {
+		if (source == null || decodedName == null || decodedName.isEmpty()) return -1;
+		long referenceEnd = trees.getSourcePositions().getEndPosition(unit, reference);
+		ExpressionTree qualifier = reference.getQualifierExpression();
+		if (qualifier == null || referenceEnd < 0 || referenceEnd > Integer.MAX_VALUE) return -1;
+		long qualifierEnd = trees.getSourcePositions().getEndPosition(unit, qualifier);
+		if (qualifierEnd < 0) return -1;
+		return memberReferenceNameStart(source, (int) qualifierEnd, (int) referenceEnd, decodedName);
+	}
+
+	private static long memberReferenceNameStart(
+		CharSequence source,
+		int qualifierEnd,
+		int referenceEnd,
+		String decodedName
+	) {
+		if (qualifierEnd < 0 || referenceEnd < qualifierEnd || referenceEnd > source.length()) return -1;
+		int[] index = { qualifierEnd };
+		if (!consumeMemberReferenceColons(source, referenceEnd, index)) return -1;
+		skipMemberReferenceTrivia(source, referenceEnd, index);
+		if (index[0] < referenceEnd) {
+			int[] probe = { index[0] };
+			if (readCodePoint(source, referenceEnd, probe) == '<') {
+				if (!skipMemberReferenceTypeArguments(source, referenceEnd, index)) return -1;
+				skipMemberReferenceTrivia(source, referenceEnd, index);
+			}
+		}
+		int nameStart = index[0];
+		int[] verify = { nameStart };
+		if (!matchesDecodedName(source, referenceEnd, verify, decodedName) || verify[0] != referenceEnd) return -1;
+		return nameStart;
+	}
+
+	private static boolean consumeMemberReferenceColons(CharSequence source, int end, int[] index) {
+		for (int colons = 0; colons < 2; colons++) {
+			if (readCodePoint(source, end, index) != ':') return false;
+		}
+		return true;
+	}
+
+	private static void skipMemberReferenceTrivia(CharSequence source, int end, int[] index) {
+		while (index[0] < end) {
+			char raw = source.charAt(index[0]);
+			if (raw == ' ' || raw == '\t' || raw == '\f' || raw == '\r' || raw == '\n') {
+				index[0]++;
+				continue;
+			}
+			if (raw == '/' && index[0] + 1 < end) {
+				if (source.charAt(index[0] + 1) == '/') {
+					index[0] += 2;
+					while (index[0] < end && source.charAt(index[0]) != '\n' && source.charAt(index[0]) != '\r') index[0]++;
+					continue;
+				}
+				if (source.charAt(index[0] + 1) == '*') {
+					index[0] += 2;
+					while (index[0] + 1 < end) {
+						if (source.charAt(index[0]) == '*' && source.charAt(index[0] + 1) == '/') {
+							index[0] += 2;
+							break;
+						}
+						index[0]++;
+					}
+					continue;
+				}
+			}
+			return;
+		}
+	}
+
+	private static boolean skipMemberReferenceTypeArguments(CharSequence source, int end, int[] index) {
+		if (index[0] >= end || source.charAt(index[0]) != '<') return false;
+		int depth = 1;
+		index[0]++;
+		while (index[0] < end && depth > 0) {
+			skipMemberReferenceTrivia(source, end, index);
+			if (index[0] >= end) return false;
+			char raw = source.charAt(index[0]);
+			if (raw == '"') {
+				if (!skipMemberReferenceStringLiteral(source, end, index)) return false;
+				continue;
+			}
+			if (raw == '\'') {
+				if (!skipMemberReferenceCharLiteral(source, end, index)) return false;
+				continue;
+			}
+			int[] probe = { index[0] };
+			int codePoint = readCodePoint(source, end, probe);
+			if (codePoint < 0) return false;
+			index[0] = probe[0];
+			if (codePoint == '<') depth++;
+			else if (codePoint == '>') depth--;
+		}
+		return depth == 0;
+	}
+
+	private static boolean skipMemberReferenceStringLiteral(CharSequence source, int end, int[] index) {
+		if (index[0] >= end || source.charAt(index[0]) != '"') return false;
+		index[0]++;
+		while (index[0] < end) {
+			char raw = source.charAt(index[0]);
+			if (raw == '"') {
+				index[0]++;
+				return true;
+			}
+			if (raw == '\\') {
+				if (!skipMemberReferenceEscape(source, end, index)) return false;
+				continue;
+			}
+			index[0]++;
+		}
+		return false;
+	}
+
+	private static boolean skipMemberReferenceCharLiteral(CharSequence source, int end, int[] index) {
+		if (index[0] >= end || source.charAt(index[0]) != '\'') return false;
+		index[0]++;
+		while (index[0] < end) {
+			char raw = source.charAt(index[0]);
+			if (raw == '\'') {
+				index[0]++;
+				return true;
+			}
+			if (raw == '\\') {
+				if (!skipMemberReferenceEscape(source, end, index)) return false;
+				continue;
+			}
+			index[0]++;
+		}
+		return false;
+	}
+
+	private static boolean skipMemberReferenceEscape(CharSequence source, int end, int[] index) {
+		if (index[0] >= end || source.charAt(index[0]) != '\\') return false;
+		if (index[0] + 1 < end && source.charAt(index[0] + 1) == 'u') {
+			int start = index[0] + 2;
+			while (start < end && source.charAt(start) == 'u') start++;
+			if (start + 4 > end) return false;
+			for (int offset = 0; offset < 4; offset++) {
+				if (hexDigit(source.charAt(start + offset)) < 0) return false;
+			}
+			index[0] = start + 4;
+			return true;
+		}
+		if (index[0] + 1 >= end) return false;
+		index[0] += 2;
+		return true;
+	}
+
+	private static boolean matchesDecodedName(CharSequence source, int end, int[] index, String decodedName) {
+		for (int offset = 0; offset < decodedName.length(); ) {
+			int expected = decodedName.codePointAt(offset);
+			if (readCodePoint(source, end, index) != expected) return false;
+			offset += Character.charCount(expected);
+		}
+		return true;
+	}
+
+	private static int readCodePoint(CharSequence source, int end, int[] index) {
+		if (index[0] >= end) return -1;
+		char raw = source.charAt(index[0]);
+		if (raw == '\\' && index[0] + 1 < end && source.charAt(index[0] + 1) == 'u') {
+			int start = index[0] + 2;
+			while (start < end && source.charAt(start) == 'u') start++;
+			if (start + 4 > end) return -1;
+			int codePoint = 0;
+			for (int offset = 0; offset < 4; offset++) {
+				int digit = hexDigit(source.charAt(start + offset));
+				if (digit < 0) return -1;
+				codePoint = (codePoint << 4) | digit;
+			}
+			index[0] = start + 4;
+			return codePoint;
+		}
+		if (Character.isHighSurrogate(raw) && index[0] + 1 < end && Character.isLowSurrogate(source.charAt(index[0] + 1))) {
+			int codePoint = Character.toCodePoint(raw, source.charAt(index[0] + 1));
+			index[0] += 2;
+			return codePoint;
+		}
+		index[0]++;
+		return raw;
+	}
+
+	private static int hexDigit(char value) {
+		if (value >= '0' && value <= '9') return value - '0';
+		if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+		if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+		return -1;
+	}
+
+	private CharSequence compilationUnitCharacters(CompilationUnitTree unit) {
+		try {
+			return unit.getSourceFile().getCharContent(true);
+		} catch (IOException failure) {
+			return null;
 		}
 	}
 
@@ -352,7 +558,12 @@ private final Trees trees;
 	private final class CallScanner extends TreePathScanner<Void, Void> {
 		private final CompilationUnitTree unit;
 		private final SourcePositions positions;
-		CallScanner(CompilationUnitTree unit) { this.unit = unit; positions = trees.getSourcePositions(); }
+		private final CharSequence source;
+		CallScanner(CompilationUnitTree unit) {
+			this.unit = unit;
+			positions = trees.getSourcePositions();
+			source = compilationUnitCharacters(unit);
+		}
 		@Override public Void visitMethodInvocation(MethodInvocationTree invocation, Void unused) {
 			Element element = trees.getElement(getCurrentPath());
 			ExecutableElement target = element instanceof ExecutableElement executable ? executable : null;
@@ -371,6 +582,23 @@ private final Trees trees;
 				}
 			}
 			return super.visitMethodInvocation(invocation, unused);
+		}
+		@Override public Void visitMemberReference(MemberReferenceTree reference, Void unused) {
+			if (reference.getMode() != MemberReferenceTree.ReferenceMode.INVOKE) {
+				return super.visitMemberReference(reference, unused);
+			}
+			Element element = trees.getElement(getCurrentPath());
+			ExecutableElement target = element instanceof ExecutableElement executable ? executable : null;
+			ExecutableElement owner = enclosingExecutable(getCurrentPath());
+			if (target != null && owner != null) {
+				long end = positions.getEndPosition(unit, reference);
+				long start = memberReferenceNameStart(unit, source, reference, reference.getName().toString());
+				if (start >= 0 && end >= start && end <= Integer.MAX_VALUE) {
+					references.add(new ReferenceRow(symbols.intern(owner), symbols.intern(target),
+						atoms.intern(unit.getSourceFile().getName()), (int) start, (int) end));
+				}
+			}
+			return super.visitMemberReference(reference, unused);
 		}
 		private ExecutableElement enclosingExecutable(TreePath path) {
 			for (TreePath current = path.getParentPath(); current != null; current = current.getParentPath()) {
@@ -401,12 +629,23 @@ private final Trees trees;
 	private final class UseScanner extends TreePathScanner<Void, Void> {
 		private final CompilationUnitTree unit;
 		private final SourcePositions positions;
+		private final CharSequence source;
 		UseScanner(CompilationUnitTree unit) {
 			this.unit = unit;
 			positions = trees.getSourcePositions();
+			source = compilationUnitCharacters(unit);
 		}
 		@Override public Void visitImport(ImportTree node, Void unused) {
 			return null;
+		}
+		@Override public Void visitMemberReference(MemberReferenceTree reference, Void unused) {
+			if (reference.getMode() == MemberReferenceTree.ReferenceMode.NEW) {
+				Element element = trees.getElement(getCurrentPath());
+				if (element instanceof ExecutableElement executable) {
+					recordConstructorUse(getCurrentPath(), reference, executable);
+				}
+			}
+			return super.visitMemberReference(reference, unused);
 		}
 		@Override public Void visitNewClass(NewClassTree node, Void unused) {
 			Element element = trees.getElement(getCurrentPath());
@@ -504,6 +743,11 @@ private final Trees trees;
 			if (nameTree instanceof MemberSelectTree member && start >= 0 && end >= start) {
 				long width = member.getIdentifier().length();
 				if (width <= end - start) start = end - width;
+			} else if (nameTree instanceof MemberReferenceTree memberReference) {
+				String decodedName = memberReference.getMode() == MemberReferenceTree.ReferenceMode.NEW
+					? "new"
+					: memberReference.getName().toString();
+				start = memberReferenceNameStart(unit, source, memberReference, decodedName);
 			}
 			if (start < 0 || end < start || end > Integer.MAX_VALUE) return;
 			String declaring;

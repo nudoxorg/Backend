@@ -1,7 +1,8 @@
 /**
  * Runs a release-pinned JavacTask and produces one immutable authority image.
  * It retains exact compiler diagnostics and refuses unsupported profile releases.
- * The extraction path contains no scanner, JSON transport, or source-text recovery.
+ * Targets are never recovered from source text; a member-reference span may be
+ * trimmed from the compilation unit characters.
  */
 package nudox.oracle;
 
