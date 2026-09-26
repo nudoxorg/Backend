@@ -842,7 +842,7 @@ impl PersistentState {
                 state
                     .zoom
                     .iter()
-                    .map(|(display, step)| (std::sync::Arc::from(display.as_str()), *step)),
+                    .map(|(display, step)| (Arc::from(display.as_str()), *step)),
             ),
             density: match state.density {
                 PersistedDensity::Comfortable => DensityPreference::Comfortable,

@@ -1,7 +1,7 @@
 //! Pure route/state reducer.
 
 use super::intent::{Effect, EngineCommand, Intent, Reduction};
-use super::route::{OrbitRoute, Overlay, Route};
+use super::route::{Overlay, Route};
 
 /// Applies one typed intent without touching GPUI, clocks, files, or sockets.
 #[must_use]
@@ -222,7 +222,9 @@ mod tests {
     use super::*;
     use crate::core::VersionedRoot;
     use crate::model::AppSnapshot;
-    use crate::navigation::route::{Coordinate, PackageLane, PackageRoute, ReleaseId, SymbolRoute, View};
+    use crate::navigation::route::{
+        Coordinate, OrbitRoute, PackageLane, PackageRoute, ReleaseId, SymbolRoute, View,
+    };
 
     fn package_route(selected: Option<crate::model::ObjectId>) -> Route {
         Route::Package(PackageRoute {
