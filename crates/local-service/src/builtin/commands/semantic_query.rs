@@ -2675,6 +2675,17 @@ mod project_call_tests {
         }
     }
 
+    fn python_set_note_field_read_foreign_fixture(foreign_key: u8) -> ForeignCallFixture {
+        ForeignCallFixture {
+            package_specifier: b"workout",
+            path_specifier: Some(b"workout.service"),
+            display: b"set_note",
+            foreign_key,
+            entity_kind: ItemKind::Field,
+            link_kind: LinkKind::Reads,
+        }
+    }
+
     fn python_note_static_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
@@ -2693,6 +2704,33 @@ mod project_call_tests {
             TreeEntityId::new(0),
             ItemKind::Function,
             Some(python_field_read_foreign_fixture(foreign_key)),
+        )?;
+        Ok((
+            service_bytes,
+            caller_bytes,
+            fixture_version(1).identity(),
+            fixture_version(2).identity(),
+        ))
+    }
+
+    fn python_set_note_function_drive_fixture(
+        foreign_key: u8,
+    ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
+        let service_bytes = project_item_image(
+            "workout/service.py",
+            1,
+            b"set_note",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            None,
+        )?;
+        let caller_bytes = project_item_image(
+            "weeks.py",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(python_set_note_field_read_foreign_fixture(foreign_key)),
         )?;
         Ok((
             service_bytes,
@@ -4585,6 +4623,45 @@ mod project_call_tests {
         if incoming != vec![drive_id] {
             return Err(format!(
                 "referencedBy on note static should name only drive, got {incoming:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_field_python_function_semantic_link_row_id_referenced_by_drive(
+    ) -> Result<(), String> {
+        let package = package_key("fixture");
+        let (service_bytes, caller_bytes, set_note_identity, drive_identity) =
+            python_set_note_function_drive_fixture(148)?;
+        let rows = semantic_view_rows(
+            package,
+            &[
+                ("workout/service.py", 1, "set_note", fixture_version(1)),
+                ("weeks.py", 2, "drive", fixture_version(2)),
+            ],
+        )?;
+        let view = semantic_view(rows)?;
+        let drive_id = RowId::Symbol(semantic_symbol(package, drive_identity));
+        let set_note_id = RowId::Symbol(semantic_symbol(package, set_note_identity));
+        let relations = project_semantic_graph_relations_from_bytes(
+            &[&service_bytes, &caller_bytes],
+            &view,
+            package,
+            semantic_symbol(package, set_note_identity),
+            set_note_id,
+            true,
+            &project_paths(&["workout/service.py", "weeks.py"]),
+        )
+        .map_err(|error| error.to_string())?;
+        let incoming = relations
+            .iter()
+            .filter(|relation| relation.to == set_note_id)
+            .map(|relation| relation.from)
+            .collect::<Vec<_>>();
+        if incoming != vec![drive_id] {
+            return Err(format!(
+                "referencedBy on set_note function should name only drive, got {incoming:?}"
             ));
         }
         Ok(())
