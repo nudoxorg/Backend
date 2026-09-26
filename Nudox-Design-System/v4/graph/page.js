@@ -153,7 +153,7 @@
     const flags = [...(n.quals || []).filter((q) => q !== "extern"), n.mustUse ? "must use" : ""].filter(Boolean);
     return `<section class="anat pipe"><div class="pins">${ins.join("") || `<div class="pi"><span class="pn">takes nothing</span></div>`}</div>`
       + `<div class="parrow"><i></i></div>`
-      + `<div class="pouts"><div class="po">${out ? typeHTML(out, i, owner) : W("nothing")}</div>${fails ? `<div class="pf">${W("or fails with")} ${typeHTML(fails, i, owner)}</div>` : ""}</div>`
+      + `<div class="pouts"><div class="po">${out ? typeHTML(out, i, owner) : W("nothing")}</div>${fails ? `<div class="pf">${W("or fails with")} ${typeHTML(fails, i, owner)}${failKinds(i)}</div>` : ""}</div>`
       + whereRows(i)
       + (flags.length ? `<div class="pflags">${flags.map((f) => `<span>${esc(f === "async" ? "waits (async)" : f === "unsafe" ? "you uphold its rules (unsafe)" : f === "const" ? "runs at compile time too" : f)}</span>`).join("")}</div>` : "")
       + `</section>`;
@@ -178,12 +178,13 @@
 
   // ------------------------------------------------------------------ the prism (static, the page's form)
   function prism(i, width) {
-    const shown = new Set(["made of", "takes", "gives"]);
+    // the page already says these: the anatomy (made of, takes, gives) and, for types, Getting one (made by)
+    const shown = new Set(["made of", "takes", "gives", ...(["struct", "enum", "union", "type"].includes(G.N[i].k) && window.GRAPH_RECIPES ? ["made by"] : [])]);
     const groups = G.relationsOf(i).filter((g) => g.side !== 0 && !shown.has(g.word));
     const cols = { "-1": groups.filter((g) => g.side < 0), "1": groups.filter((g) => g.side > 0) };
     if (!groups.length) return "";
     const narrow = width < 620;
-    const ROW = 24, HEAD = 24, GAP = 8, MAX = 5;
+    const ROW = 24, HEAD = 24, GAP = 8, MAX = groups.length >= 4 ? 3 : 5; // a busy prism shows fewer per group
     const fmt = (g) => ({ word: g.word, list: g.entries.slice(0, MAX), more: Math.max(0, g.entries.length - MAX) });
     const L = cols["-1"].map(fmt), R = cols["1"].map(fmt);
     const h = (gs) => gs.reduce((a, g) => a + HEAD + ROW * (g.list.length + (g.more ? 1 : 0)) + GAP, 0) - GAP;
@@ -201,7 +202,8 @@
       return `<section class="prism narrow"><div class="pc">${col(L, 1)}</div><div class="pgem"><i></i><span>${esc(G.N[i].n)}</span></div><div class="pc">${col(R, 1)}</div></section>`;
     }
     const HL = h(L), HR = h(R); const H = Math.max(HL, HR, 40);
-    const cx = width / 2, gx = 150; // columns end/start 150 px either side of the gem
+    // columns end/start 150 px either side of the gem; a one-sided prism fans from the edge instead of the middle
+    const gx = 150, cx = !L.length ? Math.min(width / 2, 40) : !R.length ? Math.max(width / 2, width - 40) : width / 2;
     const ys = (gs, H0) => { const out = []; let y = (H - H0) / 2; for (const g of gs) { y += HEAD; for (const _ of g.list) { out.push(y + ROW / 2); y += ROW; } if (g.more) y += ROW; y += GAP; } return out; };
     const yl = ys(L, HL), yr = ys(R, HR);
     const c = (x0, y0, x1, y1) => { const k = (x1 - x0) * 0.5; return `<path d="M${x0} ${y0} C${x0 + k} ${y0} ${x1 - k} ${y1} ${x1} ${y1}"/>`; };
@@ -304,20 +306,86 @@
     const mp = G.MD[m].path;
     const rows = items.slice(0, 40).map((j) => `<div class="crow${j === top ? " cur" : ""}" data-i="${j}" style="padding-left:28px"><span class="k ${G.KFAM[G.N[j].k] || ""} sm"><svg viewBox="0 0 24 24">${(window.KINDS || {})[G.N[j].k] || ""}</svg></span><span class="n">${esc(G.N[j].n)}</span></div>`).join("");
     return `<div class="cup">‹ ${esc(pk.yours ? "your code" : "dependencies")}</div>`
-      + `<div class="cbook">${gemSVG("package", 28)}<div class="col" style="gap:1px;min-width:0"><span class="bn">${esc(pk.name.replace(/^backend-/, ""))}</span><span class="bv">${esc(pk.version)}</span></div></div>`
+      + `<div class="cbook">${gemSVG("package", 28)}<div class="col" style="gap:1px;min-width:0"><span class="bn">${esc(pk.name.replace(/^backend-/, ""))}</span>${(() => { const v = window.GRAPH_RELEASES_UI && window.GRAPH_RELEASES_UI.viewing(i); return v && v.view !== v.pin ? `<span class="bv on">${esc(v.view.replace(/\+.*$/, ""))}</span>` : `<span class="bv">${esc(pk.version)}</span>`; })()}</div></div>`
+      + (window.GRAPH_RELEASES_UI ? `<div class="vhead">${window.GRAPH_RELEASES_UI.header(i)}</div>` : "")
       + `<div class="cfilter"><span>Filter</span></div><div class="crows"><div class="crow open"><span class="k ns sm"><svg viewBox="0 0 24 24">${(window.KINDS || {}).module || ""}</svg></span><span class="n">${esc(mp || "(root)")}</span></div>${rows}</div>`;
+  }
+  // the kinds of its error this callable can give (fails.js): built here, or carried up from a call
+  function failKinds(i) {
+    const F = window.GRAPH_FAILS; if (!F) return "";
+    const r = F.failsOf(i); if (!r || !r.kinds.size || !r.all) return "";
+    const link = (v) => `<a class="gtl" data-i="${v}">${esc(G.N[v].n)}</a>`;
+    const own = [...r.kinds].filter(([, via]) => via < 0).map(([v]) => v);
+    const through = new Map(); for (const [v, via] of r.kinds) if (via >= 0) (through.get(via) || through.set(via, []).get(via)).push(v);
+    const list = (vs) => (vs.length <= 1 ? vs.map(link).join("") : vs.slice(0, -1).map(link).join(", ") + ` ${W("or")} ` + link(vs[vs.length - 1]));
+    const parts = [];
+    if (own.length) parts.push(list(own.slice(0, 6)) + (own.length > 6 ? ` ${W(`and ${own.length - 6} more`)}` : ""));
+    for (const [via, vs] of [...through].slice(0, 3)) parts.push(`${list(vs.slice(0, 4))}${vs.length > 4 ? ` ${W(`and ${vs.length - 4} more`)}` : ""} <i class="pfv">through</i> <a class="gtl" data-i="${via}">${esc(G.N[via].n)}</a>`);
+    const count = r.kinds.size === r.all ? `any of its ${r.all} kinds` : `${r.kinds.size} of its ${r.all} kinds`;
+    return `<div class="pfk">${parts.join(' <i class="pfs">·</i> ')}</div><div class="pfc">${count}</div>`;
+  }
+  // on an error type: which calls give each of its kinds, and which your code tells apart
+  function howItFails(i) {
+    const F = window.GRAPH_FAILS; if (!F) return "";
+    const kinds = F.kinds(i); if (!kinds.length) return "";
+    const { can, told } = F.reachOf(i); if (!can) return "";
+    const per = F.makersOf(i);
+    const rows = kinds.map((v) => {
+      const ms = per.get(v); const shown = ms.slice(0, 4);
+      const who = shown.map((j) => `<a class="gtl${G.yours(j) ? " y" : ""}" data-i="${j}">${esc(G.N[j].n)}</a>`).join(' <i class="gfs">·</i> ') + (ms.length > 4 ? ` <i class="gfm">+ ${ms.length - 4}</i>` : "");
+      return `<div class="gfr${told.has(v) ? " told" : ""}"><a class="gtl gfv" data-i="${v}">${esc(G.N[v].n)}</a><span class="gfw">${who || `<i class="gfn">nothing here builds it</i>`}</span></div>`;
+    }).join("");
+    const foot = [`${can} call${can === 1 ? "" : "s"} in this world can fail with it`, told.size ? `your code tells ${told.size} of its ${kinds.length} kinds apart` : ""].filter(Boolean).join(" · ");
+    const wide = Math.max(...kinds.map((v) => G.N[v].n.length)); // one column for every row: the longest kind, in mono
+    return `<section class="csec gfails"><h2>How it fails</h2><div class="gfrows" style="--gfk:${Math.min(wide, 28) + 1}ch">${rows}</div><div class="gffoot">${foot}</div></section>`;
+  }
+  // its cousins: the same idea in another package (the same name with a few of the same methods, or a
+  // different name with many), and the road each way (recipes.convert: often one call, through a trait)
+  const COMMON = new Set(["new", "default", "from", "into", "fmt", "clone", "eq", "ne", "hash", "len", "is_empty", "iter", "get", "as_ref", "borrow", "deref", "drop", "try_from", "try_into", "to_string", "cmp", "partial_cmp", "serialize", "deserialize", "index", "index_mut", "from_str", "into_iter", "extend", "with_capacity"]);
+  let methodSets = null;
+  function cousinsOf(i) {
+    const n = G.N[i]; const TY = ["struct", "enum", "union"]; if (!TY.includes(n.k)) return [];
+    if (!methodSets) methodSets = new Map();
+    const methods = (t) => methodSets.get(t) || methodSets.set(t, new Set((G.kids[t] || []).filter((j) => G.N[j].k === "method" && G.N[j].v === "pub" && !COMMON.has(G.N[j].n)).map((j) => G.N[j].n))).get(t);
+    const mine = methods(i); if (mine.size < 3) return [];
+    const out = [];
+    for (let t = 0; t < G.N.length; t++) {
+      const u = G.N[t]; if (t === i || u.u >= 0 || u.p === n.p || !TY.includes(u.k) || u.orphan || (u.v !== "pub" && !u.via)) continue;
+      const same = u.n === n.n; if (!same && (G.kids[t] || []).length < 6) continue;
+      const theirs = methods(t); let shared = 0; for (const m of mine) if (theirs.has(m)) shared++;
+      const jac = shared / Math.max(1, mine.size + theirs.size - shared);
+      if ((same && shared >= 3) || (jac >= 0.35 && shared >= 6)) out.push({ t, shared, jac, same, names: [...mine].filter((m) => theirs.has(m)) });
+    }
+    return out.sort((a, b) => b.same - a.same || b.jac - a.jac).slice(0, 2);
+  }
+  function cousins(i) {
+    const R = window.GRAPH_RECIPES; if (!R || !R.convert) return "";
+    const cs = cousinsOf(i); if (!cs.length) return "";
+    const rows = cs.map((c) => {
+      const u = G.N[c.t]; const pk = G.PK[u.p].name;
+      const both = c.names.slice(0, 3).map((m) => `<code>${esc(m)}</code>`).join(", ") + (c.names.length > 3 ? ` and ${c.names.length - 3} more` : "");
+      const whose = (j) => `${esc(G.PK[G.N[j].p].name)}’s`;
+      const road = (from, to, word) => { const r = R.convert(from, to); return `<div class="gcw"><span class="gcl">${word}</span>${r ? R.chainRail(r, whose(from)) : `<span class="gcn">no road between them in this world</span>`}</div>`; };
+      return `<div class="gcr"><div class="gch"><a class="gtl" data-i="${c.t}">${esc(pk)}::${esc(u.n)}</a><span>${c.same ? `the same idea in ${esc(pk)}` : `much like it, in ${esc(pk)}`} · both have ${both}</span></div>`
+        + road(i, c.t, "to it") + road(c.t, i, "from it") + `</div>`;
+    }).join("");
+    return `<section class="csec gget gcous"><h2>Its cousins</h2>${rows}</section>`;
   }
   function render(i) {
     cur = i; const n = G.N[i]; G.visit(i);
     const reader = $("preader"); const rw = reader.clientWidth || (G.view.clientWidth - 264); const w = Math.min(900, rw - 64);
     if (view === "code") { renderCode(i); return; }
     const capsHTML = G.capsLine(i);
-    reader.innerHTML = `<div class="cfol pfol">${hero(i)}${anatomy(i)}`
-      + (capsHTML ? `<section class="pcaps"><div class="ah">can</div>${capsHTML}</section>` : "")
-      + `<div class="pslot" id="pslot"></div>` + members(i) + `<div id="puse"></div></div>`;
+    const lensHTML = window.GRAPH_RELEASES_UI ? window.GRAPH_RELEASES_UI.lens(i) : "";
+    reader.innerHTML = `<div class="cfol pfol">${hero(i)}${lensHTML}${anatomy(i)}`
+      + (capsHTML ? `<section class="pcaps"><div class="ah">can</div>${capsHTML}</section>` : "") + howItFails(i)
+      + `<div id="pget"></div><div class="pslot" id="pslot"></div>` + members(i) + `<div id="pcous"></div><div id="puse"></div></div>`;
     const gen = ++renderGen; inUse(i, gen).then((h) => { if (gen === renderGen && $("puse")) $("puse").outerHTML = h; });
+    // recipes need one derivation pass per package (tens of ms): after first paint
+    setTimeout(() => { if (gen !== renderGen || !$("pget") || !window.GRAPH_RECIPES) return; const R = window.GRAPH_RECIPES; $("pget").outerHTML = R.gettingOne(i) || R.callingIt(i) || ""; }, 0);
+    setTimeout(() => { if (gen !== renderGen || !$("pcous")) return; $("pcous").outerHTML = cousins(i); }, 0);
     const slot = $("pslot"); slot.outerHTML = prism(i, Math.max(300, slot.clientWidth || w)) || "";
-    $("pshelf").innerHTML = shelf(i);
+    $("pshelf").innerHTML = shelf(i); if (window.GRAPH_RELEASES_UI) window.GRAPH_RELEASES_UI.bind($("pshelf"));
     setTitle(i);
   }
   function setTitle(i) {
@@ -349,7 +417,7 @@
   // ------------------------------------------------------------------ open, close, morph
   const page = () => $("gpage");
   function open(i, api, opts = {}) {
-    G = api; if (!nameIndex) buildIndex();
+    G = api; if (!nameIndex) buildIndex(); if (window.GRAPH_RECIPES) window.GRAPH_RECIPES.init(api, types); initReleases();
     const el = page(); const wasOpen = G.pageOpen; G.pageOpen = true;
     view = opts.view || (view === "code" ? "code" : "page");
     el.classList.add("on"); render(i);
@@ -414,6 +482,12 @@
     }, 260);
   });
   window.addEventListener("keyup", (e) => { if (!e.altKey) document.body.classList.remove("xray"); });
-  function init(api) { G = api; if (!nameIndex) buildIndex(); }
-  window.GRAPH_PAGE = { init, open, close, render, setView };
+  const types = { lexType, genericsOf, resolveName, splitTop, splitPlus, params, typeHTML };
+  function init(api) { G = api; if (!nameIndex) buildIndex(); if (window.GRAPH_RECIPES) window.GRAPH_RECIPES.init(api, types); if (window.GRAPH_FAILS) window.GRAPH_FAILS.init(api, types); initReleases(); }
+  function initReleases() {
+    const U = window.GRAPH_RELEASES_UI; if (!U || !G) return;
+    U.init(G, () => { if (cur >= 0 && G.pageOpen) render(cur); });
+    const at = new URLSearchParams(location.search).get("at"); if (at && window.RELEASES) for (const c of Object.keys(window.RELEASES)) if (window.RELEASES[c].versions.some((x) => x.v === at)) U.at(c, at);
+  }
+  window.GRAPH_PAGE = { init, open, close, render, setView, types };
 })();

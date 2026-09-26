@@ -54,7 +54,7 @@ def build():
 <link rel="stylesheet" href="graph/graph.css">
 <style>{calm.CSS}</style></head>
 <body><div class="nx v4 gnx">{body}</div>
-<script src="graph/world.js"></script><script src="graph/kinds.js"></script><script src="graph/page.js"></script><script src="graph/app.js"></script></body></html>"""
+<script src="graph/world.js"></script><script src="graph/kinds.js"></script><script src="graph/releases.js"></script><script src="graph/releases-ui.js"></script><script src="graph/recipes.js"></script><script src="graph/tour.js"></script><script src="graph/fails.js"></script><script src="graph/page.js"></script><script src="graph/app.js"></script></body></html>"""
     kinds = {name: inner(item["svg"]) for (group, name), item in ICONS.items() if group == "kind"}
     open(os.path.join(HERE, "graph", "kinds.js"), "w").write("window.KINDS=" + json.dumps(kinds) + ";window.KFAM=" + json.dumps(FAM) + ";\n")
     path = os.path.join(HERE, "Graph.html")

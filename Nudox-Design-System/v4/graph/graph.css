@@ -194,3 +194,158 @@ body.xray .gpage .gty[title]::after{content:"  " attr(title);font:400 11px var(-
 .inuse pre{margin:0;padding:10px 14px;background:rgba(0,0,0,.2);font:400 calc(12.5px*var(--dtxt))/1.65 var(--mono);color:var(--ink3);white-space:pre-wrap;word-break:break-word}
 .inuse pre .hot{color:var(--ink1)}.inuse pre b{font-weight:600;color:var(--ink0);box-shadow:inset 0 -1.5px 0 var(--peri)}
 .gpage ~ .gpeek,.gpeek{z-index:20}
+/* getting one / calling it: recipes from plain values, read as rails (recipes.js) */
+.gget{gap:10px}
+.gget .route{display:flex;flex-direction:column}
+.gget .route+.route{opacity:.62;transition:opacity .16s ease}.gget .route+.route:hover,.gget:hover .route:hover{opacity:1}
+.gget .rrail{display:flex;flex-wrap:wrap;align-items:center;row-gap:8px;font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink2);min-width:0}
+.gget .rsrc{font:italic 400 calc(13px*var(--dtxt)) var(--serif,"Newsreader"),serif;color:var(--ink3);margin-right:2px;white-space:nowrap}
+.gget .rsrc a.gtl{font:500 calc(12.5px*var(--dtxt)) var(--mono);font-style:normal}
+.gget .rstep{display:inline-flex;align-items:center;gap:0;white-space:nowrap}
+.gget .rl{display:inline-block;width:14px;height:1px;background:var(--peri-line,rgba(147,162,250,.35))}
+.gget .rstep>a.rv{padding:1px 6px;color:var(--ink1);box-shadow:inset 0 0 0 1px var(--line1,rgba(158,176,255,.12))}
+.gget .rstep>a.rv:hover{box-shadow:inset 0 0 0 1px var(--peri)}
+.gget .rq{font:600 11px var(--mono);font-style:normal;color:var(--ink3);margin-left:2px}
+.gget .rq.m{color:var(--ink4)}
+.gget .rside{font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4);margin-left:6px}
+.gget .rside a.gtl{font:500 calc(11.5px*var(--dtxt)) var(--mono)}
+.gget .rnm{font:italic 400 11px var(--mono);color:var(--ink4)}
+.gget .rst{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;margin:0 1px}
+.gget .rst::before{content:"";width:5px;height:5px;transform:rotate(45deg);box-shadow:inset 0 0 0 1px var(--ink3)}
+.gget .rend{width:8px;height:8px;margin-left:3px;transform:rotate(45deg);background:var(--peri);box-shadow:0 0 0 3px rgba(147,162,250,.14)}
+.gget .rend[data-call]{background:none;box-shadow:inset 0 0 0 1.5px var(--peri)}
+.gget .rcode{display:none;margin-top:2px;padding:7px 12px;background:rgba(0,0,0,.2);font:400 calc(12.5px*var(--dtxt))/1.6 var(--mono);color:var(--ink1);white-space:pre-wrap;word-break:break-word}
+body.xray .gget .rcode{display:block}body.xray .gget .rrail{display:none}
+.gget .rfoot{font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4)}
+.gget .rnone{margin:0;font:400 calc(13px*var(--dtxt)) var(--ui);color:var(--ink3)}
+.gres .r.shp .n i{font-style:normal;color:var(--ink4)}
+.gres .r.shp{grid-template-columns:18px minmax(0,1fr);row-gap:3px}
+.gres .r.shp .w.gsig{grid-column:2;font:400 11.5px var(--mono);color:var(--ink3);white-space:normal;text-align:left;overflow:visible}
+.gres .r.shp .w.gsig .gtw{font:400 11.5px var(--ui);color:var(--ink4)}
+.gres .r.none{color:var(--ink4);font:400 12px var(--ui);padding:8px 12px}
+.gget .ralt{font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4);margin-left:10px;white-space:normal}
+.gget .ralt i{font-style:normal}
+.gres .r.lit{display:block;padding:7px 8px 3px;font:400 11.5px var(--ui);color:var(--peri-hi,#b9c3ff);cursor:default;box-shadow:inset 0 1px 0 var(--line1)}
+.gfocus .rip{margin-top:8px;padding-top:8px;box-shadow:inset 0 1px 0 var(--line1);font:400 12px/1.55 var(--ui);color:var(--ink3)}
+.gfocus .rip .rh{display:block;font:italic 400 12.5px var(--serif,"Newsreader"),serif;color:var(--ink3);margin-bottom:2px}
+.gfocus .rip b{font-weight:600;color:var(--peri-hi,#b9c3ff)}.gfocus .rip b.y{color:var(--mint)}
+.gfocus .rip i{font-style:normal;color:var(--ink4);margin:0 5px}
+.gfocus .rip .rmost{margin-top:3px;font:400 11.5px var(--ui);color:var(--ink4)}.gfocus .rip .rmost span{font:500 11.5px var(--mono);color:var(--ink2)}.gfocus .rip .rmost span.y{color:var(--mint)}
+/* the version comb in the shelf header (releases-ui.js; target shots/VersionComb.png) */
+.vhead{padding:0 14px 12px}
+.vhead .vcomb{position:relative;height:24px;outline:0;cursor:pointer}
+.vhead .vcomb:focus-visible{box-shadow:0 0 0 1px var(--peri-line)}
+.vhead .vcomb .t{position:absolute;bottom:0;width:1px;background:var(--ink4);transform:translateX(-.5px);transition:left .08s linear}
+.vhead .vcomb .t.far{opacity:.55}
+.vhead .vcomb .t.pin{background:var(--mint);width:2px}
+.vhead .vcomb .t.view{background:var(--peri);width:2px;box-shadow:0 0 0 2px rgba(147,162,250,.18)}
+.vhead .vcomb .t.hov{background:var(--ink0)}
+.vhead .vcomb .ctip{position:absolute;top:30px;z-index:3;transform:translateX(-50%);white-space:nowrap;font:400 11.5px var(--ui);color:var(--ink2);opacity:0;pointer-events:none;
+  background:var(--glass,rgba(10,18,34,.92));padding:5px 9px;box-shadow:inset 1px 1px 0 var(--bevel-hi,rgba(255,255,255,.08))}
+.vhead .vcomb .ctip b{font:600 11.5px var(--mono);color:var(--ink0)}
+.vhead .vline{margin-top:10px;font:400 12px var(--ui);color:var(--ink3);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.vhead .vline b{font:600 11.5px var(--mono);color:var(--peri-hi)}.vhead .vline span{font:500 11.5px var(--mono);color:var(--mint)}
+.vhead .vline i{font-style:normal;color:var(--ink4)}
+.vhead .vline kbd{margin-left:auto;font:500 10.5px var(--mono);color:var(--ink3);box-shadow:inset 0 0 0 1px var(--line2);padding:0 5px}
+.vhead .vsum{margin-top:4px;font:400 11.5px var(--ui);color:var(--ink4)}.vhead .vsum b{color:var(--ink1);font-weight:600}.vhead .vsum b.y{color:var(--mint)}.vhead .vsum i{font-style:normal;margin:0 5px}
+.vhead .vslip{color:var(--ink3);font-style:italic}
+.cbook .bv.on{color:var(--peri-hi)}
+/* the upgrade lens on the page */
+.glens{gap:10px}
+.glens .glyou{font:400 calc(13px*var(--dtxt)) var(--ui);color:var(--ink2)}.glens .glyou b{color:var(--mint);font-weight:600}
+.glens .gluses{display:flex;flex-direction:column;gap:10px}
+.glens .gluses .use{margin:0;display:flex;flex-direction:column;gap:5px}
+.glens .gluses figcaption{display:flex;gap:10px;align-items:baseline;font:500 12px var(--mono)}
+.glens .gluses .uw{color:var(--ink3)}
+.glens .gluses pre{margin:0;padding:8px 12px;background:rgba(0,0,0,.2);font:400 calc(12.5px*var(--dtxt))/1.6 var(--mono);color:var(--ink1);white-space:pre-wrap;word-break:break-word;box-shadow:inset 2px 0 0 var(--peri)}
+.glens .glrows{display:flex;flex-direction:column;gap:6px}
+.glens .glrow{display:grid;grid-template-columns:86px auto minmax(0,1fr);gap:12px;align-items:baseline}
+.glens .glw{font:400 11.5px var(--ui);color:var(--ink4)}.glens .glrow.br .glw,.glens .glw.br{color:var(--ink2)}
+.glens .gln{font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink1)}
+.glens .gls{display:flex;flex-direction:column;gap:2px;min-width:0}
+.glens .gls code{font:400 calc(12px*var(--dtxt)) var(--mono);white-space:pre-wrap;word-break:break-word}
+.glens .gls .glb{color:var(--ink4);text-decoration:line-through;text-decoration-color:rgba(255,255,255,.25)}
+.glens .gls .gla{color:var(--ink1)}
+.glens .gls .gtn{font-style:normal;color:var(--ink3)}
+.glens .gls .glb .gty,.glens .gls .glb .gtl,.glens .gls .glb .gtw,.glens .gls .glb .gtn{color:var(--ink4)}
+.glens .gls b.gnew{font-weight:inherit;box-shadow:inset 0 -1.5px 0 var(--mint)}
+.glens .gls b.gold{font-weight:inherit;text-decoration:line-through;text-decoration-color:var(--ink3)}
+.glens .gls .glb{text-decoration:none}
+.glens .gsame{font:italic 400 12px var(--serif,"Newsreader"),serif;color:var(--ink4)}
+.glens .glrow.same .gln{color:var(--ink3)}
+.glens .glyou .gmoved{color:var(--ink4)}
+.glens .gluses .use.same pre{box-shadow:inset 2px 0 0 var(--line2);color:var(--ink3)}
+.glens .glyou .gmoved{margin-top:3px;font:400 12px var(--ui);color:var(--ink4)}
+.glens .gsite{font:400 11.5px var(--mono);color:var(--ink3);box-shadow:inset 0 -1px 0 var(--line1)}
+.gwhere .rel{font:400 12px var(--ui);color:var(--peri-hi,#b9c3ff)}
+/* chains: "have -> need" in steps (recipes.js chains); rows in the find box, a held chain as a plate at the foot */
+.gres .r.hd{display:block;padding:9px 8px 3px;font:400 11.5px var(--ui);color:var(--ink4);cursor:default;box-shadow:inset 0 1px 0 var(--line1)}
+.gres .r.hd:first-child{box-shadow:none;padding-top:4px}
+.gres .r.chn{grid-template-columns:18px minmax(0,1fr)}
+.gres .r.chn .st{display:flex;flex-direction:column;align-items:center;gap:3px;padding-top:4px}
+.gres .r.chn .st i{width:4px;height:4px;transform:rotate(45deg);box-shadow:inset 0 0 0 1px var(--peri)}
+.gres .r.chn .st i:last-child{background:var(--peri)}
+.gres .r.chn .w.gsig{white-space:normal;text-align:left;overflow:visible;font:500 12px var(--mono);color:var(--ink2);line-height:1.55}
+.gres .r.chn .gtw{font:400 11.5px var(--ui);font-style:normal;color:var(--ink4)}
+.gres .r.chn .gtp{font-style:normal;color:var(--ink4);padding:0 1px}
+.gchain{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:5;width:min(760px,calc(100% - 32px));display:none;flex-direction:column;gap:12px;padding:16px 20px 14px;--dtxt:1;
+  background:rgba(8,15,29,.86);backdrop-filter:blur(12px);box-shadow:inset 0 0 0 1px var(--line2);
+  clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px)}
+.gchain.on{display:flex}
+.gchain .ch{display:flex;align-items:baseline;gap:14px;min-width:0}
+.gchain .ch .chn{font:500 14px var(--mono);color:var(--ink0);min-width:0}
+.gchain .ch .chn i{font:italic 400 15px var(--serif,"Newsreader"),serif;color:var(--ink3)}
+/* start here: a package's reading path (tour.js), flown stop to stop; the plate at the foot */
+.gtour{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:5;width:min(760px,calc(100% - 32px));display:none;flex-direction:column;gap:12px;padding:16px 20px 14px;
+  background:rgba(8,15,29,.86);backdrop-filter:blur(12px);box-shadow:inset 0 0 0 1px var(--line2);
+  clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px)}
+.gtour.on{display:flex}
+.gtour .th{display:flex;align-items:baseline;gap:10px}
+.gtour .th b{font:620 15px var(--display,"Bricolage Grotesque");color:var(--ink0)}
+.gtour .th i{font:italic 400 15px var(--serif,"Newsreader"),serif;color:var(--ink3)}
+.gtour .th .tn{margin-left:auto;font:400 11.5px var(--ui);color:var(--ink4)}
+.gtour .tstrip{display:flex;align-items:center;flex-wrap:wrap;row-gap:8px}
+.gtour .ts{display:inline-flex;align-items:center;gap:7px;font:500 12px var(--mono);color:var(--ink3);cursor:pointer;white-space:nowrap}
+.gtour .ts:hover span{color:var(--ink1)}
+.gtour .ts i{width:6px;height:6px;transform:rotate(45deg);box-shadow:inset 0 0 0 1.2px var(--peri)}
+.gtour .ts.past{color:var(--ink4)}.gtour .ts.past i{box-shadow:inset 0 0 0 1.2px var(--ink4)}
+.gtour .ts.on{color:var(--ink0)}.gtour .ts.on i{background:var(--peri);box-shadow:0 0 0 3px rgba(147,162,250,.16)}
+.gtour .tl{display:inline-block;width:16px;height:1px;margin:0 7px;background:var(--peri-line,rgba(147,162,250,.35))}
+.gtour .tnow .tr{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.gtour .tnow em{font:italic 400 16px var(--serif,"Newsreader"),serif;color:var(--peri-hi,#b9c3ff)}
+.gtour .tnow b{font:600 14px var(--mono);color:var(--ink0)}
+.gtour .tnow span{font:400 12px var(--ui);color:var(--ink4)}
+.gtour .tnow p{margin:6px 0 0;font:400 13.5px/1.5 var(--ui);color:var(--ink2)}
+.gtour .ft{display:flex;gap:14px;flex-wrap:wrap;font:400 11.5px var(--ui);color:var(--ink4)}
+.gtour .ft kbd,.gwhere .tk kbd{font:500 10.5px var(--mono);color:var(--ink3);box-shadow:inset 0 0 0 1px var(--line2);padding:0 5px;margin-right:5px}
+.gwhere .tk{font:400 11px var(--ui);color:var(--ink4);margin-left:12px}
+/* how it fails (fails.js): the kinds a call can give under the pipe's "or fails with"; on error types, who gives each kind */
+.pipe .pfk{margin-top:6px;font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink2);line-height:1.7}
+.pipe .pfk .pfv{font:italic 400 calc(13px*var(--dtxt)) var(--serif,"Newsreader"),serif;color:var(--ink4);padding:0 2px}
+.pipe .pfk .pfs{font-style:normal;color:var(--ink4);padding:0 5px}
+.pipe .pfc{margin-top:1px;font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4)}
+.gfails .gfrows{display:flex;flex-direction:column}
+.gfails .gfrows{font:500 calc(13px*var(--dtxt)) var(--mono)}
+.gfails .gfr{display:grid;grid-template-columns:var(--gfk,20ch) minmax(0,1fr);column-gap:28px;align-items:baseline;padding:7px 0;box-shadow:inset 0 -1px 0 var(--line1)}
+.gfails .gfv{justify-self:start;font:500 calc(13px*var(--dtxt)) var(--mono);color:var(--ink1)}
+.gfails .gfr.told .gfv{box-shadow:inset 0 -1.5px 0 var(--mint)}
+.gfails .gfw{font:500 calc(12.5px*var(--dtxt)) var(--mono);color:var(--ink3);min-width:0}
+.gfails .gfs{font-style:normal;color:var(--ink4);padding:0 3px}
+.gfails .gfm,.gfails .gfn{font:400 calc(12px*var(--dtxt)) var(--ui);font-style:normal;color:var(--ink4)}
+.gfails .gffoot{margin-top:10px;font:400 calc(11.5px*var(--dtxt)) var(--ui);color:var(--ink4)}
+@container reader (max-width:560px){ .gfails .gfr{grid-template-columns:1fr;row-gap:4px} .gfails .gfw{padding-left:14px} }
+/* its cousins: the same idea in another package, and the road each way */
+.gcous .gcr{display:flex;flex-direction:column;gap:10px;padding:4px 0 14px}
+.gcous .gcr+.gcr{box-shadow:inset 0 1px 0 var(--line1);padding-top:16px}
+.gcous .gch{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.gcous .gch a.gtl{font:500 calc(14px*var(--dtxt)) var(--mono);color:var(--ink0)}
+.gcous .gch span{font:400 calc(12.5px*var(--dtxt)) var(--ui);color:var(--ink3)}
+.gcous .gch code{font:500 calc(12px*var(--dtxt)) var(--mono);color:var(--ink2)}
+.gcous .gcw{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:baseline;column-gap:14px}
+.gcous .gcl{font:italic 400 calc(13px*var(--dtxt)) var(--serif,"Newsreader"),serif;color:var(--ink4)}
+.gcous .gcn{font:400 calc(12.5px*var(--dtxt)) var(--ui);color:var(--ink4)}
+.gcous .route+.route{opacity:1}
+/* the empty find box: what it can do */
+.gres .r.hint{grid-template-columns:minmax(0,max-content) minmax(0,1fr);column-gap:14px}
+.gres .r.hint .n{font:500 12.5px var(--mono);color:var(--ink1)}
+.gres .r.hint .w{font:400 11.5px var(--ui);color:var(--ink4);white-space:normal;text-align:left}

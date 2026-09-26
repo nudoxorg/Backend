@@ -161,7 +161,7 @@
     const hiNb = hover >= 0 && !prism ? nb(hover) : null;
     const lit = new Set(); if (hiNb) { lit.add(hover); for (const [j] of hiNb.outs) lit.add(j); for (const [j] of hiNb.ins) lit.add(j); if (N[hover].u >= 0) lit.add(N[hover].u); }
     const G = prism ? prism.g : 0;
-    const dimAll = G > 0 ? 1 - 0.7 * G : hover >= 0 ? 1 - 0.45 * hoverA : 1;
+    const dimAll = (G > 0 ? 1 - 0.7 * G : hover >= 0 ? 1 - 0.45 * hoverA : 1) * (sought || ripple || chainOn() || tour ? 0.42 : 1);
 
     // ---- territories: packages
     const visP = [];
@@ -282,6 +282,112 @@
       else { cx.fillStyle = rgba(c, a); cx.fill(p); }
     }
 
+    // ---- the constellation: everything the find box matches, wherever it lives
+    if (sought) {
+      const pad = 12; const halo = new Path2D(), core = new Path2D(); let n = 0;
+      for (const j of sought) {
+        const x = sx(X[j]), y = sy(Y[j]); if (x < -pad || y < -pad || x > VW + pad || y > VH + pad) continue;
+        const s = Math.max(2.2, Math.min(5, 1.6 + k * 0.35)); n++;
+        core.moveTo(x, y - s); core.lineTo(x + s, y); core.lineTo(x, y + s); core.lineTo(x - s, y); core.closePath();
+        halo.moveTo(x + s + 4, y); halo.arc(x, y, s + 4, 0, Math.PI * 2);
+        labels.push([6 + IMP[j] * 2, j, x, y, s]);
+      }
+      cx.fillStyle = rgba(PERI, 0.13); cx.fill(halo); cx.fillStyle = rgba(PERI, 0.95); cx.fill(core);
+      stats.sought = n;
+    }
+
+    // ---- a chain (find "have -> need", in steps): your value's road through the world. The road runs
+    // through types as places: calls on the same type fold into one stop, named "Language · from › name".
+    const CH = chainOn();
+    if (CH) {
+      const stops = chainStops(CH);
+      const pts = stops.map((st) => [sx(X[st.at]), sy(Y[st.at])]);
+      const arcs = []; // [x0, y0, cx, cy, x1, y1]: gentle arcs, all bending the same way
+      for (let a = 1; a < pts.length; a++) { const [x0, y0] = pts[a - 1], [x1, y1] = pts[a]; const dx = x1 - x0, dy = y1 - y0; arcs.push([x0, y0, (x0 + x1) / 2 - dy * 0.18, (y0 + y1) / 2 + dx * 0.18, x1, y1]); }
+      const t = STILL ? 1 : ease(Math.min(1, (now - CH.t0) / (380 + 260 * Math.max(1, arcs.length))));
+      const road = new Path2D(); arcs.forEach(([x0, y0, qx, qy, x1, y1], a) => { if (!a) road.moveTo(x0, y0); road.quadraticCurveTo(qx, qy, x1, y1); });
+      cx.lineWidth = 1.5; cx.strokeStyle = rgba(PERI, 0.7); cx.stroke(road);
+      const s = Math.max(3.2, Math.min(6, 2.4 + k * 0.4));
+      const dia = (x, y, r) => { const p = new Path2D(); p.moveTo(x, y - r); p.lineTo(x + r, y); p.lineTo(x, y + r); p.lineTo(x - r, y); p.closePath(); return p; };
+      stops.forEach((st, a) => {
+        const [x, y] = pts[a]; const reached = !arcs.length || a / arcs.length <= t + 1e-6; const last = a === stops.length - 1;
+        if (st.yours) { cx.lineWidth = 1.4; cx.strokeStyle = rgba(MINT, 0.95); cx.stroke(dia(x, y, s + 2.5)); } // what you have
+        else { cx.fillStyle = rgba(last ? PERI : INK, reached ? 1 : 0.35); cx.fill(dia(x, y, last ? s + 1.5 : s)); }
+        // its words: the place, then the calls made there
+        const name = N[st.at].n, calls = st.calls.join(" › ");
+        cx.font = F.item; const w0 = tw(name, F.item), w1 = calls ? tw(" · " + calls, F.item) : 0;
+        // right of the stop, else left, else below: two stops close together must not share a line
+        const W = w0 + w1;
+        const spots = [[x + s + 8, y + 4], [x - s - 8 - W, y + 4], [x - W / 2, y + s + 16], [x - W / 2, y - s - 8], [x + s + 8, y + 20], [x + s + 8, y - 12]];
+        const inside = ([a, b]) => a - 3 >= 8 && a + W + 3 <= VW - 8 && b - 12 >= 8 && b + 4 <= VH - 8;
+        let [lx, ly] = spots.find((p) => inside(p) && occTry(p[0] - 3, p[1] - 12, p[0] + W + 3, p[1] + 4)) || spots.find(inside) || spots[0];
+        cx.fillStyle = "rgba(4,10,22,.72)"; cx.fillRect(lx - 3, ly - 12, w0 + w1 + 6, 16);
+        cx.fillStyle = rgba(st.yours ? MINT : INK, reached ? 0.95 : 0.4); cx.fillText(name, lx, ly);
+        if (calls) { cx.fillStyle = rgba(PERI, reached ? 0.95 : 0.4); cx.fillText(" · " + calls, lx + w0, ly); }
+      });
+      if (t < 1 && arcs.length) { // the value, travelling
+        const u = t * arcs.length, a = Math.min(arcs.length - 1, Math.floor(u)), f = u - a; const [x0, y0, qx, qy, x1, y1] = arcs[a];
+        const bx = (1 - f) * (1 - f) * x0 + 2 * (1 - f) * f * qx + f * f * x1, by = (1 - f) * (1 - f) * y0 + 2 * (1 - f) * f * qy + f * f * y1;
+        cx.fillStyle = rgba(MINT, 0.18); cx.beginPath(); cx.arc(bx, by, 7, 0, Math.PI * 2); cx.fill();
+        cx.fillStyle = rgba(MINT, 1); cx.fill(dia(bx, by, 3));
+      }
+    }
+
+    // ---- a tour: the road through the package's stops, numbered; the current stop in periwinkle
+    if (tour) {
+      const pts = tour.stops.map((st) => [sx(X[st.i]), sy(Y[st.i])]);
+      // the road: the legs into and out of the current stop are drawn, the rest only hinted
+      const near = new Path2D(), far = new Path2D();
+      pts.forEach(([x1, y1], a) => { if (!a) return; const [x0, y0] = pts[a - 1]; const dx = x1 - x0, dy = y1 - y0; const p = a === tour.at || a - 1 === tour.at ? near : far; p.moveTo(x0, y0); p.quadraticCurveTo((x0 + x1) / 2 - dy * 0.18, (y0 + y1) / 2 + dx * 0.18, x1, y1); });
+      cx.setLineDash([2, 5]); cx.lineWidth = 1.2; cx.strokeStyle = rgba(PERI, 0.12); cx.stroke(far); cx.strokeStyle = rgba(PERI, 0.55); cx.stroke(near); cx.setLineDash([]);
+      const s = Math.max(3.2, Math.min(6.5, 2.4 + k * 0.4));
+      tour.stops.forEach((st, a) => {
+        const [x, y] = pts[a]; const on = a === tour.at, past = a < tour.at;
+        const p = new Path2D(); const r = on ? s + 2 : s; p.moveTo(x, y - r); p.lineTo(x + r, y); p.lineTo(x, y + r); p.lineTo(x - r, y); p.closePath();
+        if (on) { cx.fillStyle = rgba(PERI, 0.16); cx.beginPath(); cx.arc(x, y, r + 7, 0, Math.PI * 2); cx.fill(); cx.fillStyle = rgba(PERI, 1); cx.fill(p); }
+        else { cx.lineWidth = 1.3; cx.strokeStyle = rgba(past ? INK : PERI, past ? 0.55 : 0.8); cx.stroke(p); }
+        const text = `${a + 1}  ${fullName(st.i)}`; const font = on ? F.itemB : F.item; const W = tw(text, font);
+        const spots = [[x + r + 9, y + 4], [x - r - 9 - W, y + 4], [x - W / 2, y + r + 17], [x - W / 2, y - r - 9]];
+        const inside = ([a0, b0]) => a0 - 3 >= 8 && a0 + W + 3 <= VW - 8 && b0 - 12 >= 8 && b0 + 4 <= VH - 8;
+        const [lx, ly] = spots.find((q) => inside(q) && occTry(q[0] - 3, q[1] - 12, q[0] + W + 3, q[1] + 4)) || spots.find(inside) || spots[0];
+        cx.font = font; cx.fillStyle = "rgba(4,10,22,.72)"; cx.fillRect(lx - 3, ly - 12, W + 6, 16);
+        cx.fillStyle = on ? rgba(PERI, 1) : rgba(INK, past ? 0.55 : 0.85); cx.fillText(text, lx, ly);
+      });
+    }
+
+    // ---- a scrubbed release (the page's comb): removed symbols go hollow, real changes get a periwinkle ring
+    const RM = window.GRAPH_RELEASES_UI && window.GRAPH_RELEASES_UI.marks();
+    if (RM && (RM.removed.size || RM.changed.size)) {
+      const ring = new Path2D(), ghost = new Path2D();
+      const put = (p, j, s) => { const x = sx(X[j]), y = sy(Y[j]); if (x < -12 || y < -12 || x > VW + 12 || y > VH + 12) return false; p.moveTo(x, y - s); p.lineTo(x + s, y); p.lineTo(x, y + s); p.lineTo(x - s, y); p.closePath(); return true; };
+      const s = Math.max(2.4, Math.min(6, 1.8 + k * 0.4));
+      for (const j of RM.changed) if (put(ring, j, s + 2.5) && k > 6) labels.push([5 + IMP[j], j, sx(X[j]), sy(Y[j]), s]);
+      for (const j of RM.removed) put(ghost, j, s + 1);
+      cx.lineWidth = 1.2; cx.strokeStyle = rgba(PERI, 0.85); cx.stroke(ring);
+      cx.setLineDash([2, 2]); cx.strokeStyle = rgba(INK, 0.55); cx.stroke(ghost); cx.setLineDash([]);
+    }
+
+    // ---- reach: dependents light up wave by wave (R); first-wave threads run back to the source
+    if (ripple) {
+      const el = now - ripple.t0; const sx0 = sx(X[ripple.src]), sy0 = sy(Y[ripple.src]);
+      ripple.waves.forEach((wave, d) => {
+        const f = Math.max(0, Math.min(1, (el - d * WAVE_MS) / 320)); if (f <= 0) return;
+        const s = d === 0 ? 4.2 : d === 1 ? 3.2 : 2.2; const a = (d === 0 ? 0.95 : d === 1 ? 0.66 : d === 2 ? 0.34 : 0.2) * f;
+        const threads = d === 0 ? new Set(wave.slice().sort((p, q) => IMP[q] - IMP[p]).slice(0, 48)) : null;
+        const pm = new Path2D(), pp = new Path2D(), th = new Path2D();
+        for (const t of wave) {
+          const x = sx(X[t]), y = sy(Y[t]); if (x < -20 || y < -20 || x > VW + 20 || y > VH + 20) continue;
+          const p = yours(t) ? pm : pp; p.moveTo(x, y - s); p.lineTo(x + s, y); p.lineTo(x, y + s); p.lineTo(x - s, y); p.closePath();
+          if (threads && threads.has(t)) { th.moveTo(x, y); th.lineTo(sx0, sy0); }
+          if (d <= 1) labels.push([(d === 0 ? 8 : 4) + IMP[t] * 2, t, x, y, s]);
+        }
+        if (d === 0) { cx.lineWidth = 0.8; cx.strokeStyle = rgba(PERI, 0.16 * f); cx.stroke(th); }
+        cx.fillStyle = rgba(PERI, a); cx.fill(pp); cx.fillStyle = rgba(MINT, Math.min(1, a + 0.1)); cx.fill(pm);
+      });
+      // the source, ringed
+      cx.lineWidth = 1; cx.strokeStyle = rgba(PERI, 0.6); cx.beginPath(); cx.moveTo(sx0, sy0 - 9); cx.lineTo(sx0 + 9, sy0); cx.lineTo(sx0, sy0 + 9); cx.lineTo(sx0 - 9, sy0); cx.closePath(); cx.stroke();
+    }
+
     // ---- the lit neighbourhood (hover): bundled edges with flow, bright nodes
     const hi2 = hover;
     if (hiNb) {
@@ -340,7 +446,9 @@
     }
     labels.sort((a, b) => b[0] - a[0]);
     let budget = Math.round(40 + 120 * smooth(K(), 4, 30));
+    const said = CH ? new Set(chainStops(CH).map((st) => st.at)) : tour ? new Set(tour.stops.map((st) => st.i)) : null; // a road names its own stops
     for (const [prio, i, x, y, s] of labels) {
+      if (said && said.has(i)) continue;
       if (budget <= 0) break;
       const member = N[i].u >= 0; const strong = prio >= 10; const font = i === hi ? F.itemB : member ? F.mem : F.item;
       const text = N[i].n; const w = tw(text, font);
@@ -348,8 +456,9 @@
       if (!occTry(lx - 2, ly - 7, lx + w + 2, ly + 7)) continue;
       budget--; stats.labels++;
       cx.font = font;
-      const c = i === hi ? PERI : yours(i) || (reached(i) && strong) ? MINT : INK;
-      const a = i === hi ? 1 : strong ? 0.95 : (member ? 0.45 : 0.4 + 0.45 * IMP[i]) * dimAll;
+      const rip = ripple && ripple.byTop.has(i) && ripple.byTop.get(i) <= 2;
+      const c = i === hi || (sought && sought.has(i)) || (rip && !yours(i)) ? PERI : yours(i) || (reached(i) && strong) ? MINT : INK;
+      const a = i === hi || (sought && sought.has(i)) || rip ? 1 : strong ? 0.95 : (member ? 0.45 : 0.4 + 0.45 * IMP[i]) * dimAll;
       cx.fillStyle = rgba(c, a); cx.fillText(text, lx, ly);
     }
 
@@ -358,7 +467,9 @@
     // ---- where: the package and module under the camera
     const at = territoryAt(cam.x, cam.y);
     const level = k < 0.9 ? "world" : k < 3 ? "packages" : k < 12 ? "modules" : k < 40 ? "symbols" : "members";
-    whereEl.innerHTML = at ? `<b>${esc(PK[at.p].name)}</b>${at.m >= 0 && k > 1.5 ? `<span class="sep">›</span>${esc(MD[at.m].path || "(root)")}` : ""}<span class="alt">${level}</span>` : `<span class="alt">${level}</span>`;
+    const rmLine = RM && RM.crates.length ? `<span class="sep">·</span><span class="rel">${RM.crates.map(([c, v]) => `${esc(c)} at ${esc(window.GRAPH_RELEASES_UI.short(v))}`).join(", ")}: ${RM.changed.size} changed, ${RM.removed.size} gone, ${RM.added} new (not on the map)</span>` : "";
+    const tk = !tour && at && k >= 0.9 && k < 12 && tourOf(at.p) ? `<span class="tk"><kbd>T</kbd>start here</span>` : ""; // the package under the camera has a tour
+    whereEl.innerHTML = (rmLine ? (at ? `<b>${esc(PK[at.p].name)}</b>` : "") + rmLine : at ? `<b>${esc(PK[at.p].name)}</b>${at.m >= 0 && k > 1.5 ? `<span class="sep">›</span>${esc(MD[at.m].path || "(root)")}` : ""}<span class="alt">${level}</span>` : `<span class="alt">${level}</span>`) + tk;
     stats.ms = performance.now() - t0;
     if (Q.has("hud")) hudEl.textContent = `${stats.ms.toFixed(1)} ms · ${stats.items} symbols · ${stats.members} members · ${stats.edges} edges · ${stats.labels} labels\nk ${k.toFixed(2)} px/unit · ${NN.toLocaleString()} nodes · ${WD.edges.length.toLocaleString()} relations`;
     placePeek();
@@ -477,7 +588,8 @@
     const yu = [...refs].filter((j) => yours(j)).length; if (yu) facts.push(`<b>${yu}</b> in your code`);
     focusEl.innerHTML = `<div class="h">${kindSpan(n.k)}<div style="min-width:0"><div class="nm">${esc(n.n)}</div><div class="wh">${esc(qual(i))}</div></div></div>`
       + (n.d ? `<div class="sy">${esc(n.d)}</div>` : "") + capsLine(i) + `<div class="fx">${facts.join('<i>·</i>')}</div>`
-      + `<div class="ft"><span><kbd>↵</kbd>open page</span><span><kbd>↑↓</kbd>walk</span><span><kbd>esc</kbd>back out</span></div>`;
+      + (ripple && ripple.src === i ? rippleLine(ripple) : "")
+      + `<div class="ft"><span><kbd>↵</kbd>open page</span><span><kbd>R</kbd>${ripple && ripple.src === i ? "hide reach" : "reach"}</span><span><kbd>esc</kbd>back out</span></div>`;
     focusEl.classList.add("on");
     const here = document.querySelector(".titlebar .here"); if (here) { here.querySelector(".nm").textContent = n.n; here.querySelector(".path").textContent = qual(i).replace(/::/g, " › "); }
     addrEl.textContent = `nudox://graph/${qual(i).replace(/::/g, "/")}/${n.n}`;
@@ -497,7 +609,56 @@
     const half = Math.max(X[i] - x0, x1 - X[i], (Y[i] - y0) * VW / VH, (y1 - Y[i]) * VW / VH) * 2 * 1.2;
     return [X[i], Y[i], Math.min(Math.max(w, half), worldW() * 0.7)];
   }
+  // ------------------------------------------------------------------ reach (R): what would feel it if this changed, wave by wave
+  // Edges point from the dependent to what it depends on, so dependents are in-edges. A method passes the change to its
+  // callers; a field or variant passes it to its owner too (the shape changed). Waves are counted per top-level symbol.
+  let ripple = null;
+  const WAVE_MS = 240;
+  function reach(i) {
+    const seen = new Uint8Array(NN); const byTop = new Map([[topOf[i], 0]]); const waves = [];
+    let front = [i, ...(kids[i] || [])]; for (const a of front) seen[a] = 1;
+    for (let d = 1; d <= 8 && front.length; d++) {
+      const next = [], wave = [];
+      for (const a of front) for (let e = IN.off[a]; e < IN.off[a + 1]; e++) {
+        const b = IN.dst[e]; if (seen[b] || N[b].orphan) continue; seen[b] = 1; next.push(b);
+        const k = N[b].k; if ((k === "field" || k === "variant") && N[b].u >= 0 && !seen[N[b].u]) { seen[N[b].u] = 1; next.push(N[b].u); }
+        const t = topOf[b]; if (!byTop.has(t)) { byTop.set(t, d); wave.push(t); }
+      }
+      if (wave.length) waves.push(wave); front = next;
+    }
+    const all = waves.flat();
+    return { src: i, waves, byTop, all, yoursN: all.filter((t) => yours(t)).length, pkgs: new Set(all.map((t) => N[t].p)).size, t0: performance.now() };
+  }
+  function rippleLine(r) {
+    if (!r.all.length) return `<div class="rip">Nothing in this world depends on it.</div>`;
+    const w1 = r.waves[0] ? r.waves[0].length : 0, w2 = w1 + (r.waves[1] ? r.waves[1].length : 0);
+    const parts = [`<b>${w1}</b> direct`];
+    if (r.waves.length > 1) parts.push(`<b>${w2}</b> within two steps`);
+    if (r.waves.length > 2) parts.push(`<b>${r.all.length}</b> in all`);
+    parts.push(`across ${r.pkgs} package${r.pkgs === 1 ? "" : "s"}`);
+    if (r.yoursN) parts.push(`<b class="y">${r.yoursN}</b> in your code`);
+    const per = new Map(); for (const t of r.all) per.set(N[t].p, (per.get(N[t].p) || 0) + 1);
+    const most = [...per].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([p, c]) => `<span class="${PK[p].yours ? "y" : ""}">${esc(PK[p].name.replace(/^backend-/, ""))}</span> ${c}`);
+    return `<div class="rip"><span class="rh">If it changes</span>${parts.join('<i>·</i>')}${per.size > 1 ? `<div class="rmost">most in ${most.join('<i>·</i>')}</div>` : ""}</div>`;
+  }
+  function toggleReach() {
+    if (focus < 0) return;
+    if (ripple && ripple.src === focus) { ripple = null; showFocus(focus); wake(); return; }
+    ripple = reach(focus); showFocus(focus);
+    if (prism) prism.target = 0; // the reach replaces the prism while it is shown
+    // frame the source with the nearest 90 % of what it reaches
+    const pts = ripple.all.map((t) => [X[t], Y[t]]); pts.push([X[focus], Y[focus]]);
+    if (pts.length > 1) {
+      const d = pts.map(([x, y]) => Math.hypot(x - X[focus], y - Y[focus])).sort((a, b) => a - b); const lim = d[Math.floor((d.length - 1) * 0.9)];
+      const keep = pts.filter(([x, y]) => Math.hypot(x - X[focus], y - Y[focus]) <= lim + 1e-6);
+      const x0 = Math.min(...keep.map((p) => p[0])), x1 = Math.max(...keep.map((p) => p[0])), y0 = Math.min(...keep.map((p) => p[1])), y1 = Math.max(...keep.map((p) => p[1]));
+      flyTo((x0 + x1) / 2, (y0 + y1) / 2, Math.min(worldW() * 1.1, fitW(x0, y0, x1, y1, 1.3)), () => { ripple && (ripple.t0 = performance.now()); wake(); });
+    }
+    wake();
+  }
   function setFocus(i, fly = true) {
+    if (i >= 0 && tour) endTour(); // one plate at a time
+    if (ripple && ripple.src !== i) ripple = null;
     focus = i; nbCache.i = -2; showFocus(i); peekEl.classList.remove("on"); peekFor = -1; prismSel = -1; visit(i);
     if (i >= 0) {
       if (prism && prism.g > 0.05) prism.target = 0; // release the old one, gather the new one after the flight
@@ -734,8 +895,73 @@
 
   // ------------------------------------------------------------------ find
   const names = N.map((n) => n.n.toLowerCase());
-  let results = [], sel = 0;
-  function find(q) {
+  let results = [], sel = 0, sought = null;
+  // chains: "have -> need" when no single call (or too few) answers; previewed while selected, held on ↵
+  let chains = [], chainPreview = null, chainHeld = null;
+  const chainOn = () => chainHeld || chainPreview;
+  // a chain's stops: places (types; a free function is its own place), the calls made at each
+  function chainStops(c) {
+    const out = [];
+    c.path.forEach((j, a) => {
+      const at = N[j].u >= 0 ? N[j].u : j; const call = a === 0 && c.from && c.from === "#" + j ? null : N[j].k === "variant" || N[j].k === "function" || N[j].k === "method" ? N[j].n : null;
+      const prev = out[out.length - 1];
+      if (prev && prev.at === at) { if (call) prev.calls.push(call); return; }
+      out.push({ at, calls: call ? [call] : [], yours: a === 0 && c.from === "#" + j });
+    });
+    return out;
+  }
+  const chainEl = document.createElement("div"); chainEl.className = "gchain gget"; view.appendChild(chainEl);
+  function previewChain() {
+    const c = sel >= results.length ? chains[sel - results.length] : null;
+    if (c !== chainPreview) { chainPreview = c; if (c) c.t0 = performance.now(); wake(); }
+  }
+  function holdChain(c) {
+    if (tour) endTour();
+    chainHeld = c; chainPreview = null; c.t0 = performance.now();
+    const R = window.GRAPH_RECIPES; const n = c.steps;
+    const from = c.from && c.from.startsWith("#") ? N[+c.from.slice(1)].n : "your value", to = R.words(R.table[c.node.q].out, false).replace(/<[^>]+>/g, "");
+    chainEl.innerHTML = `<div class="ch"><span class="chn">${esc(from)} <i>to</i> ${esc(to)}, <i>in ${["no", "one", "two", "three", "four"][n] || n} step${n === 1 ? "" : "s"}</i></span></div>${R.chainRail(c)}<div class="rfoot">your value is the spine; the rest rides along · ⌥ for code · esc to let go</div>`;
+    chainEl.classList.add("on");
+    const at = chainStops(c).map((st) => st.at); const xs = at.map((j) => X[j]), ys = at.map((j) => Y[j]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    flyTo((x0 + x1) / 2, (y0 + y1) / 2 + (y1 - y0) * 0.12, Math.max(fitW(x0, y0, x1, y1, VW < 640 ? 2.8 : 1.9), worldW() * 0.02));
+  }
+  // start here: a package's reading path (tour.js), flown stop to stop (T; → ← ↵ esc)
+  let tour = null; // { pk, stops, at, t0 }
+  const tourEl = document.createElement("div"); tourEl.className = "gtour"; view.appendChild(tourEl);
+  function tourOf(pk) { const T = window.GRAPH_TOUR; if (!T || pk === undefined || pk < 0) return null; T.init(api); const t = T.of(pk); return t.stops.length >= 3 ? t : null; }
+  function startTour(pk, at = 0, instant = false) {
+    const t = tourOf(pk); if (!t) return false;
+    dropChain(); ripple = null; if (focus >= 0) setFocus(-1, false);
+    tour = { pk, stops: t.stops, at: -1, t0: performance.now() }; goStop(at, instant); return true;
+  }
+  function goStop(a, instant = false) {
+    if (!tour) return; a = Math.max(0, Math.min(tour.stops.length - 1, a)); if (a === tour.at) return;
+    tour.at = a; tour.t0 = performance.now();
+    const i = tour.stops[a].i; const [x, y, w] = focusCam(i); const W = w * 2.6; // the stop, among its neighbours
+    const dy = W * (VH / VW) * 0.12; // the plate covers the foot: sit the stop a little above centre
+    if (instant) { Object.assign(cam, { x, y: y + dy, w: W }); Object.assign(tgt, cam); } else flyTo(x, y + dy, W);
+    renderTour(); wake();
+  }
+  function endTour() { tour = null; tourEl.classList.remove("on"); wake(); }
+  const fullName = (j) => (N[j].u >= 0 ? N[N[j].u].n + "::" : "") + N[j].n;
+  function renderTour() {
+    const st = tour.stops[tour.at], n = N[st.i];
+    tourEl.innerHTML = `<div class="th"><b>${esc(PK[tour.pk].name)}</b><i>in ${["", "one", "two", "three", "four", "five", "six"][tour.stops.length] || tour.stops.length} stops</i><span class="tn">${tour.at + 1} of ${tour.stops.length}</span></div>`
+      + `<div class="tstrip">${tour.stops.map((s, a) => `<a class="ts${a === tour.at ? " on" : a < tour.at ? " past" : ""}" data-a="${a}"><i></i><span>${esc(fullName(s.i))}</span></a>`).join('<span class="tl"></span>')}</div>`
+      + `<div class="tnow"><div class="tr"><em>${esc(st.role)}</em><b>${esc(fullName(st.i))}</b><span>${esc(st.why)}</span></div>${n.d ? `<p>${esc(window.GRAPH_TOUR.plain(n.d))}</p>` : ""}</div>`
+      + `<div class="ft"><span><kbd>→</kbd>next</span><span><kbd>←</kbd>back</span><span><kbd>↵</kbd>open its page</span><span><kbd>esc</kbd>end</span></div>`;
+    tourEl.classList.add("on");
+  }
+  tourEl.addEventListener("click", (e) => { const a = e.target.closest("[data-a]"); if (a) goStop(+a.dataset.a); });
+  function dropChain() { chainHeld = null; chainPreview = null; chainEl.classList.remove("on"); document.body.classList.remove("xray"); wake(); }
+  function seek(q) { // every match, lit in the graph while the find box holds the query
+    const t = q.trim(); if (t.length < 2) return null;
+    const all = window.GRAPH_RECIPES && window.GRAPH_RECIPES.isShape(t) ? window.GRAPH_RECIPES.shape(t, 400) : find(t, 400);
+    return all.length ? new Set(all) : null;
+  }
+  function find(q, max = 7) {
+    if (window.GRAPH_RECIPES && window.GRAPH_RECIPES.isShape(q)) { if (window.GRAPH_PAGE) window.GRAPH_PAGE.init(api); return window.GRAPH_RECIPES.shape(q); }
     q = q.trim().toLowerCase(); if (!q) return [];
     const parts = q.split("::"); const last = parts[parts.length - 1];
     const out = [];
@@ -746,28 +972,57 @@
       const score = (nm === last ? 3 : at === 0 ? 1.6 : 0.6) + IMP[i] * 1.5 + (N[i].u < 0 ? 0.4 : 0) + (yours(i) ? 0.2 : 0) - nm.length * 0.01;
       out.push([score, i]);
     }
-    return out.sort((a, b) => b[0] - a[0]).slice(0, 7).map((x) => x[1]);
+    return out.sort((a, b) => b[0] - a[0]).slice(0, max).map((x) => x[1]);
+  }
+  // an empty find box teaches what it can do: a name, a shape, a shape in steps
+  const HINTS = [["Value", "a name"], ["path -> maybe text", "a shape: what it takes, what it gives"], ["Invocation -> list of text", "what you have → what you need, in steps if it takes more than one call"]];
+  function renderHints() {
+    resEl.innerHTML = HINTS.map(([q, w]) => `<div class="r hint" data-q="${esc(q)}"><span class="n">${esc(q)}</span><span class="w">${esc(w)}</span></div>`).join("");
+    resEl.classList.add("on");
   }
   function renderResults() {
+    if (!qEl.value.trim() && document.activeElement === qEl) { renderHints(); return; }
     const q = qEl.value.trim().toLowerCase().split("::").pop();
+    const shaped = window.GRAPH_RECIPES && window.GRAPH_RECIPES.isShape(qEl.value);
+    const lit = sought && sought.size > results.length ? `<div class="r lit">${sought.size >= 400 ? "400+" : sought.size} lit in the graph, across ${whereOf(sought)} package${whereOf(sought) === 1 ? "" : "s"}</div>` : "";
+    if (shaped) {
+      const direct = results.map((i, j) => `<div class="r shp${j === sel ? " sel" : ""}" data-i="${i}">${kindSpan(N[i].k)}<span class="n">${N[i].u >= 0 ? `<i>${esc(N[i].u >= 0 ? N[N[i].u].n : "")}::</i>` : ""}${esc(N[i].n)}</span><span class="w gsig">${window.GRAPH_RECIPES.label(i)}</span></div>`).join("");
+      const steps = chains.map((c, j) => `<div class="r chn${results.length + j === sel ? " sel" : ""}" data-c="${j}"><span class="st" title="${c.steps} steps">${"<i></i>".repeat(c.steps)}</span><span class="w gsig">${window.GRAPH_RECIPES.brief(c)}</span></div>`).join("");
+      resEl.innerHTML = (direct || (steps ? "" : `<div class="r none">nothing in this world has that shape</div>`))
+        + (steps ? `<div class="r hd">${direct ? "or, in steps" : "no one call does it; in steps"}</div>` + steps : "") + lit;
+      resEl.classList.toggle("on", true); previewChain(); return;
+    }
     resEl.innerHTML = results.map((i, j) => {
       const nm = N[i].n; const at = nm.toLowerCase().indexOf(q);
       const hl = at >= 0 ? esc(nm.slice(0, at)) + `<u>${esc(nm.slice(at, at + q.length))}</u>` + esc(nm.slice(at + q.length)) : esc(nm);
       return `<div class="r${j === sel ? " sel" : ""}" data-i="${i}">${kindSpan(N[i].k)}<span class="n">${hl}</span><span class="w">${esc(qual(i))}</span></div>`;
-    }).join("");
+    }).join("") + lit;
     resEl.classList.toggle("on", results.length > 0);
   }
-  qEl.addEventListener("input", () => { results = find(qEl.value); sel = 0; renderResults(); });
-  qEl.addEventListener("focus", () => findEl.classList.add("on"));
-  qEl.addEventListener("blur", () => { findEl.classList.remove("on"); setTimeout(() => resEl.classList.remove("on"), 150); });
+  const whereOf = (set) => { const ps = new Set(); for (const j of set) ps.add(N[j].p); return ps.size; };
+  qEl.addEventListener("input", () => {
+    results = find(qEl.value); sel = 0; sought = seek(qEl.value);
+    chains = window.GRAPH_RECIPES && window.GRAPH_RECIPES.isShape(qEl.value) && results.length < 3 ? window.GRAPH_RECIPES.chains(qEl.value) : [];
+    renderResults(); wake();
+  });
+  qEl.addEventListener("focus", () => { findEl.classList.add("on"); if (tour) endTour(); if (!qEl.value.trim()) renderHints(); });
+  qEl.addEventListener("blur", () => { findEl.classList.remove("on"); setTimeout(() => resEl.classList.remove("on"), 150); if (sought) { sought = null; wake(); } if (chainPreview) { chainPreview = null; wake(); } });
+  const pickRow = (j) => { qEl.blur(); resEl.classList.remove("on"); if (j >= results.length) holdChain(chains[j - results.length]); else { dropChain(); setFocus(results[j]); } };
   qEl.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown") { sel = Math.min(results.length - 1, sel + 1); renderResults(); e.preventDefault(); }
+    const n = results.length + chains.length;
+    if (e.key === "ArrowDown") { sel = Math.min(n - 1, sel + 1); renderResults(); e.preventDefault(); }
     else if (e.key === "ArrowUp") { sel = Math.max(0, sel - 1); renderResults(); e.preventDefault(); }
-    else if (e.key === "Enter" && results.length) { const i = results[sel]; qEl.blur(); resEl.classList.remove("on"); setFocus(i); e.preventDefault(); }
-    else if (e.key === "Escape") { qEl.value = ""; results = []; renderResults(); qEl.blur(); }
+    else if (e.key === "Enter" && n) { pickRow(sel); e.preventDefault(); }
+    else if (e.key === "Escape") { qEl.value = ""; results = []; chains = []; renderResults(); qEl.blur(); }
     e.stopPropagation();
   });
-  resEl.addEventListener("mousedown", (e) => { const r = e.target.closest(".r"); if (r) { setFocus(+r.dataset.i); qEl.blur(); } });
+  resEl.addEventListener("mousedown", (e) => {
+    const r = e.target.closest(".r"); if (!r) return;
+    if (r.dataset.q !== undefined) { e.preventDefault(); qEl.value = r.dataset.q; qEl.dispatchEvent(new Event("input")); return; } // a hint fills the box
+    if (r.dataset.c !== undefined) pickRow(results.length + +r.dataset.c); else if (r.dataset.i !== undefined) pickRow(results.indexOf(+r.dataset.i));
+  });
+  resEl.addEventListener("mousemove", (e) => { const r = e.target.closest(".r.chn"); if (r && sel !== results.length + +r.dataset.c) { sel = results.length + +r.dataset.c; renderResults(); } });
+  chainEl.addEventListener("click", (e) => { const a = e.target.closest("[data-i]"); if (a) { const i = +a.dataset.i; dropChain(); setFocus(i); } });
 
   // ------------------------------------------------------------------ input
   cv.addEventListener("pointerdown", (e) => {
@@ -818,6 +1073,16 @@
   window.addEventListener("keydown", (e) => {
     if (e.target === qEl) return;
     if (e.key === "/" || e.code === "Slash" || (e.key === "k" && e.metaKey)) { qEl.focus(); qEl.select(); e.preventDefault(); return; }
+    if ((e.key === "r" || e.key === "R") && !e.metaKey && !pageOpen && focus >= 0) { toggleReach(); e.preventDefault(); return; }
+    if (e.key === "Escape" && ripple) { ripple = null; showFocus(focus); if (focus >= 0) setFocus(focus, false); wake(); return; }
+    if (e.key === "Escape" && chainHeld && !pageOpen) { dropChain(); return; }
+    if (tour && !pageOpen) {
+      if (e.key === "ArrowRight" || e.key === " ") { goStop(tour.at + 1); e.preventDefault(); return; }
+      if (e.key === "ArrowLeft") { goStop(tour.at - 1); e.preventDefault(); return; }
+      if (e.key === "Escape") { endTour(); return; }
+      if (e.key === "Enter") { const i = tour.stops[tour.at].i; endTour(); focus = i; showFocus(i); openPage(i); return; }
+    }
+    if ((e.key === "t" || e.key === "T") && !e.metaKey && !pageOpen) { const at = territoryAt(cam.x, cam.y); if (startTour(focus >= 0 ? N[focus].p : at ? at.p : -1)) { e.preventDefault(); return; } }
     if (e.key === "Escape") { if (pageOpen) closePage(); else if (prismSel >= 0) { prismSel = -1; setHover(-1); wake(); } else if (focus >= 0) { const f = focus; setFocus(-1, false); const [x, y, w] = frameOf(f); flyTo(x, y, Math.min(worldW(), w * 6)); } else flyTo(...worldCam()); return; }
     if (e.key === "Enter" && focus >= 0) {
       if (prismSel >= 0 && prism) { const sl = layoutPrism(prism).slots[prismSel]; if (sl && !sl.more) { setFocus(sl.j); return; } }
@@ -855,6 +1120,8 @@
       }
     }
     if (prism) { const a = 1 - Math.exp(-dt / 120); prism.g += (prism.target - prism.g) * a; if (Math.abs(prism.target - prism.g) < 0.002) prism.g = prism.target; else moving = true; if (prism.target === 0 && prism.g === 0) prism = null; }
+    if (ripple && now - ripple.t0 < ripple.waves.length * WAVE_MS + 340) moving = true;
+    { const c = chainOn(); if (c && now - c.t0 < 380 + 260 * c.steps + 120) moving = true; }
     const hi = focus >= 0 ? focus : hover;
     if (hover >= 0 && hoverA < 1) { hoverA = Math.min(1, hoverA + dt / 140); moving = true; }
     if (hi >= 0) { flow = (flow + dt * 0.018) % 9; moving = true; }
@@ -864,6 +1131,8 @@
 
   // ------------------------------------------------------------------ boot
   const api = { peekHTML, KFAM, visit, enterGraph, relationsOf, caps, capsLine, nameOf, inEdges, outEdges, openPage, closePage, focusCam, buildPrism, get prism() { return prism; }, set prism(v) { prism = v; }, planFlight, worldCam, get pageOpen() { return pageOpen; }, set pageOpen(v) { pageOpen = v; }, draw: () => draw(performance.now()), N, X, Y, R, PK, MD, kids, nb, qual, sigOf, axes, yours, reached, kindSpan, esc, IMP, B, isItem, topOf, yoursUses, setFocus, flyTo, frameOf, sx, sy, K, cam, view, get focus() { return focus; }, wake, OUT, IN, IOUT, IIN };
+  window.addEventListener("keydown", (e) => { if (e.key === "Alt" && chainHeld) document.body.classList.add("xray"); });
+  window.addEventListener("keyup", (e) => { if (e.key === "Alt" && !pageOpen) document.body.classList.remove("xray"); });
   window.GRAPH = api; if (window.GRAPH_PAGE) window.GRAPH_PAGE.init(api);
   const byQuery = (q) => { if (!q) return -1; if (/^\d+$/.test(q)) return +q; const r = find(q); return r.length ? r[0] : -1; };
   new ResizeObserver(() => { resize(); if (STILL) draw(performance.now()); else wake(); }).observe(view);
@@ -886,6 +1155,16 @@
     }
     if (f >= 0) { if (STILL || Q.has("cam")) { focus = f; showFocus(f); prism = buildPrism(f); prism.g = +(Q.get("g") || 1); if (!Q.has("cam")) { const [x, y, w] = focusCam(f); Object.assign(cam, { x, y, w }); Object.assign(tgt, cam); } if (Q.has("sel")) { prismSel = +Q.get("sel"); } } else setTimeout(() => setFocus(f), 500); }
     if (h >= 0) setHover(h);
+    if (Q.has("reach") && focus >= 0) { ripple = reach(focus); ripple.t0 = -1e9; prism = null; showFocus(focus); if (!Q.has("cam")) { const pts = ripple.all.map((t) => [X[t], Y[t]]).concat([[X[focus], Y[focus]]]); const x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1])), y1 = Math.max(...pts.map((p) => p[1])); Object.assign(cam, { x: (x0 + x1) / 2, y: (y0 + y1) / 2, w: Math.min(worldW() * 1.1, fitW(x0, y0, x1, y1, 1.3)) }); Object.assign(tgt, cam); } }
+    if (Q.has("hints")) { findEl.classList.add("on"); renderHints(); }
+    if (Q.has("find")) {
+      qEl.value = Q.get("find"); findEl.classList.add("on"); results = find(qEl.value); sought = seek(qEl.value);
+      chains = window.GRAPH_RECIPES.isShape(qEl.value) && results.length < 3 ? window.GRAPH_RECIPES.chains(qEl.value) : [];
+      if (Q.has("sel")) sel = +Q.get("sel");
+      if (Q.has("chain") && chains[+Q.get("chain")]) { const c = chains[+Q.get("chain")]; sought = null; findEl.classList.remove("on"); holdChain(c); if (flight) { const [x, y, w] = flight.plan.at(1); Object.assign(cam, { x, y, w }); Object.assign(tgt, cam); flight = null; } if (Q.has("xray")) document.body.classList.add("xray"); }
+      else renderResults();
+    }
+    if (Q.has("tour")) { const p = PK.findIndex((q) => q.name === Q.get("tour")); if (p >= 0) startTour(p, +(Q.get("stop") || 1) - 1, true); }
     if (Q.has("page") && window.GRAPH_PAGE) { const pi = byQuery(Q.get("page")); if (pi >= 0) { focus = pi; showFocus(pi); const [x, y, w] = focusCam(pi); Object.assign(cam, { x, y, w }); Object.assign(tgt, cam); window.GRAPH_PAGE.open(pi, api, { instant: true, view: Q.get("view") || "page" }); } }
     draw(performance.now()); wake();
   });
