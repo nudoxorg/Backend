@@ -1384,6 +1384,32 @@ impl<'x, 'source> Projector<'x, 'source> {
             .map(|key| (key.ordinal, key.is_field))
     }
 
+    /// Resolves one struct-literal field key with no receiver type spelling.
+    /// Exactly one pushed field in the package wins; zero or ambiguous names
+    /// defer to the caller's normal resolution path.
+    fn lookup_unqualified_field(
+        &self,
+        package: &[u8],
+        member: &[u8],
+    ) -> Option<Option<u32>> {
+        let mut ordinal = None;
+        let mut count = 0u32;
+        for key in &self.members {
+            if key.package == package && key.member == member && key.is_field {
+                count += 1;
+                ordinal = Some(key.ordinal);
+                if count > 1 {
+                    return Some(None);
+                }
+            }
+        }
+        match count {
+            0 => None,
+            1 => Some(ordinal),
+            _ => Some(None),
+        }
+    }
+
     /// Records one image declaration's primary-source facts: its fact's
     /// source span (the full authority-bound declaration extent, the exact
     /// basis every owned occurrence's relative span is measured from) and
@@ -2056,28 +2082,59 @@ impl<'x, 'source> Projector<'x, 'source> {
                 };
                 foreign_target(reference_index, package, row.target, EntityKind::Module)?
             } else if row.target_package.is_empty() {
-                let local = self
-                    .lookup(owner_package, row.target)
-                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    .or_else(|| {
-                        self.lookup_member(owner_package, row.recv_type, row.target)
-                            .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    });
-                match local {
-                    Some(target) => target,
-                    None => {
-                        // Same-package target with no local fact: promoted
-                        // members, blank-keyed fields, or build-excluded
-                        // declarations. The key keeps the exact spelling
-                        // under the declaring package's lineage.
-                        foreign_target(
+                let target = if row.target_class == ReferenceTargetClass::Field
+                    && row.recv_type.is_empty()
+                {
+                    match self.lookup_unqualified_field(owner_package, row.target) {
+                        Some(Some(ordinal)) => {
+                            OccurrenceTarget::Local(EntityId::new(ordinal))
+                        }
+                        Some(None) => foreign_target(
+                            reference_index,
+                            owner_package,
+                            row.target,
+                            EntityKind::Field,
+                        )?,
+                        None => {
+                            let local = self
+                                .lookup(owner_package, row.target)
+                                .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                                .or_else(|| {
+                                    self.lookup_member(owner_package, row.recv_type, row.target)
+                                        .map(|(ordinal, _)| {
+                                            OccurrenceTarget::Local(EntityId::new(ordinal))
+                                        })
+                                });
+                            match local {
+                                Some(target) => target,
+                                None => foreign_target(
+                                    reference_index,
+                                    owner_package,
+                                    row.target,
+                                    foreign_entity_kind(row.target_class),
+                                )?,
+                            }
+                        }
+                    }
+                } else {
+                    let local = self
+                        .lookup(owner_package, row.target)
+                        .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                        .or_else(|| {
+                            self.lookup_member(owner_package, row.recv_type, row.target)
+                                .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
+                        });
+                    match local {
+                        Some(target) => target,
+                        None => foreign_target(
                             reference_index,
                             owner_package,
                             row.target,
                             foreign_entity_kind(row.target_class),
-                        )?
+                        )?,
                     }
-                }
+                };
+                target
             } else {
                 let local = self
                     .lookup(row.target_package, row.target)
@@ -5786,6 +5843,131 @@ mod tests {
         }
         if occurrences.next().is_some() {
             return Err(TestError::Missing("exact occurrences"));
+        }
+        Ok(())
+    }
+
+    /// A struct-literal field key names a pushed field with no receiver type
+    /// spelling; when exactly one field in the owner package shares the name,
+    /// the occurrence resolves locally instead of folding to a foreign key.
+    #[test]
+    fn struct_literal_field_unique_resolves_locally() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let lang = fix.declaration(KIND_TYPE, b"Lang", None);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        let string_row = fix.basic(b"string");
+        let lang_row = fix.start_row(ROW_STRUCT);
+        fix.field(lang_row, b"Name", Some(string_row));
+        fix.declarations[lang].type_root = Some(lang_row);
+        let _ = lang;
+        fix.reference_typed(
+            u32::try_from(use_fn).map_err(TestError::from)?,
+            b"",
+            b"Name",
+            b"",
+            32,
+            36,
+            1,
+            2,
+            b"",
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let name_field = entity_of(&view, b"Name")?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let read = occurrences
+            .next()
+            .ok_or(TestError::Missing("struct literal field read"))??;
+        if read.owner != use_entity {
+            return Err(TestError::Missing("struct literal field owner"));
+        }
+        if read.occurrence.target != OccurrenceTarget::Local(name_field) {
+            return Err(TestError::Missing("struct literal field target"));
+        }
+        if read.occurrence.kind != ReferenceKind::FieldAccess {
+            return Err(TestError::Missing("struct literal field kind"));
+        }
+        if read.occurrence.confidence != OccurrenceConfidence::Oracle {
+            return Err(TestError::Missing("struct literal field confidence"));
+        }
+        if read.occurrence.span != (RelSpan::new(32, 36).map_err(|_| TestError::Tail)?) {
+            return Err(TestError::Missing("struct literal field span"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact struct literal field occurrences"));
+        }
+        Ok(())
+    }
+
+    /// Two pushed fields share the struct-literal key name; the occurrence
+    /// must stay a typed foreign field key rather than picking either field.
+    #[test]
+    fn struct_literal_field_ambiguous_stays_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let lang = fix.declaration(KIND_TYPE, b"Lang", None);
+        let other = fix.declaration(KIND_TYPE, b"Other", None);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        let string_row = fix.basic(b"string");
+        let lang_row = fix.start_row(ROW_STRUCT);
+        fix.field(lang_row, b"Name", Some(string_row));
+        fix.declarations[lang].type_root = Some(lang_row);
+        let other_row = fix.start_row(ROW_STRUCT);
+        fix.field(other_row, b"Name", Some(string_row));
+        fix.declarations[other].type_root = Some(other_row);
+        fix.reference_typed(
+            u32::try_from(use_fn).map_err(TestError::from)?,
+            b"",
+            b"Name",
+            b"",
+            32,
+            36,
+            1,
+            2,
+            b"",
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let read = occurrences
+            .next()
+            .ok_or(TestError::Missing("ambiguous struct literal field read"))??;
+        if read.owner != use_entity {
+            return Err(TestError::Missing("ambiguous struct literal field owner"));
+        }
+        if matches!(read.occurrence.target, OccurrenceTarget::Local(_)) {
+            return Err(TestError::Missing(
+                "ambiguous struct literal field stays foreign",
+            ));
+        }
+        let OccurrenceTarget::Foreign(ref key) = read.occurrence.target else {
+            return Err(TestError::Missing("ambiguous struct literal foreign target"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("ambiguous struct literal foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM {
+            return Err(TestError::Missing("ambiguous struct literal ecosystem"));
+        }
+        if lineage.name != "example.com/demo" {
+            return Err(TestError::Missing("ambiguous struct literal package"));
+        }
+        if key.path != "Name" {
+            return Err(TestError::Missing("ambiguous struct literal path"));
+        }
+        if key.kind != Some(EntityKind::Field) {
+            return Err(TestError::Missing("ambiguous struct literal field kind"));
+        }
+        if read.occurrence.kind != ReferenceKind::FieldAccess {
+            return Err(TestError::Missing("ambiguous struct literal reference kind"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact ambiguous struct literal occurrences"));
         }
         Ok(())
     }
