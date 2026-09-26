@@ -77,7 +77,7 @@ use view_build::rows_for_indexed_sources;
 use view_journal::ViewJournal;
 #[path = "builtin/commands/mod.rs"]
 mod commands;
-#[path = "builtin/registry.rs"]
+#[path = "builtin/registry/mod.rs"]
 mod registry;
 use registry::RegistryGateway;
 #[path = "builtin/product_state.rs"]
