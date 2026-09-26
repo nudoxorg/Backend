@@ -162,6 +162,8 @@ fn cross_file_enum_member_is_oracle_package_variant_access() {
                 overload_index: None,
                 is_field: false,
                 is_enum_member: false,
+                is_const: false,
+                is_variable: false,
             },
             Reference {
                 start: red_start,
@@ -173,6 +175,8 @@ fn cross_file_enum_member_is_oracle_package_variant_access() {
                 overload_index: None,
                 is_field: false,
                 is_enum_member: true,
+                is_const: false,
+                is_variable: false,
             },
         ],
     );

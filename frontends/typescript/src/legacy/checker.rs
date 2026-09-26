@@ -472,6 +472,12 @@ pub struct Reference {
     /// Whether the foreign declaration is an enum member read.
     #[serde(default)]
     pub is_enum_member: bool,
+    /// Whether the foreign declaration is a `const` variable.
+    #[serde(default)]
+    pub is_const: bool,
+    /// Whether the foreign declaration is a `let` or `var` variable.
+    #[serde(default)]
+    pub is_variable: bool,
 }
 
 /// One control-flow-sensitive checker type observed at one plain
@@ -561,6 +567,10 @@ pub struct BoundReference<'report> {
     pub is_field: bool,
     /// Whether the foreign declaration is an enum member read.
     pub is_enum_member: bool,
+    /// Whether the foreign declaration is a `const` variable.
+    pub is_const: bool,
+    /// Whether the foreign declaration is a `let` or `var` variable.
+    pub is_variable: bool,
 }
 
 /// One span-bound assignment narrowing borrowed from a validated report.
@@ -681,6 +691,8 @@ impl<'report> CheckerIndex<'report> {
                         overload_index: reference.overload_index,
                         is_field: reference.is_field,
                         is_enum_member: reference.is_enum_member,
+                        is_const: reference.is_const,
+                        is_variable: reference.is_variable,
                     })
                 },
             )

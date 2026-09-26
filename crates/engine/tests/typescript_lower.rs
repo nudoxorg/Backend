@@ -1124,6 +1124,8 @@ fn checker_resolved_property_access_is_not_duplicated() {
         overload_index: None,
         is_field: false,
         is_enum_member: false,
+        is_const: false,
+        is_variable: false,
     }]);
     let v = view(SOURCE, Some(&authority));
     let (score_field, _) = named(&v, b"score");
@@ -1166,6 +1168,8 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
             overload_index: None,
             is_field: false,
             is_enum_member: false,
+            is_const: false,
+            is_variable: false,
         },
         Reference {
             start: 192,
@@ -1177,6 +1181,8 @@ export function group(service: WorkoutService) { const bound = service.setNote; 
             overload_index: None,
             is_field: false,
             is_enum_member: false,
+            is_const: false,
+            is_variable: false,
         },
     ]);
     let v = view(SOURCE, Some(&r));
@@ -1265,6 +1271,8 @@ export function group(service: WorkoutService) { const bound = service.pick; }
         overload_index: None,
         is_field: false,
         is_enum_member: false,
+        is_const: false,
+        is_variable: false,
     }]);
     let view = view(SOURCE, Some(&authority));
     let rows: Vec<_> = occurrences(&view)

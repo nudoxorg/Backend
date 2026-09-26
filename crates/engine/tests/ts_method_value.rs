@@ -118,9 +118,10 @@ fn named_owner(view: &FragmentView<'_>, name: &[u8], kind: EntityKind) -> u32 {
 }
 
 fn owner_decl_start(source: &[u8], owner_name: &str) -> u32 {
+    let needle = format!("function {owner_name}");
     let start = source
-        .windows(owner_name.len())
-        .position(|window| window == owner_name.as_bytes())
+        .windows(needle.len())
+        .position(|window| window == needle.as_bytes())
         .expect("owner declaration in source");
     u32::try_from(start).expect("owner start")
 }
