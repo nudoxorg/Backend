@@ -1263,6 +1263,8 @@ struct MemberKey<'source> {
     member: &'source [u8],
     ordinal: u32,
     is_field: bool,
+    embedded: bool,
+    type_root: Option<u32>,
 }
 
 /// The two-pass Go projector over one validated authority image.
@@ -1382,6 +1384,101 @@ impl<'x, 'source> Projector<'x, 'source> {
                 key.package == package && key.type_name == type_name && key.member == member
             })
             .map(|key| (key.ordinal, key.is_field))
+    }
+
+    /// The in-package named type behind one field's type-root coordinate,
+    /// peeling one pointer when the field is spelled as `*T`.
+    fn named_type_from_root(
+        &self,
+        type_root: Option<u32>,
+    ) -> Option<(&'source [u8], &'source [u8])> {
+        let mut row_index = type_root?;
+        let row = self.image.type_row(index_of(row_index)).ok()?;
+        row_index = if row.kind == TypeRowKind::Pointer {
+            let children = self.row_children(&row).ok()?;
+            *children.first()?
+        } else {
+            row_index
+        };
+        let row = self.image.type_row(index_of(row_index)).ok()?;
+        if row.kind == TypeRowKind::Named {
+            Some((row.package, row.name))
+        } else {
+            None
+        }
+    }
+
+    /// Resolves one receiver-qualified field selector through embedded
+    /// struct fields when the name is absent on the receiver itself.
+    /// Exactly one distinct promoted field ordinal wins; zero or more than
+    /// one stay unresolved.
+    fn lookup_promoted_field(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        member: &[u8],
+    ) -> Option<u32> {
+        const MAX_DEPTH: usize = 8;
+        let mut stack: Vec<(&[u8], &[u8], usize)> = vec![(package, recv_type, 0)];
+        let mut visited: Vec<(&[u8], &[u8])> = Vec::new();
+        let mut found: Option<u32> = None;
+        while let Some((pkg, type_name, depth)) = stack.pop() {
+            if depth > MAX_DEPTH {
+                continue;
+            }
+            if visited
+                .iter()
+                .any(|&(seen_pkg, seen_type)| seen_pkg == pkg && seen_type == type_name)
+            {
+                continue;
+            }
+            visited.push((pkg, type_name));
+            for key in &self.members {
+                if key.package != pkg
+                    || key.type_name != type_name
+                    || !key.is_field
+                    || !key.embedded
+                {
+                    continue;
+                }
+                let Some((emb_pkg, emb_name)) = self.named_type_from_root(key.type_root) else {
+                    continue;
+                };
+                if let Some((ordinal, true)) = self.lookup_member(emb_pkg, emb_name, member) {
+                    match found {
+                        None => found = Some(ordinal),
+                        Some(existing) if existing != ordinal => return None,
+                        Some(_) => {}
+                    }
+                }
+                stack.push((emb_pkg, emb_name, depth + 1));
+            }
+        }
+        found
+    }
+
+    /// Resolves one same-package reference target to a local fact when the
+    /// lane carries one, including a unique promoted struct field.
+    fn resolve_local_target(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        target: &[u8],
+        target_class: ReferenceTargetClass,
+    ) -> Option<OccurrenceTarget<'source>> {
+        self.lookup(package, target)
+            .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+            .or_else(|| {
+                self.lookup_member(package, recv_type, target)
+                    .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
+            })
+            .or_else(|| {
+                if recv_type.is_empty() || target_class != ReferenceTargetClass::Field {
+                    return None;
+                }
+                self.lookup_promoted_field(package, recv_type, target)
+                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
+            })
     }
 
     /// Records one image declaration's primary-source facts: its fact's
@@ -1591,6 +1688,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method.name,
                 ordinal,
                 is_field: false,
+                embedded: false,
+                type_root: None,
             });
             methods.push(ordinal);
             method_names.push(method.name);
@@ -1625,6 +1724,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method_set.name,
                 ordinal,
                 is_field: false,
+                embedded: false,
+                type_root: None,
             });
             methods.push(ordinal);
             method_names.push(method_set.name);
@@ -1733,6 +1834,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: true,
+                embedded: member.embedded,
+                type_root: member.type_root,
             });
             fields.push(ordinal);
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1775,6 +1878,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: false,
+                embedded: false,
+                type_root: None,
             });
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1996,9 +2101,10 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// class, and the receiver type name for method and field targets.
     /// Resolution keeps the call-graph law: a same-package target resolves
     /// to its local fact when the lane carries one (package scope by name,
-    /// members by receiver type and name); everything else — every foreign
-    /// package, every promoted or otherwise unlocalizable member — stays a
-    /// typed foreign `go` lineage key. Owners lift relative spans over the
+    /// members by receiver type and name); unique same-image promoted
+    /// struct fields resolve locally; every foreign package and every
+    /// ambiguous or otherwise unlocalizable member stays a typed foreign
+    /// `go` lineage key. Owners lift relative spans over the
     /// authority-bound source spans attached in passes one and two, so the
     /// shared containment law places every site in the exact source bytes
     /// of the used identifier.
@@ -2056,20 +2162,19 @@ impl<'x, 'source> Projector<'x, 'source> {
                 };
                 foreign_target(reference_index, package, row.target, EntityKind::Module)?
             } else if row.target_package.is_empty() {
-                let local = self
-                    .lookup(owner_package, row.target)
-                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    .or_else(|| {
-                        self.lookup_member(owner_package, row.recv_type, row.target)
-                            .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    });
-                match local {
+                match self.resolve_local_target(
+                    owner_package,
+                    row.recv_type,
+                    row.target,
+                    row.target_class,
+                ) {
                     Some(target) => target,
                     None => {
-                        // Same-package target with no local fact: promoted
-                        // members, blank-keyed fields, or build-excluded
-                        // declarations. The key keeps the exact spelling
-                        // under the declaring package's lineage.
+                        // Same-package target with no local fact: ambiguous
+                        // or unresolved promoted fields, blank-keyed fields,
+                        // or build-excluded declarations. The key keeps the
+                        // exact spelling under the declaring package's
+                        // lineage.
                         foreign_target(
                             reference_index,
                             owner_package,
@@ -2079,14 +2184,12 @@ impl<'x, 'source> Projector<'x, 'source> {
                     }
                 }
             } else {
-                let local = self
-                    .lookup(row.target_package, row.target)
-                    .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    .or_else(|| {
-                        self.lookup_member(row.target_package, row.recv_type, row.target)
-                            .map(|(ordinal, _)| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                    });
-                match local {
+                match self.resolve_local_target(
+                    row.target_package,
+                    row.recv_type,
+                    row.target,
+                    row.target_class,
+                ) {
                     Some(target) => target,
                     None => foreign_target(
                         reference_index,
@@ -3527,6 +3630,7 @@ mod tests {
         kind: u8,
         name: Cell,
         type_root: Option<u32>,
+        embedded: bool,
     }
 
     #[derive(Clone)]
@@ -3737,6 +3841,21 @@ mod tests {
                     kind: 0,
                     name: spelled,
                     type_root,
+                    embedded: false,
+                },
+            );
+        }
+
+        fn embedded_field(&mut self, owner: u32, name: &[u8], type_root: Option<u32>) {
+            let spelled = self.atom(name);
+            self.add_member(
+                owner,
+                MemberF {
+                    owner,
+                    kind: 0,
+                    name: spelled,
+                    type_root,
+                    embedded: true,
                 },
             );
         }
@@ -3750,6 +3869,7 @@ mod tests {
                     kind: 1,
                     name: spelled,
                     type_root,
+                    embedded: false,
                 },
             );
         }
@@ -4030,7 +4150,7 @@ mod tests {
             for row in &self.members {
                 let (name, name_len) = cell(row.name);
                 members.extend_from_slice(&row.owner.to_le_bytes());
-                members.extend_from_slice(&[row.kind, 0, 1, 0]);
+                members.extend_from_slice(&[row.kind, u8::from(row.embedded), 1, 0]);
                 members.extend_from_slice(&name);
                 members.extend_from_slice(&name_len);
                 members.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
@@ -5786,6 +5906,218 @@ mod tests {
         }
         if occurrences.next().is_some() {
             return Err(TestError::Missing("exact occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_unique_embed_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(EntityId::new(2))
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("unique promoted field is local"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_two_embeds_stay_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let left = fix.declaration(KIND_TYPE, b"Left", None);
+        let left_row = fix.start_row(ROW_STRUCT);
+        fix.field(left_row, b"Value", Some(int));
+        fix.declarations[left].type_root = Some(left_row);
+        let left_named = fix.named(PACKAGE, b"Left", &[]);
+        let right = fix.declaration(KIND_TYPE, b"Right", None);
+        let right_row = fix.start_row(ROW_STRUCT);
+        fix.field(right_row, b"Value", Some(int));
+        fix.declarations[right].type_root = Some(right_row);
+        let right_named = fix.named(PACKAGE, b"Right", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Left", Some(left_named));
+        fix.embedded_field(outer_row, b"Right", Some(right_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("ambiguous promoted field read"))??;
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("ambiguous promoted field stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign promoted field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact ambiguous promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_direct_field_wins() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.field(outer_row, b"Value", Some(int));
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut value_fields = 0usize;
+        for entity in view.entities() {
+            let atom = view
+                .atoms()
+                .nth(usize::try_from(entity.name.raw).map_err(TestError::from)?)
+                .ok_or(TestError::Missing("entity atom"))?;
+            if atom.bytes == b"Value" && entity.kind == EntityKind::Field {
+                value_fields += 1;
+            }
+        }
+        if value_fields != 2 {
+            return Err(TestError::Missing("two Value field facts"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("direct field read"))??;
+        if access.occurrence.target != OccurrenceTarget::Local(EntityId::new(3))
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("outer Value field at ordinal 3 wins"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact direct-field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_pointer_embed_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let pointer_inner = fix.unary(ROW_POINTER, inner_named);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(pointer_inner));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("pointer promoted field read"))??;
+        if access.occurrence.target != OccurrenceTarget::Local(EntityId::new(2))
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("pointer embed promotes Value locally"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact pointer promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_two_levels_are_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let mid = fix.declaration(KIND_TYPE, b"Mid", None);
+        let mid_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(mid_row, b"Inner", Some(inner_named));
+        fix.declarations[mid].type_root = Some(mid_row);
+        let mid_named = fix.named(PACKAGE, b"Mid", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Mid", Some(mid_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("two-level promoted field read"))??;
+        if access.occurrence.target != OccurrenceTarget::Local(EntityId::new(3))
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("two-level promotion resolves locally"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact two-level promoted field occurrences"));
         }
         Ok(())
     }
