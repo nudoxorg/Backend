@@ -2454,6 +2454,102 @@ fn pypi_simple_api_accepts_current_minor_version() {
 }
 
 #[test]
+fn pypi_json_api_admits_runtime_edges_and_marks_extras_optional() {
+    let endpoint =
+        RegistryEndpoint::new(RegistryEcosystem::Pypi, "https://pypi.org").expect("pypi endpoint");
+    let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
+        .expect("adapter");
+    assert_eq!(
+        adapter.pypi_json_url("1.0.0+local"),
+        "https://pypi.org/pypi/demo/1.0.0%2Blocal/json"
+    );
+    let source = adapter.coordinate_for_version("1.2.3").expect("coordinate");
+    let body = br#"{
+        "info": {
+            "name": "Demo",
+            "version": "1.2.3",
+            "requires_dist": [
+                "charset-normalizer<4,>=2",
+                "urllib3>=1.21.1; python_version >= \"3.7\"",
+                "PySocks!=1.5.7,>=1.5.6; extra == \"socks\"",
+                "demo-tool @ https://example.test/demo-tool.whl",
+                "platform-dep>=1; sys_platform == \"extra\""
+            ]
+        }
+    }"#;
+    let facts = adapter
+        .pypi_requires_dist(body, &source, body)
+        .expect("requires_dist");
+    let backend_library::DependencyFacts::Known(rows) = facts else {
+        panic!("expected known requires_dist");
+    };
+    assert_eq!(rows.len(), 5);
+    let by_name = |name: &str| {
+        rows.iter()
+            .find(|row| row.target.name.as_str() == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+    };
+    let charset = by_name("charset-normalizer");
+    assert_eq!(charset.scope, backend_library::DependencyScope::Runtime);
+    assert!(!charset.optional);
+    assert_eq!(
+        charset.target.requirement.as_str(),
+        "charset-normalizer<4,>=2"
+    );
+    let urllib = by_name("urllib3");
+    assert_eq!(urllib.scope, backend_library::DependencyScope::Runtime);
+    assert!(!urllib.optional);
+    let socks = by_name("PySocks");
+    assert_eq!(socks.scope, backend_library::DependencyScope::Optional);
+    assert!(socks.optional);
+    assert!(
+        socks
+            .target
+            .requirement
+            .as_str()
+            .contains("extra == \"socks\"")
+    );
+    let direct = by_name("demo-tool");
+    assert_eq!(direct.scope, backend_library::DependencyScope::Runtime);
+    assert!(direct.target.requirement.as_str().contains('@'));
+    let platform = by_name("platform-dep");
+    assert_eq!(platform.scope, backend_library::DependencyScope::Runtime);
+    assert!(!platform.optional);
+    assert!(matches!(
+        adapter.pypi_requires_dist(
+            br#"{"info":{"name":"demo","version":"1.2.3","requires_dist":null}}"#,
+            &source,
+            b"null",
+        ),
+        Ok(backend_library::DependencyFacts::Unknown(_))
+    ));
+    assert!(matches!(
+        adapter.pypi_requires_dist(
+            br#"{"info":{"name":"demo","version":"1.2.3","requires_dist":[]}}"#,
+            &source,
+            b"empty",
+        ),
+        Ok(backend_library::DependencyFacts::Known(rows)) if rows.is_empty()
+    ));
+    assert!(
+        adapter
+            .pypi_requires_dist(
+                br#"{"info":{"name":"other","version":"1.2.3","requires_dist":[]}}"#,
+                &source,
+                b"other",
+            )
+            .is_err()
+    );
+    assert!(adapter
+        .pypi_requires_dist(
+            br#"{"info":{"name":"demo","version":"1.2.3","requires_dist":["charset-normalizer","charset-normalizer"]}}"#,
+            &source,
+            b"duplicate",
+        )
+        .is_err());
+}
+
+#[test]
 fn version_pinned_native_adapter_admits_one_release_and_names_its_snapshot() {
     let archive = b"npm target archive";
     let integrity = STANDARD.encode(Sha512::digest(archive));
@@ -2603,6 +2699,54 @@ retract [v1.2.0, v1.2.3]
     };
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].target.ecosystem, RegistryEcosystem::Golang);
+    let dep = rows
+        .iter()
+        .find(|row| row.target.name.as_str() == "example.com/dep")
+        .expect("direct require");
+    assert_eq!(dep.scope, backend_library::DependencyScope::Runtime);
+    assert!(!dep.optional);
+    let indirect = rows
+        .iter()
+        .find(|row| row.target.name.as_str() == "example.com/indirect")
+        .expect("indirect require");
+    assert_eq!(indirect.scope, backend_library::DependencyScope::Development);
+    assert!(!indirect.optional);
+}
+
+#[test]
+fn go_direct_and_indirect_same_module_collapses_to_runtime() {
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Golang, "https://proxy.golang.org")
+        .expect("go endpoint");
+    let adapter = EcosystemAdapter::new(
+        endpoint,
+        PackageName::new("mod").expect("name"),
+        Some(PackageName::new("example.com/acme").expect("namespace")),
+    )
+    .expect("adapter");
+    let module = adapter
+        .go_mod(
+            br#"module example.com/acme/mod
+
+require (
+    example.com/shared v1.0.0
+    example.com/shared v1.0.0 // indirect
+)
+"#,
+            "v1.0.0",
+        )
+        .expect("go.mod");
+    let coordinate =
+        PackageCoordinate::parse("pkg:golang/example.com/acme/mod@v1.0.0").expect("coordinate");
+    let dependencies = adapter
+        .go_dependencies(&coordinate, &module, b"module frontier")
+        .expect("dependencies");
+    let backend_library::DependencyFacts::Known(rows) = dependencies else {
+        panic!("expected known Go dependencies");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].target.name.as_str(), "example.com/shared");
+    assert_eq!(rows[0].scope, backend_library::DependencyScope::Runtime);
+    assert!(!rows[0].optional);
 }
 
 #[test]

@@ -1081,15 +1081,46 @@ impl HttpRegistryTransport {
             TransportResult::NotModified => return Ok(TransportResult::NotModified),
         };
         let page = match adapter.ecosystem() {
-            RegistryEcosystem::Cargo | RegistryEcosystem::Npm | RegistryEcosystem::Pypi => {
+            RegistryEcosystem::Cargo | RegistryEcosystem::Npm => {
                 adapter.admit_page(&bytes, request)?
             }
+            RegistryEcosystem::Pypi => self.python_page(adapter, bytes, request)?,
             RegistryEcosystem::Nuget => self.nuget_page(adapter, bytes, request)?,
             RegistryEcosystem::Maven => self.maven_page(adapter, bytes, request)?,
             RegistryEcosystem::Golang => self.go_page(adapter, bytes, request)?,
             RegistryEcosystem::Cpp => self.conan_page(adapter, bytes, request)?,
         };
         Ok(TransportResult::Available(page))
+    }
+
+    fn python_page(
+        &mut self,
+        adapter: &EcosystemAdapter,
+        listing: Vec<u8>,
+        request: FeedRequest,
+    ) -> Result<FeedPage, TransportFailure> {
+        let mut page = adapter.admit_page(&listing, request)?;
+        for package in &mut page.packages {
+            let url = adapter.pypi_json_url(package.coordinate.version());
+            package.dependency_facts = match self.get(&url, self.limits.max_feed_bytes) {
+                Ok(TransportResult::Available(body)) => {
+                    adapter.pypi_requires_dist(&body, &package.coordinate, &body)?
+                }
+                Err(TransportFailure::Rejected(404)) => DependencyFacts::Unknown(
+                    backend_library::ProductText::new("PyPI JSON API release is not published")
+                        .map_err(|_| TransportFailure::Protocol)?,
+                ),
+                Ok(TransportResult::Unavailable | TransportResult::RetryAfter(_)) => {
+                    DependencyFacts::Unavailable(
+                        backend_library::ProductText::new("PyPI JSON API could not be fetched")
+                            .map_err(|_| TransportFailure::Protocol)?,
+                    )
+                }
+                Ok(TransportResult::NotModified) => return Err(TransportFailure::Protocol),
+                Err(error) => return Err(error),
+            };
+        }
+        Ok(page)
     }
 
     fn nuget_page(

@@ -9,12 +9,16 @@ use crate::{ProjectionError, ProjectionUpdate, TursoProjection};
 use backend_library::{
     CommittedViewDelta, Fragment, Row, RowChange, RowId, RowState, ViewDelta, ViewRoot,
 };
+use std::collections::{BTreeMap, BTreeSet};
 
 impl TursoProjection {
     /// Aligns the database with a complete immutable root.
     ///
     /// The exact-root fast path performs one metadata read and no writes.
-    /// Rebuild is reserved for first boot, recovery, or a missed transition.
+    /// A different root keeps every stored row whose content hash still
+    /// matches and writes only the identities that appeared, changed, or
+    /// disappeared. Rebuild is reserved for first boot, recovery, or a
+    /// missed transition.
     ///
     /// # Errors
     ///
@@ -60,14 +64,21 @@ impl TursoProjection {
             tx.rollback().await?;
             return Err(ProjectionError::StaleTransition);
         }
-        tx.execute("DELETE FROM backend_projection_rows", ())
-            .await?;
-        for rows in view.rows().chunks(REBUILD_BATCH_ROWS) {
-            upsert_rows(&tx, rows).await?;
-        }
-        // Each SQL statement creates one immutable FTS segment. Compact the
-        // bounded rebuild batches once before publishing the root fence; hot
-        // one-row deltas remain append-only and avoid global maintenance.
+        let changed_rows = if view.rows().is_empty() {
+            tx.execute("DELETE FROM backend_projection_rows", ())
+                .await?
+        } else {
+            let stored = stored_row_hashes(&tx).await?;
+            let (desired, due, changed_rows) = projection_mutations(&stored, view.rows());
+            for rows in due.chunks(REBUILD_BATCH_ROWS) {
+                upsert_rows(&tx, rows).await?;
+            }
+            delete_absent_rows(&tx, &desired).await?;
+            changed_rows
+        };
+        // Each writing statement can create one immutable FTS segment. Compact
+        // a large rebuild once before publishing the root fence. Unchanged
+        // hashes never enter that write, and hot one-row deltas stay append-only.
         if view.row_count() > REBUILD_BATCH_ROWS as u64 {
             tx.execute("OPTIMIZE INDEX backend_projection_rows_fts", ())
                 .await?;
@@ -87,7 +98,9 @@ impl TursoProjection {
             ],
         )
         .await?;
-        record_commit(&tx, view.root().as_bytes(), None, None, row_count).await?;
+        let changed_rows =
+            i64::try_from(changed_rows).map_err(|_| ProjectionError::RowCountOverflow)?;
+        record_commit(&tx, view.root().as_bytes(), None, None, changed_rows).await?;
         prune_commits(&tx).await?;
         tx.commit().await?;
         Ok(ProjectionUpdate::Rebuilt {
@@ -263,11 +276,88 @@ async fn apply_delta(
     }
 }
 
+async fn stored_row_hashes(
+    connection: &turso::Connection,
+) -> Result<BTreeMap<String, [u8; 32]>, ProjectionError> {
+    let mut rows = connection
+        .query(
+            "SELECT row_id, content_hash FROM backend_projection_rows",
+            (),
+        )
+        .await?;
+    let mut stored = BTreeMap::new();
+    while let Some(row) = rows.next().await? {
+        let id: String = row.get(0)?;
+        let hash: Vec<u8> = row.get(1)?;
+        let hash: [u8; 32] = hash
+            .try_into()
+            .map_err(|_| ProjectionError::CorruptMetadata {
+                field: "content_hash",
+            })?;
+        stored.insert(id, hash);
+    }
+    Ok(stored)
+}
+
+fn projection_mutations<'row>(
+    stored: &BTreeMap<String, [u8; 32]>,
+    rows: &'row [Row],
+) -> (BTreeSet<String>, Vec<&'row Row>, u64) {
+    let mut last_index = BTreeMap::<String, usize>::new();
+    for (index, row) in rows.iter().enumerate() {
+        last_index.insert(row.id.stable_key(), index);
+    }
+    let mut desired = BTreeSet::new();
+    let mut due = Vec::new();
+    let mut changed = 0_u64;
+    for (id, index) in &last_index {
+        let row = &rows[*index];
+        let hash = *row_hash(row).as_bytes();
+        desired.insert(id.clone());
+        if stored.get(id) != Some(&hash) {
+            changed = changed.saturating_add(1);
+            due.push(row);
+        }
+    }
+    for id in stored.keys() {
+        if !desired.contains(id) {
+            changed = changed.saturating_add(1);
+        }
+    }
+    (desired, due, changed)
+}
+
+async fn delete_absent_rows(
+    connection: &turso::Connection,
+    desired: &BTreeSet<String>,
+) -> Result<(), ProjectionError> {
+    let mut rows = connection
+        .query("SELECT row_id FROM backend_projection_rows", ())
+        .await?;
+    let mut stale = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let id: String = row.get(0)?;
+        if !desired.contains(&id) {
+            stale.push(id);
+        }
+    }
+    drop(rows);
+    for id in stale {
+        connection
+            .execute(
+                "DELETE FROM backend_projection_rows WHERE row_id = ?1",
+                [id],
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 async fn upsert_row(connection: &turso::Connection, row: &Row) -> turso::Result<u64> {
     connection.execute(UPSERT_ROW, row_values(row)).await
 }
 
-async fn upsert_rows(connection: &turso::Connection, rows: &[Row]) -> turso::Result<u64> {
+async fn upsert_rows(connection: &turso::Connection, rows: &[&Row]) -> turso::Result<u64> {
     if rows.is_empty() {
         return Ok(0);
     }
@@ -282,7 +372,10 @@ async fn upsert_rows(connection: &turso::Connection, rows: &[Row]) -> turso::Res
         sql.push_str("(?,?,?,?,?,?,?,?,?,?)");
     }
     sql.push_str(UPSERT_CONFLICT);
-    let values = rows.iter().flat_map(row_values).collect::<Vec<_>>();
+    let values = rows
+        .iter()
+        .flat_map(|row| row_values(row))
+        .collect::<Vec<_>>();
     connection
         .execute(&sql, turso::params_from_iter(values))
         .await

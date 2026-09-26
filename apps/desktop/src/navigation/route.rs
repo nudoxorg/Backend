@@ -75,17 +75,43 @@ pub enum OrbitRoute {
     Project(ProjectId),
 }
 
+/// One immutable release of a package: the registry's version spelling.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ReleaseId(Arc<str>);
+
+impl ReleaseId {
+    /// Admits one version spelling.
+    pub fn new(value: &str) -> Result<Self, CoordinateError> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(CoordinateError::Empty);
+        }
+        if value.chars().any(char::is_control) {
+            return Err(CoordinateError::ControlCharacter);
+        }
+        Ok(Self(Arc::from(value)))
+    }
+
+    /// Returns the version spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Package-level route data.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PackageRoute {
     /// Optional project selected at the orbit level.
     pub project: Option<ProjectId>,
-    /// Stable package coordinate.
+    /// Stable package coordinate (the release you pin).
     pub package: PackageId,
     /// The selected package lane.
     pub lane: PackageLane,
     /// Selected package object retained when zooming out.
     pub selected: Option<ObjectId>,
+    /// The release being viewed, when it is not the pinned one.
+    pub at: Option<ReleaseId>,
 }
 
 /// Package lanes are closed typed data, not display strings.
@@ -103,32 +129,67 @@ pub enum PackageLane {
     Security,
 }
 
-/// Page-level route data.
+/// The three ways a declaration is shown. Switching between them never
+/// pushes history: it replaces the current entry's view.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum View {
+    /// The structured, language-neutral anatomy.
+    #[default]
+    Page,
+    /// The source text.
+    Code,
+    /// The dependency graph centred on the declaration.
+    Graph,
+}
+
+impl View {
+    /// Every view, in switcher order.
+    pub const ALL: [Self; 3] = [Self::Page, Self::Code, Self::Graph];
+
+    /// Stable lowercase spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::Code => "code",
+            Self::Graph => "graph",
+        }
+    }
+
+    /// Parses the stable spelling.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|view| view.as_str() == value)
+    }
+}
+
+/// One declaration, shown one of three ways, optionally at another release.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PageRoute {
+pub struct SymbolRoute {
     /// Optional project selected at the orbit level.
     pub project: Option<ProjectId>,
-    /// Parent package coordinate.
+    /// Parent package coordinate (the release you pin).
     pub package: PackageId,
-    /// Stable page coordinate.
-    pub coordinate: Coordinate,
-    /// Selected object retained on source descent and zoom-out.
+    /// Stable declaration coordinate.
+    pub id: Coordinate,
+    /// The release being viewed, when it is not the pinned one.
+    pub at: Option<ReleaseId>,
+    /// How it is shown.
+    pub view: View,
+    /// The source line the code view opens at (the declaration's own when
+    /// `None`).
+    pub line: Option<u32>,
+    /// Selected object retained on zoom-out.
     pub selected: Option<ObjectId>,
 }
 
-/// Source-level route data.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SourceRoute {
-    /// Optional project selected at the orbit level.
-    pub project: Option<ProjectId>,
-    /// Parent package coordinate.
-    pub package: PackageId,
-    /// Parent page coordinate.
-    pub page: Coordinate,
-    /// Source line selected by the reader.
-    pub line: u32,
-    /// Selected object retained on zoom-out.
-    pub selected: Option<ObjectId>,
+impl SymbolRoute {
+    /// Whether `other` shows the same declaration at the same release (only
+    /// the view or line differ): moving between them is not navigation.
+    #[must_use]
+    pub fn same_place(&self, other: &Self) -> bool {
+        self.package == other.package && self.id == other.id && self.at == other.at
+    }
 }
 
 /// Typed application content route.
@@ -142,10 +203,10 @@ pub enum Route {
     Orbit(OrbitRoute),
     /// Package-level content.
     Package(PackageRoute),
-    /// Declaration/document page.
-    Page(PageRoute),
-    /// Captured source view.
-    Source(SourceRoute),
+    /// One declaration, as a page, its code, or its graph.
+    Symbol(SymbolRoute),
+    /// The whole dependency graph, nothing selected.
+    World,
 }
 
 /// A transient shell surface layered over a content route.
@@ -155,8 +216,10 @@ pub enum Overlay {
     AddProject,
     /// Settings surface at a typed page.
     Settings(SettingsPage),
-    /// Command palette surface.
+    /// Command palette surface (Ask, ⌘K).
     CommandPalette,
+    /// Followed releases: the calm inbox.
+    Inbox,
 }
 
 /// Settings pages are closed semantic tokens.
@@ -225,14 +288,16 @@ impl SettingsPage {
 }
 
 impl Route {
-    /// Returns the content depth.
+    /// Returns the content depth: a declaration's code view is the deepest.
     #[must_use]
     pub const fn depth(&self) -> Option<RouteDepth> {
         match self {
-            Self::Orbit(_) => Some(RouteDepth::Orbit),
+            Self::Orbit(_) | Self::World => Some(RouteDepth::Orbit),
             Self::Package(_) => Some(RouteDepth::Package),
-            Self::Page(_) => Some(RouteDepth::Page),
-            Self::Source(_) => Some(RouteDepth::Source),
+            Self::Symbol(route) => Some(match route.view {
+                View::Code => RouteDepth::Source,
+                View::Page | View::Graph => RouteDepth::Page,
+            }),
         }
     }
 
@@ -241,27 +306,63 @@ impl Route {
     pub const fn selected(&self) -> Option<ObjectId> {
         match self {
             Self::Package(route) => route.selected,
-            Self::Page(route) => route.selected,
-            Self::Source(route) => route.selected,
-            Self::Orbit(_) => None,
+            Self::Symbol(route) => route.selected,
+            Self::Orbit(_) | Self::World => None,
         }
     }
 
-    /// Returns a typed parent route for Cmd-minus / zoom-out.
+    /// The release being viewed instead of the pinned one, if any.
+    #[must_use]
+    pub const fn at(&self) -> Option<&ReleaseId> {
+        match self {
+            Self::Package(route) => route.at.as_ref(),
+            Self::Symbol(route) => route.at.as_ref(),
+            Self::Orbit(_) | Self::World => None,
+        }
+    }
+
+    /// The same place viewed at `at` (`None`: the pinned release). Routes
+    /// without a release are returned unchanged.
+    #[must_use]
+    pub fn with_release(&self, at: Option<ReleaseId>) -> Self {
+        match self {
+            Self::Package(route) => Self::Package(PackageRoute { at, ..route.clone() }),
+            Self::Symbol(route) => Self::Symbol(SymbolRoute { at, ..route.clone() }),
+            Self::Orbit(_) | Self::World => self.clone(),
+        }
+    }
+
+    /// The same declaration shown as `view`, or `None` when this route shows
+    /// no declaration.
+    #[must_use]
+    pub fn with_view(&self, view: View) -> Option<Self> {
+        match self {
+            Self::Symbol(route) => Some(Self::Symbol(SymbolRoute { view, ..route.clone() })),
+            Self::Orbit(_) | Self::Package(_) | Self::World => None,
+        }
+    }
+
+    /// Whether `other` is this place (same declaration or package at the
+    /// same release; the view, line and selection may differ).
+    #[must_use]
+    pub fn same_place(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Symbol(a), Self::Symbol(b)) => a.same_place(b),
+            _ => self == other,
+        }
+    }
+
+    /// Returns a typed parent route for surfacing one depth. A declaration
+    /// surfaces to its package whatever its view.
     #[must_use]
     pub fn zoom_out(&self) -> Option<Self> {
         match self {
-            Self::Source(route) => Some(Self::Page(PageRoute {
-                project: route.project.clone(),
-                package: route.package.clone(),
-                coordinate: route.page.clone(),
-                selected: route.selected,
-            })),
-            Self::Page(route) => Some(Self::Package(PackageRoute {
+            Self::Symbol(route) => Some(Self::Package(PackageRoute {
                 project: route.project.clone(),
                 package: route.package.clone(),
                 lane: PackageLane::Overview,
                 selected: route.selected,
+                at: route.at.clone(),
             })),
             Self::Package(route) => Some(Self::Orbit(
                 route
@@ -269,11 +370,13 @@ impl Route {
                     .clone()
                     .map_or(OrbitRoute::Home, OrbitRoute::Project),
             )),
+            Self::World => Some(Self::Orbit(OrbitRoute::Home)),
             Self::Orbit(_) => None,
         }
     }
 
     /// Returns a stable semantic route key suitable for telemetry and tests.
+    /// The view is not part of it: the three views are one place.
     #[must_use]
     pub fn key(&self) -> RouteKey {
         match self {
@@ -282,17 +385,13 @@ impl Route {
             Self::Package(route) => {
                 RouteKey::Package(route.project.clone(), route.package.clone(), route.lane)
             }
-            Self::Page(route) => RouteKey::Page(
+            Self::Symbol(route) => RouteKey::Symbol(
                 route.project.clone(),
                 route.package.clone(),
-                route.coordinate.clone(),
+                route.id.clone(),
+                route.at.clone(),
             ),
-            Self::Source(route) => RouteKey::Source(
-                route.project.clone(),
-                route.package.clone(),
-                route.page.clone(),
-                route.line,
-            ),
+            Self::World => RouteKey::World,
         }
     }
 }
@@ -306,10 +405,10 @@ pub enum RouteKey {
     OrbitProject(ProjectId),
     /// Package coordinate.
     Package(Option<ProjectId>, PackageId, PackageLane),
-    /// Page coordinate.
-    Page(Option<ProjectId>, PackageId, Coordinate),
-    /// Source coordinate and line.
-    Source(Option<ProjectId>, PackageId, Coordinate, u32),
+    /// Declaration coordinate and release.
+    Symbol(Option<ProjectId>, PackageId, Coordinate, Option<ReleaseId>),
+    /// The whole graph.
+    World,
 }
 
 /// A typed selection that can survive Cmd-minus and route replacement.
@@ -326,29 +425,40 @@ mod tests {
     use super::*;
     use crate::model::ObjectId;
 
-    fn source() -> Route {
-        Route::Source(SourceRoute {
+    fn symbol(view: View) -> Route {
+        Route::Symbol(SymbolRoute {
             project: None,
             package: PackageId::new("pkg").expect("package"),
-            page: Coordinate::new("pkg::Thing").expect("coordinate"),
-            line: 42,
+            id: Coordinate::new("pkg::Thing").expect("coordinate"),
+            at: None,
+            view,
+            line: Some(42),
             selected: Some(ObjectId::test(7)),
         })
     }
 
     #[test]
     fn depth_model_is_orbit_package_page_source() {
-        assert_eq!(source().depth(), Some(RouteDepth::Source));
-        let page = source().zoom_out().expect("page");
-        assert_eq!(page.depth(), Some(RouteDepth::Page));
-        assert_eq!(page.selected(), Some(ObjectId::test(7)));
-        let package = page.zoom_out().expect("package");
+        assert_eq!(symbol(View::Code).depth(), Some(RouteDepth::Source));
+        assert_eq!(symbol(View::Page).depth(), Some(RouteDepth::Page));
+        assert_eq!(symbol(View::Graph).depth(), Some(RouteDepth::Page));
+        let package = symbol(View::Code).zoom_out().expect("package");
         assert_eq!(package.depth(), Some(RouteDepth::Package));
         assert_eq!(package.selected(), Some(ObjectId::test(7)));
-        assert_eq!(
-            package.zoom_out().expect("orbit").depth(),
-            Some(RouteDepth::Orbit)
-        );
+        assert_eq!(package.zoom_out().expect("orbit").depth(), Some(RouteDepth::Orbit));
+        assert_eq!(Route::World.depth(), Some(RouteDepth::Orbit));
+    }
+
+    #[test]
+    fn the_three_views_are_one_place_and_one_key() {
+        let page = symbol(View::Page);
+        let code = page.with_view(View::Code).expect("a declaration has views");
+        assert!(page.same_place(&code));
+        assert_eq!(page.key(), code.key());
+        assert_ne!(page, code);
+        let other_release = page.with_release(Some(ReleaseId::new("1.0.0").expect("release")));
+        assert!(!page.same_place(&other_release), "another release is another place");
+        assert_eq!(Route::World.with_view(View::Code), None);
     }
 
     #[test]
@@ -359,6 +469,7 @@ mod tests {
             package: PackageId::new("pkg").expect("package"),
             lane: PackageLane::Overview,
             selected: None,
+            at: None,
         });
         assert_eq!(
             route.zoom_out(),

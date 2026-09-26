@@ -1,49 +1,45 @@
-//! The single GPUI application entity.
+//! The single application state owner.
 //!
 //! `UiRootEntity` is deliberately boring: one runtime, one immutable
-//! snapshot pointer, and typed shell navigation. There is no second store,
-//! reducer entity, transport entity, or view-local copy of engine state. A
-//! frame reads the snapshot, emits elements, and returns; an input queues an
-//! [`Intent`](crate::navigation::Intent), which is reduced at the next frame.
+//! snapshot pointer, and typed intents. It renders nothing — the window root
+//! is the [`Shell`](crate::shell::Shell), whose regions read the snapshot
+//! through the [`DataStore`] mirror. An input queues an
+//! [`Intent`](crate::navigation::Intent); it is reduced at the end of the
+//! current effect cycle, and engine results arrive through the actor's wake
+//! task, so nothing here ever needs a frame.
 
 use super::coordinator::{DesktopRuntime, RuntimeEvent};
-use super::{AnimationTimeline, LiveFrameClock};
+use super::reads::ReadPool;
+use super::store::DataStore;
 use crate::core::{IntentDispatcher, SnapshotReadModel, VersionedRoot};
 use crate::model::{AppSnapshot, PersistentState};
-use crate::navigation::{
-    ActionId, CommandPaletteState, EscapeResult, FocusId, FocusTree, FolderPickerOutcome, Intent,
-    ModalId, ModalStack, OrbitRoute, Overlay, PackageLane, PackageRoute, Route,
-};
-use crate::ui::components::ActionTree;
+use crate::navigation::{FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route};
 use backend_library::{CommandId, SurfaceCommand};
-use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, PathPromptOptions, Render, Subscription,
-    Task, Window,
-};
-use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use gpui::{App, AppContext as _, Context, Entity, PathPromptOptions, Task};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// The complete UI-thread state owner for one desktop window.
 pub struct UiRootEntity {
     runtime: DesktopRuntime,
     pending: Vec<Intent>,
-    timeline: AnimationTimeline<LiveFrameClock>,
-    focus: FocusTree,
-    modals: ModalStack,
-    palette: CommandPaletteState,
-    /// Last app overlay handed to gpui_component::Root. This is only an
-    /// idempotence marker; Root owns the actual dialog/sheet lifetime.
-    component_overlay: Option<Overlay>,
     persistence: Option<PersistentState>,
     requested_surface: Option<(CommandId, String, VersionedRoot)>,
     requested_local_package: Option<(crate::core::LocalProjectId, VersionedRoot)>,
     first_catalog_route_admitted: bool,
-    window_activation_subscription: Option<Subscription>,
-    capture_time: Option<Duration>,
     folder_picker_task: Option<Task<()>>,
     connection_probe: Option<crate::navigation::RequestId>,
+    /// The data plane: snapshot mirror, keyed page resources, read pool.
+    store: Option<Entity<DataStore>>,
+    /// The one task that drains engine results when the actor wakes it.
+    engine_wake: Option<Task<()>>,
+    /// Whether a deferred flush of queued intents is already scheduled.
+    flush_scheduled: bool,
+    /// Last snapshot handed to the store.
+    published: Option<Arc<AppSnapshot>>,
+    /// Intents reduced, for tests and diagnostics.
+    reduced: u64,
 }
 
 impl UiRootEntity {
@@ -58,38 +54,110 @@ impl UiRootEntity {
             // the first useful frame so a cold window never renders a fake
             // catalog or a second, view-owned bootstrap path.
             pending: vec![Intent::RefreshRoot { basis, request }],
-            timeline: AnimationTimeline::new(LiveFrameClock::default()),
-            focus: FocusTree::default(),
-            modals: ModalStack::default(),
-            palette: CommandPaletteState::default(),
-            component_overlay: None,
             persistence,
             requested_surface: None,
             requested_local_package: None,
             first_catalog_route_admitted: false,
-            window_activation_subscription: None,
-            capture_time: None,
             folder_picker_task: None,
             connection_probe: None,
+            store: None,
+            engine_wake: None,
+            flush_scheduled: false,
+            published: None,
+            reduced: 0,
         }
     }
 
-    /// Connects the semantic focus owner to GPUI's real window activation
-    /// notifications. The subscription is installed once by the visible and
-    /// capture roots; every later activation only changes focus-ring policy on
-    /// the UI thread and preserves the exact focused route.
-    pub(crate) fn observe_window_activation(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.window_activation_subscription.is_some() {
+    /// Attaches the data-plane store and starts the engine wake task.
+    ///
+    /// After this, engine results reach the UI only through the actor's wake
+    /// signal: one `cx.spawn` task awaits it, drains every queued result, and
+    /// notifies. Nothing polls per frame and an idle window with a
+    /// long-running request schedules no frame.
+    pub fn attach(&mut self, store: Option<Entity<DataStore>>, cx: &mut Context<Self>) {
+        self.store = store;
+        if self.engine_wake.is_none()
+            && let Some(mut receiver) = self.runtime.take_wake()
+        {
+            self.engine_wake = Some(cx.spawn(async move |this, cx| {
+                while receiver.wait().await.is_some() {
+                    if this.update(cx, Self::drain_engine).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        self.publish_snapshot(cx);
+        if !self.pending.is_empty() {
+            self.schedule_flush(cx);
+        }
+    }
+
+    /// Returns the data-plane store, when attached.
+    #[must_use]
+    pub const fn store(&self) -> Option<&Entity<DataStore>> {
+        self.store.as_ref()
+    }
+
+    /// Returns how many intents this root has reduced.
+    #[must_use]
+    pub const fn reduced(&self) -> u64 {
+        self.reduced
+    }
+
+    /// Returns whether engine work is in flight or waiting to be drained.
+    #[must_use]
+    pub fn has_pending_work(&self) -> bool {
+        self.runtime.has_pending_work()
+    }
+
+    /// Drains every engine result the actor has delivered.
+    fn drain_engine(&mut self, cx: &mut Context<Self>) {
+        let events = self.runtime.poll();
+        if !events.is_empty() {
+            self.apply_events(events, cx);
+        }
+    }
+
+    /// Runs queued intents at the end of the current effect cycle, so an
+    /// intent queued during a render never needs a follow-up frame request.
+    fn schedule_flush(&mut self, cx: &mut Context<Self>) {
+        if self.flush_scheduled {
             return;
         }
-        let subscription = cx.observe_window_activation(window, |this, window, cx| {
-            this.set_window_focused(window.is_window_active(), cx);
+        self.flush_scheduled = true;
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = this.update(cx, Self::flush_pending);
         });
-        self.window_activation_subscription = Some(subscription);
+    }
+
+    fn flush_pending(&mut self, cx: &mut Context<Self>) {
+        self.flush_scheduled = false;
+        let pending = std::mem::take(&mut self.pending);
+        if pending.is_empty() {
+            return;
+        }
+        for intent in pending {
+            self.dispatch(intent, cx);
+        }
+    }
+
+    /// Hands the current snapshot to the store, which emits one typed event
+    /// per branch that actually changed.
+    fn publish_snapshot(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.runtime.snapshot();
+        if self
+            .published
+            .as_ref()
+            .is_some_and(|published| Arc::ptr_eq(published, &snapshot))
+        {
+            return;
+        }
+        self.published = Some(Arc::clone(&snapshot));
+        if let Some(store) = &self.store {
+            store.update(cx, |store, cx| store.admit_snapshot(snapshot, cx));
+        }
     }
 
     /// Returns the one immutable read model used by every visual surface.
@@ -98,103 +166,16 @@ impl UiRootEntity {
         self.runtime.snapshot()
     }
 
-    /// Returns the typed focus model for accessibility probes.
-    #[must_use]
-    pub const fn focus(&self) -> &FocusTree {
-        &self.focus
-    }
-
-    /// Returns the typed overlay model.
-    #[must_use]
-    pub const fn modals(&self) -> &ModalStack {
-        &self.modals
-    }
-
-    /// Returns the command palette projection.
-    #[must_use]
-    pub const fn palette(&self) -> &CommandPaletteState {
-        &self.palette
-    }
-
-    /// Returns the overlay route most recently admitted to CE Root.
-    pub(crate) const fn component_overlay(&self) -> Option<Overlay> {
-        self.component_overlay
-    }
-
-    /// Records the route handed to CE Root without owning a second overlay
-    /// stack. The snapshot remains the source of truth for the desired route.
-    pub(crate) fn set_component_overlay(&mut self, overlay: Option<Overlay>) {
-        self.component_overlay = overlay;
-    }
-
-    /// Moves semantic focus to the next control in the active scope.
-    pub fn focus_next(&mut self, cx: &mut Context<Self>) -> Option<FocusId> {
-        let focused = self.focus.focus_next();
-        if focused.is_some() {
-            cx.notify();
-        }
-        focused
-    }
-
-    /// Moves semantic focus to the previous control in the active scope.
-    pub fn focus_previous(&mut self, cx: &mut Context<Self>) -> Option<FocusId> {
-        let focused = self.focus.focus_previous();
-        if focused.is_some() {
-            cx.notify();
-        }
-        focused
-    }
-
-    /// Preserves semantic focus while the native window leaves or regains focus.
-    pub fn set_window_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
-        self.focus.set_window_focused(focused);
-        cx.notify();
-    }
-
-    /// Applies the Escape hierarchy and queues the corresponding typed intent.
-    pub fn dismiss_escape(&mut self, cx: &mut Context<Self>) -> EscapeResult {
-        let result = self.focus.escape();
-        if matches!(result, EscapeResult::Dismissed(_)) {
-            self.queue(Intent::DismissOverlay, cx);
-        }
-        result
-    }
-
-    /// Routes a stable keyboard/command action through the active focus scope.
-    ///
-    /// Actions with payloads (selection movement and activation) remain owned
-    /// by the focused GPUI CE component; this boundary still reports them as
-    /// consumed so an outer shell cannot also interpret the same key.
-    pub fn dispatch_action(&mut self, action: ActionId, cx: &mut Context<Self>) -> bool {
-        if !self.focus.accepts(action) {
-            return false;
-        }
-        if action == ActionId::DismissOverlay {
-            return !matches!(self.dismiss_escape(cx), EscapeResult::Ignored);
-        }
-        if let Some(intent) = action.intent() {
-            self.queue(intent, cx);
-        }
-        true
-    }
-
-    /// Pins the transient timeline to a deterministic capture timestamp.
-    ///
-    /// The screenshot harness calls this immediately before each draw. It is
-    /// deliberately render-only state: the immutable snapshot and every
-    /// product intent continue to use the normal GPUI event path.
-    pub(crate) fn set_capture_time(&mut self, now: Duration) {
-        self.capture_time = Some(now);
-    }
-
-    /// Queues a typed intent and wakes the next frame.
+    /// Queues a typed intent; it is reduced at the end of the current effect
+    /// cycle, so a burst of intents from one input is one reduction pass.
     pub fn queue(&mut self, intent: Intent, cx: &mut Context<Self>) {
         self.pending.push(intent);
-        cx.notify();
+        self.schedule_flush(cx);
     }
 
     /// Applies a typed intent immediately from a harness or startup phase.
     pub fn dispatch(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        self.reduced = self.reduced.saturating_add(1);
         match intent {
             Intent::OpenFolderPicker => self.start_folder_picker(cx),
             Intent::RevealProject(project) => cx.reveal_path(&project.path()),
@@ -329,6 +310,17 @@ impl UiRootEntity {
     /// animation frames while still allowing a different package, lane, or
     /// producer root to replace it.
     pub(crate) fn ensure_surface(&mut self, command: SurfaceCommand, cx: &mut Context<Self>) {
+        // Package lanes read the keyed dossier. Their replies never enter the
+        // snapshot, so they cannot overwrite the Orbit catalog.
+        if let (Some(store), Some(package)) = (&self.store, dossier_package(&command)) {
+            let key = crate::model::pages::PageKey::Package(
+                crate::model::pages::PackageRef::from_reference(package),
+            );
+            store.update(cx, |store, cx| {
+                store.ensure(key, cx);
+            });
+            return;
+        }
         let basis = self.snapshot().key();
         let identity = (command.id(), format!("{command:?}"), basis);
         if self.requested_surface.as_ref() == Some(&identity) {
@@ -386,7 +378,6 @@ impl UiRootEntity {
         for event in events {
             match event {
                 RuntimeEvent::SnapshotChanged(snapshot) => {
-                    self.sync_navigation(&snapshot);
                     self.admit_first_catalog_route(&snapshot, cx);
                 }
                 RuntimeEvent::PersistRequested(snapshot) => {
@@ -405,11 +396,13 @@ impl UiRootEntity {
                         cx,
                     );
                 }
-                RuntimeEvent::RequestCompleted { .. } => {}
-                RuntimeEvent::RejectedStale(_) => {}
+                RuntimeEvent::RequestCompleted { .. } | RuntimeEvent::RejectedStale(_) => {}
             }
         }
-        cx.notify();
+        self.publish_snapshot(cx);
+        // Cold restart restores durable Indexing rows without an ephemeral
+        // request; reattach them once through the typed intent path.
+        self.schedule_pending_indexes(cx);
     }
 
     fn admit_first_catalog_route(&mut self, snapshot: &AppSnapshot, cx: &mut Context<Self>) {
@@ -440,72 +433,24 @@ impl UiRootEntity {
                 package: package.coordinate.clone(),
                 lane: PackageLane::Overview,
                 selected: Some(package.object),
+                at: None,
             })),
             cx,
         );
     }
 
-    fn sync_navigation(&mut self, snapshot: &AppSnapshot) {
-        self.palette.open = matches!(snapshot.overlay(), Some(Overlay::CommandPalette));
-    }
+}
 
-    /// Projects the one post-layout action registry into semantic focus IDs.
-    ///
-    /// GPUI CE remains the owner of native handles and actual Tab dispatch.
-    /// This projection only gives the runtime a stable route for modal scope,
-    /// Escape restoration, and screenshot assertions. Every key comes from a
-    /// visible, enabled action registered while the current frame rendered.
-    /// The A11y ActionFrames finalizer must run before this snapshot so the
-    /// focused bit and measured bounds belong to this exact post-layout frame.
-    fn sync_rendered_actions(&mut self, window: &Window, cx: &Context<Self>) {
-        let theme = crate::theme::theme(cx);
-        let action_tree = theme.action_tree(window);
-        let focus_order = theme.action_focus_order(window);
-        let native_focus_owner = theme.action_native_focus_owner(window);
-        sync_focus_from_actions(
-            &mut self.focus,
-            &mut self.modals,
-            &mut self.palette,
-            &action_tree,
-            &focus_order,
-            native_focus_owner.as_deref(),
-        );
-    }
-
-    fn frame(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Activation can arrive between frames. Sampling it here keeps the
-        // focus ring correct even when a platform does not emit a separate
-        // observer tick before the first repaint.
-        let window_focused = window.is_window_active();
-        if window_focused != self.focus.window_focused() {
-            self.focus.set_window_focused(window_focused);
-        }
-        for intent in std::mem::take(&mut self.pending) {
-            self.dispatch(intent, cx);
-        }
-        let events = self.runtime.poll();
-        self.apply_events(events, cx);
-        // Cold restart restores durable Indexing rows without an ephemeral
-        // request. Reattach them through the same typed intent path once per
-        // row; an admitted request is recorded before the next frame.
-        self.schedule_pending_indexes(cx);
-        self.timeline
-            .set_reduced_motion(self.snapshot().settings().reduced_motion);
-        if let Some(now) = self.capture_time {
-            self.timeline.advance_at(now);
-        } else {
-            self.timeline.advance();
-        }
-        let rendered = crate::views::render_root(self, window, cx);
-        self.sync_rendered_actions(window, cx);
-        // A settled window must not keep an ambient animation loop alive. An
-        // in-flight engine request still needs a frame to drain its event, and
-        // a resize/transition track keeps frames alive only until its terminal
-        // value is exact.
-        if self.timeline.is_active() || self.runtime.needs_frame() || !self.pending.is_empty() {
-            window.request_animation_frame();
-        }
-        rendered
+/// Returns the package a dossier-lane command reads, when it is one.
+fn dossier_package(command: &SurfaceCommand) -> Option<backend_library::PackageReference> {
+    match command {
+        SurfaceCommand::Package { package }
+        | SurfaceCommand::PackageVersions { package }
+        | SurfaceCommand::PackageProfile { package }
+        | SurfaceCommand::Dependencies { package }
+        | SurfaceCommand::Dependents { package }
+        | SurfaceCommand::Advisory { package, .. } => Some(package.clone()),
+        _ => None,
     }
 }
 
@@ -545,129 +490,6 @@ fn bound_picker_error(error: impl std::fmt::Display) -> Arc<str> {
     ))
 }
 
-fn action_descends_from(
-    action_id: &str,
-    modal_root: &str,
-    parents: &HashMap<String, Option<String>>,
-) -> bool {
-    let mut parent = parents.get(action_id).and_then(Option::as_deref);
-    let mut steps = 0;
-    while let Some(current) = parent {
-        if current == modal_root {
-            return true;
-        }
-        parent = parents.get(current).and_then(Option::as_deref);
-        steps += 1;
-        if steps > parents.len() {
-            return false;
-        }
-    }
-    false
-}
-
-fn modal_id_for_root(root: &str) -> Option<ModalId> {
-    match root {
-        "settings-dialog" => Some(ModalId::Settings),
-        "command-palette-dialog" => Some(ModalId::CommandPalette),
-        _ => None,
-    }
-}
-
-/// Projects the finalized U1 ActionFrames evidence into U2 semantic focus.
-///
-/// The measured order map is the only source of rendered Tab order and the
-/// native owner is the only source of rendered focus ownership. ActionTree
-/// contributes modal root, inert/visibility state, parent relationships, and
-/// restore ID; metadata `focused` is intentionally never treated as native
-/// evidence here.
-fn sync_focus_from_actions(
-    focus: &mut FocusTree,
-    modals: &mut ModalStack,
-    palette: &mut CommandPaletteState,
-    action_tree: &ActionTree,
-    measured_order: &HashMap<String, u32>,
-    native_focus_owner: Option<&str>,
-) {
-    let parents = action_tree
-        .iter()
-        .map(|action| {
-            (
-                action.id().to_string(),
-                action.parent_value().map(ToString::to_string),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let modal_root = action_tree.modal_root().map(ToString::to_string);
-    let mut entries = action_tree
-        .iter()
-        .filter(|action| action.is_focusable() && measured_order.contains_key(action.id().as_ref()))
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|action| {
-        measured_order
-            .get(action.id().as_ref())
-            .copied()
-            .unwrap_or(u32::MAX)
-    });
-    let is_modal_action = |action_id: &str| {
-        modal_root
-            .as_deref()
-            .is_some_and(|root| action_descends_from(action_id, root, &parents))
-    };
-    let mut shell_ids = entries
-        .iter()
-        .filter(|action| !is_modal_action(action.id().as_ref()))
-        .map(|action| action.id().clone())
-        .collect::<Vec<_>>();
-    let modal_ids = entries
-        .iter()
-        .filter(|action| is_modal_action(action.id().as_ref()))
-        .map(|action| action.id().clone())
-        .collect::<Vec<_>>();
-    // U1 marks the launch control inert while the modal owns focus, so it is
-    // absent from measured Tab order. Keep its semantic node registered solely
-    // for exact Escape restoration; `sync_action_order` still exposes only
-    // modal keys as the active Tab order.
-    if let Some(restore) = action_tree.restore_focus() {
-        if !shell_ids.contains(restore) {
-            shell_ids.push(restore.clone());
-        }
-    }
-    let modal_id = modal_root.as_deref().and_then(modal_id_for_root);
-    let modal = modal_id.map(|id| (id.focus(), modal_ids.as_slice()));
-    focus.sync_action_order(&shell_ids, modal);
-
-    let current_modal = modals.top();
-    let current_focus_modal = focus.active_modal();
-    let expected_focus_modal = modal_id.map(ModalId::focus);
-    if current_modal != modal_id || current_focus_modal != expected_focus_modal {
-        if current_modal.is_some() || current_focus_modal.is_some() {
-            let _ = modals.pop();
-            let _ = focus.pop_modal();
-        }
-        if let Some(modal_id) = modal_id {
-            let restore = action_tree
-                .restore_focus()
-                .map(|id| FocusId::Action(focus.action_key(id.as_ref())));
-            let restore_route = restore.or_else(|| Some(focus.route().active()));
-            let restore_id = restore_route.unwrap_or(FocusId::Shell);
-            let _ = modals.push(modal_id, restore_id);
-            let _ = focus.push_modal_with_restore(modal_id.focus(), Some(restore_id));
-        }
-    }
-    palette.open = matches!(modal_id, Some(ModalId::CommandPalette));
-
-    let Some(owner) = native_focus_owner else {
-        return;
-    };
-    let owner_is_modal = modal_root
-        .as_deref()
-        .is_some_and(|root| action_descends_from(owner, root, &parents));
-    if owner_is_modal == modal_id.is_some() {
-        let native_modal = modal_id.map(ModalId::focus);
-        let _ = focus.sync_native_action(owner, native_modal);
-    }
-}
-
 impl SnapshotReadModel for UiRootEntity {
     fn snapshot(&self) -> Arc<AppSnapshot> {
         self.snapshot()
@@ -680,29 +502,42 @@ impl IntentDispatcher for UiRootEntity {
     }
 }
 
-impl Render for UiRootEntity {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.frame(window, cx)
-    }
-}
-
 /// One installed GPUI entity graph. The root is the only application state
-/// owner; this wrapper exists solely so native startup and harness code can
+/// owner; the store is its data plane (snapshot mirror, keyed page resources,
+/// read pool). This wrapper exists so native startup and harness code can
 /// retain a stable installation handle.
 pub struct UiEntityGraph {
     /// The single root entity.
     pub root: Entity<UiRootEntity>,
+    /// The data-plane store region views subscribe to.
+    pub store: Entity<DataStore>,
 }
 
 impl UiEntityGraph {
-    /// Installs the one root entity on the GPUI thread.
+    /// Installs the root entity and a store without a read lane (pages are
+    /// reported unavailable). Production uses [`Self::install_with_reads`].
     pub fn install(
         cx: &mut App,
         runtime: DesktopRuntime,
         persistence: Option<PersistentState>,
     ) -> Self {
-        let root = cx.new(|_| UiRootEntity::new(runtime, persistence));
-        crate::views::install_shell_keymap(cx, root.downgrade());
-        Self { root }
+        Self::install_with_reads(cx, runtime, persistence, None)
+    }
+
+    /// Installs the root entity, the store, and the store's read pool.
+    pub fn install_with_reads(
+        cx: &mut App,
+        runtime: DesktopRuntime,
+        persistence: Option<PersistentState>,
+        reads: Option<ReadPool>,
+    ) -> Self {
+        let store = DataStore::install(cx, runtime.snapshot(), reads);
+        let attached = store.clone();
+        let root = cx.new(|cx| {
+            let mut root = UiRootEntity::new(runtime, persistence);
+            root.attach(Some(attached), cx);
+            root
+        });
+        Self { root, store }
     }
 }

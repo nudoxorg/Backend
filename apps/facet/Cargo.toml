@@ -1,0 +1,62 @@
+[package]
+name = "backend-facet"
+description = "FACET v3, the Nudox design system in GPUI: tokens, fonts, icons, motion, paint primitives, components, and the gallery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "facet"
+path = "src/lib.rs"
+
+[[bin]]
+name = "facet-gallery"
+path = "src/bin/facet-gallery.rs"
+required-features = ["gallery"]
+
+[[test]]
+name = "gallery"
+path = "tests/gallery.rs"
+required-features = ["gallery"]
+
+[dependencies]
+gpui.workspace = true
+gpui_component.workspace = true
+sha2.workspace = true
+smallvec.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+backend-gui-harness = { path = "../../tools/gui-harness", optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
+
+[features]
+default = ["highlight"]
+# Tree-sitter highlighting (`facet::code`) for the seven ecosystems' languages,
+# on the grammar versions the engine's frontends already pin.
+highlight = ["gpui_component/tree-sitter-rust", "gpui_component/tree-sitter-typescript", "gpui_component/tree-sitter-python", "gpui_component/tree-sitter-go", "gpui_component/tree-sitter-java", "gpui_component/tree-sitter-csharp", "gpui_component/tree-sitter-cpp"]
+# Lane W-Float bring-up gate for new overlay modules (removed at the end).
+overlay-wip = []
+# Lane W-Graph bring-up gate for unfinished `facet::graph` modules.
+graph-wip = []
+# Lane W-Anatomy bring-up gate for `facet::anatomy` (removed once it compiles).
+anatomy-wip = []
+# The gallery binary: every component state as a scene, captured headless
+# through the shared harness at a fixed virtual time.
+gallery = ["dep:backend-gui-harness", "dep:image", "dep:gpui_platform", "gpui_component/headless"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"], optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_platform = { workspace = true, features = ["x11", "wayland"], optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_platform = { workspace = true, features = ["wgpu"], optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

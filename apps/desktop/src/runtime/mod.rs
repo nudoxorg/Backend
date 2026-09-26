@@ -1,24 +1,26 @@
 //! Background runtime, mapping, animation, and GPUI entity wiring.
 
 pub mod actor;
-pub mod animation;
 pub mod client;
 pub mod coordinator;
+pub mod debug_page;
 pub mod mailbox;
 pub mod mapping;
+pub mod page_mapping;
+pub mod reads;
+pub mod store;
 pub mod ui_graph;
+pub mod wake;
 pub mod wiring;
 
+#[cfg(test)]
+mod frame_tests;
 #[cfg(test)]
 mod tests;
 
 pub use actor::{
     ActorStartError, CancellationToken, EngineActor, EngineClient, EngineDto, EngineEvent,
     EngineFault, EngineRequest, LocalRead, ProjectDto,
-};
-pub use animation::{
-    AnimationChannel, AnimationId, AnimationTimeline, Beat, CaptureFrameClock, Easing, FrameClock,
-    LiveFrameClock, Motion, TimelineVersion, TrackSnapshot,
 };
 pub use client::LocalEngineClient;
 pub use coordinator::{DesktopRuntime, RuntimeEvent};

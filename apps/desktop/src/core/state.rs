@@ -66,7 +66,7 @@ impl ErrorValue {
             bounded.push('…');
             bounded
         } else {
-            message.to_string()
+            message.clone()
         };
         Self {
             code,
@@ -103,11 +103,22 @@ pub enum Activity {
 }
 
 /// Resource with orthogonal activity and retained last-good value.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Resource<T> {
     value: Option<(Arc<T>, VersionedRoot)>,
     terminal: ResourceTerminal,
     activity: Activity,
+}
+
+// Cloning shares the value; it never requires `T: Clone`.
+impl<T> Clone for Resource<T> {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            terminal: self.terminal.clone(),
+            activity: self.activity,
+        }
+    }
 }
 
 /// Terminal coverage/failure status for a resource.
@@ -168,6 +179,21 @@ impl<T> Resource<T> {
             activity: Activity::Working,
             ..self
         }
+    }
+
+    /// Marks the resource at rest after work ended without a new result,
+    /// retaining any last-good value and terminal. A resource that never held
+    /// a value and never failed returns to [`Activity::NotYet`], so the next
+    /// request is not mistaken for a retry.
+    #[must_use]
+    pub fn resting(self) -> Self {
+        let activity =
+            if self.value.is_none() && matches!(self.terminal, ResourceTerminal::Complete) {
+                Activity::NotYet
+            } else {
+                Activity::Rest
+            };
+        Self { activity, ..self }
     }
 
     /// Marks work stopped while retaining a last-good value.
@@ -249,6 +275,7 @@ impl<T> Resource<T> {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

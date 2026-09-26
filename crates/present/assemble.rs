@@ -376,7 +376,7 @@ fn synthesise_loose(
 }
 
 fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) -> ShelfEntry {
-    let identity = Identity::parse_with_key(&row.label, row.id.into());
+    let identity = package_identity(row);
     let languages = identity
         .project()
         .and_then(|project| counts.get(project.root()))
@@ -405,6 +405,18 @@ fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) ->
 /// declarations came to render as `○ polyglot requested` next to a `health`
 /// line that said `ready · 18 row(s)`. The owner's own [`RowState`] is the
 /// authority, and it is the only thing consulted here.
+fn package_identity(row: &Row) -> Identity {
+    let identity = Identity::parse_with_key(&row.label, row.id.into());
+    if matches!(row.id, backend_library::RowId::Package(_)) {
+        row.signature
+            .as_deref()
+            .map(|name| identity.clone().with_manifest_name(name))
+            .unwrap_or(identity)
+    } else {
+        identity
+    }
+}
+
 fn readiness_of(row: &Row, published: u64) -> Readiness {
     match row.state {
         RowState::Ready => Readiness::Ready,

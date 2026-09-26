@@ -412,7 +412,10 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
 fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
     futures_executor::block_on(async {
         let path = path();
-        let view = root(Vec::new());
+        let root_a = view_state_root(&[("graph".to_owned(), "a".to_owned())]);
+        let root_b = view_state_root(&[("graph".to_owned(), "b".to_owned())]);
+        let root_c = view_state_root(&[("graph".to_owned(), "c".to_owned())]);
+        let root_d = view_state_root(&[("graph".to_owned(), "d".to_owned())]);
         let source = PackageReference::parse("pkg:cargo/app@1.0.0").expect("source");
         let target = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("target");
         let edge = PackageDependencyRecord::new(
@@ -434,36 +437,149 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
         let mut projection = TursoProjection::open(&path).await.expect("open");
         assert_eq!(
             projection
-                .synchronize_package_graph(view.root(), &facts)
+                .synchronize_package_graph(root_a, &facts)
                 .await
                 .expect("project graph"),
             ProjectionUpdate::Rebuilt { rows: 1 }
         );
         assert_eq!(
             projection
-                .synchronize_package_graph(view.root(), &facts)
+                .synchronize_package_graph(root_a, &facts)
                 .await
                 .expect("reuse graph"),
             ProjectionUpdate::Reused { rows: 1 }
         );
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_b, &facts)
+                .await
+                .expect("project new root"),
+            ProjectionUpdate::Rebuilt { rows: 1 }
+        );
+        let mut edge_rows = projection
+            .connection
+            .query("SELECT root FROM backend_projection_package_edges", ())
+            .await
+            .expect("edge roots");
+        let edge_root: Vec<u8> = edge_rows
+            .next()
+            .await
+            .expect("edge row")
+            .expect("edge exists")
+            .get(0)
+            .expect("root");
+        assert_eq!(edge_root.as_slice(), root_a.as_bytes());
+        let mut meta_rows = projection
+            .connection
+            .query(
+                "SELECT root FROM backend_projection_package_graph_meta WHERE singleton=1",
+                (),
+            )
+            .await
+            .expect("meta");
+        let meta_root: Vec<u8> = meta_rows
+            .next()
+            .await
+            .expect("meta row")
+            .expect("meta")
+            .get(0)
+            .expect("root");
+        assert_eq!(meta_root.as_slice(), root_b.as_bytes());
         let forward = projection
             .package_dependencies(&source)
             .await
             .expect("forward");
-        assert_eq!(forward.edges.as_ref(), &[edge]);
+        assert_eq!(forward.root.as_ref(), root_b.as_bytes());
+        assert_eq!(forward.edges.as_ref(), &[edge.clone()]);
         let reverse = projection
             .package_dependents(&target)
             .await
             .expect("reverse");
+        assert_eq!(reverse.root.as_ref(), root_b.as_bytes());
         assert_eq!(reverse.edges.len(), 1);
         assert_eq!(reverse.edges[0].source, source);
-        let unknown = vec![(
+        let facts_version = edge.facts_version;
+        let (rowid, stored_root) = stored_edge(&projection, &facts_version).await;
+        let root_move = view_state_root(&[("graph".to_owned(), "moved".to_owned())]);
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_move, &facts)
+                .await
+                .expect("move graph root"),
+            ProjectionUpdate::Rebuilt { rows: 1 }
+        );
+        let (rowid_after, stored_root_after) = stored_edge(&projection, &facts_version).await;
+        assert_eq!(rowid_after, rowid);
+        assert_eq!(stored_root_after, stored_root);
+        assert_eq!(stored_root.as_slice(), root_a.as_bytes());
+        let moved_forward = projection
+            .package_dependencies(&source)
+            .await
+            .expect("forward after root move");
+        assert_eq!(moved_forward.root.as_ref(), root_move.as_bytes());
+        assert_eq!(moved_forward.edges.as_ref(), &[edge]);
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_c, &[])
+                .await
+                .expect("clear graph"),
+            ProjectionUpdate::Rebuilt { rows: 0 }
+        );
+        let forward_empty = projection
+            .package_dependencies(&source)
+            .await
+            .expect("forward empty");
+        assert!(forward_empty.edges.is_empty());
+        let mut count_rows = projection
+            .connection
+            .query("SELECT COUNT(*) FROM backend_projection_package_edges", ())
+            .await
+            .expect("count");
+        let count: i64 = count_rows
+            .next()
+            .await
+            .expect("count row")
+            .expect("count")
+            .get(0)
+            .expect("count");
+        assert_eq!(count, 0);
+        let edge_v2 = PackageDependencyRecord::new(
+            source.clone(),
+            PackageDependencyTarget::new(RegistryEcosystem::Cargo, "serde", "^2", None)
+                .expect("target facts"),
+            DependencyScope::Runtime,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [1; 32],
+                provenance: [2; 32],
+            },
+        );
+        let facts_v2 = vec![(
+            source.clone(),
+            DependencyFacts::Known(vec![edge_v2.clone()].into_boxed_slice()),
+        )];
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_d, &facts_v2)
+                .await
+                .expect("project changed requirement"),
+            ProjectionUpdate::Rebuilt { rows: 1 }
+        );
+        let forward_v2 = projection
+            .package_dependencies(&source)
+            .await
+            .expect("forward v2");
+        assert_eq!(forward_v2.edges.len(), 1);
+        assert_eq!(forward_v2.edges[0].target.requirement.as_str(), "^2");
+        assert_ne!(forward_v2.edges[0].target.requirement.as_str(), "^1");
+        let unavailable = vec![(
             target.clone(),
             DependencyFacts::Unavailable(ProductText::new("metadata timeout").expect("reason")),
         )];
-        let next = view_state_root(&[("graph".to_owned(), "next".to_owned())]);
+        let root_e = view_state_root(&[("graph".to_owned(), "e".to_owned())]);
         projection
-            .synchronize_package_graph(next, &unknown)
+            .synchronize_package_graph(root_e, &unavailable)
             .await
             .expect("project unavailable");
         let state = projection
@@ -473,8 +589,100 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
             .state
             .expect("state row");
         assert_eq!(state.kind, 2);
+        assert_eq!(
+            projection
+                .package_dependencies(&target)
+                .await
+                .expect("state root")
+                .root
+                .as_ref(),
+            root_e.as_bytes()
+        );
+        assert!(
+            projection
+                .package_dependencies(&source)
+                .await
+                .expect("source cleared")
+                .edges
+                .is_empty()
+        );
+        let state_rowid = stored_state_rowid(&projection, target.as_str()).await;
+        let stored_root = stored_state_root(&projection, target.as_str()).await;
+        assert_eq!(stored_root.as_slice(), root_e.as_bytes());
+        let root_f = view_state_root(&[("graph".to_owned(), "f".to_owned())]);
+        assert_eq!(
+            projection
+                .synchronize_package_graph(root_f, &unavailable)
+                .await
+                .expect("keep matching state"),
+            ProjectionUpdate::Rebuilt { rows: 0 }
+        );
+        assert_eq!(
+            stored_state_rowid(&projection, target.as_str()).await,
+            state_rowid
+        );
+        assert_eq!(
+            stored_state_root(&projection, target.as_str())
+                .await
+                .as_slice(),
+            root_e.as_bytes()
+        );
+        let fenced = projection
+            .package_dependencies(&target)
+            .await
+            .expect("fenced state");
+        assert_eq!(fenced.root.as_ref(), root_f.as_bytes());
+        let fenced_state = fenced.state.expect("kept state");
+        assert_eq!(fenced_state.kind, 2);
+        assert_eq!(fenced_state.reason, "metadata timeout");
+        let changed = vec![(
+            target.clone(),
+            DependencyFacts::Unavailable(ProductText::new("registry reset").expect("reason")),
+        )];
+        let root_g = view_state_root(&[("graph".to_owned(), "g".to_owned())]);
+        projection
+            .synchronize_package_graph(root_g, &changed)
+            .await
+            .expect("replace state");
+        assert_eq!(
+            stored_state_root(&projection, target.as_str())
+                .await
+                .as_slice(),
+            root_g.as_bytes()
+        );
+        let replaced = projection
+            .package_dependencies(&target)
+            .await
+            .expect("replaced state");
+        assert_eq!(replaced.root.as_ref(), root_g.as_bytes());
+        assert_eq!(
+            replaced.state.expect("replaced").reason.as_str(),
+            "registry reset"
+        );
         std::fs::remove_file(&path).expect("remove projection");
     });
+}
+
+async fn stored_edge(projection: &TursoProjection, edge_id: &[u8; 32]) -> (i64, Vec<u8>) {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT rowid, root FROM backend_projection_package_edges WHERE edge_id = ?1",
+            turso::params![edge_id.as_slice()],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("edge query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("edge next: {error}"))
+        .unwrap_or_else(|| panic!("missing edge"));
+    (
+        row.get(0)
+            .unwrap_or_else(|error| panic!("edge rowid: {error}")),
+        row.get(1)
+            .unwrap_or_else(|error| panic!("edge root: {error}")),
+    )
 }
 
 #[test]
@@ -570,4 +778,139 @@ fn stress_fts_projection_reports_build_query_and_delta_costs() {
             let _ = std::fs::remove_file(sidecar);
         }
     });
+}
+
+#[test]
+fn rebuild_keeps_an_unchanged_rowid_and_records_only_real_mutations() {
+    futures_executor::block_on(async {
+        let path = path();
+        let basis = root(Vec::new()).basis();
+        let keep = Row::new(RowId::Package(package_key("keep")), basis, "alpha");
+        let gone = Row::new(RowId::Package(package_key("gone")), basis, "beta");
+        let edit = Row::new(RowId::Package(package_key("edit")), basis, "gamma");
+        let first = root(vec![keep.clone(), gone, edit]);
+        let revised = root(vec![
+            keep,
+            Row::new(RowId::Package(package_key("edit")), basis, "gamma-two"),
+        ]);
+        let keep_key = RowId::Package(package_key("keep")).stable_key();
+
+        let mut projection = TursoProjection::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("open: {error}"));
+        assert_eq!(
+            projection
+                .synchronize(&first)
+                .await
+                .unwrap_or_else(|error| panic!("first synchronize: {error}")),
+            ProjectionUpdate::Rebuilt { rows: 3 }
+        );
+        let keep_rowid = stored_rowid(&projection, &keep_key).await;
+        assert_eq!(recorded_changes(&projection, &first).await, 3);
+
+        assert_eq!(
+            projection
+                .synchronize(&revised)
+                .await
+                .unwrap_or_else(|error| panic!("revised synchronize: {error}")),
+            ProjectionUpdate::Rebuilt { rows: 2 }
+        );
+        assert_eq!(stored_rowid(&projection, &keep_key).await, keep_rowid);
+        assert_eq!(recorded_changes(&projection, &revised).await, 2);
+
+        let alpha = projection
+            .search("alpha", 10)
+            .await
+            .unwrap_or_else(|error| panic!("search alpha: {error}"));
+        assert_eq!(alpha.root.as_ref(), revised.root().as_bytes());
+        assert_eq!(alpha.ids.as_ref(), &[keep_key]);
+        let edited = projection
+            .search("gamma-two", 10)
+            .await
+            .unwrap_or_else(|error| panic!("search edit: {error}"));
+        assert_eq!(
+            edited.ids.as_ref(),
+            &[RowId::Package(package_key("edit")).stable_key()]
+        );
+        let removed = projection
+            .search("beta", 10)
+            .await
+            .unwrap_or_else(|error| panic!("search removed: {error}"));
+        assert!(removed.ids.is_empty());
+
+        drop(projection);
+        std::fs::remove_file(&path).unwrap_or_else(|error| panic!("remove projection: {error}"));
+    });
+}
+
+async fn stored_rowid(projection: &TursoProjection, key: &str) -> i64 {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT rowid FROM backend_projection_rows WHERE row_id = ?1",
+            [key],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("rowid query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("rowid next: {error}"))
+        .unwrap_or_else(|| panic!("missing row {key}"));
+    row.get(0)
+        .unwrap_or_else(|error| panic!("rowid decode: {error}"))
+}
+
+async fn recorded_changes(projection: &TursoProjection, view: &ViewRoot) -> i64 {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT changed_rows FROM backend_projection_commits WHERE root = ?1",
+            turso::params![view.root().as_bytes().as_slice()],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("commit query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("commit next: {error}"))
+        .unwrap_or_else(|| panic!("missing commit"));
+    row.get(0)
+        .unwrap_or_else(|error| panic!("commit decode: {error}"))
+}
+
+async fn stored_state_rowid(projection: &TursoProjection, source: &str) -> i64 {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT rowid FROM backend_projection_package_states WHERE source = ?1",
+            [source],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("state rowid query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("state rowid next: {error}"))
+        .unwrap_or_else(|| panic!("missing state {source}"));
+    row.get(0)
+        .unwrap_or_else(|error| panic!("state rowid decode: {error}"))
+}
+
+async fn stored_state_root(projection: &TursoProjection, source: &str) -> Vec<u8> {
+    let mut rows = projection
+        .connection
+        .query(
+            "SELECT root FROM backend_projection_package_states WHERE source = ?1",
+            [source],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("state root query: {error}"));
+    let row = rows
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("state root next: {error}"))
+        .unwrap_or_else(|| panic!("missing state {source}"));
+    row.get(0)
+        .unwrap_or_else(|error| panic!("state root decode: {error}"))
 }

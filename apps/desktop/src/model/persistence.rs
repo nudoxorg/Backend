@@ -2,11 +2,12 @@
 
 use super::snapshot::{AppSnapshot, SessionState, ShelfItem, ShelfState};
 use super::workspace::{
-    AppearancePreference, ConnectionStatus, PrivacyPreference, ProjectPhase, ServiceMode,
-    SettingsState, TextScalePreference, WorkspaceProject, WorkspaceState,
+    AppearancePreference, ConnectionStatus, ContrastPreference, DensityPreference,
+    MotionPreference, PrivacyPreference, ProjectPhase, ServiceMode, SettingsState,
+    ZoomPreference, WorkspaceProject, WorkspaceState,
 };
 use crate::core::ids::LocalProjectId;
-use crate::navigation::{Coordinate, Overlay, PackageLane, Route, SettingsPage};
+use crate::navigation::{Coordinate, Overlay, PackageLane, ReleaseId, Route, SettingsPage, View};
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -101,6 +102,42 @@ pub enum PersistedAppearance {
     Abyss,
     /// Light glacier palette.
     Glacier,
+    /// Follow the operating system.
+    System,
+}
+
+/// Serializable density preference.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PersistedDensity {
+    /// The boards' spacing.
+    #[default]
+    Comfortable,
+    /// Tighter rows.
+    Compact,
+    /// The tightest readable rows.
+    Dense,
+}
+
+/// Serializable motion preference.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PersistedMotion {
+    /// Follow the operating system.
+    #[default]
+    System,
+    /// Full motion.
+    Full,
+    /// Reduced motion.
+    Reduced,
+}
+
+/// Serializable contrast preference.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PersistedContrast {
+    /// The boards' palette.
+    #[default]
+    Normal,
+    /// Stronger inks, firmer lines.
+    High,
 }
 
 /// Serializable privacy preference.
@@ -121,6 +158,36 @@ pub enum PersistedServiceMode {
     Embedded,
     /// Attach to an existing daemon.
     Attached,
+}
+
+/// Rebuilds a declaration route from its persisted spelling, or Orbit when
+/// the spelling no longer admits.
+fn symbol_route(
+    project: Option<u64>,
+    package: &str,
+    id: &str,
+    at: Option<&str>,
+    view: View,
+    line: Option<u32>,
+) -> Route {
+    let project = project
+        .and_then(std::num::NonZeroU64::new)
+        .map(|project| crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project)));
+    crate::core::PackageId::new(package)
+        .ok()
+        .zip(Coordinate::new(id).ok())
+        .map(|(package, id)| {
+            Route::Symbol(crate::navigation::SymbolRoute {
+                project,
+                package,
+                id,
+                at: at.and_then(|at| ReleaseId::new(at).ok()),
+                view,
+                line,
+                selected: None,
+            })
+        })
+        .unwrap_or(Route::Orbit(crate::navigation::OrbitRoute::Home))
 }
 
 /// Versioned, forward-compatible desktop state file.
@@ -149,9 +216,20 @@ pub struct PersistedDesktopState {
     /// Surface appearance.
     #[serde(default)]
     pub appearance: PersistedAppearance,
-    /// Interface text scale percentage.
+    /// ⌘± zoom steps per display key (older files carried a `text_scale`
+    /// setting instead; it is ignored — the system now sets the baseline).
     #[serde(default)]
-    pub text_scale: u16,
+    pub zoom: std::collections::BTreeMap<String, i8>,
+    /// Spacing density.
+    #[serde(default)]
+    pub density: PersistedDensity,
+    /// Contrast treatment.
+    #[serde(default)]
+    pub contrast: PersistedContrast,
+    /// Motion preference; absent in older files, where `reduced_motion`
+    /// alone decides.
+    #[serde(default)]
+    pub motion: Option<PersistedMotion>,
     /// Local/remote registry policy.
     #[serde(default)]
     pub privacy: PersistedPrivacy,
@@ -190,7 +268,10 @@ impl Default for PersistedDesktopState {
             active_project: None,
             active_native_path: None,
             appearance: PersistedAppearance::default(),
-            text_scale: 100,
+            zoom: std::collections::BTreeMap::new(),
+            density: PersistedDensity::default(),
+            contrast: PersistedContrast::default(),
+            motion: None,
             privacy: PersistedPrivacy::default(),
             service_mode: PersistedServiceMode::default(),
             advisories: true,
@@ -218,8 +299,30 @@ pub enum PersistedRoute {
         package: String,
         /// Package lane.
         lane: PersistedPackageLane,
+        /// The release viewed instead of the pinned one.
+        #[serde(default)]
+        at: Option<String>,
     },
-    /// A declaration page route.
+    /// A declaration shown as a page, its code, or its graph.
+    Symbol {
+        /// Optional producer project.
+        project: Option<u64>,
+        /// Canonical package spelling.
+        package: String,
+        /// Declaration coordinate.
+        id: String,
+        /// The release viewed instead of the pinned one.
+        #[serde(default)]
+        at: Option<String>,
+        /// `page`, `code` or `graph`.
+        view: String,
+        /// The source line the code view opens at.
+        #[serde(default)]
+        line: Option<u32>,
+    },
+    /// The whole dependency graph.
+    World,
+    /// A declaration page route (older files; read as a page view).
     Page {
         /// Optional producer project.
         project: Option<u64>,
@@ -228,7 +331,7 @@ pub enum PersistedRoute {
         /// Declaration coordinate.
         coordinate: String,
     },
-    /// A source route.
+    /// A source route (older files; read as a code view).
     Source {
         /// Optional producer project.
         project: Option<u64>,
@@ -569,8 +672,28 @@ impl PersistentState {
             appearance: match snapshot.settings().appearance {
                 AppearancePreference::Abyss => PersistedAppearance::Abyss,
                 AppearancePreference::Glacier => PersistedAppearance::Glacier,
+                AppearancePreference::System => PersistedAppearance::System,
             },
-            text_scale: snapshot.settings().text_scale.percent(),
+            zoom: snapshot
+                .settings()
+                .zoom
+                .steps()
+                .map(|(display, step)| (display.to_string(), step))
+                .collect(),
+            density: match snapshot.settings().density {
+                DensityPreference::Comfortable => PersistedDensity::Comfortable,
+                DensityPreference::Compact => PersistedDensity::Compact,
+                DensityPreference::Dense => PersistedDensity::Dense,
+            },
+            contrast: match snapshot.settings().contrast {
+                ContrastPreference::Normal => PersistedContrast::Normal,
+                ContrastPreference::High => PersistedContrast::High,
+            },
+            motion: Some(match snapshot.settings().motion {
+                MotionPreference::System => PersistedMotion::System,
+                MotionPreference::Full => PersistedMotion::Full,
+                MotionPreference::Reduced => PersistedMotion::Reduced,
+            }),
             privacy: match snapshot.settings().privacy {
                 PrivacyPreference::LocalOnly => PersistedPrivacy::LocalOnly,
                 PrivacyPreference::RegistryMetadata => PersistedPrivacy::RegistryMetadata,
@@ -584,7 +707,7 @@ impl PersistentState {
             cache_days: snapshot.settings().cache_days,
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
-                Some(Overlay::AddProject | Overlay::CommandPalette) | None => {
+                Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
                     match snapshot.route() {
                         Route::Orbit(crate::navigation::OrbitRoute::Home) => PersistedRoute::Home,
                         Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => {
@@ -596,24 +719,23 @@ impl PersistentState {
                             project: route.project.as_ref().map(|project| project.get().get()),
                             package: route.package.as_str().to_owned(),
                             lane: route.lane.into(),
+                            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
                         },
-                        Route::Page(route) => PersistedRoute::Page {
+                        Route::Symbol(route) => PersistedRoute::Symbol {
                             project: route.project.as_ref().map(|project| project.get().get()),
                             package: route.package.as_str().to_owned(),
-                            coordinate: route.coordinate.as_str().to_owned(),
-                        },
-                        Route::Source(route) => PersistedRoute::Source {
-                            project: route.project.as_ref().map(|project| project.get().get()),
-                            package: route.package.as_str().to_owned(),
-                            page: route.page.as_str().to_owned(),
+                            id: route.id.as_str().to_owned(),
+                            at: route.at.as_ref().map(|at| at.as_str().to_owned()),
+                            view: route.view.as_str().to_owned(),
                             line: route.line,
                         },
+                        Route::World => PersistedRoute::World,
                     }
                 }
             },
             settings_page: match snapshot.overlay() {
                 Some(Overlay::Settings(page)) => Some(page.as_str().to_owned()),
-                Some(Overlay::AddProject | Overlay::CommandPalette) | None => None,
+                Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => None,
             },
         }
     }
@@ -632,7 +754,9 @@ impl PersistentState {
             | PersistedRoute::Project { .. }
             | PersistedRoute::Package { .. }
             | PersistedRoute::Page { .. }
-            | PersistedRoute::Source { .. } => None,
+            | PersistedRoute::Source { .. }
+            | PersistedRoute::Symbol { .. }
+            | PersistedRoute::World => None,
         };
         let route = match &state.route {
             PersistedRoute::Settings | PersistedRoute::Home => {
@@ -645,10 +769,12 @@ impl PersistentState {
                 .map(crate::navigation::OrbitRoute::Project)
                 .map(Route::Orbit)
                 .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home)),
+            PersistedRoute::World => Route::World,
             PersistedRoute::Package {
                 project,
                 package,
                 lane,
+                at,
             } => {
                 let project = project.and_then(std::num::NonZeroU64::new).map(|project| {
                     crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project))
@@ -661,6 +787,7 @@ impl PersistentState {
                             package,
                             lane: (*lane).into(),
                             selected: None,
+                            at: at.as_deref().and_then(|at| ReleaseId::new(at).ok()),
                         })
                     })
                     .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home))
@@ -669,46 +796,28 @@ impl PersistentState {
                 project,
                 package,
                 coordinate,
-            } => {
-                let project = project.and_then(std::num::NonZeroU64::new).map(|project| {
-                    crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project))
-                });
-                crate::core::PackageId::new(package)
-                    .ok()
-                    .zip(Coordinate::new(coordinate).ok())
-                    .map(|(package, coordinate)| {
-                        Route::Page(crate::navigation::PageRoute {
-                            project,
-                            package,
-                            coordinate,
-                            selected: None,
-                        })
-                    })
-                    .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home))
-            }
+            } => symbol_route(*project, package, coordinate, None, View::Page, None),
             PersistedRoute::Source {
                 project,
                 package,
                 page,
                 line,
-            } => {
-                let project = project.and_then(std::num::NonZeroU64::new).map(|project| {
-                    crate::core::ProjectId::from_backend(backend_library::ProjectId::new(project))
-                });
-                crate::core::PackageId::new(package)
-                    .ok()
-                    .zip(Coordinate::new(page).ok())
-                    .map(|(package, page)| {
-                        Route::Source(crate::navigation::SourceRoute {
-                            project,
-                            package,
-                            page,
-                            line: *line,
-                            selected: None,
-                        })
-                    })
-                    .unwrap_or_else(|| Route::Orbit(crate::navigation::OrbitRoute::Home))
-            }
+            } => symbol_route(*project, package, page, None, View::Code, Some(*line)),
+            PersistedRoute::Symbol {
+                project,
+                package,
+                id,
+                at,
+                view,
+                line,
+            } => symbol_route(
+                *project,
+                package,
+                id,
+                at.as_deref(),
+                View::parse(view).unwrap_or_default(),
+                *line,
+            ),
         };
         SessionState {
             route,
@@ -727,13 +836,29 @@ impl PersistentState {
             appearance: match state.appearance {
                 PersistedAppearance::Abyss => AppearancePreference::Abyss,
                 PersistedAppearance::Glacier => AppearancePreference::Glacier,
+                PersistedAppearance::System => AppearancePreference::System,
             },
-            text_scale: match state.text_scale {
-                0..=107 => TextScalePreference::Percent100,
-                108..=124 => TextScalePreference::Percent115,
-                125..=147 => TextScalePreference::Percent135,
-                148..=180 => TextScalePreference::Percent160,
-                _ => TextScalePreference::Percent200,
+            zoom: ZoomPreference::from_steps(
+                state
+                    .zoom
+                    .iter()
+                    .map(|(display, step)| (std::sync::Arc::from(display.as_str()), *step)),
+            ),
+            density: match state.density {
+                PersistedDensity::Comfortable => DensityPreference::Comfortable,
+                PersistedDensity::Compact => DensityPreference::Compact,
+                PersistedDensity::Dense => DensityPreference::Dense,
+            },
+            contrast: match state.contrast {
+                PersistedContrast::Normal => ContrastPreference::Normal,
+                PersistedContrast::High => ContrastPreference::High,
+            },
+            motion: match state.motion {
+                Some(PersistedMotion::System) => MotionPreference::System,
+                Some(PersistedMotion::Full) => MotionPreference::Full,
+                Some(PersistedMotion::Reduced) => MotionPreference::Reduced,
+                None if state.reduced_motion => MotionPreference::Reduced,
+                None => MotionPreference::System,
             },
             privacy: match state.privacy {
                 PersistedPrivacy::LocalOnly => PrivacyPreference::LocalOnly,
@@ -1149,10 +1274,13 @@ mod tests {
         ));
         let package = crate::core::PackageId::new("pkg").expect("package");
         let session = SessionState {
-            route: Route::Page(crate::navigation::PageRoute {
+            route: Route::Symbol(crate::navigation::SymbolRoute {
                 project: None,
                 package,
-                coordinate: Coordinate::new("pkg::Item").expect("coordinate"),
+                id: Coordinate::new("pkg::Item").expect("coordinate"),
+                at: Some(ReleaseId::new("1.0.190").expect("release")),
+                view: View::Code,
+                line: Some(12),
                 selected: None,
             }),
             overlay: Some(Overlay::CommandPalette),
@@ -1160,10 +1288,10 @@ mod tests {
         };
         let snapshot = snapshot.with_session(session);
         let value = PersistentState::project(&snapshot);
-        assert!(matches!(value.route, PersistedRoute::Page { .. }));
+        assert!(matches!(value.route, PersistedRoute::Symbol { .. }));
         assert_eq!(value.settings_page, None);
         let restored = PersistentState::at("unused").cold_reload(&value);
-        assert!(matches!(restored.route, Route::Page(_)));
+        assert_eq!(restored.route, snapshot.route().clone(), "view, release and line survive");
         assert_eq!(restored.overlay, None);
     }
 

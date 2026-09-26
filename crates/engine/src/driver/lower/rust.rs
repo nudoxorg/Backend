@@ -3073,15 +3073,29 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             )?;
         }
         let accesses: Vec<RustFieldAccess> = authority.field_accesses().collect();
+        let mut emitted_field_spans = Vec::new();
         for access in &accesses {
             let Some(name) = access.syntax.name_ref() else {
                 continue;
             };
             let span = authority.span(name.syntax())?;
+            if emitted_field_spans.contains(&span) {
+                continue;
+            }
+            emitted_field_spans.push(span);
             let confidence = occurrence_confidence(access.target.is_some());
             let target = access
                 .target
                 .map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
+            self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
+        }
+        for (span, target) in self.macro_field_accesses()? {
+            if emitted_field_spans.contains(&span) {
+                continue;
+            }
+            emitted_field_spans.push(span);
+            let confidence = occurrence_confidence(target.is_some());
+            let target = target.map_or(ResolvedTarget::Definition(None), ResolvedTarget::NamedField);
             self.emit_one_occurrence(span, ReferenceKind::FieldAccess, target, confidence, None)?;
         }
         let paths: Vec<_> = authority.top_level_paths().collect();
@@ -3134,6 +3148,46 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             )?;
         }
         Ok(())
+    }
+
+    /// Streams field accesses discovered through macro expansion. A macro
+    /// argument is a token tree in the source file; descending each token
+    /// reaches the expanded `FieldExpr` rust-analyzer inferred and projects
+    /// the written field identifier back onto this source buffer.
+    fn macro_field_accesses(
+        &self,
+    ) -> Result<Vec<(ByteSpan, Option<ra_ap_hir::Field>)>, RustAuthorityError> {
+        let authority = self.authority;
+        let mut accesses = Vec::new();
+        for macro_call in authority.macro_calls() {
+            let Some(token_tree) = macro_call.token_tree() else {
+                continue;
+            };
+            for token in token_tree
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|element| element.into_token())
+            {
+                for descended in authority.semantics.descend_into_macros_no_opaque(token, false) {
+                    let Some(syntax) = descended
+                        .value
+                        .parent()
+                        .and_then(|node| node.ancestors().find_map(ast::FieldExpr::cast))
+                    else {
+                        continue;
+                    };
+                    let Some(name) = syntax.name_ref() else {
+                        continue;
+                    };
+                    let Ok(Some(projected_span)) = authority.projected_span(name.syntax()) else {
+                        continue;
+                    };
+                    let target = authority.resolve_field_target(&syntax);
+                    accesses.push((projected_span, target));
+                }
+            }
+        }
+        Ok(accesses)
     }
 
     /// Emits one occurrence fact, resolving the target through the pushed
@@ -4804,12 +4858,108 @@ mod tests {
         Ok(())
     }
 
+    /// A field access inside a macro argument is authority-proven through
+    /// macro descent even though the written tree parses the argument as a
+    /// token tree. The occurrence keeps the invocation-site field spelling,
+    /// its owning function, and the resolved local field target.
+    #[test]
+    fn macro_field_accesses_commit_oracle_local_field_occurrences() -> Result<(), TestError> {
+        let source = "macro_rules! access_field {\n    ($e:expr, $f:ident) => {\n        $e.$f\n    };\n}\n\npub struct Panel {\n    pub score: u8,\n}\n\npub fn read(panel: &Panel) -> u8 {\n    access_field!(panel, score)\n}\n";
+        let view = lower(source)?;
+        let read = fact_of(&view, b"read", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let occurrences = occurrences(&view)?;
+        let field_accesses = occurrences
+            .iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing("exactly one macro field access occurrence"));
+        }
+        let access = field_accesses[0];
+        if access.0 != read {
+            return Err(TestError::Missing("field access owned by read"));
+        }
+        if access.1.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.1.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for macro field access",
+            ));
+        }
+        let name_at = source
+            .find("access_field!(panel, score)")
+            .ok_or(TestError::Missing("macro invocation in fixture source"))?
+            + "access_field!(panel, ".len();
+        let ir = owned_ir(source)?;
+        let mut verified = false;
+        for (_, occurrence) in ir.link_occurrences() {
+            let Some(link) = ir.link(occurrence.link) else {
+                continue;
+            };
+            if link.kind != backend_semantic::ir::LinkKind::Reads {
+                continue;
+            }
+            let Some(site) = occurrence.source else {
+                continue;
+            };
+            let start = usize::try_from(site.start())?;
+            let end = usize::try_from(site.end())?;
+            if source.as_bytes().get(start..end) != Some(b"score") {
+                continue;
+            }
+            verified = true;
+            if start != name_at {
+                return Err(TestError::Missing("field access at invocation spelling"));
+            }
+            let backend_semantic::ir::LinkTarget::Local(target) = link.target else {
+                return Err(TestError::Missing("local field link target"));
+            };
+            if ir.item(target).is_none_or(|item| item.name() != b"score") {
+                return Err(TestError::Missing("score field link target"));
+            }
+        }
+        if !verified {
+            return Err(TestError::Missing("invocation-site field access spelling"));
+        }
+        Ok(())
+    }
+
+    /// A direct field access whose receiver is a macro call is already emitted
+    /// by the syntax walk; macro descent must not emit the same projected
+    /// field-name span again.
+    #[test]
+    fn macro_receiver_field_accesses_emit_once() -> Result<(), TestError> {
+        let source = "macro_rules! identity {\n    ($e:expr) => {\n        $e\n    };\n}\n\npub struct Panel {\n    pub score: u8,\n}\n\npub fn read(panel: &Panel) -> u8 {\n    identity!(panel).score\n}\n";
+        let view = lower(source)?;
+        let read = fact_of(&view, b"read", EntityKind::Function)?;
+        let score = fact_of(&view, b"score", EntityKind::Field)?;
+        let field_accesses = occurrences(&view)?
+            .into_iter()
+            .filter(|(_, occurrence)| occurrence.kind == ReferenceKind::FieldAccess)
+            .collect::<Vec<_>>();
+        if field_accesses.len() != 1 {
+            return Err(TestError::Missing("exactly one field access occurrence"));
+        }
+        let (owner, access) = field_accesses[0];
+        if owner != read {
+            return Err(TestError::Missing("field access owned by read"));
+        }
+        if access.target != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score))
+            || access.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing(
+                "oracle-local field target for macro-receiver access",
+            ));
+        }
+        Ok(())
+    }
+
     /// A path the oracle could not resolve is retained, never dropped: a
     /// cargo-universe foreign key carrying the exact written spelling at
     /// syntactic confidence, owned by the containing function.
     #[test]
     fn unresolved_paths_stay_foreign_with_their_written_spelling() -> Result<(), TestError> {
-
         let view = lower("pub fn probe() {\n    vanish_without_trace();\n}\n")?;
         let occurrences = occurrences(&view)?;
         let path = occurrences

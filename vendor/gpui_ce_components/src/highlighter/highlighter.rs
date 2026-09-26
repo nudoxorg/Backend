@@ -742,7 +742,7 @@ impl SyntaxHighlighter {
 
             if language_name.is_none() {
                 language_name = query_match
-                    .captures
+                    .captures()
                     .iter()
                     .find(|cap| Some(cap.index) == data.language_capture_index)
                     .and_then(|capture| {
@@ -766,7 +766,7 @@ impl SyntaxHighlighter {
             };
 
             let mut ranges = query_match
-                .captures
+                .captures()
                 .iter()
                 .filter(|cap| Some(cap.index) == data.content_capture_index)
                 .map(|capture| capture.node.range())
@@ -921,6 +921,20 @@ impl SyntaxHighlighter {
         self.injection_layers = Self::compute_injection_layers(data, tree, &self.text.clone());
     }
 
+    /// NUDOX: the highlight captures (byte range, capture name such as `function` or
+    /// `string.special`) over `range`, innermost last, char-boundary safe — for callers that
+    /// map names to their own roles instead of a [`HighlightStyle`].
+    pub fn captures(&self, range: Range<usize>) -> Vec<(Range<usize>, SharedString)> {
+        self.match_styles(range)
+            .into_iter()
+            .filter_map(|item| {
+                let start = self.text.clip_offset(item.range.start, Bias::Left);
+                let end = self.text.clip_offset(item.range.end, Bias::Right);
+                (start < end).then_some((start..end, item.name))
+            })
+            .collect()
+    }
+
     /// Match the visible ranges of nodes in the Tree for highlighting.
     fn match_styles(&self, range: Range<usize>) -> Vec<HighlightItem> {
         let mut highlights = vec![];
@@ -966,7 +980,7 @@ impl SyntaxHighlighter {
                     .iter()
                     .any(|prop| prop.key.as_ref() == "highlight.allow-overlap");
 
-                for cap in m.captures {
+                for cap in m.captures() {
                     let node_range = cap.node.start_byte()..cap.node.end_byte();
 
                     if !allow_overlapping_captures && node_range.start < last_end {
@@ -995,7 +1009,7 @@ impl SyntaxHighlighter {
             let mut matches = query_cursor.matches(&query, *query_node, TextProvider(&source));
 
             while let Some(query_match) = matches.next() {
-                for cap in query_match.captures {
+                for cap in query_match.captures() {
                     let node = cap.node;
 
                     let Some(highlight_name) = query.capture_names().get(cap.index as usize) else {

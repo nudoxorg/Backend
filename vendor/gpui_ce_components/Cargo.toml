@@ -45,8 +45,9 @@ inspector = [
     "gpui/inspector",
     "gpui-base/inspector",
 ]
-tree-sitter = [
-    "dep:tree-sitter",
+tree-sitter = ["dep:tree-sitter"]
+tree-sitter-json = [
+    "tree-sitter",
     "dep:tree-sitter-json",
 ]
 tree-sitter-astro = [
@@ -373,7 +374,7 @@ version = "2"
 version = "2"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter]
-version = "0.26"
+version = "0.27"
 optional = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter-astro-next]
@@ -417,7 +418,7 @@ version = "0.23.0"
 optional = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter-go]
-version = "0.23.4"
+version = "0.25"
 optional = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter-graphql]
@@ -469,7 +470,7 @@ version = "0.2.0"
 optional = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter-python]
-version = "0.23.6"
+version = "0.25"
 optional = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.tree-sitter-ruby]

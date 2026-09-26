@@ -203,7 +203,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::Advisory(advisory) => advisory_view(advisory),
         SurfaceReply::Dependents(metadata) => metadata_view("dependents", metadata),
         SurfaceReply::Dependencies(facts) => dependency_view("dependencies", facts),
-        SurfaceReply::Owner(metadata) => metadata_view("owner", metadata),
+        SurfaceReply::Owner(metadata) => owner_view(metadata),
         SurfaceReply::SemanticVersions(records) => ProductView::rows(
             "semantic-versions",
             records.iter().map(semantic_row).collect(),
@@ -290,6 +290,30 @@ fn append(tags: &[String], extra: String) -> Box<[String]> {
     let mut all = tags.to_vec();
     all.push(extra);
     all.into_boxed_slice()
+}
+
+fn owner_view(metadata: &RegistryMetadata<Box<[RegistryPackageRecord]>>) -> ProductView {
+    match metadata {
+        RegistryMetadata::Recorded(records) => {
+            ProductView::rows("owner", records.iter().map(owner_row).collect())
+        }
+        RegistryMetadata::NotRecorded(reason) => metadata_view("owner", metadata),
+    }
+}
+
+fn owner_row(record: &RegistryPackageRecord) -> ProductRecord {
+    if matches!(
+        &record.coordinate,
+        backend_library::PackageReference::Local(_)
+    ) && record.coordinate.as_str().contains("::")
+    {
+        return ProductRecord::new(
+            record.name.as_str(),
+            Some(record.coordinate.as_str().to_owned()),
+            vec![format!("{:?}", record.ecosystem).to_lowercase(), "indexed file".to_owned()],
+        );
+    }
+    registry_row(record)
 }
 
 fn metadata_view(
