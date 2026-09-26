@@ -532,26 +532,49 @@ fn semantic_rows(
                 )
             })?;
             let activated = super::super::load_semantic_publication(compiler, key, *claim)?;
-            // One reopen admits the image and records its source identity.
-            // Row projection is reused when this image and its freshness
-            // overlay are already resident.
+            // An image already admitted for this publication key keeps its
+            // path and source identity. Row projection is reused when the
+            // freshness overlay is already resident.
+            let lineage = key.lineage().map_err(|error| {
+                BuiltinModelError(format!("semantic publication lineage: {error}"))
+            })?;
+            let admission = super::image_rows::publication_admission(
+                key.profile(),
+                lineage.ecosystem,
+                lineage.name,
+                key.coordinate().as_str(),
+            );
             let mut opened = Vec::new();
             let mut pending = activated.images();
             while let Some((image, rest)) = pending.split_first() {
-                let view = SemanticImageView::reopen(image.as_ref()).map_err(|error| {
-                    BuiltinModelError(format!("reopen activated semantic image: {error}"))
-                })?;
-                key.admit_image(&view).map_err(|error| {
-                    BuiltinModelError(format!(
-                        "bind semantic publication to product key: {error}"
-                    ))
-                })?;
-                let (path, identity) = compiled_source(&view)?;
-                opened.push((path, identity, view));
+                match super::image_rows::open_compiled_image(image.as_ref(), admission, residence)?
+                {
+                    super::image_rows::CompiledImage::Opened { path, identity, view } => {
+                        super::image_rows::bind_opened_image(
+                            image.as_ref(),
+                            admission,
+                            &view,
+                            key,
+                            residence,
+                        )?;
+                        opened.push(super::image_rows::CompiledImage::Opened {
+                            path,
+                            identity,
+                            view,
+                        });
+                    }
+                    resident => opened.push(resident),
+                }
                 pending = rest;
             }
             let mut compiled_sources = BTreeMap::new();
-            for (path, identity, _) in &opened {
+            for image in &opened {
+                let (path, identity) = match image {
+                    super::image_rows::CompiledImage::Resident { path, identity, .. }
+                    | super::image_rows::CompiledImage::Opened { path, identity, .. } => {
+                        (path, identity)
+                    }
+                };
                 compiled_sources.insert(path.clone(), *identity);
             }
             let empty = BTreeSet::new();
@@ -560,13 +583,17 @@ fn semantic_rows(
                 current_paths.get(&target).unwrap_or(&empty),
                 current_identities.get(&target),
             );
-            for (path, _, view) in &opened {
+            for image in &opened {
+                let path = match image {
+                    super::image_rows::CompiledImage::Resident { path, .. }
+                    | super::image_rows::CompiledImage::Opened { path, .. } => path.as_str(),
+                };
                 // Staleness is per image: this image is stale exactly when the
                 // current file compiled from its path no longer hashes to the
                 // image's own source identity. A legacy scan without persisted
                 // identities falls back to the coarse path-set comparison.
                 let stale = match decision.compiled.get(path) {
-                    Some(identity) => decision.image_stale(path, *identity),
+                    Some(compiled) => decision.image_stale(path, *compiled),
                     None => decision.path_sets_differ,
                 };
                 // A stale image was compiled from other bytes than the
@@ -587,13 +614,40 @@ fn semantic_rows(
                     path,
                     site_declarations,
                 };
-                super::image_rows::append_resident_image_rows(
-                    view,
-                    project,
-                    key.profile(),
-                    &mut sink,
-                    residence,
-                )?;
+                match image {
+                    super::image_rows::CompiledImage::Opened { view, .. } => {
+                        super::image_rows::append_resident_image_rows(
+                            view,
+                            project,
+                            key.profile(),
+                            &mut sink,
+                            residence,
+                        )?;
+                    }
+                    super::image_rows::CompiledImage::Resident { bytes, digest, .. } => {
+                        if !super::image_rows::apply_resident_image(
+                            *digest,
+                            project,
+                            key.profile(),
+                            &mut sink,
+                            residence,
+                        )? {
+                            let view = SemanticImageView::reopen(bytes).map_err(|error| {
+                                BuiltinModelError(format!(
+                                    "reopen activated semantic image: {error}"
+                                ))
+                            })?;
+                            residence.note_reopen();
+                            super::image_rows::append_resident_image_rows(
+                                &view,
+                                project,
+                                key.profile(),
+                                &mut sink,
+                                residence,
+                            )?;
+                        }
+                    }
+                }
             }
             complete.insert((
                 project.package.to_bytes(),

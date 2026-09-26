@@ -91,6 +91,18 @@ fn project_rows(bytes: &[u8]) -> Vec<backend_engine::Row> {
 
 /// Builds one small Rust semantic image rooted at `path`.
 pub(super) fn fixture_semantic_image(path: &str) -> Result<Vec<u8>, String> {
+    fixture_semantic_image_salted(path, 0)
+}
+
+/// Builds the same image as [`fixture_semantic_image`] with declaration
+/// identities shifted by `salt`. Salt `0` is that image. A non-zero salt keeps
+/// the names and the path, and gives the declarations identities that do not
+/// collide with another salt in the same package.
+pub(super) fn fixture_semantic_image_salted(path: &str, salt: u8) -> Result<Vec<u8>, String> {
+    let struct_byte = salt.wrapping_mul(4).wrapping_add(1);
+    let field_byte = struct_byte.wrapping_add(1);
+    let enum_byte = field_byte.wrapping_add(1);
+    let variant_byte = enum_byte.wrapping_add(1);
     let source = SourceIdentity {
         identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"fixture-source"),
         byte_len: 14,
@@ -128,7 +140,7 @@ pub(super) fn fixture_semantic_image(path: &str) -> Result<Vec<u8>, String> {
             name: b"name",
             kind: ItemKind::Field,
             visibility: Visibility::Public,
-            authority: fixture_authority(fixture_identity(1)),
+            authority: fixture_authority(fixture_identity(struct_byte)),
             parent: Some(struct_id),
             semantic_type: None,
             members: &[],
@@ -154,7 +166,7 @@ pub(super) fn fixture_semantic_image(path: &str) -> Result<Vec<u8>, String> {
             name: b"Started",
             kind: ItemKind::Variant,
             visibility: Visibility::Public,
-            authority: fixture_authority(fixture_identity(3)),
+            authority: fixture_authority(fixture_identity(enum_byte)),
             parent: Some(enum_id),
             semantic_type: None,
             members: &[],
@@ -167,10 +179,10 @@ pub(super) fn fixture_semantic_image(path: &str) -> Result<Vec<u8>, String> {
     builder
         .add_borrowed_tree(BorrowedTree {
             versions: &[
-                fixture_version(1),
-                fixture_version(2),
-                fixture_version(3),
-                fixture_version(4),
+                fixture_version(struct_byte),
+                fixture_version(field_byte),
+                fixture_version(enum_byte),
+                fixture_version(variant_byte),
             ],
             items: &items,
             links: &[],

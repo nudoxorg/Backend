@@ -1231,6 +1231,14 @@ pub fn measure_semantic_image_rows() {
     view_build::measure_semantic_image_rows();
 }
 
+/// Times thirty-two semantic images against reusing each admitted image.
+///
+/// The images and view basis are built before the timer. The printed line is
+/// the release measurement for a publication whose images were already admitted.
+pub fn measure_semantic_image_batch() {
+    view_build::measure_semantic_image_batch();
+}
+
 /// Starts the compiled locald profile. It does all startup work before the
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]

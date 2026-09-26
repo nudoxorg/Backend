@@ -71,6 +71,11 @@ pub(super) fn measure_semantic_image_rows() {
     image_rows::measure_semantic_image_rows();
 }
 
+/// Times a batch of semantic images against reusing their admitted rows.
+pub(super) fn measure_semantic_image_batch() {
+    image_rows::measure_semantic_image_batch();
+}
+
 /// Projected semantic rows reused across publications of the same image.
 pub(in crate::builtin) use image_rows::ImageRowResidence;
 
