@@ -1971,6 +1971,21 @@ const count = 1;
 const alias = count;
 const arrow = (raw: string) => raw.length;
 export function viaArrow(items: string[]): string[] { return items.map(arrow); }
+export function directArrow(raw: string): number { return arrow(raw); }
+const wrapped = (() => 1);
+export function viaWrapped(items: number[]): number[] { return items.map(wrapped); }
+let rebound = () => 1;
+export function viaRebound(items: number[]): number[] { return items.map(rebound); }
+export function viaAliasParse(items: string[]): string[] {
+  const alias = parse;
+  return items.map(alias);
+}
+const namedFn = function localFn() { return 1; };
+export function viaNamed(items: number[]): number[] { return items.map(namedFn); }
+const cast = (() => 1) as () => number;
+export function viaCast(items: number[]): number[] { return items.map(cast); }
+const bang = (() => 1)!;
+export function viaBang(items: number[]): number[] { return items.map(bang); }
 ";
     let view = view(SOURCE, None);
     let parse_id = EntityId::new(named(&view, b"parse").0);
@@ -1979,9 +1994,27 @@ export function viaArrow(items: string[]): string[] { return items.map(arrow); }
     let direct_id = named(&view, b"direct").0;
     let typed_id = named(&view, b"typed").0;
     let alias_id = named(&view, b"alias").0;
+    let alias_parse_binding_id = entities(&view)
+        .into_iter()
+        .filter(|(id, name, _)| name == b"alias" && *id != alias_id)
+        .map(|(id, _, _)| id)
+        .next()
+        .expect("function-local alias binding");
     let count_id = EntityId::new(named(&view, b"count").0);
     let via_arrow_id = named(&view, b"viaArrow").0;
     let arrow_id = EntityId::new(named(&view, b"arrow").0);
+    let direct_arrow_id = named(&view, b"directArrow").0;
+    let wrapped_id = EntityId::new(named(&view, b"wrapped").0);
+    let via_wrapped_id = named(&view, b"viaWrapped").0;
+    let rebound_id = EntityId::new(named(&view, b"rebound").0);
+    let via_rebound_id = named(&view, b"viaRebound").0;
+    let via_alias_parse_id = named(&view, b"viaAliasParse").0;
+    let named_fn_id = EntityId::new(named(&view, b"namedFn").0);
+    let via_named_id = named(&view, b"viaNamed").0;
+    let cast_id = EntityId::new(named(&view, b"cast").0);
+    let via_cast_id = named(&view, b"viaCast").0;
+    let bang_id = EntityId::new(named(&view, b"bang").0);
+    let via_bang_id = named(&view, b"viaBang").0;
 
     let owner_start = |name: &[u8]| {
         SOURCE
@@ -2012,7 +2045,21 @@ export function viaArrow(items: string[]): string[] { return items.map(arrow); }
                 && row.occurrence.target == OccurrenceTarget::Local(parse_id)
         })
         .collect::<Vec<_>>();
-    assert_eq!(parse_calls.len(), 3, "parse has three function-value/call sites");
+    assert_eq!(parse_calls.len(), 4, "parse has four function-value/call sites");
+
+    let alias_parse_init = parse_calls
+        .iter()
+        .filter(|row| row.owner.raw == alias_parse_binding_id)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"alias = parse", b"const alias = parse", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(alias_parse_init.len(), 1, "const alias = parse is one call");
+    assert_eq!(
+        alias_parse_init[0].occurrence.span.end,
+        alias_parse_init[0].occurrence.span.start + 5
+    );
 
     let bound_call = parse_calls
         .iter()
@@ -2071,15 +2118,117 @@ export function viaArrow(items: string[]): string[] { return items.map(arrow); }
     assert_eq!(alias_rows.len(), 1, "alias = count emits one row");
     assert_eq!(alias_rows[0].occurrence.kind, ReferenceKind::VariableUse);
 
-    let arrow_rows = rows
+    let arrow_call = rows
         .iter()
         .filter(|row| row.owner.raw == via_arrow_id)
         .filter(|row| row.occurrence.target == OccurrenceTarget::Local(arrow_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
         .filter(|row| {
             row.occurrence.span.start
                 == relative(b"function viaArrow", b"items.map(arrow)", b"arrow")
         })
         .collect::<Vec<_>>();
-    assert_eq!(arrow_rows.len(), 1, "items.map(arrow) emits one row");
-    assert_eq!(arrow_rows[0].occurrence.kind, ReferenceKind::VariableUse);
+    assert_eq!(arrow_call.len(), 1, "items.map(arrow) is one call");
+    assert_eq!(arrow_call[0].occurrence.span.end, arrow_call[0].occurrence.span.start + 5);
+
+    let direct_arrow_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == direct_arrow_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(arrow_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function directArrow", b"arrow(raw)", b"arrow")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(direct_arrow_call.len(), 1, "arrow(raw) is one call not two");
+    assert_eq!(
+        direct_arrow_call[0].occurrence.span.end,
+        direct_arrow_call[0].occurrence.span.start + 5
+    );
+
+    let wrapped_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_wrapped_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(wrapped_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaWrapped", b"items.map(wrapped)", b"wrapped")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(wrapped_call.len(), 1, "items.map(wrapped) is one call");
+    assert_eq!(wrapped_call[0].occurrence.span.end, wrapped_call[0].occurrence.span.start + 7);
+
+    let rebound_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_rebound_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(rebound_id))
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaRebound", b"items.map(rebound)", b"rebound")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rebound_rows.len(), 1, "items.map(rebound) emits one row");
+    assert_eq!(rebound_rows[0].occurrence.kind, ReferenceKind::VariableUse);
+
+    let alias_parse_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_alias_parse_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(EntityId::new(alias_parse_binding_id)))
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaAliasParse", b"items.map(alias)", b"alias")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(alias_parse_rows.len(), 1, "items.map(alias) through parse alias emits one row");
+    assert_eq!(alias_parse_rows[0].occurrence.kind, ReferenceKind::VariableUse);
+
+    let named_fn_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_named_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(named_fn_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaNamed", b"items.map(namedFn)", b"namedFn")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(named_fn_call.len(), 1, "items.map(namedFn) is one call");
+    assert_eq!(
+        named_fn_call[0].occurrence.span.end,
+        named_fn_call[0].occurrence.span.start + u32::try_from(b"namedFn".len()).expect("namedFn len")
+    );
+
+    let cast_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_cast_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(cast_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaCast", b"items.map(cast)", b"cast")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cast_call.len(), 1, "items.map(cast) is one call");
+    assert_eq!(
+        cast_call[0].occurrence.span.end,
+        cast_call[0].occurrence.span.start + u32::try_from(b"cast".len()).expect("cast len")
+    );
+
+    let bang_call = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_bang_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(bang_id))
+        .filter(|row| row.occurrence.kind == ReferenceKind::FunctionCall)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaBang", b"items.map(bang)", b"bang")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bang_call.len(), 1, "items.map(bang) is one call");
+    assert_eq!(
+        bang_call[0].occurrence.span.end,
+        bang_call[0].occurrence.span.start + u32::try_from(b"bang".len()).expect("bang len")
+    );
 }

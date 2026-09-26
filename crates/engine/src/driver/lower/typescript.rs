@@ -796,6 +796,65 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         false
     }
 
+    /// Reports whether one resolved symbol is a `const` binding initialized
+    /// by a function or arrow expression, not an alias or destructuring
+    /// pattern.
+    fn is_const_callable_value(&self, symbol: SymbolId, symbol_flags: SymbolFlags) -> bool {
+        if !symbol_flags.contains(SymbolFlags::ConstVariable) {
+            return false;
+        }
+        let nodes = self.semantic.nodes();
+        let scoping = self.semantic.scoping();
+        let declared = nodes.get_node(scoping.symbol_declaration(symbol));
+        let declarator = match declared.kind() {
+            AstKind::VariableDeclarator(declarator) => declarator,
+            AstKind::BindingIdentifier(_) => {
+                let parent = nodes.get_node(nodes.parent_id(declared.id()));
+                match parent.kind() {
+                    AstKind::VariableDeclarator(declarator) => declarator,
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        };
+        if !declarator.id.is_binding_identifier() {
+            return false;
+        }
+        let Some(init) = declarator.init.as_ref() else {
+            return false;
+        };
+        let init_span = init.span();
+        self.initializer_is_callable(init_span.start, init_span.end, 0)
+    }
+
+    /// Peels only parenthesized and TypeScript assertion wrappers, then
+    /// reports whether the initializer is a function or arrow expression.
+    fn initializer_is_callable(&self, start: u32, end: u32, depth: u8) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Some(kind) = self.ast_kind_at_exact_span(start, end) else {
+            return false;
+        };
+        if let Some(parenthesized) = kind.as_parenthesized_expression() {
+            let inner = parenthesized.expression.span();
+            return self.initializer_is_callable(inner.start, inner.end, depth.saturating_add(1));
+        }
+        if let Some(cast) = kind.as_ts_as_expression() {
+            let inner = cast.expression.span();
+            return self.initializer_is_callable(inner.start, inner.end, depth.saturating_add(1));
+        }
+        if let Some(satisfied) = kind.as_ts_satisfies_expression() {
+            let inner = satisfied.expression.span();
+            return self.initializer_is_callable(inner.start, inner.end, depth.saturating_add(1));
+        }
+        if let Some(non_null) = kind.as_ts_non_null_expression() {
+            let inner = non_null.expression.span();
+            return self.initializer_is_callable(inner.start, inner.end, depth.saturating_add(1));
+        }
+        kind.as_arrow_function_expression().is_some() || kind.as_function().is_some()
+    }
+
     /// Pushes one fact per staged generic parameter so uses of the parameter
     /// inside the declaration resolve to a `TypeVar` fact.
     fn push_type_parameter_facts(
@@ -4162,10 +4221,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             ReferenceKind::TypeReference
         } else if self.is_call_position(span) {
             ReferenceKind::FunctionCall
-        } else if let Some((_, symbol_flags)) = symbol
-            && symbol_flags.is_function()
+        } else if let Some((symbol, symbol_flags)) = symbol
             && !flags.is_value_as_type()
             && !flags.is_write_only()
+            && (symbol_flags.is_function() || self.is_const_callable_value(symbol, symbol_flags))
         {
             ReferenceKind::FunctionCall
         } else {
