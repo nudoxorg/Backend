@@ -4887,6 +4887,542 @@ mod project_call_tests {
         Ok(())
     }
 
+    fn java_status_owner_chain() -> [AncestorFixture; 1] {
+        [AncestorFixture {
+            name: b"demo.Status",
+            version_byte: 20,
+            entity_id: TreeEntityId::new(0),
+            parent_id: None,
+            parent_version_byte: None,
+            kind: ItemKind::Enum,
+        }]
+    }
+
+    fn java_namespace_active_variant_image(
+        path: &str,
+        source_identity_byte: u8,
+        active_version_byte: u8,
+        drive_version_byte: u8,
+        foreign_key: u8,
+    ) -> Result<Vec<u8>, String> {
+        project_namespace_call_image(
+            path,
+            source_identity_byte,
+            &java_status_owner_chain(),
+            b"Active",
+            active_version_byte,
+            TreeEntityId::new(1),
+            b"drive",
+            drive_version_byte,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.Status",
+                display: b"Active",
+                foreign_key,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Variant,
+            Some(ItemKind::Variant),
+        )
+    }
+
+    fn demo_box_owner_chain() -> [AncestorFixture; 2] {
+        [
+            AncestorFixture {
+                name: b"Demo",
+                version_byte: 40,
+                entity_id: TreeEntityId::new(0),
+                parent_id: None,
+                parent_version_byte: None,
+                kind: ItemKind::Module,
+            },
+            AncestorFixture {
+                name: b"Box",
+                version_byte: 41,
+                entity_id: TreeEntityId::new(1),
+                parent_id: Some(TreeEntityId::new(0)),
+                parent_version_byte: Some(40),
+                kind: ItemKind::Record,
+            },
+        ]
+    }
+
+    #[test]
+    fn join_project_value_namespace_variant_retargets_active() -> Result<(), String> {
+        let service_bytes =
+            java_namespace_active_variant_image("Status.java", 110, 111, 112, 110)?;
+        let active_identity = fixture_version(111).identity();
+        let paths = project_paths(&["Status.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([active_identity, fixture_version(112).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(active_identity) {
+            return Err(format!(
+                "namespace Variant read should retarget to Active, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_namespace_variant_referenced_by_names_drive() -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes =
+            java_namespace_active_variant_image("Status.java", 113, 114, 115, 113)?;
+        let active_identity = fixture_version(114).identity();
+        let drive_identity = fixture_version(115).identity();
+        let paths = project_paths(&["Status.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([active_identity, drive_identity]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "join_project_value returned None".to_owned())?;
+        let active_id = query_semantic_id(package, joined);
+        let (active_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &service_bytes,
+            active_identity,
+            "Active",
+            Box::new([]),
+        )?;
+        let (drive_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &service_bytes,
+            drive_identity,
+            "drive",
+            vec![active_id.clone()].into_boxed_slice(),
+        )?;
+        let workspace = super::super::super::genesis().map_err(|error| error.to_string())?;
+        let corpus = SemanticQueryCorpus::admit(
+            workspace.root(),
+            vec![
+                SemanticQueryFact::new(
+                    SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+                    SemanticQueryPresentation {
+                        id: RowId::Package(package).stable_key(),
+                        kind: "project".to_owned(),
+                        coordinate: "fixture".to_owned(),
+                        name: "fixture".to_owned(),
+                        signature: None,
+                        documentation: String::new(),
+                        score: None,
+                        project: None,
+                        parent: None,
+                        related: Box::new([]),
+                    },
+                ),
+                active_fact,
+                drive_fact,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let (cancellation, _) = SemanticQueryCancellation::new();
+        let request = SemanticQueryRequest::admit_page(
+            corpus,
+            "{ Declaration { name @filter(op: \"=\", value: [\"$name\"]) referencedBy @optional { name @output } } }",
+            BTreeMap::from([("name".to_owned(), "Active".into())]),
+            0,
+            8,
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
+        let events = futures_executor::block_on(
+            execute_semantic_query(request)
+                .map_err(|error| error.to_string())?
+                .collect::<Vec<_>>(),
+        );
+        let callers = events
+            .iter()
+            .filter_map(|event| match event {
+                SemanticQueryEvent::Row(row) => row.row().get("name").cloned(),
+                SemanticQueryEvent::Terminal(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if callers != ["drive".into()] {
+            return Err(format!(
+                "referencedBy on Active should name only drive, got {callers:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_namespace_variant_ambiguous_returns_none() -> Result<(), String> {
+        let first_bytes =
+            java_namespace_active_variant_image("Status.java", 116, 117, 118, 116)?;
+        let duplicate_bytes =
+            java_namespace_active_variant_image("Status.java", 119, 120, 121, 119)?;
+        let paths = project_paths(&["Status.java"]);
+        let images = [&first_bytes[..], &duplicate_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(117).identity(),
+            fixture_version(120).identity(),
+            fixture_version(118).identity(),
+        ]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&first_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&first_bytes).map_err(|error| error.to_string())?;
+        if join_project_value(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("ambiguous namespace Active variants must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_namespace_field_stays_on_field_join() -> Result<(), String> {
+        let service_bytes = java_namespace_note_field_image(
+            "WorkoutService.java",
+            122,
+            123,
+            124,
+            122,
+            b"demo.WorkoutService",
+        )?;
+        let note_identity = fixture_version(123).identity();
+        let paths = project_paths(&["WorkoutService.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([note_identity, fixture_version(124).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        if join_project_value(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("namespace Field read must not join through join_project_value".to_owned());
+        }
+        let joined = join_project_field(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(note_identity) {
+            return Err(format!(
+                "namespace Field read should retarget through join_project_field, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_namespace_kind_none_returns_none() -> Result<(), String> {
+        let service_bytes = project_namespace_call_image(
+            "Status.java",
+            125,
+            &java_status_owner_chain(),
+            b"Active",
+            126,
+            TreeEntityId::new(1),
+            b"drive",
+            127,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.Status",
+                display: b"Active",
+                foreign_key: 125,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Variant,
+            None,
+        )?;
+        let paths = project_paths(&["Status.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(126).identity(),
+            fixture_version(127).identity(),
+        ]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(2), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        if join_project_value(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("namespace foreign kind None must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_namespace_universe_returns_none() -> Result<(), String> {
+        let service_bytes = project_namespace_call_image(
+            "Status.java",
+            128,
+            &java_status_owner_chain(),
+            b"Active",
+            129,
+            TreeEntityId::new(1),
+            b"drive",
+            130,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.Status",
+                display: b"Active",
+                foreign_key: 128,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Variant,
+            Some(ItemKind::Variant),
+        )?;
+        let mut builder = IrBuilder::new();
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[131]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, "Caller.java")
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [TreeItemInput {
+            name: b"drive",
+            kind: ItemKind::Function,
+            visibility: Visibility::Public,
+            authority: authority(ParentageAuthority::Root),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        }];
+        let ecosystem = builder.intern_atom(b"maven").map_err(|e| e.to_string())?;
+        let spelling = builder.intern_atom(b"Active").map_err(|e| e.to_string())?;
+        let external = builder
+            .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
+                identity: ExternalDeclarationIdentity {
+                    foreign: ForeignDeclarationId::from_raw([131; 16]),
+                    variant: VariantAvailability::Unavailable,
+                },
+                origin: ForeignTargetOrigin::Universe { ecosystem },
+                path: spelling,
+                display: spelling,
+                kind: Some(ItemKind::Variant),
+            }))
+            .map_err(|e| e.to_string())?;
+        let links = [TreeLinkInput {
+            from: TreeEntityId::new(0),
+            target: TreeLinkTarget::External(external),
+            kind: LinkKind::Reads,
+            confidence: backend_semantic::ir::Confidence::Compiler,
+            authority: OccurrenceAuthorityFacts {
+                source: FactAvailability::Unavailable,
+            },
+            source: None,
+        }];
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[fixture_version(131)],
+                items: &items,
+                links: &links,
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut caller_bytes =
+            vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut caller_bytes).map_err(|error| error.to_string())?;
+        let paths = project_paths(&["Status.java", "Caller.java"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(129).identity(),
+            fixture_version(131).identity(),
+        ]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&caller_bytes, TreeEntityId::new(0), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        if join_project_value(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("Universe origin must not retarget through join_project_value".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_namespace_generic_fallback_retargets() -> Result<(), String> {
+        let service_bytes = project_namespace_call_image(
+            "Box.java",
+            132,
+            &demo_box_owner_chain(),
+            b"TOKEN",
+            133,
+            TreeEntityId::new(2),
+            b"drive",
+            134,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"Demo.Box<T>",
+                display: b"TOKEN",
+                foreign_key: 132,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Constant,
+            Some(ItemKind::Constant),
+        )?;
+        let token_identity = fixture_version(133).identity();
+        let paths = project_paths(&["Box.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([token_identity, fixture_version(134).identity()]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(3), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_value(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(token_identity) {
+            return Err(format!(
+                "generic namespace fallback should retarget to TOKEN, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_value_namespace_unbalanced_generic_stays_none() -> Result<(), String> {
+        let service_bytes = project_namespace_call_image(
+            "Box.java",
+            135,
+            &demo_box_owner_chain(),
+            b"TOKEN",
+            136,
+            TreeEntityId::new(2),
+            b"drive",
+            137,
+            TreeEntityId::new(3),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"Demo.Box<T",
+                display: b"TOKEN",
+                foreign_key: 135,
+                link_kind: LinkKind::Reads,
+            },
+            ItemKind::Constant,
+            Some(ItemKind::Constant),
+        )?;
+        let paths = project_paths(&["Box.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(136).identity(),
+            fixture_version(137).identity(),
+        ]);
+        let (external, link_kind, caller_path) =
+            foreign_namespace_link_from_caller(&service_bytes, TreeEntityId::new(3), LinkKind::Reads)?;
+        let image = SemanticImageView::reopen(&service_bytes).map_err(|error| error.to_string())?;
+        if join_project_value(
+            &image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("unbalanced generic namespace must stay external".to_owned());
+        }
+        Ok(())
+    }
+
     fn foreign_namespace_link_from_caller(
         caller_bytes: &[u8],
         caller_entity: TreeEntityId,
