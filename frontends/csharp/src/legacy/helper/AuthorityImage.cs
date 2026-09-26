@@ -352,7 +352,22 @@ internal static class AuthorityImage
             }
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()) AddReference(model, node, 1, node.Expression);
             foreach (var node in tree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>()) AddReference(model, node, 2, node.Type);
-            foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberAccessExpressionSyntax>()) AddReference(model, node, 3, node.Name);
+            foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberAccessExpressionSyntax>())
+            {
+                if (model.GetSymbolInfo(node).Symbol is IMethodSymbol
+                    && !IsInvocationCallee(node)
+                    && !InsideNameOf(node))
+                    AddReference(model, node, 8, node.Name);
+                else
+                    AddReference(model, node, 3, node.Name);
+            }
+            foreach (var node in tree.GetRoot().DescendantNodes().OfType<MemberBindingExpressionSyntax>())
+            {
+                if (model.GetSymbolInfo(node).Symbol is IMethodSymbol
+                    && !IsInvocationCallee(node)
+                    && !InsideNameOf(node))
+                    AddReference(model, node, 8, node.Name);
+            }
             // A bare identifier resolving to a field is a compiler-proved
             // reference even without a member-access receiver: `count`,
             // `count = 5`, `count++`. The read/write split keeps the two
@@ -372,6 +387,15 @@ internal static class AuthorityImage
                     || node.Parent.IsKind(SyntaxKind.PreDecrementExpression)
                     || node.Parent.IsKind(SyntaxKind.PostDecrementExpression);
                 AddReference(model, node, write ? (byte)7 : (byte)6, node);
+            }
+            foreach (var node in tree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                if (node.Parent is MemberAccessExpressionSyntax) continue;
+                if (node.Parent is MemberBindingExpressionSyntax) continue;
+                if (IsInvocationCallee(node)) continue;
+                if (InsideNameOf(node)) continue;
+                if (model.GetSymbolInfo(node).Symbol is IMethodSymbol)
+                    AddReference(model, node, 8, node);
             }
             foreach (var info in infos)
             {
@@ -398,6 +422,36 @@ internal static class AuthorityImage
                     Put(binding, 16, span.Start); Put(binding, 20, nameEnd); binding[24] = 5; references.Add(binding);
                 }
             }
+        }
+
+        private static bool IsInvocationCallee(SyntaxNode node)
+        {
+            var current = node;
+            while (true)
+            {
+                if (current.Parent is ParenthesizedExpressionSyntax paren && paren.Expression == current)
+                {
+                    current = paren;
+                    continue;
+                }
+                if (current.Parent is ConditionalAccessExpressionSyntax access && access.WhenNotNull == current)
+                {
+                    current = access;
+                    continue;
+                }
+                break;
+            }
+            return current.Parent is InvocationExpressionSyntax invocation && invocation.Expression == current;
+        }
+
+        private static bool InsideNameOf(SyntaxNode node)
+        {
+            foreach (var ancestor in node.Ancestors().OfType<InvocationExpressionSyntax>())
+            {
+                if (ancestor.Expression is IdentifierNameSyntax id && id.Identifier.Text == "nameof")
+                    return true;
+            }
+            return false;
         }
 
         private void AddReference(SemanticModel model, SyntaxNode node, byte tag, SyntaxNode spellingNode)
