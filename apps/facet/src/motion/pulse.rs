@@ -107,6 +107,7 @@ pub fn lease(window: &mut Window, cx: &mut App) -> Pulse {
         at_ms: now.saturating_duration_since(epoch).as_secs_f64() * 1000.0,
         live: true,
         overshoot_ratio: 0.0,
+        overshoot_absolute: 0.0,
         group: None,
     });
     pulse

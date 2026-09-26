@@ -289,10 +289,10 @@ impl ListLab {
             ],
         );
         Self {
-            presence: Presence::new("flow-list")
+            presence: Presence::new("flow-list.presence")
                 .enter(act::RISE)
                 .stagger(Duration::from_millis(60)),
-            flow: Flow::new("flow-list"),
+            flow: Flow::new("flow-list.flip"),
             rows: vec![0, 1, 2, 3],
             version: 0,
         }
@@ -363,7 +363,7 @@ fn page(flow: &Flow, measure: &Measure, facet: &Facet) -> AnyElement {
     } else {
         *measure
     };
-    let (_, column) = grid_measure.columns(220.0, Space::Base, 4);
+    let (count, column) = grid_measure.columns(220.0, Space::Base, 4);
     let card = |index: usize| {
         flow.item(
             ElementId::Name(format!("card-{index}").into()),
@@ -397,10 +397,14 @@ fn page(flow: &Flow, measure: &Measure, facet: &Facet) -> AnyElement {
                 }),
         )
     };
+    // A grid of exactly `count` columns, with the gap the columns were
+    // measured with. (A wrapping row of cards that exactly fill it breaks
+    // lines by float rounding: mid-drag the last card flickered between rows.)
+    #[allow(clippy::cast_possible_truncation)]
     let grid = div()
-        .flex()
-        .flex_wrap()
-        .gap(gap)
+        .grid()
+        .grid_cols(count as u16)
+        .gap(grid_measure.space(Space::Base))
         .w(grid_measure.width())
         .children((0..6).map(card));
     let notes = div()
@@ -469,7 +473,8 @@ impl ReflowLab {
                 step(800, stepped(760.0)),
                 step(1500, stepped(480.0)),
                 // Dragged back out over 1.2 s: every frame's width is
-                // tracked; crossing a room class is an epoch.
+                // followed; crossing a room class is an epoch; the column
+                // count changes undeclared (flow absorbs those jumps).
                 step(2200, |lab: &mut Self, _| {
                     lab.drag = true;
                     lab.width = 1300.0;
@@ -489,12 +494,20 @@ impl ReflowLab {
 impl Render for ReflowLab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let facet = cx.facet();
-        let spec = if self.drag {
-            Spec::tween(Duration::from_millis(1_200), LINEAR)
+        // The steps are discrete (not a motion); only the drag is animated,
+        // from the last step's width.
+        let width = if self.drag {
+            self.motion.animate_from(
+                "drag",
+                480.0,
+                self.width,
+                Spec::tween(Duration::from_millis(1_200), LINEAR),
+                window,
+                cx,
+            )
         } else {
-            Spec::Snap
+            self.width
         };
-        let width = self.motion.animate("width", self.width, spec, window, cx);
         let measure = Measure::new(px(width), &facet);
         // Steps are discrete (a shelf collapsing): epochs. The drag is not;
         // only the room class it crosses is.
@@ -563,8 +576,27 @@ impl Render for ScaleLab {
 
 struct DescentLab {
     open: Option<usize>,
-    motion: Motion,
+    /// The page body is a presence owned by this (always mounted) view, so
+    /// a page closed mid-rise fades its body out instead of dropping it.
+    bodies: Presence,
 }
+
+/// The page body's way in: held while the hero lands (240 ms), then a 10 px
+/// rise with a fade (380 ms). No room: the body is placed absolutely.
+static BODY_IN_POSE: [(f32, crate::Pose); 3] = [
+    (0.0, crate::Pose { x: 0.0, y: 10.0, sx: 1.0, sy: 1.0, rotate: 0.0, opacity: 0.0 }),
+    (0.387, crate::Pose { x: 0.0, y: 10.0, sx: 1.0, sy: 1.0, rotate: 0.0, opacity: 0.0 }),
+    (1.0, crate::Pose::REST),
+];
+static BODY_ROOM: [(f32, super::presence::Extent); 2] = [
+    (0.0, super::presence::Extent::FULL),
+    (1.0, super::presence::Extent::FULL),
+];
+const BODY_IN: super::presence::Act = super::presence::Act {
+    duration: Duration::from_millis(620),
+    pose: super::keys::Keys::new(Duration::from_millis(620), &BODY_IN_POSE, crate::tokens::motion::GLIDE),
+    room: super::keys::Keys::new(Duration::from_millis(620), &BODY_ROOM, crate::tokens::motion::GLIDE),
+};
 
 impl DescentLab {
     fn new(cx: &mut Context<Self>) -> Self {
@@ -581,7 +613,9 @@ impl DescentLab {
         );
         Self {
             open: None,
-            motion: Motion::new(),
+            bodies: Presence::new("flow-descent.body")
+                .enter(BODY_IN)
+                .exit(act::FADE_OUT),
         }
     }
 }
@@ -590,8 +624,23 @@ impl Render for DescentLab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let facet = cx.facet();
         let palette = facet.palette();
-        let base = div().size_full().bg(palette.g1).p(px(36.0)).flex().flex_col();
-        match self.open {
+        // Page bodies: the open page's rises in; a closed one fades out.
+        let bodies = self
+            .bodies
+            .sync(self.open.map(|index| ElementId::Integer(index as u64)), window, cx)
+            .into_iter()
+            .map(|item| {
+                div().absolute().top(px(184.0)).left(px(36.0)).child(item.slot(
+                    div()
+                        .w(px(620.0))
+                        .typeset(ty::LEDE, &facet)
+                        .text_color(palette.ink2.hsla())
+                        .child("A framework for serializing and deserializing Rust data structures efficiently and generically."),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let base = div().size_full().relative().bg(palette.g1).p(px(36.0)).flex().flex_col();
+        let base = match self.open {
             None => {
                 let rows = (0..6).map(|index| {
                     cut()
@@ -617,16 +666,6 @@ impl Render for DescentLab {
                 base.child(caption("descent \u{b7} orbit", &facet)).children(rows)
             }
             Some(index) => {
-                // The page body rises in after the hero lands.
-                let body = self.motion.animate_from(
-                    ElementId::Name(format!("body-{index}").into()),
-                    0.0,
-                    1.0,
-                    Spec::tween(Duration::from_millis(380), crate::tokens::motion::GLIDE)
-                        .delayed(Duration::from_millis(240)),
-                    window,
-                    cx,
-                );
                 base.child(caption("descent \u{b7} package", &facet))
                     .child(
                         div()
@@ -645,19 +684,9 @@ impl Render for DescentLab {
                                     .child(CRATES[index]),
                             )),
                     )
-                    .child(
-                        offset(
-                            div()
-                                .mt(px(28.0))
-                                .typeset(ty::LEDE, &facet)
-                                .text_color(palette.ink2.hsla())
-                                .child("A framework for serializing and deserializing Rust data structures efficiently and generically."),
-                        )
-                        .y(px(10.0 * (1.0 - body)))
-                        .opacity(body),
-                    )
             }
-        }
+        };
+        base.children(bodies)
     }
 }
 

@@ -55,7 +55,7 @@ const RECENT: Duration = Duration::from_millis(1_000);
 #[derive(Clone, Debug)]
 struct Painted {
     bounds: Bounds<Pixels>,
-    owner: GlobalElementId,
+    owner: Option<GlobalElementId>,
     at: Instant,
 }
 
@@ -102,8 +102,9 @@ impl Morphing {
     /// exactly as a native element of the painted size.
     #[must_use]
     pub fn painted(&self, own: f32) -> f32 {
-        self.from
-            .map_or(own, |from| f32::from(from.height) + (own - f32::from(from.height)) * self.t)
+        self.from.map_or(own, |from| {
+            f32::from(from.height) + (own - f32::from(from.height)) * self.t
+        })
     }
 }
 
@@ -124,6 +125,99 @@ pub struct Shared {
     curve: Bezier,
     morph: Option<Morph>,
     transform: LayerTransform,
+}
+
+/// Records a real canvas endpoint in window coordinates, immediately before
+/// handing its identity to a shared element. It obeys the same one-second
+/// lifetime as element paints; it never impersonates an element owner.
+/// Invalid or empty rectangles cannot seed a morph.
+pub fn remember(key: impl Into<ElementId>, bounds: Bounds<Pixels>, window: &Window, cx: &mut App) {
+    let values = [
+        bounds.origin.x,
+        bounds.origin.y,
+        bounds.size.width,
+        bounds.size.height,
+    ];
+    if values.iter().any(|value| !f32::from(*value).is_finite())
+        || bounds.size.width <= gpui::px(0.0)
+        || bounds.size.height <= gpui::px(0.0)
+    {
+        return;
+    }
+    let at = now(cx);
+    cx.default_global::<Registry>().painted.insert(
+        (window.window_handle().window_id(), key.into()),
+        Painted {
+            bounds,
+            owner: None,
+            at,
+        },
+    );
+}
+
+/// A disappeared canvas source must not leave a recent but now offscreen
+/// endpoint that starts the new view from obsolete geometry.
+pub fn forget(key: impl Into<ElementId>, window: &Window, cx: &mut App) {
+    cx.default_global::<Registry>()
+        .painted
+        .remove(&(window.window_handle().window_id(), key.into()));
+}
+
+/// A captured endpoint retains its original identity, window and expiry.
+/// Async layout cannot refresh an obsolete rectangle into a new source.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    key: ElementId,
+    window: WindowId,
+    painted: Painted,
+}
+
+/// Captures a recent actual paint without extending its lifetime.
+#[must_use]
+pub fn capture(key: impl Into<ElementId>, window: &Window, cx: &App) -> Option<Endpoint> {
+    let key = key.into();
+    let window = window.window_handle().window_id();
+    let painted = cx
+        .try_global::<Registry>()?
+        .painted
+        .get(&(window, key.clone()))?;
+    (now(cx).saturating_duration_since(painted.at) <= RECENT).then(|| Endpoint {
+        key,
+        window,
+        painted: painted.clone(),
+    })
+}
+
+/// Restores a captured canvas handoff only for the requested exact identity,
+/// original window and remaining lifetime. The original timestamp survives.
+pub fn resume(
+    endpoint: Endpoint,
+    key: impl Into<ElementId>,
+    window: &Window,
+    cx: &mut App,
+) -> bool {
+    let key = key.into();
+    let window = window.window_handle().window_id();
+    if endpoint.key != key
+        || endpoint.window != window
+        || now(cx).saturating_duration_since(endpoint.painted.at) > RECENT
+    {
+        return false;
+    }
+    cx.default_global::<Registry>().painted.insert(
+        (window, key),
+        Painted {
+            owner: None,
+            ..endpoint.painted
+        },
+    );
+    true
+}
+
+/// The recent actual bounds of this exact identity in this window.
+#[must_use]
+pub fn last_bounds(key: impl Into<ElementId>, window: &Window, cx: &App) -> Option<Bounds<Pixels>> {
+    capture(key, window, cx).map(|endpoint| endpoint.painted.bounds)
 }
 
 /// Wraps `child` as the shared element `key`.
@@ -174,7 +268,11 @@ impl Shared {
         let morph = self.morph?;
         let run = now.saturating_duration_since(morph.start).as_secs_f32();
         let span = self.duration.as_secs_f32();
-        let linear = if span <= 0.0 { 1.0 } else { (run / span).min(1.0) };
+        let linear = if span <= 0.0 {
+            1.0
+        } else {
+            (run / span).min(1.0)
+        };
         (linear < 1.0).then(|| (linear, self.curve.ease(linear)))
     }
 
@@ -209,9 +307,27 @@ impl Shared {
         let (from, to) = (morph.from, laid);
         let span = self.duration.as_secs_f32().max(1e-3);
         for (axis, value, target, start, moving) in [
-            ("x", painted.center().x, to.center().x, from.center().x, drift.0),
-            ("y", painted.center().y, to.center().y, from.center().y, drift.1),
-            ("h", painted.size.height, to.size.height, from.size.height, drift.2),
+            (
+                "x",
+                painted.center().x,
+                to.center().x,
+                from.center().x,
+                drift.0,
+            ),
+            (
+                "y",
+                painted.center().y,
+                to.center().y,
+                from.center().y,
+                drift.1,
+            ),
+            (
+                "h",
+                painted.size.height,
+                to.size.height,
+                from.size.height,
+                drift.2,
+            ),
         ] {
             let (value, target, start) = (f32::from(value), f32::from(target), f32::from(start));
             probe::record_track(cx, || TrackSample {
@@ -229,6 +345,7 @@ impl Shared {
                 at_ms,
                 live,
                 overshoot_ratio: f32::MAX,
+                overshoot_absolute: 0.0,
                 group: group.clone(),
             });
         }
@@ -249,11 +366,17 @@ fn morph(from: Bounds<Pixels>, to: Bounds<Pixels>, fit: Fit, t: f32) -> LayerTra
     let start = match fit {
         Fit::Height => {
             let s = ratio(from.size.height, to.size.height);
-            Size { width: s, height: s }
+            Size {
+                width: s,
+                height: s,
+            }
         }
         Fit::Width => {
             let s = ratio(from.size.width, to.size.width);
-            Size { width: s, height: s }
+            Size {
+                width: s,
+                height: s,
+            }
         }
         Fit::Stretch => Size {
             width: ratio(from.size.width, to.size.width),
@@ -309,7 +432,8 @@ impl gpui::Element for Shared {
                 .painted
                 .get(&slot)
                 .filter(|painted| {
-                    &painted.owner != owner && now.saturating_duration_since(painted.at) <= RECENT
+                    painted.owner.as_ref() != Some(owner)
+                        && now.saturating_duration_since(painted.at) <= RECENT
                 })
                 .map(|painted| painted.bounds);
             // A newcomer (no state yet) morphs from the departing paint; a
@@ -355,7 +479,16 @@ impl gpui::Element for Shared {
         let now = now(cx);
         let progress = self.progress(now);
         self.transform = match (progress, self.morph) {
-            (Some((_, t)), Some(m)) => morph(m.from, bounds, self.fit, t),
+            (Some((_, t)), Some(m)) => {
+                // The source was recorded in window space. A rising page or
+                // leaving map already has a parent transform: undo that for
+                // the source, then let the parent move the destination.
+                let from = window
+                    .layer_transform()
+                    .inverse()
+                    .map_or(m.from, |inverse| inverse.apply_bounds(m.from));
+                morph(from, bounds, self.fit, t)
+            }
             _ => LayerTransform::IDENTITY,
         };
         if let Some(owner) = id.cloned() {
@@ -369,7 +502,7 @@ impl gpui::Element for Shared {
                 slot,
                 Painted {
                     bounds: painted,
-                    owner,
+                    owner: Some(owner),
                     at: now,
                 },
             );
@@ -386,7 +519,13 @@ impl gpui::Element for Shared {
             } else if let Some(owner) = id {
                 // Finished: forget the morph (after one final sample below).
                 window.with_element_state::<State, _>(owner, |state, _| {
-                    ((), State { morph: None, ..state.unwrap_or_default() })
+                    (
+                        (),
+                        State {
+                            morph: None,
+                            ..state.unwrap_or_default()
+                        },
+                    )
                 });
             }
             if probe::enabled(cx) {
@@ -460,10 +599,32 @@ mod tests {
             (end.size.width, to.size.width),
             (end.size.height, to.size.height),
         ] {
-            assert!((f32::from(a) - f32::from(b)).abs() < 1e-3, "{end:?} vs {to:?}");
+            assert!(
+                (f32::from(a) - f32::from(b)).abs() < 1e-3,
+                "{end:?} vs {to:?}"
+            );
         }
         let stretched = morph(from, to, Fit::Stretch, 0.0).apply_bounds(to);
         assert!((f32::from(stretched.size.width) - 80.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_rising_parent_keeps_the_window_space_source_exact() {
+        let from = Bounds::new(point(px(80.0), px(300.0)), size(px(12.0), px(12.0)));
+        let to = Bounds::new(point(px(300.0), px(200.0)), size(px(72.0), px(72.0)));
+        let outer = gpui::LayerTransform::translation(point(px(0.0), px(24.0)));
+        let local_from = outer
+            .inverse()
+            .expect("translation inverse")
+            .apply_bounds(from);
+        assert_eq!(
+            outer.apply_bounds(morph(local_from, to, Fit::Height, 0.0).apply_bounds(to)),
+            from
+        );
+        assert_eq!(
+            outer.apply_bounds(morph(local_from, to, Fit::Height, 1.0).apply_bounds(to)),
+            outer.apply_bounds(to)
+        );
     }
 
     /// Two different views: a page with a hero gem, a graph with a node. The
@@ -566,7 +727,11 @@ mod tests {
         }
 
         impl Render for Page {
-            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
                 div().pl(px(300.0)).pt(px(200.0)).child(shared(
                     "gem",
                     spy("page.gem", &self.seen, div().size(px(72.0))),
@@ -581,13 +746,20 @@ mod tests {
         }
 
         impl Render for Graph {
-            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
                 let (seen, morphs) = (Rc::clone(&self.seen), Rc::clone(&self.morphs));
                 // A different parent chain from the page's.
-                div().pl(px(self.x)).pt(px(40.0)).child(div().child(shared_with("gem", move |morph| {
-                    morphs.borrow_mut().push(morph);
-                    spy("graph.node", &seen, div().size(px(12.0)))
-                })))
+                div()
+                    .pl(px(self.x))
+                    .pt(px(40.0))
+                    .child(div().child(shared_with("gem", move |morph| {
+                        morphs.borrow_mut().push(morph);
+                        spy("graph.node", &seen, div().size(px(12.0)))
+                    })))
             }
         }
 
@@ -598,7 +770,11 @@ mod tests {
         }
 
         impl Render for Root {
-            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
                 let view: AnyView = if self.show_graph {
                     self.graph.clone().into()
                 } else {
@@ -625,14 +801,145 @@ mod tests {
         }
 
         #[gpui::test]
+        fn a_canvas_endpoint_hands_its_actual_bounds_to_a_hero(cx: &mut TestAppContext) {
+            let seen: Seen = Rc::default();
+            let (_, cx) = cx.add_window_view({
+                let seen = Rc::clone(&seen);
+                |_, _| Page { seen }
+            });
+            let source = Bounds::new(
+                gpui::point(px(84.0), px(312.0)),
+                gpui::size(px(12.0), px(12.0)),
+            );
+            cx.update(|window, cx| {
+                reset_epoch(cx);
+                super::super::remember("gem", source, window, cx);
+                assert_eq!(super::super::last_bounds("gem", window, cx), Some(source));
+                assert_eq!(
+                    super::super::last_bounds("another-declaration", window, cx),
+                    None
+                );
+            });
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (90.0, 318.0, 12.0));
+            cx.executor().advance_clock(Duration::from_millis(700));
+            cx.run_until_parked();
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
+        }
+
+        #[gpui::test]
+        fn a_disappeared_or_invalid_source_cannot_seed_a_new_endpoint(cx: &mut TestAppContext) {
+            let seen: Seen = Rc::default();
+            let (_, cx) = cx.add_window_view({
+                let seen = Rc::clone(&seen);
+                |_, _| Page { seen }
+            });
+            cx.update(|window, cx| {
+                reset_epoch(cx);
+                let source = Bounds::new(
+                    gpui::point(px(84.0), px(312.0)),
+                    gpui::size(px(12.0), px(12.0)),
+                );
+                super::super::remember("gem", source, window, cx);
+                super::super::remember("another-declaration", source, window, cx);
+                super::super::forget("gem", window, cx);
+                assert_eq!(super::super::last_bounds("gem", window, cx), None);
+                assert_eq!(
+                    super::super::last_bounds("another-declaration", window, cx),
+                    Some(source)
+                );
+                super::super::remember(
+                    "gem",
+                    Bounds::new(gpui::point(px(f32::NAN), px(0.0)), source.size),
+                    window,
+                    cx,
+                );
+                assert_eq!(super::super::last_bounds("gem", window, cx), None);
+            });
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
+        }
+
+        #[gpui::test]
+        fn reduced_motion_snaps_a_seeded_canvas_handoff(cx: &mut TestAppContext) {
+            let seen: Seen = Rc::default();
+            let (_, cx) = cx.add_window_view({
+                let seen = Rc::clone(&seen);
+                |_, _| Page { seen }
+            });
+            cx.update(|window, cx| {
+                reset_epoch(cx);
+                let mut facet = crate::theme::Facet::default();
+                facet.reduced_motion = true;
+                cx.set_global(facet);
+                super::super::remember(
+                    "gem",
+                    Bounds::new(
+                        gpui::point(px(1.0), px(1.0)),
+                        gpui::size(px(12.0), px(12.0)),
+                    ),
+                    window,
+                    cx,
+                );
+            });
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
+        }
+
+        #[gpui::test]
+        fn a_captured_endpoint_cannot_refresh_its_expiry_or_change_identity(
+            cx: &mut TestAppContext,
+        ) {
+            let seen: Seen = Rc::default();
+            let (_, cx) = cx.add_window_view({
+                let seen = Rc::clone(&seen);
+                |_, _| Page { seen }
+            });
+            let endpoint = cx.update(|window, cx| {
+                reset_epoch(cx);
+                super::super::remember(
+                    "gem",
+                    Bounds::new(
+                        gpui::point(px(1.0), px(1.0)),
+                        gpui::size(px(12.0), px(12.0)),
+                    ),
+                    window,
+                    cx,
+                );
+                super::super::capture("gem", window, cx).expect("source")
+            });
+            cx.executor().advance_clock(Duration::from_millis(600));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                assert!(!super::super::resume(
+                    endpoint.clone(),
+                    "another-declaration",
+                    window,
+                    cx
+                ));
+                assert!(super::super::resume(endpoint.clone(), "gem", window, cx));
+            });
+            cx.executor().advance_clock(Duration::from_millis(401));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                assert!(!super::super::resume(endpoint, "gem", window, cx));
+                assert_eq!(super::super::last_bounds("gem", window, cx), None);
+            });
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
+        }
+
+        #[gpui::test]
         fn a_hero_gem_becomes_a_graph_node_in_another_view_and_back(cx: &mut TestAppContext) {
             let seen: Seen = Rc::default();
             let morphs = Rc::new(RefCell::new(Vec::new()));
             let (root, cx) = cx.add_window_view({
                 let (seen, morphs) = (Rc::clone(&seen), Rc::clone(&morphs));
                 |_, cx| Root {
-                    page: cx.new(|_| Page { seen: Rc::clone(&seen) }),
-                    graph: cx.new(|_| Graph { x: 40.0, seen, morphs }),
+                    page: cx.new(|_| Page {
+                        seen: Rc::clone(&seen),
+                    }),
+                    graph: cx.new(|_| Graph {
+                        x: 40.0,
+                        seen,
+                        morphs,
+                    }),
                     show_graph: false,
                 }
             });
@@ -646,7 +953,10 @@ mod tests {
             });
             let first = centre(&frame(cx, &seen), "graph.node");
             // Painted over the hero: same centre, the hero's size.
-            assert!((first.0 - hero.0).abs() < 0.01 && (first.1 - hero.1).abs() < 0.01, "{first:?}");
+            assert!(
+                (first.0 - hero.0).abs() < 0.01 && (first.1 - hero.1).abs() < 0.01,
+                "{first:?}"
+            );
             assert!((first.2 - 72.0).abs() < 0.01, "{first:?}");
             assert_eq!(
                 morphs.borrow().first().map(|m| m.t),
@@ -689,7 +999,9 @@ mod tests {
             });
             let back = centre(&frame(cx, &seen), "page.gem");
             assert!(
-                (back.0 - last.0).abs() < 0.5 && (back.1 - last.1).abs() < 0.5 && (back.2 - last.2).abs() < 0.5,
+                (back.0 - last.0).abs() < 0.5
+                    && (back.1 - last.1).abs() < 0.5
+                    && (back.2 - last.2).abs() < 0.5,
                 "{back:?} vs {last:?}"
             );
             cx.executor().advance_clock(Duration::from_millis(700));
