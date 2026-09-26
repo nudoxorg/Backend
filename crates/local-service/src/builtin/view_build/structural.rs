@@ -1,8 +1,10 @@
 use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
 use super::identity::{declaration_coordinate, declaration_symbol};
 use super::semantic_profile_is_complete;
+use backend_compile::Container;
 use backend_engine::{DeclarationKind, RowId, RowIdentityPreimage};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 
 pub(super) fn duplicate_declaration_coordinates(
     containment: &FileContainment<'_>,
@@ -484,10 +486,15 @@ fn structural_call_open_paren(excerpt: &str, after_name: usize) -> bool {
 
 fn structural_fn_declarator_before(excerpt: &str, name_at: usize) -> bool {
     let prefix = excerpt[..name_at].trim_end();
-    prefix.ends_with("fn") && prefix.len() >= 2 && {
-        let fn_at = prefix.len() - 2;
-        fn_at == 0 || !structural_ident_byte(prefix.as_bytes()[fn_at - 1])
+    for keyword in ["fn", "def", "function"] {
+        if prefix.ends_with(keyword) && prefix.len() >= keyword.len() {
+            let keyword_at = prefix.len() - keyword.len();
+            if keyword_at == 0 || !structural_ident_byte(prefix.as_bytes()[keyword_at - 1]) {
+                return true;
+            }
+        }
     }
+    false
 }
 
 /// Returns the first `{` that opens the declaration body, skipping comments
@@ -618,8 +625,505 @@ pub(super) fn structural_excerpt_calls(excerpt: &str, callee: &str) -> bool {
     false
 }
 
-/// Same-file call edges inferred from bounded declaration excerpts when no
-/// complete semantic publication supplies compiler-proven `Calls` links.
+struct CallSite {
+    name: String,
+    qualifier: Option<String>,
+}
+
+enum ImportBindingKind {
+    Value { specifier: String, exported: String },
+    Qualifier { specifier: String },
+}
+
+struct ImportBinding {
+    local: String,
+    kind: ImportBindingKind,
+}
+
+struct IndexedProjectFile {
+    path: String,
+    declarations: Vec<backend_compile::SourceDeclaration>,
+}
+
+fn parse_import_binding(declaration: &backend_compile::SourceDeclaration) -> Option<ImportBinding> {
+    if declaration.kind() != DeclarationKind::Import {
+        return None;
+    }
+    let lines = declaration.signature().split('\n').collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
+    }
+    match lines[0] {
+        "value" if lines.len() == 3 => Some(ImportBinding {
+            local: declaration.name().to_owned(),
+            kind: ImportBindingKind::Value {
+                specifier: lines[1].to_owned(),
+                exported: lines[2].to_owned(),
+            },
+        }),
+        "qualifier" if lines.len() == 2 => Some(ImportBinding {
+            local: declaration.name().to_owned(),
+            kind: ImportBindingKind::Qualifier {
+                specifier: lines[1].to_owned(),
+            },
+        }),
+        _ => None,
+    }
+}
+
+fn identifier_immediately_before_end(prefix: &str) -> Option<String> {
+    let mut end = prefix.len();
+    while end > 0 && !structural_ident_byte(prefix.as_bytes()[end - 1]) {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && structural_ident_byte(prefix.as_bytes()[start - 1]) {
+        start -= 1;
+    }
+    let qualifier = &prefix[start..end];
+    (!qualifier.is_empty()).then(|| qualifier.to_owned())
+}
+
+fn structural_call_qualifier(excerpt: &str, name_at: usize) -> Option<String> {
+    let before = excerpt[..name_at].trim_end();
+    if before.ends_with("::") {
+        return identifier_immediately_before_end(before[..before.len() - 2].trim_end());
+    }
+    if before.ends_with('.') {
+        return identifier_immediately_before_end(before[..before.len() - 1].trim_end());
+    }
+    None
+}
+
+fn structural_excerpt_call_sites(excerpt: &str) -> Vec<CallSite> {
+    let scan_from = structural_body_start(excerpt).unwrap_or(0);
+    let body = &excerpt[scan_from..];
+    let mut sites = Vec::new();
+    let mut index = 0;
+    while index < body.len() {
+        match body.as_bytes()[index] {
+            b'/' if body.as_bytes().get(index + 1) == Some(&b'/') => {
+                index += 2;
+                while index < body.len() && body.as_bytes()[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'/' if body.as_bytes().get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < body.len()
+                    && !(body.as_bytes()[index] == b'*' && body.as_bytes()[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = index.saturating_add(2).min(body.len());
+            }
+            b'"' => {
+                index += 1;
+                while index < body.len() {
+                    if body.as_bytes()[index] == b'\\' {
+                        index = index.saturating_add(2).min(body.len());
+                        continue;
+                    }
+                    if body.as_bytes()[index] == b'"' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            b'\'' => {
+                index += 1;
+                while index < body.len() {
+                    if body.as_bytes()[index] == b'\\' {
+                        index = index.saturating_add(2).min(body.len());
+                        continue;
+                    }
+                    if body.as_bytes()[index] == b'\'' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            _ => {
+                if let Some(name) = identifier_at(body, index) {
+                    let name_at = index;
+                    let after_name = index + name.len();
+                    if structural_ident_boundary_before(body, index)
+                        && structural_call_open_paren(body, after_name)
+                        && !structural_fn_declarator_before(body, index)
+                    {
+                        let absolute_at = scan_from + name_at;
+                        sites.push(CallSite {
+                            name: name.to_owned(),
+                            qualifier: structural_call_qualifier(excerpt, absolute_at),
+                        });
+                        index = after_name;
+                        continue;
+                    }
+                }
+                index += 1;
+            }
+        }
+    }
+    sites
+}
+
+fn identifier_at(body: &str, at: usize) -> Option<&str> {
+    if at >= body.len() || !structural_ident_byte(body.as_bytes()[at]) {
+        return None;
+    }
+    let mut end = at + 1;
+    while end < body.len() && structural_ident_byte(body.as_bytes()[end]) {
+        end += 1;
+    }
+    body.get(at..end)
+}
+
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mts",
+    ".cts",
+    ".mjs",
+    ".cjs",
+    ".py",
+    ".rs",
+];
+
+const INDEX_EXTENSIONS: &[&str] = &[
+    "/index.ts",
+    "/index.tsx",
+    "/index.js",
+    "/index.jsx",
+    "/index.mts",
+    "/index.cts",
+    "/index.mjs",
+    "/index.cjs",
+];
+
+fn normalize_relative_path(base: &Path, specifier: &str) -> PathBuf {
+    let mut parts = base
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect::<Vec<_>>();
+    for component in Path::new(specifier).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(_) | Component::RootDir | Component::Prefix(_) => {
+                parts.push(component);
+            }
+        }
+    }
+    parts.iter().collect()
+}
+
+fn push_resolved_candidate(
+    base: &str,
+    project_paths: &BTreeSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    let normalized = base.replace('\\', "/");
+    if project_paths.contains(&normalized) {
+        out.insert(normalized.clone());
+    }
+    for extension in SOURCE_EXTENSIONS {
+        let candidate = format!("{normalized}{extension}");
+        if project_paths.contains(&candidate) {
+            out.insert(candidate);
+        }
+    }
+    for extension in INDEX_EXTENSIONS {
+        let candidate = format!("{normalized}{extension}");
+        if project_paths.contains(&candidate) {
+            out.insert(candidate);
+        }
+    }
+    let rs_mod = format!("{normalized}/mod.rs");
+    if project_paths.contains(&rs_mod) {
+        out.insert(rs_mod);
+    }
+}
+
+fn resolve_rust_specifier(
+    specifier: &str,
+    caller_path: &str,
+    project_paths: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let caller_dir = Path::new(caller_path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(""));
+    let mut remainder = specifier;
+    let mut base = caller_dir.clone();
+    while remainder.starts_with("super::") {
+        remainder = remainder.trim_start_matches("super::");
+        base = base.parent().unwrap_or(Path::new("")).to_path_buf();
+    }
+    if let Some(stripped) = remainder.strip_prefix("crate::") {
+        remainder = stripped;
+        base = PathBuf::from("src");
+    } else if let Some(stripped) = remainder.strip_prefix("self::") {
+        remainder = stripped;
+    }
+    let path = remainder.replace("::", "/");
+    let mut resolved = BTreeSet::new();
+    push_resolved_candidate(&format!("src/{path}"), project_paths, &mut resolved);
+    push_resolved_candidate(&format!("src/{path}/mod"), project_paths, &mut resolved);
+    if !base.as_os_str().is_empty() {
+        push_resolved_candidate(
+            base.join(&path).to_string_lossy().as_ref(),
+            project_paths,
+            &mut resolved,
+        );
+        push_resolved_candidate(
+            base.join(&path).join("mod").to_string_lossy().as_ref(),
+            project_paths,
+            &mut resolved,
+        );
+    }
+    resolved
+}
+
+fn resolve_specifier_paths(
+    specifier: &str,
+    caller_path: &str,
+    project_paths: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    if specifier.starts_with("./") || specifier.starts_with("../") {
+        let caller_dir = Path::new(caller_path)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(""));
+        let normalized = normalize_relative_path(&caller_dir, specifier)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut resolved = BTreeSet::new();
+        push_resolved_candidate(&normalized, project_paths, &mut resolved);
+        return resolved;
+    }
+    if specifier.contains("::")
+        || specifier.starts_with("crate::")
+        || specifier.starts_with("self::")
+        || specifier.starts_with("super::")
+    {
+        return resolve_rust_specifier(specifier, caller_path, project_paths);
+    }
+    let caller_dir = Path::new(caller_path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(""));
+    let mut resolved = BTreeSet::new();
+    for extension in SOURCE_EXTENSIONS {
+        let candidate = caller_dir
+            .join(format!("{specifier}{extension}"))
+            .to_string_lossy()
+            .replace('\\', "/");
+        if project_paths.contains(&candidate) {
+            resolved.insert(candidate);
+        }
+    }
+    for path in project_paths {
+        if Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            == Some(specifier)
+        {
+            resolved.insert(path.clone());
+        }
+    }
+    resolved
+}
+
+fn declares_a_nominal_type(kind: DeclarationKind) -> bool {
+    matches!(
+        kind,
+        DeclarationKind::Class
+            | DeclarationKind::Struct
+            | DeclarationKind::Enum
+            | DeclarationKind::Interface
+            | DeclarationKind::Trait
+            | DeclarationKind::Type
+    )
+}
+
+fn declaration_matches_type_name(declaration: &backend_compile::SourceDeclaration, type_name: &str) -> bool {
+    declares_a_nominal_type(declaration.kind()) && declaration.name() == type_name
+}
+
+fn declaration_matches_callable_on_type(
+    declaration: &backend_compile::SourceDeclaration,
+    type_name: &str,
+    call_name: &str,
+) -> bool {
+    if !structural_callable(declaration.kind()) || declaration.name() != call_name {
+        return false;
+    }
+    match declaration.container() {
+        Container::Enclosing { name, .. } | Container::Attached { type_name: name } => {
+            name == type_name
+        }
+        Container::Module => false,
+    }
+}
+
+fn same_file_callable_coordinates(
+    declarations: &[backend_compile::SourceDeclaration],
+    containment: &FileContainment<'_>,
+    call_name: &str,
+) -> BTreeSet<String> {
+    declarations
+        .iter()
+        .filter(|declaration| {
+            structural_callable(declaration.kind()) && declaration.name() == call_name
+        })
+        .map(|declaration| containment.coordinate(declaration))
+        .collect()
+}
+
+fn declaration_coordinate_in_file(
+    label: &str,
+    file: &IndexedProjectFile,
+    project_key: [u8; 32],
+    declaration: &backend_compile::SourceDeclaration,
+) -> String {
+    let containment = FileContainment::new(
+        label,
+        &file.path,
+        project_key,
+        &file.declarations,
+    );
+    containment.coordinate(declaration)
+}
+
+fn cross_file_callable_coordinates(
+    label: &str,
+    project_key: [u8; 32],
+    caller_path: &str,
+    imports: &[ImportBinding],
+    call: &CallSite,
+    project_paths: &BTreeSet<String>,
+    files_by_path: &BTreeMap<String, &IndexedProjectFile>,
+) -> BTreeSet<String> {
+    let mut candidates = BTreeSet::new();
+    for import in imports {
+        match &import.kind {
+            ImportBindingKind::Qualifier { specifier } => {
+                if call.qualifier.as_deref() != Some(import.local.as_str()) {
+                    continue;
+                }
+                let resolved_paths =
+                    resolve_specifier_paths(specifier, caller_path, project_paths);
+                for path in resolved_paths {
+                    let Some(file) = files_by_path.get(&path) else {
+                        continue;
+                    };
+                    for declaration in &file.declarations {
+                        if structural_callable(declaration.kind())
+                            && declaration.name() == call.name
+                        {
+                            candidates.insert(declaration_coordinate_in_file(
+                                label,
+                                file,
+                                project_key,
+                                declaration,
+                            ));
+                        }
+                    }
+                }
+            }
+            ImportBindingKind::Value { specifier, exported } => {
+                let resolved_paths =
+                    resolve_specifier_paths(specifier, caller_path, project_paths);
+                for path in resolved_paths {
+                    let Some(file) = files_by_path.get(&path) else {
+                        continue;
+                    };
+                    let exported_is_type = file.declarations.iter().any(|declaration| {
+                        declaration_matches_type_name(declaration, exported)
+                    });
+                    if exported_is_type {
+                        for declaration in &file.declarations {
+                            if declaration_matches_callable_on_type(
+                                declaration,
+                                exported,
+                                &call.name,
+                            ) {
+                                candidates.insert(declaration_coordinate_in_file(
+                                    label,
+                                    file,
+                                    project_key,
+                                    declaration,
+                                ));
+                            }
+                        }
+                    } else if call.qualifier.is_none() && import.local == call.name {
+                        for declaration in &file.declarations {
+                            if structural_callable(declaration.kind())
+                                && declaration.name() == exported
+                            {
+                                candidates.insert(declaration_coordinate_in_file(
+                                    label,
+                                    file,
+                                    project_key,
+                                    declaration,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    candidates
+}
+
+fn resolve_call_targets(
+    label: &str,
+    project_key: [u8; 32],
+    caller_file: &IndexedProjectFile,
+    imports: &[ImportBinding],
+    call: &CallSite,
+    project_paths: &BTreeSet<String>,
+    files_by_path: &BTreeMap<String, &IndexedProjectFile>,
+) -> BTreeSet<String> {
+    let caller_containment = FileContainment::new(
+        label,
+        &caller_file.path,
+        project_key,
+        &caller_file.declarations,
+    );
+    let same_file = same_file_callable_coordinates(
+        &caller_file.declarations,
+        &caller_containment,
+        &call.name,
+    );
+    if !same_file.is_empty() {
+        return same_file;
+    }
+    cross_file_callable_coordinates(
+        label,
+        project_key,
+        &caller_file.path,
+        imports,
+        call,
+        project_paths,
+        files_by_path,
+    )
+}
+
+/// Same-file and import-resolved call edges inferred from bounded declaration
+/// excerpts when no complete semantic publication supplies compiler-proven
+/// `Calls` links.
 pub(crate) fn structural_call_graph_relations(
     view: &backend_engine::ViewRoot,
     sources: &IndexedSources,
@@ -627,10 +1131,9 @@ pub(crate) fn structural_call_graph_relations(
     source_id: RowId,
     include_incoming: bool,
 ) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
-    let source_row = view.row(source_id).ok_or_else(|| {
+    let _source_row = view.row(source_id).ok_or_else(|| {
         BuiltinModelError("structural call graph source is absent from the view".to_owned())
     })?;
-    let source_label = source_row.label.as_str();
     let project = sources
         .projects
         .values()
@@ -647,6 +1150,8 @@ pub(crate) fn structural_call_graph_relations(
             coordinate_ids.insert(row.label.clone(), row.id);
         }
     }
+    let mut project_paths = BTreeSet::new();
+    let mut static_files = Vec::new();
     for (_, record) in &sources.files {
         let file = record
             .file_fields()
@@ -654,45 +1159,59 @@ pub(crate) fn structural_call_graph_relations(
         if file.project != project_key {
             continue;
         }
-        let containment = FileContainment::new(
-            &project.label,
-            file.path,
-            file.project,
-            file.declarations,
-        );
-        let file_contains_source = file.declarations.iter().any(|declaration| {
-            containment.coordinate(declaration) == source_label
+        project_paths.insert(file.path.to_owned());
+        static_files.push(IndexedProjectFile {
+            path: file.path.to_owned(),
+            declarations: file.declarations.to_vec(),
         });
-        if !file_contains_source {
-            continue;
-        }
-        let mut relations = BTreeSet::new();
+    }
+    let mut files_by_path = BTreeMap::new();
+    for file in &static_files {
+        files_by_path.insert(file.path.clone(), file);
+    }
+    let mut relations = BTreeSet::new();
+    for file in &static_files {
+        let imports = file
+            .declarations
+            .iter()
+            .filter_map(parse_import_binding)
+            .collect::<Vec<_>>();
         for caller in file.declarations.iter() {
             if !structural_callable(caller.kind()) {
                 continue;
             }
-            let excerpt = caller
-                .source_excerpt()
-                .text()
-                .ok_or_else(|| {
-                    BuiltinModelError(
-                        "structural call graph caller omitted a source excerpt".to_owned(),
-                    )
-                })?;
-            let caller_coordinate = containment.coordinate(caller);
+            let Some(excerpt) = caller.source_excerpt().text() else {
+                continue;
+            };
+            let caller_containment = FileContainment::new(
+                &project.label,
+                &file.path,
+                project_key,
+                &file.declarations,
+            );
+            let caller_coordinate = caller_containment.coordinate(caller);
             let caller_id = coordinate_ids.get(&caller_coordinate).ok_or_else(|| {
                 BuiltinModelError(
                     "structural call graph caller is absent from the published view".to_owned(),
                 )
             })?;
-            for callee in file.declarations.iter() {
-                if caller.name() == callee.name() || !structural_callable(callee.kind()) {
+            for call in structural_excerpt_call_sites(excerpt) {
+                let targets = resolve_call_targets(
+                    &project.label,
+                    project_key,
+                    file,
+                    &imports,
+                    &call,
+                    &project_paths,
+                    &files_by_path,
+                );
+                if targets.len() != 1 {
                     continue;
                 }
-                if !structural_excerpt_calls(excerpt, callee.name()) {
+                let callee_coordinate = targets.into_iter().next().expect("exactly one target");
+                if callee_coordinate == caller_coordinate {
                     continue;
                 }
-                let callee_coordinate = containment.coordinate(callee);
                 let callee_id = coordinate_ids.get(&callee_coordinate).ok_or_else(|| {
                     BuiltinModelError(
                         "structural call graph callee is absent from the published view"
@@ -706,27 +1225,26 @@ pub(crate) fn structural_call_graph_relations(
                 ));
             }
         }
-        let relations = relations
-            .into_iter()
-            .filter(|relation| {
-                if include_incoming {
-                    relation.from == source_id || relation.to == source_id
-                } else {
-                    relation.from == source_id
-                }
-            })
-            .collect::<Vec<_>>();
-        if relations.is_empty() {
-            return Ok(None);
-        }
-        if relations.len() > usize::from(backend_engine::QueryLimit::MAX) {
-            return Err(BuiltinModelError(
-                "structural call graph exceeds the bounded result contract".to_owned(),
-            ));
-        }
-        return Ok(Some(relations));
     }
-    Ok(None)
+    let relations = relations
+        .into_iter()
+        .filter(|relation| {
+            if include_incoming {
+                relation.from == source_id || relation.to == source_id
+            } else {
+                relation.from == source_id
+            }
+        })
+        .collect::<Vec<_>>();
+    if relations.is_empty() {
+        return Ok(None);
+    }
+    if relations.len() > usize::from(backend_engine::QueryLimit::MAX) {
+        return Err(BuiltinModelError(
+            "structural call graph exceeds the bounded result contract".to_owned(),
+        ));
+    }
+    Ok(Some(relations))
 }
 
 /// Incoming call sites for one declaration when semantic references are absent.
