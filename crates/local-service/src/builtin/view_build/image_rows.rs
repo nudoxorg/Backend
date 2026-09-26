@@ -457,6 +457,35 @@ pub(super) fn confirm_image_admission(
     }
 }
 
+/// Admits each image for `key`, reopening only when that key has not admitted it.
+///
+/// A resident admission returns without validating the bytes. A rejected key is
+/// not recorded, so the next call validates again. An admission that already
+/// succeeded stays in place.
+pub(in crate::builtin) fn admit_activated_images(
+    images: &[impl AsRef<[u8]>],
+    key: &backend_engine::builtin::ProductSemanticPublicationKey,
+    residence: &mut ImageRowResidence,
+) -> Result<(), super::super::BuiltinModelError> {
+    let lineage = key.lineage().map_err(|error| {
+        super::super::BuiltinModelError(format!("semantic publication lineage: {error}"))
+    })?;
+    let admission = publication_admission(
+        key.profile(),
+        lineage.ecosystem,
+        lineage.name,
+        key.coordinate().as_str(),
+    );
+    for image in images {
+        let bytes = image.as_ref();
+        if let CompiledImage::Opened { view, .. } = open_compiled_image(bytes, admission, residence)?
+        {
+            bind_opened_image(bytes, admission, &view, key, residence)?;
+        }
+    }
+    Ok(())
+}
+
 /// Applies a cached projection for `digest`.
 ///
 /// `Ok(true)` stamped the resident rows. `Ok(false)` is a projection miss and
@@ -663,6 +692,71 @@ pub(super) fn measure_semantic_image_batch() {
     );
 }
 
+/// Times admitting a batch of images against reusing that admission.
+///
+/// Images and the publication key are built before either timer. `cold` validates
+/// and admits every image. `warm` finds the admission and does not validate.
+#[allow(clippy::expect_used, clippy::print_stdout)]
+pub(super) fn measure_semantic_admission() {
+    const IMAGES: usize = 32;
+    const SAMPLES: usize = 32;
+    const WARMUPS: usize = 4;
+    let images = (0..IMAGES)
+        .map(|index| {
+            let path = format!("src/file{index}.rs");
+            let salt = u8::try_from(index).expect("image index");
+            super::image_reopen::fixture_semantic_image_salted(&path, salt).expect("fixture image")
+        })
+        .collect::<Vec<_>>();
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2024,
+    );
+    let package = backend_engine::PackageReference::parse("fixture").expect("package");
+    let coordinate =
+        backend_semantic::vocabulary::PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .expect("coordinate");
+    let key =
+        backend_engine::builtin::ProductSemanticPublicationKey::new(package, coordinate, profile)
+            .expect("publication key");
+    let bytes: usize = images.iter().map(Vec::len).sum();
+    for _ in 0..WARMUPS {
+        let mut residence = ImageRowResidence::default();
+        admit_activated_images(&images, &key, &mut residence).expect("cold warmup");
+    }
+    let mut cold = Vec::with_capacity(SAMPLES);
+    let mut cold_reopens = 0_u64;
+    for _ in 0..SAMPLES {
+        let mut residence = ImageRowResidence::default();
+        let started = std::time::Instant::now();
+        admit_activated_images(&images, &key, &mut residence).expect("cold");
+        cold.push(started.elapsed().as_nanos());
+        cold_reopens += residence.reopens();
+        std::hint::black_box(residence.reopens());
+    }
+    let mut warm_residence = ImageRowResidence::default();
+    admit_activated_images(&images, &key, &mut warm_residence).expect("warm prime");
+    for _ in 0..WARMUPS {
+        admit_activated_images(&images, &key, &mut warm_residence).expect("warm warmup");
+    }
+    let reopens_before = warm_residence.reopens();
+    let mut warm = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let started = std::time::Instant::now();
+        admit_activated_images(&images, &key, &mut warm_residence).expect("warm");
+        warm.push(started.elapsed().as_nanos());
+        std::hint::black_box(warm_residence.reopens());
+    }
+    let warm_reopens = warm_residence.reopens().saturating_sub(reopens_before);
+    (cold_reopens == (IMAGES * SAMPLES) as u64 && warm_reopens == 0)
+        .then_some(())
+        .expect("admission cache validated a warm image");
+    let (cold_median, cold_p95) = percentiles(&cold);
+    let (warm_median, warm_p95) = percentiles(&warm);
+    println!(
+        "semantic_admission images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} cold_reopens={cold_reopens} warm_reopens={warm_reopens}"
+    );
+}
+
 #[allow(clippy::expect_used)]
 fn publish_image_batch(
     images: &[Vec<u8>],
@@ -833,8 +927,9 @@ mod tests {
     use super::super::semantic::{SemanticRowSink, append_image_rows, project_image_rows};
     use super::{
         Charge, CompiledImage, DuplicatePolicy, ImageRowResidence, ProjectedImage, ProjectedRow,
-        append_resident_image_rows, apply_projected_image, apply_resident_image, bind_opened_image,
-        confirm_image_admission, open_compiled_image, publication_admission, publish_image_batch,
+        admit_activated_images, append_resident_image_rows, apply_projected_image,
+        apply_resident_image, bind_opened_image, confirm_image_admission, open_compiled_image,
+        publication_admission, publish_image_batch,
     };
     use backend_engine::{Row, RowId};
     use backend_semantic::ir::SemanticImageView;
@@ -1872,5 +1967,38 @@ mod tests {
         assert_eq!(again, 8);
         assert_eq!(residence.reopens(), 2);
         assert_eq!(residence.hits(), 2);
+    }
+
+    #[test]
+    fn admitting_an_image_twice_validates_once() {
+        let fixture = fixture();
+        let key = fixture_key("pkg:cargo/fixture@1.0.0");
+        let mut residence = ImageRowResidence::default();
+        admit_activated_images(&[fixture.bytes.clone()], &key, &mut residence).expect("cold");
+        admit_activated_images(&[fixture.bytes.clone()], &key, &mut residence).expect("warm");
+        assert_eq!(residence.reopens(), 1);
+    }
+
+    #[test]
+    fn a_rejected_activation_keeps_the_admitted_image() {
+        let fixture = fixture();
+        let key = fixture_key("pkg:cargo/fixture@1.0.0");
+        let foreign = fixture_key("pkg:cargo/other@1.0.0");
+        let mut residence = ImageRowResidence::default();
+        admit_activated_images(&[fixture.bytes.clone()], &key, &mut residence).expect("admit");
+        let rejected = admit_activated_images(&[fixture.bytes.clone()], &foreign, &mut residence);
+        assert!(
+            rejected
+                .expect_err("foreign package")
+                .to_string()
+                .contains("bind semantic publication")
+        );
+        assert_eq!(residence.reopens(), 2);
+        admit_activated_images(&[fixture.bytes.clone()], &key, &mut residence).expect("kept");
+        assert_eq!(residence.reopens(), 2);
+        let rejected_again =
+            admit_activated_images(&[fixture.bytes.clone()], &foreign, &mut residence);
+        assert!(rejected_again.is_err(), "a rejected key was remembered");
+        assert_eq!(residence.reopens(), 3);
     }
 }

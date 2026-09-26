@@ -91,6 +91,7 @@ pub(super) fn execute_semantic_graph(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
     query: backend_engine::GraphNeighborhoodQuery,
     include_incoming: bool,
 ) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
@@ -141,7 +142,8 @@ pub(super) fn execute_semantic_graph(
                 continue;
             }
             let binding = claim.binding();
-            let activated = activate_semantic_publication(compiler, key, *claim, generations)?;
+            let activated =
+                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
             let activation_index = activations.len();
             activations.push(activated);
             publication_bindings.push(binding);
@@ -812,6 +814,7 @@ pub(super) fn execute_references(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
     target: &backend_engine::ProductText,
 ) -> Result<backend_engine::SurfaceReply, BuiltinModelError> {
     let library = daemon.engine().daemon().library();
@@ -864,7 +867,8 @@ pub(super) fn execute_references(
                 continue;
             };
             publication_found = true;
-            let activated = activate_semantic_publication(compiler, key, *claim, generations)?;
+            let activated =
+                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
             let activation_index = activations.len();
             activations.push(activated);
             for image_index in 0..activations[activation_index].images().len() {

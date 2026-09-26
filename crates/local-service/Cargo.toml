@@ -78,5 +78,10 @@ name = "semantic_generation"
 path = "benches/semantic_generation.rs"
 harness = false
 
+[[bench]]
+name = "semantic_admission"
+path = "benches/semantic_admission.rs"
+harness = false
+
 [lints]
 workspace = true

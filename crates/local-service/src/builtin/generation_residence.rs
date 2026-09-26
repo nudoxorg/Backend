@@ -704,6 +704,7 @@ mod tests {
             &fixture.cxx_key,
             fixture.claim,
             &mut generations,
+            &mut super::super::view_build::ImageRowResidence::default(),
         );
         let message = rejected.err().map(|error| error.to_string());
         assert!(

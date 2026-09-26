@@ -120,6 +120,7 @@ impl CommandAdapter {
                     &self.compiler,
                     &mut self.search_snapshots,
                     &mut self.generations,
+                    &mut self.image_rows,
                     &request,
                     certificate,
                 )
@@ -331,6 +332,7 @@ impl CommandAdapter {
             &mut self.search_snapshots,
             &mut self.remote_semantic,
             &mut self.generations,
+            &mut self.image_rows,
             query,
         )
         .unwrap_or_else(|error| CommandReply::Error(error.to_string()));
@@ -354,6 +356,7 @@ impl CommandAdapter {
             daemon,
             &self.compiler,
             &mut self.generations,
+            &mut self.image_rows,
             query,
             include_incoming,
         )? {
@@ -429,7 +432,14 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
             backend_engine::SurfaceCommand::References { target } => {
-                execute_references(daemon, &self.compiler, &mut self.generations, &target).map_or_else(
+                execute_references(
+                    daemon,
+                    &self.compiler,
+                    &mut self.generations,
+                    &mut self.image_rows,
+                    &target,
+                )
+                .map_or_else(
                     |error| {
                         CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
                             error.to_string(),
@@ -439,7 +449,14 @@ impl CommandAdapter {
                 )
             }
             backend_engine::SurfaceCommand::Diff { from, to } => {
-                execute_semantic_diff(daemon, &self.compiler, &mut self.generations, &from, &to)
+                execute_semantic_diff(
+                    daemon,
+                    &self.compiler,
+                    &mut self.generations,
+                    &mut self.image_rows,
+                    &from,
+                    &to,
+                )
                     .map_or_else(
                     |error| {
                         CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(

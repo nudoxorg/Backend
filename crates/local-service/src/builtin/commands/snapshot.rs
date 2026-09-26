@@ -47,6 +47,7 @@ pub(super) fn semantic_package_snapshot<'view>(
     compiler: &LocalCompilerClient,
     package: &backend_engine::PackageReference,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut super::super::view_build::ImageRowResidence,
 ) -> Result<Option<SemanticPackageSnapshot<'view>>, BuiltinModelError> {
     let view = daemon.engine().daemon().library().view();
     let package_key = backend_engine::package_key(package.as_str());
@@ -82,7 +83,8 @@ pub(super) fn semantic_package_snapshot<'view>(
                 continue;
             }
             found_publication = true;
-            let activated = activate_semantic_publication(compiler, key, *claim, generations)?;
+            let activated =
+                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
             for bytes in activated.images() {
                 append_semantic_image(
                     view,

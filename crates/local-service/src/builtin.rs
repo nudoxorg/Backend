@@ -201,22 +201,15 @@ fn load_semantic_publication(
     Ok(ActivatedProductSemantics { images })
 }
 
-pub(super) fn activate_semantic_publication(
+pub(in crate::builtin) fn activate_semantic_publication(
     compiler: &backend_engine::application::LocalCompilerClient,
     key: &backend_engine::builtin::ProductSemanticPublicationKey,
     claim: backend_engine::builtin::SemanticPublicationClaim,
     generations: &mut SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
 ) -> Result<ActivatedProductSemantics, BuiltinModelError> {
     let activated = load_semantic_publication(compiler, key, claim, generations)?;
-    for image in activated.images() {
-        let view =
-            backend_semantic::ir::SemanticImageView::reopen(image.as_ref()).map_err(|error| {
-                BuiltinModelError(format!("reopen activated semantic publication: {error}"))
-            })?;
-        key.admit_image(&view).map_err(|error| {
-            BuiltinModelError(format!("bind semantic publication to product key: {error}"))
-        })?;
-    }
+    view_build::admit_activated_images(activated.images(), key, image_rows)?;
     Ok(activated)
 }
 
@@ -1278,6 +1271,14 @@ pub fn measure_semantic_query_walk() {
 /// release measurement for an unchanged semantic claim.
 pub fn measure_semantic_generation() {
     generation_residence::measure_semantic_generation();
+}
+
+/// Times admitting a batch of semantic images against reusing that admission.
+///
+/// The images and publication key are built before either timer. The printed
+/// line is the release measurement for a key that has already admitted them.
+pub fn measure_semantic_admission() {
+    view_build::measure_semantic_admission();
 }
 
 /// Starts the compiled locald profile. It does all startup work before the

@@ -76,6 +76,11 @@ pub(super) fn measure_semantic_image_batch() {
     image_rows::measure_semantic_image_batch();
 }
 
+/// Times admitting a batch of images against reusing that admission.
+pub(super) fn measure_semantic_admission() {
+    image_rows::measure_semantic_admission();
+}
+
 /// Times one query-image validation against the three the corpus used to pay.
 pub(super) fn measure_semantic_query_walk() {
     query::measure_semantic_query_walk();
@@ -83,6 +88,9 @@ pub(super) fn measure_semantic_query_walk() {
 
 /// Projected semantic rows reused across publications of the same image.
 pub(in crate::builtin) use image_rows::ImageRowResidence;
+
+/// Admits activated image bytes, reopening only when this key has not admitted them.
+pub(in crate::builtin) use image_rows::admit_activated_images;
 
 /// Projects structural rows for `only` these files.
 ///

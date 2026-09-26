@@ -24,11 +24,12 @@ use backend_semantic::ir::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) fn semantic_query_corpus(
+pub(in crate::builtin) fn semantic_query_corpus(
     snapshot: &WorkspaceSnapshot,
     compiler: &LocalCompilerClient,
     sources: &IndexedSources,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut super::image_rows::ImageRowResidence,
 ) -> Result<backend_extension_trustfall::SemanticQueryCorpus, BuiltinModelError> {
     if sources.projects.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -56,7 +57,14 @@ pub(crate) fn semantic_query_corpus(
         ));
     }
 
-    let complete = append_compiler_query_facts(snapshot, compiler, sources, &mut facts, generations)?;
+    let complete = append_compiler_query_facts(
+        snapshot,
+        compiler,
+        sources,
+        &mut facts,
+        generations,
+        image_rows,
+    )?;
     let structural_plan = StructuralProjectionPlan::of(sources, &complete)?;
     append_structural_query_facts(sources, &structural_plan, &mut facts)?;
     if facts.len() > MAX_REBUILD_PACKAGES {
@@ -84,6 +92,7 @@ fn append_compiler_query_facts(
     sources: &IndexedSources,
     facts: &mut Vec<backend_extension_trustfall::SemanticQueryFact>,
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut super::image_rows::ImageRowResidence,
 ) -> Result<BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>, BuiltinModelError>
 {
     let relation = snapshot
@@ -116,7 +125,8 @@ fn append_compiler_query_facts(
                             .to_owned(),
                     )
                 })?;
-            let activated = activate_semantic_publication(compiler, key, *claim, generations)?;
+            let activated =
+                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
             pending.push(PendingQueryPublication {
                 package: project.package,
                 label: project.label.clone(),
