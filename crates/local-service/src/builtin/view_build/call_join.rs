@@ -25,6 +25,17 @@ pub(crate) fn semantic_mentionable(kind: ItemKind) -> bool {
     )
 }
 
+pub(crate) fn semantic_qualified_mentionable(kind: ItemKind) -> bool {
+    matches!(
+        kind,
+        ItemKind::Record
+            | ItemKind::Enum
+            | ItemKind::Trait
+            | ItemKind::Alias
+            | ItemKind::Module
+    )
+}
+
 pub(crate) struct ProjectCallableIndex {
     by_path_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
@@ -138,6 +149,29 @@ impl ProjectCallableIndex {
                 .mention_by_path_name_kind
                 .get(&(path.clone(), display.to_owned(), kind))
             {
+                matches.extend(identities);
+            }
+        }
+        matches.sort();
+        matches.dedup();
+        if matches.len() == 1 {
+            matches.pop()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn resolve_qualified_mention(
+        &self,
+        display: &str,
+        kind: ItemKind,
+    ) -> Option<DeclarationIdentity> {
+        if display.is_empty() || !semantic_qualified_mentionable(kind) {
+            return None;
+        }
+        let mut matches = Vec::new();
+        for ((_, name, item_kind), identities) in &self.mention_by_path_name_kind {
+            if name == display && *item_kind == kind {
                 matches.extend(identities);
             }
         }
@@ -486,6 +520,38 @@ pub(crate) fn foreign_package_mention_retarget(
     Ok(index.resolve_mention(&resolved_paths, display, kind))
 }
 
+pub(crate) fn foreign_qualified_type_mention_retarget(
+    image: &SemanticImageView<'_>,
+    external: ExternalId,
+    index: &ProjectCallableIndex,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(None);
+    };
+    match foreign.origin {
+        ForeignTargetOrigin::Universe { .. } | ForeignTargetOrigin::Namespace { .. } => {}
+        ForeignTargetOrigin::Package { .. } | ForeignTargetOrigin::Unspecified { .. } => {
+            return Ok(None);
+        }
+    };
+    let Some(kind) = foreign.kind else {
+        return Ok(None);
+    };
+    if !semantic_qualified_mentionable(kind) {
+        return Ok(None);
+    }
+    let display_atom = image
+        .atom(foreign.display)
+        .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
+    let display = std::str::from_utf8(display_atom).map_err(|_| {
+        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
+    })?;
+    if display.is_empty() {
+        return Ok(None);
+    }
+    Ok(index.resolve_qualified_mention(display, kind))
+}
+
 pub(crate) fn join_project_mention(
     image: &SemanticImageView<'_>,
     link_kind: backend_semantic::ir::LinkKind,
@@ -502,13 +568,19 @@ pub(crate) fn join_project_mention(
     ) {
         return Ok(None);
     }
-    let identity = foreign_package_mention_retarget(
+    let identity = if let Some(identity) = foreign_package_mention_retarget(
         image,
         external,
         caller_path,
         project_paths,
         index,
-    )?;
+    )? {
+        Some(identity)
+    } else if matches!(link_kind, backend_semantic::ir::LinkKind::TypeReference) {
+        foreign_qualified_type_mention_retarget(image, external, index)?
+    } else {
+        None
+    };
     Ok(identity.filter(|candidate| published.contains(candidate)))
 }
 

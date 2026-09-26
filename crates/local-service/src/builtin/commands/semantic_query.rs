@@ -2,8 +2,8 @@ use super::super::read_indexed_sources;
 use super::super::view_build;
 use super::super::view_build::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_namespace_field_retarget,
-    foreign_package_call_retarget, foreign_package_field_retarget, foreign_package_mention_retarget,
-    join_project_field, join_project_mention, project_paths_for_package,
+    foreign_package_call_retarget, foreign_package_field_retarget, join_project_field,
+    join_project_mention, project_paths_for_package,
 };
 use super::super::{
     BuiltinAuthorityVerifier, BuiltinIntent, BuiltinModel, BuiltinModelError,
@@ -286,6 +286,25 @@ fn semantic_entity_for_symbol(
         .transpose()
 }
 
+fn published_identities_from_images(
+    images: &[&[u8]],
+) -> Result<BTreeSet<DeclarationIdentity>, BuiltinModelError> {
+    let mut published = BTreeSet::new();
+    for bytes in images {
+        let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
+            BuiltinModelError(format!("reopen semantic graph published image: {error}"))
+        })?;
+        let session = DocumentationSession::new(&image);
+        for entity in session.canonical_entities() {
+            let entity = entity.map_err(|error| {
+                BuiltinModelError(format!("read semantic graph published entity: {error}"))
+            })?;
+            published.insert(entity.entity.version.identity());
+        }
+    }
+    Ok(published)
+}
+
 fn semantic_link_row_id(
     view: &backend_engine::ViewRoot,
     image: &backend_semantic::ir::SemanticImageView<'_>,
@@ -297,6 +316,7 @@ fn semantic_link_row_id(
     target: LinkTarget,
     project_paths: &BTreeSet<String>,
     callable_index: &ProjectCallableIndex,
+    published: &BTreeSet<DeclarationIdentity>,
 ) -> Result<Option<backend_engine::RowId>, BuiltinModelError> {
     let row_id = match target {
         LinkTarget::Local(target) => {
@@ -331,12 +351,14 @@ fn semantic_link_row_id(
                         )));
                 }
             } else if matches!(link_kind, LinkKind::TypeReference | LinkKind::Imports)
-                && let Some(identity) = foreign_package_mention_retarget(
+                && let Some(identity) = join_project_mention(
                     image,
+                    link_kind,
                     external,
                     caller_path,
                     project_paths,
                     callable_index,
+                    published,
                 )?
             {
                 return Ok(view
@@ -396,6 +418,7 @@ fn project_semantic_graph_relations_from_bytes(
     project_paths: &BTreeSet<String>,
 ) -> Result<BTreeSet<backend_engine::GraphRelation>, BuiltinModelError> {
     let callable_index = ProjectCallableIndex::build_from_bytes(images)?;
+    let published = published_identities_from_images(images)?;
     let mut relations = BTreeSet::new();
     for bytes in images {
         let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
@@ -417,6 +440,7 @@ fn project_semantic_graph_relations_from_bytes(
                     link.target,
                     project_paths,
                     &callable_index,
+                    &published,
                 )?
                 else {
                     continue;
@@ -445,6 +469,7 @@ fn project_semantic_graph_relations_from_bytes(
                         link.target,
                         project_paths,
                         &callable_index,
+                        &published,
                     )?
                     else {
                         continue;
@@ -1024,6 +1049,13 @@ mod project_call_tests {
         link_kind: LinkKind,
     }
 
+    struct UniverseMentionFixture {
+        ecosystem: &'static [u8],
+        spelling: &'static [u8],
+        foreign_key: u8,
+        entity_kind: ItemKind,
+    }
+
     struct AncestorFixture {
         name: &'static [u8],
         version_byte: u8,
@@ -1178,6 +1210,93 @@ mod project_call_tests {
         builder
             .add_borrowed_tree(BorrowedTree {
                 versions: &versions,
+                items: &items,
+                links: &links,
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn project_universe_mention_image(
+        path: &str,
+        source_identity_byte: u8,
+        item_name: &[u8],
+        entity_id: TreeEntityId,
+        item_kind: ItemKind,
+        foreign: Option<UniverseMentionFixture>,
+    ) -> Result<Vec<u8>, String> {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(&[source_identity_byte]),
+            byte_len: 12,
+        };
+        let recipe = CompileRecipeFact::derive(
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            Stage::LowerIr,
+            NativeTool::Rustc,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"fixture toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, path)
+            .map_err(|error| error.to_string())?;
+        let authority = |parentage| EntityAuthorityFacts {
+            parentage,
+            visibility: FactAvailability::Captured,
+            ..EntityAuthorityFacts::default()
+        };
+        let items = [TreeItemInput {
+            name: item_name,
+            kind: item_kind,
+            visibility: Visibility::Public,
+            authority: authority(ParentageAuthority::Root),
+            parent: None,
+            semantic_type: None,
+            members: &[],
+            docs: &[],
+            attributes: &[],
+            source: None,
+            extension: None,
+        }];
+        let mut links = Vec::new();
+        if let Some(foreign) = foreign {
+            let ecosystem = builder
+                .intern_atom(foreign.ecosystem)
+                .map_err(|e| e.to_string())?;
+            let spelling = builder
+                .intern_atom(foreign.spelling)
+                .map_err(|e| e.to_string())?;
+            let external = builder
+                .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
+                    identity: ExternalDeclarationIdentity {
+                        foreign: ForeignDeclarationId::from_raw([foreign.foreign_key; 16]),
+                        variant: VariantAvailability::Unavailable,
+                    },
+                    origin: ForeignTargetOrigin::Universe { ecosystem },
+                    path: spelling,
+                    display: spelling,
+                    kind: Some(foreign.entity_kind),
+                }))
+                .map_err(|e| e.to_string())?;
+            links.push(TreeLinkInput {
+                from: entity_id,
+                target: TreeLinkTarget::External(external),
+                kind: LinkKind::TypeReference,
+                confidence: backend_semantic::ir::Confidence::Compiler,
+                authority: OccurrenceAuthorityFacts {
+                    source: FactAvailability::Unavailable,
+                },
+                source: None,
+            });
+        }
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &[fixture_version(source_identity_byte)],
                 items: &items,
                 links: &links,
             })
@@ -2559,6 +2678,38 @@ mod project_call_tests {
         Err("caller fixture has no foreign field read".to_owned())
     }
 
+    fn java_universe_workout_drive_fixture(
+        foreign_key: u8,
+    ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
+        let service_bytes = project_item_image(
+            "WorkoutService.java",
+            1,
+            b"demo.WorkoutService",
+            TreeEntityId::new(0),
+            ItemKind::Record,
+            None,
+        )?;
+        let caller_bytes = project_universe_mention_image(
+            "Weeks.java",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(UniverseMentionFixture {
+                ecosystem: b"maven",
+                spelling: b"demo.WorkoutService",
+                foreign_key,
+                entity_kind: ItemKind::Record,
+            }),
+        )?;
+        Ok((
+            service_bytes,
+            caller_bytes,
+            fixture_version(1).identity(),
+            fixture_version(2).identity(),
+        ))
+    }
+
     fn rust_workout_drive_fixture(
         foreign_key: u8,
     ) -> Result<(Vec<u8>, Vec<u8>, DeclarationIdentity, DeclarationIdentity), String> {
@@ -3219,6 +3370,361 @@ mod project_call_tests {
         .is_some()
         {
             return Err("functions must not be found by join_project_mention".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_mention_universe_java_record_retargets_workout_service() -> Result<(), String> {
+        let (service_bytes, caller_bytes, workout_identity, _) =
+            java_universe_workout_drive_fixture(101)?;
+        let paths = project_paths(&["WorkoutService.java", "Weeks.java"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([workout_identity, fixture_version(2).identity()]);
+        let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_mention(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?;
+        if joined != Some(workout_identity) {
+            return Err(format!(
+                "join_project_mention should retarget to demo.WorkoutService, got {joined:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_mention_universe_query_corpus_referenced_by_names_drive() -> Result<(), String> {
+        let package = package_key("fixture");
+        let (service_bytes, caller_bytes, workout_identity, drive_identity) =
+            java_universe_workout_drive_fixture(102)?;
+        let paths = project_paths(&["WorkoutService.java", "Weeks.java"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([workout_identity, drive_identity]);
+        let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        let joined = join_project_mention(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "join_project_mention returned None".to_owned())?;
+        let workout_id = query_semantic_id(package, joined);
+        let (workout_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &service_bytes,
+            workout_identity,
+            "demo.WorkoutService",
+            Box::new([]),
+        )?;
+        let (drive_fact, _) = compiler_query_presentation(
+            package,
+            "fixture",
+            &caller_bytes,
+            drive_identity,
+            "drive",
+            vec![workout_id.clone()].into_boxed_slice(),
+        )?;
+        let workspace = super::super::super::genesis().map_err(|error| error.to_string())?;
+        let corpus = SemanticQueryCorpus::admit(
+            workspace.root(),
+            vec![
+                SemanticQueryFact::new(
+                    SemanticQueryEvidence::Package(PackageScopeEvidence::new(package)),
+                    SemanticQueryPresentation {
+                        id: RowId::Package(package).stable_key(),
+                        kind: "project".to_owned(),
+                        coordinate: "fixture".to_owned(),
+                        name: "fixture".to_owned(),
+                        signature: None,
+                        documentation: String::new(),
+                        score: None,
+                        project: None,
+                        parent: None,
+                        related: Box::new([]),
+                    },
+                ),
+                workout_fact,
+                drive_fact,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let (cancellation, _) = SemanticQueryCancellation::new();
+        let request = SemanticQueryRequest::admit_page(
+            corpus,
+            "{ Declaration { name @filter(op: \"=\", value: [\"$name\"]) referencedBy @optional { name @output } } }",
+            BTreeMap::from([("name".to_owned(), "demo.WorkoutService".into())]),
+            0,
+            8,
+            cancellation,
+        )
+        .map_err(|error| error.to_string())?;
+        let events = futures_executor::block_on(
+            execute_semantic_query(request)
+                .map_err(|error| error.to_string())?
+                .collect::<Vec<_>>(),
+        );
+        let callers = events
+            .iter()
+            .filter_map(|event| match event {
+                SemanticQueryEvent::Row(row) => row.row().get("name").cloned(),
+                SemanticQueryEvent::Terminal(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if callers != ["drive".into()] {
+            return Err(format!(
+                "referencedBy on demo.WorkoutService should name only drive, got {callers:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_mention_universe_ambiguous_same_name_returns_none() -> Result<(), String> {
+        let first_bytes = project_item_image(
+            "WorkoutService.java",
+            1,
+            b"demo.WorkoutService",
+            TreeEntityId::new(0),
+            ItemKind::Record,
+            None,
+        )?;
+        let duplicate_bytes = project_item_image(
+            "OtherWorkoutService.java",
+            3,
+            b"demo.WorkoutService",
+            TreeEntityId::new(0),
+            ItemKind::Record,
+            None,
+        )?;
+        let caller_bytes = project_universe_mention_image(
+            "Weeks.java",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(UniverseMentionFixture {
+                ecosystem: b"maven",
+                spelling: b"demo.WorkoutService",
+                foreign_key: 103,
+                entity_kind: ItemKind::Record,
+            }),
+        )?;
+        let paths = project_paths(&["WorkoutService.java", "OtherWorkoutService.java", "Weeks.java"]);
+        let images = [&first_bytes[..], &duplicate_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(1).identity(),
+            fixture_version(3).identity(),
+            fixture_version(2).identity(),
+        ]);
+        let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        if join_project_mention(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("ambiguous demo.WorkoutService records must not retarget".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_mention_universe_suffix_display_returns_none() -> Result<(), String> {
+        let service_bytes = project_item_image(
+            "WorkoutService.java",
+            1,
+            b"demo.WorkoutService",
+            TreeEntityId::new(0),
+            ItemKind::Record,
+            None,
+        )?;
+        let caller_bytes = project_universe_mention_image(
+            "Weeks.java",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(UniverseMentionFixture {
+                ecosystem: b"maven",
+                spelling: b"Service",
+                foreign_key: 104,
+                entity_kind: ItemKind::Record,
+            }),
+        )?;
+        let paths = project_paths(&["WorkoutService.java", "Weeks.java"]);
+        let images = [&service_bytes[..], &caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(1).identity(),
+            fixture_version(2).identity(),
+        ]);
+        let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        if join_project_mention(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("Service must not match demo.WorkoutService".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_mention_universe_java_lang_string_returns_none() -> Result<(), String> {
+        let caller_bytes = project_universe_mention_image(
+            "Weeks.java",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            ItemKind::Function,
+            Some(UniverseMentionFixture {
+                ecosystem: b"maven",
+                spelling: b"java.lang.String",
+                foreign_key: 105,
+                entity_kind: ItemKind::Record,
+            }),
+        )?;
+        let paths = project_paths(&["Weeks.java"]);
+        let images = [&caller_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([fixture_version(2).identity()]);
+        let (external, link_kind, caller_path) = foreign_mention_from_caller(&caller_bytes)?;
+        let caller_image =
+            SemanticImageView::reopen(&caller_bytes).map_err(|error| error.to_string())?;
+        if join_project_mention(
+            &caller_image,
+            link_kind,
+            external,
+            &caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("java.lang.String must not join without a published entity".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn join_project_mention_universe_reads_or_method_call_returns_none() -> Result<(), String> {
+        let service_bytes = project_item_image(
+            "WorkoutService.java",
+            1,
+            b"demo.WorkoutService",
+            TreeEntityId::new(0),
+            ItemKind::Record,
+            None,
+        )?;
+        let paths = project_paths(&["WorkoutService.java", "Weeks.java"]);
+        let images = [&service_bytes[..]];
+        let index = ProjectCallableIndex::build_from_bytes(&images).map_err(|error| error.to_string())?;
+        let published = BTreeSet::from([
+            fixture_version(1).identity(),
+            fixture_version(2).identity(),
+        ]);
+        let field_caller = java_namespace_note_field_image(
+            "Weeks.java",
+            106,
+            107,
+            108,
+            106,
+            b"demo.WorkoutService",
+        )?;
+        let (field_external, field_link_kind, field_caller_path) =
+            foreign_namespace_link_from_caller(&field_caller, TreeEntityId::new(2), LinkKind::Reads)?;
+        let field_image =
+            SemanticImageView::reopen(&field_caller).map_err(|error| error.to_string())?;
+        if join_project_mention(
+            &field_image,
+            field_link_kind,
+            field_external,
+            &field_caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("Reads must not join through join_project_mention".to_owned());
+        }
+        let method_call_bytes = project_namespace_call_image(
+            "Weeks.java",
+            109,
+            &java_owner_chain(),
+            b"setNote",
+            110,
+            TreeEntityId::new(1),
+            b"drive",
+            111,
+            TreeEntityId::new(2),
+            NamespaceCallFixture {
+                ecosystem: b"maven",
+                namespace: b"demo.WorkoutService",
+                display: b"setNote",
+                foreign_key: 109,
+                link_kind: LinkKind::MethodCall,
+            },
+            ItemKind::Function,
+            Some(ItemKind::Function),
+        )?;
+        let (call_external, call_link_kind, call_caller_path) =
+            foreign_namespace_link_from_caller(&method_call_bytes, TreeEntityId::new(2), LinkKind::MethodCall)?;
+        let call_image =
+            SemanticImageView::reopen(&method_call_bytes).map_err(|error| error.to_string())?;
+        if join_project_mention(
+            &call_image,
+            call_link_kind,
+            call_external,
+            &call_caller_path,
+            &paths,
+            &index,
+            &published,
+        )
+        .map_err(|error| error.to_string())?
+        .is_some()
+        {
+            return Err("MethodCall must not join through join_project_mention".to_owned());
         }
         Ok(())
     }
