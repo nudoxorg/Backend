@@ -19,7 +19,7 @@ use backend_semantic::ir::{
     OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
 };
 use backend_frontend_typescript::legacy::{
-    Checker, MappedModifier as CheckerMappedModifier, Report, TypeTree,
+    Checker, MappedModifier as CheckerMappedModifier, Reference, Report, TypeTree,
 };
 use backend_engine::publication::{
     OpenPublicationScratch, PublicationScratch, PublishControl, open_published, publish_compiled,
@@ -167,6 +167,93 @@ fn fact<'a>(view: &'a FragmentView<'a>, owner: u32) -> DecodedTypeFact<'a> {
 }
 fn occurrences<'a>(view: &'a FragmentView<'a>) -> Vec<DecodedOccurrence<'a>> {
     view.occurrences().into_iter().flatten().flatten().collect()
+}
+
+fn token_span(source: &[u8], needle: &[u8]) -> (u32, u32) {
+    let start = source
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .unwrap_or_else(|| panic!("missing token {needle:?}"));
+    (
+        u32::try_from(start).unwrap(),
+        u32::try_from(start + needle.len()).unwrap(),
+    )
+}
+
+fn recover_site_bytes<'a>(
+    source: &'a [u8],
+    owner_decl_start: u32,
+    occurrence: &DecodedOccurrence<'a>,
+) -> &'a [u8] {
+    let abs_start = owner_decl_start + occurrence.occurrence.span.start;
+    let abs_end = owner_decl_start + occurrence.occurrence.span.end;
+    &source[abs_start as usize..abs_end as usize]
+}
+
+fn property_token(source: &[u8], prefix: &[u8], token: &[u8]) -> u32 {
+    property_token_nth(source, prefix, token, 0)
+}
+
+fn property_token_nth(source: &[u8], prefix: &[u8], token: &[u8], index: usize) -> u32 {
+    let needle = [prefix, token].concat();
+    let mut at = 0;
+    for occurrence in 0..=index {
+        let start = source[at..]
+            .windows(needle.len())
+            .position(|window| window == needle.as_slice())
+            .map(|offset| at + offset)
+            .unwrap_or_else(|| panic!("missing property token {prefix:?}.{token:?} #{index}"));
+        if occurrence == index {
+            return u32::try_from(start + prefix.len()).unwrap();
+        }
+        at = start + 1;
+    }
+    unreachable!()
+}
+
+fn entity_decl_start(
+    source: &'static [u8],
+    authority: Option<&Report>,
+    owner: u32,
+) -> u32 {
+    let default = report(source);
+    let authority = authority.unwrap_or(&default);
+    let compiled = try_lower(source, Some(authority)).expect("lower for owner source span");
+    compiled
+        .ir
+        .items()
+        .find(|item| item.id().raw == owner)
+        .and_then(|item| item.source())
+        .expect("owner declaration source span")
+        .start()
+}
+
+fn assert_property_token_site(
+    source: &'static [u8],
+    authority: Option<&Report>,
+    occurrence: &DecodedOccurrence<'_>,
+    token: &[u8],
+    token_start: u32,
+) {
+    let owner_decl_start = entity_decl_start(source, authority, occurrence.owner.raw);
+    assert_eq!(
+        recover_site_bytes(source, owner_decl_start, occurrence),
+        token,
+        "recovered site bytes must equal the property token"
+    );
+    assert_eq!(
+        owner_decl_start + occurrence.occurrence.span.start,
+        token_start,
+        "absolute property token start must match the independently located token"
+    );
+}
+
+fn entities_named(view: &FragmentView<'_>, name: &[u8], kind: EntityKind) -> Vec<u32> {
+    entities(view)
+        .into_iter()
+        .filter(|(_, n, k)| n == name && *k == kind)
+        .map(|(id, _, _)| id)
+        .collect()
 }
 
 fn ir_tag_shape(ir: &backend_semantic::ir::Ir, id: backend_semantic::ir::TypeId) -> (SemanticTypeTag, u8) {
@@ -773,11 +860,289 @@ fn package_module_bases_stay_honestly_syntactic() {
 }
 #[test]
 fn checker_only_property_call_targets_the_exact_member() {
-    let v=view(b"export class Box { tick(): number { return 1; } } export const box = new Box(); export const t = box.tick();",None);
-    assert!(
+    const SOURCE: &[u8] = b"export class Box { tick(): number { return 1; } } export const box = new Box(); export const t = box.tick();";
+    let v = view(SOURCE, None);
+    let tick_property_start = property_token(SOURCE, b"box.", b"tick");
+    let tick_call = occurrences(&v)
+        .into_iter()
+        .find(|o| {
+            o.occurrence.kind == ReferenceKind::FunctionCall
+                && recover_site_bytes(
+                    SOURCE,
+                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    o,
+                ) == b"tick"
+        })
+        .expect("box.tick() must be a FunctionCall on the tick property token");
+    match tick_call.occurrence.target {
+        OccurrenceTarget::Foreign(ref key) => {
+            assert_eq!(key.path, "tick");
+            assert_eq!(key.display, "tick");
+            assert_eq!(
+                tick_call.occurrence.confidence,
+                OccurrenceConfidence::Syntactic
+            );
+        }
+        OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
+            panic!("box.tick() must stay a syntactic foreign property call")
+        }
+    }
+    assert_eq!(tick_call.owner.raw, named(&v, b"t").0);
+    assert_property_token_site(SOURCE, None, &tick_call, b"tick", tick_property_start);
+    assert_eq!(
         occurrences(&v)
             .iter()
-            .any(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+            .filter(|o| {
+                o.occurrence.kind == ReferenceKind::FunctionCall
+                    && recover_site_bytes(
+                        SOURCE,
+                        entity_decl_start(SOURCE, None, o.owner.raw),
+                        o,
+                    ) == b"tick"
+            })
+            .count(),
+        1,
+        "box.tick() must be the sole property-call site on tick"
+    );
+}
+
+#[test]
+fn this_field_read_targets_the_enclosing_class_field() {
+    const SOURCE: &[u8] =
+        b"export class Point { score: number; read(): number { return this.score; } }";
+    let v = view(SOURCE, None);
+    let (score_field, _) = named(&v, b"score");
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_field))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+}
+
+#[test]
+fn nested_same_name_field_inside_type_literal_does_not_shadow_class_member() {
+    const SOURCE: &[u8] = b"export class Point { score: number; meta: { score: string }; read(): number { return this.score; } }";
+    let v = view(SOURCE, None);
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let point_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(point_score))
+    );
+    assert_ne!(site.occurrence.target, OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_fields[1])));
+    assert!(!matches!(site.occurrence.target, OccurrenceTarget::Foreign(_)));
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+}
+
+#[test]
+fn nested_same_name_field_inside_nested_class_does_not_shadow_class_member() {
+    const SOURCE: &[u8] = b"export class Point { score: number; host(): void { class Inner { score: number; } } read(): number { return this.score; } }";
+    let v = view(SOURCE, None);
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let point_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(point_score))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+}
+
+#[test]
+fn this_field_read_stays_inside_its_enclosing_class() {
+    const SOURCE: &[u8] = b"export class Point { score: number; read(): number { return this.score; } } export class Other { score: number; read(): number { return this.score; } }";
+    let v = view(SOURCE, None);
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 2);
+    let other_read = read_owners[1];
+    let other_score = score_fields[1];
+    let other_score_token_start = property_token_nth(SOURCE, b"this.", b"score", 1);
+    let other_read_site = occurrences(&v)
+        .into_iter()
+        .find(|o| o.owner.raw == other_read)
+        .expect("Other.read must own the FieldAccess");
+    assert_eq!(
+        other_read_site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(other_score))
+    );
+    assert_property_token_site(
+        SOURCE,
+        None,
+        &other_read_site,
+        b"score",
+        other_score_token_start,
+    );
+}
+
+#[test]
+fn this_method_call_targets_the_enclosing_class_method() {
+    const SOURCE: &[u8] = b"export class Client { send(): number { return this.send(); } }";
+    let v = view(SOURCE, None);
+    let (send_method, _) = named(&v, b"send");
+    let send_token_start = property_token(SOURCE, b"this.", b"send");
+    let calls: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect();
+    assert_eq!(calls.len(), 1);
+    let site = &calls[0];
+    assert_eq!(site.owner.raw, send_method);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(send_method))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"send", send_token_start);
+    assert!(
+        !occurrences(&v).iter().any(|o| {
+            o.occurrence.kind == ReferenceKind::FieldAccess
+                && matches!(
+                    o.occurrence.target,
+                    OccurrenceTarget::Local(entity) if entity.raw == send_method
+                )
+        })
+    );
+}
+
+#[test]
+fn chained_builtin_call_stays_foreign_while_this_field_is_local() {
+    const SOURCE: &[u8] =
+        b"export class Chain { score: number; widen(): string { return this.score.toFixed(); } }";
+    let v = view(SOURCE, None);
+    let (score_field, _) = named(&v, b"score");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field = occurrences(&v)
+        .into_iter()
+        .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .expect("local FieldAccess of score");
+    assert_eq!(
+        field.occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_field))
+    );
+    assert_property_token_site(SOURCE, None, &field, b"score", score_token_start);
+    let _to_fixed_start = property_token(SOURCE, b"score.", b"toFixed");
+    let to_fixed = occurrences(&v)
+        .into_iter()
+        .find(|o| {
+            o.occurrence.kind == ReferenceKind::FunctionCall
+                && recover_site_bytes(
+                    SOURCE,
+                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    o,
+                ) == b"toFixed"
+        })
+        .expect("foreign FunctionCall of toFixed");
+    match to_fixed.occurrence.target {
+        OccurrenceTarget::Foreign(ref key) => assert_eq!(key.path, "toFixed"),
+        OccurrenceTarget::Local(_) => panic!("toFixed must not resolve locally"),
+        OccurrenceTarget::Stable(_) => panic!("toFixed must not target a stable ref"),
+    }
+    assert_eq!(
+        to_fixed.occurrence.confidence,
+        OccurrenceConfidence::Syntactic
+    );
+}
+
+#[test]
+fn foreign_receiver_field_access_stays_syntactic() {
+    const SOURCE: &[u8] = b"export class Point { missing: number; } export function loose(obj: Point): number { return obj.missing; }";
+    let v = view(SOURCE, None);
+    let (point_field, _) = named(&v, b"missing");
+    let missing_token_start = property_token(SOURCE, b"obj.", b"missing");
+    let site = occurrences(&v)
+        .into_iter()
+        .find(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .expect("foreign FieldAccess of missing");
+    match site.occurrence.target {
+        OccurrenceTarget::Foreign(ref key) => assert_eq!(key.path, "missing"),
+        OccurrenceTarget::Local(entity) => {
+            panic!("obj.missing must not bind locally to {entity:?}, field is {point_field}")
+        }
+        OccurrenceTarget::Stable(_) => panic!("obj.missing must not target a stable ref"),
+    }
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_property_token_site(SOURCE, None, &site, b"missing", missing_token_start);
+}
+
+#[test]
+fn checker_resolved_property_access_is_not_duplicated() {
+    const SOURCE: &[u8] =
+        b"export class Point { score: number; read(): number { return this.score; } }";
+    let field_name_start = token_span(SOURCE, b"score:").0;
+    let use_token = SOURCE
+        .windows(b"score".len())
+        .enumerate()
+        .filter(|(index, _)| {
+            SOURCE[*index..].starts_with(b"score; }")
+                && SOURCE.get(..*index).is_some_and(|prefix| prefix.ends_with(b"this."))
+        })
+        .map(|(index, _)| u32::try_from(index).unwrap())
+        .next()
+        .expect("this.score token");
+    let mut authority = report(SOURCE);
+    authority.references = Box::new([Reference {
+        start: use_token,
+        end: use_token + u32::try_from(b"score".len()).unwrap(),
+        target_start: Some(field_name_start),
+        target_end: Some(field_name_start + u32::try_from(b"score".len()).unwrap()),
+        module: None,
+        name: None,
+        overload_index: None,
+    }]);
+    let v = view(SOURCE, Some(&authority));
+    let (score_field, _) = named(&v, b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| {
+            o.occurrence.kind == ReferenceKind::FieldAccess
+                && recover_site_bytes(
+                    SOURCE,
+                    entity_decl_start(SOURCE, Some(&authority), o.owner.raw),
+                    o,
+                ) == b"score"
+        })
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(score_field))
+    );
+    assert_eq!(
+        field_reads[0].occurrence.confidence,
+        OccurrenceConfidence::Oracle
     );
 }
 #[test]
