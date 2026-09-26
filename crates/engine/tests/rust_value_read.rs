@@ -45,6 +45,54 @@ const VARIANT_LIB: &str = r#"mod service;
 pub fn drive() { let _c = service::Color::Red; }
 "#;
 
+const ASSOC_SERVICE: &str = r#"pub struct Workout;
+impl Workout {
+    pub const LIMIT: i32 = 1;
+}
+"#;
+
+const ASSOC_LIB: &str = r#"mod service;
+pub fn drive() { let _n = service::Workout::LIMIT; }
+"#;
+
+const ASSOC_LOCAL_LIB: &str = r#"pub struct Workout;
+impl Workout {
+    pub const LIMIT: i32 = 1;
+}
+pub fn local() { let _n = Workout::LIMIT; }
+"#;
+
+const DUAL_VALUE_SERVICE: &str = r#"pub const LIMIT: u8 = 1;
+pub struct Workout;
+impl Workout {
+    pub const LIMIT: i32 = 2;
+}
+"#;
+
+const DUAL_VALUE_LIB: &str = r#"mod service;
+pub fn drive() {
+    let _free = service::LIMIT;
+    let _assoc = service::Workout::LIMIT;
+}
+"#;
+
+const COLLISION_SERVICE: &str = r#"pub struct Workout;
+impl Workout {
+    pub const LIMIT: i32 = 1;
+}
+pub struct Session;
+impl Session {
+    pub const LIMIT: i32 = 2;
+}
+"#;
+
+const COLLISION_LIB: &str = r#"mod service;
+pub fn drive() {
+    let _workout = service::Workout::LIMIT;
+    let _session = service::Session::LIMIT;
+}
+"#;
+
 struct Lane<'a> {
     view: FragmentView<'a>,
     occurrences: Vec<DecodedOccurrence<'a>>,
@@ -420,6 +468,277 @@ fn cross_file_variant_read_retargets_name_token_only() -> Result<(), String> {
     };
     if key.path.contains("::") || key.display.contains("::") {
         return Err("package key must use the name token Red, not Color::Red".to_owned());
+    }
+    Ok(())
+}
+
+#[test]
+fn cross_file_associated_const_read_retargets_to_defining_module_path() -> Result<(), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-assoc-value-{nonce}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"assoc_value_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/service.rs"), ASSOC_SERVICE).map_err(|error| error.to_string())?;
+    fs::write(root.join("src/lib.rs"), ASSOC_LIB).map_err(|error| error.to_string())?;
+    let bytes = compile_source(&root, "src/lib.rs", ASSOC_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+
+    let limit_reads = package_value_reads(&lane)
+        .into_iter()
+        .filter(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.ecosystem == "cargo"
+                && lineage.name == "src/service"
+                && key.path == "LIMIT"
+                && key.display == "LIMIT"
+                && key.kind == Some(EntityKind::Constant)
+        })
+        .collect::<Vec<_>>();
+    if limit_reads.len() != 1 {
+        return Err(format!(
+            "expected exactly one retargeted associated LIMIT value read, got {}",
+            limit_reads.len()
+        ));
+    }
+
+    let mention = limit_reads[0];
+    if mention.kind != ReferenceKind::VariableUse {
+        return Err("retargeted occurrence must be a variable use".to_owned());
+    }
+    let OccurrenceTarget::Foreign(key) = mention.target else {
+        return Err("retargeted value read must be foreign".to_owned());
+    };
+    if key.path.contains("::") || key.display.contains("::") {
+        return Err(
+            "package key must use the name token LIMIT, not Workout::LIMIT or service::Workout::LIMIT"
+                .to_owned(),
+        );
+    }
+
+    let row = lane
+        .occurrences
+        .iter()
+        .find(|row| {
+            row.occurrence.confidence == OccurrenceConfidence::Oracle
+                && row.occurrence.kind == ReferenceKind::VariableUse
+                && std::ptr::eq(&row.occurrence, mention)
+        })
+        .ok_or("value read occurrence row absent")?;
+    let owner = owner_name(&lane, row.owner)?;
+    if owner != b"drive" {
+        return Err(format!(
+            "value read must be owned by drive, observed {:?}",
+            core::str::from_utf8(&owner).unwrap_or("?")
+        ));
+    }
+
+    let span_len = row.occurrence.span.end - row.occurrence.span.start;
+    if span_len != 5 {
+        return Err(format!(
+            "value read span must cover LIMIT (5 bytes), not Workout::LIMIT, got {span_len}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn same_file_associated_const_read_stays_local() -> Result<(), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-same-file-assoc-{nonce}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"same_file_assoc_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/lib.rs"), ASSOC_LOCAL_LIB).map_err(|error| error.to_string())?;
+    let bytes = compile_source(&root, "src/lib.rs", ASSOC_LOCAL_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+
+    let package_limit_keys = lane
+        .occurrences
+        .iter()
+        .filter(|row| {
+            let OccurrenceTarget::Foreign(key) = row.occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(_) = key.origin else {
+                return false;
+            };
+            key.path == "LIMIT" || key.display == "LIMIT"
+        })
+        .count();
+    if package_limit_keys != 0 {
+        return Err(format!(
+            "expected zero package LIMIT keys for same-file associated const, got {package_limit_keys}"
+        ));
+    }
+
+    let local_start = ASSOC_LOCAL_LIB
+        .find("pub fn local")
+        .ok_or("local function absent from fixture source")?;
+    let local_body = ASSOC_LOCAL_LIB
+        .get(local_start..)
+        .ok_or("local body absent")?;
+
+    let limit_local_reads: Vec<_> = lane
+        .occurrences
+        .iter()
+        .filter(|row| {
+            if row.occurrence.confidence != OccurrenceConfidence::Oracle
+                || row.occurrence.kind != ReferenceKind::VariableUse
+                || !matches!(row.occurrence.target, OccurrenceTarget::Local(_))
+            {
+                return false;
+            }
+            let span_len = row.occurrence.span.end - row.occurrence.span.start;
+            if span_len != 5 {
+                return false;
+            }
+            let Ok(start) = usize::try_from(row.occurrence.span.start) else {
+                return false;
+            };
+            let Ok(end) = usize::try_from(row.occurrence.span.end) else {
+                return false;
+            };
+            local_body.get(start..end) == Some("LIMIT")
+        })
+        .collect();
+    if limit_local_reads.len() != 1 {
+        return Err(format!(
+            "expected exactly one oracle local LIMIT value read, got {}",
+            limit_local_reads.len()
+        ));
+    }
+
+    let row = limit_local_reads[0];
+    let owner = owner_name(&lane, row.owner)?;
+    if owner != b"local" {
+        return Err(format!(
+            "LIMIT value read must be owned by local, observed {:?}",
+            core::str::from_utf8(&owner).unwrap_or("?")
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn free_const_and_associated_const_reads_stay_distinct() -> Result<(), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-dual-value-{nonce}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"dual_value_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/service.rs"), DUAL_VALUE_SERVICE).map_err(|error| error.to_string())?;
+    fs::write(root.join("src/lib.rs"), DUAL_VALUE_LIB).map_err(|error| error.to_string())?;
+    let bytes = compile_source(&root, "src/lib.rs", DUAL_VALUE_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+
+    let limit_reads = package_value_reads(&lane)
+        .into_iter()
+        .filter(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.ecosystem == "cargo"
+                && lineage.name == "src/service"
+                && key.path == "LIMIT"
+                && key.display == "LIMIT"
+                && key.kind == Some(EntityKind::Constant)
+        })
+        .collect::<Vec<_>>();
+    if limit_reads.len() != 2 {
+        return Err(format!(
+            "expected two distinct retargeted LIMIT value reads (free and associated), got {}",
+            limit_reads.len()
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn two_associated_consts_same_name_stay_distinct() -> Result<(), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "nudox-rust-assoc-collision-{nonce}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"assoc_collision_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/service.rs"), COLLISION_SERVICE).map_err(|error| error.to_string())?;
+    fs::write(root.join("src/lib.rs"), COLLISION_LIB).map_err(|error| error.to_string())?;
+    let bytes = compile_source(&root, "src/lib.rs", COLLISION_LIB)?;
+    let _ = fs::remove_dir_all(&root);
+    let lane = lane(&bytes)?;
+
+    let limit_reads = package_value_reads(&lane)
+        .into_iter()
+        .filter(|occurrence| {
+            let OccurrenceTarget::Foreign(key) = occurrence.target else {
+                return false;
+            };
+            let backend_semantic::ir::ForeignOrigin::Package(lineage) = key.origin else {
+                return false;
+            };
+            lineage.ecosystem == "cargo"
+                && lineage.name == "src/service"
+                && key.path == "LIMIT"
+                && key.display == "LIMIT"
+                && key.kind == Some(EntityKind::Constant)
+        })
+        .collect::<Vec<_>>();
+    if limit_reads.len() != 2 {
+        return Err(format!(
+            "expected two distinct retargeted associated LIMIT value reads, got {}",
+            limit_reads.len()
+        ));
     }
     Ok(())
 }
