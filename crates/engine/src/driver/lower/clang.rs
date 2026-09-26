@@ -1040,9 +1040,16 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                 | DeclarationKind::TypeAlias
                 | DeclarationKind::Template
                 | DeclarationKind::Namespace => {}
-                DeclarationKind::Enumerator => self.push_enumerator(index)?,
+                DeclarationKind::Enumerator => {
+                    if declaration.name.is_some() {
+                        self.push_enumerator(index)?;
+                    }
+                }
                 DeclarationKind::Field => self.push_typed_member(index, EntityKind::Field)?,
                 DeclarationKind::Variable => {
+                    if declaration.name.is_none() {
+                        continue;
+                    }
                     // Block-scope variables share their function's parentage
                     // but not its block scope: two same-named same-typed
                     // locals in different blocks of one function would mint
@@ -2575,6 +2582,55 @@ impl<'authority, 'scratch, 'source> Projector<'authority, 'scratch, 'source> {
                                     )
                                     .map_err(|fault| lane_terminal(&self.facts, 0, fault))?;
                                 continue;
+                            }
+                        }
+                    }
+                }
+            }
+            if reference.kind == ReferenceKind::Value {
+                if let ReferenceTarget::Foreign {
+                    identity,
+                    path: Some(slot),
+                    ..
+                } = reference.target
+                {
+                    if let Some(package_path) = self.authority.project_paths.get(slot as usize) {
+                        if PackageLineage::new(ECOSYSTEM, package_path.as_ref()).is_ok() {
+                            let entity_kind = self
+                                .authority
+                                .declarations
+                                .iter()
+                                .find(|declaration| declaration.identity == Some(identity))
+                                .and_then(|declaration| match declaration.kind {
+                                    DeclarationKind::Variable => Some(EntityKind::Static),
+                                    DeclarationKind::Enumerator => Some(EntityKind::Variant),
+                                    DeclarationKind::Function
+                                    | DeclarationKind::Method
+                                    | DeclarationKind::Constructor
+                                    | DeclarationKind::Destructor => None,
+                                    _ => None,
+                                });
+                            if let Some(entity_kind) = entity_kind {
+                                if is_source_identifier(written) {
+                                    if let Ok(name) = core::str::from_utf8(written) {
+                                        self.facts
+                                            .push_owned_package_occurrence(
+                                                owner,
+                                                ECOSYSTEM,
+                                                package_path.as_ref(),
+                                                name,
+                                                name,
+                                                Some(entity_kind),
+                                                lane_reference_kind(reference.kind),
+                                                OccurrenceConfidence::Oracle,
+                                                span,
+                                            )
+                                            .map_err(|fault| {
+                                                lane_terminal(&self.facts, 0, fault)
+                                            })?;
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
