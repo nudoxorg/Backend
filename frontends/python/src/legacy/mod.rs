@@ -171,6 +171,7 @@ pub enum ParameterKind {
 pub enum OccurrenceKind {
     FunctionCall,
     MethodCall,
+    AttributeRead,
 }
 /// How a call's receiver was written, which decides the target key the
 /// occurrence resolves through. Bare-name and module-gated rows keep the
@@ -1319,6 +1320,52 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     kind,
                     confidence: Confidence::Index,
                     span: span(callee_span),
+                    receiver,
+                });
+            }
+        }
+        if let ast::Expr::Attribute(attribute) = expr {
+            let target = attribute.attr.as_str();
+            let attr_span = span(attribute.attr.range());
+            let already_recorded = self.facts.occurrences.iter().any(|occurrence| {
+                occurrence.target == target
+                    && occurrence.span.start <= attr_span.start
+                    && occurrence.span.end == attr_span.end
+            });
+            if !already_recorded {
+                let receiver = match attribute.value.as_ref() {
+                    ast::Expr::Name(name)
+                        if matches!(name.id.as_str(), "self" | "cls")
+                            && self.enclosing_class.is_some() =>
+                    {
+                        OccurrenceReceiver::EnclosingClass {
+                            class: self
+                                .enclosing_class
+                                .clone()
+                                .expect("enclosing class proven above"),
+                        }
+                    }
+                    ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
+                        receiver: Some(name.id.as_str().to_owned()),
+                    },
+                    _ => OccurrenceReceiver::Foreign { receiver: None },
+                };
+                let owner = if self.decorator_ranges.iter().any(|range| {
+                    range.start() <= expr.range().start() && range.end() >= expr.range().end()
+                }) {
+                    match self.decorator_owner.as_deref() {
+                        Some(owner) => owner,
+                        None => &self.owner,
+                    }
+                } else {
+                    &self.owner
+                };
+                self.facts.occurrences.push(OccurrenceFact {
+                    owner: owner.to_owned(),
+                    target: target.to_owned(),
+                    kind: OccurrenceKind::AttributeRead,
+                    confidence: Confidence::Index,
+                    span: attr_span,
                     receiver,
                 });
             }
