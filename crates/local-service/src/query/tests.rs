@@ -17,6 +17,12 @@ impl semantic::AnnSource for OfflineSource {
 }
 
 pub(super) fn selected_view() -> (backend_engine::WorkspaceRoot, backend_engine::ViewRoot) {
+    selected_view_with_first_label("alpha exact")
+}
+
+fn selected_view_with_first_label(
+    first_label: &str,
+) -> (backend_engine::WorkspaceRoot, backend_engine::ViewRoot) {
     let head = crate::builtin::genesis().expect("genesis");
     let (base, _) = crate::builtin::initial_view().expect("initial view");
     let capability = crate::builtin::test_builtin_view_capability().expect("capability");
@@ -26,7 +32,7 @@ pub(super) fn selected_view() -> (backend_engine::WorkspaceRoot, backend_engine:
         RowId::Symbol(backend_engine::symbol_key("alpha::exact")),
         base.basis(),
         package,
-        "alpha exact",
+        first_label,
     )
     .with_signature("fn alpha()")
     .with_document(vec![Fragment::Text("first candidate".to_owned())]);
@@ -61,10 +67,19 @@ pub(super) fn semantic_evidence(
     workspace: backend_engine::WorkspaceRoot,
     view: &backend_engine::ViewRoot,
 ) -> backend_extension_trustfall::SemanticQueryCorpus {
+    semantic_evidence_marked(workspace, view, [7; 32])
+}
+
+fn semantic_evidence_marked(
+    workspace: backend_engine::WorkspaceRoot,
+    view: &backend_engine::ViewRoot,
+    marker: [u8; 32],
+) -> backend_extension_trustfall::SemanticQueryCorpus {
     let package = backend_engine::package_key("pkg");
     let project = RowId::Package(package).stable_key();
-    let profile =
-        backend_semantic::vocabulary::LanguageProfile::Rust(backend_semantic::vocabulary::RustEdition::Rust2021);
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2021,
+    );
     let facts = view
         .rows()
         .iter()
@@ -76,7 +91,7 @@ pub(super) fn semantic_evidence(
             } else {
                 backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
                     backend_extension_trustfall::StructuralFallbackEvidence::new(
-                        package, profile, [7; 32], [8; 32],
+                        package, profile, marker, [8; 32],
                     ),
                 )
             };
@@ -507,4 +522,94 @@ fn semantic_lane_only_reorders_local_matches_and_suppresses_unknown_ids() {
         expected
     );
     assert_eq!(outage.lanes[2].coverage, CoverageBasis::Unavailable);
+}
+
+#[test]
+fn evidence_only_refresh_rebinds_the_resident_lexical_index() {
+    let (workspace, view) = selected_view();
+    let coverage = crate::builtin::admitted_coverage().expect("coverage");
+    let mut owner = SearchSnapshotOwner::default();
+    owner
+        .select(
+            workspace,
+            view.clone(),
+            coverage,
+            semantic_evidence(workspace, &view),
+        )
+        .expect("cold snapshot");
+    assert_eq!(owner.projection_builds(), 1);
+    owner
+        .select(
+            workspace,
+            view.clone(),
+            coverage,
+            semantic_evidence_marked(workspace, &view, [9; 32]),
+        )
+        .expect("rebound snapshot");
+    assert_eq!(
+        owner.maintenance(),
+        Some(local::SnapshotMaintenance::Rebound)
+    );
+    assert_eq!(owner.projection_builds(), 1);
+    let marked = semantic_evidence_marked(workspace, &view, [9; 32]);
+    let answer = owner
+        .select(workspace, view, coverage, marked)
+        .expect("reused rebound")
+        .search_local(LocalQuery::prefix("alphabet", 4).expect("query"))
+        .expect("search");
+    assert_eq!(answer.total_matches, 1);
+    assert_eq!(answer.rows[0].row.label, "alphabet prefix");
+    assert_eq!(
+        owner.maintenance(),
+        Some(local::SnapshotMaintenance::Reused)
+    );
+    assert_eq!(owner.projection_builds(), 1);
+}
+
+#[test]
+fn one_renamed_symbol_rewrites_only_that_lexical_document() {
+    let (workspace, view) = selected_view();
+    let coverage = crate::builtin::admitted_coverage().expect("coverage");
+    let mut owner = SearchSnapshotOwner::default();
+    let evidence = semantic_evidence(workspace, &view);
+    owner
+        .select(workspace, view, coverage, evidence)
+        .expect("cold snapshot");
+    let (workspace, renamed) = selected_view_with_first_label("zephyr marker");
+    let evidence = semantic_evidence(workspace, &renamed);
+    owner
+        .select(workspace, renamed.clone(), coverage, evidence.clone())
+        .expect("revised snapshot");
+    assert_eq!(
+        owner.maintenance(),
+        Some(local::SnapshotMaintenance::Revised {
+            rewritten_documents: 1
+        })
+    );
+    assert_eq!(owner.projection_builds(), 1);
+    owner
+        .select(workspace, renamed.clone(), coverage, evidence.clone())
+        .expect("reused revision");
+    assert_eq!(
+        owner.maintenance(),
+        Some(local::SnapshotMaintenance::Reused)
+    );
+    assert_eq!(owner.projection_builds(), 1);
+    let coordinator = owner
+        .select(workspace, renamed, coverage, evidence)
+        .expect("search snapshot");
+    let renamed_hit = coordinator
+        .search_local(LocalQuery::prefix("zephyr", 4).expect("query"))
+        .expect("renamed search");
+    assert_eq!(renamed_hit.total_matches, 1);
+    assert_eq!(renamed_hit.rows[0].row.label, "zephyr marker");
+    let sibling = coordinator
+        .search_local(LocalQuery::prefix("alphabet", 4).expect("query"))
+        .expect("sibling search");
+    assert_eq!(sibling.total_matches, 1);
+    assert_eq!(sibling.rows[0].row.label, "alphabet prefix");
+    let retired = coordinator
+        .search_local(LocalQuery::prefix("exact", 4).expect("query"))
+        .expect("retired token");
+    assert_eq!(retired.total_matches, 0);
 }

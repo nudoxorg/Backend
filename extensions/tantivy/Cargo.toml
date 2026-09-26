@@ -32,3 +32,8 @@ harness = false
 name = "durable_projection"
 path = "benches/durable_projection.rs"
 harness = false
+
+[[bench]]
+name = "projection_revision"
+path = "benches/projection_revision.rs"
+harness = false
