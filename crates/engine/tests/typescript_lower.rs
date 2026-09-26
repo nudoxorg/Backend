@@ -15,8 +15,9 @@ use backend_engine::driver::{
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
 use backend_semantic::ir::{
-    DecodedOccurrence, DecodedTypeFact, DocFragmentInput, EntityKind, FragmentView, ItemKind, OccurrenceConfidence,
-    OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason, TypeWidth,
+    DecodedOccurrence, DecodedTypeFact, DocFragmentInput, EntityId, EntityKind, FragmentView, ItemKind,
+    OccurrenceConfidence, OccurrenceTarget, PrimitiveShape, ReferenceKind, SemanticTypeTag, TypeReason,
+    TypeWidth,
 };
 use backend_frontend_typescript::legacy::{
     Checker, MappedModifier as CheckerMappedModifier, Report, TypeTree,
@@ -1423,4 +1424,130 @@ fn constructor_assignments_declare_nested_function_bindings() {
     assert_eq!(parameter_count(&view, b"nested"), 1);
     assert_eq!(parameter_count(&view, b"caught"), 1);
     assert_eq!(parameter_count(&view, b"mid"), 1);
+}
+
+#[test]
+fn function_value_reference_is_a_call_not_a_read() {
+    const SOURCE: &[u8] = b"export function parse(raw: string): number { return raw.length; }
+export function use(items: string[]): number[] {
+  const bound = parse;
+  return items.map(parse);
+}
+export function direct(raw: string): number { return parse(raw); }
+export function typed(value: typeof parse): number { return 0; }
+const count = 1;
+const alias = count;
+const arrow = (raw: string) => raw.length;
+export function viaArrow(items: string[]): string[] { return items.map(arrow); }
+";
+    let view = view(SOURCE, None);
+    let parse_id = EntityId::new(named(&view, b"parse").0);
+    let bound_id = named(&view, b"bound").0;
+    let use_id = named(&view, b"use").0;
+    let direct_id = named(&view, b"direct").0;
+    let typed_id = named(&view, b"typed").0;
+    let alias_id = named(&view, b"alias").0;
+    let count_id = EntityId::new(named(&view, b"count").0);
+    let via_arrow_id = named(&view, b"viaArrow").0;
+    let arrow_id = EntityId::new(named(&view, b"arrow").0);
+
+    let owner_start = |name: &[u8]| {
+        SOURCE
+            .windows(name.len())
+            .position(|window| window == name)
+            .expect("owner declaration name")
+    };
+    let site_start = |site: &[u8], token: &[u8]| {
+        let site_at = SOURCE
+            .windows(site.len())
+            .position(|window| window == site)
+            .expect("reference site");
+        let offset = site
+            .windows(token.len())
+            .position(|window| window == token)
+            .expect("token inside site");
+        site_at + offset
+    };
+    let relative = |owner: &[u8], site: &[u8], token: &[u8]| {
+        u32::try_from(site_start(site, token) - owner_start(owner)).expect("owner-relative span")
+    };
+
+    let rows = occurrences(&view);
+    let parse_calls = rows
+        .iter()
+        .filter(|row| {
+            row.occurrence.kind == ReferenceKind::FunctionCall
+                && row.occurrence.target == OccurrenceTarget::Local(parse_id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(parse_calls.len(), 3, "parse has three function-value/call sites");
+
+    let bound_call = parse_calls
+        .iter()
+        .filter(|row| row.owner.raw == bound_id)
+        .filter(|row| {
+            row.occurrence.span.start == relative(b"bound", b"const bound = parse", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bound_call.len(), 1, "bound = parse is one call");
+    assert_eq!(bound_call[0].occurrence.span.end, bound_call[0].occurrence.span.start + 5);
+
+    let map_call = parse_calls
+        .iter()
+        .filter(|row| row.owner.raw == use_id)
+        .filter(|row| {
+            row.occurrence.span.start == relative(b"function use", b"items.map(parse)", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(map_call.len(), 1, "items.map(parse) is one call");
+    assert_eq!(map_call[0].occurrence.span.end, map_call[0].occurrence.span.start + 5);
+    assert_ne!(
+        (bound_call[0].owner.raw, bound_call[0].occurrence.span.start),
+        (map_call[0].owner.raw, map_call[0].occurrence.span.start),
+        "bound and map parse spans differ"
+    );
+
+    let direct_call = parse_calls
+        .iter()
+        .filter(|row| row.owner.raw == direct_id)
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function direct", b"parse(raw)", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(direct_call.len(), 1, "parse(raw) is one call not two");
+    assert_eq!(direct_call[0].occurrence.span.end, direct_call[0].occurrence.span.start + 5);
+
+    let typeof_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == typed_id)
+        .filter(|row| {
+            row.occurrence.span.start == relative(b"function typed", b"typeof parse", b"parse")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(typeof_rows.len(), 1, "typeof parse emits one row");
+    assert_eq!(typeof_rows[0].occurrence.kind, ReferenceKind::TypeReference);
+
+    let alias_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == alias_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(count_id))
+        .filter(|row| {
+            row.occurrence.span.start == relative(b"alias", b"const alias = count", b"count")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(alias_rows.len(), 1, "alias = count emits one row");
+    assert_eq!(alias_rows[0].occurrence.kind, ReferenceKind::VariableUse);
+
+    let arrow_rows = rows
+        .iter()
+        .filter(|row| row.owner.raw == via_arrow_id)
+        .filter(|row| row.occurrence.target == OccurrenceTarget::Local(arrow_id))
+        .filter(|row| {
+            row.occurrence.span.start
+                == relative(b"function viaArrow", b"items.map(arrow)", b"arrow")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(arrow_rows.len(), 1, "items.map(arrow) emits one row");
+    assert_eq!(arrow_rows[0].occurrence.kind, ReferenceKind::VariableUse);
 }
