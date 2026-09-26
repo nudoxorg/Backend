@@ -1284,7 +1284,13 @@ impl<'a> Visitor<'a> for Projection<'a> {
                         },
                         _ => OccurrenceReceiver::Foreign { receiver: None },
                     };
-                    let gated = self.names.iter().any(|declared| declared == target);
+                    let receiver_is_module_name = matches!(
+                        attribute.value.as_ref(),
+                        ast::Expr::Name(name)
+                            if self.names.iter().any(|declared| declared == name.id.as_str())
+                    );
+                    let gated = receiver_is_module_name
+                        && self.names.iter().any(|declared| declared == target);
                     Some((
                         target,
                         OccurrenceKind::MethodCall,
