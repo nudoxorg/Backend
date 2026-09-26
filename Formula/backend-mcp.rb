@@ -24,10 +24,10 @@ class BackendMcp < Formula
   homepage "https://github.com/nudoxorg/backend"
   license "MIT OR Apache-2.0"
 
-  # Prebuilt service binaries from the v0.2.0 GitHub release.
-  url "https://github.com/nudoxorg/Backend/releases/download/v0.2.0/backend-mcp-macos-arm64.tar.gz"
-  version "0.2.0"
-  sha256 "d5ebce0c45533daebc68b83b1f4ddc69d84febbdb0584be8fdcd5deac6978f4d"
+  # Prebuilt service binaries from the v0.2.1 GitHub release.
+  url "https://github.com/nudoxorg/Backend/releases/download/v0.2.1/backend-mcp-macos-arm64.tar.gz"
+  version "0.2.1"
+  sha256 "adba9dca17fb0646b3b6cbdb6b385a14a3dd0eed489f1c92c946216d369d7f55"
 
   # The GitHub default branch (canonical) carries the formula. `brew install
   # --HEAD` clones it into a fresh Homebrew build cell, so the compile does
