@@ -224,7 +224,14 @@ def "main test pr" []: nothing -> record {
         "--package" "backend-desktop"
     ] | ignore
     let invocation = (nextest-invocation "pr")
-    let filter = "not test(real_package_inventory_keeps_source_provenance_and_closed_terminals) and not test(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render) and not test(twenty_real_crates_compile_with_decoded_lanes)"
+    # The PR lane proves the product works: every shipped binary builds, and
+    # unit, MCP, CLI, locald, desktop, journey, storage, and crash tests pass.
+    # Deep engine-accuracy suites (real-package corpora, pinned reference and
+    # render snapshots, native-compiler probes, timing budgets) are slow and
+    # platform-sensitive; they stay in `backend test workspace` and do not
+    # gate a PR.
+    let deep_accuracy = "binary_id(/^backend-engine::.*(corpus|repro|snapshot|terminals|golden|fleet|lane|render|image|lifecycle|packaging|identity_regressions)/) or binary_id(/^backend-flow::(compiler|system)_corpus$/) or binary_id(/^backend-semantic::render_snapshot_corpus$/) or package(backend-performance-tests)"
+    let filter = $"not \(($deep_accuracy)\) and not test\(real_package_inventory_keeps_source_provenance_and_closed_terminals\) and not test\(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render\) and not test\(twenty_real_crates_compile_with_decoded_lanes\)"
     let failure = (
         try {
             process-require $cargo [
