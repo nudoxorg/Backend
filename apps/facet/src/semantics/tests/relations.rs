@@ -33,7 +33,7 @@ fn relations_match_the_prototype_entry_for_entry() {
     let mut want: Vec<&str> = Vec::new();
     let mut got: Vec<String> = Vec::new();
     let mut symbols = 0;
-    for l in golden.lines() {
+    for l in golden.lines().filter(|l| !l.contains("|callers|")) {
         want.push(l);
         if let Some(head) = l.strip_suffix("|end") {
             symbols += 1;
@@ -44,7 +44,7 @@ fn relations_match_the_prototype_entry_for_entry() {
             got.push(format!("{head}|end"));
         }
     }
-    assert!(symbols >= 50, "the golden covers {symbols} symbols");
+    assert!(symbols >= 60, "the golden covers {symbols} symbols");
     let diffs: Vec<String> = want
         .iter()
         .zip(got.iter())
@@ -122,9 +122,26 @@ fn visitors_prism_notes_other_packages_and_counts_the_rest() {
     let (left, right) = prism(w, visitor, &groups, 5);
     assert_eq!(
         column_text(&left),
-        ["implemented by: BoxedFromString (serde_json), KeyClassifier (serde_json), OptionVisitor, ArrayVisitor, OsStringVisitor +22"]
+        ["implemented by: OptionVisitor, ArrayVisitor, OsStringVisitor, FromStrVisitor, RangeVisitor +22"]
     );
     assert_eq!(column_text(&right)[0], "calls it: U32Deserializer::deserialize_any");
-    assert!(column_text(&right)[1].starts_with("used by: Value::deserialize (serde_json), Map::deserialize (serde_json)"));
-    assert!(column_text(&right)[1].ends_with("+12"));
+    assert_eq!(
+        column_text(&right)[1],
+        "used by: Value::deserialize (serde_json), Map::deserialize (serde_json), RawValue::deserialize (serde_json), deserialize, deserialize_in_place +12"
+    );
+}
+
+#[test]
+fn in_use_ranks_callers_as_the_prototype_does() {
+    let golden = include_str!("relations.golden");
+    let mut checked = 0;
+    for l in golden.lines().filter(|l| l.contains("|callers|")) {
+        let mut parts = l.split('|');
+        let i: NodeId = parts.next().and_then(|s| s.parse().ok()).expect("an id");
+        let want = parts.nth(2).unwrap_or_default();
+        let got: Vec<String> = crate::semantics::page::callers(world(), i).iter().map(ToString::to_string).collect();
+        assert_eq!(got.join(","), want, "callers of {}", world().node(i).name);
+        checked += 1;
+    }
+    assert_eq!(checked, 4);
 }

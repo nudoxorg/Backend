@@ -170,10 +170,15 @@ fn in_use_mines_real_statements_from_callers_in_other_packages_first() {
     let uses = in_use(w, from_str, &mut read);
     let got: Vec<String> =
         uses.iter().map(|u| format!("{} · {}:{} · {}", u.package, u.file, u.excerpt.line, u.excerpt.lines[0])).collect();
-    assert!(!got.is_empty() && got.len() <= 3, "{got:#?}");
+    // Other packages before serde_json's own callers; ties by importance,
+    // as the golden's caller ranking proves against page.js.
     assert_eq!(
-        got[0],
-        "extension-qdrant · response.rs:30 · serde_json::from_str(body).map_err(|source| QdrantError::Decode { phase, source })"
+        got,
+        [
+            "present · call.rs:314 · let command = serde_json::from_str::<SurfaceCommand>(encoded).map_err(|error| {",
+            "extension-qdrant · response.rs:30 · serde_json::from_str(body).map_err(|source| QdrantError::Decode { phase, source })",
+            "frontend-clang · compile_commands.rs:90 · let entries: Vec<RawEntry> = serde_json::from_str(&text).ok()?;",
+        ]
     );
     // At most two from one package while others wait.
     let first = uses.iter().filter(|u| u.package == uses[0].package).count();

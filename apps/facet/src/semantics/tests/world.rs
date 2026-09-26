@@ -5,12 +5,13 @@ use crate::semantics::names::Names;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-/// `Nudox-Design-System/v4/graph/`.
+/// The pinned fixture (see `fixtures/README.md`): the prototype's world
+/// trimmed to the four target pages' neighbourhood at a fixed revision.
 pub(super) fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Nudox-Design-System/v4/graph")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/semantics/tests/fixtures")
 }
 
-/// The whole fixture world (the workspace plus serde).
+/// The pinned world.
 pub(super) fn world() -> &'static World {
     static WORLD: OnceLock<World> = OnceLock::new();
     WORLD.get_or_init(|| {
@@ -34,9 +35,9 @@ pub(super) fn find(qualified: &str) -> NodeId {
         .unwrap_or_else(|| panic!("no {qualified} in the fixture"))
 }
 
-/// Reads a fixture source: `registry/<file>` for an external package,
-/// `repo/<file>` for the workspace.
+/// Reads a pinned source: `src/registry/<file>` for an external package,
+/// `src/repo/<file>` for the workspace.
 pub(super) fn read(package: &Package, file: &str) -> Option<Arc<str>> {
     let dir = if package.external { "registry" } else { "repo" };
-    std::fs::read_to_string(fixture_dir().join(dir).join(file)).ok().map(Arc::from)
+    std::fs::read_to_string(fixture_dir().join("src").join(dir).join(file)).ok().map(Arc::from)
 }

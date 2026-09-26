@@ -57,3 +57,11 @@ fn a_later_list_replaces_an_earlier_name_as_the_prototype_does() {
     assert_eq!(gs.len(), 1);
     assert_eq!(gs[0].bounds, ["Copy"]);
 }
+
+#[test]
+fn a_binding_inside_a_bound_is_not_a_default() {
+    // serde_json's `from_iter`: gen "I:IntoIterator<Item = T>".
+    let gs = generics(&["I:IntoIterator<Item = T>, U: Clone = String"], "");
+    assert_eq!(gs[0].bounds, ["IntoIterator<Item = T>"]);
+    assert_eq!(gs[1].bounds, ["Clone"]);
+}

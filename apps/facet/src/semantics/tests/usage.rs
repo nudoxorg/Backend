@@ -1,11 +1,12 @@
-//! Mining the statement a caller writes, over the fixture's registry sources
-//! (vendored, so their lines never move) and quoted workspace excerpts.
+//! Mining the statement a caller writes, over the pinned registry sources
+//! (`fixtures/src/registry`, line numbers intact) and quoted workspace
+//! excerpts.
 
 use crate::semantics::usage::{Needle, find, mine};
 use std::path::PathBuf;
 
 fn registry(file: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Nudox-Design-System/v4/graph/registry").join(file);
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/semantics/tests/fixtures/src/registry").join(file);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
@@ -112,4 +113,19 @@ fn comments_attributes_and_nested_items_are_skipped() {
 }";
     let got = mine(source, 1, 6, &free("RelationGroup")).expect("a use");
     assert_eq!(got.line, 5);
+}
+
+#[test]
+fn a_parameter_line_of_the_signature_never_counts_as_a_use() {
+    // The signature spans four lines and names `RequestPhase` in a parameter
+    // (no `fn` on that line, so only the signature skip keeps it out).
+    let source = "pub(crate) fn decode<'body, T: Deserialize<'body>>(
+    phase: RequestPhase,
+    body: &'body str,
+) -> Result<T, QdrantError> {
+    let phase = RequestPhase::Decode;
+    serde_json::from_str(body)
+}";
+    let got = mine(source, 1, 7, &free("RequestPhase")).expect("a use");
+    assert_eq!((got.line, got.lines[0].as_str()), (5, "let phase = RequestPhase::Decode;"));
 }

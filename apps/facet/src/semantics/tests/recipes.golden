@@ -1,0 +1,558 @@
+target|serde_json::de::Deserializer|{"makers":5,"picks":0,"section":"Getting one from anything read new from anything reader from_reader from bytes bytes from_slice 5 ways in this world make one · ⌥ for code","routes":[{"cost":0.94,"code":"Deserializer::new(read)","alts":[]},{"cost":0.94,"code":"Deserializer::from_reader(reader)","alts":[]},{"cost":0.94,"code":"Deserializer::from_slice(bytes)","alts":[]}]}
+target|serde_json::value::Value|{"makers":108,"picks":6,"section":"Getting one default from a number f from also from yes or no , text , nothing , anything , Number and 2 more from any IntoIterator iter from_iter 108 ways in this world make one · or pick one of its 6 variants above · ⌥ for code","routes":[{"cost":0.9,"code":"Value::default()","alts":[]},{"cost":0.94,"code":"Value::from(f)","alts":["number","bool","text","text","text","nothing","any","#Number"]},{"cost":0.94,"code":"Value::from_iter(iter)","alts":["any IntoIterator"]}]}
+target|present::page::Page|{"makers":4,"picks":0,"section":"Getting one from text what shape Fault Source::Absent Source new + Identity identity + a DeclarationKind kind 4 ways in this world make one · ⌥ for code","routes":[{"cost":4.97,"code":"let source = Source::Absent { fault: shape(what) };\nPage::new(Identity::parse(label), DeclarationKind::Module, source)","alts":[]}]}
+target|desktop::model::local_package::manifest::Manifest|{"makers":2,"picks":0,"section":"Getting one default from a path path read_manifest ? 2 ways in this world make one · ⌥ for code","routes":[{"cost":0.7,"code":"Manifest::default()","alts":[]},{"cost":1.39,"code":"read_manifest(path)","alts":[]}]}
+target|present::page::Page::new|{"call":"let source = Source::Absent { fault: shape(what) };\nPage::new(Identity::parse(label), DeclarationKind::Module, source)","section":"Calling it from text what shape Fault Source::Absent Source new + Identity identity + a DeclarationKind kind every argument, from plain values · ⌥ for code"}
+target|serde_json::de::Deserializer::from_slice|{"call":"Deserializer::from_slice(bytes)","section":""}
+table|174|manifest|method|#165|any|00
+table|175|decode|call|bytes|#165|10
+table|242|Module|variant||#241|00
+table|434|product_source_fixture|call|bool|#4604|10
+table|548|default|call||#543|00
+table|872|parse_toml|call|bytes|#7110|10
+table|1236|lookup_exact|call|#4223;bytes;bytes;any|any|11
+table|1244|relation|method|#1241|#1254|10
+table|1247|genesis|call|#4793;#4183|#1245|10
+table|1248|snapshot|method|#1245|#1241|00
+table|1260|lookup|method|#1254;any|any|11
+table|1480|from_admitted|call|#4223;#4695|#1475|00
+table|1481|lookup|method|#1475;any|any|11
+table|1486|from_admitted|call|any;#4695|#1484|00
+table|1487|lookup|method|#1484;any|any|11
+table|1562|from_state|call|#4604;#1622|#1558|00
+table|1563|get|method|#1558;any|any|01
+table|1619|Time|literal|#1618;number|#1619|00
+table|1619|Time|default||#1619|00
+table|1625|new|call|#1619|#1622|00
+table|1690|symbol_key|call|text|#1678|00
+table|1714|default|call||#1709|00
+table|1715|view|method|#1709|#2242|00
+table|1716|document|method|#1709;#1725|#2226|10
+table|1729|new|call|#1678;#1688|#1725|00
+table|1735|from_cursor|call|#1747|#1733|00
+table|1746|Library|variant||#1745|00
+table|1756|new|call||#1747|00
+table|1757|root|method|#1747|#1688|00
+table|1779|Null|variant||#1778|00
+table|2099|ParseError|variant||#2098|00
+table|2102|initialize_result|call|text;text;text;text|#7110|00
+table|2103|tools_list_result|call|list of #2100|#7110|00
+table|2104|resources_list_result|call|list of #2101|#7110|00
+table|2105|resource_contents_result|call|text;text;text|#7110|00
+table|2106|tool_text_result|call|text;bool|#7110|00
+table|2107|success_response|call|#7110;#7110|#7110|00
+table|2108|error_response|call|#7110;#2098;text|#7110|00
+table|2109|progress_notification|call|#7110;number;number;text|#7110|00
+table|2184|names|call||list of text|00
+table|2252|rows|method|#2242|list of #2235|00
+table|2361|attach_certificate|call|#7110;#7110|#7110|10
+table|2470|open|call|path;any;#1245;#543|#2468|10
+table|2471|engine|method|#2468|#2591|00
+table|2563|page_from_document|call|text;#2226;list of #2235;list of #2235;list of #2628|#2673|00
+table|2564|page_from_document_with_graph_relations|call|text;#2226;list of #2235;list of #2235;list of #2232;list of #2628|#2673|00
+table|2565|member_groups|call|list of #2235;#1678|list of #2665|00
+table|2566|Detail|default||#2566|00
+table|2583|row_for|call|text|#2640|01
+table|2593|Product|variant|#2694|#2592|00
+table|2594|page|call|#2591;text|#2673|10
+table|2596|shape|call|text|#2628|00
+table|2597|answer_value|call|#2592|#7110|00
+table|2598|fault_value|call|#2628|#7110|00
+table|2599|tagged|call|text;any Serialize|#7110|00
+table|2625|Retry|variant||#2624|00
+table|2626|tool_call|method|#2624|#7110|01
+table|2627|tool_arguments|call|text;list of text|#7110|00
+table|2633|usage|call|text;text|#2628|00
+table|2659|parse|call|text|#2650|00
+table|2660|Language|default||#2660|00
+table|2672|Absent|variant|#2628|#2671|00
+table|2673|Page|literal|#2650;#241;#2660;#2718;list of #2663;list of #2665;list of #2667;#2671;list of #2628|#2673|00
+table|2683|new|call|#2650;#241;#2671|#2673|00
+table|2684|with_language|method|#2673;#2660|#2673|00
+table|2685|with_signature|method|#2673;#2718|#2673|00
+table|2686|with_prose|method|#2673;list of #2663|#2673|00
+table|2687|with_members|method|#2673;list of #2665|#2673|00
+table|2688|with_relations|method|#2673;list of #2667|#2673|00
+table|2689|with_notes|method|#2673;list of #2628|#2673|00
+table|2690|prose|method|#2673|list of #2663|00
+table|2691|relations|method|#2673|list of #2667|00
+table|2692|notes|method|#2673|list of #2628|00
+table|2699|stated|call|text;text|#2694|00
+table|2718|Signature|literal|list of #2717|#2718|00
+table|2718|Signature|default||#2718|00
+table|3412|IrBuilder|literal|#3539;#3278;#3352;#3542;#3349;#3355;#3355;#3355;#3355;#3355;#3355;#3355;#3355;#3355;#3355;#3451;#3284;#3452;#3448;#3348;#3458;#3459;#3285;list of #3190;list of #3830;list of #3571|#3412|00
+table|3412|IrBuilder|default||#3412|00
+table|3439|intern_guarded|method|#3412;#3598|#3606|10
+table|3440|finish|method|#3412|#3485|10
+table|3510|typed_type|method|#3485;#3606|any|01
+table|3549|This|variant||#3548|00
+table|3600|computed|call|#3548|#3598|00
+table|4171|decode|call|bytes;number|#4168|10
+table|4190|from_checked_manifest|call|#4793;#4168|#4183|10
+table|4261|open|call|path;number|#4223|10
+table|4609|get|method|#4604;any|any|01
+table|4686|empty|call||#4710|00
+table|4687|root|method|#4710|#4756|00
+table|4688|get|method|#4710;any|any|01
+table|4697|from_checked|call|#4763|#4695|00
+table|4704|from_admitted|call|any;#4695|#4700|00
+table|4705|lookup|method|#4700;any|any|11
+table|4719|get_node|call|#4706;any|any|01
+table|4751|decode_value|call|bytes|any|10
+table|4752|admit_canonical_root|call|bytes|#4763|10
+table|4762|first_key|method|#4756|any|01
+table|4804|decode_untrusted|call|bytes|#4793|10
+table|5540|Manifest|literal|#5547;#5559;map text to #7110;map text to #7110;map text to #7110;map text to list of text|#5540|00
+table|5540|Manifest|default||#5540|00
+table|5547|ManifestPackage|literal|text;#7110;#7110;#7110;#7110;#7110;#7110;#7110;#7110;#7110;#7110|#5547|00
+table|5547|ManifestPackage|default||#5547|00
+table|5559|Workspace|literal|#5547;list of text;list of text|#5559|00
+table|5559|Workspace|default||#5559|00
+table|5563|read_manifest|call|path|#5540|01
+table|6422|success|call|#7110;#7110|#7110|00
+table|6423|error_reply|call|#7110;number;text;#7110|#7110|00
+table|6428|list_resources|call|#2591;#7110|#7110|10
+table|6429|list_resource_templates|call|#7110|#7110|10
+table|6430|read_resource|call|#2591;#7110|#7110|10
+table|6431|encode_result|call|text;any Serialize|#7110|10
+table|6433|list_tools|call|#7110|#7110|10
+table|6434|bounded_tools|call||#7110|10
+table|6435|tools_value|call||#7110|00
+table|6436|token_budget_tools|call||#7110|00
+table|6437|registry_tool|call|#2640;#1745|#7110|00
+table|6438|property|call|#2639|#7110|00
+table|6439|detail_property|call|text|#7110|00
+table|6440|answer_schema|call||#7110|00
+table|6453|handle|method|#6445;bytes|#7110|01
+table|6454|handle_inner|method|#6445;bytes|#7110|01
+table|6455|route|method|#6445;text;#7110|#7110|10
+table|6456|initialize|method|#6445;#7110|#7110|10
+table|6457|read_resource|method|#6445;#7110|#7110|10
+table|6458|call_tool|method|#6445;#7110|#7110|10
+table|6459|query_tool|method|#6445;#6841;#2566;#1733;bytes|#7110|10
+table|6460|graph_tool|method|#6445;#6841;#2566;#1733;bytes|#7110|10
+table|6461|surface_tool|method|#6445;#6841;#2566|#7110|10
+table|6462|get_prompt|method|#6445;#7110|#7110|10
+table|6463|rendered|method|#6445;#2592;#2566;bytes|#7110|10
+table|6464|graph_page_result|method|#6445;#1785;#2566;bytes|#7110|10
+table|6465|refused|call|#2628|#7110|00
+table|6466|bound_route_value|call|#7110|#7110|10
+table|6467|bound_rpc_reply|call|#7110|#7110|00
+table|6468|token_budget_rpc_response|call|#7110;text;#7110;bool|#7110|00
+table|6469|tool_result|call|text;#7110;bool|#7110|00
+table|6476|into_reply|method|#6470;#7110|#7110|00
+table|6477|list_prompts|call|#7110|#7110|10
+table|6478|graph_value|call|#1778|#7110|00
+table|6484|token_budget_tools|call||#7110|00
+table|6485|token_budget_rpc_response|call|#7110;text;#7110;bool|#7110|00
+table|6563|deserialize_any|method|#6562;any Visitor|any|10
+table|6564|deserialize_bool|method|#6562;any Visitor|any|10
+table|6565|deserialize_i8|method|#6562;any Visitor|any|10
+table|6566|deserialize_i16|method|#6562;any Visitor|any|10
+table|6567|deserialize_i32|method|#6562;any Visitor|any|10
+table|6568|deserialize_i64|method|#6562;any Visitor|any|10
+table|6569|deserialize_i128|method|#6562;any Visitor|any|10
+table|6570|deserialize_u8|method|#6562;any Visitor|any|10
+table|6571|deserialize_u16|method|#6562;any Visitor|any|10
+table|6572|deserialize_u32|method|#6562;any Visitor|any|10
+table|6573|deserialize_u64|method|#6562;any Visitor|any|10
+table|6574|deserialize_u128|method|#6562;any Visitor|any|10
+table|6575|deserialize_f32|method|#6562;any Visitor|any|10
+table|6576|deserialize_f64|method|#6562;any Visitor|any|10
+table|6577|deserialize_char|method|#6562;any Visitor|any|10
+table|6578|deserialize_str|method|#6562;any Visitor|any|10
+table|6579|deserialize_string|method|#6562;any Visitor|any|10
+table|6580|deserialize_bytes|method|#6562;any Visitor|any|10
+table|6581|deserialize_byte_buf|method|#6562;any Visitor|any|10
+table|6582|deserialize_option|method|#6562;any Visitor|any|10
+table|6583|deserialize_unit|method|#6562;any Visitor|any|10
+table|6584|deserialize_unit_struct|method|#6562;text;any Visitor|any|10
+table|6585|deserialize_newtype_struct|method|#6562;text;any Visitor|any|10
+table|6586|deserialize_seq|method|#6562;any Visitor|any|10
+table|6587|deserialize_tuple|method|#6562;number;any Visitor|any|10
+table|6588|deserialize_tuple_struct|method|#6562;text;number;any Visitor|any|10
+table|6589|deserialize_map|method|#6562;any Visitor|any|10
+table|6590|deserialize_struct|method|#6562;text;list of text;any Visitor|any|10
+table|6591|deserialize_enum|method|#6562;text;list of text;any Visitor|any|10
+table|6592|deserialize_identifier|method|#6562;any Visitor|any|10
+table|6593|deserialize_ignored_any|method|#6562;any Visitor|any|10
+table|6594|__deserialize_content_v1|method|#6562;any Visitor|any|10
+table|6597|next_element_seed|method|#6596;any DeserializeSeed|any|11
+table|6599|next_key_seed|method|#6598;any DeserializeSeed|any|11
+table|6600|next_value_seed|method|#6598;any DeserializeSeed|any|10
+table|6603|newtype_variant_seed|method|#6602;any DeserializeSeed|any|10
+table|6604|tuple_variant|method|#6602;number;any Visitor|any|10
+table|6605|struct_variant|method|#6602;list of text;any Visitor|any|10
+table|6613|into_deserializer|method||#6614|00
+table|6616|deserialize_any|method|#6614;any Visitor|any|10
+table|6617|deserialize_option|method|#6614;any Visitor|any|10
+table|6622|deserialize_any|method|#6618;any Visitor|any|10
+table|6626|new|call|number|#6623|00
+table|6627|deserialize_any|method|#6623;any Visitor|any|10
+table|6628|deserialize_enum|method|#6623;text;list of text;any Visitor|any|10
+table|6632|new|call|text|#6629|00
+table|6633|deserialize_any|method|#6629;any Visitor|any|10
+table|6634|deserialize_enum|method|#6629;text;list of text;any Visitor|any|10
+table|6638|new|call|text|#6635|00
+table|6639|deserialize_any|method|#6635;any Visitor|any|10
+table|6640|deserialize_enum|method|#6635;text;list of text;any Visitor|any|10
+table|6644|new|call|text|#6641|00
+table|6645|deserialize_any|method|#6641;any Visitor|any|10
+table|6646|deserialize_enum|method|#6641;text;list of text;any Visitor|any|10
+table|6650|new|call|text|#6647|00
+table|6651|deserialize_any|method|#6647;any Visitor|any|10
+table|6652|deserialize_enum|method|#6647;text;list of text;any Visitor|any|10
+table|6656|new|call|bytes|#6653|00
+table|6657|deserialize_any|method|#6653;any Visitor|any|10
+table|6661|new|call|bytes|#6658|00
+table|6662|deserialize_any|method|#6658;any Visitor|any|10
+table|6667|new|call|any|#6663|00
+table|6668|deserialize_any|method|#6663;any Visitor|any|10
+table|6669|next_element_seed|method|#6663;any DeserializeSeed|any|11
+table|6673|new|call|any|#6671|00
+table|6674|deserialize_any|method|#6671;any Visitor|any|10
+table|6681|new|call|any|#6675|00
+table|6682|deserialize_any|method|#6675;any Visitor|any|10
+table|6683|deserialize_seq|method|#6675;any Visitor|any|10
+table|6684|deserialize_tuple|method|#6675;number;any Visitor|any|10
+table|6685|next_key_seed|method|#6675;any DeserializeSeed|any|11
+table|6686|next_value_seed|method|#6675;any DeserializeSeed|any|10
+table|6687|next_element_seed|method|#6675;any DeserializeSeed|any|11
+table|6692|deserialize_any|method|#6688;any Visitor|any|10
+table|6693|deserialize_seq|method|#6688;any Visitor|any|10
+table|6694|deserialize_tuple|method|#6688;number;any Visitor|any|10
+table|6699|next_element_seed|method|#6695;any DeserializeSeed|any|11
+table|6703|new|call|any|#6701|00
+table|6704|deserialize_any|method|#6701;any Visitor|any|10
+table|6705|deserialize_enum|method|#6701;text;list of text;any Visitor|any|10
+table|6708|new|call|any|#6706|00
+table|6709|deserialize_any|method|#6706;any Visitor|any|10
+table|6712|newtype_variant_seed|method|#6710;any DeserializeSeed|any|10
+table|6713|tuple_variant|method|#6710;number;any Visitor|any|10
+table|6714|struct_variant|method|#6710;list of text;any Visitor|any|10
+table|6717|map_as_enum|call|any|#6715|00
+table|6718|newtype_variant_seed|method|#6715;any DeserializeSeed|any|10
+table|6719|tuple_variant|method|#6715;number;any Visitor|any|10
+table|6720|struct_variant|method|#6715;list of text;any Visitor|any|10
+table|6742|Deserializer|literal|any;bytes;number;bool;bool|#6742|00
+table|6748|new|call|any|#6742|00
+table|6749|from_reader|call|any|#6742|00
+table|6750|from_slice|call|bytes|#6742|00
+table|6751|from_str|call|text|#6742|00
+table|6753|String|variant|text|#6752|00
+table|6754|visit|method|#6752;any Visitor|any|10
+table|6755|deserialize_number|method|#6742;any Visitor|any|10
+table|6756|do_deserialize_f32|method|#6742;any Visitor|any|10
+table|6757|do_deserialize_i128|method|#6742;any Visitor|any|10
+table|6758|do_deserialize_u128|method|#6742;any Visitor|any|10
+table|6759|deserialize_raw_value|method|#6742;any Visitor|any|10
+table|6760|deserialize_any|method|#6742;any Visitor|any|10
+table|6761|deserialize_bool|method|#6742;any Visitor|any|10
+table|6762|deserialize_char|method|#6742;any Visitor|any|10
+table|6763|deserialize_str|method|#6742;any Visitor|any|10
+table|6764|deserialize_string|method|#6742;any Visitor|any|10
+table|6765|deserialize_bytes|method|#6742;any Visitor|any|10
+table|6766|deserialize_byte_buf|method|#6742;any Visitor|any|10
+table|6767|deserialize_option|method|#6742;any Visitor|any|10
+table|6768|deserialize_unit|method|#6742;any Visitor|any|10
+table|6769|deserialize_unit_struct|method|#6742;text;any Visitor|any|10
+table|6770|deserialize_newtype_struct|method|#6742;text;any Visitor|any|10
+table|6771|deserialize_seq|method|#6742;any Visitor|any|10
+table|6772|deserialize_tuple|method|#6742;number;any Visitor|any|10
+table|6773|deserialize_tuple_struct|method|#6742;text;number;any Visitor|any|10
+table|6774|deserialize_map|method|#6742;any Visitor|any|10
+table|6775|deserialize_struct|method|#6742;text;list of text;any Visitor|any|10
+table|6776|deserialize_enum|method|#6742;text;list of text;any Visitor|any|10
+table|6777|deserialize_identifier|method|#6742;any Visitor|any|10
+table|6778|deserialize_ignored_any|method|#6742;any Visitor|any|10
+table|6782|new|call|#6742|#6779|00
+table|6783|next_element_seed|method|#6779;any DeserializeSeed|any|11
+table|6787|new|call|#6742|#6784|00
+table|6788|next_key_seed|method|#6784;any DeserializeSeed|any|11
+table|6789|next_value_seed|method|#6784;any DeserializeSeed|any|10
+table|6792|new|call|#6742|#6790|00
+table|6793|newtype_variant_seed|method|#6790;any DeserializeSeed|any|10
+table|6794|tuple_variant|method|#6790;number;any Visitor|any|10
+table|6795|struct_variant|method|#6790;list of text;any Visitor|any|10
+table|6798|new|call|#6742|#6796|00
+table|6799|newtype_variant_seed|method|#6796;any DeserializeSeed|any|10
+table|6800|tuple_variant|method|#6796;number;any Visitor|any|10
+table|6801|struct_variant|method|#6796;list of text;any Visitor|any|10
+table|6802|MapKey|literal|#6742|#6802|00
+table|6804|deserialize_any|method|#6802;any Visitor|any|10
+table|6805|deserialize_bool|method|#6802;any Visitor|any|10
+table|6806|deserialize_option|method|#6802;any Visitor|any|10
+table|6807|deserialize_newtype_struct|method|#6802;text;any Visitor|any|10
+table|6808|deserialize_enum|method|#6802;text;list of text;any Visitor|any|10
+table|6809|deserialize_bytes|method|#6802;any Visitor|any|10
+table|6810|deserialize_byte_buf|method|#6802;any Visitor|any|10
+table|6845|new|call||#6841|00
+table|6846|get|method|#6841;any|#7110|01
+table|6847|get_mut|method|#6841;any|#7110|01
+table|6848|insert|method|#6841;text;#7110|#7110|01
+table|6849|shift_insert|method|#6841;number;text;#7110|#7110|01
+table|6850|remove|method|#6841;any|#7110|01
+table|6851|swap_remove|method|#6841;any|#7110|01
+table|6852|shift_remove|method|#6841;any|#7110|01
+table|6853|entry|method|#6841;text|#6857|00
+table|6854|iter|method|#6841|#6876|00
+table|6855|index|method|#6841;any|#7110|00
+table|6856|index_mut|method|#6841;any|#7110|00
+table|6866|or_insert|method|#6857;#7110|#7110|00
+table|6867|or_insert_with|method|#6857;any|#7110|00
+table|6868|insert|method|#6858;#7110|#7110|00
+table|6869|get|method|#6860|#7110|00
+table|6870|get_mut|method|#6860|#7110|00
+table|6871|into_mut|method|#6860|#7110|00
+table|6872|insert|method|#6860;#7110|#7110|00
+table|6873|remove|method|#6860|#7110|00
+table|6874|swap_remove|method|#6860|#7110|00
+table|6875|shift_remove|method|#6860|#7110|00
+table|6901|from_string_unchecked|call|text|#6897|00
+table|6904|NumberDeserializer|literal|text|#6904|00
+table|6906|next_key_seed|method|#6904;any DeserializeSeed|any|11
+table|6907|next_value_seed|method|#6904;any DeserializeSeed|any|10
+table|6908|NumberFieldDeserializer|literal||#6908|00
+table|6909|deserialize_any|method|#6908;any Visitor|any|10
+table|6912|from_borrowed|call|text|#6910|00
+table|6916|RawKeyDeserializer|literal||#6916|00
+table|6917|deserialize_any|method|#6916;any Visitor|any|10
+table|6918|OwnedRawDeserializer|literal|text|#6918|00
+table|6920|next_key_seed|method|#6918;any DeserializeSeed|any|11
+table|6921|next_value_seed|method|#6918;any DeserializeSeed|any|10
+table|6922|BorrowedRawDeserializer|literal|text|#6922|00
+table|6924|next_key_seed|method|#6922;any DeserializeSeed|any|11
+table|6925|next_value_seed|method|#6922;any DeserializeSeed|any|10
+table|6926|deserialize_any|method|#6910;any Visitor|any|10
+table|6927|deserialize_bool|method|#6910;any Visitor|any|10
+table|6928|deserialize_i8|method|#6910;any Visitor|any|10
+table|6929|deserialize_i16|method|#6910;any Visitor|any|10
+table|6930|deserialize_i32|method|#6910;any Visitor|any|10
+table|6931|deserialize_i64|method|#6910;any Visitor|any|10
+table|6932|deserialize_i128|method|#6910;any Visitor|any|10
+table|6933|deserialize_u8|method|#6910;any Visitor|any|10
+table|6934|deserialize_u16|method|#6910;any Visitor|any|10
+table|6935|deserialize_u32|method|#6910;any Visitor|any|10
+table|6936|deserialize_u64|method|#6910;any Visitor|any|10
+table|6937|deserialize_u128|method|#6910;any Visitor|any|10
+table|6938|deserialize_f32|method|#6910;any Visitor|any|10
+table|6939|deserialize_f64|method|#6910;any Visitor|any|10
+table|6940|deserialize_char|method|#6910;any Visitor|any|10
+table|6941|deserialize_str|method|#6910;any Visitor|any|10
+table|6942|deserialize_string|method|#6910;any Visitor|any|10
+table|6943|deserialize_bytes|method|#6910;any Visitor|any|10
+table|6944|deserialize_byte_buf|method|#6910;any Visitor|any|10
+table|6945|deserialize_option|method|#6910;any Visitor|any|10
+table|6946|deserialize_unit|method|#6910;any Visitor|any|10
+table|6947|deserialize_unit_struct|method|#6910;text;any Visitor|any|10
+table|6948|deserialize_newtype_struct|method|#6910;text;any Visitor|any|10
+table|6949|deserialize_seq|method|#6910;any Visitor|any|10
+table|6950|deserialize_tuple|method|#6910;number;any Visitor|any|10
+table|6951|deserialize_tuple_struct|method|#6910;text;number;any Visitor|any|10
+table|6952|deserialize_map|method|#6910;any Visitor|any|10
+table|6953|deserialize_struct|method|#6910;text;list of text;any Visitor|any|10
+table|6954|deserialize_enum|method|#6910;text;list of text;any Visitor|any|10
+table|6955|deserialize_identifier|method|#6910;any Visitor|any|10
+table|6956|deserialize_ignored_any|method|#6910;any Visitor|any|10
+table|6958|end_raw_buffering|method|#6957;any Visitor|any|10
+table|6973|new|call|any|#6961|00
+table|6974|end_raw_buffering|method|#6961;any Visitor|any|10
+table|6975|new|call|bytes|#6965|00
+table|6976|end_raw_buffering|method|#6965;any Visitor|any|10
+table|6977|new|call|text|#6969|00
+table|6978|end_raw_buffering|method|#6969;any Visitor|any|10
+table|6990|deserialize|call|any Deserializer|#7110|10
+table|6991|from_str|call|text|#7110|10
+table|6992|visit_array|call|list of #7110;any Visitor|any|10
+table|6993|deserialize_any|method|#6841;any Visitor|any|10
+table|6994|deserialize_enum|method|#6841;text;list of text;any Visitor|any|10
+table|6995|deserialize_ignored_any|method|#6841;any Visitor|any|10
+table|6996|deserialize_any|method|#7110;any Visitor|any|10
+table|6997|deserialize_option|method|#7110;any Visitor|any|10
+table|6998|deserialize_enum|method|#7110;text;list of text;any Visitor|any|10
+table|6999|deserialize_newtype_struct|method|#7110;text;any Visitor|any|10
+table|7000|deserialize_bool|method|#7110;any Visitor|any|10
+table|7001|deserialize_char|method|#7110;any Visitor|any|10
+table|7002|deserialize_str|method|#7110;any Visitor|any|10
+table|7003|deserialize_string|method|#7110;any Visitor|any|10
+table|7004|deserialize_bytes|method|#7110;any Visitor|any|10
+table|7005|deserialize_byte_buf|method|#7110;any Visitor|any|10
+table|7006|deserialize_unit|method|#7110;any Visitor|any|10
+table|7007|deserialize_unit_struct|method|#7110;text;any Visitor|any|10
+table|7008|deserialize_seq|method|#7110;any Visitor|any|10
+table|7009|deserialize_tuple|method|#7110;number;any Visitor|any|10
+table|7010|deserialize_tuple_struct|method|#7110;text;number;any Visitor|any|10
+table|7011|deserialize_map|method|#7110;any Visitor|any|10
+table|7012|deserialize_struct|method|#7110;text;list of text;any Visitor|any|10
+table|7013|deserialize_identifier|method|#7110;any Visitor|any|10
+table|7014|deserialize_ignored_any|method|#7110;any Visitor|any|10
+table|7016|VariantDeserializer|literal|#7110|#7016|00
+table|7018|newtype_variant_seed|method|#7016;any DeserializeSeed|any|10
+table|7019|tuple_variant|method|#7016;number;any Visitor|any|10
+table|7020|struct_variant|method|#7016;list of text;any Visitor|any|10
+table|7023|new|call|list of #7110|#7021|00
+table|7024|next_element_seed|method|#7021;any DeserializeSeed|any|11
+table|7028|new|call|#6841|#7025|00
+table|7029|next_key_seed|method|#7025;any DeserializeSeed|any|11
+table|7030|next_value_seed|method|#7025;any DeserializeSeed|any|10
+table|7031|visit_array_ref|call|list of #7110;any Visitor|any|10
+table|7032|deserialize_any|method|#6841;any Visitor|any|10
+table|7033|deserialize_enum|method|#6841;text;list of text;any Visitor|any|10
+table|7034|deserialize_ignored_any|method|#6841;any Visitor|any|10
+table|7035|deserialize_any|method|#7110;any Visitor|any|10
+table|7036|deserialize_option|method|#7110;any Visitor|any|10
+table|7037|deserialize_enum|method|#7110;text;list of text;any Visitor|any|10
+table|7038|deserialize_newtype_struct|method|#7110;text;any Visitor|any|10
+table|7039|deserialize_bool|method|#7110;any Visitor|any|10
+table|7040|deserialize_char|method|#7110;any Visitor|any|10
+table|7041|deserialize_str|method|#7110;any Visitor|any|10
+table|7042|deserialize_string|method|#7110;any Visitor|any|10
+table|7043|deserialize_bytes|method|#7110;any Visitor|any|10
+table|7044|deserialize_byte_buf|method|#7110;any Visitor|any|10
+table|7045|deserialize_unit|method|#7110;any Visitor|any|10
+table|7046|deserialize_unit_struct|method|#7110;text;any Visitor|any|10
+table|7047|deserialize_seq|method|#7110;any Visitor|any|10
+table|7048|deserialize_tuple|method|#7110;number;any Visitor|any|10
+table|7049|deserialize_tuple_struct|method|#7110;text;number;any Visitor|any|10
+table|7050|deserialize_map|method|#7110;any Visitor|any|10
+table|7051|deserialize_struct|method|#7110;text;list of text;any Visitor|any|10
+table|7052|deserialize_identifier|method|#7110;any Visitor|any|10
+table|7053|deserialize_ignored_any|method|#7110;any Visitor|any|10
+table|7055|VariantRefDeserializer|literal|#7110|#7055|00
+table|7057|newtype_variant_seed|method|#7055;any DeserializeSeed|any|10
+table|7058|tuple_variant|method|#7055;number;any Visitor|any|10
+table|7059|struct_variant|method|#7055;list of text;any Visitor|any|10
+table|7060|SeqRefDeserializer|literal|#6876|#7060|00
+table|7062|next_element_seed|method|#7060;any DeserializeSeed|any|11
+table|7066|new|call|#6841|#7063|00
+table|7067|next_key_seed|method|#7063;any DeserializeSeed|any|11
+table|7068|next_value_seed|method|#7063;any DeserializeSeed|any|10
+table|7069|MapKeyDeserializer|literal|text|#7069|00
+table|7071|deserialize_any|method|#7069;any Visitor|any|10
+table|7072|deserialize_bool|method|#7069;any Visitor|any|10
+table|7073|deserialize_option|method|#7069;any Visitor|any|10
+table|7074|deserialize_newtype_struct|method|#7069;text;any Visitor|any|10
+table|7075|deserialize_enum|method|#7069;text;list of text;any Visitor|any|10
+table|7080|new|call|text|#7078|00
+table|7081|deserialize_any|method|#7078;any Visitor|any|10
+table|7082|deserialize_enum|method|#7078;text;list of text;any Visitor|any|10
+table|7083|UnitOnly|literal||#7083|00
+table|7084|newtype_variant_seed|method|#7083;any DeserializeSeed|any|10
+table|7085|tuple_variant|method|#7083;number;any Visitor|any|10
+table|7086|struct_variant|method|#7083;list of text;any Visitor|any|10
+table|7087|from|call|number|#7110|00
+table|7088|from|call|number|#7110|00
+table|7089|from|call|bool|#7110|00
+table|7090|from|call|text|#7110|00
+table|7091|from|call|text|#7110|00
+table|7092|from|call|text|#7110|00
+table|7093|from|call|#6897|#7110|00
+table|7094|from|call|#6841|#7110|00
+table|7095|from|call|list of any|#7110|00
+table|7096|from|call|list of any|#7110|00
+table|7097|from|call|list of any|#7110|00
+table|7098|from_iter|call|any IntoIterator|#7110|00
+table|7099|from_iter|call|any IntoIterator|#7110|00
+table|7100|from|call|nothing|#7110|00
+table|7101|from|call|any|#7110|00
+table|7103|index_into|method|#7102;#7110|#7110|01
+table|7104|index_into_mut|method|#7102;#7110|#7110|01
+table|7105|index_or_insert|method|#7102;#7110|#7110|00
+table|7108|index|method|#7110;any|#7110|00
+table|7109|index_mut|method|#7110;any|#7110|00
+table|7111|Null|variant||#7110|00
+table|7112|Bool|variant|bool|#7110|00
+table|7113|Number|variant|#6897|#7110|00
+table|7114|String|variant|text|#7110|00
+table|7115|Array|variant|list of #7110|#7110|00
+table|7116|Object|variant|#6841|#7110|00
+table|7117|get|method|#7110;any Index|#7110|01
+table|7118|get_mut|method|#7110;any Index|#7110|01
+table|7119|as_array|method|#7110|list of #7110|01
+table|7120|pointer|method|#7110;text|#7110|01
+table|7121|pointer_mut|method|#7110;text|#7110|01
+table|7122|take|method|#7110|#7110|00
+table|7123|default|call||#7110|00
+table|7124|default|call||#7110|00
+table|7125|to_value|call|any Serialize|#7110|10
+table|7126|Serializer|literal||#7126|00
+table|7127|serialize_bool|method|#7126;bool|#7110|10
+table|7128|serialize_i8|method|#7126;number|#7110|10
+table|7129|serialize_i16|method|#7126;number|#7110|10
+table|7130|serialize_i32|method|#7126;number|#7110|10
+table|7131|serialize_i64|method|#7126;number|#7110|10
+table|7132|serialize_i128|method|#7126;number|#7110|10
+table|7133|serialize_u8|method|#7126;number|#7110|10
+table|7134|serialize_u16|method|#7126;number|#7110|10
+table|7135|serialize_u32|method|#7126;number|#7110|10
+table|7136|serialize_u64|method|#7126;number|#7110|10
+table|7137|serialize_u128|method|#7126;number|#7110|10
+table|7138|serialize_f32|method|#7126;number|#7110|10
+table|7139|serialize_f64|method|#7126;number|#7110|10
+table|7140|serialize_char|method|#7126;char|#7110|10
+table|7141|serialize_str|method|#7126;text|#7110|10
+table|7142|serialize_bytes|method|#7126;bytes|#7110|10
+table|7143|serialize_unit|method|#7126|#7110|10
+table|7144|serialize_unit_struct|method|#7126;text|#7110|10
+table|7145|serialize_unit_variant|method|#7126;text;number;text|#7110|10
+table|7146|serialize_newtype_struct|method|#7126;text;any Serialize|#7110|10
+table|7147|serialize_newtype_variant|method|#7126;text;number;text;any Serialize|#7110|10
+table|7148|serialize_none|method|#7126|#7110|10
+table|7149|serialize_some|method|#7126;any Serialize|#7110|10
+table|7150|collect_str|method|#7126;text|#7110|10
+table|7151|SerializeVec|literal|list of #7110|#7151|00
+table|7153|SerializeTupleVariant|literal|text;list of #7110|#7153|00
+table|7157|Number|variant|#7110|#7156|00
+table|7158|SerializeStructVariant|literal|text;#6841|#7158|00
+table|7161|end|method|#7151|#7110|10
+table|7162|end|method|#7151|#7110|10
+table|7163|end|method|#7151|#7110|10
+table|7164|end|method|#7153|#7110|10
+table|7165|end|method|#7156|#7110|10
+table|7167|end|method|#7156|#7110|10
+table|7168|end|method|#7158|#7110|10
+table|7169|NumberValueEmitter|literal||#7169|00
+table|7170|serialize_bool|method|#7169;bool|#7110|10
+table|7171|serialize_i8|method|#7169;number|#7110|10
+table|7172|serialize_i16|method|#7169;number|#7110|10
+table|7173|serialize_i32|method|#7169;number|#7110|10
+table|7174|serialize_i64|method|#7169;number|#7110|10
+table|7175|serialize_u8|method|#7169;number|#7110|10
+table|7176|serialize_u16|method|#7169;number|#7110|10
+table|7177|serialize_u32|method|#7169;number|#7110|10
+table|7178|serialize_u64|method|#7169;number|#7110|10
+table|7179|serialize_f32|method|#7169;number|#7110|10
+table|7180|serialize_f64|method|#7169;number|#7110|10
+table|7181|serialize_char|method|#7169;char|#7110|10
+table|7182|serialize_str|method|#7169;text|#7110|10
+table|7183|serialize_bytes|method|#7169;bytes|#7110|10
+table|7184|serialize_none|method|#7169|#7110|10
+table|7185|serialize_some|method|#7169;any Serialize|#7110|10
+table|7186|serialize_unit|method|#7169|#7110|10
+table|7187|serialize_unit_struct|method|#7169;text|#7110|10
+table|7188|serialize_unit_variant|method|#7169;text;number;text|#7110|10
+table|7189|serialize_newtype_struct|method|#7169;text;any Serialize|#7110|10
+table|7190|serialize_newtype_variant|method|#7169;text;number;text;any Serialize|#7110|10
+table|7191|RawValueEmitter|literal||#7191|00
+table|7192|serialize_bool|method|#7191;bool|#7110|10
+table|7193|serialize_i8|method|#7191;number|#7110|10
+table|7194|serialize_i16|method|#7191;number|#7110|10
+table|7195|serialize_i32|method|#7191;number|#7110|10
+table|7196|serialize_i64|method|#7191;number|#7110|10
+table|7197|serialize_u8|method|#7191;number|#7110|10
+table|7198|serialize_u16|method|#7191;number|#7110|10
+table|7199|serialize_u32|method|#7191;number|#7110|10
+table|7200|serialize_u64|method|#7191;number|#7110|10
+table|7201|serialize_f32|method|#7191;number|#7110|10
+table|7202|serialize_f64|method|#7191;number|#7110|10
+table|7203|serialize_char|method|#7191;char|#7110|10
+table|7204|serialize_str|method|#7191;text|#7110|10
+table|7205|serialize_bytes|method|#7191;bytes|#7110|10
+table|7206|serialize_none|method|#7191|#7110|10
+table|7207|serialize_some|method|#7191;any Serialize|#7110|10
+table|7208|serialize_unit|method|#7191|#7110|10
+table|7209|serialize_unit_struct|method|#7191;text|#7110|10
+table|7210|serialize_unit_variant|method|#7191;text;number;text|#7110|10
+table|7211|serialize_newtype_struct|method|#7191;text;any Serialize|#7110|10
+table|7212|serialize_newtype_variant|method|#7191;text;number;text;any Serialize|#7110|10
+table|7290|new|call||list of any|00
