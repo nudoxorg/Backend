@@ -4914,10 +4914,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             } else {
                 ReferenceKind::FieldAccess
             };
-            let (target, confidence) = if Self::is_this_receiver(AstKind::from_expression(
-                &member.object,
-            )) {
+            let object_kind = AstKind::from_expression(&member.object);
+            let (target, confidence) = if Self::is_this_receiver(object_kind) {
                 self.this_property_target(property_span, kind)?
+            } else if Self::is_super_receiver(object_kind) {
+                self.super_property_target(property_span, kind)?
             } else {
                 self.syntactic_property_target(property_span)?
             };
@@ -4936,6 +4937,17 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             .and_then(|wrapped| {
                 AstKind::from_expression(&wrapped.expression).as_this_expression()
             })
+            .is_some()
+    }
+
+    /// Reports whether one expression is `super`, peeling one parenthesized
+    /// wrapper when the source wrote `(super)`.
+    fn is_super_receiver(kind: AstKind<'_>) -> bool {
+        if kind.as_super().is_some() {
+            return true;
+        }
+        kind.as_parenthesized_expression()
+            .and_then(|wrapped| AstKind::from_expression(&wrapped.expression).as_super())
             .is_some()
     }
 
@@ -5005,6 +5017,58 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     ),
                 },
             },
+            _ => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Resolves one `super.property` site through inherited bases only. The
+    /// enclosing class is skipped, so a child override never wins.
+    fn super_property_target(
+        &self,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let Some(class) = self.enclosing_record(property_span.start) else {
+            return self.syntactic_property_target(property_span);
+        };
+        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match kind {
+            ReferenceKind::FunctionCall => match self.inherited_class_member(
+                class,
+                name,
+                EntityKind::Function,
+            ) {
+                ClassMemberMatch::Unique(fact) => Ok((
+                    OccurrenceTarget::Local(EntityId::new(fact)),
+                    OccurrenceConfidence::Index,
+                )),
+                ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                    self.syntactic_property_target(property_span)
+                }
+            },
+            ReferenceKind::FieldAccess => {
+                match self.inherited_class_member(class, name, EntityKind::Field) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                    ClassMemberMatch::Absent => {
+                        match self.inherited_class_member(class, name, EntityKind::Function) {
+                            ClassMemberMatch::Unique(fact) => Ok((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            )),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                self.syntactic_property_target(property_span)
+                            }
+                        }
+                    }
+                }
+            }
             _ => self.syntactic_property_target(property_span),
         }
     }

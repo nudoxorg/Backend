@@ -1568,6 +1568,263 @@ fn this_inherited_field_imported_base_stays_syntactic() {
 }
 
 #[test]
+fn super_method_call_skips_child_override() {
+    const SOURCE: &[u8] = b"export class Other { note(): number { return 9; } } export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): number { return super.note(); } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_methods = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_methods.len(), 3);
+    let other_note = note_methods[0];
+    let base_note = note_methods[1];
+    let child_note = note_methods[2];
+    assert_ne!(other_note, base_note);
+    assert_ne!(child_note, base_note);
+    let (read_owner, _) = named(&v, b"read");
+    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
+fn super_field_read_targets_base_score_not_other() {
+    const SOURCE: &[u8] = b"export class Other { score: number; } export class Base { score: number; } export class Child extends Base { read(): number { return super.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let other_score = score_fields[0];
+    let base_score = score_fields[1];
+    assert_ne!(other_score, base_score);
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"super.", b"score");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_score))
+    );
+    assert_ne!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_score))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+}
+
+#[test]
+fn super_field_read_skips_child_shadowing_score() {
+    const SOURCE: &[u8] = b"export class Base { score: number; } export class Child extends Base { score: number; read(): number { return super.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let base_score = score_fields[0];
+    let child_score = score_fields[1];
+    assert_ne!(base_score, child_score);
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"super.", b"score");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_score))
+    );
+    assert_ne!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_score))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+}
+
+#[test]
+fn super_field_read_resolves_to_grand_score() {
+    const SOURCE: &[u8] = b"export class Grand { score: number; } export class Base extends Grand { } export class Child extends Base { read(): number { return super.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_fields = entities_named(&v, b"score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 1);
+    let grand_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"super.", b"score");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(grand_score))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+}
+
+#[test]
+fn super_method_value_targets_base_note_not_child() {
+    const SOURCE: &[u8] = b"export class Base { note(): number { return 1; } } export class Child extends Base { note(): number { return 2; } read(): unknown { return super.note; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_methods = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_methods.len(), 2);
+    let base_note = note_methods[0];
+    let child_note = note_methods[1];
+    assert_ne!(base_note, child_note);
+    let (read_owner, _) = named(&v, b"read");
+    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_note))
+    );
+    assert_ne!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_note))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
+    assert!(
+        !occurrences(&v).iter().any(|o| {
+            o.occurrence.kind == ReferenceKind::FunctionCall
+                && recover_site_bytes(
+                    SOURCE,
+                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    o,
+                ) == b"note"
+        })
+    );
+}
+
+#[test]
+fn super_method_value_child_method_does_not_shadow_base_field() {
+    const SOURCE: &[u8] = b"export class Base { note: number; } export class Child extends Base { note(): number { return 1; } read(): unknown { return super.note; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_fields = entities_named(&v, b"note", EntityKind::Field);
+    assert_eq!(note_fields.len(), 1);
+    let base_note = note_fields[0];
+    let note_methods = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_methods.len(), 1);
+    let child_note = note_methods[0];
+    assert_ne!(base_note, child_note);
+    let (read_owner, _) = named(&v, b"read");
+    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_note))
+    );
+    assert_ne!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_note))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"note", note_token_start);
+    assert!(
+        !occurrences(&v).iter().any(|o| {
+            o.occurrence.kind == ReferenceKind::FunctionCall
+                && recover_site_bytes(
+                    SOURCE,
+                    entity_decl_start(SOURCE, None, o.owner.raw),
+                    o,
+                ) == b"note"
+        })
+    );
+}
+
+#[test]
+fn super_field_read_imported_base_stays_syntactic() {
+    const SOURCE: &[u8] = b"export class Child extends Imported { read(): number { return super.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_token_start = property_token(SOURCE, b"super.", b"score");
+    let (read_owner, _) = named(&v, b"read");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    match &sites[0].occurrence.target {
+        OccurrenceTarget::Foreign(key) => {
+            assert_eq!(key.path, "score");
+            assert_eq!(key.display, "score");
+            assert!(key.kind.is_none());
+            assert!(matches!(
+                key.origin,
+                ForeignOrigin::Universe { ecosystem: "npm" }
+            ));
+        }
+        OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
+            panic!("imported-only base must stay a syntactic npm-universe key")
+        }
+    }
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+}
+
+#[test]
+fn super_method_call_generic_base_resolves_to_base_note() {
+    const SOURCE: &[u8] = b"export class Base<T> { note(): number { return 1; } } export class Child extends Base<number> { read(): number { return super.note(); } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_methods = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_methods.len(), 1);
+    let base_note = note_methods[0];
+    let (read_owner, _) = named(&v, b"read");
+    let note_token_start = property_token(SOURCE, b"super.", b"note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
 fn chained_builtin_call_stays_foreign_while_this_field_is_local() {
     const SOURCE: &[u8] =
         b"export class Chain { score: number; widen(): string { return this.score.toFixed(); } }";
