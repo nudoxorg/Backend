@@ -4148,8 +4148,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     }
 
     /// Commits one reference fact, resolving its target through OXC's symbol
-    /// when one exists and its category from the reference flags and call
-    /// position.
+    /// when one exists and its category from the reference flags, call
+    /// position, and—when the resolved symbol is a function declaration or
+    /// expression—value use that is neither a type query nor write-only.
     fn push_reference(
         &mut self,
         owner: u32,
@@ -4160,6 +4161,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let kind = if flags.is_type() {
             ReferenceKind::TypeReference
         } else if self.is_call_position(span) {
+            ReferenceKind::FunctionCall
+        } else if let Some((_, symbol_flags)) = symbol
+            && symbol_flags.is_function()
+            && !flags.is_value_as_type()
+            && !flags.is_write_only()
+        {
             ReferenceKind::FunctionCall
         } else {
             ReferenceKind::VariableUse
