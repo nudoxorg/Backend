@@ -251,7 +251,12 @@ pub(super) fn index(world: &World, recipes: &Recipes, names: &Names) -> Vec<Type
             });
             match producer.how {
                 How::Call | How::Method => {
-                    if owner_generic || node.quals.iter().any(|qual| qual.as_ref() == "async") {
+                    if owner_generic
+                        || node
+                            .quals
+                            .iter()
+                            .any(|qual| matches!(qual.as_ref(), "async" | "unsafe"))
+                    {
                         return TypeProof::Erased;
                     }
                     let output = node

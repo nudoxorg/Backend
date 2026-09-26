@@ -69,18 +69,16 @@ fn package_scope(world: &World, from: NodeId, path: &[String]) -> Option<Option<
     if path.len() == 1 {
         return Some(None);
     }
-    let candidates: Vec<_> = world
+    let candidates: Vec<u32> = world
         .packages
         .iter()
         .enumerate()
-        .filter(|(a, package)| {
-            package.name.replace('-', "_") == *first
-                || world
-                    .package_short(u32::try_from(*a).unwrap())
-                    .replace('-', "_")
-                    == *first
+        .filter_map(|(a, package)| {
+            let short = u32::try_from(a).ok()?;
+            let name_matches = package.name.replace('-', "_") == *first
+                || world.package_short(short).replace('-', "_") == *first;
+            name_matches.then_some(short)
         })
-        .map(|(a, _)| u32::try_from(a).unwrap())
         .collect();
     let visible: Vec<_> = candidates
         .iter()

@@ -440,8 +440,7 @@ fn full_world_startup_and_first_input_cost() {
         .max_by_key(|&package| d.package_items(package).len())
         .unwrap();
     let start = std::time::Instant::now();
-    let tour =
-        crate::semantics::tour::of_items(&w, d.semantic_names(), package, d.package_items(package));
+    let tour = d.package_tour(package).expect("prepared package tour");
     let tour_build = start.elapsed();
     eprintln!(
         "largest package first tour: {tour_build:?}, {} indexed candidates/{} eligible items/{} stops; old action Names build {name_build:?}",
@@ -1638,4 +1637,118 @@ fn raw_pointer_identity_is_not_owned_value_proof() {
     assert!(d.query(&w, "Raw -> text").chains.is_empty());
     assert_eq!(d.query(&w, "inspect").rows[0].node, 2);
     assert_eq!(d.query(&w, "pointer").rows[0].node, 3);
+}
+
+#[test]
+fn unsafe_calls_are_names_but_not_safe_callable_proofs() {
+    let mut unsafe_call = call("inspect_unsafe", None, false, &["value: Alpha"], "String");
+    unsafe_call.quals.push("unsafe".into());
+    let w = world(vec![item(Kind::Struct, "Alpha"), unsafe_call]);
+    let d = Discovery::new(&w);
+    assert!(d.query(&w, "Alpha -> text").lit.is_empty());
+    assert_eq!(d.query(&w, "inspect_unsafe").rows[0].node, 1);
+}
+
+#[test]
+fn shape_complexity_is_rejected_before_recursive_parsing() {
+    let w = road_world();
+    let d = Discovery::new(&w);
+    for query in [
+        format!("{}Invocation -> text", "maybe ".repeat(10_000)),
+        format!(
+            "{}Invocation{} -> text",
+            "Option<".repeat(33),
+            ">".repeat(33)
+        ),
+        format!("{}Invocation -> text", "&".repeat(33)),
+        format!("{}Invocation -> text", "maybe ".repeat(128)),
+        format!("{}Invocation -> text", ".".repeat(4000)),
+        format!("{}Invocation -> text", ")".repeat(4000)),
+    ] {
+        let result = d.query(&w, &query);
+        assert!(
+            result.issue.is_some(),
+            "must reject before recursive parsing"
+        );
+        assert!(result.rows.is_empty() && result.chains.is_empty());
+    }
+    for query in [
+        format!("{}Invocation -> text", "maybe ".repeat(124)),
+        format!(
+            "{}Invocation{} -> text",
+            "Option<".repeat(32),
+            ">".repeat(32)
+        ),
+        format!("{}Invocation -> text", "&".repeat(32)),
+    ] {
+        assert!(
+            d.query(&w, &query).issue.is_none(),
+            "near-budget shape remains searchable"
+        );
+    }
+    assert!(
+        d.query(&w, &"maybe ".repeat(10_000)).issue.is_none(),
+        "names have no grammar cap"
+    );
+    assert!(d.cache_len() <= 8);
+}
+
+#[test]
+fn prepared_focus_facts_preserve_member_callers_and_tours() {
+    let w = crate::graph::model::tests::tiny();
+    let d = Discovery::new(&w);
+    for (at, _) in w.nodes.iter().enumerate() {
+        let i = at as NodeId;
+        let facts = d.focus_facts(i).expect("facts for every node");
+        let used = w.used_in(i);
+        assert_eq!(facts.used, used.len());
+        assert_eq!(
+            facts.yours,
+            used.iter().filter(|&&caller| w.yours(caller)).count()
+        );
+        assert_eq!(facts.caps, crate::semantics::page::caps_of(&w, i));
+        let counts = [Kind::Variant, Kind::Field, Kind::Method].map(|kind| {
+            w.kids(i)
+                .iter()
+                .filter(|&&child| w.node(child).kind == kind)
+                .count()
+        });
+        assert_eq!(facts.counts, counts);
+    }
+    for package in 0..w.packages.len() {
+        assert_eq!(
+            d.package_tour(package as u32),
+            Some(&crate::semantics::tour::of(
+                &w,
+                d.semantic_names(),
+                package as u32
+            ))
+        );
+    }
+    assert!(d.focus_facts(NodeId::MAX).is_none());
+    assert!(d.package_tour(u32::MAX).is_none());
+    let attached = Discovery::from_prepared(d.prepared());
+    assert!(Arc::ptr_eq(&d.focus_facts, &attached.focus_facts));
+    assert!(Arc::ptr_eq(&d.package_tours, &attached.package_tours));
+}
+
+#[test]
+fn explicit_array_queries_do_not_erase_length_identity() {
+    let w = world(vec![
+        item(Kind::Struct, "Alpha"),
+        item(Kind::Struct, "Beta"),
+        call("collect", None, false, &["value: Alpha"], "Vec<Beta>"),
+        call("consume", None, false, &["values: Vec<Alpha>"], "String"),
+    ]);
+    let d = Discovery::new(&w);
+    assert_eq!(d.query(&w, "Alpha -> list of Beta").lit, [2]);
+    assert_eq!(d.query(&w, "list of Alpha -> text").lit, [3]);
+    for query in [
+        "Alpha -> [Beta; 3]",
+        "[Alpha; 3] -> text",
+        "Alpha -> Option<[Beta; 3]>",
+    ] {
+        let result = d.query(&w, query);
+        assert!(result.lit.is_empty() && result.chains.is_empty(), "{query}");
+    }
 }
