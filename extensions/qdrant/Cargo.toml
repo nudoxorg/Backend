@@ -27,3 +27,8 @@ workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[[bench]]
+name = "http_delta"
+path = "benches/http_delta.rs"
+harness = false

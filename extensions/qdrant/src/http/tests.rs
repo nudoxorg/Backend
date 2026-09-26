@@ -357,3 +357,166 @@ fn upsert_puts_missing_points_after_empty_retrieve() {
     );
     server.join().expect("server");
 }
+
+struct DeltaScript {
+    requests: usize,
+    corrupt_after_put: bool,
+}
+
+fn serve_delta(script: DeltaScript) -> (String, thread::JoinHandle<Vec<(&'static str, usize)>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let server = thread::spawn(move || {
+        let mut stored = std::collections::HashMap::<String, serde_json::Value>::new();
+        let mut transcript = Vec::with_capacity(script.requests);
+        for _ in 0..script.requests {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let (header, body) = read_http(&mut stream);
+            let first = header.lines().next().expect("request line");
+            let (kind, put_points, response) = if first.starts_with("POST ") {
+                let request: serde_json::Value =
+                    serde_json::from_slice(&body).expect("retrieve JSON");
+                let points = request["ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|id| id.as_str())
+                    .filter_map(|id| stored.get(id).cloned())
+                    .collect::<Vec<_>>();
+                (
+                    "retrieve",
+                    0,
+                    serde_json::json!({"result": points}).to_string(),
+                )
+            } else if first.starts_with("PUT ") {
+                let request: serde_json::Value =
+                    serde_json::from_slice(&body).expect("upsert JSON");
+                let points = request["points"].as_array().cloned().unwrap_or_default();
+                let count = points.len();
+                for mut point in points {
+                    let Some(id) = point["id"].as_str().map(str::to_owned) else {
+                        continue;
+                    };
+                    if script.corrupt_after_put {
+                        point["payload"]["coordinate_key"] =
+                            serde_json::json!("rewritten-coordinate");
+                    }
+                    stored.insert(id, point);
+                }
+                (
+                    "put",
+                    count,
+                    r#"{"result":{"status":"completed"}}"#.to_owned(),
+                )
+            } else {
+                panic!("unexpected Qdrant request: {first}");
+            };
+            transcript.push((kind, put_points));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .expect("response");
+        }
+        transcript
+    });
+    (format!("http://{address}"), server)
+}
+
+fn read_http(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
+    let mut request = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !request.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).expect("request byte");
+        request.push(byte[0]);
+    }
+    let header = String::from_utf8(request).expect("HTTP header");
+    let content_length = header
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then_some(value.trim())
+        })
+        .and_then(|length| length.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut body = vec![0_u8; content_length];
+    stream.read_exact(&mut body).expect("request body");
+    (header, body)
+}
+
+#[test]
+fn upsert_rejects_a_rewritten_coordinate_without_another_put() {
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let document = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("document vector");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 3,
+        corrupt_after_put: true,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    let cold = client
+        .upsert(binding, std::slice::from_ref(&document))
+        .expect("cold upsert");
+    assert_eq!(
+        cold,
+        QdrantMutationReceipt {
+            points: 1,
+            batches: 1,
+        }
+    );
+    let error = client
+        .upsert(binding, std::slice::from_ref(&document))
+        .expect_err("rewritten coordinate");
+    assert!(matches!(error, HttpProviderError::ImmutableVector));
+    let transcript = server.join().expect("server");
+    assert_eq!(transcript, [("retrieve", 0), ("put", 1), ("retrieve", 0)]);
+}
+
+#[test]
+fn upsert_writes_only_the_point_missing_from_retrieve() {
+    let binding = upsert_binding();
+    let recipe = upsert_test_recipe();
+    let present = DocumentVector::new(
+        recipe,
+        CandidateId::new(7).expect("candidate"),
+        vec![0.25, -0.5],
+    )
+    .expect("present vector");
+    let missing = DocumentVector::new(
+        recipe,
+        CandidateId::new(8).expect("candidate"),
+        vec![0.5, 0.25],
+    )
+    .expect("missing vector");
+    let (endpoint, server) = serve_delta(DeltaScript {
+        requests: 4,
+        corrupt_after_put: false,
+    });
+    let client = QdrantHttpClient::new(test_config(endpoint), recipe).expect("client");
+    let cold = client
+        .upsert(binding, std::slice::from_ref(&present))
+        .expect("cold upsert");
+    assert_eq!(cold.points, 1);
+    let delta = client
+        .upsert(binding, &[present, missing])
+        .expect("delta upsert");
+    assert_eq!(
+        delta,
+        QdrantMutationReceipt {
+            points: 1,
+            batches: 1,
+        }
+    );
+    let transcript = server.join().expect("server");
+    assert_eq!(
+        transcript,
+        [("retrieve", 0), ("put", 1), ("retrieve", 0), ("put", 1)]
+    );
+}
