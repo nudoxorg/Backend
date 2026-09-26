@@ -208,16 +208,34 @@ pub fn route_package(route: &Route) -> Option<PackageRef> {
 /// The declaration a route reads, scoped to the release it views.
 #[must_use]
 pub fn route_symbol(route: &Route) -> Option<SymbolRef> {
+    route_declaration(route).ok()
+}
+
+/// Why a route reads no declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Unread {
+    /// The address does not spell a declaration.
+    NotADeclaration,
+    /// The route views a release its package cannot be read at: a
+    /// workspace crate has only its working copy in the index.
+    ReleaseNotHere(crate::navigation::ReleaseId),
+}
+
+/// [`route_symbol`], saying why when there is none.
+///
+/// # Errors
+/// [`Unread`] when the route names no declaration this index can read.
+pub fn route_declaration(route: &Route) -> Result<SymbolRef, Unread> {
     let Route::Symbol(route) = route else {
-        return None;
+        return Err(Unread::NotADeclaration);
     };
-    let symbol = SymbolRef::new(route.id.as_str()).ok()?;
+    let symbol = SymbolRef::new(route.id.as_str()).map_err(|_| Unread::NotADeclaration)?;
     let Some(at) = &route.at else {
-        return Some(symbol);
+        return Ok(symbol);
     };
-    let pinned = PackageRef::parse(route.package.as_str()).ok()?;
-    let viewed = pinned.at(at.as_str())?;
-    symbol.rebased(&pinned, &viewed).or(Some(symbol))
+    let pinned = PackageRef::parse(route.package.as_str()).map_err(|_| Unread::NotADeclaration)?;
+    let viewed = pinned.at(at.as_str()).ok_or_else(|| Unread::ReleaseNotHere(at.clone()))?;
+    Ok(symbol.rebased(&pinned, &viewed).unwrap_or(symbol))
 }
 
 /// Returns the page keys one route displays.

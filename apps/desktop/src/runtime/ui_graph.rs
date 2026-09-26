@@ -11,22 +11,34 @@
 use super::coordinator::{DesktopRuntime, RuntimeEvent};
 use super::reads::ReadPool;
 use super::store::DataStore;
-use crate::core::{IntentDispatcher, SnapshotReadModel, VersionedRoot};
+use crate::core::{IntentDispatcher, SnapshotReadModel};
 use crate::model::{AppSnapshot, PersistentState};
-use crate::navigation::{FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route};
-use backend_library::{CommandId, SurfaceCommand};
-use gpui::{App, AppContext as _, Context, Entity, PathPromptOptions, Task};
+use crate::navigation::{FolderPickerOutcome, Intent, OrbitRoute, PackageLane, PackageRoute, Route, View};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// A native view request carries the graph visit it belongs to. The map
+/// resolves its visible selection rather than the route's original symbol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GraphDestination { Page, Code }
+impl GraphDestination {
+    pub(crate) const fn view(self) -> View { match self { Self::Page => View::Page, Self::Code => View::Code } }
+}
+#[derive(Clone, Debug)]
+pub(crate) struct GraphViewRequest {
+    pub target: GraphDestination,
+    pub route: Route,
+    pub root: crate::core::VersionedRoot,
+    pub sequence: u64,
+}
 
 /// The complete UI-thread state owner for one desktop window.
 pub struct UiRootEntity {
     runtime: DesktopRuntime,
     pending: Vec<Intent>,
     persistence: Option<PersistentState>,
-    requested_surface: Option<(CommandId, String, VersionedRoot)>,
-    requested_local_package: Option<(crate::core::LocalProjectId, VersionedRoot)>,
     first_catalog_route_admitted: bool,
     folder_picker_task: Option<Task<()>>,
     connection_probe: Option<crate::navigation::RequestId>,
@@ -40,7 +52,11 @@ pub struct UiRootEntity {
     published: Option<Arc<AppSnapshot>>,
     /// Intents reduced, for tests and diagnostics.
     reduced: u64,
+    /// Invalidates graph view intents only for competing content requests.
+    graph_view_generation: u64,
 }
+
+impl EventEmitter<GraphViewRequest> for UiRootEntity {}
 
 impl UiRootEntity {
     /// Installs one root around an already admitted runtime.
@@ -55,8 +71,6 @@ impl UiRootEntity {
             // catalog or a second, view-owned bootstrap path.
             pending: vec![Intent::RefreshRoot { basis, request }],
             persistence,
-            requested_surface: None,
-            requested_local_package: None,
             first_catalog_route_admitted: false,
             folder_picker_task: None,
             connection_probe: None,
@@ -65,6 +79,7 @@ impl UiRootEntity {
             flush_scheduled: false,
             published: None,
             reduced: 0,
+            graph_view_generation: 0,
         }
     }
 
@@ -104,6 +119,8 @@ impl UiRootEntity {
     pub const fn reduced(&self) -> u64 {
         self.reduced
     }
+
+    pub(crate) const fn graph_view_generation(&self) -> u64 { self.graph_view_generation }
 
     /// Returns whether engine work is in flight or waiting to be drained.
     #[must_use]
@@ -154,6 +171,10 @@ impl UiRootEntity {
         {
             return;
         }
+        if self.published.as_ref().is_some_and(|previous| previous.route() != snapshot.route()
+            || previous.key() != snapshot.key() || previous.overlay() != snapshot.overlay()) {
+            self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
+        }
         self.published = Some(Arc::clone(&snapshot));
         if let Some(store) = &self.store {
             store.update(cx, |store, cx| store.admit_snapshot(snapshot, cx));
@@ -177,6 +198,18 @@ impl UiRootEntity {
     pub fn dispatch(&mut self, intent: Intent, cx: &mut Context<Self>) {
         self.reduced = self.reduced.saturating_add(1);
         match intent {
+            Intent::SetView(view @ (View::Page | View::Code))
+                if self.snapshot().overlay().is_none()
+                    && matches!(self.snapshot().route(), Route::World | Route::Symbol(crate::navigation::SymbolRoute { view: View::Graph, .. })) => {
+                let snapshot = self.snapshot();
+                self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
+                cx.emit(GraphViewRequest {
+                    target: if view == View::Page { GraphDestination::Page } else { GraphDestination::Code },
+                    route: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    sequence: self.graph_view_generation,
+                });
+            }
             Intent::OpenFolderPicker => self.start_folder_picker(cx),
             Intent::RevealProject(project) => cx.reveal_path(&project.path()),
             Intent::TestConnection => {
@@ -303,77 +336,6 @@ impl UiRootEntity {
         })
     }
 
-    /// Ensures one typed product surface is admitted for the current root.
-    ///
-    /// Render functions call this at their boundary instead of reaching into
-    /// a client.  The identity tuple makes the request idempotent across
-    /// animation frames while still allowing a different package, lane, or
-    /// producer root to replace it.
-    pub(crate) fn ensure_surface(&mut self, command: SurfaceCommand, cx: &mut Context<Self>) {
-        // Package lanes read the keyed dossier. Their replies never enter the
-        // snapshot, so they cannot overwrite the Orbit catalog.
-        if let (Some(store), Some(package)) = (&self.store, dossier_package(&command)) {
-            let key = crate::model::pages::PageKey::Package(
-                crate::model::pages::PackageRef::from_reference(package),
-            );
-            store.update(cx, |store, cx| {
-                store.ensure(key, cx);
-            });
-            return;
-        }
-        let basis = self.snapshot().key();
-        let identity = (command.id(), format!("{command:?}"), basis);
-        if self.requested_surface.as_ref() == Some(&identity) {
-            return;
-        }
-        self.requested_surface = Some(identity);
-        let request = self.runtime.allocate_request();
-        self.queue(
-            Intent::RefreshSurface {
-                command,
-                basis,
-                request,
-            },
-            cx,
-        );
-    }
-
-    /// Ensures one local project's offline package facts are admitted.
-    ///
-    /// Like [`Self::ensure_surface`], a render boundary calls this instead of
-    /// reading files: the read runs on the actor's local lane and its result
-    /// arrives as a snapshot. Facts already admitted for `project` are kept;
-    /// otherwise one read is issued per project and root.
-    pub(crate) fn ensure_local_package(
-        &mut self,
-        project: &crate::core::LocalProjectId,
-        cx: &mut Context<Self>,
-    ) {
-        let snapshot = self.snapshot();
-        if snapshot
-            .local_package()
-            .loaded_value()
-            .is_some_and(|package| package.project == *project)
-        {
-            return;
-        }
-        let basis = snapshot.key();
-        let identity = (project.clone(), basis);
-        if self.requested_local_package.as_ref() == Some(&identity) {
-            return;
-        }
-        self.requested_local_package = Some(identity);
-        let request = self.runtime.allocate_request();
-        self.queue(
-            Intent::RefreshLocalPackage {
-                project: project.clone(),
-                basis,
-                request,
-            },
-            cx,
-        );
-    }
-
     fn apply_events(&mut self, events: Vec<RuntimeEvent>, cx: &mut Context<Self>) {
         for event in events {
             match event {
@@ -439,19 +401,6 @@ impl UiRootEntity {
         );
     }
 
-}
-
-/// Returns the package a dossier-lane command reads, when it is one.
-fn dossier_package(command: &SurfaceCommand) -> Option<backend_library::PackageReference> {
-    match command {
-        SurfaceCommand::Package { package }
-        | SurfaceCommand::PackageVersions { package }
-        | SurfaceCommand::PackageProfile { package }
-        | SurfaceCommand::Dependencies { package }
-        | SurfaceCommand::Dependents { package }
-        | SurfaceCommand::Advisory { package, .. } => Some(package.clone()),
-        _ => None,
-    }
 }
 
 fn folder_picker_outcome(paths: Vec<PathBuf>) -> FolderPickerOutcome {
