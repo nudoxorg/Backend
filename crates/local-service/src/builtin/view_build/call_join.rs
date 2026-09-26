@@ -13,15 +13,25 @@ pub(crate) fn semantic_callable(kind: ItemKind) -> bool {
     matches!(kind, ItemKind::Function)
 }
 
+pub(crate) fn semantic_mentionable(kind: ItemKind) -> bool {
+    matches!(
+        kind,
+        ItemKind::Record | ItemKind::Enum | ItemKind::Trait | ItemKind::Alias | ItemKind::Module
+    )
+}
+
 pub(crate) struct ProjectCallableIndex {
     by_path_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
     by_owner_name: BTreeMap<(String, String), Vec<DeclarationIdentity>>,
+    mention_by_path_name_kind: BTreeMap<(String, String, ItemKind), Vec<DeclarationIdentity>>,
 }
 
 impl ProjectCallableIndex {
     pub(crate) fn build_from_bytes(images: &[&[u8]]) -> Result<Self, BuiltinModelError> {
         let mut by_path_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
         let mut by_owner_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();
+        let mut mention_by_path_name_kind =
+            BTreeMap::<(String, String, ItemKind), Vec<DeclarationIdentity>>::new();
         for bytes in images {
             let image = SemanticImageView::reopen(bytes).map_err(|error| {
                 BuiltinModelError(format!("reopen semantic graph image: {error}"))
@@ -32,36 +42,42 @@ impl ProjectCallableIndex {
                 let entity = entity.map_err(|error| {
                     BuiltinModelError(format!("read semantic graph callable: {error}"))
                 })?;
-                if !semantic_callable(entity.entity.kind) {
-                    continue;
-                }
                 let name = std::str::from_utf8(entity.name).map_err(|_| {
                     BuiltinModelError("semantic graph callable name is not UTF-8".to_owned())
                 })?;
                 let identity = entity.entity.version.identity();
-                by_path_name
-                    .entry((path.clone(), name.to_owned()))
-                    .or_default()
-                    .push(identity);
-                if let Some((immediate, chain)) =
-                    owner_chain_keys(&session, &image, entity.entity.id)?
-                {
-                    by_owner_name
-                        .entry((immediate.clone(), name.to_owned()))
+                if semantic_callable(entity.entity.kind) {
+                    by_path_name
+                        .entry((path.clone(), name.to_owned()))
                         .or_default()
                         .push(identity);
-                    if chain != immediate {
+                    if let Some((immediate, chain)) =
+                        owner_chain_keys(&session, &image, entity.entity.id)?
+                    {
                         by_owner_name
-                            .entry((chain, name.to_owned()))
+                            .entry((immediate.clone(), name.to_owned()))
                             .or_default()
                             .push(identity);
+                        if chain != immediate {
+                            by_owner_name
+                                .entry((chain, name.to_owned()))
+                                .or_default()
+                                .push(identity);
+                        }
                     }
+                }
+                if semantic_mentionable(entity.entity.kind) {
+                    mention_by_path_name_kind
+                        .entry((path.clone(), name.to_owned(), entity.entity.kind))
+                        .or_default()
+                        .push(identity);
                 }
             }
         }
         Ok(Self {
             by_path_name,
             by_owner_name,
+            mention_by_path_name_kind,
         })
     }
 
@@ -73,6 +89,30 @@ impl ProjectCallableIndex {
         let mut matches = Vec::new();
         for path in resolved_paths {
             if let Some(identities) = self.by_path_name.get(&(path.clone(), display.to_owned())) {
+                matches.extend(identities);
+            }
+        }
+        matches.sort();
+        matches.dedup();
+        if matches.len() == 1 {
+            matches.pop()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn resolve_mention(
+        &self,
+        resolved_paths: &BTreeSet<String>,
+        display: &str,
+        kind: ItemKind,
+    ) -> Option<DeclarationIdentity> {
+        let mut matches = Vec::new();
+        for path in resolved_paths {
+            if let Some(identities) = self
+                .mention_by_path_name_kind
+                .get(&(path.clone(), display.to_owned(), kind))
+            {
                 matches.extend(identities);
             }
         }
@@ -308,6 +348,71 @@ pub(crate) fn project_paths_for_package(
         }
     }
     paths
+}
+
+pub(crate) fn foreign_package_mention_retarget(
+    image: &SemanticImageView<'_>,
+    external: ExternalId,
+    caller_path: &str,
+    project_paths: &BTreeSet<String>,
+    index: &ProjectCallableIndex,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    let Some(ExternalTarget::Foreign(foreign)) = image.external(external) else {
+        return Ok(None);
+    };
+    let ForeignTargetOrigin::Package { package, .. } = foreign.origin else {
+        return Ok(None);
+    };
+    let Some(kind) = foreign.kind else {
+        return Ok(None);
+    };
+    let package_atom = image
+        .atom(package)
+        .ok_or_else(|| BuiltinModelError("semantic graph package atom is missing".to_owned()))?;
+    let path_atom = image
+        .atom(foreign.path)
+        .ok_or_else(|| BuiltinModelError("semantic graph path atom is missing".to_owned()))?;
+    let display_atom = image
+        .atom(foreign.display)
+        .ok_or_else(|| BuiltinModelError("semantic graph display atom is missing".to_owned()))?;
+    let package = std::str::from_utf8(package_atom).map_err(|_| {
+        BuiltinModelError("semantic graph package specifier is not UTF-8".to_owned())
+    })?;
+    let path = std::str::from_utf8(path_atom).map_err(|_| {
+        BuiltinModelError("semantic graph foreign path is not UTF-8".to_owned())
+    })?;
+    let display = std::str::from_utf8(display_atom).map_err(|_| {
+        BuiltinModelError("semantic graph display name is not UTF-8".to_owned())
+    })?;
+    let specifier = foreign_dotted_module_specifier(path, display).unwrap_or(package);
+    let resolved_paths = resolve_specifier_paths(specifier, caller_path, project_paths);
+    Ok(index.resolve_mention(&resolved_paths, display, kind))
+}
+
+pub(crate) fn join_project_mention(
+    image: &SemanticImageView<'_>,
+    link_kind: backend_semantic::ir::LinkKind,
+    external: ExternalId,
+    caller_path: &str,
+    project_paths: &BTreeSet<String>,
+    index: &ProjectCallableIndex,
+    published: &BTreeSet<DeclarationIdentity>,
+) -> Result<Option<DeclarationIdentity>, BuiltinModelError> {
+    if !matches!(
+        link_kind,
+        backend_semantic::ir::LinkKind::TypeReference
+            | backend_semantic::ir::LinkKind::Imports
+    ) {
+        return Ok(None);
+    }
+    let identity = foreign_package_mention_retarget(
+        image,
+        external,
+        caller_path,
+        project_paths,
+        index,
+    )?;
+    Ok(identity.filter(|candidate| published.contains(candidate)))
 }
 
 pub(crate) fn join_project_call(

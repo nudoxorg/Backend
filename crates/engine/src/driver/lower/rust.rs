@@ -3198,6 +3198,38 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     .map_err(|_| admission())?;
                 continue;
             }
+            if matches!(kind, ReferenceKind::TypeReference | ReferenceKind::Import)
+                && let Some(resolution) = &resolved
+                && let ra_ap_hir::PathResolution::Def(definition) = resolution
+                && self.ordinal_of_definition(definition).is_none()
+                && let Some(package_path) = authority.cross_file_type_package_path(*definition)
+                && let Some(entity_kind) = package_entity_kind(*definition)
+                && let Some(owner) = self.owner_of(span)
+            {
+                let owner_span = self
+                    .rows
+                    .iter()
+                    .find(|row| row.ordinal == owner)
+                    .map(|row| row.span)
+                    .ok_or_else(admission)?;
+                let written = self.bytes_of(span)?;
+                let name = core::str::from_utf8(written).map_err(|_| admission())?;
+                let relative = relative_span(span, owner_span)?;
+                self.facts
+                    .push_owned_package_occurrence(
+                        owner,
+                        CARGO_ECOSYSTEM,
+                        &package_path,
+                        name,
+                        name,
+                        Some(entity_kind),
+                        kind,
+                        OccurrenceConfidence::Oracle,
+                        relative,
+                    )
+                    .map_err(|_| admission())?;
+                continue;
+            }
             self.emit_one_occurrence(
                 span,
                 kind,
@@ -3865,6 +3897,25 @@ const fn path_definition(resolution: &ra_ap_hir::PathResolution) -> Option<ra_ap
     match resolution {
         ra_ap_hir::PathResolution::Def(module_def) => Some(*module_def),
         _ => None,
+    }
+}
+
+/// Maps one cross-file package-retargetable definition onto the entity lattice.
+const fn package_entity_kind(definition: ra_ap_hir::ModuleDef) -> Option<EntityKind> {
+    match definition {
+        ra_ap_hir::ModuleDef::Adt(ra_ap_hir::Adt::Struct(_) | ra_ap_hir::Adt::Union(_)) => {
+            Some(EntityKind::Record)
+        }
+        ra_ap_hir::ModuleDef::Adt(ra_ap_hir::Adt::Enum(_)) => Some(EntityKind::Enum),
+        ra_ap_hir::ModuleDef::Trait(_) => Some(EntityKind::Trait),
+        ra_ap_hir::ModuleDef::TypeAlias(_) => Some(EntityKind::Alias),
+        ra_ap_hir::ModuleDef::Module(_) => Some(EntityKind::Module),
+        ra_ap_hir::ModuleDef::Function(_)
+        | ra_ap_hir::ModuleDef::EnumVariant(_)
+        | ra_ap_hir::ModuleDef::Const(_)
+        | ra_ap_hir::ModuleDef::Static(_)
+        | ra_ap_hir::ModuleDef::BuiltinType(_)
+        | ra_ap_hir::ModuleDef::Macro(_) => None,
     }
 }
 

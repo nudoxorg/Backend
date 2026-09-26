@@ -9,7 +9,8 @@ use super::identity::{
     query_semantic_id, semantic_coordinate, semantic_symbol,
 };
 use super::call_join::{
-    ProjectCallableIndex, foreign_display_name, join_project_call, project_paths_for_package,
+    ProjectCallableIndex, foreign_display_name, join_project_call, join_project_mention,
+    project_paths_for_package,
 };
 use super::compiled_source_path;
 use super::semantic::semantic_row_content;
@@ -265,8 +266,8 @@ fn append_compiler_query_facts(
                             }
                         }
                         LinkTarget::External(external) => {
-                            if let Some(callable_index) = callable_index
-                                && let Some(joined) = join_project_call(
+                            if let Some(callable_index) = callable_index {
+                                if let Some(joined) = join_project_call(
                                     &image,
                                     link.kind,
                                     external,
@@ -274,10 +275,22 @@ fn append_compiler_query_facts(
                                     &project_paths,
                                     callable_index,
                                     &published,
-                                )?
-                            {
-                                related.push(query_semantic_id(package, joined));
-                                continue;
+                                )? {
+                                    related.push(query_semantic_id(package, joined));
+                                    continue;
+                                }
+                                if let Some(joined) = join_project_mention(
+                                    &image,
+                                    link.kind,
+                                    external,
+                                    &caller_path,
+                                    &project_paths,
+                                    callable_index,
+                                    &published,
+                                )? {
+                                    related.push(query_semantic_id(package, joined));
+                                    continue;
+                                }
                             }
                             let identity = ExternalTargetIdentity::capture(&image, external)
                                 .map_err(|error| {

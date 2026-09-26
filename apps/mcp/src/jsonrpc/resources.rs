@@ -54,9 +54,10 @@ to *find* coordinates and `backend.document` is the way to read them.
 ## edges from a row
 
 `project`, `parent`, `children`, `related`, `referencedBy`, `sameProject`.
-`related` walks outward. A call to a function declared in this same project,
-including another file, lands on that declaration. `referencedBy` is that edge
-reversed, so the declaration names its callers across files. A stable reference
+`related` walks outward. A call, a type reference, or an import of a
+declaration in this same project lands on that declaration, including another
+file. `referencedBy` is that edge reversed, so the declaration names its
+callers and mention sites across files. A stable reference
 into another publication stays an external node and is not joined. Any other
 foreign target stays an external node; when the compiler recorded a display
 spelling, that spelling is the node's name. An edge that may be

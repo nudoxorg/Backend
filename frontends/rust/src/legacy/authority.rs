@@ -555,12 +555,59 @@ impl<'analysis> RustAuthority<'analysis> {
     #[must_use]
     pub fn cross_file_method_package_path(&self, function: Function) -> Option<String> {
         let source = self.semantics.source(function)?;
-        let range = self.semantics.original_range(source.value.syntax());
+        self.cross_file_package_path_from_syntax(source.value.syntax())
+    }
+
+    /// Rust module path of one resolved type or module definition when it lives
+    /// in another project-local file. Structs, unions, enums, traits, type
+    /// aliases, and modules share the same `src/...` path rules as functions.
+    #[must_use]
+    pub fn cross_file_type_package_path(&self, definition: ModuleDef) -> Option<String> {
+        match definition {
+            ModuleDef::Adt(adt) => {
+                let source = self.semantics.source(adt)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            ModuleDef::Trait(trait_) => {
+                let source = self.semantics.source(trait_)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            ModuleDef::TypeAlias(alias) => {
+                let source = self.semantics.source(alias)?;
+                self.cross_file_package_path_from_syntax(source.value.syntax())
+            }
+            ModuleDef::Module(module) => module
+                .as_source_file_id(self.database)
+                .and_then(|file_id| self.cross_file_package_path_from_file(file_id)),
+            ModuleDef::Function(_)
+            | ModuleDef::EnumVariant(_)
+            | ModuleDef::Const(_)
+            | ModuleDef::Static(_)
+            | ModuleDef::BuiltinType(_)
+            | ModuleDef::Macro(_) => None,
+        }
+    }
+
+    fn cross_file_package_path_from_syntax(
+        &self,
+        syntax: &ra_ap_syntax::SyntaxNode,
+    ) -> Option<String> {
+        let range = self.semantics.original_range(syntax);
         if range.file_id == self.source_file {
             return None;
         }
+        self.cross_file_package_path_from_file(range.file_id)
+    }
+
+    fn cross_file_package_path_from_file(
+        &self,
+        file_id: EditionedFileId,
+    ) -> Option<String> {
+        if file_id == self.source_file {
+            return None;
+        }
         let db = self.database;
-        let file_id = range.file_id.file_id(db);
+        let file_id = file_id.file_id(db);
         let source_root_id = db.file_source_root(file_id).source_root_id(db);
         let source_root = db.source_root(source_root_id).source_root(db);
         if source_root.is_library {

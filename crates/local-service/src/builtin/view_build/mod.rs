@@ -14,7 +14,8 @@ mod structural;
 
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
-    foreign_package_call_retarget, join_project_call, project_paths_for_package,
+    foreign_package_call_retarget, foreign_package_mention_retarget, join_project_call,
+    join_project_mention, project_paths_for_package,
 };
 
 pub(crate) use identity::query_semantic_id;
