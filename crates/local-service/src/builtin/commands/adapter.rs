@@ -445,10 +445,10 @@ impl CommandAdapter {
                         continue;
                     }
                     let project_root = std::path::Path::new(&project.label);
-                    if !project_root.join("Cargo.toml").is_file() {
+                    if !project_root.is_dir() {
                         continue;
                     }
-                    match super::super::local_manifest::cargo_dependency_facts(project_root) {
+                    match super::super::local_manifest::local_dependency_facts(project_root) {
                         Ok(Some(fact)) => dependency_facts.push(fact),
                         Ok(None) => {}
                         Err(error) => return Err(BuiltinModelError(error)),
