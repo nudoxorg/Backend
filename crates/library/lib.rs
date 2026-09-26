@@ -104,10 +104,11 @@ pub use graph_query::{
     MAX_GRAPH_VALUE_BYTES, MAX_GRAPH_VALUE_DEPTH,
 };
 pub use package_graph::{
-    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope,
+    DependencyAuthority, DependencyEvidence, DependencyFacts, DependencyScope, DependentSources,
     MAX_PACKAGE_GRAPH_ROWS, PackageDependencyRecord, PackageDependencySourceFacts,
-    PackageDependencyTarget, admit_dependency_rows, collapse_dependency_rows, dependency_optional,
-    discover_source_entries, discover_source_files, source_selection_policy,
+    PackageDependencyTarget, PackageGraphIndex, admit_dependency_rows, collapse_dependency_rows,
+    dependency_optional, discover_source_entries, discover_source_files, linear_dependent_sources,
+    source_selection_policy,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,

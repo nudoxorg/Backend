@@ -30,6 +30,15 @@ pub(in crate::builtin) struct CommandAdapter {
     search_snapshots: super::super::query::SearchSnapshotOwner,
     remote_semantic: super::super::query::RemoteSemantic,
     published: Option<super::super::view_publish::PublishedRoots>,
+    dependencies: Option<ResidentDependencies>,
+}
+
+struct ResidentDependencies {
+    stamp: [u8; 32],
+    local_witness: [u8; 32],
+    facts: Vec<backend_engine::PackageDependencySourceFacts>,
+    index: backend_library::PackageGraphIndex,
+    synced_root: Option<[u8; 32]>,
 }
 
 impl CommandAdapter {
@@ -50,6 +59,7 @@ impl CommandAdapter {
             search_snapshots,
             remote_semantic,
             published,
+            dependencies: None,
         }
     }
 
@@ -456,54 +466,70 @@ impl CommandAdapter {
                     .as_mut()
                     .map_or(Ok(Vec::new()), RegistryGateway::catalog)
                     .map_err(BuiltinModelError)?;
-                let mut dependency_facts = self
-                    .registry
-                    .as_mut()
-                    .map_or_else(Vec::new, RegistryGateway::dependency_facts);
-                let indexed = super::super::read_indexed_sources(
-                    &daemon.engine().daemon().owner().snapshot(),
-                )?;
-                for project in indexed.projects.values() {
-                    if project.label.starts_with("pkg:") {
-                        continue;
-                    }
-                    let project_root = std::path::Path::new(&project.label);
-                    if !project_root.is_dir() {
-                        continue;
-                    }
-                    match super::super::local_manifest::local_dependency_facts(project_root) {
-                        Ok(Some(fact)) => dependency_facts.push(fact),
-                        Ok(None) => {}
-                        Err(error) => return Err(BuiltinModelError(error)),
-                    }
+                let stamp = match self.registry.as_mut() {
+                    Some(registry) => registry.publication_stamp().map_err(BuiltinModelError)?,
+                    None => [0; 32],
+                };
+                let local_facts = local_project_dependencies(daemon)?;
+                let local_witness = dependency_witness(&local_facts);
+                let root = *daemon
+                    .engine()
+                    .daemon()
+                    .library()
+                    .view()
+                    .root()
+                    .as_bytes();
+                let refresh = self.dependencies.as_ref().is_none_or(|cached| {
+                    cached.stamp != stamp || cached.local_witness != local_witness
+                });
+                if refresh {
+                    let mut facts = self
+                        .registry
+                        .as_mut()
+                        .map_or_else(Vec::new, RegistryGateway::dependency_facts);
+                    facts.extend(local_facts);
+                    let index = backend_library::PackageGraphIndex::from_facts(&facts);
+                    let synced_root = self.dependencies.as_ref().and_then(|cached| cached.synced_root);
+                    self.dependencies = Some(ResidentDependencies {
+                        stamp,
+                        local_witness,
+                        facts,
+                        index,
+                        synced_root,
+                    });
                 }
-                futures_executor::block_on(self.sql_projection.synchronize_package_graph(
-                    daemon.engine().daemon().library().view().root(),
-                    &dependency_facts,
-                ))
-                .map_err(|error| {
-                    BuiltinModelError(format!("align package graph projection: {error}"))
-                })?;
                 let workspace = self
                     .registry
                     .as_ref()
-                    .map(|gateway| gateway.workspace_root());
-                self.product_state
-                    .execute(
-                        surface,
-                        daemon.engine().daemon().library().view(),
-                        &catalog,
-                        &dependency_facts,
-                        workspace,
-                    )
-                    .map_or_else(
-                        |error| {
-                            CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
-                                error,
-                            ))
-                        },
-                        CommandReply::Surface,
-                    )
+                    .map(|gateway| gateway.workspace_root().to_path_buf());
+                let mut cached = self.dependencies.take().ok_or_else(|| {
+                    BuiltinModelError("dependency index disappeared after refresh".to_owned())
+                })?;
+                if cached.synced_root != Some(root) {
+                    futures_executor::block_on(self.sql_projection.synchronize_package_graph(
+                        daemon.engine().daemon().library().view().root(),
+                        &cached.facts,
+                    ))
+                    .map_err(|error| {
+                        BuiltinModelError(format!("align package graph projection: {error}"))
+                    })?;
+                    cached.synced_root = Some(root);
+                }
+                let reply = self.product_state.execute(
+                    surface,
+                    daemon.engine().daemon().library().view(),
+                    &catalog,
+                    &cached.facts,
+                    &cached.index,
+                    workspace.as_deref(),
+                );
+                self.dependencies = Some(cached);
+                reply.map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
+                    CommandReply::Surface,
+                )
             }
         };
         Ok((reply, None))
@@ -785,4 +811,53 @@ fn commit_builtin_intent(
             "builtin intent was sent to the wrong owner lane".to_owned(),
         )),
     }
+}
+
+fn local_project_dependencies(
+    daemon: &ProductDaemon,
+) -> Result<Vec<backend_engine::PackageDependencySourceFacts>, BuiltinModelError> {
+    let indexed =
+        super::super::read_indexed_sources(&daemon.engine().daemon().owner().snapshot())?;
+    let mut facts = Vec::new();
+    for project in indexed.projects.values() {
+        if project.label.starts_with("pkg:") {
+            continue;
+        }
+        let project_root = Path::new(&project.label);
+        if !project_root.is_dir() {
+            continue;
+        }
+        match super::super::local_manifest::local_dependency_facts(project_root) {
+            Ok(Some(fact)) => facts.push(fact),
+            Ok(None) => {}
+            Err(error) => return Err(BuiltinModelError(error)),
+        }
+    }
+    Ok(facts)
+}
+
+fn dependency_witness(facts: &[backend_engine::PackageDependencySourceFacts]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.local-dependency.witness.v1\0");
+    for (source, state) in facts {
+        hasher.update(source.as_str().as_bytes());
+        hasher.update(&[0]);
+        match state {
+            backend_library::DependencyFacts::Known(rows) => {
+                hasher.update(&[1]);
+                for row in rows.iter() {
+                    hasher.update(&row.facts_version);
+                }
+            }
+            backend_library::DependencyFacts::Unknown(reason) => {
+                hasher.update(&[2]);
+                hasher.update(reason.as_str().as_bytes());
+            }
+            backend_library::DependencyFacts::Unavailable(reason) => {
+                hasher.update(&[3]);
+                hasher.update(reason.as_str().as_bytes());
+            }
+        }
+    }
+    *hasher.finalize().as_bytes()
 }
