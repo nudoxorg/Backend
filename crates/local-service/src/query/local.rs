@@ -441,6 +441,33 @@ impl SearchSnapshotOwner {
     pub(crate) fn corpus_builds(&self) -> u64 {
         self.corpus_builds
     }
+
+    /// Returns the corpus already admitted for `workspace`.
+    #[must_use]
+    pub fn resident_corpus(&self, workspace: WorkspaceRoot) -> Option<SemanticQueryCorpus> {
+        self.corpus
+            .as_ref()
+            .filter(|cached| cached.workspace() == workspace)
+            .cloned()
+    }
+
+    /// Admits the corpus for `workspace`, running `prepare` only on a miss.
+    ///
+    /// A resident corpus is cloned before `prepare` runs, so a warm search
+    /// does not page the workspace source relation. A prepare or build error
+    /// leaves any previous corpus in place and does not count as an admission.
+    pub fn admit_corpus<S, E>(
+        &mut self,
+        workspace: WorkspaceRoot,
+        prepare: impl FnOnce() -> Result<S, E>,
+        build: impl FnOnce(S) -> Result<SemanticQueryCorpus, E>,
+    ) -> Result<SemanticQueryCorpus, E> {
+        if let Some(cached) = self.resident_corpus(workspace) {
+            return Ok(cached);
+        }
+        let prepared = prepare()?;
+        self.shared_corpus(workspace, || build(prepared))
+    }
 }
 
 impl QueryCoordinator {

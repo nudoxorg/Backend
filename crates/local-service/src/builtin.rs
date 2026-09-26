@@ -87,6 +87,8 @@ mod product_state;
 use product_state::ProductState;
 #[path = "builtin/local_manifest.rs"]
 mod local_manifest;
+#[path = "builtin/search_source_page.rs"]
+mod search_source_page;
 #[path = "builtin/coverage.rs"]
 mod coverage;
 use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};
@@ -382,7 +384,12 @@ pub(crate) fn genesis() -> Result<WorkspaceHead, BuiltinModelError> {
 /// The manifest root is a pure function of the selected relations, so this is
 /// also how two heads that share a root under different commits are built.
 fn head_for_intent(intent: Option<&BuiltinIntent>) -> Result<WorkspaceHead, BuiltinModelError> {
-    let relation = workspace_relation(intent)?;
+    head_from_relation(workspace_relation(intent)?)
+}
+
+fn head_from_relation(
+    relation: RelationState<BuiltinWorkspaceRelation>,
+) -> Result<WorkspaceHead, BuiltinModelError> {
     let semantic = semantic_relation()?;
     let manifest = workspace_manifest(&relation, &semantic)?;
     // `WorkspaceHead::genesis` derives this same deterministic transaction and
@@ -1166,6 +1173,14 @@ pub fn measure_manifest_residence() {
 /// measurement for a repeated search over an unchanged workspace.
 pub fn measure_search_corpus() {
     query::measure_search_corpus();
+}
+
+/// Times paging the workspace source relation against a resident corpus hit.
+///
+/// The snapshot is built before the timer. The printed line is the release
+/// measurement for the source page a warm search used to read and discard.
+pub fn measure_search_source_page() {
+    search_source_page::measure_search_source_page();
 }
 
 /// Starts the compiled locald profile. It does all startup work before the
