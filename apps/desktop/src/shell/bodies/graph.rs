@@ -31,12 +31,14 @@ pub(crate) struct Map {
     identities: Option<Arc<IdentityAdapter>>,
     entry_origin: Option<facet::motion::shared::Endpoint>,
     painted_focus: Option<(NodeId, gpui::Bounds<gpui::Pixels>, bool)>,
+    canvas_transform: gpui::LayerTransform,
     error: Option<String>,
     load_error: Option<String>,
     visible: bool,
     focus_on_mount: bool,
     route: Option<Route>,
     routed_focus: Option<NodeId>,
+    semantic_focus: Option<NodeId>,
     revealed_focus: Option<NodeId>,
     resolved: BTreeMap<NodeId, ResolvedSymbol>,
     open_generation: u64,
@@ -55,6 +57,16 @@ struct TestFixture {
 }
 #[cfg(test)]
 impl gpui::Global for TestFixture {}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) struct TestCanvasLayer {
+    pub scale: f32,
+    pub x: f32,
+    pub y: f32,
+}
+#[cfg(test)]
+impl gpui::Global for TestCanvasLayer {}
 
 #[cfg(test)]
 pub(crate) fn install_test_fixture(cx: &mut App) {
@@ -108,13 +120,16 @@ impl Map {
                     || event.is_branch(Branch::Overlay)
                 {
                     map.invalidate_open();
+                    map.error = None;
                     if event.is_branch(Branch::Root) {
                         map.resolved.clear();
                         map.routed_focus = None;
                     }
+                    map.publish_focus(cx);
                 }
                 if matches!(event, StoreEvent::Resource(_)) {
                     map.resolve_open(window, cx);
+                    map.publish_focus(cx);
                     cx.notify();
                 }
             },
@@ -185,12 +200,14 @@ impl Map {
             identities: None,
             entry_origin: None,
             painted_focus: None,
+            canvas_transform: gpui::LayerTransform::IDENTITY,
             error: None,
             load_error: None,
             visible: false,
             focus_on_mount: false,
             route: None,
             routed_focus: None,
+            semantic_focus: None,
             revealed_focus: None,
             resolved: BTreeMap::new(),
             pending: None,
@@ -204,15 +221,16 @@ impl Map {
     /// A capture waits for the mounted map's discovery index and any routed
     /// lookup, as well as the fixture parsing/layout worker.
     pub(crate) fn ready(&self, cx: &App) -> bool {
-        self.pending.is_none() && (!self.visible
-            || self.load_error.is_some()
-            || (self.loading.is_none()
-                && self.ready_scene.is_none()
-                && self.pending.is_none()
-                && self
-                    .graph
-                    .as_ref()
-                    .is_some_and(|graph| graph.read(cx).ready())))
+        self.pending.is_none()
+            && (!self.visible
+                || self.load_error.is_some()
+                || (self.loading.is_none()
+                    && self.ready_scene.is_none()
+                    && self.pending.is_none()
+                    && self
+                        .graph
+                        .as_ref()
+                        .is_some_and(|graph| graph.read(cx).ready())))
     }
 
     pub(crate) fn report(&self, cx: &App) -> String {
@@ -325,6 +343,7 @@ impl Map {
             }
         }
         self.visible = false;
+        self.publish_focus(cx);
     }
 
     pub(crate) fn show(
@@ -335,7 +354,8 @@ impl Map {
         cx: &mut Context<Self>,
     ) {
         let changed_route = self.route.as_ref() != Some(route);
-        if !self.visible || changed_route {
+        let arriving = !self.visible || changed_route;
+        if arriving {
             self.focus_on_mount = true;
             self.painted_focus = None;
             self.entry_origin = route_symbol(route).and_then(|symbol| {
@@ -355,6 +375,9 @@ impl Map {
             self.error = None;
         }
         self.visible = true;
+        if arriving {
+            self.publish_focus(cx);
+        }
         let Some(graph) = self.graph.clone() else {
             return;
         };
@@ -362,16 +385,16 @@ impl Map {
             graph.update(cx, |graph, cx| graph.show_world(cx));
             self.painted_focus = None;
         }
-        if let Some(node) = self.revealed_focus.take() {
-            self.routed_focus = Some(node);
-            graph.update(cx, |graph, cx| graph.enter(node, cx));
-            return;
-        }
         if let Some(at) = route.at() {
             self.error = Some(format!(
                 "Graph fixture is pinned; release {} is not re-scoped by this map.",
                 at.as_str()
             ));
+            return;
+        }
+        if let Some(node) = self.revealed_focus.take() {
+            self.routed_focus = Some(node);
+            graph.update(cx, |graph, cx| graph.enter(node, cx));
             return;
         }
         let Some(symbol) = route_symbol(route) else {
@@ -406,6 +429,7 @@ impl Map {
                     line: page.identity.line,
                 },
             );
+            self.publish_focus(cx);
             if graph.read(cx).focused() != Some(*id) {
                 graph.update(cx, |graph, cx| graph.enter(*id, cx));
             }
@@ -476,6 +500,75 @@ impl Map {
         }
     }
 
+    /// Publish only semantic selection changes. Neither camera nor hover is
+    /// part of this model; the data plane additionally equality-gates events.
+    fn publish_focus(&self, cx: &mut Context<Self>) {
+        use backend_library::DeclarationKind as D;
+        use facet::graph::Kind as G;
+        let snapshot = self.links.snapshot(cx);
+        let focus = self.graph.as_ref().and_then(|graph| {
+            if !self.visible || !is_graph(snapshot.route()) || snapshot.route().at().is_some() {
+                return None;
+            }
+            let graph = graph.read(cx);
+            let id = graph.focused()?;
+            let world = graph.world();
+            let node = world.node(id);
+            let indexed = self
+                .resolved
+                .get(&id)
+                .map(|resolved| (resolved.package.clone(), resolved.symbol.clone()))
+                .or_else(|| {
+                    let package = crate::runtime::store::route_package(snapshot.route())?;
+                    let store = self.links.store.read(cx);
+                    let resource = store.package(&package);
+                    if resource.value_root() != Some(snapshot.key()) {
+                        return None;
+                    }
+                    let tree = resource.loaded_value()?.outline.known()?;
+                    let symbol = self
+                        .identities
+                        .as_ref()?
+                        .outline_symbol(id, &package, tree)?;
+                    Some((package, symbol))
+                });
+            Some(crate::runtime::graph_focus::GraphFocus {
+                visit: snapshot.route().clone(),
+                root: snapshot.key(),
+                node: id,
+                name: Arc::from(world.name_of(id).as_ref()),
+                package: Arc::from(world.packages[node.pkg as usize].name.as_ref()),
+                module: Arc::from(world.modules[node.module as usize].path.as_ref()),
+                kind: match node.kind {
+                    G::Struct => D::Struct,
+                    G::Enum => D::Enum,
+                    G::Union => D::Union,
+                    G::Trait => D::Trait,
+                    G::Type => D::Type,
+                    G::Function => D::Function,
+                    G::Method => D::Method,
+                    G::Macro => D::Macro,
+                    G::Constant => D::Constant,
+                    G::Field => D::Field,
+                    G::Variant => D::Variant,
+                    G::Other => D::Unknown,
+                },
+                indexed,
+            })
+        });
+        let notice = (!self.visible)
+            .then(|| self.error.as_ref())
+            .flatten()
+            .map(|error| crate::runtime::graph_focus::GraphNotice {
+                visit: snapshot.route().clone(),
+                root: snapshot.key(),
+                message: Arc::from(error.as_str()),
+            });
+        self.links
+            .store
+            .update(cx, |store, cx| store.admit_graph_focus(focus, notice, cx));
+    }
+
     fn callback_basis(&self, cx: &App) -> CallbackBasis {
         let snapshot = self.links.snapshot(cx);
         CallbackBasis {
@@ -504,7 +597,17 @@ impl Map {
         if snapshot.overlay().is_some() {
             return;
         }
-        let Some(graph) = &self.graph else {
+        if self
+            .route
+            .as_ref()
+            .is_some_and(|route| route.at().is_some())
+        {
+            self.error = Some("This graph fixture cannot focus a symbol at the viewed release; return to your pin first.".into());
+            self.publish_focus(cx);
+            cx.notify();
+            return;
+        }
+        let Some(graph) = self.graph.clone() else {
             return;
         };
         if node as usize >= graph.read(cx).world().len() {
@@ -563,13 +666,21 @@ impl Map {
                     .is_some_and(|route| route.at().is_some()))
         {
             self.error = Some("This graph fixture cannot open a symbol at the viewed release; return to your pin first.".into());
+            self.publish_focus(cx);
             cx.notify();
             return;
         }
         self.error = None;
         self.invalidate_open();
+        self.publish_focus(cx);
         if let Some(resolved) = self.resolved.get(&node).cloned() {
-            self.navigate(resolved, target, self.visible.then(|| self.anchor_for(node, cx)).flatten(), window, cx);
+            self.navigate(
+                resolved,
+                target,
+                self.visible.then(|| self.anchor_for(node, cx)).flatten(),
+                window,
+                cx,
+            );
             return;
         }
         let Some(graph) = &self.graph else { return };
@@ -688,12 +799,31 @@ impl Map {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn canvas_geometry(
+        &self,
+        node: NodeId,
+        cx: &App,
+    ) -> (
+        Option<gpui::Bounds<gpui::Pixels>>,
+        Option<gpui::Bounds<gpui::Pixels>>,
+        gpui::LayerTransform,
+    ) {
+        (
+            self.anchor_for(node, cx),
+            self.painted_focus.map(|(_, bounds, _)| bounds),
+            self.canvas_transform,
+        )
+    }
+
     fn anchor_for(&self, node: NodeId, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> {
         let graph = self.graph.as_ref()?.read(cx);
         handoff_anchor(
             node,
             graph.focused(),
-            graph.node_bounds(node),
+            graph
+                .node_bounds(node)
+                .map(|bounds| self.canvas_transform.apply_bounds(bounds)),
             self.painted_focus,
         )
     }
@@ -876,7 +1006,14 @@ impl gpui::Element for FocusMark {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<gpui::AnyElement> {
-        if !self.owner.upgrade()?.read(cx).visible {
+        let owner = self.owner.upgrade()?;
+        let visible = owner.update(cx, |map, _| {
+            // GraphView supplies layout-space window bounds. The actual
+            // canvas also inherits every native parent compositing layer.
+            map.canvas_transform = window.layer_transform();
+            map.visible
+        });
+        if !visible {
             return None;
         }
         let graph = self.graph.read(cx);
@@ -899,18 +1036,21 @@ impl gpui::Element for FocusMark {
             facet::graph::Kind::Enum => facet::icons::Kind::Enum,
             _ => facet::icons::Kind::Struct,
         };
-        let (symbol, origin, previous_node) = self
-            .owner
-            .update(cx, |map, _| {
-                map.resolved.get(&node).map(|resolved| {
-                    (
-                        resolved.symbol.clone(),
-                        map.entry_origin.take(),
-                        map.painted_focus.map(|(node, _, _)| node),
-                    )
-                })
-            })
-            .ok()??;
+        let Some((symbol, origin, previous_node)) = owner.update(cx, |map, _| {
+            let Some(resolved) = map.resolved.get(&node) else {
+                // A producer-root change can remove the indexed join while
+                // the fixture's selected node remains. No old ghost survives.
+                map.painted_focus = None;
+                return None;
+            };
+            Some((
+                resolved.symbol.clone(),
+                map.entry_origin.take(),
+                map.painted_focus.map(|(node, _, _)| node),
+            ))
+        }) else {
+            return None;
+        };
         let key = crate::shell::kit::shared_id(&symbol);
         if let Some(origin) = origin {
             if !facet::motion::shared::resume(origin, key.clone(), window, cx) {
@@ -1006,6 +1146,11 @@ impl Render for Map {
                         }) {
                             map.invalidate_open();
                         }
+                        let focus = graph.read(cx).focused();
+                        if map.semantic_focus != focus {
+                            map.semantic_focus = focus;
+                            map.publish_focus(cx);
+                        }
                         // GPUI dirties the child view's ancestor path; its
                         // canvas and this endpoint share the same prepaint.
                     }));
@@ -1042,7 +1187,7 @@ impl Render for Map {
                     .unwrap_or_else(|| "Laying out the graph fixture…".into()),
             );
         }
-        root.child(
+        let root = root.child(
             div()
                 .absolute()
                 .bottom(px(8.0))
@@ -1060,7 +1205,26 @@ impl Render for Map {
                             }
                         }),
                 ),
-        )
+        );
+        #[cfg(test)]
+        {
+            let layer = cx
+                .try_global::<TestCanvasLayer>()
+                .copied()
+                .unwrap_or(TestCanvasLayer {
+                    scale: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                });
+            gpui::layer(root)
+                .origin(0.0, 0.0)
+                .scale(layer.scale)
+                .translate(gpui::point(px(layer.x), px(layer.y)))
+        }
+        #[cfg(not(test))]
+        {
+            root
+        }
     }
 }
 

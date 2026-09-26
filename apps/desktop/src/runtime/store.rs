@@ -60,6 +60,8 @@ pub enum Branch {
     LocalPackage,
     /// Document tabs changed.
     Documents,
+    /// The mounted graph's semantic selection changed, without a route change.
+    GraphFocus,
 }
 
 /// A typed change notification.
@@ -176,6 +178,8 @@ pub struct DataStore {
     prefetching: BTreeSet<PageKey>,
     wake_task: Option<Task<()>>,
     stats: StoreStats,
+    graph_focus: Option<super::graph_focus::GraphFocus>,
+    graph_notice: Option<super::graph_focus::GraphNotice>,
 }
 
 impl std::fmt::Debug for DataStore {
@@ -268,6 +272,27 @@ impl DataStore {
             prefetching: BTreeSet::new(),
             wake_task: None,
             stats: StoreStats::default(),
+            graph_focus: None,
+            graph_notice: None,
+        }
+    }
+
+    /// A display selection never becomes an address or a history entry.
+    pub(crate) fn graph_focus(&self) -> Option<&super::graph_focus::GraphFocus> {
+        self.graph_focus.as_ref().filter(|focus| focus.active(&self.snapshot))
+    }
+
+    pub(crate) fn graph_notice(&self) -> Option<&super::graph_focus::GraphNotice> {
+        self.graph_notice.as_ref().filter(|notice| notice.active(&self.snapshot))
+    }
+
+    /// Semantic equality is the notification boundary: camera and hover frames
+    /// cannot invalidate the shell regions or schedule data-plane reads.
+    pub(crate) fn admit_graph_focus(&mut self, focus: Option<super::graph_focus::GraphFocus>, notice: Option<super::graph_focus::GraphNotice>, cx: &mut Context<Self>) {
+        if self.graph_focus != focus || self.graph_notice != notice {
+            self.graph_focus = focus;
+            self.graph_notice = notice;
+            self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
         }
     }
 

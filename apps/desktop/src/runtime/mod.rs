@@ -4,6 +4,7 @@ pub mod actor;
 pub mod client;
 pub mod coordinator;
 pub mod debug_page;
+pub(crate) mod graph_focus;
 pub mod mailbox;
 pub mod mapping;
 pub mod page_mapping;

@@ -191,6 +191,31 @@ impl IdentityAdapter {
             .collect()
     }
 
+    pub(super) fn outline_symbol(
+        &self,
+        node: NodeId,
+        package: &PackageRef,
+        tree: &crate::model::pages::OutlineTree,
+    ) -> Option<SymbolRef> {
+        if !tree.complete {
+            return None;
+        }
+        fn visit<'a>(nodes: &'a [crate::model::pages::OutlineNode], out: &mut Vec<&'a DeclRef>) {
+            for node in nodes {
+                out.push(&node.decl);
+                visit(&node.children, out);
+            }
+        }
+        let mut decls = Vec::new();
+        visit(&tree.roots, &mut decls);
+        let mut matches = decls.into_iter().filter(|decl| {
+            decl.coordinate.package().as_ref() == Some(package)
+                && self.candidates(decl, package).as_slice() == [node]
+        });
+        let first = matches.next()?;
+        matches.next().is_none().then(|| first.coordinate.clone())
+    }
+
     pub(super) fn resolve(
         &self,
         node: NodeId,
@@ -373,6 +398,54 @@ mod tests {
         }
         let absolute = row("/index/one", "/index/one/src/lib.rs", 7);
         assert!(adapter.resolve(0, &[absolute]).is_ok());
+    }
+
+    #[test]
+    fn outline_highlights_require_a_complete_unique_typed_index_coordinate() {
+        use crate::model::pages::{OutlineNode, OutlineTree};
+        let (_, adapter) = small(false);
+        let package = PackageRef::parse("/index/one").expect("package");
+        let right = row("/index/one", "src/lib.rs", 7);
+        let node = |decl: DeclRef| OutlineNode {
+            decl,
+            children: Arc::from([]),
+        };
+        let tree = |decls: Vec<DeclRef>, complete| OutlineTree {
+            roots: decls.into_iter().map(node).collect(),
+            complete,
+        };
+        assert_eq!(
+            adapter.outline_symbol(0, &package, &tree(vec![right.decl.clone()], true)),
+            Some(right.decl.coordinate.clone())
+        );
+        assert!(
+            adapter
+                .outline_symbol(0, &package, &tree(vec![right.decl.clone()], false))
+                .is_none()
+        );
+        assert!(
+            adapter
+                .outline_symbol(
+                    0,
+                    &package,
+                    &tree(vec![right.decl.clone(), right.decl.clone()], true)
+                )
+                .is_none()
+        );
+        let mut inconsistent = right.decl.clone();
+        inconsistent.coordinate = row("/index/two", "src/lib.rs", 7).decl.coordinate;
+        assert!(
+            adapter
+                .outline_symbol(0, &package, &tree(vec![inconsistent], true))
+                .is_none(),
+            "display parts cannot override an actual foreign package coordinate"
+        );
+        let (_, duplicate) = small(true);
+        assert!(
+            duplicate
+                .outline_symbol(0, &package, &tree(vec![right.decl], true))
+                .is_none()
+        );
     }
 
     #[test]
