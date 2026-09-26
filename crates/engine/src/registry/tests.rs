@@ -3010,6 +3010,55 @@ fn nuget_registration_retains_standing_security_downloads_and_dependencies() {
 }
 
 #[test]
+fn nuget_framework_groups_share_one_dependency_edge() {
+    let archive = b"nuget framework archive";
+    let hash = STANDARD.encode(Sha512::digest(archive));
+    let endpoint = RegistryEndpoint::new(RegistryEcosystem::Nuget, "https://api.nuget.org")
+        .expect("nuget endpoint");
+    let adapter = EcosystemAdapter::new(endpoint, PackageName::new("demo").expect("package"), None)
+        .expect("nuget adapter");
+    let repeated = format!(
+        r#"{{"items":[{{"catalogEntry":{{"version":"1.0.0","listed":true,"dependencyGroups":[
+            {{"targetFramework":"net8.0","dependencies":[{{"id":"Dep","range":"[2.0.0]"}}]}},
+            {{"targetFramework":"net6.0","dependencies":null}},
+            {{"targetFramework":"netstandard2.0","dependencies":[{{"id":"dep","range":"[2.0.0]"}}]}},
+            {{"targetFramework":"net48","dependencies":[{{"id":"other","range":"[3.0.0]"}}]}}
+        ]}},"packageContent":"https://api.nuget.org/v3-flatcontainer/demo/1.0.0/demo.1.0.0.nupkg","packageHash":"{hash}"}}]}}"#
+    );
+    let releases = adapter
+        .decode(repeated.as_bytes())
+        .expect("repeated framework dependencies");
+    let facts = &releases[0].dependency_facts;
+    let backend_library::DependencyFacts::Known(rows) = facts else {
+        panic!("expected shared NuGet edges, got {facts:?}");
+    };
+    assert_eq!(rows.len(), 2);
+    let dep = rows
+        .iter()
+        .find(|row| row.target.name.as_str().eq_ignore_ascii_case("dep"))
+        .expect("shared dep");
+    assert_eq!(dep.target.name.as_str(), "Dep");
+    assert_eq!(dep.target.requirement.as_str(), "[2.0.0]");
+    assert_eq!(dep.scope, backend_library::DependencyScope::Runtime);
+    assert!(!dep.optional);
+    let other = rows
+        .iter()
+        .find(|row| row.target.name.as_str() == "other")
+        .expect("other");
+    assert_eq!(other.target.requirement.as_str(), "[3.0.0]");
+    let conflict = format!(
+        r#"{{"items":[{{"catalogEntry":{{"version":"1.0.0","listed":true,"dependencyGroups":[
+            {{"targetFramework":"net8.0","dependencies":[{{"id":"dep","range":"[2.0.0]"}}]}},
+            {{"targetFramework":"netstandard2.0","dependencies":[{{"id":"DEP","range":"[1.0.0]"}}]}}
+        ]}},"packageContent":"https://api.nuget.org/v3-flatcontainer/demo/1.0.0/demo.1.0.0.nupkg","packageHash":"{hash}"}}]}}"#
+    );
+    assert!(matches!(
+        adapter.decode(conflict.as_bytes()),
+        Err(TransportFailure::Protocol)
+    ));
+}
+
+#[test]
 fn nuget_v3_registration_pages_are_traversed_deterministically() {
     let archive = b"nuget paged archive";
     let hash = STANDARD.encode(Sha512::digest(archive));
