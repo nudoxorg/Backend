@@ -42,6 +42,8 @@ const MAX_TYPE_DEPTH: u8 = 24;
 const UNSET: u32 = u32::MAX;
 /// The closed foreign ecosystem every unresolved TypeScript name lives in.
 const NPM_ECOSYSTEM: &str = "npm";
+/// Maximum `extends` hops consulted for inherited `this` member resolution.
+const MAX_INHERITANCE_DEPTH: u8 = 8;
 
 /// Exact direct-authority rejection while borrowing OXC declaration facts.
 #[derive(Debug)]
@@ -373,6 +375,13 @@ impl<'source> TypeCells<'source> {
 enum TypeOutcome<'source> {
     Existing(u32),
     Cells(TypeCells<'source>),
+}
+
+/// How many members of one expected kind live on one class owner.
+enum ClassMemberMatch {
+    Unique(u32),
+    Ambiguous,
+    Absent,
 }
 
 /// Applies lowered cells onto one fact under construction.
@@ -4955,7 +4964,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     }
 
     /// Resolves one `this.property` site through the enclosing class when
-    /// exactly one same-name member of the expected kind lives there.
+    /// exactly one same-name member of the expected kind lives there, then
+    /// through at most [`MAX_INHERITANCE_DEPTH`] `extends` hops when the
+    /// enclosing class declares no such member.
     fn this_property_target(
         &self,
         property_span: Span,
@@ -4973,6 +4984,32 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             ReferenceKind::FieldAccess => EntityKind::Field,
             _ => return self.syntactic_property_target(property_span),
         };
+        match self.class_member_of_owner(class, name, expected_kind) {
+            ClassMemberMatch::Unique(fact) => Ok((
+                OccurrenceTarget::Local(EntityId::new(fact)),
+                OccurrenceConfidence::Index,
+            )),
+            ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+            ClassMemberMatch::Absent => match self.inherited_class_member(class, name, expected_kind) {
+                ClassMemberMatch::Unique(fact) => Ok((
+                    OccurrenceTarget::Local(EntityId::new(fact)),
+                    OccurrenceConfidence::Index,
+                )),
+                ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                    self.syntactic_property_target(property_span)
+                }
+            },
+        }
+    }
+
+    /// Counts members of `expected_kind` named `name` whose enclosing owner
+    /// is exactly `owner`.
+    fn class_member_of_owner(
+        &self,
+        owner: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+    ) -> ClassMemberMatch {
         let candidates = self
             .facts_by_name
             .get(name)
@@ -4988,22 +5025,89 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
             let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
             if decl_start == UNSET
-                || self.enclosing_registered_owner(decl_start, Some(ordinal)) != Some(class)
+                || self.enclosing_registered_owner(decl_start, Some(ordinal)) != Some(owner)
             {
                 continue;
             }
             if matched.is_some() {
-                return self.syntactic_property_target(property_span);
+                return ClassMemberMatch::Ambiguous;
             }
             matched = Some(ordinal);
         }
         match matched {
-            Some(fact) => Ok((
-                OccurrenceTarget::Local(EntityId::new(fact)),
-                OccurrenceConfidence::Index,
-            )),
-            None => self.syntactic_property_target(property_span),
+            Some(fact) => ClassMemberMatch::Unique(fact),
+            None => ClassMemberMatch::Absent,
         }
+    }
+
+    /// Walks `extends` from `start_class`, resolving inherited members with
+    /// the same count rules as the enclosing class.
+    fn inherited_class_member(
+        &self,
+        start_class: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+    ) -> ClassMemberMatch {
+        let mut visited = Vec::new();
+        let mut current = start_class;
+        for _ in 0..MAX_INHERITANCE_DEPTH {
+            if visited.contains(&current) {
+                return ClassMemberMatch::Absent;
+            }
+            visited.push(current);
+            let super_span = match self.record_super_class_name_span(current) {
+                Some(span) => span,
+                None => return ClassMemberMatch::Absent,
+            };
+            let super_name = match self.slice_span(super_span) {
+                Some(name) => name,
+                None => return ClassMemberMatch::Absent,
+            };
+            let base = match self.unique_file_record(super_name) {
+                Some(record) => record,
+                None => return ClassMemberMatch::Absent,
+            };
+            match self.class_member_of_owner(base, name, expected_kind) {
+                ClassMemberMatch::Unique(fact) => return ClassMemberMatch::Unique(fact),
+                ClassMemberMatch::Ambiguous => return ClassMemberMatch::Ambiguous,
+                ClassMemberMatch::Absent => current = base,
+            }
+        }
+        ClassMemberMatch::Absent
+    }
+
+    /// Resolves the single file-local `Record` with `name`, or `None` when
+    /// zero or more than one such record is published.
+    fn unique_file_record(&self, name: &[u8]) -> Option<u32> {
+        let candidates = self.facts_by_name.get(name)?;
+        let mut matched = None;
+        for &ordinal in candidates {
+            let index = usize::try_from(ordinal).ok()?;
+            if self.fact_kinds.get(index) != Some(&EntityKind::Record) {
+                continue;
+            }
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(ordinal);
+        }
+        matched
+    }
+
+    /// Returns the identifier span of one class record's `extends` clause,
+    /// peeling parenthesized wrappers and requiring an identifier reference.
+    fn record_super_class_name_span(&self, record: u32) -> Option<Span> {
+        let index = usize::try_from(record).ok()?;
+        let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+        let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+        if start == UNSET || end == UNSET {
+            return None;
+        }
+        let kind = self.ast_kind_at_exact_span(start, end)?;
+        let class = kind.as_class()?;
+        let super_expr = class.super_class.as_ref()?;
+        let span = super_expr.span();
+        self.peel_object_identifier_span(span.start, span.end)
     }
 
     /// Builds the honest npm-universe foreign key for one unresolved property
