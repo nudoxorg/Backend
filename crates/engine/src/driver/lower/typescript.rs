@@ -3235,7 +3235,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Runs the ordered projection: the self-nominal declaration pass, the
     /// alias/member/signature/variable pass, the checker computed pass, the
     /// narrowing pass, the reference pass, the checker-only reference pass,
-    /// the static property-access pass, then the documentation pass.
+    /// the enum-member pass, the static property-access pass, then the
+    /// documentation pass.
     fn run(&mut self) -> Result<(), TypeScriptCollectError> {
         self.pass_declarations()?;
         self.pass_members()?;
@@ -3243,8 +3244,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         self.pass_narrowings()?;
         self.pass_references()?;
         self.pass_checker_references()?;
-        self.pass_property_accesses()?;
         self.pass_enum_member_accesses()?;
+        self.pass_property_accesses()?;
         self.pass_docs()?;
         self.pass_parentage()?;
         Ok(())

@@ -2216,8 +2216,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         end: occurrence.span.end,
                     })
                 })?;
-                let target =
-                    foreign_package(module_spelling, binding, module_span, Some(EntityKind::Function))?;
+                let target = foreign_package(
+                    module_spelling,
+                    binding,
+                    module_span,
+                    Some(EntityKind::Function),
+                )?;
                 let confidence = match checked {
                     Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                     _ => OccurrenceConfidence::Index,

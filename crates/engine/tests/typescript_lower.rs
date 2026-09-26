@@ -1996,29 +1996,40 @@ fn catch_binding_repeated_name_still_lowers() {
 }
 
 #[test]
-fn enum_member_missing_name_stays_absent() {
+fn enum_member_missing_name_does_not_invent_a_variant() {
     const SOURCE: &[u8] = b"export enum Color { Red = 1 }\nexport function pick(): void { Color.missing; }\n";
     let view = view(SOURCE, None);
-    assert!(
-        occurrences(&view)
-            .iter()
-            .all(|row| row.occurrence.kind != ReferenceKind::FieldAccess)
-    );
     assert!(
         !entities(&view)
             .iter()
             .any(|(_, name, _)| name == b"missing")
     );
+    assert!(
+        occurrences(&view).iter().all(|row| {
+            if row.occurrence.kind != ReferenceKind::FieldAccess {
+                return true;
+            }
+            !matches!(row.occurrence.target, OccurrenceTarget::Local(_))
+        }),
+        "a missing enum member stays off every published variant"
+    );
 }
 
 #[test]
-fn enum_member_non_enum_receiver_stays_absent() {
+fn enum_member_non_enum_receiver_is_not_a_variant() {
     const SOURCE: &[u8] = b"export function pick(box: { tick: number }): number { return box.tick; }\n";
     let view = view(SOURCE, None);
     assert!(
-        occurrences(&view)
-            .iter()
-            .all(|row| row.occurrence.kind != ReferenceKind::FieldAccess)
+        occurrences(&view).iter().all(|row| {
+            let OccurrenceTarget::Local(target) = row.occurrence.target else {
+                return true;
+            };
+            entities(&view)
+                .into_iter()
+                .find(|(id, _, _)| *id == target.raw)
+                .is_none_or(|(_, _, kind)| kind != EntityKind::Variant)
+        }),
+        "a non-enum property read does not retarget an enum variant"
     );
 }
 
