@@ -23,7 +23,8 @@ use backend_frontend_python::legacy::{
     DeclarationKind, OccurrenceKind, Span, extract,
 };
 use backend_semantic::ir::{
-    EntityId, EntityKind, ForeignOrigin, FragmentView, OccurrenceTarget, ReferenceKind,
+    EntityId, EntityKind, ForeignOrigin, FragmentView, OccurrenceConfidence, OccurrenceTarget,
+    ReferenceKind,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage};
 use thiserror::Error;
@@ -97,6 +98,55 @@ fn entity_ordinal(
         })
         .map(|entity| entity.entity)
         .ok_or(TestError::Falsified("entity ordinal absent"))
+}
+
+fn method_ordinal_in_class(
+    decoded: &FragmentView<'_>,
+    atoms: &[&[u8]],
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    class_name: &[u8],
+    method_name: &[u8],
+) -> Result<EntityId, TestError> {
+    let class_span = class_span(module, class_name)?;
+    let mut class_method_indexes: Vec<usize> = Vec::new();
+    for (index, declaration) in module.declarations.iter().enumerate() {
+        if declaration.kind == DeclarationKind::Function
+            && declaration.name.as_bytes() == method_name
+            && declaration.span.start >= class_span.start
+            && declaration.span.end <= class_span.end
+        {
+            class_method_indexes.push(index);
+        }
+    }
+    if class_method_indexes.len() != 1 {
+        return Err(TestError::Falsified("method declaration in class not unique"));
+    }
+    let mut prior_methods = 0_usize;
+    for (index, declaration) in module.declarations.iter().enumerate() {
+        if index == class_method_indexes[0] {
+            break;
+        }
+        if declaration.kind == DeclarationKind::Function
+            && declaration.name.as_bytes() == method_name
+        {
+            prior_methods += 1;
+        }
+    }
+    let named_methods: Vec<EntityId> = decoded
+        .entities()
+        .filter(|entity| {
+            entity.kind == EntityKind::Function
+                && atoms.get(entity.name.raw as usize).copied() == Some(method_name)
+        })
+        .map(|entity| entity.entity)
+        .collect();
+    if named_methods.is_empty() {
+        return Err(TestError::Falsified("named method entities absent"));
+    }
+    named_methods
+        .get(prior_methods)
+        .copied()
+        .ok_or(TestError::Falsified("method entity ordinal absent"))
 }
 
 fn field_ordinal_in_class(
@@ -397,5 +447,230 @@ fn python_field_reads_lower_honestly() -> Result<(), TestError> {
         ));
     }
 
+    Ok(())
+}
+
+fn local_field_access<'a>(
+    rows: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner: EntityId,
+    field: EntityId,
+) -> Result<&'a backend_semantic::ir::DecodedOccurrence<'a>, TestError> {
+    let matches: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row.occurrence.kind == ReferenceKind::FieldAccess
+                && row.owner == owner
+                && row.occurrence.confidence == OccurrenceConfidence::Index
+                && matches!(
+                    row.occurrence.target,
+                    OccurrenceTarget::Local(target) if target == field
+                )
+        })
+        .collect();
+    if matches.len() != 1 {
+        return Err(TestError::Falsified("local FieldAccess not unique"));
+    }
+    Ok(matches[0])
+}
+
+fn local_method_call<'a>(
+    rows: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner: EntityId,
+    method: EntityId,
+) -> Result<&'a backend_semantic::ir::DecodedOccurrence<'a>, TestError> {
+    let matches: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row.occurrence.kind == ReferenceKind::MethodCall
+                && row.owner == owner
+                && row.occurrence.confidence == OccurrenceConfidence::Index
+                && matches!(
+                    row.occurrence.target,
+                    OccurrenceTarget::Local(target) if target == method
+                )
+        })
+        .collect();
+    if matches.len() != 1 {
+        return Err(TestError::Falsified("local MethodCall not unique"));
+    }
+    Ok(matches[0])
+}
+
+fn universe_field_access<'a>(
+    rows: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner: EntityId,
+    spelling: &str,
+) -> Result<&'a backend_semantic::ir::DecodedOccurrence<'a>, TestError> {
+    let matches: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row.occurrence.kind == ReferenceKind::FieldAccess
+                && row.owner == owner
+                && row.occurrence.confidence == OccurrenceConfidence::Index
+                && matches!(
+                    &row.occurrence.target,
+                    OccurrenceTarget::Foreign(key)
+                        if key.path == spelling
+                            && key.display == spelling
+                            && key.kind == Some(EntityKind::Field)
+                            && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
+                )
+        })
+        .collect();
+    if matches.len() != 1 {
+        return Err(TestError::Falsified("universe FieldAccess not unique"));
+    }
+    Ok(matches[0])
+}
+
+#[test]
+fn python_inherited_field_read_resolves_to_base() -> Result<(), TestError> {
+    let source = b"class Base:\n    note: str\n\nclass Child(Base):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_field_read_two_level_chain() -> Result<(), TestError> {
+    let source = b"class Grand:\n    note: str\n\nclass Mid(Grand):\n    pass\n\nclass Child(Mid):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let grand_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Grand", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, grand_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_field_read_ambiguous_bases_stays_universe() -> Result<(), TestError> {
+    let source = b"class Left:\n    note: str\n\nclass Right:\n    note: str\n\nclass Child(Left, Right):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
+    let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if left_note == right_note {
+        return Err(TestError::Falsified("Left.note and Right.note are one field"));
+    }
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    universe_field_access(&rows, read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_field_read_shadows_base_field() -> Result<(), TestError> {
+    let source = b"class Base:\n    note: str\n\nclass Child(Base):\n    note: str\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let child_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, child_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_field_read_diamond_resolves_to_base() -> Result<(), TestError> {
+    let source = b"class Base:\n    note: str\n\nclass Left(Base):\n    pass\n\nclass Right(Base):\n    pass\n\nclass Child(Left, Right):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_method_call_resolves_to_base() -> Result<(), TestError> {
+    let source = b"class Base:\n    def set_note(self):\n        pass\n\nclass Child(Base):\n    def run(self):\n        self.set_note()\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_set_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"set_note")?;
+    let run = entity_ordinal(&decoded, &atoms, b"run", EntityKind::Function)?;
+    local_method_call(&rows, run, base_set_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_method_call_shadows_base_method() -> Result<(), TestError> {
+    let source = b"class Base:\n    def set_note(self):\n        pass\n\nclass Child(Base):\n    def set_note(self):\n        pass\n    def run(self):\n        self.set_note()\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let child_set_note =
+        method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"set_note")?;
+    let run = entity_ordinal(&decoded, &atoms, b"run", EntityKind::Function)?;
+    local_method_call(&rows, run, child_set_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_field_read_skips_unresolved_base() -> Result<(), TestError> {
+    let source = b"class Base:\n    note: str\n\nclass Child(object, Base):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_field_read_generic_base() -> Result<(), TestError> {
+    use backend_frontend_python::legacy::Annotation;
+    let source = b"class Base:\n    note: str\n\nclass Child(Base[int]):\n    def read(self):\n        return self.note\n";
+    let (fragment, module) = compile_fixture(source)?;
+    let child = module
+        .declarations
+        .iter()
+        .find(|declaration| declaration.name == "Child")
+        .ok_or(TestError::Falsified("Child class absent"))?;
+    let records_generic_base = child.bases.iter().any(|base| {
+        matches!(
+            base,
+            Annotation::Generic { base: inner, .. }
+                if matches!(inner.as_ref(), Annotation::Name { name, .. } if name == "Base")
+        )
+    });
+    if !records_generic_base {
+        return Err(TestError::Falsified(
+            "extractor does not record Child(Base[int]) as a Generic base whose name is Base",
+        ));
+    }
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    local_field_access(&rows, read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn python_inherited_field_read_ambiguous_local_stays_universe() -> Result<(), TestError> {
+    let source = b"class Base:\n    other: str\n\nclass Child(Base):\n    note: str\n    note: int\n    def read(self):\n        return self.note\n";
+    let (fragment, _module) = compile_fixture(source)?;
+    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let read = entity_ordinal(&decoded, &atoms, b"read", EntityKind::Function)?;
+    universe_field_access(&rows, read, "note")?;
     Ok(())
 }

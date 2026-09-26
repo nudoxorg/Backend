@@ -1803,10 +1803,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// earliest pushed row with the same name. Import bindings become
     /// foreign `pypi` package keys, since the referenced declaration lives
     /// outside this fragment; the checker's resolution decides the tier.
-    /// Widened attribute rows key by receiver: a `self`/`cls` call resolves
-    /// to the method its enclosing class declares, and every other receiver
-    /// stays honestly foreign (an imported module receiver still resolves
-    /// through its own package key) — never a fabricated local.
+    /// Widened attribute rows key by receiver: a `self`/`cls` use resolves
+    /// to the member its enclosing class declares, or to the unique member
+    /// of that spelling on a same-file base when the class declares none.
+    /// Every other receiver stays honestly foreign (an imported module
+    /// receiver still resolves through its own package key) — never a
+    /// fabricated local.
     fn occurrence_target(
         &self,
         rows: &[Pushed<'source>],
@@ -1873,6 +1875,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 confidence,
                             )))
                         }
+                        // No unique field on the enclosing class or its same-file
+                        // bases: an honest typed foreign field key.
                         None => Ok(Some((
                             foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
                             OccurrenceConfidence::Index,
@@ -1890,9 +1894,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 confidence,
                             )))
                         }
-                        // The attribute resolves to no live method of the class
-                        // (an inherited or unknown method): an honest typed
-                        // foreign method key, never a fabricated local.
+                        // No unique method on the enclosing class or its same-file
+                        // bases: an honest typed foreign method key, never a
+                        // fabricated local.
                         None => Ok(Some((
                             foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
                             OccurrenceConfidence::Index,
@@ -2016,15 +2020,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-    /// The lane ordinal of the live method one widened `self`/`cls` call
-    /// resolves to: the innermost live function declaration with the
-    /// attribute's spelling inside the innermost live class declaration
-    /// with the recorded class's name whose extent contains the call site.
-    /// The same live and innermost laws the parentage pass applies pick
-    /// exactly one row; anything else has no honest local target.
-    fn enclosing_method(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
+    /// The innermost live class declaration with the recorded class name whose
+    /// extent contains the occurrence site.
+    fn enclosing_class_span(&self, occurrence: &OccurrenceFact, class: &str) -> Option<Span> {
         let class_bytes = class.as_bytes();
-        let attribute_bytes = occurrence.target.as_bytes();
         let mut class_span: Option<Span> = None;
         for (index, declaration) in self.module.declarations.iter().enumerate() {
             if declaration.kind != DeclarationKind::Class
@@ -2040,48 +2039,21 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 class_span = Some(declaration.span);
             }
         }
-        let class_span = class_span?;
-        let mut method: Option<(Span, u32)> = None;
-        for (index, declaration) in self.module.declarations.iter().enumerate() {
-            if declaration.kind != DeclarationKind::Function
-                || declaration.name.as_bytes() != attribute_bytes
-                || !self.live[index]
-                || !span_contains(class_span, declaration.span)
-            {
-                continue;
-            }
-            let area = declaration.span.end - declaration.span.start;
-            let occupied = method.map_or(true, |(span, _)| area < span.end - span.start);
-            if occupied && let Some(ordinal) = self.ordinals[index] {
-                method = Some((declaration.span, ordinal));
-            }
-        }
-        method.map(|(_, ordinal)| ordinal)
+        class_span
     }
 
-    fn enclosing_field(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
-        let class_bytes = class.as_bytes();
-        let attribute_bytes = occurrence.target.as_bytes();
-        let mut class_span: Option<Span> = None;
+    /// Live declaration ordinals of one member kind and spelling inside a
+    /// class extent.
+    fn member_ordinals_in_class(
+        &self,
+        class_span: Span,
+        member_kind: DeclarationKind,
+        spelling: &[u8],
+    ) -> Vec<u32> {
+        let mut matches = Vec::new();
         for (index, declaration) in self.module.declarations.iter().enumerate() {
-            if declaration.kind != DeclarationKind::Class
-                || declaration.name.as_bytes() != class_bytes
-                || !self.live[index]
-                || !span_contains(declaration.span, occurrence.span)
-            {
-                continue;
-            }
-            let area = declaration.span.end - declaration.span.start;
-            let occupied = class_span.map_or(true, |span| area < span.end - span.start);
-            if occupied {
-                class_span = Some(declaration.span);
-            }
-        }
-        let class_span = class_span?;
-        let mut matches: Vec<u32> = Vec::new();
-        for (index, declaration) in self.module.declarations.iter().enumerate() {
-            if declaration.kind != DeclarationKind::Field
-                || declaration.name.as_bytes() != attribute_bytes
+            if declaration.kind != member_kind
+                || declaration.name.as_bytes() != spelling
                 || !self.live[index]
                 || !span_contains(class_span, declaration.span)
             {
@@ -2091,11 +2063,163 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 matches.push(ordinal);
             }
         }
+        matches
+    }
+
+    /// The lane ordinal of the live method one widened `self`/`cls` call
+    /// resolves to: the sole live function declaration with the attribute's
+    /// spelling inside the innermost live class declaration with the
+    /// recorded class's name whose extent contains the call site. When the
+    /// enclosing class declares no such method, same-file bases are walked
+    /// for exactly one inherited method of that spelling.
+    fn enclosing_method(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
+        let class_span = self.enclosing_class_span(occurrence, class)?;
+        let attribute_bytes = occurrence.target.as_bytes();
+        let local = self.member_ordinals_in_class(
+            class_span,
+            DeclarationKind::Function,
+            attribute_bytes,
+        );
+        match local.len() {
+            1 => Some(local[0]),
+            n if n > 1 => None,
+            _ => {
+                let class_index = self.class_index_for_span(class_span)?;
+                self.inherited_member_ordinal(class_index, DeclarationKind::Function, attribute_bytes)
+            }
+        }
+    }
+
+    fn enclosing_field(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
+        let class_span = self.enclosing_class_span(occurrence, class)?;
+        let attribute_bytes = occurrence.target.as_bytes();
+        let local = self.member_ordinals_in_class(class_span, DeclarationKind::Field, attribute_bytes);
+        match local.len() {
+            1 => Some(local[0]),
+            n if n > 1 => None,
+            _ => {
+                let class_index = self.class_index_for_span(class_span)?;
+                self.inherited_member_ordinal(class_index, DeclarationKind::Field, attribute_bytes)
+            }
+        }
+    }
+
+    /// The declaration index of the live class whose extent equals `class_span`.
+    fn class_index_for_span(&self, class_span: Span) -> Option<usize> {
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .find(|(index, declaration)| {
+                declaration.kind == DeclarationKind::Class
+                    && declaration.span == class_span
+                    && self.live[*index]
+            })
+            .map(|(index, _)| index)
+    }
+
+    /// Exactly one live class declaration index for a bare same-file name.
+    fn unique_live_class_index(&self, name: &str) -> Option<usize> {
+        let name_bytes = name.as_bytes();
+        let mut matches = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind == DeclarationKind::Class
+                && self.live[index]
+                && declaration.name.as_bytes() == name_bytes
+            {
+                matches.push(index);
+            }
+        }
         if matches.len() == 1 {
             Some(matches[0])
         } else {
             None
         }
+    }
+
+    /// One inherited member ordinal when same-file bases contribute exactly one
+    /// live row of `member_kind` with `spelling`.
+    fn inherited_member_ordinal(
+        &self,
+        class_index: usize,
+        member_kind: DeclarationKind,
+        spelling: &[u8],
+    ) -> Option<u32> {
+        let mut visited = HashSet::new();
+        let mut found: Option<u32> = None;
+        if self
+            .walk_inherited_member(class_index, member_kind, spelling, 0, &mut visited, &mut found)
+            .is_none()
+        {
+            return None;
+        }
+        found
+    }
+
+    /// Walks same-file bases for one member spelling. `found` accumulates the
+    /// sole distinct ordinal across branches; `None` means the walk is ambiguous.
+    fn walk_inherited_member(
+        &self,
+        class_index: usize,
+        member_kind: DeclarationKind,
+        spelling: &[u8],
+        depth: u8,
+        visited: &mut HashSet<(u32, u32)>,
+        found: &mut Option<u32>,
+    ) -> Option<()> {
+        if depth >= INHERITED_MEMBER_DEPTH_LIMIT {
+            return Some(());
+        }
+        let declaration = &self.module.declarations[class_index];
+        for base in &declaration.bases {
+            // A base this lane cannot name, or a name that is not exactly one
+            // live class, does not decide the walk. A later same-file base
+            // can still contribute the member.
+            let Some(base_name) = same_file_base_name(base) else {
+                continue;
+            };
+            if base_name.contains('.') {
+                continue;
+            }
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            let base_declaration = &self.module.declarations[base_index];
+            let key = (base_declaration.span.start, base_declaration.span.end);
+            if visited.contains(&key) {
+                continue;
+            }
+            visited.insert(key);
+            let members =
+                self.member_ordinals_in_class(base_declaration.span, member_kind, spelling);
+            match members.len() {
+                0 => {
+                    if self
+                        .walk_inherited_member(
+                            base_index,
+                            member_kind,
+                            spelling,
+                            depth + 1,
+                            visited,
+                            found,
+                        )
+                        .is_none()
+                    {
+                        return None;
+                    }
+                }
+                1 => {
+                    let ordinal = members[0];
+                    match *found {
+                        None => *found = Some(ordinal),
+                        Some(existing) if existing == ordinal => {}
+                        Some(_) => return None,
+                    }
+                }
+                _ => return None,
+            }
+        }
+        Some(())
     }
 
     /// The borrowed module spelling of one import binding when a `from … import
@@ -2637,6 +2761,21 @@ const fn combined_tier(any_checked: bool, any_resolved: bool) -> Confidence {
         Confidence::Compiler
     } else {
         lowered_tier(any_resolved)
+    }
+}
+
+/// Maximum same-file base depth for inherited member resolution.
+const INHERITED_MEMBER_DEPTH_LIMIT: u8 = 8;
+
+/// Peels a same-file base class name from one written base annotation.
+fn same_file_base_name(annotation: &Annotation) -> Option<&str> {
+    match annotation {
+        Annotation::Name { name, .. } => Some(name.as_str()),
+        Annotation::Generic { base, .. } => match base.as_ref() {
+            Annotation::Name { name, .. } => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
