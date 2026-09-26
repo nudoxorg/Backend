@@ -2187,22 +2187,23 @@ fn push_occurrence<'source>(
     Ok(())
 }
 
-/// The lane's reference-kind cell for one image reference class. The lane's
-/// closed lattice and the image's closed vocabulary share the four expression
-/// classes, so no two of those collapse and none is unreachable. An explicit
-/// interface implementation's binding has no implementation class in the
-/// lane's closed lattice; it lands as `MethodCall` — the class an invocation
-/// through the implemented interface member carries — at oracle confidence,
-/// so consumers can still resolve every implementation of one interface
-/// member from the occurrence plane alone. A bare-identifier field read is a
-/// use of a variable binding; a bare-identifier field write is the field the
-/// site accesses as its target, so the read/write distinction survives the
-/// lane boundary on the two classes the lattice proves.
+/// The lane's reference-kind cell for one image reference class. Invocation
+/// and method-group rows both land as `MethodCall`; member-access and
+/// field-write rows both land as `FieldAccess`; the remaining classes map
+/// one-to-one. An explicit interface implementation's binding has no
+/// implementation class in the lane's closed lattice; it lands as
+/// `MethodCall` — the class an invocation through the implemented interface
+/// member carries — at oracle confidence, so consumers can still resolve
+/// every implementation of one interface member from the occurrence plane
+/// alone. A bare-identifier field read is a use of a variable binding; a
+/// bare-identifier field write is the field the site accesses as its target,
+/// so the read/write distinction survives the lane boundary on the two
+/// classes the lattice proves.
 const fn reference_kind(kind: ReferenceTag) -> ReferenceKind {
     match kind {
-        ReferenceTag::Invocation | ReferenceTag::InterfaceImplementation => {
-            ReferenceKind::MethodCall
-        }
+        ReferenceTag::Invocation
+        | ReferenceTag::InterfaceImplementation
+        | ReferenceTag::MethodGroup => ReferenceKind::MethodCall,
         ReferenceTag::ObjectCreation => ReferenceKind::TypeReference,
         ReferenceTag::MemberAccess => ReferenceKind::FieldAccess,
         ReferenceTag::UsingDirective => ReferenceKind::Import,
@@ -2302,9 +2303,9 @@ fn typed_invocation_foreign_key(
 /// implementation binding resolves to a method-shaped interface member.
 const fn foreign_kind(kind: ReferenceTag) -> Option<EntityKind> {
     match kind {
-        ReferenceTag::Invocation | ReferenceTag::InterfaceImplementation => {
-            Some(EntityKind::Function)
-        }
+        ReferenceTag::Invocation
+        | ReferenceTag::InterfaceImplementation
+        | ReferenceTag::MethodGroup => Some(EntityKind::Function),
         ReferenceTag::ObjectCreation => Some(EntityKind::Record),
         ReferenceTag::MemberAccess => Some(EntityKind::Field),
         ReferenceTag::UsingDirective => Some(EntityKind::Module),
@@ -2594,6 +2595,7 @@ mod tests {
     const REF_VALUE: u8 = 0;
     const REF_REF: u8 = 2;
     const REF_INVOCATION: u8 = 1;
+    const REF_METHOD_GROUP: u8 = 8;
     const REF_IMPL_BINDING: u8 = 5;
     const FLAG_EXPLICIT_INTERFACE: u8 = 0x10;
     const GENERIC_REFERENCE_TYPE: u8 = 0x1;
@@ -3831,6 +3833,112 @@ mod tests {
         Ok(())
     }
 
+    fn span_of_nth(source: &[u8], needle: &[u8], occurrence: usize) -> (u32, u32) {
+        let mut seen = 0usize;
+        for at in 0..=source.len().saturating_sub(needle.len()) {
+            if &source[at..at + needle.len()] == needle {
+                if seen == occurrence {
+                    return (
+                        u32::try_from(at).unwrap_or(u32::MAX),
+                        u32::try_from(at + needle.len()).unwrap_or(u32::MAX),
+                    );
+                }
+                seen += 1;
+            }
+        }
+        panic!("occurrence {occurrence} of {needle:?} not found");
+    }
+
+    #[test]
+    fn method_group_rows_lower_as_method_calls_with_local_and_foreign_targets()
+    -> Result<(), TestError> {
+        let source =
+            b"class Widget { static void MParse() {} void Via() { System.Func<int> f = MParse; Foreign.Call(); } }";
+        let mut fix = Fixture::default();
+        let widget = fix.class(b"demo.Widget", source);
+        let void_ty = fix.named(b"System.Void");
+        let parse_method = fix.method(widget, b"MParse", Some(void_ty), source);
+        fix.declarations.push(parse_method);
+        let via_method = fix.method(widget, b"Via", Some(void_ty), source);
+        fix.declarations.push(via_method);
+        let parse_row = 1;
+        let via_row = 2;
+        let file = fix.atom(b"Widget.cs");
+        let local_spelling = fix.atom(b"MParse");
+        let foreign_spelling = fix.atom(b"Call");
+        let (local_start, local_end) = span_of_nth(source, b"MParse", 1);
+        fix.references.push(RefRow {
+            owner: via_row,
+            target: Some(parse_row),
+            spelling: local_spelling,
+            file,
+            start: local_start,
+            end: local_end,
+            kind: REF_METHOD_GROUP,
+        });
+        let (foreign_start, foreign_end) = Fixture::span_of(source, b"Call");
+        fix.references.push(RefRow {
+            owner: via_row,
+            target: None,
+            spelling: foreign_spelling,
+            file,
+            start: foreign_start,
+            end: foreign_end,
+            kind: REF_METHOD_GROUP,
+        });
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        if occurrences.len() != 2 {
+            return Err(TestError::Missing("two method-group occurrences"));
+        }
+        let local = occurrences
+            .iter()
+            .find(|row| matches!(row.occurrence.target, OccurrenceTarget::Local(_)))
+            .ok_or(TestError::Missing("local method-group occurrence"))?;
+        let OccurrenceTarget::Local(local_target) = local.occurrence.target else {
+            return Err(TestError::Missing("local target"));
+        };
+        if local_target.raw != parse_row
+            || local.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall
+            || local.occurrence.confidence
+                != backend_semantic::ir::OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("local method-group projection"));
+        }
+        let via_decl_start = fix.declarations[via_row as usize].decl_start;
+        if local.occurrence.span.start != local_start - via_decl_start
+            || local.occurrence.span.end != local_end - via_decl_start
+        {
+            return Err(TestError::Missing("local method-group name span"));
+        }
+        let foreign = occurrences
+            .iter()
+            .find(|row| matches!(row.occurrence.target, OccurrenceTarget::Foreign(_)))
+            .ok_or(TestError::Missing("foreign method-group occurrence"))?;
+        let OccurrenceTarget::Foreign(key) = foreign.occurrence.target else {
+            return Err(TestError::Missing("foreign target"));
+        };
+        if key.path != "Call"
+            || key.kind != Some(EntityKind::Function)
+            || foreign.occurrence.kind != backend_semantic::ir::ReferenceKind::MethodCall
+            || foreign.occurrence.confidence
+                != backend_semantic::ir::OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("foreign method-group projection"));
+        }
+        if foreign.occurrence.span.start != foreign_start - via_decl_start
+            || foreign.occurrence.span.end != foreign_end - via_decl_start
+        {
+            return Err(TestError::Missing("foreign method-group name span"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn signatures_lower_parameter_and_result_carriers_with_reference_kinds() -> Result<(), TestError>
     {
@@ -4258,6 +4366,59 @@ mod tests {
         let other = lower(&mutated, source)?;
         if other == bytes {
             return Err(TestError::Tail);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bare_property_read_lowers_as_local_variable_use() -> Result<(), TestError> {
+        let source =
+            b"class Widget { public int Count { get; set; } public int Read() => Count; }";
+        let mut fix = Fixture::default();
+        let widget = fix.class(b"demo.Widget", source);
+        let int_ty = fix.named(b"System.Int32");
+        let name_atom = fix.atom(b"Count");
+        let (name_start, name_end) = Fixture::span_of(source, b"Count");
+        let property = Decl::new(11, name_atom, None)
+            .typed(int_ty)
+            .owned_by(widget)
+            .at(name_start, name_start, name_end);
+        fix.declarations.push(property);
+        let method = fix
+            .method(widget, b"Read", Some(int_ty), source)
+            .ending(u32::try_from(source.len()).map_err(|_| TestError::Num)?);
+        fix.declarations.push(method);
+        let spelling = fix.atom(b"Count");
+        let file = fix.atom(b"Widget.cs");
+        let (read_at, read_end) = Fixture::span_of(source, b"=> Count");
+        fix.references.push(RefRow {
+            owner: 2,
+            target: Some(1),
+            spelling,
+            file,
+            start: read_at + 3,
+            end: read_end,
+            kind: 6,
+        });
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let rows: Vec<_> = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TestError::Missing("occurrence decode"))?;
+        let property_reads = rows
+            .iter()
+            .filter(|row| {
+                row.occurrence.kind == backend_semantic::ir::ReferenceKind::VariableUse
+                    && matches!(
+                        row.occurrence.target,
+                        OccurrenceTarget::Local(local) if local.raw == 1
+                    )
+            })
+            .count();
+        if property_reads != 1 {
+            return Err(TestError::Missing("one property-read VariableUse"));
         }
         Ok(())
     }
