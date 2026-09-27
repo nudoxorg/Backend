@@ -4832,6 +4832,57 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         false
     }
 
+    /// Returns whether an exact span names a `TSQualifiedName` node.
+    fn span_is_ts_qualified_name(&self, start: u32, end: u32) -> bool {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= start);
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > start {
+                break;
+            }
+            if known.start == start
+                && known.end == end
+                && self
+                    .semantic
+                    .nodes()
+                    .get_node(*node_id)
+                    .kind()
+                    .as_ts_qualified_name()
+                    .is_some()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns an exact-span `IdentifierReference` when one is indexed at
+    /// `start`/`end`, even if a wrapper node shares the same span.
+    fn identifier_reference_span_at(&self, start: u32, end: u32) -> Option<Span> {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= start);
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > start {
+                break;
+            }
+            if known.start == start
+                && known.end == end
+                && self
+                    .semantic
+                    .nodes()
+                    .get_node(*node_id)
+                    .kind()
+                    .as_identifier_reference()
+                    .is_some()
+            {
+                return Some(Span::new(start, end));
+            }
+        }
+        None
+    }
+
     /// Peels one or more parenthesized wrappers and returns the span of the
     /// innermost identifier reference, if any.
     fn peel_object_identifier_span(&self, start: u32, end: u32) -> Option<Span> {
@@ -5207,8 +5258,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// exactly one same-name member of the expected kind lives there, then
     /// through at most [`MAX_INHERITANCE_DEPTH`] `extends` hops when the
     /// enclosing class declares no such member. Field reads consult fields
-    /// first and only walk methods when both local and inherited fields are
-    /// absent; ambiguous fields never fall through to methods.
+    /// first and only walk methods when local, inherited, and implemented
+    /// fields are absent; ambiguous fields never fall through to methods.
     fn this_property_target(
         &self,
         property_span: Span,
@@ -5237,12 +5288,23 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         OccurrenceConfidence::Index,
                     )),
                     ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
-                    ClassMemberMatch::Absent => self.this_member_target(
-                        class,
-                        name,
-                        EntityKind::Function,
-                        property_span,
-                    ),
+                    ClassMemberMatch::Absent => {
+                        match self.implemented_class_member(class, name, EntityKind::Field) {
+                            ClassMemberMatch::Unique(fact) => Ok((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            )),
+                            ClassMemberMatch::Ambiguous => {
+                                self.syntactic_property_target(property_span)
+                            }
+                            ClassMemberMatch::Absent => self.this_member_target(
+                                class,
+                                name,
+                                EntityKind::Function,
+                                property_span,
+                            ),
+                        }
+                    }
                 },
             },
             _ => self.syntactic_property_target(property_span),
@@ -5499,8 +5561,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     }
 
     /// Resolves one `this.property` member through the enclosing class, then
-    /// through inherited bases, using [`class_member_of_owner`] and
-    /// [`inherited_class_member`].
+    /// through inherited bases, then through `implements` interfaces, using
+    /// [`class_member_of_owner`], [`inherited_class_member`], and
+    /// [`implemented_class_member`].
     fn this_member_target(
         &self,
         class: u32,
@@ -5519,9 +5582,20 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     OccurrenceTarget::Local(EntityId::new(fact)),
                     OccurrenceConfidence::Index,
                 )),
-                ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
-                    self.syntactic_property_target(property_span)
-                }
+                ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                ClassMemberMatch::Absent => match self.implemented_class_member(
+                    class,
+                    name,
+                    expected_kind,
+                ) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                        self.syntactic_property_target(property_span)
+                    }
+                },
             },
         }
     }
@@ -5633,6 +5707,174 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             matched = Some(ordinal);
         }
         matched
+    }
+
+    /// Resolves the single file-local `Trait` with `name`, or `None` when
+    /// zero or more than one such trait is published.
+    fn unique_file_trait(&self, name: &[u8]) -> Option<u32> {
+        let candidates = self.facts_by_name.get(name)?;
+        let mut matched = None;
+        for &ordinal in candidates {
+            let index = usize::try_from(ordinal).ok()?;
+            if self.fact_kinds.get(index) != Some(&EntityKind::Trait) {
+                continue;
+            }
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(ordinal);
+        }
+        matched
+    }
+
+    /// Resolves one `this.property` member through every `implements` clause
+    /// on `class`, walking each interface's `extends` heritages when the
+    /// direct member is absent.
+    fn implemented_class_member(
+        &self,
+        class: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+    ) -> ClassMemberMatch {
+        let index = match usize::try_from(class) {
+            Ok(index) => index,
+            Err(_) => return ClassMemberMatch::Absent,
+        };
+        let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+        let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+        if start == UNSET || end == UNSET {
+            return ClassMemberMatch::Absent;
+        }
+        let kind = match self.ast_kind_at_exact_span(start, end) {
+            Some(kind) => kind,
+            None => return ClassMemberMatch::Absent,
+        };
+        let class_ast = match kind.as_class() {
+            Some(class_ast) => class_ast,
+            None => return ClassMemberMatch::Absent,
+        };
+        let mut matches = Vec::new();
+        for implements_clause in class_ast.implements.iter() {
+            let expression_span = implements_clause.expression.span();
+            if self.span_is_ts_qualified_name(expression_span.start, expression_span.end) {
+                continue;
+            }
+            let identifier_span = match self
+                .identifier_reference_span_at(expression_span.start, expression_span.end)
+            {
+                Some(span) => span,
+                None => continue,
+            };
+            let trait_name = match self.slice_span(identifier_span) {
+                Some(name) => name,
+                None => continue,
+            };
+            let trait_ordinal = match self.unique_file_trait(trait_name) {
+                Some(trait_ordinal) => trait_ordinal,
+                None => continue,
+            };
+            let mut visited_ordinals = Vec::new();
+            let mut visited_spans = Vec::new();
+            matches.push(self.trait_member_in_hierarchy(
+                trait_ordinal,
+                name,
+                expected_kind,
+                0,
+                &mut visited_ordinals,
+                &mut visited_spans,
+            ));
+        }
+        Self::combine_namespace_member_matches(&matches)
+    }
+
+    /// Resolves one member on `trait_ordinal` and, when absent, walks that
+    /// interface's `extends` heritages up to [`MAX_INHERITANCE_DEPTH`].
+    fn trait_member_in_hierarchy(
+        &self,
+        trait_ordinal: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+        depth: u8,
+        visited_ordinals: &mut Vec<u32>,
+        visited_spans: &mut Vec<u32>,
+    ) -> ClassMemberMatch {
+        if depth >= MAX_INHERITANCE_DEPTH {
+            return ClassMemberMatch::Absent;
+        }
+        if visited_ordinals.contains(&trait_ordinal) {
+            return ClassMemberMatch::Absent;
+        }
+        let index = match usize::try_from(trait_ordinal) {
+            Ok(index) => index,
+            Err(_) => return ClassMemberMatch::Absent,
+        };
+        let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+        if decl_start != UNSET && visited_spans.contains(&decl_start) {
+            return ClassMemberMatch::Absent;
+        }
+        visited_ordinals.push(trait_ordinal);
+        if decl_start != UNSET {
+            visited_spans.push(decl_start);
+        }
+        match self.class_member_of_owner(trait_ordinal, name, expected_kind) {
+            ClassMemberMatch::Unique(fact) => ClassMemberMatch::Unique(fact),
+            ClassMemberMatch::Ambiguous => ClassMemberMatch::Ambiguous,
+            ClassMemberMatch::Absent => {
+                let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+                let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+                if start == UNSET || end == UNSET {
+                    return ClassMemberMatch::Absent;
+                }
+                let kind = match self.ast_kind_at_exact_span(start, end) {
+                    Some(kind) => kind,
+                    None => return ClassMemberMatch::Absent,
+                };
+                let interface = match kind.as_ts_interface_declaration() {
+                    Some(interface) => interface,
+                    None => return ClassMemberMatch::Absent,
+                };
+                let mut combined = ClassMemberMatch::Absent;
+                for heritage in interface.extends.iter() {
+                    let expression_span = heritage.expression.span();
+                    if self.span_is_ts_qualified_name(expression_span.start, expression_span.end) {
+                        continue;
+                    }
+                    let identifier_span = match self
+                        .identifier_reference_span_at(expression_span.start, expression_span.end)
+                        .or_else(|| {
+                            self.peel_object_identifier_span(
+                                expression_span.start,
+                                expression_span.end,
+                            )
+                        })
+                    {
+                        Some(span) => span,
+                        None => continue,
+                    };
+                    let super_name = match self.slice_span(identifier_span) {
+                        Some(name) => name,
+                        None => continue,
+                    };
+                    let super_trait = match self.unique_file_trait(super_name) {
+                        Some(super_trait) => super_trait,
+                        None => continue,
+                    };
+                    let branch = self.trait_member_in_hierarchy(
+                        super_trait,
+                        name,
+                        expected_kind,
+                        depth.saturating_add(1),
+                        visited_ordinals,
+                        visited_spans,
+                    );
+                    combined = Self::combine_namespace_member_matches(&[combined, branch]);
+                    if matches!(combined, ClassMemberMatch::Ambiguous) {
+                        return ClassMemberMatch::Ambiguous;
+                    }
+                }
+                combined
+            }
+        }
     }
 
     /// Returns the identifier span of one class record's `extends` clause,
