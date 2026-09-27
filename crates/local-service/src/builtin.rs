@@ -658,14 +658,14 @@ fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
 /// `changes` must be strictly ordered by identity. A removal names a resident
 /// row. An upsert replaces that identity or inserts one the resident view does
 /// not hold.
-pub(super) fn admitted_bytes_after_row_changes(
-    current: &[Row],
+pub(super) fn admitted_bytes_after_row_changes<'a>(
+    current: impl IntoIterator<Item = &'a Row>,
     changes: &[backend_engine::RowChange],
 ) -> Result<usize, BuiltinModelError> {
     use std::cmp::Ordering;
 
     let overflow = || BuiltinModelError("workspace view bytes overflow".to_owned());
-    let mut ordered: Vec<&Row> = current.iter().collect();
+    let mut ordered: Vec<&Row> = current.into_iter().collect();
     ordered.sort_by_key(|row| row.id);
     if ordered.windows(2).any(|pair| pair[0].id == pair[1].id) {
         return Err(BuiltinModelError(
@@ -887,7 +887,7 @@ fn publish_package_view(
     let current = daemon.engine().daemon().library().view().clone();
     if let Some(edit) = edit
         && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
-        && let Some(resident) = view_publish::resident_symbols(current.rows(), package)
+        && let Some(resident) = view_publish::resident_symbols(current.row_refs(), package)
     {
         let structural_keys = view_publish::structural_splice_keys(
             &prior.activated,
@@ -907,7 +907,7 @@ fn publish_package_view(
         };
         let paths = view_publish::paths_for_files(&sources, &changed)?;
         match view_publish::row_changes_splicing_changed_files(
-            current.rows(),
+            current.row_refs(),
             package,
             &paths,
             &replacement,
@@ -940,7 +940,7 @@ fn publish_package_view(
                     }
                 }
                 let merged = match view_publish::rows_splicing_changed_files(
-                    current.rows(),
+                    current.row_refs(),
                     package,
                     &paths,
                     replacement,
@@ -1029,7 +1029,7 @@ fn try_commit_row_patch(
     current: ViewRoot,
     changes: Vec<backend_engine::RowChange>,
 ) -> Result<Option<Vec<backend_engine::CommittedViewDelta>>, BuiltinModelError> {
-    let _admitted = admitted_bytes_after_row_changes(current.rows(), &changes)?;
+    let _admitted = admitted_bytes_after_row_changes(current.row_refs(), &changes)?;
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let workspace_root = snapshot.root();
     let capability = builtin_view_capability_for_workspace(&snapshot)?;
