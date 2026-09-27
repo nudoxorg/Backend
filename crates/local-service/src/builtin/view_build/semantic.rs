@@ -258,23 +258,24 @@ impl<'a> SourceRowProjection<'a> {
     ) -> Result<Row, BuiltinModelError> {
         let coordinate = &prepared.coordinate;
         let symbol = prepared.id;
-        let prose = if prepared.is_file_module {
-            format!("{} source · {path}", language.name())
+        // A file module names its file; any other declaration's document is
+        // exactly the documentation its author wrote, and an undocumented
+        // declaration has an empty one. A placeholder such as "function in
+        // src/lib.rs:12" read as documentation on every page and ledger row.
+        let document = if prepared.is_file_module {
+            vec![Fragment::Text(format!("{} source · {path}", language.name()))]
         } else if declaration.documentation().is_empty() {
-            format!(
-                "{} in {path}:{}",
-                declaration.kind_name(),
-                declaration.line()
-            )
+            Vec::new()
         } else {
-            declaration.documentation().to_owned()
+            vec![Fragment::Text(declaration.documentation().to_owned())]
         };
         let row = Row::in_package(symbol, self.initial.basis(), package, coordinate.as_str())
-            .with_document(vec![Fragment::Text(prose)])
+            .with_document(document)
             .with_signature(declaration.signature())
             .with_kind(declaration.kind())
             .with_source(declaration.location().clone())
-            .with_excerpt(declaration.source_excerpt().clone());
+            .with_excerpt(declaration.source_excerpt().clone())
+            .with_facts(declaration.facts().clone());
         let row = match prepared.identity_preimage.clone() {
             Some(preimage) => row.with_identity_preimage(preimage),
             None => row,
@@ -783,9 +784,33 @@ pub(super) fn append_image_rows(
         }
         let content =
             semantic_row_content(profile, image, &entity, project.package, image_identity)?;
+        let parent_kind = match entity.entity.parent {
+            Some(parent) => Some(
+                session
+                    .entity(parent)
+                    .map_err(|error| BuiltinModelError(format!("project semantic parent: {error}")))?
+                    .entity
+                    .kind,
+            ),
+            None => None,
+        };
+        let site_facts = sites
+            .get(&identity)
+            .map_or(backend_compile::DeclarationFacts::UNOBSERVED, |site| {
+                site.facts().clone()
+            });
+        let facts = semantic_facts(
+            backend_semantic::vocabulary::Language::from(profile),
+            image,
+            &entity.entity,
+            parent_kind,
+            &content.document,
+        )?
+        .or(&site_facts);
         let row_bytes = coordinate
             .len()
             .checked_add(content.encoded_bytes)
+            .and_then(|bytes| bytes.checked_add(facts.text_bytes()))
             .ok_or_else(|| {
                 BuiltinModelError("project semantic row byte count overflow".to_owned())
             })?;
@@ -815,7 +840,8 @@ pub(super) fn append_image_rows(
         .try_with_identity_preimage(&semantic_identity(project.package, identity))
         .map_err(|error| BuiltinModelError(format!("semantic row identity preimage: {error}")))?
         .with_kind(declaration_kind(entity.entity.kind))
-        .with_document(document);
+        .with_document(document)
+        .with_facts(facts);
         if let Some(site) = sites.get(&identity) {
             let excerpt_bytes = site.source_excerpt().text().map_or(0, str::len);
             *sink.remaining_bytes =
@@ -904,6 +930,96 @@ pub(super) fn append_image_rows(
         }
     }
     Ok(())
+}
+
+/// The declaration facts the semantic lane itself observed for one entity.
+///
+/// * Deprecation is observed wherever the authority captured the entity's
+///   attribute plane (Rust `#[deprecated]` staged by the lowering, Java
+///   annotations, C# attributes, Python decorators), completed by the
+///   language's documentation convention (a Javadoc `@deprecated` supplies
+///   the words for `@Deprecated(since = …)`). TypeScript and Go state it
+///   only in documentation, so a captured documentation plane observes it.
+///   C and C++ attributes are not modeled by the Clang authority, so that
+///   lane leaves it unobserved.
+/// * Obligation is observed for Go, whose interface methods are exactly the
+///   functions parented to an interface, and for Python's
+///   `@abstractmethod`. Every other obligation is read from the paired
+///   structural declaration, which parses bodies and modifiers.
+///
+/// A fact left unobserved here falls back to the paired structural site.
+fn semantic_facts<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+    language: backend_semantic::vocabulary::Language,
+    reader: &Reader,
+    entity: &backend_semantic::ir::SemanticEntity,
+    parent_kind: Option<backend_semantic::ir::ItemKind>,
+    document: &[Fragment],
+) -> Result<backend_compile::DeclarationFacts, BuiltinModelError> {
+    use backend_compile::{DeclarationFacts, Fact, Obligation};
+    use backend_semantic::ir::{FactAvailability, ItemKind};
+    use backend_semantic::vocabulary::Language;
+    let mut attributes = Vec::new();
+    let attributes_captured = entity.authority.attributes == FactAvailability::Captured;
+    if attributes_captured {
+        let atoms = reader.atom_list(entity.attributes).ok_or_else(|| {
+            BuiltinModelError("project semantic attribute list is dangling".to_owned())
+        })?;
+        for atom in atoms {
+            let bytes = reader.atom(atom).ok_or_else(|| {
+                BuiltinModelError("project semantic attribute atom is dangling".to_owned())
+            })?;
+            attributes.push(String::from_utf8_lossy(bytes).into_owned());
+        }
+    }
+    let documentation_captured = entity.authority.documentation == FactAvailability::Captured;
+    let prose = document_text(document);
+    let documented = documentation_captured
+        .then(|| backend_compile::deprecation_in_documentation(language, &prose))
+        .flatten();
+    let deprecation = if attributes_captured {
+        let written = attributes
+            .iter()
+            .find_map(|text| backend_compile::deprecation_in_attribute(language, text));
+        Fact::observed(match written {
+            Some(notice) => Some(notice.completed_by(documented.as_ref())),
+            None => documented,
+        })
+    } else if documentation_captured && matches!(language, Language::TypeScript | Language::Go) {
+        Fact::observed(documented)
+    } else {
+        Fact::Unobserved
+    };
+    let obligation = match language {
+        Language::Go if entity.kind == ItemKind::Function => Fact::observed(
+            (parent_kind == Some(ItemKind::Trait)).then_some(Obligation::Required),
+        ),
+        Language::Python
+            if attributes_captured
+                && attributes
+                    .iter()
+                    .any(|text| backend_compile::is_abstract_method_decorator(text)) =>
+        {
+            Fact::Present(Obligation::Required)
+        }
+        _ => Fact::Unobserved,
+    };
+    Ok(DeclarationFacts {
+        deprecation,
+        obligation,
+    })
+}
+
+/// A document's prose with one `\n` per break, for convention readers.
+fn document_text(document: &[Fragment]) -> String {
+    let mut text = String::new();
+    for fragment in document {
+        match fragment {
+            Fragment::Text(value) | Fragment::Code(value) => text.push_str(value),
+            Fragment::Link { label, .. } => text.push_str(label),
+            Fragment::Break => text.push('\n'),
+        }
+    }
+    text
 }
 
 fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(
