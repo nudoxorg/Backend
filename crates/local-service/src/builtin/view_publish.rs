@@ -2076,6 +2076,78 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_file_splice_matches_owned_rows_and_skips_sibling_bodies() {
+        let (initial, _) = super::super::initial_view().expect("initial");
+        let capability = super::super::test_builtin_view_capability().expect("coverage");
+        let package = backend_engine::package_key("pkg:alpha");
+        let sibling_package = backend_engine::package_key("pkg:beta");
+        let draw = semantic_row(&initial, package, "src/impl.rs", "draw");
+        let body = "x".repeat(4096);
+        let mut rows = vec![draw];
+        for index in 0..4096 {
+            let label = format!("pkg:beta::item-{index:04}");
+            rows.push(
+                Row::in_package(
+                    RowId::Symbol(backend_engine::symbol_key(&label)),
+                    initial.basis(),
+                    sibling_package,
+                    label,
+                )
+                .with_document(vec![backend_engine::Fragment::Text(body.clone())]),
+            );
+        }
+        let root = ViewRoot::new_checked(
+            initial.recipe(),
+            initial.basis(),
+            initial.frontier(),
+            rows,
+            initial.coverage().to_vec(),
+            capability,
+        )
+        .expect("resident view");
+        let paths = BTreeSet::from(["src/impl.rs".to_owned()]);
+        let owned =
+            row_changes_splicing_changed_files(root.rows(), package, &paths, &[]).expect("owned");
+        let borrowed = row_changes_splicing_changed_files(root.row_refs(), package, &paths, &[])
+            .expect("borrowed");
+        assert_eq!(owned, borrowed);
+        assert_eq!(borrowed.len(), 1);
+        assert_eq!(
+            resident_symbols(root.row_refs(), package),
+            resident_symbols(root.rows(), package)
+        );
+
+        let mut owned_samples = Vec::with_capacity(9);
+        let mut borrowed_samples = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            let cloned = root.row_refs().cloned().collect::<Vec<_>>();
+            std::hint::black_box(
+                row_changes_splicing_changed_files(&cloned, package, &paths, &[]).expect("owned"),
+            );
+            owned_samples.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(
+                row_changes_splicing_changed_files(root.row_refs(), package, &paths, &[])
+                    .expect("borrowed"),
+            );
+            borrowed_samples.push(started.elapsed().as_nanos());
+        }
+        owned_samples.sort_unstable();
+        borrowed_samples.sort_unstable();
+        let owned_median = owned_samples[owned_samples.len() / 2];
+        let borrowed_median = borrowed_samples[borrowed_samples.len() / 2];
+        eprintln!(
+            "file_splice_rows rows=4096 owned_median_ns={owned_median} \
+             borrowed_median_ns={borrowed_median}"
+        );
+        assert!(
+            borrowed_median * 2 < owned_median,
+            "borrowed {borrowed_median} ns, owned {owned_median} ns"
+        );
+    }
+
+    #[test]
     fn a_second_file_patches_without_touching_the_stale_file() {
         let (initial, _) = super::super::initial_view().expect("initial");
         let package = backend_engine::package_key("pkg:alpha");
