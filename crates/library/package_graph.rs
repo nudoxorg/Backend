@@ -802,6 +802,140 @@ mod tests {
     }
 
     #[test]
+    fn reverse_index_matches_linear_scan_across_seeded_graphs() {
+        let mut state = 0x7a89_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            state
+        };
+        let ecosystems = [
+            (RegistryEcosystem::Cargo, "cargo"),
+            (RegistryEcosystem::Npm, "npm"),
+            (RegistryEcosystem::Pypi, "pypi"),
+        ];
+        let scopes = [
+            DependencyScope::Runtime,
+            DependencyScope::Optional,
+            DependencyScope::Development,
+            DependencyScope::Build,
+            DependencyScope::Peer,
+        ];
+        for _graph in 0..64 {
+            let source_count = usize::try_from(next() % 24).expect("count");
+            let mut facts = Vec::<PackageDependencySourceFacts>::with_capacity(source_count);
+            for source_index in 0..source_count {
+                let &(ecosystem, token) = ecosystems
+                    .get(usize::try_from(next() % 3).expect("eco"))
+                    .expect("ecosystem");
+                let name = format!("lib-{}", next() % 5);
+                let version = next() % 3;
+                let spelling = format!("pkg:{token}/{name}@{version}.0.0");
+                let reuse = !facts.is_empty() && next() % 7 == 0;
+                let source_ref = if reuse {
+                    facts.first().expect("duplicate source").0.clone()
+                } else {
+                    PackageReference::parse(&spelling).expect("source")
+                };
+                match next() % 5 {
+                    0 => facts.push((
+                        source_ref,
+                        DependencyFacts::Unknown(
+                            ProductText::new(format!("unknown-{source_index}")).expect("reason"),
+                        ),
+                    )),
+                    1 => facts.push((
+                        source_ref,
+                        DependencyFacts::Unavailable(
+                            ProductText::new(format!("unavailable-{source_index}"))
+                                .expect("reason"),
+                        ),
+                    )),
+                    _ => {
+                        let edge_count = usize::try_from(next() % 5).expect("edges");
+                        let mut rows = Vec::with_capacity(edge_count);
+                        for edge in 0..edge_count {
+                            let target_name = format!("dep-{}", next() % 4);
+                            let target_version = next() % 3;
+                            let resolved = if next() % 2 == 0 {
+                                Some(
+                                    PackageReference::parse(format!(
+                                        "pkg:{token}/{target_name}@{target_version}.0.0"
+                                    ))
+                                    .expect("resolved"),
+                                )
+                            } else {
+                                None
+                            };
+                            let scope = *scopes
+                                .get(usize::try_from(next() % 5).expect("scope"))
+                                .expect("scope");
+                            rows.push(PackageDependencyRecord::new(
+                                source_ref.clone(),
+                                PackageDependencyTarget::new(
+                                    ecosystem,
+                                    target_name,
+                                    "^1",
+                                    resolved,
+                                )
+                                .expect("target"),
+                                scope,
+                                next() % 2 == 0,
+                                DependencyEvidence {
+                                    authority: DependencyAuthority::RegistryMetadata,
+                                    frontier: [u8::try_from(edge).unwrap_or(0); 32],
+                                    provenance: [u8::try_from(source_index).unwrap_or(0); 32],
+                                },
+                            ));
+                        }
+                        facts.push((source_ref, DependencyFacts::Known(rows.into_boxed_slice())));
+                    }
+                }
+            }
+            let index = PackageGraphIndex::from_facts(&facts);
+            let mut queries = vec![
+                PackageReference::parse("local-pkg").expect("local"),
+                PackageReference::parse("pkg:cargo/missing@9.0.0").expect("missing"),
+            ];
+            for (source, state) in &facts {
+                queries.push(source.clone());
+                if let DependencyFacts::Known(rows) = state {
+                    for row in rows.iter() {
+                        if let Some(resolved) = &row.target.resolved {
+                            queries.push(resolved.clone());
+                        }
+                        queries.push(
+                            PackageReference::parse(format!(
+                                "pkg:cargo/{}@7.0.0",
+                                row.target.name.as_str()
+                            ))
+                            .expect("other version"),
+                        );
+                    }
+                }
+            }
+            for query in &queries {
+                assert_eq!(
+                    index.dependent_sources(&facts, query),
+                    linear_dependent_sources(&facts, query),
+                    "dependents diverged for {}",
+                    query.as_str()
+                );
+                assert_eq!(
+                    index.dependencies(&facts, query),
+                    facts
+                        .iter()
+                        .find(|(source, _)| source.as_str() == query.as_str())
+                        .map(|(_, state)| state),
+                    "forward lookup diverged for {}",
+                    query.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn warm_reverse_lookup_beats_a_full_fact_scan() {
         const SOURCES: usize = 4_096;
         const EDGES: usize = 8;
@@ -849,29 +983,36 @@ mod tests {
         );
         let mut lookup_samples = Vec::with_capacity(9);
         let mut scan_samples = Vec::with_capacity(9);
+        let mut cold_samples = Vec::with_capacity(9);
         for sample in 0..11 {
+            let cold_started = std::time::Instant::now();
+            let cold = PackageGraphIndex::from_facts(&facts).dependent_sources(&facts, &target);
+            let cold_elapsed = cold_started.elapsed().as_nanos();
             let lookup_started = std::time::Instant::now();
             let looked = index.dependent_sources(&facts, &target);
             let lookup_elapsed = lookup_started.elapsed().as_nanos();
             let scan_started = std::time::Instant::now();
             let scanned = linear_dependent_sources(&facts, &target);
             let scan_elapsed = scan_started.elapsed().as_nanos();
-            std::hint::black_box((looked, scanned));
+            std::hint::black_box((cold, looked, scanned));
             if sample >= 2 {
+                cold_samples.push(cold_elapsed);
                 lookup_samples.push(lookup_elapsed);
                 scan_samples.push(scan_elapsed);
             }
         }
+        cold_samples.sort_unstable();
         lookup_samples.sort_unstable();
         scan_samples.sort_unstable();
+        let cold_median = cold_samples[cold_samples.len() / 2];
         let lookup_median = lookup_samples[lookup_samples.len() / 2];
         let scan_median = scan_samples[scan_samples.len() / 2];
         eprintln!(
-            "reverse_index lookup_median_ns={lookup_median} scan_median_ns={scan_median} \
-             sources={SOURCES}"
+            "reverse_index cold_median_ns={cold_median} lookup_median_ns={lookup_median} \
+             scan_median_ns={scan_median} sources={SOURCES}"
         );
         assert!(
-            lookup_median.saturating_mul(4) < scan_median,
+            lookup_median.saturating_mul(32) < scan_median,
             "lookup {lookup_median} ns vs scan {scan_median} ns"
         );
     }
