@@ -60,6 +60,22 @@ actions!(
         DepthCode,
         /// Settings.
         OpenSettings,
+        /// Hold what you are on (the hand).
+        Hold,
+        /// Open or close the hand.
+        OpenHand,
+        /// The hand's first card.
+        HandCard1,
+        /// The hand's second card.
+        HandCard2,
+        /// The hand's third card.
+        HandCard3,
+        /// The hand's fourth card.
+        HandCard4,
+        /// The hand's fifth card.
+        HandCard5,
+        /// Copy this place's `nudox://` address.
+        CopyAddress,
     ]
 );
 
@@ -109,16 +125,32 @@ pub(crate) enum Command {
     ZoomOut,
     /// ⌘0.
     ZoomReset,
-    /// ⌘1.
+    /// ⌃1.
     DepthOrbit,
-    /// ⌘2.
+    /// ⌃2.
     DepthPackage,
-    /// ⌘3.
+    /// ⌃3.
     DepthPage,
-    /// ⌘4.
+    /// ⌃4.
     DepthCode,
     /// ⌘,.
     OpenSettings,
+    /// ⌘D.
+    Hold,
+    /// H.
+    OpenHand,
+    /// ⌘1.
+    HandCard1,
+    /// ⌘2.
+    HandCard2,
+    /// ⌘3.
+    HandCard3,
+    /// ⌘4.
+    HandCard4,
+    /// ⌘5.
+    HandCard5,
+    /// ⌘⇧C.
+    CopyAddress,
 }
 
 /// Where a row listens.
@@ -183,11 +215,20 @@ pub(crate) const TABLE: &[Key] = &[
     key(Command::ZoomIn, "secondary-+", "⌘+", Scope::Shell, "text larger"),
     key(Command::ZoomOut, "secondary--", "⌘−", Scope::Shell, "text smaller"),
     key(Command::ZoomReset, "secondary-0", "⌘0", Scope::Shell, "text at the system's size"),
-    key(Command::DepthOrbit, "secondary-1", "⌘1", Scope::Shell, "Orbit"),
-    key(Command::DepthPackage, "secondary-2", "⌘2", Scope::Shell, "the package"),
-    key(Command::DepthPage, "secondary-3", "⌘3", Scope::Shell, "the page"),
-    key(Command::DepthCode, "secondary-4", "⌘4", Scope::Shell, "the code"),
+    // Depth moved to ⌃ when the hand took ⌘1–⌘5 (lead, 2026-09-27).
+    key(Command::DepthOrbit, "ctrl-1", "⌃1", Scope::Shell, "Orbit"),
+    key(Command::DepthPackage, "ctrl-2", "⌃2", Scope::Shell, "the package"),
+    key(Command::DepthPage, "ctrl-3", "⌃3", Scope::Shell, "the page"),
+    key(Command::DepthCode, "ctrl-4", "⌃4", Scope::Shell, "the code"),
     key(Command::OpenSettings, "secondary-,", "⌘,", Scope::Shell, "settings"),
+    key(Command::Hold, "secondary-d", "⌘D", Scope::Shell, "hold it in the hand"),
+    key(Command::OpenHand, "h", "H", Scope::Plain, "the hand"),
+    key(Command::HandCard1, "secondary-1", "⌘1", Scope::Shell, "the hand's first card"),
+    key(Command::HandCard2, "secondary-2", "⌘2", Scope::Shell, "the hand's second card"),
+    key(Command::HandCard3, "secondary-3", "⌘3", Scope::Shell, "the hand's third card"),
+    key(Command::HandCard4, "secondary-4", "⌘4", Scope::Shell, "the hand's fourth card"),
+    key(Command::HandCard5, "secondary-5", "⌘5", Scope::Shell, "the hand's fifth card"),
+    key(Command::CopyAddress, "secondary-shift-c", "⌘⇧C", Scope::Shell, "copy the address"),
 ];
 
 /// The cap a command shows (its first row).
@@ -235,6 +276,14 @@ fn binding(key: &Key) -> KeyBinding {
         Command::DepthPage => KeyBinding::new(chord, DepthPage, context),
         Command::DepthCode => KeyBinding::new(chord, DepthCode, context),
         Command::OpenSettings => KeyBinding::new(chord, OpenSettings, context),
+        Command::Hold => KeyBinding::new(chord, Hold, context),
+        Command::OpenHand => KeyBinding::new(chord, OpenHand, context),
+        Command::HandCard1 => KeyBinding::new(chord, HandCard1, context),
+        Command::HandCard2 => KeyBinding::new(chord, HandCard2, context),
+        Command::HandCard3 => KeyBinding::new(chord, HandCard3, context),
+        Command::HandCard4 => KeyBinding::new(chord, HandCard4, context),
+        Command::HandCard5 => KeyBinding::new(chord, HandCard5, context),
+        Command::CopyAddress => KeyBinding::new(chord, CopyAddress, context),
     }
 }
 

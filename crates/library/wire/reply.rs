@@ -1,7 +1,8 @@
 use super::reply_admission::{CapabilityAdmission, CoverageAdmission, VerifierAdmission};
 use super::reply_content::{
-    DocumentWire, FragmentWire, OutlineWire, SourceAvailabilityWire, SourceExcerptWire,
-    document_from_wire_with_admission, document_to_wire, fragment_from_wire_with_capability,
+    DocumentWire, FactsWire, FragmentWire, OutlineWire, SourceAvailabilityWire, SourceExcerptWire,
+    document_from_wire_with_admission, document_to_wire, facts_from_wire, facts_to_wire,
+    fragment_from_wire_with_capability,
     fragment_to_wire, outline_from_wire_with_admission, outline_to_wire,
     source_availability_from_wire, source_availability_to_wire, source_excerpt_from_wire,
     source_excerpt_not_captured, source_excerpt_to_wire,
@@ -170,6 +171,8 @@ pub(crate) struct RowWire {
     source: SourceAvailabilityWire,
     #[serde(default = "source_excerpt_not_captured")]
     excerpt: SourceExcerptWire,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    facts: Option<FactsWire>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -766,6 +769,7 @@ pub(crate) fn row_to_wire(row: &Row) -> RowWire {
         kind: row.kind.map(|kind| kind.name().to_owned()),
         source: source_availability_to_wire(&row.source),
         excerpt: source_excerpt_to_wire(&row.excerpt),
+        facts: facts_to_wire(&row.facts),
     }
 }
 
@@ -837,6 +841,7 @@ fn row_from_wire_with_capability(
         kind: value.kind.map(|kind| DeclarationKind::from_name(&kind)),
         source: source_availability_from_wire(value.source)?,
         excerpt: source_excerpt_from_wire(value.excerpt)?,
+        facts: facts_from_wire(value.facts)?,
     })
 }
 
@@ -934,6 +939,7 @@ fn row_from_wire_against_admission(
         kind: value.kind.map(|kind| DeclarationKind::from_name(&kind)),
         source: source_availability_from_wire(value.source)?,
         excerpt: source_excerpt_from_wire(value.excerpt)?,
+        facts: facts_from_wire(value.facts)?,
     })
 }
 

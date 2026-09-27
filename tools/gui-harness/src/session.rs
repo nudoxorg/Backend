@@ -22,7 +22,122 @@ use gpui::{
     ScrollDelta, ScrollWheelEvent, TouchPhase, Window, point, px, size,
 };
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+/// Guards the span of [`Session::frame`] that draws the window and drains
+/// gpui's shared, process-wide frame-timing ring, plus
+/// [`Session::clear_frame_timing_history`]'s trace toggle.
+///
+/// `FrameTiming::window_id` is a per-`App` slotmap key (`gpui::WindowId`):
+/// two `Session`s in different `App`s (e.g. two tests running in parallel in
+/// one process) can get the identical id for their first window, so
+/// `frame()` no longer scopes by `window_id` alone (see there: it now also
+/// requires the entry's own `draw_start`/`draw_end` to fall inside this
+/// call's own measured `[started, started + cpu]`, which is what actually
+/// tells sessions apart without changing the vendored `gpui` type).
+/// This lock exists for what timestamp-scoping alone does not cover:
+/// `clear_frame_timing_history`'s disable/enable pair clears the *entire*
+/// shared ring outright, silently dropping frames a concurrent session
+/// pushed but had not yet collected, and a truly simultaneous draw on
+/// another thread could otherwise land its `draw_start`/`draw_end` inside
+/// this call's own window by sheer timing coincidence. Holding this for the
+/// whole draw-then-drain (or clear-then-reset) rules both out.
+static FRAME_TIMING_CAPTURE: Mutex<()> = Mutex::new(());
+
+const INPUT_TRACE_MAX_BYTES: usize = 1024 * 1024;
+
+/// Opt-in, bounded input-phase trace. Records stay in memory during driving;
+/// the file is written once when the session is dropped, never flushed per act.
+struct InputTrace {
+    path: PathBuf,
+    started: Instant,
+    sequence: u64,
+    rows: Vec<u8>,
+    truncated: bool,
+}
+
+impl InputTrace {
+    fn from_env() -> Option<Self> {
+        let path = std::env::var_os("FACET_INPUT_TRACE")?;
+        if path.is_empty() {
+            return None;
+        }
+        Some(Self {
+            path: PathBuf::from(path),
+            started: Instant::now(),
+            sequence: 0,
+            rows: Vec::new(),
+            truncated: false,
+        })
+    }
+
+    fn record(&mut self, at_ms: u64, action: &str, event: &str, stage: &str, elapsed: Duration) {
+        if self.truncated {
+            return;
+        }
+        let row = serde_json::to_vec(&serde_json::json!({
+            "schema": "facet-input-trace-v1",
+            "seq": self.sequence,
+            "elapsed_ns": self.started.elapsed().as_nanos(),
+            "at_ms": at_ms,
+            "action": action,
+            "event": event,
+            "stage": stage,
+            "duration_ns": elapsed.as_nanos(),
+        }))
+        .expect("input trace row serializes");
+        if self.rows.len() + row.len() + 1 > INPUT_TRACE_MAX_BYTES {
+            self.truncated = true;
+            return;
+        }
+        self.rows.extend_from_slice(&row);
+        self.rows.push(b'\n');
+        self.sequence += 1;
+    }
+}
+
+impl Drop for InputTrace {
+    fn drop(&mut self) {
+        use std::io::Write as _;
+        let Ok(mut file) = std::fs::File::create(&self.path) else {
+            eprintln!("GUI_HARNESS_INPUT_TRACE could_not_create={:?}", self.path);
+            return;
+        };
+        if let Err(error) = file.write_all(&self.rows) {
+            eprintln!("GUI_HARNESS_INPUT_TRACE write_failed={error}");
+            return;
+        }
+        if self.truncated {
+            let _ = file.write_all(b"{\"schema\":\"facet-input-trace-v1\",\"truncated\":true}\n");
+        }
+    }
+}
+
+const fn act_kind(act: &Act) -> &'static str {
+    match act {
+        Act::Move { .. } => "move",
+        Act::Down { .. } => "down",
+        Act::Up { .. } => "up",
+        Act::Click { .. } => "click",
+        Act::Scroll { .. } => "scroll",
+        Act::Zoom { .. } => "zoom",
+        Act::Drag { .. } => "drag",
+        Act::Route { .. } => "route",
+        Act::Leave => "leave",
+        Act::Key { .. } => "key",
+        Act::Type { .. } => "type",
+        Act::Hold { .. } => "hold",
+        Act::Release { .. } => "release",
+        Act::Resize { .. } => "resize",
+        Act::TextScale { .. } => "text-scale",
+        Act::Density { .. } => "density",
+        Act::Theme { .. } => "theme",
+        Act::Contrast { .. } => "contrast",
+        Act::Motion { .. } => "motion",
+    }
+}
 
 /// How a session is set up.
 #[derive(Clone)]
@@ -98,6 +213,8 @@ pub struct Session {
     input_cpu: Duration,
     input_events: usize,
     input_max: Duration,
+    input_trace: Option<InputTrace>,
+    trace_action: Option<&'static str>,
 }
 
 /// A product's "nothing in flight" predicate (it may land finished work
@@ -162,11 +279,15 @@ impl Session {
             gpui_platform::current_headless_renderer,
         );
         let scale = f32::from(viewport.scale);
+        let audit_scale = std::env::var_os("GUI_HARNESS_SCALE_AUDIT").is_some();
         let window = context
             .open_window(
                 size(px(viewport.width as f32), px(viewport.height as f32)),
                 move |window, cx| {
                     window.set_scale_factor(scale);
+                    if audit_scale {
+                        eprintln!("GUI_HARNESS_SCALE phase=build requested={scale} actual={}", window.scale_factor());
+                    }
                     build_root(window, cx)
                 },
             )
@@ -186,8 +307,29 @@ impl Session {
             input_cpu: Duration::ZERO,
             input_events: 0,
             input_max: Duration::ZERO,
+            input_trace: InputTrace::from_env(),
+            trace_action: None,
         };
         session.settle_tasks();
+        // Activation and initial bounds callbacks re-read the test platform's
+        // display scale (2x). Restore the declared capture scale only after
+        // those opening tasks, just as resize does after bounds_changed.
+        // Otherwise a 1x fresh scene is clipped from a 2x physical draw while
+        // a resized scene correctly uses 1x, invalidating pixel comparisons.
+        let opened_scale = session.update(|window, _| window.scale_factor())?;
+        if opened_scale != scale {
+            session.update(|window, _| window.set_scale_factor(scale))?;
+            session.settle_tasks();
+        }
+        let settled_scale = session.update(|window, _| window.scale_factor())?;
+        if audit_scale {
+            eprintln!("GUI_HARNESS_SCALE phase=settled requested={scale} before_restore={opened_scale} actual={settled_scale}");
+        }
+        if settled_scale != scale {
+            return Err(CaptureError::InvalidConfig(format!(
+                "capture requested {scale}x device scale but opening tasks settled at {settled_scale}x"
+            )));
+        }
         // Draws made while opening belong to no frame of the timeline.
         let _ = session.timings.collect_unseen();
         Ok(session)
@@ -205,6 +347,10 @@ impl Session {
     }
 
     fn clear_frame_timing_history(&mut self) {
+        // Locked: the off/on transition clears the *shared* ring outright, so
+        // a concurrent session's not-yet-collected frames would otherwise
+        // vanish mid-collection (see `FRAME_TIMING_CAPTURE`).
+        let _capture = FRAME_TIMING_CAPTURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // The existing off transition clears and releases the global ring.
         // Reset the collector's cursor when total_pushed is reset to zero.
         // This policy belongs to a memory-only session; ordinary perf runs
@@ -252,7 +398,13 @@ impl Session {
     }
 
     fn settle_tasks(&mut self) {
+        let started = (self.trace_action.is_some() && self.input_trace.is_some()).then(Instant::now);
         self.context.run_until_parked();
+        if let (Some(started), Some(action), Some(trace)) =
+            (started, self.trace_action, self.input_trace.as_mut())
+        {
+            trace.record(self.now_ms, action, "foreground_tasks", "settlement", started.elapsed());
+        }
     }
 
     /// Installs a quiescence predicate: after the first frame and after
@@ -272,6 +424,7 @@ impl Session {
             return Ok(());
         };
         let started = Instant::now();
+        let trace_started = self.input_trace.as_ref().map(|_| Instant::now());
         let result = loop {
             self.settle_tasks();
             let holds = self
@@ -290,6 +443,9 @@ impl Session {
             std::thread::sleep(Duration::from_millis(2));
         };
         self.quiet = Some(quiet);
+        if let (Some(started), Some(trace)) = (trace_started, self.input_trace.as_mut()) {
+            trace.record(self.now_ms, "batch", "script_quiescence", "settlement", started.elapsed());
+        }
         result
     }
 
@@ -318,10 +474,18 @@ impl Session {
     }
 
     fn dispatch(&mut self, event: impl InputEvent) -> Result<(), CaptureError> {
+        let trace_action = self.trace_action.filter(|_| self.input_trace.is_some());
+        let event_kind = trace_action.map(|_| std::any::type_name_of_val(&event));
         let input = event.to_platform_input();
+        let started = trace_action.map(|_| Instant::now());
         self.update(|window, cx| {
             window.dispatch_event(input, cx);
         })?;
+        if let (Some(action), Some(event), Some(started), Some(trace)) =
+            (trace_action, event_kind, started, self.input_trace.as_mut())
+        {
+            trace.record(self.now_ms, action, event, "dispatch_event", started.elapsed());
+        }
         self.settle_tasks();
         Ok(())
     }
@@ -435,13 +599,23 @@ impl Session {
         adapter: &mut dyn FnMut(&Act, &mut Window, &mut App),
     ) -> Result<(), CaptureError> {
         let started = Instant::now();
+        let action = act_kind(act);
+        self.trace_action = Some(action);
         let result = (|| {
             self.dispatch_act(act)?;
+            let adapter_started = self.input_trace.as_ref().map(|_| Instant::now());
             self.update(|window, cx| adapter(act, window, cx))?;
+            if let (Some(started), Some(trace)) = (adapter_started, self.input_trace.as_mut()) {
+                trace.record(self.now_ms, action, "product_adapter", "adapter", started.elapsed());
+            }
             self.settle_tasks();
             Ok(())
         })();
         let elapsed = started.elapsed();
+        if let Some(trace) = self.input_trace.as_mut() {
+            trace.record(self.now_ms, action, "act", "total", elapsed);
+        }
+        self.trace_action = None;
         self.input_cpu += elapsed;
         self.input_events += 1;
         self.input_max = self.input_max.max(elapsed);
@@ -540,22 +714,43 @@ impl Session {
         let input_cpu = std::mem::take(&mut self.input_cpu);
         let input_events = std::mem::take(&mut self.input_events);
         let input_max = std::mem::take(&mut self.input_max);
-        let (callbacks, cpu) = self.update(|window, cx| {
+        // Locked: draw, then drain gpui's shared frame-timing ring, as one
+        // step. Nothing else may push to (or clear) that ring while this
+        // session's own draw is unaccounted for — see `FRAME_TIMING_CAPTURE`.
+        let capture_guard = FRAME_TIMING_CAPTURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (callbacks, started, cpu) = self.update(|window, cx| {
             let callbacks = window.simulate_next_frame(cx);
             let started = Instant::now();
             let clear = window.draw(cx);
             let cpu = started.elapsed();
             clear.clear(cx);
-            (callbacks, cpu)
+            (callbacks, started, cpu)
         })?;
+        // `window_id` alone cannot scope this: it is a per-`App` slotmap key,
+        // so another session's window commonly shares this session's id (two
+        // fresh `App`s' first windows both get index 0). Nothing on
+        // `FrameTiming` names the session that pushed it, so this session is
+        // scoped by *when* its own `window.draw(cx)` ran instead: every entry
+        // in gpui's shared ring records its own `draw_start`/`draw_end`
+        // (real, globally-comparable `Instant`s), and no draw but this one
+        // could have landed inside `[started, started + cpu]` — regardless
+        // of `window_id`, regardless of whether some other session pushed
+        // entries in between this session's polls. `window_id` is kept as a
+        // belt-and-suspenders check, not the scoping mechanism.
         let window_id = self.window.window_id();
+        let drawn_by = started..=(started + cpu);
         let invalidations = self
             .timings
             .collect_unseen()
             .into_iter()
-            .filter(|timing| timing.window_id == window_id)
+            .filter(|timing| {
+                timing.window_id == window_id
+                    && drawn_by.contains(&timing.draw_start)
+                    && drawn_by.contains(&timing.draw_end)
+            })
             .map(|timing| timing.invalidations)
             .sum();
+        drop(capture_guard);
         if !self.retain_frame_timings {
             self.clear_frame_timing_history();
         }
@@ -694,4 +889,99 @@ pub fn play(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FRAME_TIMING_CAPTURE, Session, SessionOptions};
+    use crate::Viewport;
+    use gpui::{AppContext as _, Context, IntoElement, Render, Styled, Window, div};
+    use std::sync::Arc;
+
+    /// A view with nothing that ever changes on its own: after its first
+    /// (necessarily dirty) frame, every later frame is genuinely idle unless
+    /// something else forces a redraw.
+    struct Blank;
+
+    impl Render for Blank {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full()
+        }
+    }
+
+    fn open(width: u32, height: u32) -> Session {
+        Session::open(
+            Viewport::new(width, height, 1).expect("viewport"),
+            SessionOptions {
+                asset_source: Arc::new(()),
+                frame_ms: 16,
+            },
+            |_window, cx| cx.new(|_| Blank),
+        )
+        .expect("session opens")
+    }
+
+    /// Two `Session`s — two independent `App`s, each with its own window
+    /// slotmap — commonly get the identical first `WindowId` (asserted
+    /// below). This is the same collision W-Data measured with real
+    /// parallel test threads; here both sessions are driven on this one
+    /// test thread; the machinery under test is the *shared static ring*
+    /// and its per-session cursors, not OS-thread races (running two live
+    /// headless GPUI `App`s on separate threads inside one process trips an
+    /// unrelated, pre-existing AppKit thread-safety abort in this repo's
+    /// headless renderer — orthogonal to this bug and out of scope here;
+    /// two `App`s alive at once on one thread reproduces the identical
+    /// `WindowId` collision without it).
+    ///
+    /// Session B does a burst of real, invalidation-producing draws (a
+    /// forced resize before each one) while session A's view never changes.
+    /// Filtering `collect_unseen()` by `window_id` alone would return B's
+    /// entries too (the mutation proof in CHECKPOINT-3b confirms this): B's
+    /// pushes land in the shared ring between A's own polls, tagged with
+    /// the same, colliding `window_id`. Scoping `frame()` by each entry's
+    /// own `draw_start`/`draw_end` timestamp instead — see `frame()` — means
+    /// A's frames stay genuinely idle regardless of how much B, or any
+    /// other session, draws in between.
+    #[test]
+    fn concurrent_sessions_do_not_bleed_frame_timings() {
+        let mut a = open(200, 200);
+        let mut b = open(300, 300);
+        assert_eq!(
+            a.window.window_id(),
+            b.window.window_id(),
+            "two fresh Apps' first windows are expected to share a WindowId; if this ever \
+             fails, the bug this test guards no longer applies and the test should be revisited"
+        );
+
+        a.frame(false).expect("warm up a (its own first frame is dirty)");
+        b.frame(false).expect("warm up b (its own first frame is dirty)");
+
+        let before = a.frame(false).expect("draw a once more").0.invalidations;
+        for toggle in 0..30 {
+            let size = if toggle % 2 == 0 { 301 } else { 300 };
+            b.resize(size, 300).expect("forced resize");
+            b.frame(false).expect("draw b");
+        }
+        let after = a.frame(false).expect("draw a again").0.invalidations;
+
+        assert_eq!(
+            before, 0,
+            "a's second frame (nothing changed) must already be idle: {before}"
+        );
+        assert_eq!(
+            after, 0,
+            "a's frame right after b resized and drew 30 times must still be idle, not b's \
+             draws bleeding in through a shared WindowId: {after}"
+        );
+    }
+
+    /// Direct proof the lock exists and is the one `frame()` and
+    /// `clear_frame_timing_history()` use (a compile-time check that the
+    /// name in the doc comment above is not stale).
+    #[test]
+    fn the_capture_lock_is_uncontended_between_sequential_sessions() {
+        let _first = FRAME_TIMING_CAPTURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(_first);
+        let _second = FRAME_TIMING_CAPTURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
 }

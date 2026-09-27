@@ -27,9 +27,9 @@ use std::collections::HashMap;
 
 pub mod view;
 
-#[cfg(any(test, feature = "gallery"))]
+#[cfg(any(test, feature = "gallery", feature = "release-fixture"))]
 pub mod fixture;
-#[cfg(any(test, feature = "gallery"))]
+#[cfg(any(test, feature = "gallery", feature = "release-fixture"))]
 pub mod json;
 #[cfg(test)]
 mod tests;
@@ -325,16 +325,16 @@ pub enum Shape {
 }
 
 impl Shape {
-    /// The shape in plain words, for comparison.
+    /// The shape in plain words, for comparison. Rust has no named
+    /// arguments: a parameter's name and binding pattern are the callee's
+    /// business, never the caller's, so only its **type**, position by
+    /// position, is compared here — a parameter rename alone can never
+    /// make two signatures read differently in plain words.
     fn plain(&self, resolve: &dyn Resolve) -> String {
         match self {
             Self::Sig(sig) => {
                 let scope = Scope::new(resolve).generics(sig.generics.iter().cloned());
-                let params: Vec<String> = sig
-                    .params
-                    .iter()
-                    .map(|(name, ty)| format!("{} {}", name.as_deref().unwrap_or(""), scope.spell(ty).plain()))
-                    .collect();
+                let params: Vec<String> = sig.params.iter().map(|(_, ty)| scope.spell(ty).plain()).collect();
                 let ret = sig.ret.as_ref().map(|r| scope.spell(r).plain()).unwrap_or_default();
                 format!("({}) → {ret}", params.join(", "))
             }
@@ -627,9 +627,11 @@ fn sig_pieces(
         if k > 0 {
             push_words(&mut out, ", ", Mark::Same);
         }
-        if let Some(name) = name {
-            // A parameter's name is not a type: quiet mono, never a link.
-            out.push((Piece::Prim(SharedString::from(name.clone())), *name_mark));
+        // A parameter's name is not a type: quiet mono, never a link. A
+        // leading `_` (an otherwise-unused parameter) is the callee's own
+        // business too, so it never shows.
+        if let Some(shown) = name.as_deref().map(|n| n.strip_prefix('_').unwrap_or(n)).filter(|n| !n.is_empty()) {
+            out.push((Piece::Prim(SharedString::from(shown.to_owned())), *name_mark));
             out.push((Piece::Space, Mark::Same));
         }
         out.extend(ty.iter().cloned());
@@ -679,9 +681,11 @@ pub fn marked(before: &str, after: &str, resolve: &dyn Resolve) -> (Marked, Mark
                 match (a.params.get(k), b.params.get(k)) {
                     (Some((na, ta)), Some((nb, tb))) => {
                         let (ma, mb) = mark_types(&sa, ta, &sb, tb);
-                        let names = if na == nb { (Mark::Same, Mark::Same) } else { (Mark::Old, Mark::New) };
-                        pa.push((na.clone(), ma, names.0));
-                        pb.push((nb.clone(), mb, names.1));
+                        // A parameter's name is the callee's business, never
+                        // the caller's: renamed or not, it is never marked
+                        // old or new (only its type can be).
+                        pa.push((na.clone(), ma, Mark::Same));
+                        pb.push((nb.clone(), mb, Mark::Same));
                     }
                     (Some((na, ta)), None) => pa.push((na.clone(), all(sa.pieces(ta), Mark::Old), Mark::Old)),
                     (None, Some((nb, tb))) => pb.push((nb.clone(), all(sb.pieces(tb), Mark::New), Mark::New)),

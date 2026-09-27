@@ -250,12 +250,13 @@ impl Scene {
         self.quads.sort_by_key(|quad| quad.order);
         self.paths.sort_by_key(|path| path.order);
         self.underlines.sort_by_key(|underline| underline.order);
-        self.monochrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
-        self.subpixel_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
-        self.polychrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+        // A paint layer shares one draw order, but its sprites can overlap.
+        // Preserve their insertion order: even same-color alpha blends round
+        // differently when reordered on an 8-bit target. Atlas allocation IDs
+        // must not make the result depend on which glyphs were cached first.
+        self.monochrome_sprites.sort_by_key(|sprite| sprite.order);
+        self.subpixel_sprites.sort_by_key(|sprite| sprite.order);
+        self.polychrome_sprites.sort_by_key(|sprite| sprite.order);
         self.surfaces.sort_by_key(|surface| surface.order);
         self.backdrop_filters.sort_by_key(|filter| filter.order);
         // Markers normally get distinct, monotonically-increasing orders (children overlap

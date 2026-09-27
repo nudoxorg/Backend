@@ -324,6 +324,13 @@ impl Fill {
         self.path.is_none()
     }
 
+    /// Transfers the accumulated triangles to a caller that owns their paint
+    /// bounds. Consuming the batch preserves its geometry without cloning it.
+    #[must_use]
+    pub fn into_path(self) -> Option<Path<Pixels>> {
+        self.path
+    }
+
     /// Paints the batch (a no-op when empty or fully transparent).
     pub fn paint(self, window: &mut Window, color: impl Into<Background>) {
         if let Some(path) = self.path {

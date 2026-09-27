@@ -14,9 +14,12 @@ use gpui::{
 };
 use std::cell::RefCell;
 
-/// Which engine produced a track sample.
+/// Which engine or direct input produced a track sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TrackKind {
+    /// A held manipulation: value is actual pose, target is requested pose.
+    /// This is an input observation, never an autonomous trajectory.
+    Input,
     /// A duration and a curve.
     Tween,
     /// An analytic spring.
@@ -32,6 +35,7 @@ impl TrackKind {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Input => "input",
             Self::Tween => "tween",
             Self::Spring => "spring",
             Self::Keys => "keys",
@@ -49,7 +53,7 @@ pub struct TrackSample {
     pub kind: TrackKind,
     /// The value painted this frame.
     pub value: f32,
-    /// Where the track is heading.
+    /// Where the track is heading; for Input, the raw requested pose.
     pub target: f32,
     /// Units per second.
     pub velocity: f32,
@@ -143,6 +147,8 @@ pub struct TextSample {
     pub key: String,
     /// The painted box, in logical px.
     pub bounds: BoundsSample,
+    /// Actual ancestor content mask at native paint; intrinsic layout stays in `bounds`.
+    pub paint_clip: Option<BoundsSample>,
     /// The width the text would take with no box constraint, in logical px.
     pub natural_width: f32,
     /// The declared overflow handling.
@@ -573,6 +579,7 @@ pub fn draw_started(cx: &mut App) {
         ledger.texts.clear();
         ledger.targets.clear();
         ledger.stacks.clear();
+        ledger.scrolls.clear();
     }
 }
 
@@ -721,6 +728,55 @@ impl Element for Measure {
 mod grouping_tests {
     use super::{BoundsSample, TextOverflow, TextSample, current_group, grouped};
 
+    #[gpui::test]
+    fn draw_start_discards_old_scroll_geometry_keeps_new_scroll_and_event_tracks(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            super::enable(cx);
+            let viewport = gpui::Bounds::new(
+                gpui::point(gpui::px(10.0), gpui::px(20.0)),
+                gpui::size(gpui::px(200.0), gpui::px(100.0)),
+            );
+            let content = gpui::Bounds::new(
+                viewport.origin,
+                gpui::size(gpui::px(200.0), gpui::px(500.0)),
+            );
+            super::record_scroll(cx, &"hidden-old-scroll".into(), viewport, content);
+            super::record_track(cx, || super::TrackSample {
+                key: "event-terminal".to_owned(),
+                kind: super::TrackKind::Tween,
+                value: 1.0,
+                target: 1.0,
+                velocity: 0.0,
+                started_ms: 0.0,
+                budget_ms: 0.0,
+                at_ms: 1.0,
+                live: false,
+                overshoot_ratio: 0.0,
+                overshoot_absolute: 0.0,
+                group: None,
+            });
+            super::draw_started(cx);
+            super::record_scroll(cx, &"painted-new-scroll".into(), viewport, content);
+            let ledger = super::take(cx);
+            assert_eq!(
+                ledger.scrolls.len(),
+                1,
+                "hidden scroll leaked across the final draw"
+            );
+            assert_eq!(ledger.scrolls[0].key, "painted-new-scroll");
+            assert_eq!(ledger.scrolls[0].viewport.x, 10.0);
+            assert_eq!(ledger.scrolls[0].content.height, 500.0);
+            assert_eq!(
+                ledger.tracks.len(),
+                1,
+                "draw start lost input-time terminal evidence"
+            );
+            assert_eq!(ledger.tracks[0].key, "event-terminal");
+        });
+    }
+
     #[test]
     fn nested_groups_use_the_innermost_scope_and_unwind() {
         assert_eq!(current_group(), None);
@@ -758,6 +814,7 @@ mod grouping_tests {
         let wide_clip = TextSample {
             key: "t".to_owned(),
             bounds: bounds(0.0, 0.0, 40.0, 16.0),
+            paint_clip: None,
             natural_width: 120.0,
             overflow: TextOverflow::Clip,
             content: "a long label".to_owned(),
@@ -920,6 +977,7 @@ impl Element for Text {
             let sample = TextSample {
                 key: String::new(),
                 bounds: bounds_sample(&self.key, bounds),
+                paint_clip: None,
                 natural_width: f32::from(natural),
                 overflow: self.overflow,
                 content: self.content.to_string(),
@@ -944,6 +1002,16 @@ impl Element for Text {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if enabled(cx) {
+            let clip = bounds_sample(&self.key, window.content_mask().bounds);
+            let key = self.key.to_string();
+            for text in cx.default_global::<Probe>().ledger.texts.iter_mut().rev() {
+                if text.key == key {
+                    text.paint_clip = Some(clip);
+                    break;
+                }
+            }
+        }
         self.child.paint(window, cx);
     }
 }

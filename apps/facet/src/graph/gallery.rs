@@ -26,6 +26,8 @@ use gpui::{
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
+#[path = "gallery_fixture_load.rs"]
+mod fixture_load;
 
 /// The prototype's canvas.
 const CANVAS: (u32, u32) = (1440, 824);
@@ -33,6 +35,9 @@ const CANVAS: (u32, u32) = (1440, 824);
 #[cfg(test)]
 #[path = "gallery_checks.rs"]
 mod adversarial;
+#[cfg(test)]
+#[path = "sprite_checks.rs"]
+mod sprite_checks;
 #[path = "gallery_fixture.rs"]
 mod pinned;
 
@@ -54,6 +59,12 @@ pub(crate) const SCENES: &[Scene] = &[
         title: "Control: identical real high-fanout hover, naive drawing",
         size: CANVAS,
         build: |w,cx| with(Strategy::Naive,Src::Rust,At::CheckLiveHover,w,cx),
+    },
+    Scene {
+        id: "graph-check-live-hover-batched",
+        title: "Control: identical real high-fanout hover, snapped star quads",
+        size: CANVAS,
+        build: |w, cx| with(Strategy::Batched, Src::Rust, At::CheckLiveHover, w, cx),
     },
     Scene {
         id: "graph-check-live-hover-paths",
@@ -338,6 +349,12 @@ pub(crate) const SCENES: &[Scene] = &[
         },
     },
     Scene {
+        id: "graph-world-batched",
+        title: "Control: the world, snapped star quads and batched shapes",
+        size: CANVAS,
+        build: |w, cx| with(Strategy::Batched, Src::Rust, At::World, w, cx),
+    },
+    Scene {
         id: "graph-world-naive",
         title: "Perf: the world, one path per shape and one quad per star, no layer",
         size: CANVAS,
@@ -348,6 +365,12 @@ pub(crate) const SCENES: &[Scene] = &[
         title: "Perf: the world, stars as triangles in the batched paths (no quads)",
         size: CANVAS,
         build: |w, cx| with(Strategy::AllPaths, Src::Rust, At::World, w, cx),
+    },
+    Scene {
+        id: "graph-world-coverage",
+        title: "Diagnostic: world stars with exact pixel-area coverage quads",
+        size: CANVAS,
+        build: |w, cx| with(Strategy::Coverage, Src::Rust, At::World, w, cx),
     },
     Scene {
         id: "graph-present-naive",
@@ -414,25 +437,22 @@ enum At {
 }
 
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Nudox-Design-System/v4/graph")
+    std::env::var_os("FACET_GRAPH_FIXTURE_DIR").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Nudox-Design-System/v4/graph"),
+        PathBuf::from,
+    )
 }
 
-/// The fixture world (empty when the file is missing).
+/// Loads once, preserving an actual read/parse failure for the review UI.
+fn loaded_world() -> Result<Arc<World>, fixture_load::LoadError> {
+    static WORLD: OnceLock<Result<Arc<World>, fixture_load::LoadError>> = OnceLock::new();
+    WORLD.get_or_init(|| fixture_load::load(&fixture().join("world.json"))).clone()
+}
+
+/// The fixture world. Callers must never treat an unavailable fixture as a
+/// successful empty graph; scene construction handles this error visibly.
 pub(crate) fn world() -> Arc<World> {
-    static WORLD: OnceLock<Arc<World>> = OnceLock::new();
-    WORLD
-        .get_or_init(|| {
-            let bytes = std::fs::read(fixture().join("world.json")).unwrap_or_default();
-            Arc::new(World::from_json(&bytes).unwrap_or_else(|_| empty()))
-        })
-        .clone()
-}
-
-fn empty() -> World {
-    match World::new(Vec::new(), Vec::new(), Vec::new(), Vec::new()) {
-        Ok(world) => world,
-        Err(error) => panic!("an empty world: {error}"),
-    }
+    loaded_world().unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn scene(src: Src) -> Arc<MapScene> {
@@ -681,6 +701,21 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
     } else {
         "free"
     };
+    // Focus cards retain exact measured bounds. Chain/tour plates publish
+    // their actual chrome bounds in this draw's ledger instead.
+    let measured_card = match mode {
+        "chain" | "tour" => {
+            let key = if mode == "chain" { "graph-chain-bounds" } else { "graph-tour-bounds" };
+            ledger.bounds.iter().rev().find(|bounds| bounds.key == key).map_or(Json::Null, |bounds| Json::obj([
+                ("x", Json::num(bounds.x)), ("y", Json::num(bounds.y)),
+                ("width", Json::num(bounds.width)), ("height", Json::num(bounds.height)),
+            ]))
+        }
+        _ => state.card_bounds.map_or(Json::Null, |b| Json::obj([
+            ("x", Json::num(f32::from(b.origin.x))), ("y", Json::num(f32::from(b.origin.y))),
+            ("width", Json::num(f32::from(b.size.width))), ("height", Json::num(f32::from(b.size.height))),
+        ])),
+    };
     let bounds = |b: &crate::probe::BoundsSample| {
         Json::obj([
             ("x", Json::num(b.x)),
@@ -693,7 +728,7 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
     let retained = graph.retained();
     let snapshot = Json::obj([
         ("source", Json::str(source)),
-        ("strategy", Json::str(match strategy { Strategy::Batched=>"batched",Strategy::AllPaths=>"all_paths",Strategy::Naive=>"naive" })),
+        ("strategy", Json::str(match strategy { Strategy::Batched=>"batched",Strategy::AllPaths=>"all_paths",Strategy::Coverage=>"coverage",Strategy::Naive=>"naive" })),
         ("expected_focus",node(expected_focus)),
         ("find_bounds",ledger.bounds("graph-find-bounds").map_or(Json::Null,bounds)),
         ("scrolls",Json::Arr(ledger.scrolls.iter().map(|scroll|Json::obj([
@@ -708,6 +743,8 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
             ("tours",Json::num(retained.tours as f64)),
             ("prism_rows",Json::num(retained.prism_rows as f64)),
             ("search_cache",Json::num(retained.search_cache as f64)),
+            ("fading_symbols",Json::num(retained.fading_symbols as f64)),
+            ("fading_relations",Json::num(retained.fading_relations as f64)),
         ])),
         ("focused", node(graph.focused())),
         ("hovered", node(state.hover)),
@@ -715,6 +752,9 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
         ("fading_hover",state.fading_hover.map_or(Json::Null,|(id,alpha)|Json::obj([
             ("node",node(Some(id))),("strength",Json::num(alpha)),
         ]))),
+        ("fading_hovers", Json::Arr(state.fading_hovers.iter().map(|&(id, alpha)| Json::obj([
+            ("node", node(Some(id))), ("strength", Json::num(alpha)),
+        ])).collect())),
         ("expected_hover_targets",expected_hover_targets.map_or(Json::Null,|(dense,sparse)|Json::obj([
             ("dense",node(Some(dense))),("sparse",node(Some(sparse))),
         ]))),
@@ -724,13 +764,18 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
             ("x", Json::num(v.x)), ("y", Json::num(v.y)),
             ("width", Json::num(v.w)), ("height", Json::num(v.h)),
         ]))),
-        ("measured_card_bounds", state.card_bounds.map_or(Json::Null, |b| Json::obj([
-            ("x", Json::num(f32::from(b.origin.x))), ("y", Json::num(f32::from(b.origin.y))),
-            ("width", Json::num(f32::from(b.size.width))), ("height", Json::num(f32::from(b.size.height))),
-        ]))),
+        ("measured_card_bounds", measured_card),
         ("focus_bounds", graph.focus_bounds().map_or(Json::Null, |b| Json::obj([
             ("x", Json::num(f32::from(b.origin.x))), ("y", Json::num(f32::from(b.origin.y))),
             ("width", Json::num(f32::from(b.size.width))), ("height", Json::num(f32::from(b.size.height))),
+        ]))),
+        ("relation_rail", state.rail_viewport.map_or(Json::Null, |bounds| Json::obj([
+            ("x", Json::num(f32::from(bounds.origin.x))), ("y", Json::num(f32::from(bounds.origin.y))),
+            ("width", Json::num(f32::from(bounds.size.width))), ("height", Json::num(f32::from(bounds.size.height))),
+            ("offset_x", Json::num(state.rail_offset.0)), ("offset_y", Json::num(state.rail_offset.1)),
+            ("visible_keys", Json::Arr(state.rail_visible.iter().map(|key| Json::obj([
+                ("node", node(Some(key.node))), ("side", Json::num(key.side)), ("word", Json::Str(key.word.text().into())),
+            ])).collect())),
         ]))),
         ("hover_slot", state.hover_slot.map_or(Json::Null, |slot| Json::num(slot as f64))),
         ("pointer_prism_pick", state.pointer.and_then(|(x,y)| state.frame.as_ref().and_then(|f|f.pick(x,y)))
@@ -742,8 +787,22 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
         ("exploration", Json::str(mode)),
         ("tour_stop", node(graph.tour_stop())),
         ("find_open", Json::Bool(state.find_open)),
+        ("pending_accept", Json::Bool(state.pending_accept)),
         ("query", Json::str(state.query)),
+        ("find_scroll", Json::obj([
+            ("x", Json::num(state.find_scroll.0)), ("y", Json::num(state.find_scroll.1)),
+        ])),
+        ("find_selection", Json::obj([
+            ("start", Json::num(state.find_selection.0 as f64)),
+            ("end", Json::num(state.find_selection.1 as f64)),
+        ])),
         ("searching", Json::Bool(state.searching)),
+        ("discovery_ready", Json::Bool(state.discovery_ready)),
+        ("discovery_prepare_ms", state.discovery_prepare_ms.map_or(Json::Null, Json::num)),
+        ("preparing_tour", state.preparing_tour.map_or(Json::Null, |(package, at)| Json::obj([
+            ("package", Json::num(package)), ("at", Json::num(at as f64)),
+        ]))),
+        ("unavailable_tour", state.unavailable_tour.map_or(Json::Null, Json::num)),
         (
             "rows",
             Json::Arr(state.rows.iter().map(|&id| node(Some(id))).collect()),
@@ -830,7 +889,7 @@ fn snapshot(cx: &mut App, ledger: &crate::probe::Ledger) -> crate::gallery::json
 struct ExpectedFocus(Option<NodeId>);
 impl gpui::Global for ExpectedFocus {}
 struct CurrentStrategy(Strategy);
-impl Default for CurrentStrategy { fn default()->Self { Self(Strategy::Batched) } }
+impl Default for CurrentStrategy { fn default()->Self { Self(Strategy::default()) } }
 impl gpui::Global for CurrentStrategy {}
 
 #[derive(Default)]
@@ -867,12 +926,15 @@ struct Current(gpui::WeakEntity<GraphView>, Src);
 impl gpui::Global for Current {}
 
 fn build(src: Src, at: At, window: &mut Window, cx: &mut App) -> AnyView {
-    with(Strategy::Batched, src, at, window, cx)
+    with(Strategy::default(), src, at, window, cx)
 }
 
 #[allow(clippy::too_many_lines)]
 fn with(strategy: Strategy, src: Src, at: At, window: &mut Window, cx: &mut App) -> AnyView {
     cx.set_global(CurrentStrategy(strategy));
+    if !matches!(src, Src::Pinned) {
+        if let Err(error) = loaded_world() { return fixture_load::error_view(error, cx); }
+    }
     let map = scene(src);
     let world = map.world.clone();
     let view = super::camera::View {
@@ -1168,7 +1230,7 @@ mod tests {
         let runs: [(&str, Option<&str>); 12] = [
             ("graph-baseline", None),
             ("graph-baseline-cut", None),
-            ("graph-world", None),
+            ("graph-world-batched", None),
             ("graph-world-paths", None),
             ("graph-world-naive", None),
             ("graph-present", None),

@@ -1,0 +1,1411 @@
+{
+ "crates": {
+  "toml": {
+   "downloads": 942292584,
+   "recent": 231128979,
+   "fetched": "2026-09-26"
+  },
+  "toml_edit": {
+   "downloads": 847323285,
+   "recent": 210119132,
+   "fetched": "2026-09-26"
+  },
+  "basic-toml": {
+   "downloads": 65463892,
+   "recent": 15364807,
+   "fetched": "2026-09-26"
+  },
+  "serde_json": {
+   "downloads": 1346803956,
+   "recent": 328698629,
+   "fetched": "2026-09-26"
+  },
+  "ron": {
+   "downloads": 115613973,
+   "recent": 20538557,
+   "fetched": "2026-09-26"
+  },
+  "serde_yaml": {
+   "downloads": 415213903,
+   "recent": 92980778,
+   "fetched": "2026-09-26"
+  },
+  "ciborium": {
+   "downloads": 245725523,
+   "recent": 60845863,
+   "fetched": "2026-09-26"
+  },
+  "rmp-serde": {
+   "downloads": 133994856,
+   "recent": 26766990,
+   "fetched": "2026-09-26"
+  },
+  "bincode": {
+   "downloads": 327554873,
+   "recent": 63893175,
+   "fetched": "2026-09-26"
+  },
+  "postcard": {
+   "downloads": 66499810,
+   "recent": 25609139,
+   "fetched": "2026-09-26"
+  },
+  "quick-xml": {
+   "downloads": 433883549,
+   "recent": 118572321,
+   "fetched": "2026-09-26"
+  },
+  "clap": {
+   "downloads": 1167715453,
+   "recent": 239264450,
+   "fetched": "2026-09-26"
+  },
+  "pico-args": {
+   "downloads": 76846261,
+   "recent": 18638604,
+   "fetched": "2026-09-26"
+  },
+  "regex": {
+   "downloads": 1192203938,
+   "recent": 258667978,
+   "fetched": "2026-09-26"
+  },
+  "fancy-regex": {
+   "downloads": 236095040,
+   "recent": 66655839,
+   "fetched": "2026-09-26"
+  },
+  "reqwest": {
+   "downloads": 745739282,
+   "recent": 194371193,
+   "fetched": "2026-09-26"
+  },
+  "ureq": {
+   "downloads": 210956525,
+   "recent": 61830946,
+   "fetched": "2026-09-26"
+  },
+  "hyper": {
+   "downloads": 949788318,
+   "recent": 212799862,
+   "fetched": "2026-09-26"
+  },
+  "attohttpc": {
+   "downloads": 34652086,
+   "recent": 6407723,
+   "fetched": "2026-09-26"
+  },
+  "tokio": {
+   "downloads": 1001748879,
+   "recent": 235872090,
+   "fetched": "2026-09-26"
+  },
+  "smol": {
+   "downloads": 23894253,
+   "recent": 5419466,
+   "fetched": "2026-09-26"
+  },
+  "async-executor": {
+   "downloads": 168564087,
+   "recent": 33319179,
+   "fetched": "2026-09-26"
+  },
+  "thiserror": {
+   "downloads": 1518032977,
+   "recent": 382502328,
+   "fetched": "2026-09-26"
+  },
+  "anyhow": {
+   "downloads": 989870984,
+   "recent": 222794924,
+   "fetched": "2026-09-26"
+  },
+  "miette": {
+   "downloads": 77096930,
+   "recent": 18706480,
+   "fetched": "2026-09-26"
+  },
+  "snafu": {
+   "downloads": 112618951,
+   "recent": 18972320,
+   "fetched": "2026-09-26"
+  },
+  "displaydoc": {
+   "downloads": 611043963,
+   "recent": 193312341,
+   "fetched": "2026-09-26"
+  },
+  "smallvec": {
+   "downloads": 1224985068,
+   "recent": 293182741,
+   "fetched": "2026-09-26"
+  },
+  "arrayvec": {
+   "downloads": 580637504,
+   "recent": 132349273,
+   "fetched": "2026-09-26"
+  },
+  "tinyvec": {
+   "downloads": 746717914,
+   "recent": 176128489,
+   "fetched": "2026-09-26"
+  },
+  "winnow": {
+   "downloads": 939827107,
+   "recent": 275394095,
+   "fetched": "2026-09-26"
+  },
+  "nom": {
+   "downloads": 745713767,
+   "recent": 164767285,
+   "fetched": "2026-09-26"
+  },
+  "pest": {
+   "downloads": 338144384,
+   "recent": 68780167,
+   "fetched": "2026-09-26"
+  },
+  "blake3": {
+   "downloads": 188782237,
+   "recent": 46357717,
+   "fetched": "2026-09-26"
+  },
+  "serde": {
+   "downloads": 1443694573,
+   "recent": 326285814,
+   "fetched": "2026-09-26"
+  },
+  "sha2": {
+   "downloads": 983634503,
+   "recent": 269261245,
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter": {
+   "downloads": 40918069,
+   "recent": 15217273,
+   "fetched": "2026-09-26"
+  },
+  "futures-executor": {
+   "downloads": 768639913,
+   "recent": 181474205,
+   "fetched": "2026-09-26"
+  },
+  "ignore": {
+   "downloads": 178830460,
+   "recent": 39223043,
+   "fetched": "2026-09-26"
+  },
+  "base64": {
+   "downloads": 1623156382,
+   "recent": 341817092,
+   "fetched": "2026-09-26"
+  },
+  "flate2": {
+   "downloads": 703527951,
+   "recent": 163647373,
+   "fetched": "2026-09-26"
+  },
+  "opentelemetry": {
+   "downloads": 273825643,
+   "recent": 62550665,
+   "fetched": "2026-09-26"
+  },
+  "opentelemetry-appender-tracing": {
+   "downloads": 19597590,
+   "recent": 8552512,
+   "fetched": "2026-09-26"
+  },
+  "opentelemetry_sdk": {
+   "downloads": 228106882,
+   "recent": 56622256,
+   "fetched": "2026-09-26"
+  },
+  "sha1": {
+   "downloads": 539100514,
+   "recent": 153226703,
+   "fetched": "2026-09-26"
+  },
+  "zip": {
+   "downloads": 278414732,
+   "recent": 73903120,
+   "fetched": "2026-09-26"
+  },
+  "tracing": {
+   "downloads": 876776724,
+   "recent": 200225369,
+   "fetched": "2026-09-26"
+  },
+  "tracing-opentelemetry": {
+   "downloads": 210280833,
+   "recent": 46486213,
+   "fetched": "2026-09-26"
+  },
+  "tracing-subscriber": {
+   "downloads": 626845618,
+   "recent": 147886240,
+   "fetched": "2026-09-26"
+  },
+  "zerocopy": {
+   "downloads": 941340015,
+   "recent": 255572851,
+   "fetched": "2026-09-26"
+  },
+  "allocation-counter": {
+   "downloads": 2170278,
+   "recent": 2049087,
+   "fetched": "2026-09-26"
+  },
+  "futures-core": {
+   "downloads": 955601561,
+   "recent": 238107230,
+   "fetched": "2026-09-26"
+  },
+  "rustix": {
+   "downloads": 1173829018,
+   "recent": 266443098,
+   "fetched": "2026-09-26"
+  },
+  "nix": {
+   "downloads": 823178814,
+   "recent": 186068111,
+   "fetched": "2026-09-26"
+  },
+  "strum": {
+   "downloads": 650175752,
+   "recent": 143541201,
+   "fetched": "2026-09-26"
+  },
+  "futures-util": {
+   "downloads": 942732257,
+   "recent": 236753794,
+   "fetched": "2026-09-26"
+  },
+  "socket2": {
+   "downloads": 1258380029,
+   "recent": 306133009,
+   "fetched": "2026-09-26"
+  },
+  "windows-sys": {
+   "downloads": 1619513051,
+   "recent": 424290226,
+   "fetched": "2026-09-26"
+  },
+  "atomic-waker": {
+   "downloads": 491599017,
+   "recent": 147473570,
+   "fetched": "2026-09-26"
+  },
+  "loom": {
+   "downloads": 67243767,
+   "recent": 14730117,
+   "fetched": "2026-09-26"
+  },
+  "memmap2": {
+   "downloads": 353343172,
+   "recent": 81666345,
+   "fetched": "2026-09-26"
+  },
+  "turso": {
+   "downloads": 985851,
+   "recent": 562337,
+   "fetched": "2026-09-26"
+  },
+  "derive_more": {
+   "downloads": 497864974,
+   "recent": 120422330,
+   "fetched": "2026-09-26"
+  },
+  "fearless_simd": {
+   "downloads": 6374864,
+   "recent": 4675013,
+   "fetched": "2026-09-26"
+  },
+  "bolero": {
+   "downloads": 5788150,
+   "recent": 1545006,
+   "fetched": "2026-09-26"
+  },
+  "rstest": {
+   "downloads": 124668491,
+   "recent": 28127593,
+   "fetched": "2026-09-26"
+  },
+  "trybuild": {
+   "downloads": 68552440,
+   "recent": 15700881,
+   "fetched": "2026-09-26"
+  },
+  "clang-sys": {
+   "downloads": 312511862,
+   "recent": 61866589,
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter-cpp": {
+   "downloads": 11534883,
+   "recent": 3828657,
+   "fetched": "2026-09-26"
+  },
+  "tempfile": {
+   "downloads": 837743093,
+   "recent": 190443618,
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter-c-sharp": {
+   "downloads": 6294468,
+   "recent": 2360689,
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter-go": {
+   "downloads": 13128805,
+   "recent": 4858593,
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter-java": {
+   "downloads": 11628666,
+   "recent": 3982980,
+   "fetched": "2026-09-26"
+  },
+  "ruff_python_ast": {
+   "downloads": 599578,
+   "recent": 598325,
+   "fetched": "2026-09-26"
+  },
+  "ruff_python_parser": {
+   "downloads": 599368,
+   "recent": 598126,
+   "fetched": "2026-09-26"
+  },
+  "ruff_text_size": {
+   "downloads": 600138,
+   "recent": 598852,
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter-python": {
+   "downloads": 16126358,
+   "recent": 6199397,
+   "fetched": "2026-09-26"
+  },
+  "ra_ap_base_db": {
+   "downloads": 1823150,
+   "recent": 321743,
+   "fetched": "2026-09-26"
+  },
+  "ra_ap_hir": {
+   "downloads": 1772242,
+   "recent": 320881,
+   "fetched": "2026-09-26"
+  },
+  "ra_ap_hir_ty": {
+   "downloads": 1788717,
+   "recent": 321491,
+   "fetched": "2026-09-26"
+  },
+  "ra_ap_ide_db": {
+   "downloads": 1766744,
+   "recent": 316294,
+   "fetched": "2026-09-26"
+  },
+  "ra_ap_load-cargo": {
+   "downloads": 614389,
+   "recent": 129644,
+   "fetched": "2026-09-26"
+  },
+  "ra_ap_project_model": {
+   "downloads": 1741985,
+   "recent": 305161,
+   "fetched": "2026-09-26"
+  },
+  "ra_ap_syntax": {
+   "downloads": 3327207,
+   "recent": 563583,
+   "fetched": "2026-09-26"
+  },
+  "ra_ap_vfs": {
+   "downloads": 1928248,
+   "recent": 338885,
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter-rust": {
+   "downloads": 20095165,
+   "recent": 7337761,
+   "fetched": "2026-09-26"
+  },
+  "oxc_allocator": {
+   "downloads": 7553030,
+   "recent": 3028373,
+   "fetched": "2026-09-26"
+  },
+  "oxc_ast": {
+   "downloads": 7526593,
+   "recent": 3013129,
+   "fetched": "2026-09-26"
+  },
+  "oxc_diagnostics": {
+   "downloads": 7535364,
+   "recent": 3012101,
+   "fetched": "2026-09-26"
+  },
+  "oxc_parser": {
+   "downloads": 7477615,
+   "recent": 2999927,
+   "fetched": "2026-09-26"
+  },
+  "oxc_semantic": {
+   "downloads": 4110164,
+   "recent": 1797692,
+   "fetched": "2026-09-26"
+  },
+  "oxc_span": {
+   "downloads": 7537881,
+   "recent": 3021074,
+   "fetched": "2026-09-26"
+  },
+  "oxc_syntax": {
+   "downloads": 7523683,
+   "recent": 3013012,
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter-typescript": {
+   "downloads": 14982323,
+   "recent": 5804565,
+   "fetched": "2026-09-26"
+  },
+  "tantivy": {
+   "downloads": 18814724,
+   "recent": 4093726,
+   "fetched": "2026-09-26"
+  },
+  "trustfall": {
+   "downloads": 429701,
+   "recent": 116684,
+   "fetched": "2026-09-26"
+  },
+  "trustfall_core": {
+   "downloads": 464597,
+   "recent": 117965,
+   "fetched": "2026-09-26"
+  },
+  "gpui-ce": {
+   "downloads": 10863,
+   "recent": 9080,
+   "fetched": "2026-09-26"
+  },
+  "gpui_ce_components": {
+   "downloads": 90,
+   "recent": 90,
+   "fetched": "2026-09-26"
+  },
+  "image": {
+   "downloads": 197101827,
+   "recent": 52993981,
+   "fetched": "2026-09-26"
+  },
+  "proptest": {
+   "downloads": 194800094,
+   "recent": 50213884,
+   "fetched": "2026-09-26"
+  },
+  "gpui_ce_platform": {
+   "downloads": 2049,
+   "recent": 2049,
+   "fetched": "2026-09-26"
+  },
+  "axum": {
+   "downloads": 488074216,
+   "recent": 122273139,
+   "fetched": "2026-09-26"
+  }
+ },
+ "advisories": {
+  "toml": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "toml_edit": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "basic-toml": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "serde_json": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ron": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "serde_yaml": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2018-0005",
+     "title": "Uncontrolled recursion leads to abort in deserialization",
+     "date": "2018-09-17",
+     "patched": [
+      ">= 0.8.4"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "ciborium": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "rmp-serde": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2022-0092",
+     "title": "`rmp-serde` `Raw` and `RawRef` unsound",
+     "date": "2022-04-13",
+     "patched": [
+      ">= 1.1.1"
+     ],
+     "informational": "unsound"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "bincode": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2025-0141",
+     "title": "Bincode is unmaintained",
+     "date": "2025-12-16",
+     "patched": [],
+     "informational": "unmaintained"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "postcard": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "quick-xml": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2026-0194",
+     "title": "Quadratic run time when checking a start tag for duplicate attribute names",
+     "date": "2026-06-29",
+     "patched": [
+      ">= 0.41.0"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2026-0195",
+     "title": "Unbounded namespace-declaration allocation in `NsReader` enables memory-exhaustion denial of service",
+     "date": "2026-06-29",
+     "patched": [
+      ">= 0.41.0"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "clap": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "pico-args": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "regex": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2022-0013",
+     "title": "Regexes with large repetitions on empty sub-expressions take a very long time to parse",
+     "date": "2022-03-08",
+     "patched": [
+      ">= 1.5.5"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "fancy-regex": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "reqwest": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ureq": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "hyper": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2016-0002",
+     "title": "HTTPS MitM vulnerability due to lack of hostname verification",
+     "date": "2016-05-09",
+     "patched": [
+      ">= 0.9.4"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2017-0002",
+     "title": "headers containing newline characters can split messages",
+     "date": "2017-01-23",
+     "patched": [
+      ">= 0.10.2",
+      "< 0.10.0",
+      ">= 0.9.18"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2020-0008",
+     "title": "Flaw in hyper allows request smuggling by sending a body in GET requests",
+     "date": "2020-03-19",
+     "patched": [
+      ">= 0.12.34"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2021-0020",
+     "title": "Multiple Transfer-Encoding headers misinterprets request payload",
+     "date": "2021-02-05",
+     "patched": [
+      ">= 0.14.3",
+      "0.13.10",
+      "0.12.36"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2021-0078",
+     "title": "Lenient `hyper` header parsing of `Content-Length` could allow request smuggling",
+     "date": "2021-07-07",
+     "patched": [
+      ">= 0.14.10"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2021-0079",
+     "title": "Integer overflow in `hyper`'s parsing of the `Transfer-Encoding` header leads to data loss",
+     "date": "2021-07-07",
+     "patched": [
+      ">= 0.14.10"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2022-0022",
+     "title": "Parser creates invalid uninitialized value",
+     "date": "2022-05-10",
+     "patched": [
+      ">= 0.14.12"
+     ],
+     "informational": "unsound"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "attohttpc": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tokio": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2021-0072",
+     "title": "Task dropped in wrong thread when aborting `LocalSet` task",
+     "date": "2021-07-07",
+     "patched": [
+      ">= 1.5.1",
+      "< 1.6.0",
+      ">= 1.6.3",
+      "< 1.7.0",
+      ">= 1.7.2",
+      "< 1.8.0",
+      ">= 1.8.1"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2021-0124",
+     "title": "Data race when sending and receiving after closing a `oneshot` channel",
+     "date": "2021-11-16",
+     "patched": [
+      ">= 1.8.4",
+      "< 1.9.0",
+      ">= 1.13.1"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2023-0001",
+     "title": "reject_remote_clients Configuration corruption",
+     "date": "2023-01-04",
+     "patched": [
+      ">= 1.18.4",
+      "< 1.19.0",
+      ">= 1.20.3",
+      "< 1.21.0",
+      ">= 1.23.1"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2023-0005",
+     "title": "`tokio::io::ReadHalf<T>::unsplit` is Unsound",
+     "date": "2023-01-11",
+     "patched": [
+      ">= 1.18.5",
+      "< 1.19.0",
+      ">= 1.20.4",
+      "< 1.21.0",
+      ">= 1.24.2"
+     ],
+     "informational": "unsound"
+    },
+    {
+     "id": "RUSTSEC-2025-0023",
+     "title": "Broadcast channel calls clone in parallel, but does not require `Sync`",
+     "date": "2025-04-07",
+     "patched": [
+      ">= 1.38.2",
+      "< 1.39.0",
+      ">= 1.42.1",
+      "< 1.43.0",
+      ">= 1.43.1",
+      "< 1.44.0",
+      ">= 1.44.2"
+     ],
+     "informational": "unsound"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "smol": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "async-executor": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "thiserror": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "anyhow": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2026-0190",
+     "title": "Unsoundness in `Error::downcast_mut()`",
+     "date": "2026-06-25",
+     "patched": [
+      ">= 1.0.103"
+     ],
+     "informational": "unsound"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "miette": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "snafu": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "displaydoc": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "smallvec": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2018-0003",
+     "title": "Possible double free during unwinding in SmallVec::insert_many",
+     "date": "2018-07-19",
+     "patched": [
+      ">= 0.6.3",
+      "^0.3.4",
+      "^0.4.5",
+      "^0.5.1"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2018-0018",
+     "title": "smallvec creates uninitialized value of any type",
+     "date": "2018-09-25",
+     "patched": [
+      ">= 0.6.13"
+     ],
+     "informational": "unsound"
+    },
+    {
+     "id": "RUSTSEC-2019-0009",
+     "title": "Double-free and use-after-free in SmallVec::grow()",
+     "date": "2019-06-06",
+     "patched": [
+      ">= 0.6.10"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2019-0012",
+     "title": "Memory corruption in SmallVec::grow()",
+     "date": "2019-07-19",
+     "patched": [
+      ">= 0.6.10"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2021-0003",
+     "title": "Buffer overflow in SmallVec::insert_many",
+     "date": "2021-01-08",
+     "patched": [
+      ">= 0.6.14",
+      "< 1.0.0",
+      ">= 1.6.1"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "arrayvec": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tinyvec": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "winnow": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "nom": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "pest": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "blake3": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "serde": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "sha2": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2021-0100",
+     "title": "Miscomputed results when using AVX2 backend",
+     "date": "2021-09-08",
+     "patched": [
+      ">= 0.9.8"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "tree-sitter": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "futures-executor": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ignore": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "base64": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2017-0004",
+     "title": "Integer overflow leads to heap-based buffer overflow in encode_config_buf",
+     "date": "2017-05-03",
+     "patched": [
+      ">= 0.5.2"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "flate2": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "opentelemetry": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "opentelemetry-appender-tracing": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "opentelemetry_sdk": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "sha1": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "zip": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2025-0168",
+     "title": "Incorrect path canonicalization during Archive Extraction Leading to Arbitrary File Write",
+     "date": "2025-03-16",
+     "patched": [
+      ">= 2.3.0"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "tracing": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2023-0078",
+     "title": "Potential stack use-after-free in `Instrumented::into_inner`",
+     "date": "2023-10-19",
+     "patched": [
+      ">= 0.1.40"
+     ],
+     "informational": "unsound"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "tracing-opentelemetry": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tracing-subscriber": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2025-0055",
+     "title": "Logging user input may result in poisoning logs with ANSI escape sequences",
+     "date": "2025-08-29",
+     "patched": [
+      ">=0.3.20"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "zerocopy": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2023-0074",
+     "title": "Some Ref methods are unsound with some type parameters",
+     "date": "2023-12-14",
+     "patched": [
+      ">= 0.2.9",
+      "< 0.3.0",
+      ">= 0.3.2",
+      "< 0.4.0",
+      ">= 0.4.1",
+      "< 0.5.0",
+      ">= 0.5.2",
+      "< 0.6.0",
+      ">= 0.6.6",
+      "< 0.7.0",
+      ">= 0.7.31"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "allocation-counter": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "futures-core": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "rustix": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "nix": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2021-0119",
+     "title": "Out-of-bounds write in nix::unistd::getgrouplist",
+     "date": "2021-09-27",
+     "patched": [
+      "^0.20.2",
+      "^0.21.2",
+      "^0.22.2",
+      ">= 0.23.0"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "strum": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "futures-util": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2020-0059",
+     "title": "MutexGuard::map can cause a data race in safe code",
+     "date": "2020-10-22",
+     "patched": [
+      ">= 0.3.7"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2020-0062",
+     "title": "Improper `Sync` implementation on `FuturesUnordered` in futures-utils can cause data corruption",
+     "date": "2020-01-24",
+     "patched": [
+      ">= 0.3.2"
+     ],
+     "informational": null
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "socket2": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2020-0079",
+     "title": "`socket2` invalidly assumes the memory layout of std::net::SocketAddr",
+     "date": "2020-11-06",
+     "patched": [
+      ">= 0.3.16"
+     ],
+     "informational": "unsound"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "windows-sys": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "atomic-waker": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "loom": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "memmap2": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2026-0186",
+     "title": "Unchecked pointer offset in crate `memmap2`",
+     "date": "2026-06-20",
+     "patched": [
+      ">= 0.9.11"
+     ],
+     "informational": "unsound"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "turso": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "derive_more": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "fearless_simd": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "bolero": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "rstest": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "trybuild": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "clang-sys": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tree-sitter-cpp": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tempfile": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tree-sitter-c-sharp": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tree-sitter-go": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tree-sitter-java": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ruff_python_ast": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ruff_python_parser": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ruff_text_size": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tree-sitter-python": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ra_ap_base_db": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ra_ap_hir": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ra_ap_hir_ty": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ra_ap_ide_db": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ra_ap_load-cargo": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ra_ap_project_model": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ra_ap_syntax": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "ra_ap_vfs": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tree-sitter-rust": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "oxc_allocator": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "oxc_ast": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "oxc_diagnostics": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "oxc_parser": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "oxc_semantic": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "oxc_span": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "oxc_syntax": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tree-sitter-typescript": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "tantivy": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "trustfall": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "trustfall_core": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "gpui-ce": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "gpui_ce_components": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "image": {
+   "ids": [
+    {
+     "id": "RUSTSEC-2019-0014",
+     "title": "Flaw in interface may drop uninitialized instance of arbitrary types",
+     "date": "2019-08-21",
+     "patched": [
+      ">= 0.21.3"
+     ],
+     "informational": null
+    },
+    {
+     "id": "RUSTSEC-2020-0073",
+     "title": "Mutable reference with immutable provenance",
+     "date": "2020-11-12",
+     "patched": [
+      ">= 0.23.12"
+     ],
+     "informational": "unsound"
+    }
+   ],
+   "fetched": "2026-09-26"
+  },
+  "proptest": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "gpui_ce_platform": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  },
+  "axum": {
+   "ids": [],
+   "fetched": "2026-09-26",
+   "note": "no directory in rustsec/advisory-db"
+  }
+ }
+}

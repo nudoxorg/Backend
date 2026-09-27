@@ -52,18 +52,31 @@ impl RenderOnce for HoldsView {
         let ink = TypeInk::new(roles::TYPE, palette);
         let gutter = gutter(&m);
         let rows_measure = m.within(m.width() - gutter);
-        let mut root = div().id(self.id.clone()).flex().flex_col().child(heading(self.holds.heading(), &m, palette));
+        let mut root = div().id(self.id.clone()).flex().flex_col().child(heading(
+            ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("heading")),
+            self.holds.heading(),
+            &m,
+            palette,
+        ));
         if self.holds.fields.is_empty() {
             return root;
         }
         let rows = self.holds.fields.iter().enumerate().map(|(n, field)| {
             let name_role = if field.public { roles::NAME } else { roles::NAME_QUIET };
             let name_ink = if field.public { palette.ink0 } else { palette.ink2 };
-            let name = div()
-                .set(name_role, &rows_measure)
-                .text_color(name_ink.hsla())
-                .children(field.name.clone())
-                .into_any_element();
+            let words = div().set(name_role, &rows_measure).text_color(name_ink.hsla()).children(field.name.clone());
+            let name = match &field.name {
+                Some(text) => crate::probe::text(
+                    ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{n}-name"))),
+                    text.clone(),
+                    rows_measure.role(name_role),
+                    1.0,
+                    crate::probe::TextOverflow::Wrap,
+                    words,
+                )
+                .into_any_element(),
+                None => words.into_any_element(),
+            };
             let mut line = Line::new();
             line.spelled(&field.ty, &ink, &self.links, xray);
             let id = ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{n}-ty")));

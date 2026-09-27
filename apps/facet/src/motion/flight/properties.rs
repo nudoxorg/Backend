@@ -443,6 +443,7 @@ fn graph_route_landmarks_have_fixed_screen_bounds_and_covariant_reversal() {
                         Camera::new(c.x * scale + 10000.0, c.y * scale - 3300.0, c.w * scale)
                     };
                     let travel = match travel {
+                        Travel::Reading(_) => unreachable!("legacy route fixture"),
                         Travel::Focus(c) => Travel::Focus(transform(c)),
                         Travel::Survey(c) => Travel::Survey(transform(c)),
                         Travel::Reframe => Travel::Reframe,
@@ -659,5 +660,571 @@ fn interrupted_small_lens_has_no_blend_rebound_and_truthful_frame_velocity() {
             assert_eq!(trip.sample(at + trip.duration), target);
             assert_eq!(trip.velocity(at + trip.duration), (0.0, 0.0, 0.0));
         }
+    }
+}
+
+fn reading_room(bottom: bool) -> super::FlightRoom {
+    if bottom {
+        super::FlightRoom {
+            left: -0.5,
+            right: 0.5,
+            top: -0.3,
+            bottom: 0.05,
+            anchor: (-0.22, -0.125),
+        }
+    } else {
+        super::FlightRoom {
+            left: -0.5,
+            right: 0.15,
+            top: -0.3,
+            bottom: 0.3,
+            anchor: (-0.15, 0.0),
+        }
+    }
+}
+
+fn reading(
+    from: Camera,
+    to: Camera,
+    kind: super::FocusKind,
+    room: super::FlightRoom,
+) -> super::FocusRoute {
+    super::FocusRoute {
+        departure: Some((
+            from.x + room.anchor.0 * from.w,
+            from.y + room.anchor.1 * from.w,
+        )),
+        arrival: (to.x + room.anchor.0 * to.w, to.y + room.anchor.1 * to.w),
+        context: Camera::new(
+            (from.x + to.x) / 2.0,
+            (from.y + to.y) / 2.0 + 60.0,
+            10_000.0,
+        ),
+        room,
+        kind,
+    }
+}
+
+#[test]
+fn reading_handoff_keeps_scale_and_transfer_lifts_early_into_actual_room() {
+    use super::{FocusKind, GraphPath, Travel};
+    let room = reading_room(false);
+    let from = Camera::new(30.0, 0.0, 200.0);
+    let to = Camera::new(110.0, 0.0, 200.0);
+    let near = GraphPath::new(
+        from,
+        to,
+        Travel::Reading(reading(from, to, FocusKind::Handoff, room)),
+    );
+    assert!(
+        near.apex <= 224.0,
+        "local move must not reveal the 10,000-unit package"
+    );
+    assert_eq!(near.at_t(0.0), from);
+    assert_eq!(near.at_t(1.0), to);
+    assert!(
+        near.at_t(0.5).y > 0.0,
+        "one approach bends toward the common context"
+    );
+    let far = Camera::new(830.0, 0.0, 200.0);
+    let follow = GraphPath::new(
+        from,
+        far,
+        Travel::Reading(reading(from, far, FocusKind::Follow, room)),
+    );
+    let transfer = GraphPath::new(
+        from,
+        far,
+        Travel::Reading(reading(from, far, FocusKind::Transfer, room)),
+    );
+    assert!(
+        transfer.apex < 2200.0 && transfer.apex > 1600.0,
+        "fit the actual corridor, not the whole package"
+    );
+    assert!(transfer.advance > follow.advance && follow.advance > near.advance);
+    // Both endpoint contractions advance continuously; transfer has already
+    // crossed its width apex by halfway without a waypoint pause.
+    let at_half = transfer.at_t(0.5);
+    assert!(at_half.w < transfer.apex);
+    assert!(at_half.x > transfer.at_t(0.4).x);
+}
+
+#[test]
+fn reading_landmarks_obey_fixed_projection_hulls_and_one_lens_turn() {
+    use super::{FocusKind, GraphPath, Travel};
+    for bottom in [false, true] {
+        let room = reading_room(bottom);
+        for ratio in [0.01, 0.1, 1.0, 10.0, 100.0] {
+            for dx in [-1800.0, -80.0, 0.0, 80.0, 1800.0] {
+                for kind in [FocusKind::Handoff, FocusKind::Follow, FocusKind::Transfer] {
+                    let from = Camera::new(30.0, -40.0, 200.0);
+                    let to = Camera::new(from.x + dx, 150.0, 200.0 * ratio);
+                    let intent = reading(from, to, kind, room);
+                    let path = GraphPath::new(from, to, Travel::Reading(intent));
+                    let mut last_width = from.w;
+                    let mut descended = false;
+                    for index in 0..=1000 {
+                        let camera = path.at_t(f64::from(index) / 1000.0);
+                        assert!(
+                            camera.x.is_finite()
+                                && camera.y.is_finite()
+                                && camera.w > 0.0
+                                && camera.w.is_finite()
+                        );
+                        assert!(camera.w <= path.apex * (1.0 + 1e-12));
+                        if camera.w < last_width - path.apex * 1e-12 {
+                            descended = true;
+                        }
+                        if descended {
+                            assert!(
+                                camera.w <= last_width + path.apex * 1e-12,
+                                "single lens turn: {last_width} -> {}",
+                                camera.w
+                            );
+                        }
+                        last_width = camera.w;
+                        for point in [intent.departure.expect("reading fixture anchors a departure landmark for the projection hull"), intent.arrival, (400.0, -200.0)] {
+                            let endpoints = [
+                                ((point.0 - from.x) / from.w, (point.1 - from.y) / from.w),
+                                ((point.0 - to.x) / to.w, (point.1 - to.y) / to.w),
+                                room.anchor,
+                            ];
+                            let value = (
+                                (point.0 - camera.x) / camera.w,
+                                (point.1 - camera.y) / camera.w,
+                            );
+                            for (axis, got, bow) in [
+                                (0, value.0, (path.normal.0 * path.bend).abs()),
+                                (1, value.1, (path.normal.1 * path.bend).abs()),
+                            ] {
+                                let scalar = |p: &(f64, f64)| if axis == 0 { p.0 } else { p.1 };
+                                let low =
+                                    endpoints.iter().map(scalar).fold(f64::INFINITY, f64::min);
+                                let high = endpoints
+                                    .iter()
+                                    .map(scalar)
+                                    .fold(f64::NEG_INFINITY, f64::max);
+                                assert!(
+                                    got >= low - bow - 1e-9 && got <= high + bow + 1e-9,
+                                    "fixed screen hull violated {got} [{low},{high}]"
+                                );
+                            }
+                        }
+                    }
+                    assert_eq!(path.at_t(1.0), to);
+                    // Invert the bounded progress warp to independently check
+                    // corridor capture exactly at spatial halfway.
+                    let mut low = 0.0;
+                    let mut high = 1.0;
+                    for _ in 0..40 {
+                        let u = (low + high) / 2.0;
+                        if u + path.advance * u * (1.0 - u) < 0.5 {
+                            low = u;
+                        } else {
+                            high = u;
+                        }
+                    }
+                    let camera = path.at_t((low + high) / 2.0);
+                    for point in [
+                        intent
+                            .departure
+                            .expect("reading fixture provides both landmarks for midpoint capture"),
+                        intent.arrival,
+                    ] {
+                        assert!(
+                            room.contains((
+                                (point.0 - camera.x) / camera.w,
+                                (point.1 - camera.y) / camera.w
+                            )),
+                            "midpoint must capture both landmarks in actual room"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn invisible_focus_hint_cannot_change_route_after_pan_or_reframe() {
+    use super::{FocusKind, GraphPath, Travel};
+    let from = Camera::new(4000.0, -300.0, 90.0);
+    let to = Camera::new(4700.0, 600.0, 60.0);
+    for bottom in [false, true] {
+        let room = reading_room(bottom);
+        let mut intent = reading(from, to, FocusKind::Transfer, room);
+        intent.departure = Some((-10_000.0, 50_000.0));
+        let stale = GraphPath::new(from, to, Travel::Reading(intent));
+        intent.departure = None;
+        intent.context = Camera::new(-9e8, 7e8, 2e9);
+        let authoritative = GraphPath::new(from, to, Travel::Reading(intent));
+        for index in 0..=1000 {
+            assert_eq!(
+                stale.at_t(f64::from(index) / 1000.0),
+                authoritative.at_t(f64::from(index) / 1000.0)
+            );
+        }
+    }
+}
+
+#[test]
+fn reading_routes_are_covariant_under_world_translation_and_scale() {
+    use super::{FocusKind, GraphPath, Travel};
+    let from = Camera::new(30.0, -40.0, 200.0);
+    let to = Camera::new(830.0, 150.0, 30.0);
+    for bottom in [false, true] {
+        let intent = reading(from, to, FocusKind::Transfer, reading_room(bottom));
+        let route = GraphPath::new(from, to, Travel::Reading(intent));
+        for scale in [0.01, 1.0, 100.0] {
+            let transform =
+                |p: Camera| Camera::new(p.x * scale + 3700.0, p.y * scale - 9100.0, p.w * scale);
+            let point = |p: (f64, f64)| (p.0 * scale + 3700.0, p.1 * scale - 9100.0);
+            let mut changed = intent;
+            changed.departure = changed.departure.map(point);
+            changed.arrival = point(changed.arrival);
+            changed.context = transform(changed.context);
+            let moved = GraphPath::new(transform(from), transform(to), Travel::Reading(changed));
+            for i in 0..=1000 {
+                let expected = transform(route.at_t(f64::from(i) / 1000.0));
+                let actual = moved.at_t(f64::from(i) / 1000.0);
+                for (a, b) in [
+                    (actual.x, expected.x),
+                    (actual.y, expected.y),
+                    (actual.w, expected.w),
+                ] {
+                    assert!((a - b).abs() <= 1e-7 + route.apex * scale * 1e-10);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn reading_reversals_and_room_interruptions_keep_full_derivative_and_exact_rest() {
+    use super::{FocusKind, Travel, plan_travel};
+    let epoch = Instant::now();
+    let mut from = Camera::new(30.0, -40.0, 200.0);
+    let mut goal = Camera::new(830.0, 150.0, 30.0);
+    let mut trip = plan_travel(
+        from,
+        (0.0, 0.0, 0.0),
+        goal,
+        epoch,
+        Pacing::GRAPH_TRAVEL,
+        Travel::Reading(reading(
+            from,
+            goal,
+            FocusKind::Transfer,
+            reading_room(false),
+        )),
+    );
+    for act in 0..128 {
+        let at = trip.start
+            + trip
+                .duration
+                .mul_f64([0.01, 0.18, 0.42, 0.72, 0.99][act % 5]);
+        from = trip.sample(at);
+        let velocity = trip.velocity(at);
+        goal = Camera::new(
+            if act % 2 == 0 { -800.0 } else { 1400.0 },
+            (act % 7) as f64 * 60.0,
+            [2.0, 30.0, 200.0, 2000.0][act % 4],
+        );
+        let intent = reading(from, goal, FocusKind::Transfer, reading_room(act % 2 == 0));
+        let next = plan_travel(
+            from,
+            velocity,
+            goal,
+            at,
+            Pacing::GRAPH_TRAVEL,
+            Travel::Reading(intent),
+        );
+        assert_eq!(next.sample(at), from);
+        assert_eq!(next.velocity(at), velocity);
+        assert!(next.duration <= Duration::from_millis(1250));
+        let delta = Duration::from_micros(1);
+        let after = next.sample(at + delta);
+        for landmark in [
+            (from.x, from.y),
+            (from.x + from.w * 0.3, from.y - from.w * 0.2),
+        ] {
+            let a = screen(from, landmark, 1440.0, (37.0, -91.0));
+            let b = screen(after, landmark, 1440.0, (37.0, -91.0));
+            let k = 1440.0 / from.w;
+            let expected = (
+                -k * (velocity.0 + (landmark.0 - from.x) * velocity.2),
+                -k * (velocity.1 + (landmark.1 - from.y) * velocity.2),
+            );
+            for (got, want) in [
+                ((b.0 - a.0) / delta.as_secs_f64(), expected.0),
+                ((b.1 - a.1) / delta.as_secs_f64(), expected.1),
+            ] {
+                assert!(
+                    (got - want).abs() < 2.0 + want.abs() * 0.03,
+                    "screen derivative {got} != {want}"
+                );
+            }
+        }
+        for sample in 0..=40 {
+            assert_bounded_warp(
+                &next,
+                next.duration.as_secs_f64() * f64::from(sample) / 40.0,
+                1440.0,
+            );
+        }
+        assert_eq!(next.sample(at + next.duration), goal);
+        assert_eq!(next.velocity(at + next.duration), (0.0, 0.0, 0.0));
+        trip = next;
+    }
+}
+
+#[test]
+fn reading_event_storm_is_invariant_to_frame_cadence_and_delayed_draws() {
+    use super::{FocusKind, State, Travel, step_with};
+    let epoch = Instant::now();
+    let run = |cadence: u64| {
+        let mut state = State::Still(Camera::new(30.0, -40.0, 200.0));
+        let mut target = Camera::new(830.0, 150.0, 30.0);
+        let mut travel = Travel::Reading(reading(
+            Camera::new(30.0, -40.0, 200.0),
+            target,
+            FocusKind::Transfer,
+            reading_room(false),
+        ));
+        step_with(
+            &mut state,
+            target,
+            epoch,
+            false,
+            Pacing::GRAPH_TRAVEL,
+            Some(travel),
+        );
+        let mut next_draw = cadence;
+        let mut events = Vec::new();
+        for (index, millis) in [7, 34, 121, 129, 281, 406, 907, 1601]
+            .into_iter()
+            .enumerate()
+        {
+            while next_draw < millis {
+                step_with(
+                    &mut state,
+                    target,
+                    epoch + Duration::from_millis(next_draw),
+                    false,
+                    Pacing::GRAPH_TRAVEL,
+                    Some(travel),
+                );
+                next_draw += cadence;
+            }
+            let at = epoch + Duration::from_millis(millis);
+            let before = step_with(
+                &mut state,
+                target,
+                at,
+                false,
+                Pacing::GRAPH_TRAVEL,
+                Some(travel),
+            )
+            .0;
+            let velocity = match state {
+                State::Flying(trip) => trip.velocity(at),
+                _ => (0.0, 0.0, 0.0),
+            };
+            target = Camera::new(
+                if index % 2 == 0 { -800.0 } else { 1400.0 },
+                index as f64 * 30.0,
+                [2.5, 40.0, 400.0, 4000.0][index % 4],
+            );
+            travel = Travel::Reading(reading(
+                before.camera,
+                target,
+                FocusKind::Transfer,
+                reading_room(index % 2 == 0),
+            ));
+            let after = step_with(
+                &mut state,
+                target,
+                at,
+                false,
+                Pacing::GRAPH_TRAVEL,
+                Some(travel),
+            )
+            .0;
+            assert_eq!(after.camera, before.camera);
+            events.push((after.camera, velocity));
+        }
+        let end = epoch + Duration::from_secs(4);
+        let rest = step_with(
+            &mut state,
+            target,
+            end,
+            false,
+            Pacing::GRAPH_TRAVEL,
+            Some(travel),
+        )
+        .0;
+        assert_eq!(rest.camera, target);
+        assert!(!rest.live);
+        events
+    };
+    let baseline = run(1);
+    for cadence in [8, 16, 33, 120, 500] {
+        assert_eq!(
+            run(cadence),
+            baseline,
+            "cadence{cadence} changed navigation intent or interruption state"
+        );
+    }
+}
+
+#[test]
+fn reading_source_and_goal_never_backtrack_along_their_reading_axis() {
+    use super::{FocusKind, GraphPath, Travel};
+    for bottom in [false, true] {
+        let room = reading_room(bottom);
+        for ratio in [0.0001, 0.01, 1.0, 100.0, 10_000.0] {
+            for direction in [(80.0, 60.0), (-800.0, 150.0), (1800.0, -900.0)] {
+                let from = Camera::new(30.0, -40.0, 200.0);
+                let source = (
+                    from.x + room.anchor.0 * from.w,
+                    from.y + room.anchor.1 * from.w,
+                );
+                let goal = (source.0 + direction.0, source.1 + direction.1);
+                let to = Camera::new(
+                    goal.0 - room.anchor.0 * 200.0 * ratio,
+                    goal.1 - room.anchor.1 * 200.0 * ratio,
+                    200.0 * ratio,
+                );
+                let intent = super::FocusRoute {
+                    departure: Some(source),
+                    arrival: goal,
+                    context: Camera::new(400.0, 600.0, 100_000.0),
+                    room,
+                    kind: FocusKind::Transfer,
+                };
+                let path = GraphPath::new(from, to, Travel::Reading(intent));
+                let length = direction.0.hypot(direction.1);
+                let axis = (direction.0 / length, direction.1 / length);
+                let scalar = |camera: Camera, point: (f64, f64)| {
+                    ((point.0 - camera.x) / camera.w - room.anchor.0) * axis.0
+                        + ((point.1 - camera.y) / camera.w - room.anchor.1) * axis.1
+                };
+                let mut source_last = scalar(from, source);
+                let mut goal_last = scalar(from, goal);
+                for index in 1..=1000 {
+                    let camera = path.at_t(f64::from(index) / 1000.0);
+                    let outgoing = scalar(camera, source);
+                    let incoming = scalar(camera, goal);
+                    assert!(
+                        outgoing <= source_last + 1e-8,
+                        "source reversed at{index}: {source_last}->{outgoing}"
+                    );
+                    assert!(
+                        incoming <= goal_last + 1e-8,
+                        "goal reversed at{index}: {goal_last}->{incoming}"
+                    );
+                    source_last = outgoing;
+                    goal_last = incoming;
+                }
+                assert!(goal_last.abs() < 1e-8);
+            }
+        }
+    }
+}
+
+#[test]
+fn reading_extreme_unhinted_zoom_has_no_synthetic_source_detour_or_geometry_collapse() {
+    use super::{FocusKind, GraphPath, Travel, plan_travel};
+    let at = Instant::now();
+    for bottom in [false, true] {
+        let room = reading_room(bottom);
+        for (width, target_width) in [(1e6, 40.0), (40.0, 1e6), (1e-6, 1e6), (1e6, 1e-6)] {
+            let from = Camera::new(0.0, 0.0, width);
+            let arrival = (600.0, 100.0);
+            let target = Camera::new(
+                arrival.0 - room.anchor.0 * target_width,
+                arrival.1 - room.anchor.1 * target_width,
+                target_width,
+            );
+            let intent = super::FocusRoute {
+                departure: None,
+                arrival,
+                context: Camera::new(-9e8, 7e8, 2e9),
+                room,
+                kind: FocusKind::Transfer,
+            };
+            let path = GraphPath::new(from, target, Travel::Reading(intent));
+            let limit = if width == 1e6 && target_width <= 40.0 {
+                1.02
+            } else if width >= 2.5 && target_width >= 2.5 {
+                1.25
+            } else {
+                2.0
+            };
+            assert!(
+                path.apex <= width.max(target_width) * limit,
+                "unhinted mixed zoom cannot stage a huge synthetic departure lift: {} exceeds independent{limit}x fixture cap",
+                path.apex
+            );
+            for phase in [1e-12, 1e-9, 0.001, 0.1, 0.5, 0.9, 0.999999999999] {
+                let camera = path.at_t(phase);
+                assert!(
+                    camera.x.is_finite()
+                        && camera.y.is_finite()
+                        && camera.w.is_finite()
+                        && camera.w > 0.0
+                );
+            }
+            let velocity = (46.0 * width, -23.0 * width, -184.274568);
+            let trip = plan_travel(
+                from,
+                velocity,
+                target,
+                at,
+                Pacing::GRAPH_TRAVEL,
+                Travel::Reading(intent),
+            );
+            assert_eq!(trip.sample(at), from);
+            assert_eq!(trip.velocity(at), velocity);
+            for sample in 0..=1000 {
+                assert_bounded_warp(
+                    &trip,
+                    trip.duration.as_secs_f64() * f64::from(sample) / 1000.0,
+                    1440.0,
+                );
+            }
+            assert_eq!(trip.sample(at + trip.duration), target);
+            assert_eq!(trip.velocity(at + trip.duration), (0.0, 0.0, 0.0));
+        }
+    }
+}
+
+#[test]
+fn visible_old_focus_after_overview_cannot_force_a_departure_or_context_lift() {
+    use super::{FocusKind, GraphPath, Travel};
+    let room = reading_room(false);
+    let from = Camera::new(0.0, 0.0, 1e6);
+    let arrival = (600.0, 100.0);
+    let to = Camera::new(606.0, 100.0, 40.0);
+    let mut intent = super::FocusRoute {
+        departure: Some((0.0, 0.0)),
+        arrival,
+        context: Camera::new(1e9, -1e9, 2e9),
+        room,
+        kind: FocusKind::Transfer,
+    };
+    assert!(
+        room.contains((0.0, 0.0)),
+        "old symbol is still onscreen, but no longer the reading departure"
+    );
+    let stale = GraphPath::new(from, to, Travel::Reading(intent));
+    intent.departure = None;
+    intent.context = Camera::new(-7e9, 9e9, 2e10);
+    let actual = GraphPath::new(from, to, Travel::Reading(intent));
+    for i in 0..=1000 {
+        assert_eq!(
+            stale.at_t(f64::from(i) / 1000.0),
+            actual.at_t(f64::from(i) / 1000.0)
+        );
     }
 }

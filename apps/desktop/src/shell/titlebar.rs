@@ -1,34 +1,51 @@
-//! The titlebar region: the shelf toggle, the bead thread with the here
-//! capsule (or the Ask field on Orbit), and the trail and inbox buttons.
+//! The titlebar region: the shelf toggle and the view switch, then the jump
+//! bar (D-Hand) — back and forward and where you are — or the Ask field on
+//! Orbit, and the inbox button.
 //!
-//! It degrades from its own measured width (`v4/shots/flow-*.png`): below
-//! 1100 effective px older beads go, below 760 only "here" remains and
-//! fills, below 520 the icon buttons go.
+//! Nothing about history shows at rest. ⌘[ / ⌘] walk it; the back chevron
+//! goes back on a click and lists the last ten places on a long press
+//! (400 ms) or a right click. Each segment of the plate (package › module ›
+//! declaration) opens its siblings; hovering the plate shows the
+//! `nudox://` address (⌘⇧C copies it).
+//!
+//! It degrades from its own measured width: below 700 effective px the
+//! plate drops the package segment, below 560 the module segments, below
+//! 520 the icon buttons go.
 
 use super::focus::{Target, Targets};
+use super::jump::{self, Here, Mark, Segment};
 use super::kit::{keycap, text};
 use super::region::{Links, Region, RegionCore};
-use super::thread::{self, Bead, Here, Mark};
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{Intent, OrbitRoute, Route, View};
-use crate::runtime::store::{Branch, DataStore};
+use crate::runtime::store::{Branch, DataStore, route_package, route_symbol};
 use facet::icons::{self, Icon, IconSize, KindSize};
+use facet::overlay::float::{self, FloatKind, FloatRequest, Side};
+use facet::overlay::menu::{self, Menu, MenuItem};
 use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
-    AnyElement, ClickEvent, Context, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
-    WindowControlArea, div, px,
+    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Task, Window, WindowControlArea, div, px,
 };
+use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
+
+/// How long a press on back waits before it lists the last places.
+const LONG_PRESS: Duration = Duration::from_millis(400);
 
 /// The titlebar region.
 pub(crate) struct Titlebar {
     core: RegionCore,
     links: Links,
     pub(crate) targets: Targets,
+    /// A press on back, waiting to become a long press.
+    press: Option<Task<()>>,
+    /// The press became a long press: its click is not a step back.
+    long: Rc<Cell<bool>>,
 }
 
 impl Titlebar {
@@ -37,6 +54,8 @@ impl Titlebar {
             core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Settings, Branch::GraphFocus]),
             links,
             targets: Targets::named("titlebar"),
+            press: None,
+            long: Rc::new(Cell::new(false)),
         }
     }
 
@@ -51,20 +70,13 @@ impl Region for Titlebar {
     }
 
     fn keys(&self, snapshot: &AppSnapshot) -> Vec<PageKey> {
-        thread::thread_keys(snapshot.session())
+        let route = snapshot.route();
+        route_symbol(route).map(PageKey::Symbol).into_iter().chain(route_package(route).map(PageKey::Package)).collect()
     }
 
     fn urgency(&self) -> super::region::Urgency {
         super::region::Urgency::Warm
     }
-}
-
-/// How much of the thread the titlebar's width affords.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Reach {
-    Full,
-    Recent,
-    HereOnly,
 }
 
 impl Render for Titlebar {
@@ -76,32 +88,12 @@ impl Render for Titlebar {
         let palette = facet.palette();
         let keys = facet.reveal.keys;
         let effective = measure.effective();
-        // `v4.css`: ≤ 1100 older beads go, ≤ 760 only "here", ≤ 520 no icons.
-        let reach = if effective > 1100.0 {
-            Reach::Full
-        } else if effective > 760.0 {
-            Reach::Recent
-        } else {
-            Reach::HereOnly
-        };
         let icons_shown = effective > 520.0;
         let snapshot = self.links.snapshot(cx);
-        let (mut thread, here) = {
+        let (here, segments) = {
             let store = self.links.store.read(cx);
-            (thread::thread(snapshot.session(), store), thread::here(&snapshot, store))
+            (jump::here(&snapshot, store), jump::segments(snapshot.route(), store))
         };
-        match reach {
-            Reach::Full => {}
-            Reach::Recent => {
-                let keep = thread.behind.len().saturating_sub(2);
-                thread.behind.drain(..keep);
-                thread.ahead.truncate(1);
-            }
-            Reach::HereOnly => {
-                thread.behind.clear();
-                thread.ahead.clear();
-            }
-        }
         let orbit = matches!(snapshot.route(), Route::Orbit(OrbitRoute::Home)) && snapshot.overlay().is_none();
         let shelf_on = snapshot.settings().shelf_open;
         let links = self.links.clone();
@@ -114,13 +106,7 @@ impl Render for Titlebar {
             let act: super::focus::Act = Rc::new(move |_, cx| {
                 toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(cx));
             });
-            self.targets.push(Target {
-                id: id.clone(),
-                label: "Toggle the shelf".into(),
-                act: Rc::clone(&act),
-                peek: None,
-                source: None,
-            });
+            self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), act: Rc::clone(&act), peek: None, source: None });
             left = left.child(
                 self.targets.track(
                     id.clone(),
@@ -131,12 +117,10 @@ impl Render for Titlebar {
                 ),
             );
         }
-
         // The altimeter's slot is the view switch (§8.4): Graph · Page · Code,
-        // only the active view named.
-        // (Below 760 only "here" remains, the switch included: G and ⌘. still work.)
+        // only the active view named. Below 760 it gives way to the bar.
         if let Some(active) = view_of(snapshot.route())
-            && reach != Reach::HereOnly
+            && effective > 760.0
         {
             left = left.child(self.view_switch(active, &measure, palette, keys));
         }
@@ -144,32 +128,19 @@ impl Render for Titlebar {
         let center = if orbit {
             self.ask_field(&measure, palette, keys, cx)
         } else {
-            self.thread_row(&thread, &here, reach, &measure, palette, keys, cx)
+            self.jump_bar(&snapshot, &here, &segments, effective, &measure, palette, keys, cx)
         };
 
         let mut right = div().flex().flex_none().items_center().gap(measure.space(Space::Tight)).pr(measure.space(Space::Roomy));
         if icons_shown {
-            for (id, icon, label, intent) in [
-                ("tb-trail", Icon::Trail, "Trail", None),
-                ("tb-inbox", Icon::Inbox, "Inbox", Some(Intent::OpenInbox)),
-            ] {
-                let target_links = links.clone();
-                let act: super::focus::Act = Rc::new(move |_, cx| match &intent {
-                    Some(intent) => target_links.dispatch(intent.clone(), cx),
-                    None => target_links.shell(cx, |shell, cx| shell.open_ask(true, cx)),
-                });
-                self.targets.push(Target {
-                    id: id.into(),
-                    label: label.into(),
-                    act: Rc::clone(&act),
-                    peek: None,
-                    source: None,
-                });
-                right = right.child(self.targets.track(
-                    id,
-                    facet::controls::icon_button(id, icon, label, &measure).on_click(move |window, cx| act(window, cx)),
-                ));
-            }
+            let id = "tb-inbox";
+            let target_links = links.clone();
+            let act: super::focus::Act = Rc::new(move |_, cx| target_links.dispatch(Intent::OpenInbox, cx));
+            self.targets.push(Target { id: id.into(), label: "Inbox".into(), act: Rc::clone(&act), peek: None, source: None });
+            right = right.child(self.targets.track(
+                id,
+                facet::controls::icon_button(id, Icon::Inbox, "Inbox", &measure).on_click(move |window, cx| act(window, cx)),
+            ));
         }
 
         let glow = self.targets.glow(&measure);
@@ -189,165 +160,305 @@ impl Render for Titlebar {
                 }
             })
             .child(left)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .flex()
-                    .justify_center()
-                    .child(center),
-            )
+            .child(div().flex_1().min_w(px(0.0)).flex().justify_center().child(center))
             .child(right)
             .child(glow)
     }
 }
 
+/// The words a back-menu row says for a place: its name, then its package.
+fn place_words(route: &Route) -> String {
+    match route {
+        Route::Symbol(symbol) => {
+            let name = backend_present::Identity::parse(symbol.id.as_str()).name().to_owned();
+            let package = crate::model::pages::PackageRef::parse(symbol.package.as_str())
+                .map_or_else(|_| symbol.package.as_str().to_owned(), |package| package.display_name().to_owned());
+            format!("{name} · {package}")
+        }
+        Route::Package(package) => crate::model::pages::PackageRef::parse(package.package.as_str())
+            .map_or_else(|_| package.package.as_str().to_owned(), |package| package.display_name().to_owned()),
+        Route::Orbit(_) => "Orbit".to_owned(),
+        Route::World => "Graph".to_owned(),
+    }
+}
+
+/// Opens the back menu under `anchor`: the last ten places, nearest first.
+fn back_menu(links: &Links, anchor: gpui::Bounds<gpui::Pixels>, window: &mut Window, cx: &mut App) {
+    let back = links.snapshot(cx).session().back.to_vec();
+    let places: Vec<Route> = back.into_iter().take(10).collect();
+    if places.is_empty() {
+        return;
+    }
+    let items = places.iter().map(|route| MenuItem::new(place_words(route))).collect();
+    let links = links.clone();
+    let steps = places.len();
+    let menu = Menu::new(items, move |index, _, cx| {
+        for _ in 0..=index.min(steps - 1) {
+            links.dispatch(Intent::Back, cx);
+        }
+    });
+    menu::open("jump-back-menu", anchor, Side::Below, menu, window, cx);
+}
+
 impl Titlebar {
-    #[allow(clippy::too_many_arguments)]
-    fn thread_row(
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn jump_bar(
         &mut self,
-        thread: &thread::Thread,
+        snapshot: &AppSnapshot,
         here: &Here,
-        reach: Reach,
+        segments: &[Segment],
+        effective: f32,
         measure: &Measure,
-        palette: &Palette,
+        palette: &'static Palette,
         keys: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = div().flex().items_center().min_w(px(0.0)).gap(measure.space(Space::Snug));
-        if reach == Reach::HereOnly {
-            row = row.w_full();
-        }
-        let count = thread.behind.len();
-        for (index, bead) in thread.behind.iter().enumerate() {
-            let nearest = index + 1 == count;
-            row = row.child(self.bead(bead, false, nearest && keys, measure, palette));
-            row = row.child(strand(measure, if nearest { palette.mint.base.into() } else { palette.line2.into() }, false));
-        }
-        row = row.child(self.capsule(here, reach, measure, palette, keys, cx));
-        for (index, bead) in thread.ahead.iter().enumerate() {
-            row = row.child(strand(measure, palette.line3.into(), true));
-            row = row.child(self.bead(bead, true, index == 0 && keys, measure, palette));
-        }
-        row.into_any_element()
-    }
+        let scale = measure.scale();
+        let height = px(32.0 * scale);
+        let session = snapshot.session();
+        let mut bar = div().flex().items_center().min_w(px(0.0)).gap(measure.space(Space::Snug));
 
-    fn bead(&mut self, bead: &Bead, ahead: bool, cap: bool, measure: &Measure, palette: &Palette) -> AnyElement {
-        let id: SharedString = format!("bead{}", bead.steps).into();
-        let links = self.links.clone();
-        let steps = bead.steps;
-        let act: super::focus::Act = Rc::new(move |_, cx| {
-            let intent = if steps < 0 { Intent::Back } else { Intent::Forward };
-            for _ in 0..steps.unsigned_abs() {
-                links.dispatch(intent.clone(), cx);
-            }
-        });
-        self.targets.push(Target {
-            id: id.clone(),
-            label: bead.label.clone(),
-            act: Rc::clone(&act),
-            peek: None,
-            source: None,
-        });
-        let color: Hsla = match bead.mark {
-            Mark::Kind(kind) if ahead => icons::Kind::hue(kind, palette),
-            Mark::Kind(kind) => {
-                let mut hue = icons::Kind::hue(kind, palette);
-                hue.alpha *= 0.85;
-                hue
-            }
-            Mark::Orbit | Mark::Place => palette.ink3.into(),
-        };
-        let side = measure.icon(12.0);
-        let label = if steps < 0 { "⌘[" } else { "⌘]" };
-        self.targets
-            .track(
-                id.clone(),
+        // Back: a click steps back; a long press or a right click lists.
+        let can_back = !session.back.is_empty();
+        let back_links = self.links.clone();
+        let menu_links = self.links.clone();
+        let targets = self.targets.clone();
+        let long = Rc::clone(&self.long);
+        let press_links = self.links.clone();
+        let press_targets = self.targets.clone();
+        let weak = cx.weak_entity();
+        let release = cx.weak_entity();
+        let act: super::focus::Act = Rc::new(move |_, cx| back_links.dispatch(Intent::Back, cx));
+        self.targets.push(Target { id: "jump-back".into(), label: "Back".into(), act: Rc::clone(&act), peek: None, source: None });
+        let right_links = menu_links.clone();
+        let right_targets = targets.clone();
+        bar = bar.child(
+            self.targets.track(
+                "jump-back",
                 div()
-                    .id(id)
+                    .id("jump-back")
                     .relative()
-                    .flex_none()
-                    // The diamond is 12 px; its hit target is never under 24.
-                    .size((side + measure.space(Space::Tight) * 2.0).max(px(24.0 * measure.scale())))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icons::ui(Icon::Diamond, IconSize::S12, color).size(side))
-                    .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
-                    .children(keycap(cap, label, measure)),
-            )
-            .into_any_element()
-    }
+                    .size(px(24.0 * scale))
+                    .cursor_pointer()
+                    .child(text(ty::ROW, measure, if can_back { palette.ink2 } else { palette.ink4 }).child("‹"))
+                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                        let links = press_links.clone();
+                        let targets = press_targets.clone();
+                        let window_handle = window.window_handle();
+                        let _ = weak.update(cx, |bar, cx| {
+                            bar.long.set(false);
+                            let long = Rc::clone(&bar.long);
+                            bar.press = Some(cx.spawn(async move |_, cx| {
+                                cx.background_executor().timer(LONG_PRESS).await;
+                                let _ = window_handle.update(cx, |_, window, cx| {
+                                    long.set(true);
+                                    if let Some(anchor) = targets.bounds_of("jump-back") {
+                                        back_menu(&links, anchor, window, cx);
+                                    }
+                                });
+                            }));
+                        });
+                    })
+                    // A press that ends before it is long is a click: the
+                    // wait ends with it.
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        let _ = release.update(cx, |bar, _| bar.press = None);
+                    })
+                    .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                        if let Some(anchor) = right_targets.bounds_of("jump-back") {
+                            back_menu(&right_links, anchor, window, cx);
+                        }
+                    })
+                    .on_click(move |_: &ClickEvent, window, cx| {
+                        if long.take() {
+                            return;
+                        }
+                        act(window, cx);
+                    })
+                    .children(keycap(keys, "⌘[", measure)),
+            ),
+        );
+        if !session.forward.is_empty() {
+            let forward_links = self.links.clone();
+            let act: super::focus::Act = Rc::new(move |_, cx| forward_links.dispatch(Intent::Forward, cx));
+            self.targets.push(Target { id: "jump-forward".into(), label: "Forward".into(), act: Rc::clone(&act), peek: None, source: None });
+            bar = bar.child(
+                self.targets.track(
+                    "jump-forward",
+                    div()
+                        .id("jump-forward")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(24.0 * scale))
+                        .cursor_pointer()
+                        .child(text(ty::ROW, measure, palette.ink2).child("›"))
+                        .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
+                ),
+            );
+        }
 
-    fn capsule(
-        &mut self,
-        here: &Here,
-        reach: Reach,
-        measure: &Measure,
-        palette: &Palette,
-        keys: bool,
-        _cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let links = self.links.clone();
-        let act: super::focus::Act = Rc::new(move |_, cx| {
-            links.shell(cx, |shell, cx| shell.open_ask(false, cx));
-        });
-        self.targets.push(Target {
-            id: "here".into(),
-            label: here.name.clone(),
-            act: Rc::clone(&act),
-            peek: None,
-            source: None,
-        });
+        // The plate: where you are.
         let mark = match here.mark {
-            Mark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, &measure, palette),
+            Mark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, measure, palette),
             Mark::Orbit => icons::ui(Icon::Orbit, IconSize::S14, palette.ink2).size(measure.icon(14.0)).into_any_element(),
             Mark::Place => icons::ui(Icon::Settings, IconSize::S14, palette.ink2).size(measure.icon(14.0)).into_any_element(),
         };
-        let height = px(32.0 * measure.scale());
+        let name = text(ty::MONO_ROW, measure, palette.ink0)
+            .font_weight(gpui::FontWeight(600.0))
+            .flex_shrink(1.0)
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(here.name.clone());
+        #[cfg(test)]
+        let name = facet::probe::text(
+            "graph-test-here-name",
+            here.name.clone(),
+            ty::MONO_ROW,
+            measure.scale(),
+            facet::probe::TextOverflow::Clip,
+            name,
+        );
         let mut plate = cut()
             .chamfer(Chamfer::Float)
             .bevel(Bevel::Rest)
             .fill(palette.plate)
             .h(height)
             .min_w(px(0.0))
+            .flex_1()
+            .max_w(px(520.0 * scale))
             .px(measure.space(Space::Roomy))
             .flex()
             .items_center()
-            .gap(measure.space(Space::Base))
-            .child(mark)
-            .child(
-                text(ty::MONO_ROW, measure, palette.ink0)
-                    .font_weight(gpui::FontWeight(600.0))
-                    .flex_shrink_0()
-                    .when_narrow(reach == Reach::HereOnly)
-                    .child(here.name.clone()),
-            )
-            .child(
+            .gap(measure.space(Space::Snug));
+        // Package › module segments before the name (the name is the last
+        // segment); the narrow bar keeps the name and what is nearest it.
+        let lead = segments.len().saturating_sub(1);
+        let keep_from = if effective < 560.0 {
+            lead
+        } else if effective < 700.0 {
+            1.min(lead)
+        } else {
+            0
+        };
+        for (index, segment) in segments.iter().enumerate().take(lead).skip(keep_from) {
+            let id: SharedString = format!("jump-seg-{index}").into();
+            plate = plate.child(self.segment(id, index, segment, measure, palette)).child(text(ty::SMALL, measure, palette.ink4).child("›"));
+        }
+        let last_id: SharedString = format!("jump-seg-{lead}").into();
+        let last_links = self.links.clone();
+        let last_targets = self.targets.clone();
+        plate = plate.child(
+            div()
+                .id(last_id.clone())
+                .flex()
+                .items_center()
+                .gap(measure.space(Space::Snug))
+                .min_w(px(0.0))
+                .cursor_pointer()
+                .child(mark)
+                .child(name)
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    siblings_menu(&last_links, &last_targets, lead, window, cx);
+                }),
+        );
+        // Not a declaration: the place names itself (`registry`, `Appearance`).
+        let quiet: Option<SharedString> = if segments.is_empty() || here.path.starts_with("viewing ") {
+            Some(here.path.clone())
+        } else {
+            None
+        };
+        if let Some(quiet) = quiet.filter(|words| !words.is_empty()) {
+            plate = plate.child(
                 text(ty::SMALL, measure, palette.ink3)
                     .flex_1()
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .child(here.path.clone()),
-            )
-            .child(icons::ui(Icon::Search, IconSize::S14, palette.ink4).size(measure.icon(14.0)));
-        plate = match reach {
-            Reach::HereOnly => plate.flex_1(),
-            Reach::Full | Reach::Recent => plate.w(px(430.0 * measure.scale())).flex_shrink_0(),
-        };
-        self.targets
-            .track(
+                    .child(quiet),
+            );
+        } else {
+            plate = plate.child(div().flex_1());
+        }
+        let ask_links = self.links.clone();
+        plate = plate.child(
+            div()
+                .id("jump-ask")
+                .cursor_pointer()
+                .child(icons::ui(Icon::Search, IconSize::S14, palette.ink4).size(measure.icon(14.0)))
+                .on_click(move |_: &ClickEvent, _, cx| ask_links.shell(cx, |shell, cx| shell.open_ask(cx))),
+        );
+        let hover_targets = self.targets.clone();
+        let address = SharedString::from(jump::address_parts(snapshot).full());
+        let ask_act_links = self.links.clone();
+        let act: super::focus::Act = Rc::new(move |_, cx| ask_act_links.shell(cx, |shell, cx| shell.open_ask(cx)));
+        self.targets.push(Target { id: "here".into(), label: here.name.clone(), act, peek: None, source: None });
+        bar = bar.child(
+            self.targets.track(
                 "here",
                 div()
                     .id("here")
                     .relative()
+                    .flex_1()
                     .min_w(px(0.0))
-                    .when_flex(reach == Reach::HereOnly)
+                    .flex()
+                    .justify_center()
                     .child(plate)
-                    .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
+                    .on_hover(move |hovered, window, cx| {
+                        if *hovered
+                            && let Some(anchor) = hover_targets.bounds_of("here")
+                        {
+                            let words = address.clone();
+                            let request = FloatRequest::new("jump-address", anchor, FloatKind::Tip, move |measure, _, cx| {
+                                text(ty::MONO_SMALL, measure, cx.facet().palette().ink2).child(words.clone()).into_any_element()
+                            });
+                            float::rest(request, window, cx);
+                        } else {
+                            float::leave(&"jump-address".into(), window, cx);
+                        }
+                    })
                     .children(keycap(keys, "⌘K", measure)),
+            ),
+        );
+        bar.into_any_element()
+    }
+
+    /// One segment before the name: its siblings, or its page when it has
+    /// none to list (the package).
+    fn segment(&mut self, id: SharedString, index: usize, segment: &Segment, measure: &Measure, palette: &Palette) -> AnyElement {
+        let links = self.links.clone();
+        let targets = self.targets.clone();
+        let route = segment.route.clone();
+        let act: super::focus::Act = {
+            let links = links.clone();
+            let route = route.clone();
+            Rc::new(move |_, cx| {
+                if let Some(route) = route.clone() {
+                    links.dispatch(Intent::Navigate(route), cx);
+                }
+            })
+        };
+        self.targets.push(Target { id: id.clone(), label: segment.name.clone(), act: Rc::clone(&act), peek: None, source: None });
+        self.targets
+            .track(
+                id.clone(),
+                div()
+                    .id(id)
+                    .cursor_pointer()
+                    .flex_none()
+                    .child(text(ty::SMALL, measure, palette.ink2).whitespace_nowrap().child(segment.name.clone()))
+                    .on_click(move |_: &ClickEvent, window, cx| {
+                        if index == 0 {
+                            act(window, cx);
+                        } else {
+                            siblings_menu(&links, &targets, index, window, cx);
+                        }
+                    }),
             )
             .into_any_element()
     }
@@ -355,7 +466,7 @@ impl Titlebar {
     fn ask_field(&mut self, measure: &Measure, palette: &Palette, keys: bool, _cx: &mut Context<Self>) -> AnyElement {
         let links = self.links.clone();
         let act: super::focus::Act = Rc::new(move |_, cx| {
-            links.shell(cx, |shell, cx| shell.open_ask(false, cx));
+            links.shell(cx, |shell, cx| shell.open_ask(cx));
         });
         self.targets.push(Target {
             id: "ask".into(),
@@ -400,18 +511,7 @@ impl Titlebar {
             )
             .into_any_element()
     }
-}
 
-/// The view a place shows, when it is a declaration or the world graph.
-fn view_of(route: &Route) -> Option<View> {
-    match route {
-        Route::Symbol(route) => Some(route.view),
-        Route::World => Some(View::Graph),
-        Route::Orbit(_) | Route::Package(_) => None,
-    }
-}
-
-impl Titlebar {
     fn view_switch(&mut self, active: View, measure: &Measure, palette: &Palette, keys: bool) -> AnyElement {
         let mut row = div().flex().items_center().gap(measure.space(Space::Hair));
         for view in [View::Graph, View::Page, View::Code] {
@@ -428,24 +528,16 @@ impl Titlebar {
                 View::Code => Icon::File,
             };
             let links = self.links.clone();
-            let act: super::focus::Act = Rc::new(move |window, cx| {
-                match view {
-                    View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
-                    View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
-                    View::Graph => {
-                        if !super::bodies::graph::is_graph(links.snapshot(cx).route()) {
-                            links.dispatch(Intent::SetView(View::Graph), cx);
-                        }
+            let act: super::focus::Act = Rc::new(move |window, cx| match view {
+                View::Page => window.dispatch_action(Box::new(super::keys::DepthPage), cx),
+                View::Code => window.dispatch_action(Box::new(super::keys::DepthCode), cx),
+                View::Graph => {
+                    if !super::bodies::graph::is_graph(links.snapshot(cx).route()) {
+                        links.dispatch(Intent::SetView(View::Graph), cx);
                     }
                 }
             });
-            self.targets.push(Target {
-                id: id.clone(),
-                label: name.into(),
-                act: Rc::clone(&act),
-                peek: None,
-                source: None,
-            });
+            self.targets.push(Target { id: id.clone(), label: name.into(), act: Rc::clone(&act), peek: None, source: None });
             let cap = match view {
                 View::Graph => super::keys::cap(super::keys::Command::Graph),
                 View::Page | View::Code => super::keys::cap(super::keys::Command::CodePage),
@@ -475,40 +567,32 @@ impl Titlebar {
     }
 }
 
-fn strand(measure: &Measure, color: Hsla, dashed: bool) -> AnyElement {
-    let width = px(14.0 * measure.scale());
-    if dashed {
-        div()
-            .flex()
-            .flex_none()
-            .gap(px(2.0))
-            .children((0..3).map(|_| div().w(px(3.0)).h(px(1.0)).bg(color)))
-            .w(width)
-            .into_any_element()
-    } else {
-        div().flex_none().w(width).h(px(1.0)).bg(color).into_any_element()
+/// Opens the siblings of segment `index` under it: the outline level it
+/// sits at; choosing one opens its page.
+fn siblings_menu(links: &Links, targets: &Targets, index: usize, window: &mut Window, cx: &mut App) {
+    let Some(anchor) = targets.bounds_of(&format!("jump-seg-{index}")).or_else(|| targets.bounds_of("here")) else {
+        return;
+    };
+    let route = links.snapshot(cx).route().clone();
+    let siblings = jump::siblings(&route, index, links.store.read(cx));
+    if siblings.is_empty() {
+        return;
     }
-}
-
-/// A name that may shrink (with an ellipsis) when the capsule is all there is.
-trait WhenNarrow: Styled + Sized {
-    fn when_narrow(self, narrow: bool) -> Self {
-        if narrow {
-            self.flex_shrink(1.0).min_w(px(0.0)).overflow_hidden().whitespace_nowrap().text_ellipsis()
-        } else {
-            self
+    let items = siblings.iter().map(|sibling| MenuItem::new(sibling.name.clone())).collect();
+    let links = links.clone();
+    let menu = Menu::new(items, move |choice, _, cx| {
+        if let Some(route) = siblings.get(choice).and_then(|sibling| sibling.route.clone()) {
+            links.dispatch(Intent::Navigate(route), cx);
         }
-    }
+    });
+    menu::open(format!("jump-siblings-{index}"), anchor, Side::Below, menu, window, cx);
 }
 
-impl<E: Styled> WhenNarrow for E {}
-
-/// `flex_1` only when asked, so the capsule fills only in "here only" mode.
-trait WhenFlex: Styled + Sized {
-    fn when_flex(self, flex: bool) -> Self {
-        if flex { self.flex_1() } else { self }
+/// The view a place shows, when it is a declaration or the world graph.
+fn view_of(route: &Route) -> Option<View> {
+    match route {
+        Route::Symbol(route) => Some(route.view),
+        Route::World => Some(View::Graph),
+        Route::Orbit(_) | Route::Package(_) => None,
     }
 }
-
-impl<E: Styled> WhenFlex for E {}
-

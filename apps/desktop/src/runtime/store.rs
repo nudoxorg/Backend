@@ -62,6 +62,8 @@ pub enum Branch {
     Documents,
     /// The mounted graph's semantic selection changed, without a route change.
     GraphFocus,
+    /// What the hand holds changed.
+    Hand,
 }
 
 /// A typed change notification.
@@ -246,6 +248,7 @@ pub fn route_declaration(route: &Route) -> Result<SymbolRef, Unread> {
 #[must_use]
 pub fn route_keys(route: &Route) -> Vec<PageKey> {
     match route {
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => vec![PageKey::Browse(browse.into())],
         Route::Orbit(_) => vec![PageKey::Orbit, PageKey::Health],
         Route::World => vec![PageKey::Orbit],
         Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
@@ -392,6 +395,9 @@ impl DataStore {
         }
         if old.documents() != snapshot.documents() {
             changed.push(Branch::Documents);
+        }
+        if old.session().hand != snapshot.session().hand {
+            changed.push(Branch::Hand);
         }
         for branch in &changed {
             self.emit(StoreEvent::Snapshot(*branch), cx);
@@ -691,6 +697,7 @@ mod tests {
             package: Known::Unknown(unknown()),
             signature: Known::Unknown(unknown()),
             docs: Arc::from([]),
+            sections: crate::model::pages::DocSections::default(),
             site: SourceSite {
                 location: Known::Unknown(unknown()),
                 excerpt: Known::Unknown(unknown()),

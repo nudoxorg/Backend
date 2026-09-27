@@ -3,7 +3,7 @@
 //!
 //! | Check | Holds when |
 //! |---|---|
-//! | continuity | no track moves further between two frames than its velocity allows (a retarget starts where the old motion was) |
+//! | continuity | autonomous tracks obey velocity; direct input matches its requested pose and hands off without a jump |
 //! | overshoot | a segment stays within `[from, target]` widened by its own trajectory's relative and absolute bounds |
 //! | settle | a segment stops being live within its budget (plus one frame) |
 //! | slot | once nothing moves, every `paint:K` bounds equal their `slot:K` bounds (the settled value is the laid-out position) |
@@ -274,7 +274,9 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
                 Some(last)
                     if (last.sample.at_ms - sample.at_ms).abs() < 1e-6
                         && (same_segment(last.sample, sample)
-                            || (at_rest(last.sample) && at_rest(sample))) =>
+                            || (at_rest(last.sample)
+                                && at_rest(sample)
+                                && last.sample.kind == sample.kind)) =>
                 {
                     *last = at;
                 }
@@ -311,11 +313,87 @@ pub fn analyze(frames: &[Observed], tolerance: Tolerance) -> Alignment {
             live_at_end: last.is_some_and(|sample| sample.live),
             group: last.and_then(|sample| sample.group.clone()),
         };
+        // Held manipulation is measured against its independently requested
+        // pose, not against the autonomous engine's previous velocity. The
+        // observation is typed and cannot carry a fake trajectory allowance.
+        for at in sequence
+            .iter()
+            .filter(|at| at.sample.kind == TrackKind::Input)
+        {
+            let sample = at.sample;
+            let valid = sample.value.is_finite()
+                && sample.target.is_finite()
+                && sample.at_ms.is_finite()
+                && sample.started_ms.is_finite()
+                && (sample.started_ms - sample.at_ms).abs() < 1e-6
+                && !sample.live
+                && sample.velocity == 0.0
+                && sample.budget_ms == 0.0
+                && sample.overshoot_ratio == 0.0
+                && sample.overshoot_absolute == 0.0;
+            let error = (sample.value - sample.target).abs();
+            out.stats.entry(Check::Continuity).or_default().see(
+                if valid {
+                    error / tolerance.absolute
+                } else {
+                    f32::INFINITY
+                },
+                key,
+                at.at_ms,
+            );
+            if !valid || error > tolerance.absolute {
+                findings.push(Finding {
+                    check: Check::Continuity,
+                    key: (*key).to_owned(),
+                    at_ms: at.at_ms,
+                    detail: format!(
+                        "input pose {:.3} differs from requested {:.3} (absolute allowance {:.3}); valid input observation: {valid}",
+                        sample.value, sample.target, tolerance.absolute,
+                    ),
+                });
+            }
+        }
         // Continuity (snaps under reduced motion are the design).
         for pair in sequence.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             if frames[b.frame].ledger.reduced_motion {
                 out.stats.entry(Check::Continuity).or_default().skipped += 1;
+                continue;
+            }
+            if b.sample.kind == TrackKind::Input {
+                // Its actual/requested equality was checked above. Input is
+                // allowed to move the camera directly, without animation lag.
+                summary.max_step = summary
+                    .max_step
+                    .max((b.sample.value - a.sample.value).abs());
+                continue;
+            }
+            if a.sample.kind == TrackKind::Input {
+                // Keep the outgoing input pose beside the first autonomous
+                // sample, even when both were published on the same clock.
+                // No relative span or velocity slack may hide a release jump.
+                let step = (b.sample.value - a.sample.value).abs();
+                summary.max_step = summary.max_step.max(step);
+                out.stats.entry(Check::Continuity).or_default().see(
+                    if step.is_finite() {
+                        step / tolerance.absolute
+                    } else {
+                        f32::INFINITY
+                    },
+                    key,
+                    b.at_ms,
+                );
+                if !step.is_finite() || step > tolerance.absolute {
+                    findings.push(Finding {
+                        check: Check::Continuity,
+                        key: (*key).to_owned(),
+                        at_ms: b.at_ms,
+                        detail: format!(
+                            "autonomous handoff jumped {:.3} from last input pose {:.3} to {:.3} (absolute allowance {:.3})",
+                            step, a.sample.value, b.sample.value, tolerance.absolute,
+                        ),
+                    });
+                }
                 continue;
             }
             let dt = ((b.sample.at_ms - a.sample.at_ms) / 1000.0).max(0.0) as f32;
@@ -1027,6 +1105,176 @@ mod envelope_canaries {
                 .any(|f| f.detail.contains("invalid trajectory envelope")),
             "nonfinite envelopes must fail, not suppress verification: {:?}",
             broken.findings
+        );
+    }
+}
+
+#[cfg(test)]
+mod input_canaries {
+    use super::{Check, Observed, Tolerance, analyze};
+    use crate::probe::{Ledger, TrackKind, TrackSample};
+    use backend_gui_harness::{Drawn, Viewport};
+    use std::time::Duration;
+
+    fn sample(at_ms: u64, value: f32, kind: TrackKind) -> TrackSample {
+        let coast = kind == TrackKind::Tween && (48..=96).contains(&at_ms);
+        let live = coast && at_ms < 96;
+        TrackSample {
+            key: "held-camera.x".into(),
+            kind,
+            value,
+            target: if coast { -24.0 } else { value },
+            velocity: if live {
+                if at_ms == 80 { -31.25 } else { -62.5 }
+            } else {
+                0.0
+            },
+            started_ms: if coast { 48.0 } else { at_ms as f64 },
+            budget_ms: if coast { 48.0 } else { 0.0 },
+            at_ms: at_ms as f64,
+            live,
+            overshoot_ratio: 0.0,
+            overshoot_absolute: 0.0,
+            group: None,
+        }
+    }
+
+    fn frames() -> Vec<Observed> {
+        [
+            (0, 10.0),
+            (16, -6.0),
+            (32, -16.0),
+            (48, -22.0),
+            (64, -23.0),
+            (80, -23.5),
+            (96, -24.0),
+            (112, -24.0),
+            (128, -24.0),
+        ]
+        .into_iter()
+        .map(|(at_ms, value)| {
+            let input = (16..=48).contains(&at_ms);
+            let mut tracks = vec![sample(
+                at_ms,
+                value,
+                if input {
+                    TrackKind::Input
+                } else {
+                    TrackKind::Tween
+                },
+            )];
+            if at_ms == 48 {
+                tracks.push(sample(at_ms, value, TrackKind::Tween));
+            }
+            Observed {
+                drawn: Drawn {
+                    at_ms,
+                    invalidations: u64::from(at_ms <= 96),
+                    callbacks: 0,
+                    cpu: Duration::ZERO,
+                    input_cpu: Duration::ZERO,
+                    input_events: usize::from(input),
+                    input_max: Duration::ZERO,
+                    viewport: Viewport {
+                        width: 1440,
+                        height: 824,
+                        scale: 1,
+                    },
+                    captured: false,
+                },
+                ledger: Ledger {
+                    tracks,
+                    ..Ledger::default()
+                },
+                events: usize::from(input),
+                state: None,
+            }
+        })
+        .collect()
+    }
+
+    #[test]
+    fn truthful_held_input_keeps_same_frame_coast_boundary_and_quiet_rest() {
+        let healthy = analyze(&frames(), Tolerance::default());
+        assert!(
+            healthy.passed(),
+            "truthful input/release: {:?}",
+            healthy.findings
+        );
+        assert_eq!(
+            healthy.tracks[0].samples, 10,
+            "same-frame input and coast are both retained"
+        );
+        assert!(
+            healthy.stats[&Check::Continuity].evaluated >= 9,
+            "input correctness and outgoing handoff must be evaluated"
+        );
+        assert_eq!(healthy.requested_after_idle, 0);
+        assert_eq!(
+            TrackKind::Input.name(),
+            "input",
+            "input origin is serialized explicitly"
+        );
+    }
+
+    #[test]
+    fn corrupted_input_pose_is_checked_against_the_original_request() {
+        let mut broken = frames();
+        broken[2].ledger.tracks[0].value += 1.0;
+        let report = analyze(&broken, Tolerance::default());
+        assert!(
+            report
+                .of(Check::Continuity)
+                .any(|finding| finding.at_ms == 32 && finding.detail.contains("requested")),
+            "corrupted input was accepted: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn first_coast_jump_uses_strict_absolute_tolerance_even_at_the_same_instant() {
+        let mut broken = frames();
+        // .01 is below the old2%-of-coast-span allowance(.04), so this
+        // canary proves that a relative trajectory span cannot hide the jump.
+        broken[3].ledger.tracks[1].value -= 0.01;
+        let report = analyze(&broken, Tolerance::default());
+        assert!(
+            report
+                .of(Check::Continuity)
+                .any(|finding| finding.at_ms == 48 && finding.detail.contains("handoff")),
+            "first coast jumped without failure: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn input_boundary_does_not_hide_a_later_autonomous_jump() {
+        let mut broken = frames();
+        broken[4].ledger.tracks[0].value += 10.0;
+        let report = analyze(&broken, Tolerance::default());
+        assert!(
+            report
+                .of(Check::Continuity)
+                .any(|finding| finding.at_ms == 64),
+            "later coast corruption was accepted: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn input_origin_cannot_claim_a_fake_velocity_or_live_budget() {
+        let mut broken = frames();
+        broken[2].ledger.tracks[0].velocity = 10_000.0;
+        broken[2].ledger.tracks[0].live = true;
+        broken[2].ledger.tracks[0].budget_ms = 1000.0;
+        let report = analyze(&broken, Tolerance::default());
+        assert!(
+            report
+                .of(Check::Continuity)
+                .any(|finding| finding.at_ms == 32
+                    && finding.detail.contains("valid input observation: false")),
+            "fake input trajectory was accepted: {:?}",
+            report.findings
         );
     }
 }

@@ -58,6 +58,7 @@ pub(in crate::builtin) struct CommandAdapter {
     image_rows: super::super::view_build::ImageRowResidence,
     generations: super::super::generation_residence::SemanticGenerationResidence,
     dependencies: Option<ResidentDependencies>,
+    browse: super::super::browse::BrowseCache,
 }
 
 struct ResidentDependencies {
@@ -95,6 +96,7 @@ impl CommandAdapter {
             image_rows,
             generations,
             dependencies: None,
+            browse: super::super::browse::BrowseCache::default(),
         }
     }
 
@@ -274,7 +276,8 @@ impl CommandAdapter {
         let mut document = backend_library::Document::new(symbol, root, row.document.clone())
             .with_source_basis(source_basis)
             .with_location(row.source.clone())
-            .with_excerpt(row.excerpt.clone());
+            .with_excerpt(row.excerpt.clone())
+            .with_facts(row.facts.clone());
         document.signature.clone_from(&row.signature);
         Some(document)
     }
@@ -447,6 +450,30 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
+            backend_engine::SurfaceCommand::ProjectTree { root } => {
+                let authority = self.registry.as_ref().map(RegistryGateway::advisory);
+                self.browse
+                    .project_tree(Path::new(root.as_str()), authority)
+                    .map_or_else(
+                        |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)),
+                        |tree| {
+                            CommandReply::Surface(backend_engine::SurfaceReply::ProjectTree(Box::new(tree)))
+                        },
+                    )
+            }
+            backend_engine::SurfaceCommand::AdvisoryRefresh => match self.registry.as_mut() {
+                Some(gateway) => gateway.refresh_advisories().map_or_else(
+                    |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)),
+                    |states| {
+                        CommandReply::Surface(backend_engine::SurfaceReply::AdvisoryRefreshed(
+                            states.into_boxed_slice(),
+                        ))
+                    },
+                ),
+                None => CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
+                    "no advisory authority is open in this owner".to_owned(),
+                )),
+            },
             backend_engine::SurfaceCommand::References { target } => {
                 execute_references(
                     daemon,

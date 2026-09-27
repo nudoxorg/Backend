@@ -191,6 +191,8 @@ pub struct SessionState {
     pub forward: RouteHistory,
     /// Selected object/document retained across zoom transitions.
     pub selected: Option<Selection>,
+    /// What you hold (D-Hand): persisted; its order is recomputed.
+    pub hand: crate::model::hand::Hand,
 }
 
 impl Default for SessionState {
@@ -201,6 +203,7 @@ impl Default for SessionState {
             back: RouteHistory::new(),
             forward: RouteHistory::new(),
             selected: None,
+            hand: crate::model::hand::Hand::default(),
         }
     }
 }

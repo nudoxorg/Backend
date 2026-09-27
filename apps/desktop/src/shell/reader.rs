@@ -16,7 +16,7 @@ use super::bodies::{self, Ctx, Lens, Pages};
 use super::focus::Targets;
 use super::kit::HoverIntent;
 use super::region::{Links, Region, RegionCore};
-use super::thread::{route_package, route_symbol};
+use super::jump::{route_package, route_symbol};
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{Overlay, Route, View};
@@ -30,6 +30,8 @@ use gpui::{
     AppContext as _, Context, ElementId, Entity, InteractiveElement, IntoElement, ParentElement, Pixels, Render, ScrollHandle,
     SharedString, StatefulInteractiveElement, Styled, Window, div, point, px,
 };
+use std::cell::Cell;
+use std::rc::Rc;
 
 /// The reading measure at 100 % text.
 pub(crate) const FOLIO: f32 = 784.0;
@@ -65,6 +67,12 @@ pub(crate) struct Reader {
     pub(crate) targets: Targets,
     hover: HoverIntent,
     scroll: ScrollHandle,
+    /// Bring the focused target into view in the next frame's prepaint (a
+    /// keyboard walk, or a reflow that may have moved it).
+    reveal: Rc<Cell<bool>>,
+    /// What the last frame was laid out for: width, height, text scale,
+    /// density. A change is a reflow.
+    laid_out: Option<(Pixels, Pixels, f32, facet::Density)>,
     lens: Lens,
     route: Route,
     overlay: Option<Overlay>,
@@ -96,6 +104,8 @@ impl Reader {
             targets: Targets::named("reader"),
             hover: HoverIntent::default(),
             scroll: ScrollHandle::new(),
+            reveal: Rc::new(Cell::new(false)),
+            laid_out: None,
             lens: Lens::Reference,
             route: snapshot.route().clone(),
             overlay: snapshot.overlay(),
@@ -201,20 +211,10 @@ impl Reader {
         self.hover.hover(key, hovered, &links, cx);
     }
 
-    /// Keeps the focused target on screen after a keyboard walk.
+    /// Keeps the focused target on screen after a keyboard walk (in the
+    /// frame that draws the walk, from that frame's layout).
     pub(crate) fn reveal_focused(&self) {
-        let (Some(target), Some(view)) = (self.targets.focused_bounds(), Some(self.scroll.bounds())) else {
-            return;
-        };
-        let offset = self.scroll.offset();
-        let margin = px(48.0);
-        if target.origin.y < view.origin.y + margin {
-            let delta = view.origin.y + margin - target.origin.y;
-            self.scroll.set_offset(point(offset.x, (offset.y + delta).min(px(0.0))));
-        } else if target.origin.y + target.size.height > view.origin.y + view.size.height - margin {
-            let delta = target.origin.y + target.size.height - (view.origin.y + view.size.height - margin);
-            self.scroll.set_offset(point(offset.x, offset.y - delta));
-        }
+        self.reveal.set(true);
     }
 
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>) {
@@ -489,6 +489,7 @@ fn place_keys(route: &Route, overlay: Option<Overlay>) -> Vec<PageKey> {
         _ => {}
     }
     match route {
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => vec![PageKey::Browse(browse.into())],
         Route::Orbit(_) => vec![PageKey::Orbit, PageKey::Health],
         Route::World => Vec::new(),
         Route::Package(_) => route_package(route).map(PageKey::Package).into_iter().collect(),
@@ -507,6 +508,13 @@ impl Render for Reader {
         self.targets.begin();
         let measure = self.core.measure(cx);
         let facet = cx.facet();
+        // A reflow moves whatever the keyboard stands on: bring it back
+        // into view in the same frame.
+        let laid_out = (self.core.width(), window.viewport_size().height, facet.text_scale, facet.density);
+        if self.laid_out.is_some_and(|last| last != laid_out) && self.targets.focused().is_some() {
+            self.reveal.set(true);
+        }
+        self.laid_out = Some(laid_out);
         let palette = facet.palette();
         let snapshot = self.links.snapshot(cx);
         if bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none() {
@@ -616,25 +624,29 @@ impl Render for Reader {
         }
 
         let glow = self.targets.glow(&measure);
+        let scroller = div()
+            .id("reader-scroll")
+            .debug_selector(|| "reader-scroll".to_owned())
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(
+                div()
+                    .w_full()
+                    .px(pad)
+                    .pt(measure.fluid(22.0, 56.0))
+                    .pb(px(96.0 * scale))
+                    .child(stack),
+            );
         div()
             .relative()
             .size_full()
-            .child(
-                div()
-                    .id("reader-scroll")
-                    .debug_selector(|| "reader-scroll".to_owned())
-                    .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(
-                        div()
-                            .w_full()
-                            .px(pad)
-                            .pt(measure.fluid(22.0, 56.0))
-                            .pb(px(96.0 * scale))
-                            .child(stack),
-                    ),
-            )
+            .child(Reveal {
+                pending: Rc::clone(&self.reveal),
+                targets: self.targets.clone(),
+                scroll: self.scroll.clone(),
+                child: scroller.into_any_element(),
+            })
             .children(self.map.as_ref().into_iter().flat_map(|map| leaving_graph.iter().map(move |item| {
                 div().absolute().top_0().left_0().right_0().bottom_0()
                     .child(item.slot(div().size_full().child(map.clone()))).occlude()
@@ -643,5 +655,95 @@ impl Render for Reader {
             .child(glow)
             .text_color(palette.ink1.hsla())
             .font_family(facet::fonts::family(ty::BODY))
+    }
+}
+
+/// The reader's scroll container, bringing the focused target into view
+/// when asked. It runs before the container applies its offset, from this
+/// frame's layout, so the frame that walks or reflows already shows the
+/// target (the storm's seed 3 saw focus left off a 320 px window after the
+/// text grew).
+struct Reveal {
+    pending: Rc<Cell<bool>>,
+    targets: Targets,
+    scroll: ScrollHandle,
+    child: gpui::AnyElement,
+}
+
+impl IntoElement for Reveal {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for Reveal {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        view: gpui::Bounds<Pixels>,
+        _state: &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        if self.pending.take()
+            && let Some(layout) = self.targets.focused_layout()
+        {
+            // The target's place in the content, as if unscrolled.
+            let target = window.layout_bounds(layout);
+            let offset = self.scroll.offset();
+            let margin = px(48.0).min(view.size.height / 4.0);
+            let top = target.origin.y + offset.y;
+            let bottom = top + target.size.height;
+            let lowest = view.origin.y + view.size.height - margin;
+            let highest = view.origin.y + margin;
+            let y = if bottom > lowest {
+                offset.y - (bottom - lowest)
+            } else if top < highest {
+                (offset.y + (highest - top)).min(px(0.0))
+            } else {
+                offset.y
+            };
+            if y != offset.y {
+                self.scroll.set_offset(point(offset.x, y));
+            }
+        }
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&gpui::GlobalElementId>,
+        _inspector_id: Option<&gpui::InspectorElementId>,
+        _bounds: gpui::Bounds<Pixels>,
+        _state: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        self.child.paint(window, cx);
     }
 }

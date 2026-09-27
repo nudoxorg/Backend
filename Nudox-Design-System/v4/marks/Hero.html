@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Package hero</title>
+<style>
+@font-face{font-family:"Bricolage Grotesque";src:url("../../fonts/BricolageGrotesque[opsz,wdth,wght].ttf") format("truetype");font-weight:200 800;font-stretch:75% 100%}
+@font-face{font-family:"Geist";src:url("../../fonts/Geist[wght].ttf") format("truetype");font-weight:100 900}
+@font-face{font-family:"Geist Mono";src:url("../../fonts/GeistMono[wght].ttf") format("truetype");font-weight:100 900}
+@font-face{font-family:"Newsreader";src:url("../../fonts/Newsreader[opsz,wght].ttf") format("truetype");font-weight:200 800;font-style:normal}
+@font-face{font-family:"Newsreader";src:url("../../fonts/Newsreader-Italic[opsz,wght].ttf") format("truetype");font-weight:200 800;font-style:italic}
+</style>
+<link rel="stylesheet" href="../facet.css">
+<link rel="stylesheet" href="../main-extra.css">
+<link rel="stylesheet" href="../v4.css">
+<link rel="stylesheet" href="marks.css">
+<style>
+html,body{margin:0;background:#030814;overflow:hidden}
+/* the calm window (calm.py), restated for a runtime page */
+.win.calm{position:relative;display:flex;flex-direction:column;container:win / inline-size;overflow:hidden}
+.calm .titlebar{height:50px;display:flex;align-items:center;gap:8px;padding:0 12px 0 14px;border-bottom:1px solid var(--line1);flex:none}
+.calm .thread{flex:1;display:flex;justify-content:center;min-width:0}
+.calm .here{flex:0 1 460px;min-width:0}
+.calm .here .mk-stone{flex:none}
+.cbody{flex:1;display:flex;min-height:0;position:relative}
+.cshelf{flex:none;width:clamp(220px,18cqi,264px);display:flex;flex-direction:column;border-right:1px solid var(--line1);background:rgba(3,8,18,.55);padding:6px 0;min-height:0}
+.cup{display:flex;align-items:center;gap:6px;height:30px;padding:0 14px;font:500 12px var(--ui);color:var(--ink3)}
+.cbook{display:flex;align-items:center;gap:10px;padding:8px 14px 12px}
+.cbook .bn{font:600 14px var(--ui);color:var(--ink0)}
+.cbook .bv{font:400 11.5px var(--mono);color:var(--ink3)}
+.cfilter{display:flex;align-items:center;gap:8px;margin:0 10px 8px;height:28px;padding:0 10px;font:400 12px var(--ui);color:var(--ink4);background:rgba(255,255,255,.02);box-shadow:inset 0 0 0 1px var(--line1)}
+.crows{display:flex;flex-direction:column;overflow:hidden}
+.crow{display:flex;align-items:center;gap:9px;height:28px;padding:0 12px;font:500 12.5px var(--mono);color:var(--ink2);white-space:nowrap}
+.ckspine{flex:none;width:42px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 0;border-right:1px solid var(--line1);background:rgba(3,8,18,.55)}
+.ckspine span{opacity:.55}
+.creader{flex:1;min-width:0;overflow:hidden;position:relative;container:reader / inline-size}
+.cstatus{height:26px;flex:none;display:flex;align-items:center;padding:0 12px;border-top:1px solid var(--line1);font:400 11px var(--mono);color:var(--ink4)}
+.cfol{width:100%;box-sizing:border-box;max-width:880px;margin:0 auto;padding:clamp(22px,5cqi,64px) clamp(16px,4cqi,48px) 80px;display:flex;flex-direction:column;gap:26px}
+.chero{display:flex;align-items:center;gap:clamp(14px,2cqi,22px);min-width:0}
+.chero .nm{font:700 clamp(30px,calc(20px + 2cqi),46px)/1.02 var(--display);letter-spacing:-.035em;color:var(--ink0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chero .ld{font:italic 400 clamp(15px,calc(12px + .5cqi),18px)/1.4 var(--serif);color:var(--ink2);margin-top:6px}
+.ctabs{display:flex;gap:clamp(14px,2.4cqi,28px);border-bottom:1px solid var(--line1);font:500 13px var(--ui);color:var(--ink3);margin-top:6px}
+.ctabs span{padding:0 0 10px;position:relative;white-space:nowrap}
+.ctabs span.on{color:var(--ink0)}
+.ctabs span.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--mint)}
+/* the marks line: what the facts line became */
+.hmarks{display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px;margin-top:-8px}
+.hmarks .hon{display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap}
+.hmarks .hon>.w{font:400 12.5px var(--ui);color:var(--ink3)}
+.hmarks .hon .mk-deps{display:contents}
+.hcomb{margin-top:-6px}
+.hgem{cursor:default}
+.hgem .mk-card{top:calc(100% + 10px)}
+.hgem .mk-api{display:block;font:400 12.5px/17px var(--ui);color:var(--ink1);margin-top:4px}
+.hgem .mk-api b{font:600 12.5px var(--mono);color:var(--ink0)}
+@container reader (max-width:560px){ .hmarks .hon{flex-basis:100%} }
+</style>
+</head>
+<body class="nx v4">
+<div id="stage"></div>
+<script src="data.js"></script>
+<script>window.MARKS_NOW = window.MARKS_DATA.generatedAt;</script>
+<script type="module">
+import { ecosystemMark, licenseMark, versionComb, depList, packageGem, openMark } from "./marks.js";
+
+const D = window.MARKS_DATA, P = D.packages, YOURS = D.you.license, TREE = D.tree.licenses;
+const q = new URLSearchParams(location.search);
+const key = q.get("pkg") || "toml";
+const W = +(q.get("w") || 1440), H = +(q.get("h") || (W >= 1100 ? 900 : W >= 700 ? 900 : 900));
+const zoom = (+(q.get("text") || 100)) / 100;
+const vw = Math.round(W / zoom), vh = Math.round(H / zoom);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const firstSentence = (s) => (s || "").split(/(?<=\.)\s/)[0];
+const modIcon = '<span class="k ns sm"><svg viewBox="0 0 24 24"><path d="M9 4H7L5 6v12l2 2h2M15 4h2l2 2v12l-2 2h-2"></path></svg></span>';
+
+// one description per hero; every value comes from data.json
+const HEROES = {
+  toml: () => {
+    const p = P.toml;
+    return { name: "toml", eco: "crates", where: `crates.io · ${p.pin}`, lede: firstSentence(p.description), license: p.license, pkg: p,
+      version: p.pin, comb: versionComb(p.releases, p.pin, { name: "toml", id: "h-ver", also: p.alsoInTree, yours: p.yourUsers, measured: p.measured }),
+      deps: p.deps, modules: p.modules, api: `<b>${p.api.declarations}</b> public items in ${esc(p.pin)} · ${p.modules.length} modules`,
+      addr: `nudox://crates.io/toml@${p.pin}` };
+  },
+  serde: () => {
+    const p = P.serde;
+    return { name: "serde", eco: "crates", where: `crates.io · ${p.pin}`, lede: firstSentence(p.description), license: p.license, pkg: p,
+      version: p.pin, comb: versionComb(p.releases, p.pin, { name: "serde", id: "h-ver" }),
+      deps: p.deps, modules: p.modules, api: `Not indexed yet, so its size is unknown.`, addr: `nudox://crates.io/serde@${p.pin}` };
+  },
+  present: () => {
+    const p = P.present;
+    return { name: "present", eco: "crates", local: { path: p.path }, where: "local project", lede: p.description, license: p.license, pkg: p, self: true,
+      version: p.version, comb: versionComb([], p.version, { name: "present", local: { path: p.path }, id: "h-ver" }),
+      deps: p.deps, modules: p.modules,
+      api: `<b>${p.api.declarations.toLocaleString("en")}</b> declarations · ${p.api.public.toLocaleString("en")} public · ${p.api.modules} modules`, addr: "nudox://present" };
+  },
+  react: () => {
+    const p = P["@types/react"];
+    return { name: "@types/react", eco: "npm", where: `npm · ${p.version}`, lede: firstSentence(p.description) + ".", license: p.license, pkg: p,
+      version: p.version, comb: versionComb(p.releases, null, { name: "@types/react", id: "h-ver" }),
+      deps: p.deps, modules: [], api: `Not indexed yet, so its size is unknown.`, addr: `nudox://npmjs.com/@types/react@${p.version}` };
+  },
+};
+const h = (HEROES[key] || HEROES.toml)();
+
+const stone = ecosystemMark(h.eco, { word: false, card: false, local: h.local, id: "h-here-eco" });
+const titlebar = `<header class="titlebar v2"><span class="lights live"><i></i><i></i><i></i></span>`
+  + `<button class="ibtn on" aria-label="Toggle shelf"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path class="f" d="M7 4h2v16H3V8z"></path><path d="M7 4h14v12l-4 4H3V8z"></path><path d="M9 4v16"></path></svg></button>`
+  + `<div class="thread"><button class="here">${stone}<span class="nm">${esc(h.name)}</span><span class="path">${esc(h.where)}</span></button></div>`
+  + `<button class="ibtn" aria-label="Inbox"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path class="f" d="M5 5h7l-9 8z"></path><path d="M3 13h5l1.5 3h5L16 13h5M5 5h14l2 8v6H3v-6z"></path></svg></button></header>`;
+
+const narrow = vw < 900, gone = vw < 640;
+const shelf = gone ? "" : narrow
+  ? `<nav class="ckspine">${h.modules.slice(0, 12).map(() => `<span>${modIcon}</span>`).join("")}</nav>`
+  : `<aside class="cshelf"><div class="cup"><svg class="ico s12" viewBox="0 0 24 24" style="transform:rotate(180deg)"><path d="m9 6 6 6-6 6"></path></svg>Library</div>`
+    + `<div class="cbook">${packageGem(28, { local: !!h.local })}<div class="col" style="gap:1px;min-width:0"><span class="bn">${esc(h.name)}</span><span class="bv">${esc(h.version)}</span></div></div>`
+    + `<div class="cfilter"><svg class="ico s12" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8z"></path></svg><span>Filter</span></div>`
+    + `<div class="crows">${h.modules.map((m) => `<div class="crow">${modIcon}<span>${esc(m)}</span></div>`).join("")}</div></aside>`;
+
+const gem = `<span class="mk mk-m hgem" tabindex="0" data-mk-id="h-gem">${packageGem(vw < 640 ? 48 : 64, { local: !!h.local })}`
+  + `<span class="mk-card" role="tooltip"><span class="mk-et"><b>${esc(h.name)}</b><i>${esc(h.where)}</i></span><span class="mk-api">${h.api}</span></span></span>`;
+const eco = ecosystemMark(h.eco, { install: h.pkg.install, pkg: h.name, version: h.version, local: h.local, id: "h-eco" });
+const lic = licenseMark(h.license, YOURS, { project: "present", tree: TREE, self: h.self, pkg: h.name, id: "h-lic" });
+const deps = h.deps.filter((d) => d.kind === "normal").sort((a, b) => (a.optional - b.optional) || a.name.localeCompare(b.name))
+  .concat(h.deps.filter((d) => d.kind !== "normal"));
+const on = deps.length ? `<span class="hon"><span class="w">on</span>${depList(deps, { parent: h.name, idPrefix: "h-dep" })}</span>` : "";
+const reader = `<div class="cfol"><div class="chero">${gem}<div class="col" style="min-width:0"><span class="nm">${esc(h.name)}</span>`
+  + (h.lede ? `<span class="ld">${esc(h.lede)}</span>` : "") + `</div></div>`
+  + `<div class="hmarks">${eco}${lic}${on}</div><div class="hcomb">${h.comb}</div>`
+  + `<nav class="ctabs"><span class="on">Map</span><span>Readme</span><span>Depends</span><span>Used by</span><span>Changes</span></nav></div>`;
+
+const ground = await fetch("../tpl-ground.html").then((r) => r.text()).catch(() => "");
+const win = `<div class="win calm" style="width:${vw}px;height:${vh}px">${ground}${titlebar}<div class="cbody">${shelf}<main class="reader creader">${reader}</main></div>`
+  + `<footer class="cstatus"><span class="mono">${esc(h.addr)}</span></footer></div>`;
+document.getElementById("stage").innerHTML = zoom !== 1 ? `<div style="zoom:${zoom}">${win}</div>` : win;
+if (q.get("alt")) document.documentElement.classList.add("mk-alt");
+const hov = q.get("hover");
+if (hov) openMark(hov);
+</script>
+</body>
+</html>

@@ -67,9 +67,15 @@ fn pinned_interruption_retargets_then_returns_to_exact_world_with_same_history()
     let fresh = capture(&fresh_scene, &shot).unwrap_or_else(|error| panic!("{error}"));
     if frames[5].image != fresh[0].image {
         let path = std::env::temp_dir().join("facet-graph-interruption-regression");
-        std::fs::create_dir_all(&path).unwrap();
-        frames[5].image.save(path.join("interrupted.png")).unwrap();
-        fresh[0].image.save(path.join("fresh.png")).unwrap();
+        std::fs::create_dir_all(&path).expect("diagnostic directory can be created");
+        frames[5]
+            .image
+            .save(path.join("interrupted.png"))
+            .expect("interrupted frame can be saved for diagnosis");
+        fresh[0]
+            .image
+            .save(path.join("fresh.png"))
+            .expect("fresh frame can be saved for diagnosis");
         let mismatch = frames[5].image.enumerate_pixels().zip(fresh[0].image.enumerate_pixels())
             .filter(|(a,b)| a.2 != b.2).map(|(a,_)| (a.0,a.1)).collect::<Vec<_>>();
         panic!("settled interrupted navigation differs from settled visits with identical history: {} changed pixels, first {:?}, diagnostic {}", mismatch.len(), mismatch.first(), path.display());
@@ -89,10 +95,21 @@ fn input_after_idle_really_opens_find_and_returns_to_quiet() {
         frames[1].image.as_raw(),
         "input after idle was ignored"
     );
+    // Closing find intentionally retains its query. Compare with a fresh
+    // world that reached the same field state through real keyboard input.
+    let fresh_scene = find("graph-pinned-world").unwrap_or_else(|| panic!("missing pinned world"));
+    let mut fresh_shot = Shot::new(&fresh_scene);
+    fresh_shot.scale = 1;
+    fresh_shot.times = vec![5800];
+    fresh_shot.script = Some(
+        Script::parse("leave @0; key / @200; type \"glyph::RelationLabel\" @240; key escape @280; leave @400")
+            .expect("find comparison script is valid"),
+    );
+    let fresh = capture(&fresh_scene, &fresh_shot).expect("fresh comparison scene captures");
     assert_eq!(
-        frames[0].image.as_raw(),
+        fresh[0].image.as_raw(),
         frames[2].image.as_raw(),
-        "closing find left a stale panel/constellation"
+        "closing find differs from independent world with the same retained query"
     );
     assert_eq!(
         frames[2].image.as_raw(),
@@ -146,7 +163,9 @@ fn reduced_weather_lands_without_live_tracks_and_equals_fresh_narrow_light_world
     shot.appearance = Appearance::Glacier;
     shot.reduced_motion = true;
     shot.times = vec![4600];
-    shot.script = Some(Script::parse("leave @0").unwrap_or_else(|error| panic!("{error}")));
+    // The search field retains its last query when closed. Reproduce that
+    // state through actual input on the independent fresh geometry.
+    shot.script = Some(Script::parse("leave @0; key / @200; type \"glyph::RelationLabel\" @240; key escape @280; leave @400").unwrap_or_else(|error| panic!("{error}")));
     let fresh = capture(&fresh_scene, &shot).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(frames[3].image.dimensions(), fresh[0].image.dimensions());
     assert_eq!(
@@ -780,13 +799,13 @@ fn native_focus_card_padding_click_keeps_focus_and_does_not_drag_graph() {
                 let card=tick.ledger.bounds("graph-focus-card").unwrap_or_else(||panic!("actual card missing"));
                 assert_eq!(graph.focused(),Some(0));
                 assert!(!graph.inspect(cx).moving,"padding baseline must start at rest");
-                measured=Some((card.x+4.0,card.y+4.0,graph.camera().unwrap()));
+                measured=Some((card.x+4.0,card.y+4.0,graph.camera().expect("focused graph has a camera")));
             }
             Ok(())
         }).unwrap_or_else(|error|panic!("{error}"));
         let (x,y,cam)=measured.unwrap_or_else(||panic!("padding baseline was not observed"));
         shot.times=vec![1400,1450,1520,2600];
-        shot.script=Some(Script::parse(&format!("down {x},{y} @1400; move {},{} @1450; up {},{} @1500; leave @1600",x+2.0,y+2.0,x+2.0,y+2.0)).unwrap());
+        shot.script=Some(Script::parse(&format!("down {x},{y} @1400; move {},{} @1450; up {},{} @1500; leave @1600",x+2.0,y+2.0,x+2.0,y+2.0)).expect("padding click script is valid"));
         let mut checked=0;
         run(&target,&shot,&mut |tick,_,cx| {
             if shot.times.contains(&tick.drawn.at_ms) {

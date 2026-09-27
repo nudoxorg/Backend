@@ -24,8 +24,8 @@
 //! |---|---|
 //! | `size WxH`, `start ROUTE` | header: the window and the boot route (`orbit`) |
 //! | any `storm --replay` act, untimed | `key cmd-k`, `type "toml Value"`, `resize 480x900`, `text-scale 200`, `motion off`, `hold alt`, `route …`: delivered between two frames |
-//! | `click PICK`, `hover PICK` | settle, then the pointer goes to what a person points at: `"WORDS" [after "ANCHOR"] [in AREA]` (the target under those words) or a probe id (`*` globs) |
-//! | `STEP else ACT` | `ACT` is a detour, taken only when `STEP` could not be done; the step still fails |
+//! | `click PICK`, `hover PICK` | settle, then the pointer goes to what a person points at: `"WORDS" [after "ANCHOR"…] [in AREA]` (the target under those words; each anchor after the one before) or a probe id (`*` globs) |
+//! | `STEP else STEP` | the second (acts or a click) is a detour, taken only when the first could not be done; the step still fails |
 //! | `settle` | frames until nothing is live, nothing is in flight and nothing asks for a frame |
 //! | `wait MS` | virtual time passes, frame by frame |
 //! | `check NAME` + indented asserts | settle, capture, and judge the settled frame |
@@ -33,8 +33,10 @@
 //! Asserts, on the settled frame, content first: `route WORDS` (exact; the
 //! harness route words), `text "S"… [in AREA]` (each on screen, exactly),
 //! `order "A" "B"… [in AREA]` (in this paint order), `absent "S"…`,
-//! `line "S" [in AREA]` (a visual row reads S, whitespace aside), `focus
-//! PICK`, and `budget page-open|search|flight|frame-p95 <= N ms`. Areas
+//! `line "S" [in AREA]` (a visual row reads S, whitespace aside), `link
+//! PICK` (on screen and inside a published target), `focus PICK`, `focus
+//! restored` (the target this route was left by, clicked, is focused again),
+//! and `budget page-open|search|flight|frame-p95 <= N ms`. Areas
 //! (`titlebar`, `shelf`, `reader`, `pins`, `status`) come from the shell's
 //! resolved frame. Every checkpoint also requires zero lints.
 //!
@@ -204,6 +206,8 @@ struct Runner {
     film: Option<Film>,
     tiles: Vec<Tile>,
     filming: bool,
+    /// How each route (as exact words) was last left.
+    left_by: std::collections::HashMap<String, Leave>,
 }
 
 impl Runner {
@@ -221,7 +225,14 @@ impl Runner {
             film: None,
             tiles: Vec::new(),
             filming,
+            left_by: std::collections::HashMap::new(),
         }
+    }
+
+    /// The current route as exact words.
+    fn route_words(&mut self) -> Result<String, String> {
+        let route = self.session.update(|_, cx| current_route(cx)).map_err(err)?;
+        Ok(route.as_ref().map_or_else(|| "(no route)".to_owned(), describe))
     }
 
     fn now(&self) -> u64 {
@@ -593,6 +604,29 @@ fn judge_one(runner: &Runner, seen: &Seen, route: Option<&Route>, assert: &Asser
                 })
                 .collect()
         }
+        Assert::Link(pick) => vec![
+            seen.locate(pick)
+                .map(|(_, what, _)| format!("link {pick}: {what}"))
+                .map_err(|why| format!("link {pick}: {why}")),
+        ],
+        Assert::FocusRestored => {
+            let here = route.map_or_else(|| "(no route)".to_owned(), describe);
+            let focused = seen.focused();
+            let names = focused.iter().map(|target| format!("`{}`", short(&target.key))).collect::<Vec<_>>().join(", ");
+            vec![match runner.left_by.get(&here) {
+                None => Err(format!("focus restored: this route (`{}`) was never left, so nothing can come back", short(&here))),
+                Some(Leave { key: None, how }) => Err(format!(
+                    "focus restored: this route was left by `{how}`, not by a click on a target, so there is no focus to restore; focused: [{names}]"
+                )),
+                Some(Leave { key: Some(key), how }) => match focused.as_slice() {
+                    [target] if &target.key == key => Ok(format!("focus restored: `{}` (left by `{how}`)", short(key))),
+                    _ => Err(format!(
+                        "focus restored: left by `{how}` on `{}`, but focused: [{names}]",
+                        short(key)
+                    )),
+                },
+            }]
+        }
         Assert::Focus(pick) => vec![
             seen.focus_is(pick)
                 .map(|evidence| format!("focus {pick}: {evidence}"))
@@ -731,54 +765,67 @@ fn calm_replay(journey: &Journey, events: &[Event], scale: u8) -> Result<(RgbaIm
     Ok((image, notes))
 }
 
-/// Plays one pointer step: settle, locate, deliver (or the detour).
-fn point(runner: &mut Runner, step: &Step, click: bool, pick: &Pick, report: &mut String) -> Result<bool, String> {
-    if let Err(why) = runner.settle()? {
-        let _ = writeln!(report, "  L{:<3} note: not still before `{}`: {why}", step.line, step.text);
-    }
-    match runner.seen()?.locate(pick) {
-        Ok(((x, y), what)) => {
-            let act = if click {
-                Act::Click {
-                    x,
-                    y,
-                    button: backend_gui_harness::Button::Left,
-                }
-            } else {
-                Act::Move { x, y }
-            };
-            runner.deliver(std::slice::from_ref(&act), &step.text)?;
-            let _ = writeln!(
-                report,
-                "  L{:<3} {:>6} ms  {}  ->  {act}  ({what})",
-                step.line,
-                runner.now(),
-                step.text
-            );
-            Ok(true)
-        }
-        Err(why) => {
-            let _ = writeln!(report, "  L{:<3} FAIL {}: {why}", step.line, step.text);
-            if let Some(detour) = &step.otherwise {
-                match routes_resolve(detour) {
-                    Ok(()) => {
-                        let words = detour.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
-                        runner.deliver(detour, &format!("DETOUR {words}"))?;
-                        let _ = writeln!(
-                            report,
-                            "  L{:<3} {:>6} ms  DETOUR (the person could not do this): {words}",
-                            step.line,
-                            runner.now()
-                        );
-                    }
-                    Err(why) => {
-                        let _ = writeln!(report, "  L{:<3} FAIL detour: {why}", step.line);
-                    }
-                }
+/// How a route was left: the target clicked (if any) and the step.
+struct Leave {
+    key: Option<String>,
+    how: String,
+}
+
+/// Does one acts or pointer step. `Ok(Err(why))`: the person could not.
+fn perform(runner: &mut Runner, kind: &StepKind, label: &str, line: usize, report: &mut String) -> Result<Result<(), String>, String> {
+    let before = runner.route_words()?;
+    let (acts, key, what) = match kind {
+        StepKind::Acts(acts) => {
+            // A route the index cannot resolve fails the step; it never
+            // reaches the product adapter (which would panic).
+            if let Err(why) = routes_resolve(acts) {
+                return Ok(Err(why));
             }
-            Ok(false)
+            (acts.clone(), None, String::new())
         }
+        StepKind::Pointer { click, pick } => {
+            if let Err(why) = runner.settle()? {
+                let _ = writeln!(report, "  L{line:<3} note: not still before `{label}`: {why}");
+            }
+            match runner.seen()?.locate(pick) {
+                Ok(((x, y), what, key)) => {
+                    let act = if *click {
+                        Act::Click {
+                            x,
+                            y,
+                            button: backend_gui_harness::Button::Left,
+                        }
+                    } else {
+                        Act::Move { x, y }
+                    };
+                    (vec![act], click.then_some(key), format!("  ({what})"))
+                }
+                Err(why) => return Ok(Err(why)),
+            }
+        }
+        StepKind::Settle | StepKind::Wait(_) | StepKind::Check { .. } => {
+            return Err(format!("L{line}: `{label}` is not an act"));
+        }
+    };
+    runner.deliver(&acts, label)?;
+    let words = acts.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
+    let _ = writeln!(
+        report,
+        "  L{line:<3} {:>6} ms  {label}{}{what}",
+        runner.now(),
+        if matches!(kind, StepKind::Pointer { .. }) { format!("  ->  {words}") } else { String::new() }
+    );
+    let after = runner.route_words()?;
+    if after != before {
+        runner.left_by.insert(
+            before,
+            Leave {
+                key,
+                how: label.to_owned(),
+            },
+        );
     }
+    Ok(Ok(()))
 }
 
 /// What a finished run printed and whether it passed.
@@ -821,20 +868,16 @@ fn run(journey: &Journey, out: &Path, scale: u8, fresh: bool) -> Result<Outcome,
     let _ = writeln!(report, "\nsteps:");
     for step in &journey.steps {
         match &step.kind {
-            StepKind::Acts(acts) => {
-                // A route the index cannot resolve is a failed step, not a
-                // panic in the product adapter.
-                if let Err(why) = routes_resolve(acts) {
+            StepKind::Acts(_) | StepKind::Pointer { .. } => {
+                if let Err(why) = perform(&mut runner, &step.kind, &step.text, step.line, &mut report)? {
                     failed_steps += 1;
                     let _ = writeln!(report, "  L{:<3} FAIL {}: {why}", step.line, step.text);
-                    continue;
-                }
-                runner.deliver(acts, &step.text)?;
-                let _ = writeln!(report, "  L{:<3} {:>6} ms  {}", step.line, runner.now(), step.text);
-            }
-            StepKind::Pointer { click, pick } => {
-                if !point(&mut runner, step, *click, pick, &mut report)? {
-                    failed_steps += 1;
+                    if let Some(detour) = &step.otherwise {
+                        let label = format!("DETOUR (the person could not do L{}) {}", step.line, step.text.split(" else ").nth(1).unwrap_or_default());
+                        if let Err(why) = perform(&mut runner, detour, &label, step.line, &mut report)? {
+                            let _ = writeln!(report, "  L{:<3} FAIL detour: {why}", step.line);
+                        }
+                    }
                 }
             }
             StepKind::Settle => match runner.settle()? {

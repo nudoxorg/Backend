@@ -90,6 +90,33 @@ impl PlatformAtlas for MetalAtlas {
             }
         }
     }
+
+    #[cfg(feature = "test-support")]
+    fn read_tile_for_test(&self, tile: AtlasTile) -> Option<Vec<u8>> {
+        let lock = self.0.lock();
+        // A removed tile may already have been repacked into the same texture.
+        if !lock.tiles_by_key.values().any(|live| *live == tile) {
+            return None;
+        }
+        let texture = lock.texture(tile.texture_id);
+        let row_bytes = tile.bounds.size.width.to_bytes(texture.bytes_per_pixel()) as usize;
+        let mut bytes = vec![0; row_bytes * tile.bounds.size.height.0 as usize];
+        let region = metal::MTLRegion::new_2d(
+            tile.bounds.origin.x.into(),
+            tile.bounds.origin.y.into(),
+            tile.bounds.size.width.into(),
+            tile.bounds.size.height.into(),
+        );
+        // These Shared/Managed textures are written only by CPU upload and read by
+        // the GPU, so no GPU-to-CPU synchronization is needed to read their bytes.
+        texture.metal_texture.get_bytes(
+            bytes.as_mut_ptr() as *mut std::ffi::c_void,
+            row_bytes as u64,
+            region,
+            0,
+        );
+        Some(bytes)
+    }
 }
 
 impl MetalAtlasState {

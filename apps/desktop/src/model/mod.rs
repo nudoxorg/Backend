@@ -1,5 +1,7 @@
 //! Immutable model, selectors, virtualization, and durable local state.
 
+pub mod browse;
+pub mod hand;
 pub mod local_package;
 pub mod pages;
 pub mod persistence;

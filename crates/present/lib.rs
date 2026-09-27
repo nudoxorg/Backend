@@ -49,6 +49,9 @@
 #![deny(unsafe_code)]
 
 mod assemble;
+mod browse;
+#[cfg(test)]
+mod browse_tests;
 mod budget;
 mod call;
 mod coverage;
@@ -64,6 +67,7 @@ mod page;
 mod product;
 mod record;
 mod render;
+mod sections;
 mod shelf;
 mod signature;
 mod status;
@@ -71,6 +75,10 @@ mod status;
 pub use assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, project_of,
     record_list, record_list_from_rows, shelf_from_root, shelf_from_snapshot,
+};
+pub use browse::{
+    AlertReading, RoleReading, RowReading, TreeReading, TwiceReading, count, display_version,
+    read_tree, role_label, why_line,
 };
 pub use budget::{
     BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN,
@@ -110,6 +118,7 @@ pub use page::{
 pub use product::{ProductRecord, ProductView, product_view};
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{Colour, Style, Theme, Width, display_width, markdown, text};
+pub use sections::{LineRole, SectionKind, SectionReader};
 pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};
 pub use signature::{Resolved, Signature, Target, Token, TokenKind};
 pub use status::{

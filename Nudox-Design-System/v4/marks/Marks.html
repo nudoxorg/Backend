@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Identity marks</title>
+<style>
+@font-face{font-family:"Bricolage Grotesque";src:url("../../fonts/BricolageGrotesque[opsz,wdth,wght].ttf") format("truetype");font-weight:200 800;font-stretch:75% 100%}
+@font-face{font-family:"Geist";src:url("../../fonts/Geist[wght].ttf") format("truetype");font-weight:100 900}
+@font-face{font-family:"Geist Mono";src:url("../../fonts/GeistMono[wght].ttf") format("truetype");font-weight:100 900}
+@font-face{font-family:"Newsreader";src:url("../../fonts/Newsreader[opsz,wght].ttf") format("truetype");font-weight:200 800;font-style:normal}
+@font-face{font-family:"Newsreader";src:url("../../fonts/Newsreader-Italic[opsz,wght].ttf") format("truetype");font-weight:200 800;font-style:italic}
+</style>
+<link rel="stylesheet" href="../facet.css">
+<link rel="stylesheet" href="../v4.css">
+<link rel="stylesheet" href="marks.css">
+<style>
+html,body{margin:0;background:#030814}
+.board{min-height:100vh;background:var(--g0);padding:44px 52px 90px;display:flex;flex-direction:column;gap:56px}
+.board h1{margin:0;font:640 34px/1 var(--display);letter-spacing:-.035em;color:var(--ink0)}
+.board h2{margin:0 0 22px;font:620 20px/1.2 var(--display);letter-spacing:-.02em;color:var(--ink0)}
+.b-row{display:grid;gap:30px 44px;margin-bottom:34px;align-items:start}
+.b-row.c1{grid-template-columns:1fr}.b-row.c2{grid-template-columns:repeat(2,minmax(0,1fr))}.b-row.c3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.b-row.c4{grid-template-columns:repeat(4,minmax(0,1fr))}.b-row.c5{grid-template-columns:repeat(5,minmax(0,1fr))}
+.b-lab{font:500 12px/16px var(--ui);color:var(--ink3);margin-bottom:14px}
+.b-lab code{font:400 11.5px var(--mono);color:var(--ink2)}
+.b-cell{min-width:0}
+.b-cell.tall{min-height:var(--h,250px)}
+.b-line{display:flex;flex-wrap:wrap;align-items:center;gap:14px 30px}
+.b-rows{display:flex;flex-direction:column;gap:2px;max-width:420px}
+.b-rows .b-r{display:flex;align-items:center;gap:10px;height:28px;padding:0 10px;margin:0 -10px;font:500 12.5px var(--mono);color:var(--ink1)}
+.b-rows .b-r .b-v{margin-left:auto;font:400 11.5px var(--mono);color:var(--ink4)}
+.b-rows .b-r.b-hov{background:rgba(143,160,255,.06)}
+.b-fam{display:flex;flex-direction:column;gap:8px}
+.b-fam .b-who{font:400 11.5px var(--mono);color:var(--ink4)}
+.b-legend{display:flex;flex-wrap:wrap;gap:22px 34px;align-items:flex-end}
+.b-legend .b-it{display:flex;flex-direction:column;align-items:center;gap:9px;min-width:64px}
+.b-legend .b-it .mk-ver{width:34px;min-width:0;grid-template-columns:1fr}
+.b-legend .b-it span.b-w{font:400 11.5px/15px var(--ui);color:var(--ink3);text-align:center;max-width:110px}
+.combbox{max-width:660px}
+.b-hero{display:flex;align-items:center;gap:10px 18px;flex-wrap:wrap}
+.b-hero .b-on{font:400 12.5px var(--ui);color:var(--ink3)}
+/* stills */
+.solo-mode .board{padding:26px 30px;gap:0}
+.solo-mode .board>h1,.solo-mode section>h2,.solo-mode .b-lab{display:none}
+.solo-mode section:not(.keep),.solo-mode .b-row:not(.keep),.solo-mode .b-cell:not(.solo){display:none}
+.solo-mode .b-row.keep{grid-template-columns:1fr;margin:0}
+</style>
+</head>
+<body class="nx v4">
+<div class="board" id="board"><h1>Identity marks</h1></div>
+<script src="data.js"></script>
+<script>window.MARKS_NOW = window.MARKS_DATA.generatedAt;</script>
+<script type="module">
+import { ecosystemMark, licenseMark, versionComb, depLink, depList, openMark } from "./marks.js";
+
+const D = window.MARKS_DATA, P = D.packages, YOURS = D.you.license, TREE = D.tree.licenses;
+const q = new URLSearchParams(location.search);
+const $b = document.getElementById("board");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+function cell(label, html, opts = {}) {
+  return `<div class="b-cell${opts.tall ? " tall" : ""}"${opts.h ? ` style="--h:${opts.h}px"` : ""}>${label ? `<div class="b-lab">${label}</div>` : ""}${html}</div>`;
+}
+const row = (n, cells) => `<div class="b-row c${n}">${cells.join("")}</div>`;
+const section = (id, title, body) => `<section id="${id}"><h2>${title}</h2>${body}</section>`;
+
+// ---------------------------------------------------------------- 1. ecosystems (one real package each)
+const ECOS = [
+  ["crates", P.toml], ["npm", P["@types/react"]], ["pypi", P.tomli], ["go", P["github.com/BurntSushi/toml"]],
+  ["maven", P["joda-time"]], ["nuget", P.Polyfill], ["cpp", P.tomlplusplus],
+];
+const ecoSay = { cpp: "No registry to install from: it is header-only, so the include is the install." };
+const eco = (e, p, extra = {}) => ecosystemMark(e, { install: p.install, pkg: p.name, version: p.version, id: `eco-${e}`, say: ecoSay[e], ...extra });
+const ecoRest = `<div class="b-line">${ECOS.map(([e, p]) => eco(e, p, { id: `eco-rest-${e}` })).join("")}</div>`;
+const ecoRows = `<div class="b-rows">${ECOS.map(([e, p], i) => `<div class="b-r${i === 1 ? " b-hov" : ""}">${ecosystemMark(e, { word: false, install: p.install, id: `eco-row-${e}` })}<span>${esc(p.name)}</span><span class="b-v">${esc(p.version)}</span></div>`).join("")}</div>`;
+const ecoBody = row(2, [cell("At rest", ecoRest), cell("In a row, the stone alone", ecoRows)])
+  + row(3, [
+    cell("Hover", eco("crates", P.toml, { id: "eco-crates" }), { tall: true, h: 210 }),
+    cell("Press: the line drops into the clipboard and the stone ticks once", eco("crates", P.toml, { id: "eco-press" }), { tall: true, h: 210 }),
+    cell("A workspace package", ecosystemMark("crates", { local: { path: P.present.path }, install: P.present.install, id: "eco-local" }), { tall: true, h: 210 }),
+  ])
+  + row(3, ECOS.slice(1, 4).map(([e, p]) => cell(`Hover · ${esc(p.name)}`, eco(e, p), { tall: true, h: 200 })))
+  + row(3, ECOS.slice(4).map(([e, p]) => cell(`Hover · ${esc(p.name)}`, eco(e, p), { tall: true, h: 200 })));
+
+// ---------------------------------------------------------------- 2. licenses
+const L = D.licenses, N = L.named, EX = L.examples;
+const lic = (spdx, id, extra = {}) => licenseMark(spdx, YOURS, { project: "present", tree: TREE, id, ...extra });
+const famCells = [
+  ["MIT", "tokio", lic(N.tokio.license, "lic-f-mit", { pkg: "tokio" })],
+  ["MPL-2.0", "option-ext", lic("MPL-2.0", "lic-f-mpl", { pkg: "option-ext" })],
+  ["GPL-2.0-only", "self_cell's other choice", lic("GPL-2.0-only", "lic-f-gpl")],
+  ["CC0-1.0", "notify", lic("CC0-1.0", "lic-f-cc0")],
+  [null, "cfg_block", lic(null, "lic-f-file", { file: N.cfg_block.licenseFile, pkg: "cfg_block" })],
+  [null, "no license field, no file", lic(null, "lic-f-none")],
+];
+const fams = `<div class="b-line" style="gap:26px 46px">${famCells.map(([, who, html]) => `<div class="b-fam">${html}<span class="b-who">${esc(who)}</span></div>`).join("")}</div>`;
+const compound = [
+  ["toml", P.toml.license], ["memchr", N.memchr.license], ["self_cell", N.self_cell.license],
+  ["unicode-ident", N["unicode-ident"].license], ["r-efi", N["r-efi"].license],
+];
+const comp = `<div class="b-line" style="gap:26px 46px">${compound.map(([who, s], i) => `<div class="b-fam">${lic(s, `lic-c-${i}`)}<span class="b-who">${esc(who)}</span></div>`).join("")}</div>`;
+const licBody = row(2, [cell("The shape is the family", fams), cell("OR is a choice of rings; AND links them", comp)])
+  + row(3, [
+    cell(`Hover · toml <code>${esc(P.toml.license)}</code>`, lic(P.toml.license, "lic-toml", { pkg: "toml" }), { tall: true, h: 350 }),
+    cell(`Hover · self_cell <code>${esc(N.self_cell.license)}</code>`, lic(N.self_cell.license, "lic-selfcell", { pkg: "self_cell" }), { tall: true, h: 350 }),
+    cell(`Hover · option-ext <code>MPL-2.0</code>`, lic(N["option-ext"].license, "lic-mpl", { pkg: "option-ext" }), { tall: true, h: 350 }),
+  ])
+  + row(3, [
+    cell(`Hover · cfg_block <code>license-file</code>`, lic(null, "lic-file", { file: N.cfg_block.licenseFile, pkg: "cfg_block" }), { tall: true, h: 330 }),
+    cell(`Hover · unicode-ident <code>AND</code>`, lic(N["unicode-ident"].license, "lic-and", { pkg: "unicode-ident" }), { tall: true, h: 330 }),
+    cell(`Hover · present, your own project: the mark knows the tree`, lic(P.present.license, "lic-self", { self: true, pkg: "present" }), { tall: true, h: 330 }),
+  ]);
+
+// ---------------------------------------------------------------- 3. version
+const t = P.toml;
+const tomlComb = (extra = {}) => versionComb(t.releases, t.pin, { name: "toml", also: t.alsoInTree, yours: t.yourUsers, measured: t.measured, ...extra });
+const legendItem = (html, w) => `<div class="b-it">${html}<span class="b-w">${w}</span></div>`;
+const tick = (cls, extra = "") => `<span class="mk mk-ver" style="--nw:0px"><span class="mk-comb"><i class="mk-t ${cls.split(" ").map((c) => "mk-" + c).join(" ")}" style="left:50%${extra}"></i></span></span>`;
+const legend = `<div class="b-legend">`
+  + legendItem(tick("patch"), "patch")
+  + legendItem(tick("minor"), "minor")
+  + legendItem(tick("major"), "breaking")
+  + legendItem(tick("pre"), "pre-release")
+  + legendItem(tick("patch yanked"), "yanked")
+  + legendItem(tick("after brk", ";--f:.9"), "breaking, after your pin")
+  + legendItem(tick("patch slip"), "broke API without a major bump")
+  + legendItem(tick("pin"), "your pin")
+  + legendItem(tick("pinhome view"), "viewing")
+  + legendItem(`<span class="mk mk-ver" style="--nw:0px"><span class="mk-comb"><span class="mk-also" style="left:50%"><i></i></span></span></span>`, "also in your tree")
+  + `</div>`;
+const variants = row(2, [
+  cell("Rider: the number is the pin's own tooth; later releases trail off, breaking ones stand taller", `<div class="combbox">${tomlComb({ id: "v-rider" })}</div>`),
+  cell("Baseline: the number sits at the comb's start, the pin is a mint tick inside it", `<div class="combbox">${tomlComb({ variant: "baseline", id: "v-base" })}</div>`),
+  cell("Terrace: each breaking release after your pin lifts the baseline, so the climb ahead is visible", `<div class="combbox">${tomlComb({ variant: "terrace", id: "v-terrace" })}</div>`),
+  cell("Time: releases placed by date, so quiet years and bursts show", `<div class="combbox">${tomlComb({ variant: "time", id: "v-time" })}</div>`),
+]);
+const s = P.serde, r = P["@types/react"], syn = P.syn, sj = P.serde_json;
+const synPins = syn.pins;
+const synNew = synPins.at(-1);
+const synComb = versionComb(syn.releases, synNew.v, {
+  name: "syn", id: "ver-syn", pinVia: synNew.via, yours: synNew.direct,
+  also: synPins.slice(0, -1).map((p) => ({ v: p.v, via: p.via, yours: p.yours })),
+});
+const states = row(2, [
+  cell("Rest", `<div class="combbox">${tomlComb({ id: "ver-rest" })}</div>`, { tall: true, h: 110 }),
+  cell("Hover the number: the semver reading", `<div class="combbox">${tomlComb({ id: "ver-read" })}</div>`, { tall: true, h: 230 }),
+  cell("Hover the second pin: two copies of toml compile", `<div class="combbox">${tomlComb({ id: "ver-dup" })}</div>`, { tall: true, h: 230 }),
+  cell("Scrubbed: the digits that change roll, the rest hold still", `<div class="combbox">${tomlComb({ id: "ver-scrub", view: "1.0.0+spec-1.1.0", rollFrom: "0.9.12+spec-1.1.0" })}</div>`, { tall: true, h: 110 }),
+  cell(`syn: two majors in your tree`, `<div class="combbox">${synComb}</div>`, { tall: true, h: 230 }),
+  cell(`serde: up to date, ${s.releases.length} releases`, `<div class="combbox">${versionComb(s.releases, s.pin, { name: "serde", id: "ver-serde" })}</div>`, { tall: true, h: 150 }),
+  cell(`@types/react: ${r.releases.length} releases, not in your tree`, `<div class="combbox">${versionComb(r.releases, null, { name: "@types/react", id: "ver-react" })}</div>`, { tall: true, h: 150 }),
+  cell("present: never published", `<div class="combbox">${versionComb([], P.present.version, { name: "present", local: { path: P.present.path }, id: "ver-local" })}</div>`, { tall: true, h: 150 }),
+]);
+const verBody = row(1, [cell("Ticks", legend)]) + `<div class="b-lab" style="margin:8px 0 18px">Four readings of toml's ${t.releases.length} releases, pinned at ${t.pin}</div>` + variants + states;
+
+// ---------------------------------------------------------------- 4. depends on
+const dl = (pkg, parent, prefix) => depList(pkg.deps, { parent, idPrefix: prefix });
+const depRest = `<div class="b-hero"><span class="b-on">on</span>${dl(t, "toml", "dep-toml")}</div>`;
+const depAlt = `<div class="b-hero mk-alt"><span class="b-on">on</span>${dl(t, "toml", "dep-toml-alt")}</div>`;
+const pick = (pkg, name, kind = "normal") => pkg.deps.find((d) => d.name === name && d.kind === kind);
+const one = (pkg, parent, name, id, kind) => `<div class="b-hero"><span class="b-on">on</span>${depLink(pick(pkg, name, kind), { parent, id })}</div>`;
+const depBody = row(2, [cell("toml, at rest", depRest), cell("⌥ held: dev-dependencies join, hollow", depAlt)])
+  + row(3, [
+    cell("toml → toml_edit", one(t, "toml", "toml_edit", "dep-toml_edit"), { tall: true, h: 250 }),
+    cell("toml → indexmap, optional and off in your tree", one(t, "toml", "indexmap", "dep-indexmap"), { tall: true, h: 250 }),
+    cell("toml → serde", one(t, "toml", "serde", "dep-serde"), { tall: true, h: 250 }),
+  ])
+  + row(3, [
+    cell("serde_json → itoa", one(sj, "serde_json", "itoa", "dep-itoa"), { tall: true, h: 250 }),
+    cell("serde_json → serde_core", one(sj, "serde_json", "serde_core", "dep-serde_core"), { tall: true, h: 250 }),
+    cell("serde_json → memchr", one(sj, "serde_json", "memchr", "dep-memchr"), { tall: true, h: 250 }),
+  ])
+  + row(3, [
+    cell("present → backend-library, from the workspace graph", one(P.present, "present", "backend-library", "dep-library"), { tall: true, h: 250 }),
+    cell("@types/react → csstype", one(r, "@types/react", "csstype", "dep-csstype"), { tall: true, h: 250 }),
+    cell("toml → serde_json, a dev-dependency (⌥)", one(t, "toml", "serde_json", "dep-dev-serde_json", "dev"), { tall: true, h: 250 }),
+  ]);
+
+$b.insertAdjacentHTML("beforeend", section("eco", "Ecosystem", ecoBody) + section("lic", "License", licBody) + section("ver", "Version", verBody) + section("dep", "Depends on", depBody));
+
+// ---------------------------------------------------------------- states for the board and for stills
+const OPEN = ["eco-crates", "eco-press", "eco-local", "eco-npm", "eco-pypi", "eco-go", "eco-maven", "eco-nuget", "eco-cpp",
+  "lic-toml", "lic-selfcell", "lic-mpl", "lic-file", "lic-and", "lic-self",
+  "ver-read-num", "ver-dup-also-1.1.5", "ver-syn-also-2.0.119", "ver-serde-num", "ver-react-num", "ver-local-num",
+  "dep-toml_edit", "dep-indexmap", "dep-serde", "dep-itoa", "dep-serde_core", "dep-memchr", "dep-library", "dep-csstype", "dep-dev-serde_json"];
+function press(id) {
+  const m = document.querySelector(`[data-mk-id="${id}"]`);
+  if (!m) return;
+  m.classList.add("is-open", "is-copied", "mk-freeze");
+}
+const hover = q.get("hover"), solo = q.get("solo"), only = q.get("only");
+if (only) document.querySelectorAll("section").forEach((s) => { if (s.id !== only) s.remove(); });
+if (solo) {
+  document.body.classList.add("solo-mode");
+  const m = document.querySelector(`[data-mk-id="${solo}"]`);
+  const c = m?.closest(".b-cell");
+  if (c) { c.classList.add("solo"); c.closest(".b-row").classList.add("keep"); c.closest("section").classList.add("keep"); }
+  if (solo === "eco-press") press(solo); else openMark(solo);
+} else if (hover) {
+  openMark(hover);
+} else {
+  for (const id of OPEN) id === "eco-press" ? press(id) : openMark(id);
+}
+if (q.get("alt")) document.documentElement.classList.add("mk-alt");
+</script>
+</body>
+</html>

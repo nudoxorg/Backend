@@ -106,3 +106,127 @@ fn canonical_rows_retain_typed_source_metadata() {
     );
     assert!(encoded.contains(&DeclarationKind::Function.wire_tag()));
 }
+
+/// Canonical bytes of rows that state no declaration facts, captured before
+/// the facts suffix existed. A row that observed nothing must keep exactly
+/// these bytes, so no existing view root moves when the carrier is added.
+fn no_fact_rows() -> Vec<(&'static str, Row)> {
+    let basis = Basis::new(
+        canonical_empty::<ViewRelation>().commitment(),
+        object_version(b"golden-basis"),
+    );
+    let package = package_key("/golden");
+    let structural = Row::in_package(
+        RowId::Symbol(symbol_key("/golden::src/lib.rs:3::answer")),
+        basis,
+        package,
+        "/golden::src/lib.rs:3::answer",
+    )
+    .with_parent(symbol_key("/golden::src/lib.rs"))
+    .with_document(vec![
+        crate::Fragment::Text("Answers.".to_owned()),
+        crate::Fragment::Break,
+        crate::Fragment::Code("let a = answer();".to_owned()),
+        crate::Fragment::Link {
+            label: "Question".to_owned(),
+            target: symbol_key("/golden::src/lib.rs:9::Question"),
+        },
+    ])
+    .with_signature("pub fn answer() -> u8")
+    .with_kind(DeclarationKind::Function)
+    .with_source(SourceLocation::new("src/lib.rs", 3).expect("location"))
+    .with_excerpt(
+        crate::SourceExcerpt::captured(
+            "pub fn answer() -> u8 {\n    42\n}",
+            crate::SourceExcerptExtent::Complete,
+        )
+        .expect("excerpt"),
+    );
+    let mut semantic = Row::in_package(
+        RowId::Symbol(symbol_key("/golden\0semantic\0answer")),
+        basis,
+        package,
+        "/golden::semantic::0123::answer",
+    )
+    .try_with_identity_preimage("/golden\0semantic\0answer")
+    .expect("preimage")
+    .with_document(Vec::<crate::Fragment>::new())
+    .with_signature("function(parameters=[],result=builtin(u8))")
+    .with_kind(DeclarationKind::Function);
+    semantic.score = Some(7);
+    let bare = Row::new(
+        RowId::Object(object_version(b"golden-object")),
+        basis,
+        "bare",
+    );
+    vec![("structural", structural), ("semantic", semantic), ("bare", bare)]
+}
+
+#[test]
+fn rows_that_state_no_facts_keep_their_canonical_bytes() {
+    let expected = [
+        ("structural", "a869e2ace4b99ab6304f5bbaa12b4fc0201d59478d6fa16b7d52adcc8a445374"),
+        ("semantic", "8d5e2ab93640ba4262b100653ea878556f2f758e158015830c26fe4dbc38dab8"),
+        ("bare", "eec1d4cb338c73c69aba95b8cbbb043d160c0b40c40c2e88cc809dfa2437109a"),
+    ];
+    let mut actual = Vec::new();
+    for (name, row) in no_fact_rows() {
+        let mut encoded = Vec::new();
+        encode_row(&row, &mut encoded);
+        actual.push((name, blake3::hash(&encoded).to_hex().to_string()));
+    }
+    let actual: Vec<(&str, &str)> = actual
+        .iter()
+        .map(|(name, digest)| (*name, digest.as_str()))
+        .collect();
+    assert_eq!(actual, expected);
+}
+
+fn stated_facts() -> crate::DeclarationFacts {
+    crate::DeclarationFacts {
+        deprecation: crate::Fact::Present(crate::Deprecation::new(
+            Some("1.2.0"),
+            Some("use `fresh`"),
+        )),
+        obligation: crate::Fact::Present(crate::Obligation::Required),
+    }
+}
+
+#[test]
+fn stated_facts_are_an_append_only_suffix_that_commits_their_text() {
+    for (name, row) in no_fact_rows() {
+        let mut historical = Vec::new();
+        encode_row(&row, &mut historical);
+        let mut stated = Vec::new();
+        encode_row(&row.clone().with_facts(stated_facts()), &mut stated);
+        assert_eq!(stated.get(..historical.len()), Some(historical.as_slice()), "{name}");
+        let suffix = &stated[historical.len()..];
+        assert_eq!(suffix.first(), Some(&2), "{name}: the facts tag follows every field");
+        for text in [&b"1.2.0"[..], b"use `fresh`"] {
+            assert!(
+                suffix.windows(text.len()).any(|window| window == text),
+                "{name}: {} is committed",
+                String::from_utf8_lossy(text)
+            );
+        }
+    }
+    // Absent and unobserved are different statements with different bytes,
+    // and so is a different note.
+    let (_, row) = no_fact_rows().remove(0);
+    let encode = |facts: crate::DeclarationFacts| {
+        let mut out = Vec::new();
+        encode_row(&row.clone().with_facts(facts), &mut out);
+        out
+    };
+    let absent = encode(crate::DeclarationFacts {
+        deprecation: crate::Fact::Absent,
+        obligation: crate::Fact::Unobserved,
+    });
+    let unobserved = encode(crate::DeclarationFacts::UNOBSERVED);
+    let other_note = encode(crate::DeclarationFacts {
+        deprecation: crate::Fact::Present(crate::Deprecation::new(Some("1.2.0"), Some("use `new`"))),
+        obligation: crate::Fact::Present(crate::Obligation::Required),
+    });
+    assert_ne!(absent, unobserved);
+    assert_ne!(other_note, encode(stated_facts()));
+}

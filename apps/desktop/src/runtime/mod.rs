@@ -1,9 +1,12 @@
 //! Background runtime, mapping, animation, and GPUI entity wiring.
 
 pub mod actor;
+pub mod browse_reads;
 pub mod client;
 pub mod coordinator;
 pub mod debug_page;
+pub(crate) mod fixture_releases;
+pub(crate) mod fixture_world;
 pub(crate) mod graph_focus;
 pub mod mailbox;
 pub mod mapping;

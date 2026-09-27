@@ -6680,6 +6680,18 @@ impl Window {
         None
     }
 
+    /// The native primitives of the last painted frame, for rendering diagnostics.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn rendered_scene_for_test(&self) -> &Scene {
+        &self.rendered_frame.scene
+    }
+
+    /// Read the raw atlas bytes used by a sprite in a rendering diagnostic.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn read_atlas_tile_for_test(&self, tile: AtlasTile) -> Option<Vec<u8>> {
+        self.sprite_atlas.read_tile_for_test(tile)
+    }
+
     /// For testing: set the current modifier keys state.
     /// This does not generate any events.
     #[cfg(any(test, feature = "test-support"))]

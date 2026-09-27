@@ -73,6 +73,9 @@ pub enum OrbitRoute {
     Home,
     /// A selected local or service project.
     Project(ProjectId),
+    /// A browsing page at the orbit's depth: a project's tree (find and
+    /// compare next). The shell's `Route::Orbit(_)` arms already hold it.
+    Browse(super::BrowseRoute),
 }
 
 /// One immutable release of a package: the registry's version spelling.
@@ -370,7 +373,7 @@ impl Route {
                     .clone()
                     .map_or(OrbitRoute::Home, OrbitRoute::Project),
             )),
-            Self::World => Some(Self::Orbit(OrbitRoute::Home)),
+            Self::World | Self::Orbit(OrbitRoute::Browse(_)) => Some(Self::Orbit(OrbitRoute::Home)),
             Self::Orbit(_) => None,
         }
     }
@@ -391,6 +394,7 @@ impl Route {
                 route.id.clone(),
                 route.at.clone(),
             ),
+            Self::Orbit(OrbitRoute::Browse(route)) => RouteKey::Browse(route.clone()),
             Self::World => RouteKey::World,
         }
     }
@@ -409,6 +413,8 @@ pub enum RouteKey {
     Symbol(Option<ProjectId>, PackageId, Coordinate, Option<ReleaseId>),
     /// The whole graph.
     World,
+    /// A browsing page.
+    Browse(super::BrowseRoute),
 }
 
 /// A typed selection that can survive Cmd-minus and route replacement.

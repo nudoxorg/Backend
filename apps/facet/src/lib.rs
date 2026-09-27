@@ -26,6 +26,7 @@ pub mod code;
 pub mod graph;
 pub mod semantics;
 pub mod anatomy;
+pub mod browse;
 
 #[cfg(feature = "gallery")]
 pub mod gallery;

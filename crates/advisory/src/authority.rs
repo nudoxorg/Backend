@@ -75,7 +75,10 @@ impl AuthorityFeed {
         Ok(Self {
             source,
             mode: SyncMode::Snapshot,
-            complete: true,
+            // One RustSec document is one advisory, not the database: it cannot
+            // vouch that every other package is clean. The database is a
+            // directory tree, admitted through [`Self::from_entries`].
+            complete: source != AdvisorySource::RustSec,
             freshness: FeedFreshness {
                 etag,
                 last_modified,

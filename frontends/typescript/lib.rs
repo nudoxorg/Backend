@@ -159,7 +159,7 @@ pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_comp
     );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::TypeScript,
-        b"tree-sitter-typescript-0.23.2/tags-v3",
+        b"tree-sitter-typescript-0.23.2/tags-v4",
         vec![
             backend_compile::GrammarVariant::new(
                 &["ts", "mts", "cts", "js", "mjs", "cjs"],

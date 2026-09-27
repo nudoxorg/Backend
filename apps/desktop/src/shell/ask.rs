@@ -3,7 +3,8 @@
 //! Typing asks the store for a search through the read pool (latest wins:
 //! a newer query supersedes the older one, whose rows never land). The list
 //! re-renders only when its own query's page lands. With an empty field the
-//! list is the trail you walked, nearest first.
+//! list waits for a question (the jump bar's back menu holds where you
+//! have been).
 //!
 //! PLACEHOLDER frame: the dialog plate is composed from facet primitives
 //! until `facet::overlay::float` exports the dialog; the field is
@@ -45,7 +46,6 @@ pub(crate) struct Ask {
     input: Entity<InputState>,
     query: Option<SearchQuery>,
     /// Trail mode: the list is history, not results.
-    trail: bool,
     selected: usize,
     renders: u64,
     pending: Option<Task<()>>,
@@ -75,7 +75,6 @@ impl Ask {
             links,
             input,
             query: None,
-            trail: false,
             selected: 0,
             renders: 0,
             pending: None,
@@ -87,9 +86,8 @@ impl Ask {
         self.renders
     }
 
-    /// Opens fresh: empty field, focused; `trail` lists history.
-    pub(crate) fn opened(&mut self, trail: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.trail = trail;
+    /// Opens fresh: empty field, focused.
+    pub(crate) fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = 0;
         self.query = None;
         self.pending = None;
@@ -106,7 +104,6 @@ impl Ask {
         if query == self.query {
             return;
         }
-        self.trail = false;
         self.query = query.clone();
         cx.notify();
         let Some(query) = query else {
@@ -143,9 +140,6 @@ impl Ask {
     }
 
     fn choices(&self, cx: &App) -> Vec<Choice> {
-        if self.trail || self.query.is_none() {
-            return self.trail_choices(cx);
-        }
         let Some(query) = &self.query else {
             return Vec::new();
         };
@@ -155,34 +149,6 @@ impl Ask {
             .loaded_value()
             .map(|page| page.rows.iter().map(result_choice).collect())
             .unwrap_or_default()
-    }
-
-    fn trail_choices(&self, cx: &App) -> Vec<Choice> {
-        let snapshot = self.links.snapshot(cx);
-        snapshot
-            .session()
-            .back
-            .to_vec()
-            .into_iter()
-            .filter_map(|route| {
-                let (name, place) = match &route {
-                    Route::Symbol(symbol) => {
-                        let identity = backend_present::Identity::parse(symbol.id.as_str());
-                        (identity.name().to_owned(), identity.to_string())
-                    }
-                    Route::Package(package) => (package.package.as_str().to_owned(), "package".to_owned()),
-                    Route::Orbit(_) | Route::World => return None,
-                };
-                Some(Choice {
-                    name: name.into(),
-                    place: place.into(),
-                    reason: "a trail you walked".into(),
-                    kind: icons::Kind::Unknown,
-                    route: Some(route),
-                })
-            })
-            .take(12)
-            .collect()
     }
 
     /// Whether a search for the current query is still on its way.
@@ -235,8 +201,8 @@ impl Render for Ask {
         let measure = Measure::new(width, &facet);
         let choices = self.choices(cx);
         let searching = self.searching(cx);
-        let count: SharedString = if self.trail || self.query.is_none() {
-            "your trail".into()
+        let count: SharedString = if self.query.is_none() {
+            "a name, a shape, or a question".into()
         } else if searching {
             "asking…".into()
         } else {

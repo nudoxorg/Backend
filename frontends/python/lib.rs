@@ -31,7 +31,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::Python,
-        b"tree-sitter-python-0.25.0/tags-v2",
+        b"tree-sitter-python-0.25.0/tags-v3",
         vec![GrammarVariant::new(
             &["py", "pyi", "pyw"],
             tree_sitter_python::LANGUAGE.into(),

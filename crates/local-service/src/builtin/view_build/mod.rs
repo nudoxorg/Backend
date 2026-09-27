@@ -464,6 +464,279 @@ pub fn execute() {}
         })
     }
 
+    /// Encodes one image whose declarations carry the attribute and
+    /// documentation planes a producer captured, under `profile`.
+    fn facts_image(
+        profile: LanguageProfile,
+        tool: NativeTool,
+        items: &[TreeItemInput<'_>],
+    ) -> Result<Vec<u8>, String> {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"facts-source"),
+            byte_len: 14,
+        };
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            tool,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"facts-toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:generic/facts@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, FIXTURE_PATH)
+            .map_err(|error| error.to_string())?;
+        let versions = (0..items.len())
+            .map(|index| fixture_version(u8::try_from(index + 1).unwrap_or(u8::MAX)))
+            .collect::<Vec<_>>();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items,
+                links: &[],
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn image_rows(bytes: &[u8], profile: LanguageProfile) -> Result<Vec<Row>, String> {
+        let view = SemanticImageView::reopen(bytes).map_err(|error| error.to_string())?;
+        let project = IndexedProject {
+            package: package_key("fixture"),
+            label: "fixture".to_owned(),
+            files: Arc::<[[u8; 32]]>::from([]),
+        };
+        let (initial, _) = initial_view().map_err(|e| e.to_string())?;
+        let mut symbols = BTreeSet::new();
+        let mut rows = Vec::new();
+        let mut remaining = usize::MAX;
+        let mut sink = super::SemanticRowSink {
+            initial: &initial,
+            symbols: &mut symbols,
+            rows: &mut rows,
+            capacity: 64,
+            remaining_bytes: &mut remaining,
+            stale: false,
+            path: FIXTURE_PATH,
+            site_declarations: &[],
+        };
+        super::append_image_rows(&view, &project, profile, &mut sink)
+            .map_err(|error| error.to_string())?;
+        Ok(rows)
+    }
+
+    fn captured_planes(parentage: ParentageAuthority) -> EntityAuthorityFacts {
+        EntityAuthorityFacts {
+            attributes: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            ..fixture_authority(parentage)
+        }
+    }
+
+    fn rendered_deprecation(row: &Row) -> String {
+        match &row.facts.deprecation {
+            backend_compile::Fact::Unobserved => "unobserved".to_owned(),
+            backend_compile::Fact::Absent => "absent".to_owned(),
+            backend_compile::Fact::Present(notice) => {
+                format!("since {:?} note {:?}", notice.since(), notice.note())
+            }
+        }
+    }
+
+    #[test]
+    fn a_semantic_row_reads_deprecation_from_its_captured_attributes_and_docs()
+    -> Result<(), String> {
+        use backend_semantic::ir::DocInput;
+        let profile = LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java17);
+        let docs = [
+            DocInput::Text("Makes one."),
+            DocInput::SoftBreak,
+            DocInput::Text("@deprecated use Fresh instead"),
+        ];
+        let attributes: [&[u8]; 1] = [br#"@java.lang.Deprecated(since="9", forRemoval=true)"#];
+        let items = [
+            TreeItemInput {
+                name: b"make",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: captured_planes(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &docs,
+                attributes: &attributes,
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"fresh",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: captured_planes(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"blind",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: fixture_authority(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        let rows = image_rows(&facts_image(profile, NativeTool::JavaCompiler, &items)?, profile)?;
+        assert_eq!(
+            rendered_deprecation(row_named(&rows, "make")?),
+            r#"since Some("9") note Some("use Fresh instead")"#
+        );
+        assert_eq!(rendered_deprecation(row_named(&rows, "fresh")?), "absent");
+        assert_eq!(
+            rendered_deprecation(row_named(&rows, "blind")?),
+            "unobserved",
+            "an authority that captured no attribute plane observed nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_go_interface_method_is_required_and_a_deprecated_paragraph_is_read() -> Result<(), String>
+    {
+        use backend_semantic::ir::DocInput;
+        let profile = LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go124);
+        let docs = [
+            DocInput::Text("Old makes one."),
+            DocInput::SoftBreak,
+            DocInput::SoftBreak,
+            DocInput::Text("Deprecated: use New."),
+        ];
+        let documented = EntityAuthorityFacts {
+            documentation: FactAvailability::Captured,
+            ..fixture_authority(ParentageAuthority::Root)
+        };
+        let items = [
+            TreeItemInput {
+                name: b"Shape",
+                kind: ItemKind::Trait,
+                visibility: Visibility::Public,
+                authority: documented,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"Area",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: EntityAuthorityFacts {
+                    documentation: FactAvailability::Captured,
+                    ..fixture_authority(fixture_identity(1))
+                },
+                parent: Some(TreeEntityId::new(0)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"Old",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: documented,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &docs,
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        let rows = image_rows(&facts_image(profile, NativeTool::GoCompiler, &items)?, profile)?;
+        let area = row_named(&rows, "Area")?;
+        assert_eq!(
+            area.facts.obligation,
+            backend_compile::Fact::Present(backend_compile::Obligation::Required)
+        );
+        let old = row_named(&rows, "Old")?;
+        assert_eq!(old.facts.obligation, backend_compile::Fact::Absent);
+        assert_eq!(rendered_deprecation(old), r#"since None note Some("use New.")"#);
+        Ok(())
+    }
+
+    #[test]
+    fn a_structural_row_carries_its_facts_and_no_invented_documentation() -> Result<(), String> {
+        let frontend = backend_frontend_rust::syntax_frontend().map_err(|e| e.to_string())?;
+        let source = "/// Makes one.\n#[deprecated(since = \"1.2.0\", note = \"use `fresh`\")]\npub fn stale() {}\n\npub fn bare() {}\n";
+        let analysis = frontend
+            .analyze(std::path::Path::new(FIXTURE_PATH), source.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let project_key = [9u8; 32];
+        let sources = structural_sources(
+            project_key,
+            FIXTURE_PATH,
+            backend_engine::SourceLanguage::Rust,
+            analysis.declarations().clone(),
+        )?;
+        let (initial, _) = initial_view().map_err(|e| e.to_string())?;
+        let structural_plan =
+            StructuralProjectionPlan::of(&sources, &BTreeSet::new()).map_err(|e| e.to_string())?;
+        let targets = super::SemanticTargets::default();
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            64,
+            &targets,
+            &structural_plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|e| e.to_string())?;
+        for (key, file) in &sources.files {
+            projection
+                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+                .map_err(|e| e.to_string())?;
+        }
+        let rows = projection.finish(Vec::new()).map_err(|e| e.to_string())?;
+        let stale = row_named(&rows, "stale")?;
+        assert_eq!(
+            rendered_deprecation(stale),
+            r#"since Some("1.2.0") note Some("use `fresh`")"#
+        );
+        assert_eq!(
+            stale.document.as_ref(),
+            &[backend_engine::Fragment::Text("Makes one.".to_owned())]
+        );
+        let bare = row_named(&rows, "bare")?;
+        assert_eq!(rendered_deprecation(bare), "absent");
+        assert!(
+            bare.document.is_empty(),
+            "an undocumented declaration has an empty document, not {:?}",
+            bare.document
+        );
+        Ok(())
+    }
+
     #[test]
     fn duplicate_structural_coordinates_keep_each_identity_and_close_parent_edges()
     -> Result<(), String> {

@@ -60,6 +60,12 @@ pub(crate) const SCENES: &[Scene] = &[
         build: float_edges_sides,
     },
     Scene {
+        id: "text-wrap-link",
+        title: "A rest-able prose link whose text wraps across lines: its hairline must run under each line it occupies, not stretch to the first line's right edge.",
+        size: (260, 200),
+        build: text_wrap_link,
+    },
+    Scene {
         id: "float-rise",
         title: "Film: a peek opens at 1 ms and rises",
         size: (900, 520),
@@ -736,6 +742,50 @@ fn float_edges_sides(window: &mut Window, cx: &mut App) -> AnyView {
         cx,
     );
     view.into()
+}
+
+/// A rest-able prose link, narrow enough that its own text wraps across
+/// lines: proof for `range_rects` (`overlay/text.rs`) that a linked range's
+/// hairline (and hit rect) is drawn once per line it occupies, not
+/// stretched from its start to the first line's right edge.
+struct WrapLink;
+
+impl Render for WrapLink {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let facet = cx.facet();
+        let palette = facet.palette();
+        let measure = Measure::new(px(120.0 * facet.text_scale), &facet);
+        let content = super::text::prose(
+            "wrap-link-prose",
+            "`Chain Walk Traversal Order Detail`",
+            crate::tokens::ty::BODY,
+            &measure,
+        )
+        .color(palette.ink1)
+        .links(|text: &str, _occurrence: usize| {
+            (text == "Chain Walk Traversal Order Detail").then(|| {
+                Link::new(key("wrap-link"), |rect: Bounds<Pixels>| {
+                    let content = tooltip::content(tooltip::TipText {
+                        title: None,
+                        body: "Wrapped-link hairline proof.".into(),
+                        chord: vec![],
+                    });
+                    FloatRequest::new(key("wrap-link"), rect, FloatKind::Tip, content).side(Side::Below)
+                })
+            })
+        });
+        div()
+            .relative()
+            .size_full()
+            .bg(palette.g0.hsla())
+            .child(ground())
+            .child(div().absolute().left(px(20.0)).top(px(20.0)).w(px(120.0)).child(content))
+            .child(float::layer(window, cx))
+    }
+}
+
+fn text_wrap_link(_window: &mut Window, cx: &mut App) -> AnyView {
+    cx.new(|_| WrapLink).into()
 }
 
 fn film_rise(window: &mut Window, cx: &mut App) -> AnyView {

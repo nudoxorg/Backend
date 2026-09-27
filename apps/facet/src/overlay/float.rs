@@ -544,6 +544,68 @@ pub fn reported(key: &ElementId, window: &Window, cx: &mut App) -> Option<Bounds
         .map(|report| report.bounds)
 }
 
+/// Trigger keys whose anchors the layer still needs: every open card and
+/// pending hover intent. A virtual canvas must resolve all of these each
+/// frame, including a source card protected while another trigger is
+/// deferred by pointer aim. Leaving cards and pinned rows need no anchor.
+#[must_use]
+pub fn live_triggers(window: &Window, cx: &mut App) -> Vec<ElementId> {
+    let layer = state(window, cx);
+    let layer = layer.borrow();
+    let mut keys: Vec<ElementId> = layer
+        .model
+        .cards()
+        .filter(|card| card.is_open())
+        .map(|card| card.key.clone())
+        .collect();
+    for pending in [layer.model.pending(), layer.model.tip_pending()]
+        .into_iter()
+        .flatten()
+    {
+        if !keys.contains(&pending.request.key) {
+            keys.push(pending.request.key.clone());
+        }
+    }
+    keys
+}
+
+#[cfg(test)]
+pub(crate) fn aimed_pending(key: &ElementId, window: &Window, cx: &mut App) -> bool {
+    state(window, cx)
+        .borrow()
+        .model
+        .pending()
+        .is_some_and(|pending| pending.request.key == *key && pending.aimed)
+}
+
+/// A virtual canvas resolved a requested anchor and found that the exact
+/// trigger no longer exists in its mounted scene. Unlike pointer leave,
+/// this closes its card and cancels its pending intent even during aim or
+/// card hover. Call only after checking the original trigger's identity.
+pub fn anchor_gone(key: &ElementId, window: &mut Window, cx: &mut App) {
+    let changed = {
+        let layer = state(window, cx);
+        let mut layer = layer.borrow_mut();
+        layer.triggers.remove(key);
+        layer
+            .model
+            .cards()
+            .any(|card| card.is_open() && card.key == *key)
+            || [layer.model.pending(), layer.model.tip_pending()]
+                .into_iter()
+                .flatten()
+                .any(|pending| pending.request.key == *key)
+    };
+    with_model(window, cx, |model, now| {
+        model.triggers_gone(|candidate| candidate == key, now)
+    });
+    // Virtual anchors are resolved during prepaint, when a host notify by
+    // itself cannot invalidate the already drawing frame.
+    if changed {
+        motion::request_frame(window, cx);
+    }
+}
+
 /// Whether a card for `key` is open (triggers may draw themselves "lit").
 #[must_use]
 pub fn is_open(key: &ElementId, window: &Window, cx: &mut App) -> bool {

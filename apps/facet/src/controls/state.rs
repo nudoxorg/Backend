@@ -17,7 +17,7 @@ use crate::probe::{self, Target};
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, Entity, FocusHandle, Global,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
-    MouseExitEvent, MouseMoveEvent, Pixels, Point, Window, WindowId,
+    MouseButton, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Window, WindowId,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -446,6 +446,20 @@ impl Element for HoverZone {
             window.on_mouse_event(move |_: &MouseExitEvent, phase, _window, cx| {
                 if phase == DispatchPhase::Bubble && painted.replace(false) {
                     set_hovered(&entity, false, cx);
+                }
+            });
+        }
+        {
+            // The button came up somewhere: the press is over, even when
+            // something above (a menu this press opened) takes the event
+            // before the control's own mouse-up could see it.
+            let entity = entity.clone();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+                if phase == DispatchPhase::Capture
+                    && event.button == MouseButton::Left
+                    && entity.read(cx).pressed
+                {
+                    set_pressed(&entity, false, cx);
                 }
             });
         }

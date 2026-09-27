@@ -275,6 +275,16 @@ struct Decl<'source> {
     expanded: bool,
 }
 
+/// The path an attribute's meta names (`deprecated` in `#[deprecated(…)]`).
+fn meta_path(meta: &ast::Meta) -> Option<ast::Path> {
+    match meta {
+        ast::Meta::KeyValueMeta(meta) => meta.path(),
+        ast::Meta::PathMeta(meta) => meta.path(),
+        ast::Meta::TokenTreeMeta(meta) => meta.path(),
+        ast::Meta::CfgAttrMeta(_) | ast::Meta::CfgMeta(_) | ast::Meta::UnsafeMeta(_) => None,
+    }
+}
+
 /// Canonical positional names of tuple fields, exactly the spellings Rust
 /// itself uses for `.0`-style access. The table covers every `u8` index so
 /// a tuple struct wider than sixteen fields keeps those fields.
@@ -520,6 +530,54 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
         self.emit_computed()?;
         self.emit_docs(&declarations)?;
         self.emit_reexport_docs()?;
+        self.emit_attributes(&declarations)?;
+        Ok(())
+    }
+
+    /// Stages the attributes a reader weighs, exactly as written, on every
+    /// declaration the written walk owns: `#[deprecated]` in each of its
+    /// spellings. The item attribute plane is then captured for that row,
+    /// so "written with no such attribute" is a statement, not a guess. An
+    /// expansion-made declaration has no written attributes here, and a row
+    /// whose attribute text cannot be borrowed from the source stays
+    /// unobserved rather than claiming it has none.
+    fn emit_attributes(&mut self, declarations: &[Decl<'source>]) -> Result<(), RustAuthorityError> {
+        for (index, declaration) in declarations.iter().enumerate() {
+            let Some(Some(owner)) = self.ordinals.get(index).copied() else {
+                continue;
+            };
+            if declaration.expanded {
+                continue;
+            }
+            let Some(item) = ast::AnyHasAttrs::cast(declaration.syntax.clone()) else {
+                continue;
+            };
+            let mut written = Vec::new();
+            let mut readable = true;
+            for attribute in item.attrs() {
+                let Some(meta) = attribute.meta() else {
+                    continue;
+                };
+                if !meta_path(&meta).is_some_and(|path| path.syntax().text() == "deprecated") {
+                    continue;
+                }
+                match self.bytes_of_node(meta.syntax()) {
+                    Ok(bytes) => written.push(bytes),
+                    Err(_) => readable = false,
+                }
+            }
+            if !readable {
+                continue;
+            }
+            let mut atoms = Vec::with_capacity(written.len());
+            for bytes in written {
+                atoms.push(self.facts.intern_atom(bytes).map_err(|_| admission())?);
+            }
+            let list = self.facts.intern_atom_list(&atoms).map_err(|_| admission())?;
+            self.facts
+                .attach_item_attributes(owner as usize, list)
+                .map_err(|_| admission())?;
+        }
         Ok(())
     }
 
@@ -3642,7 +3700,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                 let authority = self.authority;
                 let emitter = &*self;
                 authority.visit_documentation(&declaration.syntax, |line| {
-                    if let Some(span) = emitter.span_of_text(line)
+                    // An empty line has no bytes to borrow, but it is the
+                    // paragraph break, so it is kept as one.
+                    if line.is_empty() {
+                        lines.push(&[]);
+                    } else if let Some(span) = emitter.span_of_text(line)
                         && let Ok(bytes) = emitter.bytes_of(span)
                     {
                         lines.push(bytes);
@@ -3655,6 +3717,13 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     }
 
     /// Pushes the borrowed doc lines of one declaration as fragments.
+    ///
+    /// Every line boundary is one soft break and an empty line contributes
+    /// only its break, the convention every other lowering follows: two
+    /// breaks in a row end a paragraph. Pushing a break only for an empty
+    /// line glued each line of a paragraph onto the next (`one line.Next
+    /// line`) and left a `# Errors` heading indistinguishable from the prose
+    /// before it.
     fn push_doc_lines(
         &mut self,
         owner: u32,
@@ -3662,11 +3731,11 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
     ) -> Result<(), RustAuthorityError> {
         let mut fragments: Vec<DocFragmentInput<'source>> = Vec::new();
         let mut inside_fence = false;
-        for line in lines {
+        for (at, line) in lines.iter().enumerate() {
+            if at > 0 {
+                fragments.push(DocFragmentInput::SoftBreak);
+            }
             if line.is_empty() {
-                if !matches!(fragments.last(), Some(DocFragmentInput::SoftBreak)) {
-                    fragments.push(DocFragmentInput::SoftBreak);
-                }
                 continue;
             }
             if line.starts_with(b"```") {
@@ -3829,12 +3898,14 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
             else {
                 continue;
             };
-            let mut lines = Vec::new();
+            let mut lines: Vec<&'source [u8]> = Vec::new();
             {
                 let authority = self.authority;
                 let emitter = &*self;
                 authority.visit_documentation(reexport.item.syntax(), |line| {
-                    if let Some(span) = emitter.span_of_text(line)
+                    if line.is_empty() {
+                        lines.push(&[]);
+                    } else if let Some(span) = emitter.span_of_text(line)
                         && let Ok(bytes) = emitter.bytes_of(span)
                     {
                         lines.push(bytes);

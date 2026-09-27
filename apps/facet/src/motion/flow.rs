@@ -17,19 +17,27 @@
 //!
 //! Each item keeps a spring per axis for its offset from layout (0 at rest)
 //! and the velocity its layout moves at. Every frame the layout's step is
-//! compared with what that velocity predicted (plus what carriers announce:
+//! compared with a grid-tolerant prediction (plus what carriers announce:
 //! a [presence](super::presence) slot opening or closing above it):
 //!
 //! - a step that continues the motion — slower in the same direction, or
 //!   within half of how far the item was moving anyway — is **followed**:
 //!   painted moves with the layout;
-//! - anything else is **absorbed**: the item keeps its predicted course and
+//! - anything else is **absorbed**: the item keeps its physical course and
 //!   the difference goes into its spring (value and velocity kept). That is
 //!   an epoch's jump, and equally a breakpoint nobody declared, a pixel-snap
 //!   step of a slowly creeping layout, or the first frame of a drag (the
 //!   frame that measures its speed).
 //!
-//! On an epoch frame the whole step except the prediction is absorbed, so an
+//! While its spring moves it by a grid step or more, a timed step within the
+//! layout's pixel grid is followed even when a counter-moving spring makes
+//! painted speed small. Prediction decides what
+//! counts as a jump; realized layout velocity drives paint and is published
+//! with the analytic spring velocity. A stationary layout adds no phantom
+//! motion from the predictor's rounding deadband. Same-clock draws replay
+//! that physical velocity; changing layout without time is still absorbed.
+//!
+//! On an epoch frame the whole step except the physical motion is absorbed, so an
 //! epoch in the middle of a drag springs from where the item is painted and
 //! keeps following the drag. The painted position never jumps.
 //!
@@ -137,16 +145,20 @@ impl Track {
 /// far the item was moving anyway.
 fn follows(step: f32, predicted: f32, sprung: f32) -> bool {
     let slower = step * predicted >= 0.0 && step.abs() <= predicted.abs();
-    step.abs() <= NOISE || slower || (step - predicted).abs() <= FOLLOW * (predicted + sprung).abs() + NOISE
+    step.abs() <= NOISE
+        || slower
+        || (step - predicted).abs() <= FOLLOW * (predicted + sprung).abs() + NOISE
 }
 
 /// One axis of an item's position: its spring, and how its layout moves.
 #[derive(Clone, Copy, Debug, Default)]
 struct Axis {
     spring: Track,
-    /// The layout's velocity (px/s) beyond what carriers announce, as last
-    /// measured.
+    /// Grid-tolerant layout velocity beyond carriers, used to predict steps.
     velocity: f32,
+    /// The layout velocity actually realized by the last timed placement.
+    /// Kept separate from the grid-tolerant predictor and replayed at dt=0.
+    actual_velocity: f32,
 }
 
 impl Axis {
@@ -163,12 +175,30 @@ impl Axis {
         epoch: bool,
     ) -> bool {
         let dt = now.saturating_duration_since(then).as_secs_f32();
-        // What it was moving at, as published last frame; and what its
-        // spring did meanwhile.
+        // Prediction classifies layout changes; physical motion determines
+        // where a compensated jump paints. The spring's phase is shared.
         let predicted = (self.velocity + was) * dt;
+        let physical = (self.actual_velocity + was) * dt;
         #[allow(clippy::cast_possible_truncation)]
-        let sprung = (self.spring.sample(spring, now).offset - self.spring.sample(spring, then).offset) as f32;
-        let followed = !epoch && follows(step, predicted, sprung);
+        let sprung = (self.spring.sample(spring, now).offset
+            - self.spring.sample(spring, then).offset) as f32;
+        // Within the pixel grid of its prediction a step is followed while
+        // the spring moves it by at least that much anyway (a counter-moving
+        // spring can make the painted speed small); otherwise a grid step is
+        // a jump to absorb (a slowly creeping layout stays smooth).
+        let followed = !epoch
+            && (follows(step, predicted, sprung)
+                || (dt > 0.0 && sprung.abs() >= grid && (step - predicted).abs() <= grid + NOISE));
+        if followed && dt > 0.0 {
+            // A compensated jump is not layout motion. For a followed step,
+            // carriers explain the share between their two announced rates;
+            // use the smallest remaining share, without a grid deadband.
+            // This preserves a carrier's first announced velocity and leaves
+            // a stationary, uncarried target with exactly zero layout speed.
+            let low = step / dt - was.max(carry);
+            let high = step / dt - was.min(carry);
+            self.actual_velocity = 0.0_f32.clamp(low, high);
+        }
         // An epoch's jump is not motion; anything else between frames is.
         // The layout's own share of the step is known only within bounds:
         // the carriers moved it by somewhere between their velocities at the
@@ -182,7 +212,7 @@ impl Axis {
             let high = step + grid - was.min(carry) * dt;
             self.velocity = (self.velocity * dt).clamp(low, high) / dt;
         }
-        !followed && self.spring.rebase(spring, now, predicted - step)
+        !followed && self.spring.rebase(spring, now, physical - step)
     }
 }
 
@@ -199,10 +229,12 @@ struct Record {
     seen: u64,
     /// When it was last placed.
     at: Instant,
-    /// The probe's current segment: when it started, its settle budget, and
-    /// whether its target moves (then it has no step-response bound). Every
-    /// rebase starts a new one, and so does a target that starts moving.
-    segment: Option<Segment>,
+    /// The probe's current segment per axis (x, y): when it started, its
+    /// settle budget, and whether its target moves (then it has no
+    /// step-response bound). A rebase of that axis starts a new one, and so
+    /// does a target that starts moving. Axes are separate probe tracks, so
+    /// a pixel-snap step absorbed on one never restarts the other.
+    segment: [Option<Segment>; 2],
     /// A live sample went to the probe; the settle sends a final one.
     reported: bool,
     /// Where it was last published.
@@ -238,12 +270,15 @@ pub(crate) struct Placement {
     pub(crate) live: bool,
     /// Velocity of the offset (its spring), px/s.
     spring: Point<f32>,
-    /// Velocity of its layout beyond what carriers announce, px/s.
+    /// Predicted layout velocity beyond carriers, for descendant prediction.
     velocity: Point<f32>,
+    /// Realized layout velocity beyond the current carrier, for publication.
+    actual_velocity: Point<f32>,
     /// Whether the spring was rebased this frame (a new probe segment).
     rebased: bool,
-    /// The probe segment it is in, if its spring is live.
-    segment: Option<Segment>,
+    /// Per axis (x, y): whether its spring is live, and the probe segment it
+    /// is in.
+    axes: [(bool, Option<Segment>); 2],
 }
 
 /// The pure model: per-key tracks on an explicit clock.
@@ -321,7 +356,7 @@ impl Model {
             carry,
             seen: generation,
             at: now,
-            segment: None,
+            segment: [None, None],
             reported: false,
             shown: point(f32::from(layout.origin.x), f32::from(layout.origin.y)),
         });
@@ -332,18 +367,30 @@ impl Model {
         );
         // Reduced motion follows everything (the springs are cleared below).
         let (then, grid) = (record.at, self.grid);
-        let mut rebased = record.x.place(spring, (then, now), (step.x, grid), (record.carry.x, carry.x), epoch);
-        rebased |= record.y.place(spring, (then, now), (step.y, grid), (record.carry.y, carry.y), epoch);
+        let mut rebased_x = record.x.place(
+            spring,
+            (then, now),
+            (step.x, grid),
+            (record.carry.x, carry.x),
+            epoch,
+        );
+        let mut rebased_y = record.y.place(
+            spring,
+            (then, now),
+            (step.y, grid),
+            (record.carry.y, carry.y),
+            epoch,
+        );
         if epoch && !reduced && resize == Resize::Scale {
             let (dw, dh) = (
                 f32::from(record.layout.size.width - layout.size.width),
                 f32::from(record.layout.size.height - layout.size.height),
             );
             if dw.abs() >= JUMP {
-                rebased |= record.w.rebase(spring, now, dw);
+                rebased_x |= record.w.rebase(spring, now, dw);
             }
             if dh.abs() >= JUMP {
-                rebased |= record.h.rebase(spring, now, dh);
+                rebased_y |= record.h.rebase(spring, now, dh);
             }
         }
         record.layout = layout;
@@ -363,33 +410,50 @@ impl Model {
         let (y, vy) = record.y.spring.advance(spring, now);
         let (w, _) = record.w.advance(spring, now);
         let (h, _) = record.h.advance(spring, now);
-        let tracks = [record.x.spring, record.y.spring, record.w, record.h];
-        let live = tracks.iter().any(|track| track.moving.is_some());
-        let drifting = (carried.total.x + record.x.velocity).abs() + (carried.total.y + record.y.velocity).abs() > NOISE;
-        self.drifting |= drifting;
+        let live = [record.x.spring, record.y.spring, record.w, record.h]
+            .iter()
+            .any(|track| track.moving.is_some());
+        let drifting = [
+            (carried.total.x + record.x.velocity).abs() > NOISE,
+            (carried.total.y + record.y.velocity).abs() > NOISE,
+        ];
+        self.drifting |= drifting[0] || drifting[1];
         // An epoch while the layout is moving (a class change mid-drag)
         // springs towards targets that keep moving.
-        let drifting = drifting || (epoch && self.drifted);
-        record.segment = match record.segment {
-            _ if !live => None,
-            Some(segment) if !rebased && (segment.drifting || !drifting) => Some(segment),
-            _ => {
-                // A new segment from here: the settle time from the phase now.
-                let budget = tracks
-                    .iter()
-                    .map(|track| {
-                        let phase = track.sample(spring, now);
-                        Duration::from_secs_f64(spring.settle_time(phase, REST))
+        let moving_scope = epoch && self.drifted;
+        let mut axes = [(false, None); 2];
+        for (index, (tracks, rebased)) in [
+            ([record.x.spring, record.w], rebased_x),
+            ([record.y.spring, record.h], rebased_y),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let axis_live = tracks.iter().any(|track| track.moving.is_some());
+            let drifting = drifting[index] || moving_scope;
+            record.segment[index] = match record.segment[index] {
+                _ if !axis_live => None,
+                Some(segment) if !rebased && (segment.drifting || !drifting) => Some(segment),
+                _ => {
+                    // A new segment from here: the settle time from the phase now.
+                    let budget = tracks
+                        .iter()
+                        .map(|track| {
+                            let phase = track.sample(spring, now);
+                            Duration::from_secs_f64(spring.settle_time(phase, REST))
+                        })
+                        .max()
+                        .unwrap_or_default();
+                    Some(Segment {
+                        started: now,
+                        budget,
+                        drifting,
                     })
-                    .max()
-                    .unwrap_or_default();
-                Some(Segment {
-                    started: now,
-                    budget,
-                    drifting,
-                })
-            }
-        };
+                }
+            };
+            axes[index] = (axis_live, record.segment[index]);
+        }
+        let rebased = rebased_x || rebased_y;
         Placement {
             offset: point(px(x), px(y)),
             grow: Size {
@@ -399,8 +463,9 @@ impl Model {
             live,
             spring: point(vx, vy),
             velocity: point(record.x.velocity, record.y.velocity),
+            actual_velocity: point(record.x.actual_velocity, record.y.actual_velocity),
             rebased: rebased && live,
-            segment: record.segment,
+            axes,
         }
     }
 
@@ -408,11 +473,13 @@ impl Model {
     pub(crate) fn is_settled(&self, now: Instant) -> bool {
         let spring = self.spring;
         self.records.values().all(|record| {
-            [record.x.spring, record.y.spring, record.w, record.h].iter().all(|track| {
-                track
-                    .moving
-                    .is_none_or(|_| spring.at_rest(track.sample(spring, now), REST))
-            })
+            [record.x.spring, record.y.spring, record.w, record.h]
+                .iter()
+                .all(|track| {
+                    track
+                        .moving
+                        .is_none_or(|_| spring.at_rest(track.sample(spring, now), REST))
+                })
         })
     }
 
@@ -435,6 +502,8 @@ pub(crate) struct Carrier {
     /// How fast it moves their layout, px/s: a presence slot pushed by rooms
     /// opening or closing before it; a flow item's own layout velocity.
     layout: Point<f32>,
+    /// The realized layout motion, distinct from its prediction for children.
+    actual_layout: Point<f32>,
     /// How fast it moves their paint offset, px/s: a flow item's spring.
     paint: Point<f32>,
 }
@@ -454,6 +523,7 @@ pub(crate) fn carried<R>(velocity: Point<f32>, f: impl FnOnce() -> R) -> R {
         stack.borrow_mut().push(Carrier {
             anchor: None,
             layout: velocity,
+            actual_layout: velocity,
             paint: point(0.0, 0.0),
         });
     });
@@ -473,6 +543,8 @@ struct Context {
     carry: Point<f32>,
     /// Velocity of everything carrying it, px/s.
     carried: Point<f32>,
+    /// Realized ancestor/carrier motion for the probe's physical velocity.
+    actual_carried: Point<f32>,
 }
 
 fn context() -> Context {
@@ -482,9 +554,11 @@ fn context() -> Context {
             offset: point(px(0.0), px(0.0)),
             carry: point(0.0, 0.0),
             carried: point(0.0, 0.0),
+            actual_carried: point(0.0, 0.0),
         };
         for carrier in stack.borrow().iter() {
             context.carried = context.carried + carrier.layout + carrier.paint;
+            context.actual_carried = context.actual_carried + carrier.actual_layout + carrier.paint;
             match carrier.anchor {
                 Some((anchor, offset)) => {
                     context.anchor = anchor;
@@ -714,7 +788,10 @@ impl gpui::Element for FlowItem {
             .child
             .as_mut()
             .map(|child| child.request_layout(window, cx));
-        (child.unwrap_or_else(|| window.request_layout(gpui::Style::default(), [], cx)), ())
+        (
+            child.unwrap_or_else(|| window.request_layout(gpui::Style::default(), [], cx)),
+            (),
+        )
     }
 
     fn prepaint(
@@ -743,10 +820,22 @@ impl gpui::Element for FlowItem {
                 total: context.carried,
             };
             inner.model.grid = 1.0 / window.scale_factor().max(1.0);
-            let placement = inner.model.place(&self.key, own, carried, self.resize, now, reduced);
+            let placement = inner
+                .model
+                .place(&self.key, own, carried, self.resize, now, reduced);
             let vanished = std::mem::take(&mut inner.model.vanished);
-            let finished = inner.model.records.get(&self.key).is_some_and(|record| record.reported && !placement.live);
-            (placement, inner.scope.clone(), inner.model.spring, finished, vanished)
+            let finished = inner
+                .model
+                .records
+                .get(&self.key)
+                .is_some_and(|record| record.reported && !placement.live);
+            (
+                placement,
+                inner.scope.clone(),
+                inner.model.spring,
+                finished,
+                vanished,
+            )
         };
         if placement.live {
             request_frame(window, cx);
@@ -763,8 +852,9 @@ impl gpui::Element for FlowItem {
                 target.x + f32::from(placement.offset.x),
                 target.y + f32::from(placement.offset.y),
             );
-            let velocity = context.carried + placement.velocity + placement.spring;
-            let moving = placement.live || placement.rebased || velocity.x.abs() + velocity.y.abs() > NOISE;
+            let velocity = context.actual_carried + placement.actual_velocity + placement.spring;
+            let moving =
+                placement.live || placement.rebased || velocity.x.abs() + velocity.y.abs() > NOISE;
             if moving || finished {
                 publish(
                     cx,
@@ -774,16 +864,18 @@ impl gpui::Element for FlowItem {
                         value,
                         target,
                         velocity,
-                        live: placement.live,
-                        started: placement.segment.map(|segment| segment.started),
-                        budget: placement.segment.map_or(Duration::ZERO, |segment| segment.budget),
-                        // A moving target has no step-response bound (the
-                        // harness's `f32::MAX`); otherwise the spring's.
-                        overshoot: if placement.segment.is_some_and(|segment| segment.drifting) {
-                            f32::MAX
-                        } else {
-                            spring.overshoot_ratio()
-                        },
+                        axes: placement.axes.map(|(live, segment)| Leg {
+                            live,
+                            started: segment.map(|segment| segment.started),
+                            budget: segment.map_or(Duration::ZERO, |segment| segment.budget),
+                            // A moving target has no step-response bound (the
+                            // harness's `f32::MAX`); otherwise the spring's.
+                            overshoot: if segment.is_some_and(|segment| segment.drifting) {
+                                f32::MAX
+                            } else {
+                                spring.overshoot_ratio()
+                            },
+                        }),
                     },
                     now,
                 );
@@ -797,22 +889,24 @@ impl gpui::Element for FlowItem {
             origin: bounds.origin + placement.offset,
             size: bounds.size,
         };
-        self.transform = if placement.grow.width.abs() > px(JUMP) || placement.grow.height.abs() > px(JUMP) {
-            let scale = Size {
-                width: f32::from(bounds.size.width + placement.grow.width)
-                    / f32::from(bounds.size.width).max(1e-3),
-                height: f32::from(bounds.size.height + placement.grow.height)
-                    / f32::from(bounds.size.height).max(1e-3),
+        self.transform =
+            if placement.grow.width.abs() > px(JUMP) || placement.grow.height.abs() > px(JUMP) {
+                let scale = Size {
+                    width: f32::from(bounds.size.width + placement.grow.width)
+                        / f32::from(bounds.size.width).max(1e-3),
+                    height: f32::from(bounds.size.height + placement.grow.height)
+                        / f32::from(bounds.size.height).max(1e-3),
+                };
+                LayerTransform::scale_about(painted.origin, scale)
+            } else {
+                LayerTransform::IDENTITY
             };
-            LayerTransform::scale_about(painted.origin, scale)
-        } else {
-            LayerTransform::IDENTITY
-        };
         *self.stack.borrow_mut() = STACK.with(|stack| {
             let mut chain = stack.borrow().clone();
             chain.push(Carrier {
                 anchor: Some((layout, placement.offset)),
                 layout: placement.velocity,
+                actual_layout: placement.actual_velocity,
                 paint: placement.spring,
             });
             chain
@@ -858,6 +952,13 @@ struct Sample {
     value: Point<f32>,
     target: Point<f32>,
     velocity: Point<f32>,
+    /// Per axis (x, y): its own probe track's segment.
+    axes: [Leg; 2],
+}
+
+/// One axis's probe segment.
+#[derive(Clone, Copy)]
+struct Leg {
     live: bool,
     started: Option<Instant>,
     budget: Duration,
@@ -868,14 +969,17 @@ impl Sample {
     /// The last word on an item that stopped being drawn mid-flight: at rest
     /// where it was last shown.
     fn gone(shown: Point<f32>) -> Self {
-        Self {
-            value: shown,
-            target: shown,
-            velocity: point(0.0, 0.0),
+        let rest = Leg {
             live: false,
             started: None,
             budget: Duration::ZERO,
             overshoot: 0.0,
+        };
+        Self {
+            value: shown,
+            target: shown,
+            velocity: point(0.0, 0.0),
+            axes: [rest, rest],
         }
     }
 }
@@ -886,14 +990,15 @@ impl Sample {
 fn publish(cx: &mut App, scope: &SharedString, key: &ElementId, sample: Sample, now: Instant) {
     let epoch = motion_epoch(cx);
     let millis = |at: Instant| at.saturating_duration_since(epoch).as_secs_f64() * 1000.0;
-    let started_ms = sample.started.map_or(0.0, millis);
-    let budget_ms = sample.budget.as_secs_f64() * 1000.0;
     let at_ms = millis(now);
     let group = probe::current_group();
-    for (axis, value, target, velocity) in [
-        ("x", sample.value.x, sample.target.x, sample.velocity.x),
-        ("y", sample.value.y, sample.target.y, sample.velocity.y),
+    let [leg_x, leg_y] = sample.axes;
+    for (axis, value, target, velocity, leg) in [
+        ("x", sample.value.x, sample.target.x, sample.velocity.x, leg_x),
+        ("y", sample.value.y, sample.target.y, sample.velocity.y, leg_y),
     ] {
+        let started_ms = leg.started.map_or(0.0, millis);
+        let budget_ms = leg.budget.as_secs_f64() * 1000.0;
         probe::record_track(cx, || TrackSample {
             key: format!("{scope}.{key}.{axis}"),
             kind: TrackKind::Spring,
@@ -903,8 +1008,8 @@ fn publish(cx: &mut App, scope: &SharedString, key: &ElementId, sample: Sample, 
             started_ms,
             budget_ms,
             at_ms,
-            live: sample.live,
-            overshoot_ratio: sample.overshoot,
+            live: leg.live,
+            overshoot_ratio: leg.overshoot,
             overshoot_absolute: 0.0,
             group: group.clone(),
         });
@@ -914,7 +1019,8 @@ fn publish(cx: &mut App, scope: &SharedString, key: &ElementId, sample: Sample, 
 #[cfg(test)]
 #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
 mod tests {
-    use super::{Carry, Model, Placement, Resize};
+    use super::{Axis, Carry, Model, Placement, Resize, Segment, Track};
+    use crate::motion::spring::{Phase, SNAPPY};
     use gpui::{Bounds, ElementId, Pixels, Point, point, px, size};
     use std::time::{Duration, Instant};
 
@@ -951,6 +1057,200 @@ mod tests {
     }
 
     #[test]
+    fn a_stationary_target_publishes_its_analytic_spring_velocity_without_prediction_drift() {
+        let t0 = Instant::now();
+        let key = ElementId::Integer(4);
+        let mut model = Model::new();
+        model.grid = 0.5;
+        model.frame(7);
+        model.place(&key, at(100.0, 50.0), still(), Resize::Snap, t0, false);
+        // The mounted drag fixture at 864ms: layout is stationary but its
+        // prediction still occupies the -0.5px/16ms rounding deadband.
+        let origin = Phase {
+            offset: -0.7877426147460938,
+            velocity: 54.9588508605957,
+        };
+        let record = model.records.get_mut(&key).expect("placed record exists");
+        record.x.velocity = -31.25;
+        record.x.actual_velocity = -31.25;
+        record.x.spring.moving = Some((origin, t0));
+        for elapsed in [16, 32] {
+            let now = t0 + ms(elapsed);
+            let expected = SNAPPY.step(origin, elapsed as f64 / 1000.0);
+            model.frame(7);
+            let p = model.place(&key, at(100.0, 50.0), still(), Resize::Snap, now, false);
+            assert!(
+                (p.velocity.x + 31.25).abs() < 1e-3,
+                "the predictor is retained for pixel rounding"
+            );
+            assert_eq!(p.actual_velocity.x, 0.0);
+            assert!(
+                (f64::from(p.actual_velocity.x + p.spring.x) - expected.velocity).abs() < 1e-3,
+                "the physical velocity must match the analytic trajectory: {p:?} vs {expected:?}"
+            );
+            assert!((f64::from(p.offset.x) - expected.offset).abs() < 1e-4);
+            assert!(
+                expected.velocity > 0.0,
+                "the returning spring is moving right"
+            );
+            model.frame(7);
+            let duplicate = model.place(&key, at(100.0, 50.0), still(), Resize::Snap, now, false);
+            assert_eq!(duplicate.actual_velocity, p.actual_velocity);
+            assert_eq!(
+                duplicate.spring, p.spring,
+                "a same-clock draw replays the physical phase"
+            );
+        }
+    }
+
+    #[test]
+    fn pixel_rounding_during_spring_cancellation_keeps_the_analytic_segment() {
+        let t0 = Instant::now();
+        let key = ElementId::Integer(2);
+        let mut model = Model::new();
+        model.grid = 0.5;
+        model.frame(7);
+        model.place(&key, at(206.0, 0.0), still(), Resize::Snap, t0, false);
+        // The mounted fixture at 336ms: the spring counters the drag, so
+        // painted speed is small although layout still moves 3px/frame.
+        let origin = Phase {
+            offset: -6.8524322509765625,
+            velocity: -178.0734100341797,
+        };
+        let record = model.records.get_mut(&key).expect("placed record exists");
+        record.x.velocity = 156.25;
+        record.x.actual_velocity = 187.5;
+        record.x.spring.moving = Some((origin, t0));
+        record.segment[0] = Some(Segment {
+            started: t0,
+            budget: ms(500),
+            drifting: true,
+        });
+        let now = t0 + ms(16);
+        let expected = SNAPPY.step(origin, 0.016);
+        model.frame(7);
+        let p = model.place(&key, at(209.0, 0.0), still(), Resize::Snap, now, false);
+        assert!(
+            !p.rebased,
+            "half a grid pixel is rounding, not a layout interruption: {p:?}"
+        );
+        assert_eq!(p.axes[0].1.expect("active segment survives rounding").started, t0);
+        assert!((f64::from(p.offset.x) - expected.offset).abs() < 1e-4);
+        assert!(
+            (p.actual_velocity.x - 187.5).abs() < 1e-3,
+            "the realized 3px/16ms layout motion is published"
+        );
+        assert!((f64::from(p.spring.x) - expected.velocity).abs() < 1e-3);
+    }
+
+    #[test]
+    fn grid_uncertainty_does_not_follow_same_clock_epochs_or_real_jumps() {
+        let t0 = Instant::now();
+        let origin = Phase {
+            offset: -6.8524322509765625,
+            velocity: -178.0734100341797,
+        };
+        for (elapsed, step, epoch) in [(0, 0.5, false), (16, 2.5, true), (16, 6.0, false)] {
+            let mut axis = Axis {
+                spring: Track {
+                    moving: Some((origin, t0)),
+                },
+                velocity: 156.25,
+                actual_velocity: 187.5,
+            };
+            let now = t0 + ms(elapsed);
+            let phase = SNAPPY.step(origin, elapsed as f64 / 1000.0);
+            let physical = 187.5 * elapsed as f32 / 1000.0;
+            assert!(axis.place(SNAPPY, (t0, now), (step, 0.5), (0.0, 0.0), epoch));
+            let after = axis.spring.sample(SNAPPY, now);
+            assert!((after.offset - (phase.offset + f64::from(physical - step))).abs() < 1e-5);
+            assert!(
+                (after.velocity - phase.velocity).abs() < 1e-5,
+                "interruptions retain spring momentum"
+            );
+            assert_eq!(
+                axis.actual_velocity, 187.5,
+                "a compensated jump cannot become layout velocity"
+            );
+        }
+    }
+
+    #[test]
+    fn absorbed_layout_jumps_follow_the_physical_trajectory_instead_of_the_grid_predictor() {
+        let t0 = Instant::now();
+        let origin = Phase {
+            offset: -6.8524322509765625,
+            velocity: -178.0734100341797,
+        };
+        let mut axis = Axis {
+            spring: Track {
+                moving: Some((origin, t0)),
+            },
+            velocity: 156.25,
+            actual_velocity: 187.5,
+        };
+        let now = t0 + ms(16);
+        assert!(axis.place(SNAPPY, (t0, now), (6.0, 0.5), (0.0, 0.0), false));
+        let after = axis.spring.sample(SNAPPY, now);
+        let expected = SNAPPY.step(origin, 0.016);
+        let painted = 206.0 + 6.0 + after.offset;
+        let physical_course = 206.0 + 187.5 * 0.016 + expected.offset;
+        assert!((painted - physical_course).abs() < 1e-5);
+        assert!((after.velocity - expected.velocity).abs() < 1e-5);
+        assert!(
+            (f64::from(axis.actual_velocity) + after.velocity - (187.5 + expected.velocity)).abs()
+                < 1e-5
+        );
+        // Replaying the same clock must not replace physical momentum with
+        // the predictor newly learned from the discontinuous layout jump.
+        assert!(!axis.place(SNAPPY, (now, now), (0.0, 0.5), (0.0, 0.0), false));
+        assert_eq!(axis.actual_velocity, 187.5);
+        assert_eq!(axis.spring.sample(SNAPPY, now), after);
+    }
+
+    #[test]
+    fn nested_carriers_publish_the_derivative_of_the_composed_physical_trajectory() {
+        let outer = Phase {
+            offset: -20.0,
+            velocity: -100.0,
+        };
+        let inner = Phase {
+            offset: -4.0,
+            velocity: 60.0,
+        };
+        let t = 0.08;
+        let a = SNAPPY.step(outer, t);
+        let b = SNAPPY.step(inner, t);
+        let stack = vec![
+            super::Carrier {
+                anchor: Some((origin(), point(px(a.offset as f32), px(0.0)))),
+                layout: point(156.25, 0.0),
+                actual_layout: point(187.5, 0.0),
+                paint: point(a.velocity as f32, 0.0),
+            },
+            super::Carrier {
+                anchor: Some((origin(), point(px(b.offset as f32), px(0.0)))),
+                layout: point(-31.25, 0.0),
+                actual_layout: point(0.0, 0.0),
+                paint: point(b.velocity as f32, 0.0),
+            },
+        ];
+        let saved = super::STACK.with(|current| current.replace(stack));
+        let context = super::context();
+        super::STACK.with(|current| current.replace(saved));
+        let physical_position =
+            |time| 187.5 * time + SNAPPY.step(outer, time).offset + SNAPPY.step(inner, time).offset;
+        let h = 1e-6;
+        let derivative = (physical_position(t + h) - physical_position(t - h)) / (2.0 * h);
+        assert!((f64::from(context.actual_carried.x) - derivative).abs() < 1e-3);
+        assert!((f64::from(context.offset.x) - (a.offset + b.offset)).abs() < 1e-4);
+        assert_eq!(
+            context.carry.x, 0.0,
+            "an inner flow measures layout from its own ancestor"
+        );
+    }
+
+    #[test]
     fn an_epoch_starts_where_it_was_painted_and_settles_exactly_on_layout() {
         let t0 = Instant::now();
         let key = ElementId::Integer(1);
@@ -961,7 +1261,11 @@ mod tests {
         // Epoch: it now lays out 200 px lower.
         model.frame(1);
         let jumped = model.place(&key, at(0.0, 200.0), still(), Resize::Snap, t0, false);
-        assert_eq!(painted(at(0.0, 200.0), jumped), (0.0, 0.0), "painted where it was");
+        assert_eq!(
+            painted(at(0.0, 200.0), jumped),
+            (0.0, 0.0),
+            "painted where it was"
+        );
         assert!(jumped.live);
         let mut last = 0.0;
         let mut t = t0;
@@ -996,9 +1300,20 @@ mod tests {
         for step in 1..60 {
             model.frame(7);
             let x = step as f32 * 13.0;
-            let p = model.place(&key, at(x, 0.0), still(), Resize::Snap, t0 + ms(step * 16), false);
+            let p = model.place(
+                &key,
+                at(x, 0.0),
+                still(),
+                Resize::Snap,
+                t0 + ms(step * 16),
+                false,
+            );
             let now = painted(at(x, 0.0), p);
-            assert!((p.velocity.x - 812.5).abs() < 0.5, "measured at 13 px / 16 ms: {}", p.velocity.x);
+            assert!(
+                (p.velocity.x - 812.5).abs() < 0.5,
+                "measured at 13 px / 16 ms: {}",
+                p.velocity.x
+            );
             let lag = -f32::from(p.offset.x);
             if step == 1 {
                 assert_eq!(now, (0.0, 0.0), "the first frame holds");
@@ -1006,13 +1321,26 @@ mod tests {
                 let moved = now.0 - previous.0;
                 // The drag's 13 px, plus the held step draining (SNAPPY's
                 // 0.5 % overshoot can pull back a hair).
-                assert!((12.9..=13.0 * 1.5).contains(&moved), "step {step}: moved {moved}, dragged 13");
-                assert!((-0.1..=held).contains(&lag), "step {step}: the held step only drains: {held} -> {lag}");
+                assert!(
+                    (12.9..=13.0 * 1.5).contains(&moved),
+                    "step {step}: moved {moved}, dragged 13"
+                );
+                assert!(
+                    (-0.1..=held).contains(&lag),
+                    "step {step}: the held step only drains: {held} -> {lag}"
+                );
             }
             held = held.min(lag.max(0.0));
             previous = now;
         }
-        let last = model.place(&key, at(59.0 * 13.0, 0.0), still(), Resize::Snap, t0 + ms(59 * 16), false);
+        let last = model.place(
+            &key,
+            at(59.0 * 13.0, 0.0),
+            still(),
+            Resize::Snap,
+            t0 + ms(59 * 16),
+            false,
+        );
         assert_eq!(last.offset, origin(), "followed with no lag once moving");
         assert!(!last.live);
     }
@@ -1032,8 +1360,14 @@ mod tests {
         // Another epoch at the same instant: back up to 100.
         model.frame(2);
         let after = model.place(&key, at(0.0, 100.0), still(), Resize::Snap, mid, false);
-        assert_eq!(painted(at(0.0, 300.0), before), painted(at(0.0, 100.0), after));
-        assert!((before.spring.y - after.spring.y).abs() < 1e-3, "{before:?} {after:?}");
+        assert_eq!(
+            painted(at(0.0, 300.0), before),
+            painted(at(0.0, 100.0), after)
+        );
+        assert!(
+            (before.spring.y - after.spring.y).abs() < 1e-3,
+            "{before:?} {after:?}"
+        );
         assert!(before.spring.y > 100.0, "it was moving down fast");
     }
 
@@ -1056,7 +1390,14 @@ mod tests {
         // counter-moves.
         model.frame(2);
         let p2 = model.place(&parent, at(0.0, 400.0), still(), Resize::Snap, t0, false);
-        let c = model.place(&child, at(10.0, 210.0 - 400.0), still(), Resize::Snap, t0, false);
+        let c = model.place(
+            &child,
+            at(10.0, 210.0 - 400.0),
+            still(),
+            Resize::Snap,
+            t0,
+            false,
+        );
         // It was painted at 10 (riding the parent's -200 offset); still is.
         let child_painted = 210.0 + f32::from(p2.offset.y) + f32::from(c.offset.y);
         assert_eq!(child_painted, 10.0, "painted where it was");
@@ -1079,7 +1420,14 @@ mod tests {
         let mut y = 100.0;
         let mut last_carry = carry(0.0);
         model.frame(0);
-        let start = model.place(&key, at(0.0, y), down(last_carry), Resize::Snap, t0 + ms(16), false);
+        let start = model.place(
+            &key,
+            at(0.0, y),
+            down(last_carry),
+            Resize::Snap,
+            t0 + ms(16),
+            false,
+        );
         assert!(!start.live && start.velocity.y == 0.0, "{start:?}");
         for step in 1..10_u64 {
             let t = step as f32 * 0.008;
@@ -1088,7 +1436,14 @@ mod tests {
             y += 0.5 * (last_carry + c) * 0.008;
             let snapped = (y * 2.0).round() / 2.0;
             model.frame(0);
-            let p = model.place(&key, at(0.0, snapped), down(c), Resize::Snap, t0 + ms(16) + ms(8 * step), false);
+            let p = model.place(
+                &key,
+                at(0.0, snapped),
+                down(c),
+                Resize::Snap,
+                t0 + ms(16) + ms(8 * step),
+                false,
+            );
             assert!(
                 f32::from(p.offset.y).abs() <= 0.5,
                 "step {step}: follows the room (lag {})",
@@ -1117,10 +1472,24 @@ mod tests {
         let mut model = Model::new();
         model.frame(0);
         for key in 0..10_u64 {
-            model.place(&ElementId::Integer(key), at(0.0, key as f32 * 20.0), still(), Resize::Snap, t0, false);
+            model.place(
+                &ElementId::Integer(key),
+                at(0.0, key as f32 * 20.0),
+                still(),
+                Resize::Snap,
+                t0,
+                false,
+            );
         }
         model.frame(0);
-        model.place(&ElementId::Integer(3), at(0.0, 60.0), still(), Resize::Snap, t0, false);
+        model.place(
+            &ElementId::Integer(3),
+            at(0.0, 60.0),
+            still(),
+            Resize::Snap,
+            t0,
+            false,
+        );
         model.frame(0);
         assert_eq!(model.records.len(), 1);
     }
@@ -1186,16 +1555,39 @@ mod tests {
                 model.frame(token);
                 for &key in &order {
                     let parent_layout = layout(&order, width, key);
-                    let parent = model.place(&ElementId::Integer(key), parent_layout, still(), Resize::Snap, now, false);
-                    let child = model.place(&ElementId::Integer(100 + key), child_layout, still(), Resize::Snap, now, false);
-                    assert!(parent.velocity.y.is_finite() && parent.spring.x.is_finite() && child.velocity.x.is_finite());
+                    let parent = model.place(
+                        &ElementId::Integer(key),
+                        parent_layout,
+                        still(),
+                        Resize::Snap,
+                        now,
+                        false,
+                    );
+                    let child = model.place(
+                        &ElementId::Integer(100 + key),
+                        child_layout,
+                        still(),
+                        Resize::Snap,
+                        now,
+                        false,
+                    );
+                    assert!(
+                        parent.velocity.y.is_finite()
+                            && parent.spring.x.is_finite()
+                            && child.velocity.x.is_finite()
+                    );
                     let painted_parent = painted(parent_layout, parent);
                     let painted_child = (
-                        f32::from(parent_layout.origin.x + px(6.0) + parent.offset.x + child.offset.x),
-                        f32::from(parent_layout.origin.y + px(4.0) + parent.offset.y + child.offset.y),
+                        f32::from(
+                            parent_layout.origin.x + px(6.0) + parent.offset.x + child.offset.x,
+                        ),
+                        f32::from(
+                            parent_layout.origin.y + px(4.0) + parent.offset.y + child.offset.y,
+                        ),
                     );
                     if let Some((before, before_child, when)) = last.get(&key) {
-                        let moved = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() + (a.1 - b.1).abs();
+                        let moved =
+                            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() + (a.1 - b.1).abs();
                         if *when == now {
                             assert!(
                                 moved(*before, painted_parent) < 0.01,
@@ -1217,9 +1609,27 @@ mod tests {
             model.frame(token);
             for &key in &order {
                 let parent_layout = layout(&order, width, key);
-                let p = model.place(&ElementId::Integer(key), parent_layout, still(), Resize::Snap, now, false);
-                let c = model.place(&ElementId::Integer(100 + key), child_layout, still(), Resize::Snap, now, false);
-                assert_eq!((p.offset, c.offset), (origin(), origin()), "seed {seed}: settled on layout");
+                let p = model.place(
+                    &ElementId::Integer(key),
+                    parent_layout,
+                    still(),
+                    Resize::Snap,
+                    now,
+                    false,
+                );
+                let c = model.place(
+                    &ElementId::Integer(100 + key),
+                    child_layout,
+                    still(),
+                    Resize::Snap,
+                    now,
+                    false,
+                );
+                assert_eq!(
+                    (p.offset, c.offset),
+                    (origin(), origin()),
+                    "seed {seed}: settled on layout"
+                );
                 assert!(!p.live && !c.live);
             }
             assert!(model.is_settled(now), "seed {seed}");
@@ -1246,18 +1656,26 @@ mod tests {
         }
 
         impl Render for List {
-            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
                 // The order is an epoch; the gap (a "drag") is not.
                 self.flow.epoch(self.version);
-                div().flex().flex_col().gap(px(self.gap)).children(self.order.iter().map(|&key| {
-                    self.flow.item(
-                        ElementId::Integer(key),
-                        probe::measure(
-                            ElementId::Name(format!("row-{key}").into()),
-                            div().w(px(100.0)).h(px(30.0)),
-                        ),
-                    )
-                }))
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(self.gap))
+                    .children(self.order.iter().map(|&key| {
+                        self.flow.item(
+                            ElementId::Integer(key),
+                            probe::measure(
+                                ElementId::Name(format!("row-{key}").into()),
+                                div().w(px(100.0)).h(px(30.0)),
+                            ),
+                        )
+                    }))
             }
         }
 
@@ -1306,7 +1724,10 @@ mod tests {
                 if gap == 1 {
                     assert_eq!(moved, 0.0, "the drag's first frame holds");
                 } else {
-                    assert!((1.5..=3.0).contains(&moved), "gap {gap}: followed the drag: moved {moved}");
+                    assert!(
+                        (1.5..=3.0).contains(&moved),
+                        "gap {gap}: followed the drag: moved {moved}"
+                    );
                 }
                 previous = now;
             }
@@ -1332,7 +1753,10 @@ mod tests {
                 cx.run_until_parked();
                 let (_, ledger) = frame(cx);
                 let now = y(&ledger, 3) - top;
-                assert!((now - previous).abs() < 30.0, "continuous: {previous} -> {now}");
+                assert!(
+                    (now - previous).abs() < 30.0,
+                    "continuous: {previous} -> {now}"
+                );
                 previous = now;
             }
             let (_, ledger) = frame(cx);

@@ -71,6 +71,9 @@ pub(crate) struct Targets {
     active: bool,
     /// Where the bevel was last heading, kept while it comes to rest unseen.
     heading: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// This frame's layout of each target (known before any prepaint, so a
+    /// scroll container can bring one into view in the same frame).
+    layouts: Rc<RefCell<HashMap<SharedString, LayoutId>>>,
     /// The bevel's own motion store: its liveness is the bevel's alone.
     motion: Motion,
 }
@@ -88,6 +91,13 @@ impl Targets {
     /// same ids record again, so a reused prepaint keeps them valid).
     pub(crate) fn begin(&self) {
         self.list.borrow_mut().clear();
+        self.layouts.borrow_mut().clear();
+    }
+
+    /// The focused target's layout in this frame, once laid out.
+    pub(crate) fn focused_layout(&self) -> Option<LayoutId> {
+        let id = self.focused.as_ref().filter(|_| self.active)?;
+        self.layouts.borrow().get(id).copied()
     }
 
     /// Registers one target in walk order.
@@ -104,6 +114,7 @@ impl Targets {
             id,
             focused,
             bounds: Rc::clone(&self.bounds),
+            layouts: Rc::clone(&self.layouts),
             child: child.into_any_element(),
         }
     }
@@ -177,6 +188,11 @@ impl Targets {
             .collect()
     }
 
+    /// Where target `id` was last painted.
+    pub(crate) fn bounds_of(&self, id: &str) -> Option<Bounds<Pixels>> {
+        self.bounds.borrow().get(id).copied()
+    }
+
     /// The focused target's bounds, when recorded.
     pub(crate) fn focused_bounds(&self) -> Option<Bounds<Pixels>> {
         let id = self.focused.as_ref()?;
@@ -202,6 +218,7 @@ pub(crate) struct Tracked {
     id: SharedString,
     focused: bool,
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
+    layouts: Rc<RefCell<HashMap<SharedString, LayoutId>>>,
     child: AnyElement,
 }
 
@@ -232,7 +249,9 @@ impl Element for Tracked {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        (self.child.request_layout(window, cx), ())
+        let layout = self.child.request_layout(window, cx);
+        self.layouts.borrow_mut().insert(self.id.clone(), layout);
+        (layout, ())
     }
 
     fn prepaint(

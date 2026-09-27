@@ -1415,6 +1415,13 @@ pub trait PlatformAtlas {
     fn contains(&self, _key: &AtlasKey) -> bool {
         false
     }
+
+    /// Read the tightly packed, row-major bytes of a live tile for rendering diagnostics.
+    /// Returns `None` when the backend does not support readback or the tile is stale.
+    #[cfg(any(test, feature = "test-support"))]
+    fn read_tile_for_test(&self, _tile: AtlasTile) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 #[doc(hidden)]

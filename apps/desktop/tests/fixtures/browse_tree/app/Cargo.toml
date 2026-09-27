@@ -1,0 +1,10 @@
+[package]
+name = "browse-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Reads settings from TOML and packs them with bincode."
+
+[dependencies]
+toml = "0.8.23"
+bincode = "=1.3.3"

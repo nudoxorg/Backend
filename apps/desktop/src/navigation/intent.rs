@@ -80,6 +80,12 @@ pub enum Intent {
     /// View the current package or declaration at another release (`None`:
     /// the pinned one). Replaces the current entry, like a view switch.
     SetRelease(Option<super::route::ReleaseId>),
+    /// Hold a thing in the hand (touching it when it is already held).
+    Hold(crate::model::hand::Held),
+    /// Let go of a held thing.
+    LetGo(crate::model::hand::Held),
+    /// A held thing was gone to or used: touch it at the given unix ms.
+    TouchHeld(crate::model::hand::Held, u64),
     /// Move one content level up.
     ZoomOut,
     /// Move backward in typed history.

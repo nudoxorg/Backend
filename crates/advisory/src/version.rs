@@ -109,6 +109,8 @@ pub fn normalize_package(
     let ecosystem = match ecosystem.trim().to_ascii_lowercase().as_str() {
         "python" => "pypi".to_owned(),
         "golang" | "go" => "go".to_owned(),
+        // OSV names Cargo's registry by its host.
+        "crates.io" => "cargo".to_owned(),
         "generic" => "conan".to_owned(),
         value => value.to_owned(),
     };
@@ -719,4 +721,344 @@ fn canonical_maven(key: &VersionKey) -> String {
         })
         .collect::<Vec<_>>()
         .join(".")
+}
+
+// ---------------------------------------------------------------------------
+// Cargo requirements: the one semver authority for dependency questions
+// ---------------------------------------------------------------------------
+
+/// One Cargo release: `major.minor.patch-pre`, build metadata dropped.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CargoVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    pre: Box<[String]>,
+}
+
+impl CargoVersion {
+    fn parse(value: &str) -> Result<Self, VersionCompareError> {
+        let invalid = || VersionCompareError::Invalid {
+            syntax: VersionSyntax::Semver,
+            value: value.to_owned(),
+        };
+        let core = value.trim().split_once('+').map_or(value.trim(), |(core, _)| core);
+        let (release, pre) = core.split_once('-').map_or((core, ""), |(release, pre)| (release, pre));
+        let mut parts = release.split('.');
+        let mut number = || -> Result<u64, VersionCompareError> {
+            parts.next().ok_or_else(invalid)?.parse::<u64>().map_err(|_| invalid())
+        };
+        let (major, minor, patch) = (number()?, number()?, number()?);
+        if parts.next().is_some() {
+            return Err(invalid());
+        }
+        Ok(Self {
+            major,
+            minor,
+            patch,
+            pre: pre.split('.').filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect(),
+        })
+    }
+
+    fn cmp_pre(&self, pre: &[String]) -> Ordering {
+        compare_pre(&self.pre, pre)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CargoOp {
+    Exact,
+    Greater,
+    GreaterEq,
+    Less,
+    LessEq,
+    Tilde,
+    Caret,
+    Wildcard,
+}
+
+/// One comparator of a Cargo requirement; partial versions keep `None`.
+#[derive(Clone, Debug)]
+struct CargoComparator {
+    op: CargoOp,
+    major: u64,
+    minor: Option<u64>,
+    patch: Option<u64>,
+    pre: Box<[String]>,
+}
+
+impl CargoComparator {
+    fn parse(text: &str, requirement: &str) -> Result<Self, VersionCompareError> {
+        let invalid = || VersionCompareError::Invalid {
+            syntax: VersionSyntax::Semver,
+            value: requirement.to_owned(),
+        };
+        let text = text.trim();
+        let (mut op, rest) = [
+            (">=", CargoOp::GreaterEq),
+            ("<=", CargoOp::LessEq),
+            (">", CargoOp::Greater),
+            ("<", CargoOp::Less),
+            ("=", CargoOp::Exact),
+            ("~", CargoOp::Tilde),
+            ("^", CargoOp::Caret),
+        ]
+        .into_iter()
+        .find_map(|(token, op)| text.strip_prefix(token).map(|rest| (op, rest.trim_start())))
+        .unwrap_or((CargoOp::Caret, text));
+        let rest = rest.split_once('+').map_or(rest, |(core, _)| core);
+        let (release, pre) = rest.split_once('-').map_or((rest, ""), |(release, pre)| (release, pre));
+        let wild = |part: &str| matches!(part, "*" | "x" | "X");
+        let mut parts = release.split('.');
+        let major_text = parts.next().ok_or_else(invalid)?;
+        if wild(major_text) {
+            return Err(invalid());
+        }
+        let major = major_text.parse::<u64>().map_err(|_| invalid())?;
+        let mut component = |parts: &mut std::str::Split<'_, char>| -> Result<Option<u64>, VersionCompareError> {
+            match parts.next() {
+                None => Ok(None),
+                Some(part) if wild(part) => {
+                    op = CargoOp::Wildcard;
+                    Ok(None)
+                }
+                Some(part) => part.parse::<u64>().map(Some).map_err(|_| invalid()),
+            }
+        };
+        let minor = component(&mut parts)?;
+        let patch = if minor.is_some() { component(&mut parts)? } else { None };
+        if parts.next().is_some() || (!pre.is_empty() && patch.is_none()) {
+            return Err(invalid());
+        }
+        Ok(Self {
+            op,
+            major,
+            minor,
+            patch,
+            pre: pre.split('.').filter(|part| !part.is_empty()).map(ToOwned::to_owned).collect(),
+        })
+    }
+
+    fn exact(&self, version: &CargoVersion) -> bool {
+        version.major == self.major
+            && self.minor.is_none_or(|minor| version.minor == minor)
+            && self.patch.is_none_or(|patch| version.patch == patch)
+            && (self.patch.is_none() || version.cmp_pre(&self.pre) == Ordering::Equal)
+    }
+
+    fn greater(&self, version: &CargoVersion) -> bool {
+        if version.major != self.major {
+            return version.major > self.major;
+        }
+        let Some(minor) = self.minor else { return false };
+        if version.minor != minor {
+            return version.minor > minor;
+        }
+        let Some(patch) = self.patch else { return false };
+        if version.patch != patch {
+            return version.patch > patch;
+        }
+        version.cmp_pre(&self.pre) == Ordering::Greater
+    }
+
+    fn less(&self, version: &CargoVersion) -> bool {
+        if version.major != self.major {
+            return version.major < self.major;
+        }
+        let Some(minor) = self.minor else { return false };
+        if version.minor != minor {
+            return version.minor < minor;
+        }
+        let Some(patch) = self.patch else { return false };
+        if version.patch != patch {
+            return version.patch < patch;
+        }
+        version.cmp_pre(&self.pre) == Ordering::Less
+    }
+
+    fn matches(&self, version: &CargoVersion) -> bool {
+        match self.op {
+            CargoOp::Exact | CargoOp::Wildcard => {
+                version.major == self.major
+                    && self.minor.is_none_or(|minor| version.minor == minor)
+                    && self.patch.is_none_or(|patch| version.patch == patch)
+                    && (self.op == CargoOp::Wildcard
+                        || self.patch.is_none()
+                        || version.cmp_pre(&self.pre) == Ordering::Equal)
+            }
+            CargoOp::Greater => self.greater(version),
+            CargoOp::GreaterEq => self.exact(version) || self.greater(version),
+            CargoOp::Less => self.less(version),
+            CargoOp::LessEq => self.exact(version) || self.less(version),
+            CargoOp::Tilde => {
+                if version.major != self.major {
+                    return false;
+                }
+                if let Some(minor) = self.minor
+                    && version.minor != minor
+                {
+                    return false;
+                }
+                if let Some(patch) = self.patch
+                    && version.patch != patch
+                {
+                    return version.patch > patch;
+                }
+                version.cmp_pre(&self.pre) != Ordering::Less
+            }
+            CargoOp::Caret => {
+                if version.major != self.major {
+                    return false;
+                }
+                let Some(minor) = self.minor else { return true };
+                let Some(patch) = self.patch else {
+                    return if self.major > 0 {
+                        version.minor >= minor
+                    } else {
+                        version.minor == minor
+                    };
+                };
+                if self.major > 0 {
+                    if version.minor != minor {
+                        return version.minor > minor;
+                    }
+                    if version.patch != patch {
+                        return version.patch > patch;
+                    }
+                } else if minor > 0 {
+                    if version.minor != minor {
+                        return false;
+                    }
+                    if version.patch != patch {
+                        return version.patch > patch;
+                    }
+                } else if version.minor != minor || version.patch != patch {
+                    return false;
+                }
+                version.cmp_pre(&self.pre) != Ordering::Less
+            }
+        }
+    }
+}
+
+/// Whether `version` satisfies the Cargo requirement `requirement`
+/// (`"0.8.23"`, `"^1.0"`, `"~0.4"`, `"=1.2.3"`, `">=1, <3"`, `"1.*"`, `"*"`).
+///
+/// Cargo's rules: a bare version is a caret requirement, comparators joined
+/// by commas must all hold, partial versions match their whole range, build
+/// metadata is ignored, and a pre-release matches only a comparator that
+/// names the same `major.minor.patch` with a pre-release of its own.
+///
+/// # Errors
+///
+/// Returns [`VersionCompareError::Invalid`] when either side is not Cargo
+/// semver syntax.
+pub fn cargo_requirement_matches(
+    requirement: &str,
+    version: &str,
+) -> Result<bool, VersionCompareError> {
+    let candidate = CargoVersion::parse(version)?;
+    let requirement = requirement.trim();
+    if requirement.is_empty() || requirement == "*" {
+        return Ok(candidate.pre.is_empty());
+    }
+    let comparators = requirement
+        .split(',')
+        .map(|part| CargoComparator::parse(part, requirement))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !comparators.iter().all(|comparator| comparator.matches(&candidate)) {
+        return Ok(false);
+    }
+    Ok(candidate.pre.is_empty()
+        || comparators.iter().any(|comparator| {
+            comparator.major == candidate.major
+                && comparator.minor == Some(candidate.minor)
+                && comparator.patch == Some(candidate.patch)
+                && !comparator.pre.is_empty()
+        }))
+}
+
+/// Cargo's compatibility class of a version: two versions in one class can
+/// be unified into one copy (`1.4.2` → `1`, `0.8.23` → `0.8`, `0.0.3` → `0.0.3`).
+///
+/// # Errors
+///
+/// Returns [`VersionCompareError::Invalid`] when `version` is not Cargo semver.
+pub fn cargo_compatibility_class(version: &str) -> Result<String, VersionCompareError> {
+    let version = CargoVersion::parse(version)?;
+    Ok(if version.major > 0 {
+        version.major.to_string()
+    } else if version.minor > 0 {
+        format!("0.{}", version.minor)
+    } else {
+        format!("0.0.{}", version.patch)
+    })
+}
+
+/// Orders two Cargo versions by semver precedence; build metadata is ignored.
+///
+/// # Errors
+///
+/// Returns [`VersionCompareError::Invalid`] when either side is not Cargo semver.
+pub fn cargo_version_cmp(left: &str, right: &str) -> Result<Ordering, VersionCompareError> {
+    let (left, right) = (CargoVersion::parse(left)?, CargoVersion::parse(right)?);
+    Ok((left.major, left.minor, left.patch)
+        .cmp(&(right.major, right.minor, right.patch))
+        .then_with(|| compare_pre(&left.pre, &right.pre)))
+}
+
+#[cfg(test)]
+mod cargo_tests {
+    use super::{cargo_compatibility_class, cargo_requirement_matches, cargo_version_cmp};
+    use std::cmp::Ordering;
+
+    fn holds(requirement: &str, version: &str) -> bool {
+        cargo_requirement_matches(requirement, version).expect("cargo syntax")
+    }
+
+    // The table is the Cargo book's "Specifying dependencies" examples.
+    #[test]
+    fn caret_tilde_wildcard_and_comparison_follow_the_cargo_book() {
+        for (requirement, inside, outside) in [
+            ("1.2.3", "1.9.0", "2.0.0"),
+            ("1.2", "1.2.0", "2.0.0"),
+            ("1", "1.99.1", "2.0.0"),
+            ("0.2.3", "0.2.9", "0.3.0"),
+            ("0.2", "0.2.0", "0.3.0"),
+            ("0.0.3", "0.0.3", "0.0.4"),
+            ("0.0", "0.0.9", "0.1.0"),
+            ("0", "0.99.0", "1.0.0"),
+            ("~1.2.3", "1.2.9", "1.3.0"),
+            ("~1.2", "1.2.0", "1.3.0"),
+            ("~1", "1.9.0", "2.0.0"),
+            ("1.*", "1.4.0", "2.0.0"),
+            ("1.2.*", "1.2.7", "1.3.0"),
+            ("=1.2.3", "1.2.3", "1.2.4"),
+            (">= 1.2, < 1.5", "1.4.9", "1.5.0"),
+        ] {
+            assert!(holds(requirement, inside), "{requirement} must accept {inside}");
+            assert!(!holds(requirement, outside), "{requirement} must refuse {outside}");
+        }
+        assert!(!holds("1.2.3", "1.2.2"), "a caret floor holds");
+        assert!(holds("*", "3.1.4"));
+    }
+
+    #[test]
+    fn prereleases_need_a_prerelease_comparator_and_build_metadata_is_ignored() {
+        assert!(!holds("1.0", "1.1.0-alpha"), "a stable requirement never picks a pre-release");
+        assert!(holds("1.1.0-alpha", "1.1.0-beta"));
+        assert!(holds("1.0", "1.1.5+spec-1.1.0"), "build metadata plays no part");
+        assert!(holds("0.8.23", "0.8.23"));
+        assert!(!holds("0.8.23", "1.1.5+spec-1.1.0"), "toml 0.8 and 1.x are two copies");
+    }
+
+    #[test]
+    fn classes_and_order() {
+        assert_eq!(cargo_compatibility_class("0.8.23").as_deref(), Ok("0.8"));
+        assert_eq!(cargo_compatibility_class("1.1.5+spec-1.1.0").as_deref(), Ok("1"));
+        assert_eq!(cargo_compatibility_class("0.0.341").as_deref(), Ok("0.0.341"));
+        assert_eq!(cargo_version_cmp("0.8.23", "1.1.5+spec-1.1.0"), Ok(Ordering::Less));
+        assert_eq!(cargo_version_cmp("2.0.0-rc.1", "2.0.0"), Ok(Ordering::Less));
+        assert!(cargo_requirement_matches("banana", "1.0.0").is_err());
+    }
 }

@@ -69,6 +69,8 @@ pub enum ReadRequest {
     Orbit,
     /// The owner health model.
     Health,
+    /// A browsing page's resource (your tree).
+    Browse(crate::model::browse::BrowseKey),
 }
 
 impl ReadRequest {
@@ -82,6 +84,7 @@ impl ReadRequest {
             PageKey::Search(query) => Self::Search(query.clone()),
             PageKey::Orbit => Self::Orbit,
             PageKey::Health => Self::Health,
+            PageKey::Browse(key) => Self::Browse(key.clone()),
         }
     }
 }
@@ -537,6 +540,7 @@ const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::Subscriptions
             | SurfaceCommand::Projects
             | SurfaceCommand::Tree
+            | SurfaceCommand::ProjectTree { .. }
     )
 }
 
@@ -639,6 +643,7 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                 .health()
                 .map(|report| PageValue::Health(page_mapping::health_model(&report)))
                 .map_err(|error| failure(&error)),
+            ReadRequest::Browse(key) => super::browse_reads::compose(&mut self.engine, key),
         }
     }
 }

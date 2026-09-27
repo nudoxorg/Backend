@@ -10,6 +10,8 @@ mod journal;
 mod model;
 mod parse;
 mod policy;
+#[cfg(test)]
+mod real_tests;
 mod version;
 mod wire;
 
@@ -36,8 +38,9 @@ pub use policy::{
     OverrideEvidence, PolicyReason,
 };
 pub use version::{
-    NormalizedVersion, PackageNormalizationError, VersionCompareError, matches, normalize_package,
-    normalize_version, range_matches,
+    NormalizedVersion, PackageNormalizationError, VersionCompareError, cargo_compatibility_class,
+    cargo_requirement_matches, cargo_version_cmp, matches, normalize_package, normalize_version,
+    range_matches,
 };
 pub use wire::{AdvisoryDecisionDto, AdvisoryPackageDto, AdvisorySurfaceDto};
 

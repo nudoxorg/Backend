@@ -301,6 +301,12 @@ pub fn lower(invocation: &Invocation, project: &str) -> Result<Request, Fault> {
             limit: limit(invocation)?,
         }),
         CommandId::Outline => Ok(Request::Outline(path_or(invocation, project))),
+        CommandId::ProjectTree => {
+            let root = path_or(invocation, project);
+            let root = ProductText::new(root.as_str())
+                .map_err(|error| Fault::admission(error, Operand::Argument(root.clone())))?;
+            admit(&SurfaceCommand::ProjectTree { root }).map(|command| Request::Surface(Box::new(command)))
+        }
         _ => surface(invocation, spec.id).map(|command| Request::Surface(Box::new(command))),
     }
 }
@@ -557,6 +563,7 @@ fn home_or_session(invocation: &Invocation, id: CommandId) -> Result<SurfaceComm
             node: node(invocation, 0)?,
             branch: invocation.flag("branch"),
         },
+        CommandId::AdvisoryRefresh => SurfaceCommand::AdvisoryRefresh,
         _ => {
             return Err(Fault::usage(
                 invocation.grammar().name(),

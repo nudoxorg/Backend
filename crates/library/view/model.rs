@@ -4,7 +4,9 @@ use crate::canonical::{
     BranchKey, LogKey, PackageKey, SemanticObject, SymbolKey, ViewStateRoot, encode_id,
 };
 use crate::surface::SemanticLinkKind;
-use backend_compile::{DeclarationKind, SourceDeclaration, SourceExcerpt, SourceLocation};
+use backend_compile::{
+    DeclarationFacts, DeclarationKind, SourceDeclaration, SourceExcerpt, SourceLocation,
+};
 use backend_version::{AuthorizedCompleteCoverage, CoverageWitness, ScopeRoot};
 use core::fmt;
 use std::sync::Arc;
@@ -390,6 +392,8 @@ pub struct Document {
     pub location: SourceAvailability,
     /// Bounded declaration source text with explicit availability and extent.
     pub excerpt: SourceExcerpt,
+    /// What the producer observed about the declaration, copied from its row.
+    pub facts: DeclarationFacts,
 }
 
 impl Document {
@@ -408,7 +412,15 @@ impl Document {
             signature: None,
             location: SourceAvailability::NotCaptured,
             excerpt: SourceExcerpt::NotCaptured,
+            facts: DeclarationFacts::UNOBSERVED,
         }
+    }
+
+    /// Attaches the declaration facts copied from the projected row.
+    #[must_use]
+    pub fn with_facts(mut self, facts: DeclarationFacts) -> Self {
+        self.facts = facts;
+        self
     }
 
     /// Binds this document to the complete producer source basis.
@@ -724,6 +736,10 @@ pub struct Row {
     pub source: SourceAvailability,
     /// Bounded declaration source text with explicit availability and extent.
     pub excerpt: SourceExcerpt,
+    /// What the producer observed about this declaration beyond its name,
+    /// kind, signature, and documentation: deprecation and obligation, each
+    /// either unobserved, absent, or present.
+    pub facts: DeclarationFacts,
 }
 
 impl Row {
@@ -745,6 +761,7 @@ impl Row {
             kind: None,
             source: SourceAvailability::NotCaptured,
             excerpt: SourceExcerpt::NotCaptured,
+            facts: DeclarationFacts::UNOBSERVED,
         }
     }
 
@@ -823,6 +840,13 @@ impl Row {
     #[must_use]
     pub fn with_excerpt(mut self, excerpt: SourceExcerpt) -> Self {
         self.excerpt = excerpt;
+        self
+    }
+
+    /// Attaches what the producer observed about this declaration.
+    #[must_use]
+    pub fn with_facts(mut self, facts: DeclarationFacts) -> Self {
+        self.facts = facts;
         self
     }
 }

@@ -666,3 +666,86 @@ fn measured_reframe_keeps_semantic_flight_and_once_only_landing_intent() {
     assert_eq!(rig.travel(), Some(Travel::Reframe));
     assert!(matches!(rig.segment, Segment::Flight { landing: None, .. }));
 }
+
+#[test]
+fn measured_room_reframe_preserves_optional_symbol_hints_and_landing() {
+    use super::{FlightRoom, FocusKind, FocusRoute, Landing, Travel};
+    let initial = Camera::new(30.0, 0.0, 200.0);
+    let target = Camera::new(830.0, 0.0, 200.0);
+    let room = FlightRoom {
+        left: -0.5,
+        right: 0.15,
+        top: -0.3,
+        bottom: 0.3,
+        anchor: (-0.15, 0.0),
+    };
+    let route = FocusRoute {
+        departure: Some((0.0, 0.0)),
+        arrival: (800.0, 0.0),
+        context: Camera::new(400.0, 60.0, 1200.0),
+        room,
+        kind: FocusKind::Follow,
+    };
+    let mut rig = Rig::new(initial);
+    rig.fly_with(target, Some(Landing::Gather(7)), Travel::Reading(route));
+    let changed = FlightRoom {
+        left: -0.5,
+        right: 0.5,
+        top: -0.3,
+        bottom: 0.05,
+        anchor: (-0.22, -0.125),
+    };
+    rig.reframe_in(Camera::new(844.0, 25.0, 200.0), changed);
+    assert_eq!(rig.cam, initial);
+    assert_eq!(
+        rig.travel(),
+        Some(Travel::Reading(FocusRoute {
+            room: changed,
+            ..route
+        }))
+    );
+    assert!(matches!(
+        rig.segment,
+        Segment::Flight {
+            landing: Some(Landing::Gather(7)),
+            ..
+        }
+    ));
+    rig.hold();
+    assert_eq!(rig.phase(), None);
+}
+
+#[test]
+fn room_normalization_preserves_isotropic_projection_under_viewport_translation() {
+    let view = View {
+        x: 37.0,
+        y: 91.0,
+        w: 1440.0,
+        h: 824.0,
+    };
+    let room = View {
+        x: 37.0,
+        y: 91.0,
+        w: 900.0,
+        h: 380.0,
+    };
+    let anchor = (289.0, 281.0);
+    let normalized = view.flight_room(&room, anchor);
+    let moved = View {
+        x: view.x + 173.0,
+        y: view.y - 89.0,
+        ..view
+    };
+    let moved_room = View {
+        x: room.x + 173.0,
+        y: room.y - 89.0,
+        ..room
+    };
+    assert_eq!(
+        normalized,
+        moved.flight_room(&moved_room, (anchor.0 + 173.0, anchor.1 - 89.0))
+    );
+    assert!((normalized.left + 0.5).abs() < 1e-12);
+    assert!((normalized.bottom - (380.0 - 412.0) / 1440.0).abs() < 1e-12);
+    assert!((normalized.anchor.0 - (252.0 - 720.0) / 1440.0).abs() < 1e-12);
+}

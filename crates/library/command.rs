@@ -111,6 +111,10 @@ pub enum CommandId {
     TreeOpen,
     /// Close a node or branch in the session tree.
     TreeClose,
+    /// Read a project's dependency tree.
+    ProjectTree,
+    /// Refresh the configured advisory sources.
+    AdvisoryRefresh,
     /// Read engine health.
     Health,
     /// Read the constant-size current revision token.

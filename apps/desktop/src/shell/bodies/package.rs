@@ -1,6 +1,6 @@
-//! The package page, plain: hero, one facts line, "start with" (the
-//! package's top-level declarations as mark + name rows), dependencies, and
-//! the README's first blocks.
+//! The package page: hero, one facts line, Start here (the package's
+//! reading path, when the world knows the package), its modules as mark +
+//! name rows, dependencies, and the README's first blocks.
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf};
@@ -35,7 +35,22 @@ pub(super) fn body(
         other => return not_ready(&other, &PageKey::Package(package.clone()), package.display_name(), ctx, cx),
     };
     let mut leaves = vec![hero(&dossier, ctx)];
-    leaves.push(start_with(&dossier, ctx, cx));
+    let decls = dossier.outline.known().map(|tree| {
+        fn visit<'a>(nodes: &'a [OutlineNode], out: &mut Vec<&'a crate::model::pages::DeclRef>) {
+            for node in nodes {
+                out.push(&node.decl);
+                visit(&node.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        visit(&tree.roots, &mut out);
+        out
+    });
+    let reading = decls.and_then(|decls| crate::runtime::fixture_world::reading(&package, decls, cx));
+    if let Some(reading) = &reading {
+        leaves.push(start_here(reading, ctx));
+    }
+    leaves.push(start_with(&dossier, reading.is_some(), ctx, cx));
     if let Some(leaf) = dependencies(&dossier, ctx) {
         leaves.push(leaf);
     }
@@ -89,10 +104,64 @@ fn hero(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Leaf {
     )
 }
 
-fn start_with(dossier: &PackageDossier, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
+/// Start here: the package's reading path as a strip — each stop's gem,
+/// its name (the first underlined: that is where you begin) and its role
+/// beneath, joined by periwinkle legs. Below 760 effective px, rows that
+/// also say why. Every stop opens its page.
+fn start_here(reading: &crate::runtime::fixture_world::Reading, ctx: &mut Ctx<'_>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let heading = ctx.say("Start with");
+    let world = &reading.world;
+    let scale = measure.scale();
+    let narrow = measure.effective() < 760.0;
+    let label = ctx.say("Start here");
+    let mut strip = if narrow {
+        div().flex().flex_col().gap(measure.space(Space::Base))
+    } else {
+        div().flex().items_start().gap(measure.space(Space::Roomy))
+    };
+    strip = strip.child(text(ty::SMALL, &measure, palette.ink3).pt(px(2.0 * scale)).child(label));
+    for (index, stop) in reading.tour.stops.iter().enumerate() {
+        let node = stop.node;
+        let name = ctx.say(world.name_of(node).to_string());
+        let role = ctx.say(stop.role.text());
+        let id: SharedString = format!("tour-{index}").into();
+        let act: Act = Rc::new(move |window, cx| {
+            window.dispatch_action(Box::new(facet::anatomy::Open { target: facet::semantics::Target::Node(node) }), cx);
+        });
+        ctx.targets.push(Target { id: id.clone(), label: name.clone(), act: Rc::clone(&act), peek: None, source: None });
+        let mut title = text(ty::MONO_ROW, &measure, palette.ink0).child(name);
+        if index == 0 {
+            title = title.underline().text_decoration_color(palette.peri.base.hsla());
+        }
+        let gem = facet::paint::gem(crate::shell::kit::world_kind(world.node(node).kind)).size(18.0 * scale);
+        let mut words = div().flex().flex_col().child(title).child(text(ty::CAPTION, &measure, palette.ink3).child(role));
+        if narrow {
+            let why = ctx.say(stop.why.text(world));
+            words = words.child(text(ty::SMALL, &measure, palette.ink3).child(why));
+        } else if index > 0 {
+            strip = strip.child(div().w(px(34.0 * scale)).h(px(1.0)).mt(px(10.0 * scale)).bg(palette.peri.base.alpha(0.6)));
+        }
+        let stop = div()
+            .id(id.clone())
+            .flex()
+            .items_start()
+            .gap(measure.space(Space::Base))
+            .cursor_pointer()
+            .child(div().pt(px(1.0 * scale)).child(gem))
+            .child(words)
+            .on_click(move |_: &ClickEvent, window, cx| act(window, cx));
+        strip = strip.child(ctx.targets.track(id, stop));
+    }
+    Leaf::new(strip)
+}
+
+fn start_with(dossier: &PackageDossier, touring: bool, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    // With a reading path above, this is the package's modules; without
+    // one, it is still where to start.
+    let heading = ctx.say(if touring { "Modules" } else { "Start with" });
     let mut column = div().flex().flex_col().child(head(heading, &measure, palette));
     match dossier.outline.known() {
         Some(tree) => {

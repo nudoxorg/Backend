@@ -389,6 +389,7 @@ fn add_row_bound(bound: &mut usize, row: &Row) {
             .saturating_add(size_of::<u32>() + 16);
     }
     bytes = bytes.saturating_add(row.excerpt.text().map_or(0, str::len));
+    bytes = bytes.saturating_add(facts_bound(&row.facts));
     for fragment in &row.document {
         bytes = bytes.saturating_add(match fragment {
             Fragment::Text(value) | Fragment::Code(value) => 64usize.saturating_add(value.len()),
@@ -399,10 +400,21 @@ fn add_row_bound(bound: &mut usize, row: &Row) {
     add_bound(bound, bytes);
 }
 
+/// Encoded-size bound of one row's or document's declaration facts: the
+/// retained text plus a fixed allowance for the wire framing.
+fn facts_bound(facts: &crate::DeclarationFacts) -> usize {
+    if facts.is_unobserved() {
+        0
+    } else {
+        128usize.saturating_add(facts.text_bytes())
+    }
+}
+
 fn add_document_bound(bound: &mut usize, document: &Document) {
     let mut bytes = 512usize
         .saturating_add(document.signature.as_deref().map_or(0, str::len))
-        .saturating_add(document.excerpt.text().map_or(0, str::len));
+        .saturating_add(document.excerpt.text().map_or(0, str::len))
+        .saturating_add(facts_bound(&document.facts));
     for fragment in &document.fragments {
         bytes = bytes.saturating_add(match fragment {
             Fragment::Text(value) | Fragment::Code(value) => 64usize.saturating_add(value.len()),

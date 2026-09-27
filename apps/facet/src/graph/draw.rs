@@ -24,7 +24,7 @@ use crate::data::text::{Shaped, shape};
 use crate::motion::Camera;
 use crate::paint::geom::{Fill, Poly, Pt, pt};
 use crate::tokens::{Face, Palette, Tone, TypeRole};
-use gpui::{App, Bounds, Hsla, SharedString, Window, fill, point, px, size};
+use gpui::{App, Bounds, Hsla, LayerTransform, Pixels, SharedString, Window, fill, point, px, size};
 
 /// How symbols reach the GPU (kept switchable so the choice stays measured,
 /// see CHECKPOINT-2).
@@ -32,10 +32,12 @@ use gpui::{App, Bounds, Hsla, SharedString, Window, fill, point, px, size};
 pub enum Strategy {
     /// Stars as quads inside one layer, shapes batched into one path per
     /// (shape, tone, brightness).
-    #[default]
     Batched,
-    /// Stars as triangles in the batched paths too (no quads at all).
+    /// Stars as triangles in the batched paths, with full edge-pixel coverage.
+    #[default]
     AllPaths,
+    /// Diagnostic: stars split into pixel-area coverage quads, shapes batched.
+    Coverage,
     /// One path per shape and one quad per star, no layer (the naive port).
     Naive,
 }
@@ -71,6 +73,18 @@ pub struct Stats {
     pub paths: u32,
     /// Quads handed to the scene.
     pub quads: u32,
+}
+
+/// An accepted, actually painted territory label, in window coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct TerritoryLabel {
+    pub bounds: Bounds<gpui::Pixels>,
+    pub territory: Terr,
+}
+/// Paint metadata is committed with the same frame as the canvas geometry.
+pub struct Painted {
+    pub stats: Stats,
+    pub territory_labels: Vec<TerritoryLabel>,
 }
 
 /// One immutable exploration snapshot shared by the view and painter.
@@ -163,8 +177,8 @@ pub struct Look<'a> {
     pub hover_a: f32,
     /// The hovered territory (no symbol under the pointer).
     pub hover_terr: Option<Terr>,
-    /// One bounded departing packet, visual-only and never pickable.
-    pub(crate) outgoing_hover: Option<(&'a super::scene::Neighbourhood, f32, f32)>,
+    /// Positive departing packets, one per world symbol, visual-only and never pickable.
+    pub(crate) retiring_hovers: &'a [(std::sync::Arc<super::scene::Neighbourhood>, f32, f32)],
     /// The focused symbol.
     pub focus: Option<NodeId>,
     /// The gathered prism, laid out.
@@ -173,6 +187,8 @@ pub struct Look<'a> {
     pub flow: f32,
     /// Finite motion overlay opacity, independent of wrapped phase.
     pub flow_alpha: f32,
+    /// Finite reading-context emphasis, preserved across camera retargets.
+    pub reading_a: f32,
     /// Visited symbols, oldest first.
     pub trail: &'a [NodeId],
     /// Measured native chrome bounds, frozen before this paint.
@@ -191,6 +207,60 @@ pub fn tone(t: Tone, alpha: f32) -> Hsla {
     let mut h: Hsla = t.hsla();
     h.alpha = alpha.clamp(0.0, 1.0);
     h
+}
+
+/// Count doubling adds a visible, compressed step without adding geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct EdgeWeight(f32);
+impl EdgeWeight {
+    pub(crate) const SINGLE: Self = Self(1.2);
+    pub(crate) const SELECTED: Self = Self(1.85);
+    #[allow(clippy::cast_precision_loss)]
+    pub(crate) fn aggregate(count: usize) -> Self {
+        Self((0.9 + 0.2625 * (count.max(1) as f32).log2()).min(3.0))
+    }
+    pub(crate) const fn pixels(self) -> f32 {
+        self.0
+    }
+}
+
+/// Foreground edge hue carries relation meaning; endpoint gems carry ownership.
+pub(crate) fn thread_tone(palette: &Palette, family: usize) -> Tone {
+    match family {
+        1 => palette.mint.base,
+        2 => palette.peri.base,
+        3 => palette.amber.base,
+        _ => palette.ink1,
+    }
+}
+
+/// A restrained terminal identifies direction without a running animation.
+pub(crate) fn thread_terminal(fill: &mut Fill, points: &[Pt], inset: f32, width: f32) {
+    let Some((&tip, rest)) = points.split_last() else {
+        return;
+    };
+    let Some(&before) = rest.last() else {
+        return;
+    };
+    if !tip.x.is_finite()
+        || !tip.y.is_finite()
+        || (tip.x - points[0].x).hypot(tip.y - points[0].y) < inset + 8.0
+    {
+        return;
+    }
+    let (dx, dy) = (tip.x - before.x, tip.y - before.y);
+    let length = dx.hypot(dy);
+    if length <= 1e-3 {
+        return;
+    }
+    let (ux, uy) = (dx / length, dy / length);
+    let tip = pt(tip.x - ux * inset, tip.y - uy * inset);
+    let stem = pt(tip.x - ux * 3.5, tip.y - uy * 3.5);
+    fill.triangle(
+        tip,
+        pt(stem.x - uy * width, stem.y + ux * width),
+        pt(stem.x + uy * width, stem.y - ux * width),
+    );
 }
 
 /// A type role at a px size (text scale applied by the caller).
@@ -358,6 +428,30 @@ fn quad_to(out: &mut Vec<Pt>, from: Pt, ctrl: Pt, to: Pt, steps: u32) {
     }
 }
 
+/// Emit the exact shared zoom silhouette without temporary polygon storage.
+fn glyph_fill(
+    fill: &mut Fill,
+    glyph: super::scene::Glyph,
+    x: f32,
+    y: f32,
+    radius: f32,
+    hollow: bool,
+) {
+    let outer = glyph.vertices(radius).map(|p| pt(x + p[0], y + p[1]));
+    if hollow && glyph.inner > 0.0 {
+        let inner_radius = glyph.inner * radius / glyph.radius;
+        let inner = glyph.vertices(inner_radius).map(|p| pt(x + p[0], y + p[1]));
+        for i in 0..4 {
+            let next = (i + 1) % 4;
+            fill.triangle(outer[i], outer[next], inner[next]);
+            fill.triangle(outer[i], inner[next], inner[i]);
+        }
+    } else {
+        fill.triangle(outer[0], outer[1], outer[2]);
+        fill.triangle(outer[0], outer[2], outer[3]);
+    }
+}
+
 /// Samples a cubic Bézier into `out` (without its first point).
 pub(crate) fn cubic_to(out: &mut Vec<Pt>, p0: Pt, c1: Pt, c2: Pt, p3: Pt, steps: u32) {
     for s in 1..=steps {
@@ -372,18 +466,15 @@ pub(crate) fn cubic_to(out: &mut Vec<Pt>, p0: Pt, c1: Pt, c2: Pt, p3: Pt, steps:
     }
 }
 
-/// The label occupancy grid: 8 px cells over the view; a label takes its
-/// cells only when all are free.
+/// Exact label conflicts indexed in bounded viewport cells. Cell placement
+/// accelerates lookup only; pan/zoom cannot change overlap truth.
 pub struct Occupancy {
-    cell: f32,
     cols: usize,
     rows: usize,
-    x0: f32,
-    y0: f32,
-    w: f32,
-    h: f32,
-    taken: Vec<bool>,
     clip: [f32; 4],
+    buckets: Vec<Vec<usize>>,
+    rects: Vec<([f32; 4], u64)>,
+    epoch: u64,
 }
 
 impl Occupancy {
@@ -393,99 +484,112 @@ impl Occupancy {
         Self::anchored(view, (view.x, view.y))
     }
 
-    /// Align collision cells with a projected world origin. A common pan of
-    /// map labels and origin preserves their collision choices; foreground
-    /// reservations and canvas clipping still use their actual window bounds.
+    /// Exact decisions are independent of the acceleration grid's alignment.
+    /// The world anchor is retained for compatibility with existing callers.
     #[must_use]
-    pub fn anchored(view: &View, anchor: (f32, f32)) -> Self {
-        let cell = 8.0;
-        let x0 = view.x - (view.x - anchor.0).rem_euclid(cell);
-        let y0 = view.y - (view.y - anchor.1).rem_euclid(cell);
-        let w = view.x + view.w - x0;
-        let h = view.y + view.h - y0;
+    pub fn anchored(view: &View, _anchor: (f32, f32)) -> Self {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (cols, rows) = (
-            ((w / cell).ceil() as usize) + 1,
-            ((h / cell).ceil() as usize) + 1,
+            (view.w.max(1.0) / 64.0).ceil() as usize,
+            (view.h.max(1.0) / 64.0).ceil() as usize,
         );
         Self {
-            cell,
             cols,
             rows,
-            x0,
-            y0,
-            w,
-            h,
-            taken: vec![false; cols * rows],
             clip: [view.x, view.y, view.x + view.w, view.y + view.h],
+            buckets: vec![Vec::new(); cols * rows],
+            rects: Vec::new(),
+            epoch: 0,
         }
     }
 
-    /// Reserves a foreground box even when it intersects another reservation.
-    /// A gathering prism can overlap itself; map text must still avoid its union.
-    pub fn reserve(&mut self, [x0, y0, x1, y1]: [f32; 4]) {
-        if x1 < self.x0 || y1 < self.y0 || x0 > self.x0 + self.w || y0 > self.y0 + self.h {
+    fn overlaps(a: [f32; 4], b: [f32; 4]) -> bool {
+        a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn cells(&self, r: [f32; 4]) -> (usize, usize, usize, usize) {
+        let x = |v: f32| (((v - self.clip[0]) / 64.0).floor().max(0.0) as usize).min(self.cols - 1);
+        let y = |v: f32| (((v - self.clip[1]) / 64.0).floor().max(0.0) as usize).min(self.rows - 1);
+        (x(r[0]), y(r[1]), x(r[2]), y(r[3]))
+    }
+
+    fn contained(&self, r: [f32; 4]) -> bool {
+        r.iter().all(|v| v.is_finite())
+            && r[0] >= self.clip[0]
+            && r[1] >= self.clip[1]
+            && r[2] <= self.clip[2]
+            && r[3] <= self.clip[3]
+            && r[2] > r[0]
+            && r[3] > r[1]
+    }
+
+    fn free(&mut self, r: [f32; 4]) -> bool {
+        if !self.contained(r) {
+            return false;
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            for (_, stamp) in &mut self.rects {
+                *stamp = 0;
+            }
+            self.epoch = 1;
+        }
+        let (x0, y0, x1, y1) = self.cells(r);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                for &id in &self.buckets[x + y * self.cols] {
+                    let (other, stamp) = &mut self.rects[id];
+                    if *stamp == self.epoch {
+                        continue;
+                    }
+                    *stamp = self.epoch;
+                    if Self::overlaps(r, *other) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Reserves measured foreground, including overlapping chrome/prism boxes.
+    pub fn reserve(&mut self, r: [f32; 4]) {
+        if !r.iter().all(|v| v.is_finite())
+            || r[2] <= r[0]
+            || r[3] <= r[1]
+            || !Self::overlaps(r, self.clip)
+        {
             return;
         }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let cell =
-            |v: f32, o: f32, n: usize| (((v - o) / self.cell).floor().max(0.0) as usize).min(n - 1);
-        let (a0, b0, a1, b1) = (
-            cell(x0, self.x0, self.cols),
-            cell(y0, self.y0, self.rows),
-            cell(x1, self.x0, self.cols),
-            cell(y1, self.y0, self.rows),
-        );
-        for b in b0..=b1 {
-            for a in a0..=a1 {
-                self.taken[a + b * self.cols] = true;
+        let (x0, y0, x1, y1) = self.cells(r);
+        let id = self.rects.len();
+        self.rects.push((r, 0));
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                self.buckets[x + y * self.cols].push(id);
             }
         }
     }
 
-    /// One composite label owns its overlapping line boxes together.
+    /// Lines are tested atomically and may overlap each other. Their gap does
+    /// not claim space that neither line paints.
     pub fn take_pair(&mut self, a: [f32; 4], b: [f32; 4]) -> bool {
-        self.take(
-            a[0].min(b[0]),
-            a[1].min(b[1]),
-            a[2].max(b[2]),
-            a[3].max(b[3]),
-        )
+        if !self.free(a) || !self.free(b) {
+            return false;
+        }
+        self.reserve(a);
+        self.reserve(b);
+        true
     }
 
     /// Takes the box (window px) if it is on screen and free.
     pub fn take(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
-        if ![x0, y0, x1, y1].iter().all(|v| v.is_finite())
-            || x0 < self.clip[0]
-            || y0 < self.clip[1]
-            || x1 > self.clip[2]
-            || y1 > self.clip[3]
-            || x1 < x0
-            || y1 < y0
-        {
+        let r = [x0, y0, x1, y1];
+        if !self.free(r) {
             return false;
         }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let (x0, y0, x1, y1) = (x0 - self.x0, y0 - self.y0, x1 - self.x0, y1 - self.y0);
-        let cell = |v: f32, n: usize| ((v / self.cell).floor().max(0.0) as usize).min(n - 1);
-        let (a0, b0, a1, b1) = (
-            cell(x0, self.cols),
-            cell(y0, self.rows),
-            cell(x1, self.cols),
-            cell(y1, self.rows),
-        );
-        for b in b0..=b1 {
-            for a in a0..=a1 {
-                if self.taken[a + b * self.cols] {
-                    return false;
-                }
-            }
-        }
-        for b in b0..=b1 {
-            for a in a0..=a1 {
-                self.taken[a + b * self.cols] = true;
-            }
-        }
+        self.reserve(r);
         true
     }
 }
@@ -530,6 +634,142 @@ fn bank() -> Bank {
 /// A star for the quad path: `(x, y, side, tone, brightness)`.
 type Star = (f32, f32, f32, usize, usize);
 
+/// Pixel-aligned spans with uniform coverage; at most two fractional edge
+/// pixels and one full interior span, regardless of the rectangle's size.
+fn coverage_spans(near: f32, far: f32) -> ([(f32, f32, f32); 3], usize) {
+    let mut spans = [(0.0, 0.0, 0.0); 3];
+    if !near.is_finite() || !far.is_finite() || far <= near {
+        return (spans, 0);
+    }
+    if near.floor() + 1.0 >= far.ceil() {
+        spans[0] = (near.floor(), far.ceil(), far - near);
+        return (spans, 1);
+    }
+    let (inside_near, inside_far) = (near.ceil(), far.floor());
+    let mut len = 0;
+    if near < inside_near {
+        spans[len] = (near.floor(), inside_near, inside_near - near);
+        len += 1;
+    }
+    if inside_near < inside_far {
+        spans[len] = (inside_near, inside_far, 1.0);
+        len += 1;
+    }
+    if inside_far < far {
+        spans[len] = (inside_far, far.ceil(), far - inside_far);
+        len += 1;
+    }
+    (spans, len)
+}
+
+/// Exact box/pixel overlap in device coordinates. Each returned rectangle
+/// covers disjoint pixel cells; its weight is the area covered in each cell.
+pub(super) fn star_coverage_rectangles(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> ([([f32; 4], f32); 9], usize) {
+    let (xs, nx) = coverage_spans(x, x + width);
+    let (ys, ny) = coverage_spans(y, y + height);
+    let mut rectangles = [([0.0; 4], 0.0); 9];
+    let mut len = 0;
+    for &(x0, x1, ax) in &xs[..nx] {
+        for &(y0, y1, ay) in &ys[..ny] {
+            rectangles[len] = ([x0, y0, x1 - x0, y1 - y0], ax * ay);
+            len += 1;
+        }
+    }
+    (rectangles, len)
+}
+
+/// Graph-only diagnostic alternative to snapping both edges of a tiny star.
+/// Existing quad shaders blend the exact coverage weights; no renderer flags
+/// or global quad behavior change. Returns the actual number of quads drawn.
+pub(super) fn paint_star_coverage(
+    window: &mut Window,
+    x: f32,
+    y: f32,
+    side: f32,
+    color: Hsla,
+) -> usize {
+    if color.alpha <= 0.0 {
+        return 0;
+    }
+    let transform = window.layer_transform();
+    let Some(inverse) = transform.inverse() else {
+        return 0;
+    };
+    let bounds = transform.apply_bounds(Bounds::new(point(px(x), px(y)), size(px(side), px(side))));
+    let sf = window.scale_factor();
+    let (rectangles, len) = star_coverage_rectangles(
+        bounds.origin.x.as_f32() * sf,
+        bounds.origin.y.as_f32() * sf,
+        bounds.size.width.as_f32() * sf,
+        bounds.size.height.as_f32() * sf,
+    );
+    for &([rx, ry, width, height], coverage) in &rectangles[..len] {
+        let mut covered = color;
+        covered.alpha *= coverage;
+        // paint_quad applies the current layer transform again. Map back so
+        // its final device bounds are exactly these integer pixel cells.
+        let rect = inverse.apply_bounds(Bounds::new(
+            point(px(rx / sf), px(ry / sf)),
+            size(px(width / sf), px(height / sf)),
+        ));
+        window.paint_quad(fill(rect, covered));
+    }
+    len
+}
+
+/// The same triangle rectangle used by the batched AllPaths star bank.
+pub(super) fn paint_star_path(window: &mut Window, x: f32, y: f32, side: f32, color: Hsla) {
+    let mut path = Fill::new();
+    path.rect(x, y, side, side);
+    path.paint(window, color);
+}
+
+/// The final path copy must include every device pixel touched by the MSAA
+/// triangles. Keep the triangles unchanged and expand only the copy bounds.
+pub(super) fn star_copy_bounds(
+    bounds: Bounds<Pixels>,
+    transform: LayerTransform,
+    scale: f32,
+) -> Option<Bounds<Pixels>> {
+    let inverse = transform.inverse()?;
+    let painted = transform.apply_bounds(bounds);
+    let far = painted.bottom_right();
+    let covered = Bounds::from_corners(
+        point(
+            px((painted.origin.x.as_f32() * scale).floor() / scale),
+            px((painted.origin.y.as_f32() * scale).floor() / scale),
+        ),
+        point(
+            px((far.x.as_f32() * scale).ceil() / scale),
+            px((far.y.as_f32() * scale).ceil() / scale),
+        ),
+    );
+    Some(inverse.apply_bounds(covered))
+}
+
+/// Paint one tiny-star bank with outward copy bounds, including a singleton.
+/// Other graph paths keep their existing Fill::paint behavior.
+pub(super) fn paint_star_bank(window: &mut Window, batch: Fill, color: Hsla) -> bool {
+    if color.alpha <= 0.0005 {
+        return false;
+    }
+    let Some(mut path) = batch.into_path() else {
+        return false;
+    };
+    let Some(bounds) = star_copy_bounds(path.bounds, window.layer_transform(), window.scale_factor())
+    else {
+        return false;
+    };
+    path.bounds = bounds;
+    window.paint_path(path, color);
+    true
+}
+
 /// Ambient context belongs to nearby territories. A soft96px edge keeps
 /// endpoint relevance continuous during pan, while distant crossing-only
 /// wires do not compete with exact hovered relations.
@@ -549,6 +789,145 @@ fn hover_envelope(active: Option<f32>, outgoing: Option<f32>) -> f32 {
         .clamp(0.0, 1.0)
 }
 
+/// Visual label intent from hover strands; the caller folds departures by maximum.
+/// Priority and geometry stay identical when an active packet retires.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct LabelAccent {
+    near: f32,
+    source: f32,
+}
+impl LabelAccent {
+    fn of(
+        node: NodeId,
+        active: Option<(NodeId, &[NodeId], f32)>,
+        outgoing: Option<(NodeId, &[NodeId], f32)>,
+    ) -> Self {
+        let mut value = Self::default();
+        for (source, lit, alpha) in active.into_iter().chain(outgoing) {
+            if lit.binary_search(&node).is_ok() {
+                value.near = value.near.max(alpha.clamp(0.0, 1.0));
+                if source == node {
+                    value.source = value.source.max(alpha.clamp(0.0, 1.0));
+                }
+            }
+        }
+        value
+    }
+    fn priority(self) -> f32 {
+        if self.source > 0.0 {
+            30.0
+        } else if self.near > 0.0 {
+            10.0
+        } else {
+            0.0
+        }
+    }
+    fn paint(self, rest: Hsla, lit: Hsla, source: Hsla) -> Hsla {
+        if self.near <= 0.0 {
+            return rest;
+        }
+        let accent = crate::paint::mix(lit, source, self.source / self.near);
+        crate::paint::mix(rest, accent, self.near)
+    }
+}
+fn symbol_role(member: bool, focused: bool) -> TypeRole {
+    if focused {
+        roles::ITEM_BOLD
+    } else if member {
+        roles::MEMBER
+    } else {
+        roles::ITEM
+    }
+}
+
+/// Ordinary hierarchy precedes PageRank: a type's name explains its shell.
+/// Explicit hover/focus/road/search priorities remain above either tier.
+#[derive(Clone, Copy)]
+enum LabelTier {
+    Member,
+    Item,
+}
+impl LabelTier {
+    fn priority(self, importance: f32) -> f32 {
+        match self {
+            Self::Member => 0.2 + importance,
+            Self::Item => 2.0 + importance,
+        }
+    }
+}
+
+/// Reach adds color inside the real glyph, rather than a fixed-size marker
+/// carpet. Its footprint can never increase the world's spatial density.
+#[derive(Clone, Copy)]
+struct ReachLens {
+    reading: f32,
+}
+impl ReachLens {
+    fn new(scale: f64) -> Self {
+        Self {
+            reading: smooth(scale, 3.0, 12.0) as f32,
+        }
+    }
+    fn radius(self, glyph: super::scene::Glyph, depth: u8) -> f32 {
+        let (far, near) = match depth {
+            1 => (0.8, 3.4),
+            2 => (0.7, 2.6),
+            _ => (0.6, 1.8),
+        };
+        glyph.radius.min(far + (near - far) * self.reading)
+    }
+    fn alpha(self, depth: usize, yours: bool) -> f32 {
+        let far = [0.46, 0.30, 0.20, 0.15, 0.12, 0.10, 0.09, 0.08][depth];
+        let near = [0.86, 0.60, 0.38, 0.28, 0.22, 0.18, 0.15, 0.12][depth];
+        far + (near - far) * self.reading + if yours { 0.03 } else { 0.0 }
+    }
+}
+
+fn territory_label(
+    labels: &mut Vec<TerritoryLabel>,
+    territory: Terr,
+    shaped: &Shaped,
+    x: f32,
+    base: f32,
+    device_scale: f32,
+    view: &View,
+) {
+    let x = (x * device_scale).round() / device_scale;
+    let base = (base * device_scale).round() / device_scale;
+    let text = painted_text_bounds(x, base, shaped.width(), shaped.ascent(), shaped.descent());
+    if let Some(bounds) = clipped_label_bounds(text, view) {
+        labels.push(TerritoryLabel { bounds, territory });
+    }
+}
+
+fn painted_text_bounds(
+    x: f32,
+    base: f32,
+    width: f32,
+    ascent: f32,
+    descent: f32,
+) -> Bounds<gpui::Pixels> {
+    Bounds {
+        origin: point(px(x), px(base - ascent)),
+        size: size(px(width), px(ascent + descent)),
+    }
+}
+
+fn clipped_label_bounds(text: Bounds<gpui::Pixels>, view: &View) -> Option<Bounds<gpui::Pixels>> {
+    let (x0, y0) = (
+        f32::from(text.origin.x).max(view.x),
+        f32::from(text.origin.y).max(view.y),
+    );
+    let (x1, y1) = (
+        f32::from(text.right()).min(view.x + view.w),
+        f32::from(text.bottom()).min(view.y + view.h),
+    );
+    (x1 > x0 && y1 > y0).then(|| Bounds {
+        origin: point(px(x0), px(y0)),
+        size: size(px(x1 - x0), px(y1 - y0)),
+    })
+}
+
 /// Fade a leaf's entire strand toward its aggregate route before its endpoint
 /// leaves the indexed window margin. Interior strands retain full fidelity.
 fn endpoint_fade(view: &View, x: f32, y: f32) -> f32 {
@@ -560,14 +939,20 @@ fn endpoint_fade(view: &View, x: f32, y: f32) -> f32 {
 }
 
 /// Paints one frame; returns what it drew.
+pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
+    paint_with_regions(look, window, cx).stats
+}
+
+/// Paint and return accepted label geometry for the exact frame's picking.
 #[allow(
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
-pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
+pub fn paint_with_regions(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Painted {
     let mut st = Stats::default();
+    let mut territory_labels = Vec::new();
     let Look {
         scene,
         view,
@@ -599,7 +984,6 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
         palette.line1,
     );
     let yours_pkg = |p: u32| world.packages[p as usize].yours;
-    let hi = look.focus.or(look.hover);
     let prism_g = look.prism.map_or(0.0, |p| p.e);
     let mode_dim = if look.exploration.reach().is_some()
         || look.exploration.tour().is_some()
@@ -617,18 +1001,36 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             1.0 - 0.45
                 * hover_envelope(
                     look.hover.map(|_| look.hover_a),
-                    look.outgoing_hover.map(|(_, a, _)| a),
+                    look.retiring_hovers
+                        .iter()
+                        .map(|(_, a, _)| *a)
+                        .reduce(f32::max),
                 )
         };
+    // Reading intent is established before the proxy gather starts. Keep its
+    // world context quiet through the entire flight, not only after landing.
+    let ambient_dim = dim_all * (1.0 - 0.72 * look.reading_a.clamp(0.0, 1.0));
     // The lit neighbourhood of the hovered symbol (not while a prism shows).
     let lit_nb = look
         .hover
         .filter(|_| look.prism.is_none())
         .map(|h| scene.neighbourhood(h));
-    let lit = lit_nb
-        .as_ref()
-        .map_or(&[][..], |neighbours| neighbours.lit.as_slice());
-    let is_lit = |j: NodeId| lit.binary_search(&j).is_ok();
+    let active_labels = lit_nb
+        .as_deref()
+        .map(|nb| (nb.node, nb.lit.as_slice(), look.hover_a));
+    let label_accent = |j| {
+        let mut accent = LabelAccent::of(j, active_labels, None);
+        for (nb, alpha, _) in look
+            .retiring_hovers
+            .iter()
+            .filter(|(nb, _, _)| look.hover != Some(nb.node))
+        {
+            let departing = LabelAccent::of(j, None, Some((nb.node, nb.lit.as_slice(), *alpha)));
+            accent.near = accent.near.max(departing.near);
+            accent.source = accent.source.max(departing.source);
+        }
+        accent
+    };
     let paint_fill = |f: Fill, color: Hsla, window: &mut Window, st: &mut Stats| {
         if !f.is_empty() && color.alpha > 0.0005 {
             st.paths += 1;
@@ -743,19 +1145,19 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             }
             paint_fill(
                 quiet,
-                tone(line, 0.035 * pkg_edge_a * dim_all),
+                tone(line, 0.035 * pkg_edge_a * ambient_dim),
                 window,
                 &mut st,
             );
             paint_fill(
                 yours_e,
-                tone(mint, 0.035 * pkg_edge_a * dim_all),
+                tone(mint, 0.035 * pkg_edge_a * ambient_dim),
                 window,
                 &mut st,
             );
             paint_fill(
                 on_e,
-                tone(peri, 0.32 * pkg_edge_a * dim_all),
+                tone(peri, 0.32 * pkg_edge_a * ambient_dim),
                 window,
                 &mut st,
             );
@@ -808,7 +1210,7 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 let alpha = 0.02 + 0.02 * q as f32 + 0.01;
                 paint_fill(
                     f,
-                    tone(line, alpha.min(0.12) * mod_edge_a * dim_all),
+                    tone(line, alpha.min(0.12) * mod_edge_a * ambient_dim),
                     window,
                     &mut st,
                 );
@@ -835,12 +1237,18 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 f.seg(pt(ax, ay), pt(bx, by), 0.8);
                 st.edges += 1;
             }) as u32;
-            paint_fill(f, tone(line, 0.1 * item_edge_a * dim_all), window, &mut st);
+            paint_fill(
+                f,
+                tone(line, 0.1 * item_edge_a * ambient_dim),
+                window,
+                &mut st,
+            );
         }
 
         // ---- symbols: batched per (shape, tone, brightness)
         let (mut dots, mut dia, mut sq, mut hollow, mut shells, mut msq, mut mdot) =
             (bank(), bank(), bank(), bank(), bank(), bank(), bank());
+        let reach_lens = ReachLens::new(k);
         let mut reach_shapes: [[Fill; 8]; 2] =
             std::array::from_fn(|_| std::array::from_fn(|_| Fill::new()));
         let mut stars: Vec<Star> = Vec::new();
@@ -866,15 +1274,10 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 && let Some(d @ 1..=8) = reach.depth[i as usize]
                 && look.exploration.reach_wave() > f32::from(d - 1)
             {
-                let radius = if d == 1 {
-                    4.2
-                } else if d == 2 {
-                    3.2
-                } else {
-                    2.2
-                };
-                reach_shapes[usize::from(world.yours(i))][usize::from(d - 1)].diamond(x, y, radius);
-                if d <= 2 {
+                let radius = reach_lens.radius(glyph, d);
+                let batch = &mut reach_shapes[usize::from(world.yours(i))][usize::from(d - 1)];
+                glyph_fill(batch, glyph, x, y, radius, node.kind == Kind::Trait);
+                if d <= 2 && glyph.label_alpha > 0.001 {
                     labels.push((
                         (if d == 1 { 8.0 } else { 4.0 }) + imp * 2.0,
                         i,
@@ -887,16 +1290,14 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             let bright = ((imp * 4.0) as usize).min(3);
             let yours = yours_pkg(node.pkg);
             let t = usize::from(world.yours_in[i as usize] > 0 || yours);
-            if core < 1.6 {
-                let s =
-                    (if core < 0.7 { 1.0 } else { 1.5 }) + if t == 1 && !yours { 0.6 } else { 0.0 };
+            if core <= 1.3 {
+                let s = glyph.radius * 2.0;
                 let (rx, ry) = (x - s / 2.0, y - s / 2.0);
                 match look.strategy {
                     Strategy::AllPaths => dots[t][bright].rect(rx, ry, s, s),
                     _ => stars.push((rx, ry, s, t, bright)),
                 }
             } else {
-                let s = core.min(9.0) * 0.8;
                 let bank = match node.kind {
                     Kind::Trait => &mut hollow,
                     Kind::Struct | Kind::Enum | Kind::Type | Kind::Union => &mut dia,
@@ -908,26 +1309,23 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 } else {
                     &mut bank[t][bright]
                 };
-                match node.kind {
-                    Kind::Trait => target.diamond_ring(x, y, s, 1.2),
-                    Kind::Struct | Kind::Enum | Kind::Type | Kind::Union => target.diamond(x, y, s),
-                    _ => target.rect(x - s * 0.55, y - s * 0.55, s * 1.1, s * 1.1),
-                }
+                glyph_fill(target, glyph, x, y, glyph.radius, node.kind == Kind::Trait);
                 if naive {
                     let c = if t == 1 { mint } else { ink };
-                    naive_shapes.push((one, tone(c, (0.3 + 0.2 * bright as f32) * dim_all)));
+                    naive_shapes.push((one, tone(c, (0.3 + 0.2 * bright as f32) * dim_all * 0.9)));
                 }
             }
-            if core > 4.5 || is_lit(i) || Some(i) == hi {
-                let prio = imp * smooth(f64::from(core), 4.5, 11.0) as f32
-                    + if is_lit(i) { 10.0 } else { 0.0 }
-                    + if Some(i) == hi { 20.0 } else { 0.0 };
-                labels.push((prio, i, x, y, core.min(9.0) * 0.8));
+            let accent = label_accent(i);
+            if glyph.label_alpha > 0.001 || accent.near > 0.0 || Some(i) == look.focus {
+                let prio = LabelTier::Item.priority(imp)
+                    + accent.priority()
+                    + if Some(i) == look.focus { 20.0 } else { 0.0 };
+                labels.push((prio, i, x, y, glyph.radius));
             }
             // Members on their shells.
-            let ma = scene.member_alpha(i, k) as f32;
-            if ma > 0.02 && !world.kids(i).is_empty() {
-                let level = (ma * 3.0).round() as usize;
+            let members = scene.member_detail(i, k);
+            if members.visible() && !world.kids(i).is_empty() {
+                let level = 3;
                 for shell in layout.shells_of(i) {
                     let ring = layout.shell(shell);
                     if ring.len() < 3 {
@@ -938,9 +1336,9 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                         .chain(std::iter::once(&ring[0]))
                         .map(|&j| pt(sx(layout.x[j as usize]), sy(layout.y[j as usize])))
                         .collect();
-                    shells[t][level].polyline(&poly, 1.0);
+                    shells[t][level].polyline(&poly, members.coverage);
                 }
-                let s = Scene::member_glyph(k).radius * 2.0;
+                let s = members.glyph.radius * 2.0;
                 for &j in world.kids(i) {
                     let (mx, my) = (sx(layout.x[j as usize]), sy(layout.y[j as usize]));
                     if mx < view.x - 10.0
@@ -957,11 +1355,13 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                         &mut mdot
                     };
                     bank[t][level].rect(mx - s / 2.0, my - s / 2.0, s, s);
-                    if k > 38.0 {
-                        let prio = world.importance[j as usize]
-                            + 0.2
-                            + if is_lit(j) { 10.0 } else { 0.0 }
-                            + if Some(j) == hi { 20.0 } else { 0.0 };
+                    if members.glyph.label_alpha > 0.001
+                        || label_accent(j).near > 0.0
+                        || Some(j) == look.focus
+                    {
+                        let prio = LabelTier::Member.priority(world.importance[j as usize])
+                            + label_accent(j).priority()
+                            + if Some(j) == look.focus { 20.0 } else { 0.0 };
                         labels.push((prio, j, mx, my, s / 2.0));
                     }
                 }
@@ -980,27 +1380,28 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                     window,
                     &mut st,
                 );
-                paint_fill(
+                if paint_star_bank(
+                    window,
                     std::mem::take(&mut dots[t][b]),
+                    tone(c, (0.3 + 0.2 * b as f32) * dim_all * 0.9),
+                ) {
+                    st.paths += 1;
+                }
+                paint_fill(
+                    std::mem::take(&mut dia[t][b]),
                     tone(c, (0.3 + 0.2 * b as f32) * dim_all * 0.9),
                     window,
                     &mut st,
                 );
                 paint_fill(
-                    std::mem::take(&mut dia[t][b]),
-                    tone(c, (0.3 + 0.2 * b as f32) * dim_all),
-                    window,
-                    &mut st,
-                );
-                paint_fill(
                     std::mem::take(&mut sq[t][b]),
-                    tone(c, (0.3 + 0.2 * b as f32) * dim_all),
+                    tone(c, (0.3 + 0.2 * b as f32) * dim_all * 0.9),
                     window,
                     &mut st,
                 );
                 paint_fill(
                     std::mem::take(&mut hollow[t][b]),
-                    tone(c, (0.3 + 0.2 * b as f32) * dim_all),
+                    tone(c, (0.3 + 0.2 * b as f32) * dim_all * 0.9),
                     window,
                     &mut st,
                 );
@@ -1032,23 +1433,30 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                     )
                 })
             });
+            let coverage = look.strategy == Strategy::Coverage;
             let draw = |window: &mut Window| {
+                let mut count = 0;
                 for &(x, y, s, t, b) in &stars {
-                    window.paint_quad(fill(
-                        Bounds {
-                            origin: point(px(x), px(y)),
-                            size: size(px(s), px(s)),
-                        },
-                        colors[t][b],
-                    ));
+                    if coverage {
+                        count += paint_star_coverage(window, x, y, s, colors[t][b]);
+                    } else {
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(x), px(y)),
+                                size: size(px(s), px(s)),
+                            },
+                            colors[t][b],
+                        ));
+                        count += 1;
+                    }
                 }
+                count
             };
-            if naive {
-                draw(window);
+            st.quads += if naive {
+                draw(window)
             } else {
-                window.paint_layer(bounds, draw);
-            }
-            st.quads += stars.len() as u32;
+                window.paint_layer(bounds, draw)
+            } as u32;
         }
 
         // ---- reach: constant-time depth lookup while visiting visible items
@@ -1056,13 +1464,10 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             for (mine, waves) in reach_shapes.into_iter().enumerate() {
                 for (d, batch) in waves.into_iter().enumerate() {
                     let fade = (look.exploration.reach_wave() - d as f32).clamp(0.0, 1.0);
-                    let alpha: f32 = [0.95, 0.66, 0.34, 0.2, 0.2, 0.2, 0.2, 0.2][d];
+                    let alpha = reach_lens.alpha(d, mine == 1);
                     paint_fill(
                         batch,
-                        tone(
-                            if mine == 1 { mint } else { peri },
-                            (alpha + if mine == 1 { 0.1 } else { 0.0 }).min(1.0) * fade,
-                        ),
+                        tone(if mine == 1 { mint } else { peri }, alpha * fade),
                         window,
                         &mut st,
                     );
@@ -1118,9 +1523,9 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
 
         // ---- the lit neighbourhood: bundled edges with flow, bright nodes
         for (neighbours, a, flow_alpha, promote) in look
-            .outgoing_hover
-            .map(|(nb, a, flow_alpha)| (nb, a, flow_alpha, false))
-            .into_iter()
+            .retiring_hovers
+            .iter()
+            .map(|(nb, a, flow_alpha)| (nb.as_ref(), *a, *flow_alpha, false))
             .chain(
                 lit_nb
                     .as_deref()
@@ -1134,19 +1539,11 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             if promote {
                 st.hover_relations = neighbours.edges.len() as u32;
             } else {
-                st.fading_hover_relations = neighbours.edges.len() as u32;
+                st.fading_hover_relations += neighbours.edges.len() as u32;
             }
-            let mut trunks: [Fill; 3] = std::array::from_fn(|_| Fill::new());
-            let mut hubs: [Fill; 3] = std::array::from_fn(|_| Fill::new());
-            let colour = |incoming: bool, other: NodeId| {
-                if !incoming {
-                    0
-                } else if world.yours(other) {
-                    2
-                } else {
-                    1
-                }
-            };
+            let mut trunks: [Fill; 4] = std::array::from_fn(|_| Fill::new());
+            let mut hubs: [Fill; 4] = std::array::from_fn(|_| Fill::new());
+            let mut ownership = Fill::new();
             let screen_points = |edge: &super::scene::HoverEdge| {
                 let mut screen = [pt(0.0, 0.0); super::scene::ROUTE_SAMPLES];
                 for (dst, p) in screen.iter_mut().zip(&edge.points) {
@@ -1162,33 +1559,46 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                     continue;
                 }
                 let screen = screen_points(edge);
-                let width = (0.8 + (bundle.count as f32).log2() * 0.08).min(1.5);
-                trunks[colour(edge.incoming, edge.other)]
-                    .polyline(&screen[..edge.points.len()], width);
+                let width = EdgeWeight::aggregate(bundle.count).pixels();
+                let family = bundle.family();
+                trunks[family].polyline(&screen, width);
+                let arrival = screen[screen.len() - 1];
+                if projected.contains(arrival.x, arrival.y) {
+                    thread_terminal(
+                        &mut trunks[family],
+                        &screen,
+                        if edge.incoming { 14.0 } else { 7.0 },
+                        width.max(1.6),
+                    );
+                }
                 if let Some(caption) = &bundle.caption {
                     let remote = screen[if edge.incoming { 0 } else { screen.len() - 1 }];
                     if projected.contains(remote.x, remote.y) {
-                        let color = colour(edge.incoming, edge.other);
-                        hubs[color].diamond_ring(remote.x, remote.y, 3.5, 1.0);
-                        if promote {
-                            road_labels.push((
-                                caption.clone(),
-                                remote.x,
-                                remote.y,
-                                3.5,
-                                roles::SUB,
-                                tone(
-                                    if color == 0 {
-                                        ink
-                                    } else if color == 1 {
-                                        peri
-                                    } else {
-                                        mint
-                                    },
-                                    0.65 * a,
-                                ),
-                            ));
+                        hubs[family].diamond_ring(remote.x, remote.y, 3.5, 1.0);
+                        // A mixed hub exposes its actual semantic families as
+                        // small facets; one shared trunk retains all members.
+                        let corners = [
+                            pt(remote.x, remote.y - 2.4),
+                            pt(remote.x + 2.4, remote.y),
+                            pt(remote.x, remote.y + 2.4),
+                            pt(remote.x - 2.4, remote.y),
+                        ];
+                        for f in 0..4 {
+                            if bundle.families[f] > 0 {
+                                hubs[f].triangle(remote, corners[f], corners[(f + 1) % 4]);
+                            }
                         }
+                        if world.yours(edge.other) {
+                            ownership.diamond_ring(remote.x, remote.y, 5.5, 0.7);
+                        }
+                        road_labels.push((
+                            caption.clone(),
+                            remote.x,
+                            remote.y,
+                            3.5,
+                            roles::SUB,
+                            tone(thread_tone(palette, family), 0.65 * a),
+                        ));
                     }
                 }
                 if promote {
@@ -1202,14 +1612,8 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 paint_fill(
                     batch,
                     tone(
-                        if q == 0 {
-                            ink
-                        } else if q == 1 {
-                            peri
-                        } else {
-                            mint
-                        },
-                        0.3 * a,
+                        thread_tone(palette, q),
+                        (if q == 0 { 0.3 } else { 0.42 }) * a,
                     ),
                     window,
                     &mut st,
@@ -1218,20 +1622,12 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             for (q, batch) in hubs.into_iter().enumerate() {
                 paint_fill(
                     batch,
-                    tone(
-                        if q == 0 {
-                            ink
-                        } else if q == 1 {
-                            peri
-                        } else {
-                            mint
-                        },
-                        0.65 * a,
-                    ),
+                    tone(thread_tone(palette, q), 0.65 * a),
                     window,
                     &mut st,
                 );
             }
+            paint_fill(ownership, tone(mint, 0.6 * a), window, &mut st);
             // Unfold exact leaves only at visible endpoints and reading scale.
             // One batch per module gives a continuous alpha without quantized
             // fade steps; sorting work is proportional to visible candidates.
@@ -1252,27 +1648,39 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             if promote {
                 st.hover_candidates = work as u32;
             } else {
-                st.fading_hover_candidates = work as u32;
+                st.fading_hover_candidates += work as u32;
             }
             leaves.sort_unstable_by_key(|&(module, i, _, _)| (module, i));
             let mut start = 0;
             while start < leaves.len() {
                 let module = leaves[start].0;
                 let alpha = leaves[start].2;
-                let mut batches: [Fill; 3] = std::array::from_fn(|_| Fill::new());
-                let mut lights: [Fill; 3] = std::array::from_fn(|_| Fill::new());
+                let mut batches: [Fill; 4] = std::array::from_fn(|_| Fill::new());
+                let mut lights: [Fill; 4] = std::array::from_fn(|_| Fill::new());
                 let mut end = start;
                 while end < leaves.len() && leaves[end].0 == module {
                     let edge = &neighbours.edges[leaves[end].1];
                     let route = scene.leaf_route(h, edge);
                     let screen = screen_points(&route);
                     let coverage = leaves[end].3;
-                    let colour = colour(edge.incoming, edge.other);
+                    let colour = super::scene::EdgeFamily::of(edge.rel).slot();
                     // Coverage fading varies stroke width within one uniform
                     // color batch, so a thousand boundary leaves cannot create
                     // a thousand individual paint submissions.
                     if edge.shared {
-                        batches[colour].polyline(&screen[..route.points.len()], 1.2 * coverage);
+                        batches[colour].polyline(
+                            &screen[..route.points.len()],
+                            EdgeWeight::SINGLE.pixels() * coverage,
+                        );
+                        let arrival = screen[screen.len() - 1];
+                        if projected.contains(arrival.x, arrival.y) {
+                            let inset = if edge.incoming {
+                                14.0
+                            } else {
+                                scene.glyph_radius(edge.other, k).max(3.5) + 2.0
+                            };
+                            thread_terminal(&mut batches[colour], &screen, inset, 1.4 * coverage);
+                        }
                     }
                     if flow_alpha > 0.0 {
                         lights[colour].dashed_in(
@@ -1290,13 +1698,7 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                     end += 1;
                 }
                 for (q, (batch, light)) in batches.into_iter().zip(lights).enumerate() {
-                    let color = if q == 0 {
-                        ink
-                    } else if q == 1 {
-                        peri
-                    } else {
-                        mint
-                    };
+                    let color = thread_tone(palette, q);
                     paint_fill(batch, tone(color, 0.5 * a * alpha), window, &mut st);
                     paint_fill(
                         light,
@@ -1330,13 +1732,13 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 } else {
                     bright_ink.diamond(x, y, 3.5);
                 }
-                if promote && labelled.binary_search(&j).is_err() {
+                if labelled.binary_search(&j).is_err() {
                     labels.push((
-                        if j == h { 30.0 } else { 12.0 } + world.importance[j as usize],
+                        label_accent(j).priority() + world.importance[j as usize],
                         j,
                         x,
                         y,
-                        if j == h { 7.0 } else { 3.5 },
+                        scene.glyph_radius(j, k),
                     ));
                 }
             });
@@ -1498,11 +1900,33 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             if !with_sub && !occ.take(title_box[0], title_box[1], title_box[2], title_box[3]) {
                 continue;
             }
+            let territory = Terr {
+                pkg: p,
+                module: None,
+            };
             let base = baseline(&label, y);
+            territory_label(
+                &mut territory_labels,
+                territory,
+                &label,
+                x,
+                base,
+                window.scale_factor(),
+                &view,
+            );
             texts.push((label, x, base));
             st.labels += 1;
             if with_sub && let Some((sub, sx_, sy_, _)) = subtitle {
                 let base = baseline(&sub, sy_);
+                territory_label(
+                    &mut territory_labels,
+                    territory,
+                    &sub,
+                    sx_,
+                    base,
+                    window.scale_factor(),
+                    &view,
+                );
                 texts.push((sub, sx_, base));
                 st.labels += 1;
             }
@@ -1543,13 +1967,25 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 continue;
             }
             let base = baseline(&label, y);
+            territory_label(
+                &mut territory_labels,
+                Terr {
+                    pkg: world.modules[m as usize].pkg,
+                    module: Some(m),
+                },
+                &label,
+                x,
+                base,
+                window.scale_factor(),
+                &view,
+            );
             texts.push((label, x, base));
             st.labels += 1;
         }
         labels.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-        let mut budget = (40.0 + 120.0 * smooth(k, 4.0, 30.0)).round() as i32;
+        let mut budget = 160;
         let mut tried = 0;
-        for &(prio, i, x, y, s) in &labels {
+        for &(_, i, x, y, s) in &labels {
             if look
                 .exploration
                 .tour()
@@ -1584,28 +2020,51 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
                 .is_some_and(|d| {
                     d <= 2 && look.exploration.reach_wave() > f32::from(d.saturating_sub(1))
                 });
-            let strong = prio >= 10.0 || sought || reached;
-            let r = if Some(i) == hi {
-                roles::ITEM_BOLD
-            } else if member {
-                roles::MEMBER
+            let focused = Some(i) == look.focus;
+            let strong = focused || sought || reached;
+            let r = symbol_role(member, focused);
+            let detail_alpha = node.parent.map_or_else(
+                || Scene::glyph(node.kind, k).label_alpha,
+                |parent| scene.member_detail(parent, k).glyph.label_alpha,
+            );
+            let a = if strong {
+                0.95
             } else {
-                roles::ITEM
+                (if member {
+                    0.45
+                } else {
+                    0.4 + 0.45 * world.importance[i as usize]
+                }) * dim_all
+                    * detail_alpha
             };
-            let c = if Some(i) == hi || sought || (reached && !world.yours(i)) {
+            let yours = world.yours(i) || (world.reached(i) && strong);
+            let mut rest = if focused || sought || (reached && !world.yours(i)) {
                 tone(peri, 1.0)
             } else {
-                let a = if strong {
-                    0.95
-                } else {
-                    (if member {
-                        0.45
-                    } else {
-                        0.4 + 0.45 * world.importance[i as usize]
-                    }) * dim_all
-                };
-                let yours = world.yours(i) || (world.reached(i) && strong);
                 tone(if yours { mint } else { ink }, a)
+            };
+            // Labels admitted only by hover have no resting text. Existing
+            // labels keep their font, shape anchor and occupancy throughout
+            // retirement; only their color follows the packet envelope.
+            let ordinary = detail_alpha > 0.0;
+            if !ordinary && !strong {
+                rest.alpha = 0.0;
+            }
+            let c = if strong {
+                rest
+            } else {
+                label_accent(i).paint(
+                    rest,
+                    tone(
+                        if world.yours(i) || world.reached(i) {
+                            mint
+                        } else {
+                            ink
+                        },
+                        0.95,
+                    ),
+                    tone(peri, 1.0),
+                )
             };
             let label = shape(node.name.clone(), scaled(r, ts), c, window);
             let w = label.width();
@@ -1627,7 +2086,10 @@ pub fn paint(look: &Look<'_>, window: &mut Window, cx: &mut App) -> Stats {
             }
         });
     }
-    st
+    Painted {
+        stats: st,
+        territory_labels,
+    }
 }
 
 /// A flat, low-alpha halo; no gradient or per-symbol scene layer.
@@ -1843,9 +2305,132 @@ pub fn group(n: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relation_count_ink_is_monotone_compressed_and_bounded() {
+        use super::EdgeWeight;
+        let mut prior = EdgeWeight::aggregate(0).pixels();
+        assert_eq!(prior, 0.9);
+        for count in 1..=100_000 {
+            let width = EdgeWeight::aggregate(count).pixels();
+            assert!(width >= prior && (0.9..=3.0).contains(&width));
+            prior = width;
+        }
+        for count in [1, 2, 4, 8, 16, 32, 64, 128] {
+            let delta =
+                EdgeWeight::aggregate(count * 2).pixels() - EdgeWeight::aggregate(count).pixels();
+            assert!((delta - 0.2625).abs() < 1e-6);
+        }
+        assert_eq!(EdgeWeight::aggregate(usize::MAX).pixels(), 3.0);
+        assert!(EdgeWeight::SELECTED.pixels() > EdgeWeight::SINGLE.pixels());
+    }
     use super::{Occupancy, clipped_dashes, group};
     use crate::graph::camera::View;
     use crate::paint::geom::pt;
+
+    #[test]
+    fn ordinary_item_labels_precede_their_shell_without_overriding_intent() {
+        use super::LabelTier;
+        // Pinned to the independently replayed RelationLabel/method ranks.
+        let parent = LabelTier::Item.priority(0.104);
+        let member = LabelTier::Member.priority(0.052);
+        assert!(parent > member);
+        for step in 0..=1000 {
+            let importance = step as f32 / 1000.0;
+            assert!(LabelTier::Item.priority(0.0) > LabelTier::Member.priority(importance));
+            assert!(LabelTier::Member.priority(importance) + 10.0 > LabelTier::Item.priority(1.0));
+            assert!(4.0 > LabelTier::Item.priority(importance));
+        }
+        let mut boxes = [
+            (parent, 0, [100.0, 100.0, 190.0, 114.0]),
+            (member, 1, [180.0, 100.0, 220.0, 114.0]),
+        ];
+        boxes.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut index = Occupancy::new(&View {
+            x: 0.0,
+            y: 0.0,
+            w: 480.0,
+            h: 618.0,
+        });
+        let accepted: Vec<_> = boxes
+            .into_iter()
+            .filter_map(|(_, id, r)| index.take(r[0], r[1], r[2], r[3]).then_some(id))
+            .collect();
+        assert_eq!(
+            accepted,
+            vec![0],
+            "the parent name wins the actual overlapping label rectangle"
+        );
+    }
+
+    #[test]
+    fn exact_label_index_matches_brute_force_and_ignores_grid_cell_crossings() {
+        let view = View {
+            x: 37.0,
+            y: 53.0,
+            w: 1440.0,
+            h: 900.0,
+        };
+        let base: Vec<_> = (0..1200)
+            .map(|i| {
+                let x = 100.0 + ((i * 137) % 1000) as f32;
+                let y = 100.0 + ((i * 71) % 600) as f32;
+                [x, y, x + 17.0 + (i % 11) as f32, y + 11.0]
+            })
+            .collect();
+        let mut canonical = None;
+        for (scale, dx, dy) in [
+            (1.0, 0.0, 0.0),
+            (1.0, 0.125, -0.0625),
+            (1.0, 63.875, 31.25),
+            (1.01, 0.0, 0.0),
+            (0.99, 0.0, 0.0),
+        ] {
+            let mut index = Occupancy::new(&view);
+            let mut accepted = Vec::new();
+            let mut truth = Vec::new();
+            for b in &base {
+                let r = [
+                    b[0] * scale + dx,
+                    b[1] * scale + dy,
+                    b[2] * scale + dx,
+                    b[3] * scale + dy,
+                ];
+                let free = accepted.iter().all(|&other| !Occupancy::overlaps(r, other));
+                assert_eq!(index.take(r[0], r[1], r[2], r[3]), free);
+                if free {
+                    accepted.push(r);
+                }
+                truth.push(free);
+            }
+            assert!(index.buckets.len() <= 23 * 15);
+            assert_eq!(index.rects.len(), accepted.len());
+            if let Some(ref expected) = canonical {
+                assert_eq!(&truth, expected);
+            } else {
+                canonical = Some(truth);
+            }
+        }
+        let mut same_cell = Occupancy::new(&view);
+        assert!(same_cell.take(100.0, 100.0, 110.0, 110.0));
+        assert!(
+            same_cell.take(111.0, 100.0, 120.0, 110.0),
+            "one-pixel gap stays free"
+        );
+        assert!(!same_cell.take(109.0, 100.0, 115.0, 110.0));
+    }
+
+    #[test]
+    fn atomic_label_pair_does_not_claim_its_empty_gap() {
+        let mut index = Occupancy::new(&View {
+            x: 0.0,
+            y: 0.0,
+            w: 480.0,
+            h: 618.0,
+        });
+        assert!(index.take_pair([100.0, 100.0, 200.0, 110.0], [100.0, 130.0, 200.0, 140.0]));
+        assert!(index.take(120.0, 112.0, 180.0, 128.0));
+        assert!(!index.take(120.0, 105.0, 180.0, 115.0));
+    }
 
     #[test]
     fn offscreen_dashes_keep_direction_phase_and_bounded_work() {
@@ -2181,6 +2766,185 @@ mod tests {
                 assert!(projected.x.is_finite() && projected.y.is_finite());
             }
         }
+    }
+
+    #[test]
+    fn reach_lens_preserves_each_hit_silhouette_and_bounds_dense_world_coverage() {
+        use super::super::model::Kind;
+        use super::super::scene::{Scene, Shape};
+        for k in [0.05, 0.514, 1.0, 3.0, 6.0, 12.0, 100.0] {
+            let lens = super::ReachLens::new(k);
+            for kind in [
+                Kind::Struct,
+                Kind::Trait,
+                Kind::Enum,
+                Kind::Function,
+                Kind::Method,
+            ] {
+                let glyph = Scene::glyph(kind, k);
+                for depth in 1..=8 {
+                    let radius = lens.radius(glyph, depth);
+                    assert!(radius > 0.0 && radius.is_finite());
+                    assert!(radius <= glyph.radius && radius <= 3.4);
+                    // Every overlay stays inside the real selectable silhouette.
+                    let corner = if glyph.shape == Shape::Diamond {
+                        (radius, 0.0)
+                    } else {
+                        (radius, radius)
+                    };
+                    assert!(glyph.contains(corner.0, corner.1));
+                }
+            }
+        }
+        let lens = super::ReachLens::new(0.514);
+        let glyph = Scene::glyph(Kind::Trait, 0.514);
+        let mut area = 0.0;
+        for i in 0..11874 {
+            let depth = (i % 8 + 1) as u8;
+            let radius = lens.radius(glyph, depth);
+            assert!(
+                radius > 0.0,
+                "no semantic member is dropped to meet a budget"
+            );
+            area += 4.0 * radius * radius;
+        }
+        assert!(
+            area <= 11874.0,
+            "world marks fit the existing one-pixel stars"
+        );
+        assert!(
+            area * 20.0 < 11874.0 * 2.0 * 4.2 * 4.2,
+            "not the former fixed diamond carpet"
+        );
+    }
+
+    #[test]
+    fn reach_depth_emphasis_and_zoom_lens_are_continuous_and_ordered() {
+        for yours in [false, true] {
+            for step in 0..=1200 {
+                let k = f64::from(step) / 100.0;
+                let lens = super::ReachLens::new(k);
+                let mut previous = 1.0;
+                for depth in 0..8 {
+                    let alpha = lens.alpha(depth, yours);
+                    assert!(alpha > 0.0 && alpha <= 0.9 && alpha < previous);
+                    assert!(
+                        (alpha - super::ReachLens::new(k + 0.01).alpha(depth, yours)).abs() < 0.001
+                    );
+                    previous = alpha;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_label_text_bounds_share_snapped_paint_coordinates_at_all_scales() {
+        for text_scale in [1.0, 1.5, 2.0] {
+            for device_scale in [1.0, 2.0] {
+                let x: f32 = 213.27;
+                let base: f32 = 419.61;
+                let x = (x * device_scale).round() / device_scale;
+                let base = (base * device_scale).round() / device_scale;
+                let (width, ascent, descent) =
+                    (87.2 * text_scale, 9.7 * text_scale, 2.4 * text_scale);
+                let bounds = super::painted_text_bounds(x, base, width, ascent, descent);
+                assert_eq!(f32::from(bounds.origin.x), x);
+                assert_eq!(f32::from(bounds.origin.y), base - ascent);
+                assert!((f32::from(bounds.right()) - x - width).abs() < 1e-4);
+                assert!((f32::from(bounds.bottom()) - base - descent).abs() < 1e-4);
+                assert!(!bounds.contains(&gpui::point(gpui::px(x - 1.0), gpui::px(base))));
+                assert!(bounds.contains(&gpui::point(gpui::px(x + width / 2.0), gpui::px(base))));
+            }
+        }
+    }
+
+    #[test]
+    fn territory_hit_regions_include_only_the_painted_content_mask() {
+        let view = super::View {
+            x: 100.0,
+            y: 50.0,
+            w: 200.0,
+            h: 90.0,
+        };
+        let partial = super::painted_text_bounds(80.0, 66.0, 60.0, 30.0, 5.0);
+        let shown = super::clipped_label_bounds(partial, &view)
+            .expect("partially visible label has painted bounds");
+        assert_eq!(f32::from(shown.origin.x), 100.0);
+        assert_eq!(f32::from(shown.origin.y), 50.0);
+        assert_eq!(f32::from(shown.size.width), 40.0);
+        assert_eq!(f32::from(shown.size.height), 21.0);
+        assert!(
+            super::clipped_label_bounds(
+                super::painted_text_bounds(10.0, 5.0, 5.0, 2.0, 1.0),
+                &view
+            )
+            .is_none()
+        );
+        let inside = super::painted_text_bounds(120.0, 80.0, 30.0, 10.0, 3.0);
+        assert_eq!(super::clipped_label_bounds(inside, &view), Some(inside));
+    }
+
+    #[test]
+    fn hover_label_retirement_keeps_identity_priority_role_and_color() {
+        let lit = [2, 7, 9];
+        let rest = gpui::hsla(0.6, 0.2, 0.4, 0.35);
+        let neighbour = gpui::hsla(0.5, 0.1, 0.8, 0.95);
+        let source = gpui::hsla(0.7, 0.5, 0.7, 1.0);
+        for step in 1..=100 {
+            let alpha = step as f32 / 100.0;
+            for node in [2, 7, 9, 13] {
+                let active = super::LabelAccent::of(node, Some((7, &lit, alpha)), None);
+                let retired = super::LabelAccent::of(node, None, Some((7, &lit, alpha)));
+                assert_eq!(active, retired);
+                assert_eq!(active.priority(), retired.priority());
+                assert_eq!(
+                    active.paint(rest, neighbour, source),
+                    retired.paint(rest, neighbour, source)
+                );
+                if node != 13 {
+                    assert!(
+                        active.priority() >= 10.0,
+                        "occupancy priority persists until zero"
+                    );
+                }
+            }
+        }
+        assert_eq!(super::symbol_role(false, false), super::roles::ITEM);
+        assert_eq!(super::symbol_role(true, false), super::roles::MEMBER);
+        assert_eq!(super::symbol_role(false, true), super::roles::ITEM_BOLD);
+        let overlap = super::LabelAccent::of(7, Some((9, &lit, 0.2)), Some((7, &lit, 0.8)));
+        assert_eq!(overlap.near, 0.8);
+        assert_eq!(overlap.source, 0.8);
+    }
+
+    #[test]
+    fn hover_label_color_has_no_departure_dip_and_settles_to_exact_baseline() {
+        let lit = [2, 7];
+        let rest = gpui::hsla(0.6, 0.2, 0.4, 0.35);
+        let neighbour = gpui::hsla(0.5, 0.1, 0.8, 0.95);
+        let source = gpui::hsla(0.7, 0.5, 0.7, 1.0);
+        for (node, target_alpha) in [(2, 0.95), (7, 1.0)] {
+            let mut previous = rest.alpha;
+            for step in 0..=1000 {
+                let alpha = step as f32 / 1000.0;
+                let accent = super::LabelAccent::of(node, None, Some((7, &lit, alpha)));
+                let color = accent.paint(rest, neighbour, source);
+                assert!(color.alpha + 1e-6 >= previous);
+                assert!(
+                    (color.alpha - (rest.alpha + (target_alpha - rest.alpha) * alpha)).abs() < 1e-5
+                );
+                previous = color.alpha;
+            }
+            let settled = super::LabelAccent::of(node, None, Some((7, &lit, 0.0)));
+            assert_eq!(settled.priority(), 0.0);
+            assert_eq!(settled.paint(rest, neighbour, source), rest);
+        }
+        let zero = super::LabelAccent::of(2, Some((7, &lit, 0.0)), None);
+        assert_eq!(
+            zero.paint(rest, neighbour, source),
+            rest,
+            "entry at zero makes no visible accent"
+        );
     }
 
     #[test]
