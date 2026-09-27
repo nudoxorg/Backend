@@ -473,6 +473,37 @@ pub(super) struct SemanticTargets {
     >,
 }
 
+/// Which publication keys a projection reads.
+enum PublicationScan {
+    /// Every selected publication in the relation.
+    All,
+    /// The contiguous key range of one package.
+    Package(backend_engine::PackageReference),
+}
+
+/// Package ranges for a splice, or one full scan when a label is not a package reference.
+fn publication_scans(
+    foreign: ForeignPublication,
+    projects: &BTreeMap<[u8; 32], IndexedProject>,
+) -> Vec<PublicationScan> {
+    if matches!(foreign, ForeignPublication::Reject) {
+        return vec![PublicationScan::All];
+    }
+    let mut packages = Vec::with_capacity(projects.len());
+    for project in projects.values() {
+        let Ok(package) = backend_engine::PackageReference::parse(project.label.clone()) else {
+            return vec![PublicationScan::All];
+        };
+        packages.push(package);
+    }
+    packages.sort();
+    packages.dedup();
+    packages
+        .into_iter()
+        .map(PublicationScan::Package)
+        .collect()
+}
+
 fn semantic_rows(
     snapshot: &WorkspaceSnapshot,
     compiler: &LocalCompilerClient,
@@ -499,14 +530,33 @@ fn semantic_rows(
     let mut symbols = BTreeSet::new();
     let mut remaining_bytes = MAX_REBUILD_BYTES;
     let mut targets = SemanticTargets::default();
-    let mut after = None;
-    loop {
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| {
-                BuiltinModelError(format!("read semantic publication page: {error}"))
-            })?;
+    for scan in publication_scans(foreign, projects) {
+        let mut after = None;
+        let mut from = match &scan {
+            PublicationScan::All => None,
+            PublicationScan::Package(package) => Some(
+                backend_engine::builtin::ProductSemanticPublicationKey::package_lower_bound(
+                    package.clone(),
+                ),
+            ),
+        };
+        loop {
+        let page = if let Some(start) = from.take() {
+            relation.page_from(&start, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        } else {
+            relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        }
+        .map_err(|error| {
+            BuiltinModelError(format!("read semantic publication page: {error}"))
+        })?;
+        let mut finished_package = false;
         for (key, record) in page.entries() {
+            if let PublicationScan::Package(package) = &scan
+                && key.package() != package
+            {
+                finished_package = true;
+                break;
+            }
             if !key.is_selected() {
                 continue;
             }
@@ -673,10 +723,14 @@ fn semantic_rows(
             }
             activated_publications.insert((key.package_key(), key.profile()));
         }
+        if finished_package {
+            break;
+        }
         let Some(next) = page.next().cloned() else {
             break;
         };
         after = Some(next);
+        }
     }
     Ok(SemanticRows {
         rows,

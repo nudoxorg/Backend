@@ -577,6 +577,17 @@ fn lazy_page_seeks_to_the_cursor_without_rereading_the_left_tree()
     let tail = lazy.page(Some(&(ROWS - 1)), 4)?;
     assert!(tail.entries().is_empty());
     assert!(tail.next().is_none());
+
+    loader.calls.set(0);
+    let from = lazy.page_from(&8_000, 32)?;
+    let from_calls = loader.calls.get();
+    assert_eq!(from.entries(), &items[8_000..8_032]);
+    assert_eq!(
+        lazy.page(Some(&7_999), 1)?.entries(),
+        lazy.page_from(&8_000, 1)?.entries()
+    );
+    assert!(from_calls < node_count / 8);
+    eprintln!("lazy_page_from rows={ROWS} nodes={node_count} from_calls={from_calls}");
     Ok(())
 }
 

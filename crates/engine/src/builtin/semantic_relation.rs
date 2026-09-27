@@ -22,7 +22,7 @@ use backend_library::{PackageKey, PackageReference, package_key};
 use backend_semantic::ir::{
     ImageProvenance, PackageLineage, SemanticCoreReader, SemanticImageAuthority,
 };
-use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, RustEdition, Stage};
 use backend_store::hydration::VerifiedGenerationFacts;
 use backend_version::{
     CanonicalRelation, Relation, RelationDecodeError, RelationState, StateRoot, WorkspaceRoot,
@@ -206,6 +206,21 @@ impl ProductSemanticPublicationKey {
     #[must_use]
     pub const fn package(&self) -> &PackageReference {
         &self.package
+    }
+
+    /// The least key that can name `package`.
+    ///
+    /// Every stored key for `package` sorts at or after this probe, and every
+    /// key for an earlier package sorts before it. The probe is not a stored
+    /// publication key.
+    #[must_use]
+    pub fn package_lower_bound(package: PackageReference) -> Self {
+        Self {
+            package,
+            coordinate: PackageUrl::ordering_floor(),
+            profile: LanguageProfile::Rust(RustEdition::Rust2015),
+            selection: SemanticPublicationSelection::Selected,
+        }
     }
 
     /// Returns the exact version-pinned compiler coordinate.
@@ -1016,6 +1031,28 @@ mod tests {
                 .map_err(|_| "compiler coordinate")?,
             LanguageProfile::Rust(RustEdition::Rust2024),
         )
+    }
+
+    #[test]
+    fn package_lower_bound_opens_that_package_and_skips_earlier_ones() {
+        let earlier = ProductSemanticPublicationKey::new(
+            PackageReference::parse("pkg:cargo/alpha@1.0.0".to_owned()).expect("package"),
+            PackageUrl::parse("pkg:cargo/alpha@1.0.0".to_owned()).expect("coordinate"),
+            LanguageProfile::Rust(RustEdition::Rust2024),
+        )
+        .expect("earlier");
+        let sample = key().expect("sample");
+        let later = ProductSemanticPublicationKey::new(
+            PackageReference::parse("pkg:cargo/zeta@1.0.0".to_owned()).expect("package"),
+            PackageUrl::parse("pkg:cargo/zeta@1.0.0".to_owned()).expect("coordinate"),
+            LanguageProfile::Rust(RustEdition::Rust2015),
+        )
+        .expect("later");
+        let bound = ProductSemanticPublicationKey::package_lower_bound(sample.package().clone());
+        assert!(earlier < bound);
+        assert!(bound <= sample);
+        assert!(sample < later);
+        assert_eq!(bound.package(), sample.package());
     }
 
     /// The wire order of semantic keys is exactly the relation's order, for
