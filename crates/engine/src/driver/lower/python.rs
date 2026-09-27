@@ -2331,9 +2331,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// the import-binding arm did not apply and the site is an attribute read:
     /// a unique live class yields the unique field or bound method inside that
     /// class (fields before methods, then inherited members); a unique live
-    /// import alias yields the alias statement's package field key. Ambiguous
-    /// or multiply-matched cases stay on an honest universe field key; zero
-    /// annotation candidates fall through to `module_field`.
+    /// import alias yields the alias statement's package field key; a union of
+    /// one class name peels to that class; an ambiguous union stays on an
+    /// honest universe field key. Multiply-matched cases stay on an honest
+    /// universe field key; zero annotation candidates fall through to
+    /// `module_field`.
     fn annotated_receiver_read_target(
         &self,
         occurrence: &OccurrenceFact,
@@ -2346,18 +2348,19 @@ impl<'a, 'source> Emitter<'a, 'source> {
             None => return Ok(None),
         };
         let function = &self.module.declarations[function_index];
+        let foreign = || {
+            foreign_field(self.slice(occurrence.span)?, occurrence.span)
+                .map(|target| (target, OccurrenceConfidence::Index))
+        };
         let type_name = match receiver_annotation_name(function, receiver) {
-            Some(name) => name,
-            None => return Ok(None),
+            ReceiverAnnotationName::Absent => return Ok(None),
+            ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
+            ReceiverAnnotationName::Unique(name) => name,
         };
         let candidates = self.live_class_or_alias_indices(type_name);
         if candidates.is_empty() {
             return Ok(None);
         }
-        let foreign = || {
-            foreign_field(self.slice(occurrence.span)?, occurrence.span)
-                .map(|target| (target, OccurrenceConfidence::Index))
-        };
         if candidates.len() >= 2 {
             return foreign().map(Some);
         }
@@ -2451,8 +2454,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// Resolves one plain-name receiver through its parameter annotation when
     /// the import-binding arm did not apply: a unique live class yields the
     /// unique method inside that class; a unique live import alias yields the
-    /// alias statement's package key. Every ambiguous or unproven case keeps
-    /// today's universe key by returning `None`.
+    /// alias statement's package key; a union of one class name peels to that
+    /// class; an ambiguous union stays on an honest universe method key. Every
+    /// other unproven case keeps today's universe key by returning `None`.
     fn annotated_receiver_target(
         &self,
         occurrence: &OccurrenceFact,
@@ -2464,9 +2468,14 @@ impl<'a, 'source> Emitter<'a, 'source> {
             None => return Ok(None),
         };
         let function = &self.module.declarations[function_index];
+        let foreign = || {
+            foreign_method(self.slice(occurrence.span)?, occurrence.span)
+                .map(|target| (target, OccurrenceConfidence::Index))
+        };
         let type_name = match receiver_annotation_name(function, receiver) {
-            Some(name) => name,
-            None => return Ok(None),
+            ReceiverAnnotationName::Absent => return Ok(None),
+            ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
+            ReceiverAnnotationName::Unique(name) => name,
         };
         let candidates = self.live_class_or_alias_indices(type_name);
         if candidates.len() != 1 {
@@ -3295,25 +3304,106 @@ fn is_receiver_parameter(receiver: ReceiverKind, name: &str) -> bool {
     }
 }
 
+/// Classification of one receiver parameter annotation for class-name binding.
+enum ReceiverAnnotationName<'a> {
+    /// No undotted class name is available for candidate lookup.
+    Absent,
+    /// One undotted class or alias name, including through peeled generics and
+    /// a union of one class name with ignored `None` arms.
+    Unique(&'a str),
+    /// Two or more distinct class names, so binding must not pick one arm.
+    Ambiguous,
+}
+
+fn optional_or_union_base(name: &str) -> Option<&'static str> {
+    if name == "Optional" || name == "typing.Optional" {
+        Some("Optional")
+    } else if name == "Union" || name == "typing.Union" {
+        Some("Union")
+    } else {
+        None
+    }
+}
+
+fn classify_receiver_annotation<'a>(annotation: &'a Annotation) -> ReceiverAnnotationName<'a> {
+    match annotation {
+        Annotation::None => ReceiverAnnotationName::Absent,
+        Annotation::Name { name, .. } => {
+            if name.contains('.') {
+                ReceiverAnnotationName::Absent
+            } else {
+                ReceiverAnnotationName::Unique(name.as_str())
+            }
+        }
+        Annotation::Generic { base, args } => {
+            if let Annotation::Name { name, .. } = base.as_ref() {
+                match optional_or_union_base(name) {
+                    Some("Optional") => {
+                        if args.len() == 1 {
+                            classify_receiver_annotation(&args[0])
+                        } else {
+                            ReceiverAnnotationName::Absent
+                        }
+                    }
+                    Some("Union") => classify_receiver_union_members(args),
+                    _ => classify_receiver_annotation(base.as_ref()),
+                }
+            } else {
+                classify_receiver_annotation(base.as_ref())
+            }
+        }
+        Annotation::Union(members) => classify_receiver_union_members(members),
+        Annotation::List(_)
+        | Annotation::StringLiteral(_)
+        | Annotation::Literal(_)
+        | Annotation::Unknown(_) => ReceiverAnnotationName::Absent,
+    }
+}
+
+fn classify_receiver_union_members<'a>(
+    members: &'a [Annotation],
+) -> ReceiverAnnotationName<'a> {
+    let mut flattened: Vec<&Annotation> = Vec::new();
+    flatten_receiver_union_members(members, &mut flattened);
+    let mut unique_name: Option<&'a str> = None;
+    for member in flattened {
+        match classify_receiver_annotation(member) {
+            ReceiverAnnotationName::Absent => {}
+            ReceiverAnnotationName::Ambiguous => return ReceiverAnnotationName::Ambiguous,
+            ReceiverAnnotationName::Unique(name) => {
+                if let Some(existing) = unique_name {
+                    if existing != name {
+                        return ReceiverAnnotationName::Ambiguous;
+                    }
+                } else {
+                    unique_name = Some(name);
+                }
+            }
+        }
+    }
+    match unique_name {
+        Some(name) => ReceiverAnnotationName::Unique(name),
+        None => ReceiverAnnotationName::Absent,
+    }
+}
+
+fn flatten_receiver_union_members<'a>(members: &'a [Annotation], out: &mut Vec<&'a Annotation>) {
+    for member in members {
+        if let Annotation::Union(inner) = member {
+            flatten_receiver_union_members(inner, out);
+        } else {
+            out.push(member);
+        }
+    }
+}
+
 /// The non-receiver parameter whose name equals `receiver`, when its
-/// annotation is a plain undotted name or peels to one through generics.
+/// annotation is a plain undotted name, peels to one through generics, or is
+/// a union of one class name.
 fn receiver_annotation_name<'a>(
     declaration: &'a DeclarationFact,
     receiver: &str,
-) -> Option<&'a str> {
-    fn undotted_name<'a>(annotation: &'a Annotation) -> Option<&'a str> {
-        match annotation {
-            Annotation::Name { name, .. } if !name.contains('.') => Some(name.as_str()),
-            Annotation::Generic { base, .. } => undotted_name(base),
-            Annotation::Name { .. }
-            | Annotation::List(_)
-            | Annotation::StringLiteral(_)
-            | Annotation::Union(_)
-            | Annotation::Literal(_)
-            | Annotation::None
-            | Annotation::Unknown(_) => None,
-        }
-    }
+) -> ReceiverAnnotationName<'a> {
     for parameter in &declaration.parameters {
         if is_receiver_parameter(declaration.receiver, &parameter.name) {
             continue;
@@ -3321,9 +3411,9 @@ fn receiver_annotation_name<'a>(
         if parameter.name != receiver {
             continue;
         }
-        return undotted_name(&parameter.annotation);
+        return classify_receiver_annotation(&parameter.annotation);
     }
-    None
+    ReceiverAnnotationName::Absent
 }
 
 /// Borrowed source span of the module path in one import alias statement.
