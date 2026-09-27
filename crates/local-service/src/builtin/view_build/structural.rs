@@ -1390,6 +1390,13 @@ struct ParsedDeclarationCoordinate {
     name: String,
 }
 
+fn label_names_declaration(label: &str, name: &str) -> bool {
+    label == name
+        || label
+            .strip_suffix(name)
+            .is_some_and(|prefix| prefix.ends_with("::"))
+}
+
 fn parsed_declaration_coordinate(coordinate: &str) -> Option<ParsedDeclarationCoordinate> {
     let (prefix, name) = coordinate.rsplit_once("::")?;
     if name.is_empty() {
@@ -1419,24 +1426,24 @@ pub(crate) fn view_row_for_structural_coordinate(
     package: backend_engine::PackageKey,
     coordinate: &str,
 ) -> Option<RowId> {
+    if let Some(id) = view.first_package_label(package, coordinate) {
+        return Some(id);
+    }
+    let Some(parsed) = parsed_declaration_coordinate(coordinate) else {
+        return None;
+    };
     let mut semantic_matches = Vec::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if row.package != Some(package) {
             continue;
         }
-        if row.label == coordinate {
-            return Some(row.id);
-        }
-        let Some(parsed) = parsed_declaration_coordinate(coordinate) else {
-            continue;
-        };
         let Some(location) = row.source.captured() else {
             continue;
         };
         if location.path() != parsed.path || location.start_line() != parsed.line {
             continue;
         }
-        if row.label.ends_with(&format!("::{}", parsed.name)) || row.label == parsed.name {
+        if label_names_declaration(&row.label, &parsed.name) {
             semantic_matches.push(row.id);
         }
     }
@@ -1494,31 +1501,27 @@ pub(crate) fn structural_call_graph_relations(
     source_id: RowId,
     include_incoming: bool,
 ) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
-    let _source_row = view.row(source_id).ok_or_else(|| {
-        BuiltinModelError("structural call graph source is absent from the view".to_owned())
-    })?;
-    let mut coordinate_ids = BTreeMap::<String, RowId>::new();
-    for row in view.rows() {
-        if row.package == Some(package) {
-            coordinate_ids.insert(row.label.clone(), row.id);
-        }
+    if view.row_ref(source_id).is_none() {
+        return Err(BuiltinModelError(
+            "structural call graph source is absent from the view".to_owned(),
+        ));
     }
     let mut relations = BTreeSet::new();
     for (caller_coordinate, callee_coordinate) in structural_call_coordinate_pairs(sources, package)?
     {
-        let caller_id = coordinate_ids.get(&caller_coordinate).ok_or_else(|| {
+        let caller_id = view.last_package_label(package, &caller_coordinate).ok_or_else(|| {
             BuiltinModelError(
                 "structural call graph caller is absent from the published view".to_owned(),
             )
         })?;
-        let callee_id = coordinate_ids.get(&callee_coordinate).ok_or_else(|| {
+        let callee_id = view.last_package_label(package, &callee_coordinate).ok_or_else(|| {
             BuiltinModelError(
                 "structural call graph callee is absent from the published view".to_owned(),
             )
         })?;
         relations.insert(backend_engine::GraphRelation::new(
-            *caller_id,
-            *callee_id,
+            caller_id,
+            callee_id,
             backend_library::SemanticLinkKind::Calls,
         ));
     }
@@ -1549,25 +1552,23 @@ pub(crate) fn structural_reference_facts(
     sources: &super::super::IndexedSources,
     target: &str,
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
-    let target_row = view
-        .rows()
-        .iter()
-        .find(|row| row.label == target)
-        .ok_or_else(|| {
+    let (target_id, target_symbol, package) = {
+        let target_row = view.row_refs().find(|row| row.label == target).ok_or_else(|| {
             BuiltinModelError("structural references target is absent from the view".to_owned())
         })?;
-    let backend_engine::RowId::Symbol(target_symbol) = target_row.id else {
-        return Err(BuiltinModelError(
-            "structural references target is not a declaration row".to_owned(),
-        ));
+        let backend_engine::RowId::Symbol(target_symbol) = target_row.id else {
+            return Err(BuiltinModelError(
+                "structural references target is not a declaration row".to_owned(),
+            ));
+        };
+        let Some(package) = target_row.package else {
+            return Err(BuiltinModelError(
+                "structural references target is not attributed to a package".to_owned(),
+            ));
+        };
+        (target_row.id, target_symbol, package)
     };
-    let Some(package) = target_row.package else {
-        return Err(BuiltinModelError(
-            "structural references target is not attributed to a package".to_owned(),
-        ));
-    };
-    let Some(relations) =
-        structural_call_graph_relations(view, sources, package, target_row.id, true)?
+    let Some(relations) = structural_call_graph_relations(view, sources, package, target_id, true)?
     else {
         return Ok(Vec::new());
     };
@@ -1581,12 +1582,12 @@ pub(crate) fn structural_reference_facts(
     let target_identity = structural_symbol_identity(target_symbol);
     let mut facts = Vec::new();
     for relation in relations {
-        if relation.to != target_row.id
+        if relation.to != target_id
             || relation.relation != backend_library::SemanticLinkKind::Calls
         {
             continue;
         }
-        let site_row = view.row(relation.from).ok_or_else(|| {
+        let site_row = view.row_ref(relation.from).ok_or_else(|| {
             BuiltinModelError("structural references site is absent from the view".to_owned())
         })?;
         let backend_engine::RowId::Symbol(site_symbol) = site_row.id else {
