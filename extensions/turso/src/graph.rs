@@ -36,10 +36,12 @@ impl TursoProjection {
     /// The graph is deliberately fenced independently from the UI row
     /// projection: package metadata can arrive in a different ingest batch,
     /// while every query still returns the exact root that supplied its facts.
-    /// An identical root performs no writes. A new root keeps an edge whose
-    /// payload still matches and keeps an unknown or unavailable state whose
-    /// source, kind, and reason still match. Queries fence on the metadata
-    /// root, so a root-only change does not rewrite those rows.
+    /// An identical root performs no writes. A new root inserts only content
+    /// identities that are not already stored and deletes identities that
+    /// disappeared. A stored edge whose content identity still matches is left
+    /// in place, including its original root column. An unknown or unavailable
+    /// state whose source, kind, and reason still match is kept. Queries fence
+    /// on the metadata root.
     pub async fn synchronize_package_graph(
         &mut self,
         root: backend_library::ViewStateRoot,
@@ -77,14 +79,19 @@ impl TursoProjection {
                 rows: u64::try_from(current.edge_count).unwrap_or(0),
             });
         }
+        let stored_edges = stored_edge_ids(&tx).await?;
         let mut desired_edges = BTreeSet::new();
+        let mut due_edges = Vec::new();
         let mut desired_states = BTreeMap::new();
         for (source, state) in facts {
             match state {
                 DependencyFacts::Known(rows) => {
                     for record in rows.iter() {
-                        desired_edges.insert(record.facts_version);
-                        upsert_package_edge(&tx, root_bytes, record).await?;
+                        if desired_edges.insert(record.facts_version)
+                            && !stored_edges.contains(&record.facts_version)
+                        {
+                            due_edges.push(record);
+                        }
                     }
                 }
                 DependencyFacts::Unknown(reason) => {
@@ -97,7 +104,14 @@ impl TursoProjection {
                 }
             }
         }
-        delete_absent_edges(&tx, &desired_edges).await?;
+        for batch in due_edges.chunks(EDGE_WRITE_BATCH) {
+            insert_package_edges(&tx, root_bytes, batch).await?;
+        }
+        let stale_edges = stored_edges
+            .into_iter()
+            .filter(|edge_id| !desired_edges.contains(edge_id))
+            .collect::<Vec<_>>();
+        delete_edge_ids(&tx, &stale_edges).await?;
         retain_matching_states(&tx, root_bytes, &desired_states).await?;
         tx.execute(
             "INSERT INTO backend_projection_package_graph_meta (singleton, root, edge_count) \
@@ -248,73 +262,99 @@ async fn package_state_from(
     }))
 }
 
-async fn upsert_package_edge(
-    connection: &turso::Connection,
-    root: &[u8; 32],
-    record: &PackageDependencyRecord,
-) -> turso::Result<u64> {
-    let edge_id = record.facts_version;
-    let resolved = record.target.resolved.as_ref().map(|value| value.as_str());
-    connection
-        .execute(
-            "INSERT INTO backend_projection_package_edges (\
-             edge_id, root, source, target_ecosystem, target_name, requirement, resolved, \
-             scope, optional, authority, frontier, provenance, facts_version) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
-             ON CONFLICT(edge_id) DO UPDATE SET root=excluded.root, source=excluded.source, \
-             target_ecosystem=excluded.target_ecosystem, target_name=excluded.target_name, \
-             requirement=excluded.requirement, resolved=excluded.resolved, scope=excluded.scope, \
-             optional=excluded.optional, authority=excluded.authority, frontier=excluded.frontier, \
-             provenance=excluded.provenance, facts_version=excluded.facts_version \
-             WHERE source!=excluded.source OR target_ecosystem!=excluded.target_ecosystem \
-             OR target_name!=excluded.target_name OR requirement!=excluded.requirement \
-             OR resolved IS NOT excluded.resolved OR scope!=excluded.scope \
-             OR optional!=excluded.optional OR authority!=excluded.authority \
-             OR frontier!=excluded.frontier OR provenance!=excluded.provenance \
-             OR facts_version!=excluded.facts_version",
-            turso::params![
-                edge_id.as_slice(),
-                root.as_slice(),
-                record.source.as_str(),
-                i64::from(record.target.ecosystem as u8),
-                record.target.name.as_str(),
-                record.target.requirement.as_str(),
-                resolved,
-                dependency_scope_code(record.scope),
-                i64::from(record.optional),
-                dependency_authority_code(record.evidence.authority),
-                record.evidence.frontier.as_slice(),
-                record.evidence.provenance.as_slice(),
-                record.facts_version.as_slice(),
-            ],
-        )
-        .await
-}
+const EDGE_WRITE_BATCH: usize = 128;
 
-async fn delete_absent_edges(
+async fn stored_edge_ids(
     connection: &turso::Connection,
-    desired: &BTreeSet<[u8; 32]>,
-) -> Result<(), ProjectionError> {
+) -> Result<BTreeSet<[u8; 32]>, ProjectionError> {
     let mut rows = connection
         .query("SELECT edge_id FROM backend_projection_package_edges", ())
         .await?;
-    let mut stale = Vec::new();
+    let mut ids = BTreeSet::new();
     while let Some(row) = rows.next().await? {
         let id: Vec<u8> = row.get(0)?;
         let id: [u8; 32] = id
             .try_into()
             .map_err(|_| ProjectionError::CorruptMetadata { field: "edge_id" })?;
-        if !desired.contains(&id) {
-            stale.push(id);
-        }
+        ids.insert(id);
     }
-    drop(rows);
-    for id in stale {
+    Ok(ids)
+}
+
+async fn insert_package_edges(
+    connection: &turso::Connection,
+    root: &[u8; 32],
+    records: &[&PackageDependencyRecord],
+) -> Result<(), ProjectionError> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut sql = String::from(
+        "INSERT INTO backend_projection_package_edges (\
+         edge_id, root, source, target_ecosystem, target_name, requirement, resolved, \
+         scope, optional, authority, frontier, provenance, facts_version) VALUES ",
+    );
+    for index in 0..records.len() {
+        if index != 0 {
+            sql.push(',');
+        }
+        sql.push_str("(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    }
+    let mut values = Vec::with_capacity(records.len().saturating_mul(13));
+    for record in records {
+        values.extend(edge_values(root, record));
+    }
+    connection
+        .execute(&sql, turso::params_from_iter(values))
+        .await?;
+    Ok(())
+}
+
+fn edge_values(root: &[u8; 32], record: &PackageDependencyRecord) -> [turso::Value; 13] {
+    let resolved = record
+        .target
+        .resolved
+        .as_ref()
+        .map_or(turso::Value::Null, |value| {
+            turso::Value::Text(value.as_str().to_owned())
+        });
+    [
+        turso::Value::Blob(record.facts_version.to_vec()),
+        turso::Value::Blob(root.to_vec()),
+        turso::Value::Text(record.source.as_str().to_owned()),
+        turso::Value::Integer(i64::from(record.target.ecosystem as u8)),
+        turso::Value::Text(record.target.name.as_str().to_owned()),
+        turso::Value::Text(record.target.requirement.as_str().to_owned()),
+        resolved,
+        turso::Value::Integer(dependency_scope_code(record.scope)),
+        turso::Value::Integer(i64::from(record.optional)),
+        turso::Value::Integer(dependency_authority_code(record.evidence.authority)),
+        turso::Value::Blob(record.evidence.frontier.to_vec()),
+        turso::Value::Blob(record.evidence.provenance.to_vec()),
+        turso::Value::Blob(record.facts_version.to_vec()),
+    ]
+}
+
+async fn delete_edge_ids(
+    connection: &turso::Connection,
+    stale: &[[u8; 32]],
+) -> Result<(), ProjectionError> {
+    for batch in stale.chunks(EDGE_WRITE_BATCH) {
+        let mut sql =
+            String::from("DELETE FROM backend_projection_package_edges WHERE edge_id IN (");
+        for index in 0..batch.len() {
+            if index != 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+        }
+        sql.push(')');
+        let values = batch
+            .iter()
+            .map(|id| turso::Value::Blob(id.to_vec()))
+            .collect::<Vec<_>>();
         connection
-            .execute(
-                "DELETE FROM backend_projection_package_edges WHERE edge_id = ?1",
-                turso::params![id.as_slice()],
-            )
+            .execute(&sql, turso::params_from_iter(values))
             .await?;
     }
     Ok(())
