@@ -172,8 +172,10 @@ mod tests {
     use super::ProfileStalePaths;
     use super::{
         STALE_NOTE, SourceRowProjection, StructuralParent, StructuralProjectionPlan,
-        append_structural_query_facts, semantic_profile_is_complete, structural_call_graph_relations,
-        structural_excerpt_calls,
+        append_structural_query_facts, semantic_profile_is_complete,
+        structural_call_coordinate_pairs, structural_call_graph_relations,
+        structural_call_graph_relations_mapped,
+        structural_excerpt_calls, structural_reference_facts, view_row_for_structural_coordinate,
     };
     use backend_engine::{
         Row, RowId, ViewRoot, package_key, product_source_file_key, symbol_key,
@@ -2116,6 +2118,296 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             &rows,
             false,
         )?;
+        Ok(())
+    }
+
+    fn republish(view: &ViewRoot, rows: Vec<Row>) -> Result<ViewRoot, String> {
+        let capability = view.capability().ok_or("view has no coverage capability")?;
+        ViewRoot::new_checked(
+            view.recipe(),
+            view.basis(),
+            view.frontier(),
+            rows,
+            view.coverage().to_vec(),
+            capability,
+        )
+        .map_err(|error| format!("{error:?}"))
+    }
+
+    fn relations_cloning_every_row(
+        view: &ViewRoot,
+        sources: &super::super::IndexedSources,
+        package: backend_engine::PackageKey,
+        source_id: RowId,
+        include_incoming: bool,
+    ) -> Result<Vec<backend_engine::GraphRelation>, String> {
+        let rows = view.row_refs().cloned().collect::<Vec<_>>();
+        if !rows.iter().any(|row| row.id == source_id) {
+            return Err("structural call graph source is absent from the view".to_owned());
+        }
+        let mut coordinate_ids = BTreeMap::<String, RowId>::new();
+        for row in &rows {
+            if row.package == Some(package) {
+                coordinate_ids.insert(row.label.clone(), row.id);
+            }
+        }
+        let mut relations = BTreeSet::new();
+        let pairs = structural_call_coordinate_pairs(sources, package)
+            .map_err(|error| error.to_string())?;
+        for (caller_coordinate, callee_coordinate) in pairs {
+            let caller_id = *coordinate_ids.get(&caller_coordinate).ok_or(
+                "structural call graph caller is absent from the published view",
+            )?;
+            let callee_id = *coordinate_ids.get(&callee_coordinate).ok_or(
+                "structural call graph callee is absent from the published view",
+            )?;
+            relations.insert(backend_engine::GraphRelation::new(
+                caller_id,
+                callee_id,
+                backend_library::SemanticLinkKind::Calls,
+            ));
+        }
+        Ok(relations
+            .into_iter()
+            .filter(|relation| {
+                if include_incoming {
+                    relation.from == source_id || relation.to == source_id
+                } else {
+                    relation.from == source_id
+                }
+            })
+            .collect())
+    }
+
+    #[test]
+    fn borrowed_call_graph_matches_cloned_rows_and_skips_sibling_bodies() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { entriesFromItems } from \"./apply-set\";\nexport function syncWorkout() { entriesFromItems(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, mut rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
+        let callee = "fixture::apply-set.ts:1::entriesFromItems";
+        let sibling_package = package_key("pkg:beta");
+        let body = "x".repeat(4096);
+        for index in 0..4096 {
+            let label = format!("pkg:beta::item-{index:04}");
+            rows.push(
+                Row::in_package(
+                    RowId::Symbol(symbol_key(&label)),
+                    view.basis(),
+                    sibling_package,
+                    label,
+                )
+                .with_document(vec![backend_engine::Fragment::Text(body.clone())]),
+            );
+        }
+        let heavy = republish(&view, rows)?;
+        let owned = relations_cloning_every_row(&heavy, &sources, package, sync, false)?;
+        let borrowed = calls_relations(&heavy, &sources, package, sync, false)?;
+        let callee_id = row_for_coordinate_in(&heavy, callee)?;
+        if owned != borrowed || borrowed.len() != 1 || borrowed[0].to != callee_id {
+            return Err(format!("owned {owned:?} borrowed {borrowed:?}"));
+        }
+        let pairs = structural_call_coordinate_pairs(&sources, package)
+            .map_err(|error| error.to_string())?;
+        let mapped = structural_call_graph_relations_mapped(&heavy, &pairs, package, sync, false);
+        if mapped != borrowed {
+            return Err(format!("mapped {mapped:?} borrowed {borrowed:?}"));
+        }
+        let facts = structural_reference_facts(&heavy, &sources, callee)
+            .map_err(|error| error.to_string())?;
+        let RowId::Symbol(sync_symbol) = sync else {
+            return Err("sync row is not a symbol".to_owned());
+        };
+        if facts.len() != 1 || facts[0].site != sync_symbol {
+            return Err(format!("expected one incoming fact from syncWorkout, got {facts:?}"));
+        }
+
+        let mut owned_samples = Vec::with_capacity(9);
+        let mut borrowed_samples = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            std::hint::black_box(relations_cloning_every_row(
+                &heavy, &sources, package, sync, false,
+            )?)
+            .len();
+            owned_samples.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(calls_relations(&heavy, &sources, package, sync, false)?).len();
+            borrowed_samples.push(started.elapsed().as_nanos());
+        }
+        owned_samples.sort_unstable();
+        borrowed_samples.sort_unstable();
+        let owned_median = owned_samples[owned_samples.len() / 2];
+        let borrowed_median = borrowed_samples[borrowed_samples.len() / 2];
+        eprintln!(
+            "call_graph_rows rows=4096 owned_median_ns={owned_median} \
+             borrowed_median_ns={borrowed_median}"
+        );
+        if borrowed_median * 2 >= owned_median {
+            return Err(format!(
+                "borrowed {borrowed_median} ns, owned {owned_median} ns"
+            ));
+        }
+        Ok(())
+    }
+
+    fn row_for_coordinate_in(view: &ViewRoot, coordinate: &str) -> Result<RowId, String> {
+        view.row_refs()
+            .find(|row| row.label == coordinate)
+            .map(|row| row.id)
+            .ok_or_else(|| format!("missing row for coordinate {coordinate}"))
+    }
+
+    #[test]
+    fn duplicate_call_labels_keep_first_coordinate_and_last_graph_edge() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { entriesFromItems } from \"./apply-set\";\nexport function syncWorkout() { entriesFromItems(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
+        let target = "fixture::apply-set.ts:1::entriesFromItems";
+        let original = row_for_coordinate(&rows, target)?;
+        let mut later = None;
+        for index in 0..10_000 {
+            let candidate = symbol_key(&format!("duplicate-callee-{index}"));
+            if RowId::Symbol(candidate) > original {
+                later = Some(candidate);
+                break;
+            }
+        }
+        let later = later.ok_or("no symbol key sorts after the original callee")?;
+        let mut doubled_rows = rows;
+        doubled_rows.push(Row::in_package(
+            RowId::Symbol(later),
+            view.basis(),
+            package,
+            target,
+        ));
+        let doubled = republish(&view, doubled_rows)?;
+        let first = view_row_for_structural_coordinate(&doubled, package, target)
+            .ok_or("missing first coordinate")?;
+        if first != original {
+            return Err(format!("coordinate resolved {first:?}, first row is {original:?}"));
+        }
+        let relations = calls_relations(&doubled, &sources, package, sync, false)?;
+        if relations.len() != 1 || relations[0].to != RowId::Symbol(later) {
+            return Err(format!("graph edge should keep the later label, got {relations:?}"));
+        }
+        let pairs = structural_call_coordinate_pairs(&sources, package)
+            .map_err(|error| error.to_string())?;
+        let mapped =
+            structural_call_graph_relations_mapped(&doubled, &pairs, package, sync, false);
+        if mapped.len() != 1 || mapped[0].to != original {
+            return Err(format!("mapped edge should keep the first label, got {mapped:?}"));
+        }
+        let facts = structural_reference_facts(&doubled, &sources, target)
+            .map_err(|error| error.to_string())?;
+        if !facts.is_empty() {
+            return Err(format!(
+                "later graph edge must not satisfy the first-label reference target: {facts:?}"
+            ));
+        }
+        let unique = structural_reference_facts(&view, &sources, target)
+            .map_err(|error| error.to_string())?;
+        let RowId::Symbol(sync_symbol) = sync else {
+            return Err("sync row is not a symbol".to_owned());
+        };
+        if unique.len() != 1 || unique[0].site != sync_symbol {
+            return Err(format!("expected one reference fact, got {unique:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_coordinate_miss_uses_the_unique_captured_declaration() -> Result<(), String> {
+        let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+        let capability =
+            super::super::test_builtin_view_capability().map_err(|error| error.to_string())?;
+        let package = package_key("fixture");
+        let caller_label = "fixture::src/worker.rs:1::main";
+        let callee_coordinate = "fixture::src/worker.rs:6::run";
+        let caller = Row::in_package(
+            RowId::Symbol(symbol_key(caller_label)),
+            initial.basis(),
+            package,
+            caller_label,
+        );
+        let location = backend_compile::SourceLocation::new("src/worker.rs", 6)
+            .map_err(|error| error.to_string())?;
+        let callee = Row::in_package(
+            RowId::Symbol(symbol_key("semantic-run")),
+            initial.basis(),
+            package,
+            "run",
+        )
+        .with_source(location.clone());
+        let view = ViewRoot::new_checked(
+            initial.recipe(),
+            initial.basis(),
+            initial.frontier(),
+            vec![caller.clone(), callee.clone()],
+            initial.coverage().to_vec(),
+            capability.clone(),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let resolved = view_row_for_structural_coordinate(&view, package, callee_coordinate)
+            .ok_or("semantic declaration was not resolved")?;
+        if resolved != callee.id {
+            return Err(format!("resolved {resolved:?}, semantic row is {:?}", callee.id));
+        }
+        let pairs = vec![(caller_label.to_owned(), callee_coordinate.to_owned())];
+        let mapped =
+            structural_call_graph_relations_mapped(&view, &pairs, package, caller.id, false);
+        if mapped.len() != 1 || mapped[0].from != caller.id || mapped[0].to != callee.id {
+            return Err(format!("mapped semantic edge: {mapped:?}"));
+        }
+        let other = Row::in_package(
+            RowId::Symbol(symbol_key("semantic-run-other")),
+            initial.basis(),
+            package,
+            "run",
+        )
+        .with_source(location);
+        let ambiguous = ViewRoot::new_checked(
+            initial.recipe(),
+            initial.basis(),
+            initial.frontier(),
+            vec![caller.clone(), callee, other],
+            initial.coverage().to_vec(),
+            capability,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        if view_row_for_structural_coordinate(&ambiguous, package, callee_coordinate).is_some() {
+            return Err("two semantic rows at one coordinate must not resolve".to_owned());
+        }
+        let missed =
+            structural_call_graph_relations_mapped(&ambiguous, &pairs, package, caller.id, false);
+        if !missed.is_empty() {
+            return Err(format!("ambiguous callee must drop the edge, got {missed:?}"));
+        }
         Ok(())
     }
 
