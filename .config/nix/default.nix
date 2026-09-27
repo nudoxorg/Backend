@@ -230,6 +230,12 @@ in
     // value.pkgs.lib.optionalAttrs (value.tools.backendControl != null) {
       backend-control = value.tools.backendControl;
     }
+    // value.pkgs.lib.optionalAttrs (value.tools.fuzzContract != null) (
+      {
+        continuous-fuzz = value.tools.fuzzContract.bundle;
+      }
+      // value.tools.fuzzContract.aliases
+    )
     // value.pkgs.lib.optionalAttrs (value.tools.guiRuntime != null) {
       gui-runtime = value.tools.guiRuntime;
     }

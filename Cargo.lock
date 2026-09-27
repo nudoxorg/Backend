@@ -1177,6 +1177,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-fuzz"
+version = "0.1.0"
+dependencies = [
+ "backend-replication",
+ "backend-version",
+ "bolero",
+]
+
+[[package]]
 name = "backend-gui-harness"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,9 @@
+# LibFuzzer dictionary for the replication envelope.
+# The marker is the public RPL2 magic. Tag bytes are the dispatch discriminants
+# in crates/replication codec messages.rs. No secrets belong here.
+
+magic="RPL2"
+version="\x03"
+tag_capabilities="\x01"
+tag_root_summary="\x02"
+tag_need="\x0f"
