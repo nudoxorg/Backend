@@ -1545,7 +1545,7 @@ def read(item: Child):
         ));
     }
     let read = field_access_in_owner(&occurrences, read_owner)?;
-    assert_local_field_access(read, EntityId::new(child_field))?;
+    assert_local_field_access(read, child_field)?;
     Ok(())
 }
 
@@ -1604,7 +1604,7 @@ def read(item: Child):
         ));
     }
     let read = field_access_in_owner(&occurrences, read_owner)?;
-    assert_local_field_access(read, EntityId::new(left_note))?;
+    assert_local_field_access(read, left_note)?;
     Ok(())
 }
 
@@ -1632,7 +1632,7 @@ def read(item: Child):
         ));
     }
     let read = field_access_in_owner(&occurrences, read_owner)?;
-    assert_local_field_access(read, EntityId::new(base_field))?;
+    assert_local_field_access(read, base_field)?;
     Ok(())
 }
 
