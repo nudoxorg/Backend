@@ -31,8 +31,7 @@ use backend_frontend_python::legacy::{
     Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
     DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
     OccurrenceFact, OccurrenceKind, OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span,
-    SymbolOutcome,
-    TypeReason as ExtractedReason, extract,
+    SymbolOutcome, TypeReason as ExtractedReason, extract,
 };
 use backend_semantic::ir::{
     AnonRecordForm, Confidence, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
@@ -783,7 +782,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
             }
         }
         let bindings = self.name_bindings(&classes)?;
-        Ok(TypeTables { classes, typevars, bindings })
+        Ok(TypeTables {
+            classes,
+            typevars,
+            bindings,
+        })
     }
 
     fn name_bindings(
@@ -822,12 +825,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 continue;
             };
             let resolution = resolve_alias_target(&bound, classes, &target);
-            apply_type_alias_binding(
-                &mut bound,
-                &mut locals,
-                &declaration.name,
-                resolution,
-            );
+            apply_type_alias_binding(&mut bound, &mut locals, &declaration.name, resolution);
         }
         Ok(bound)
     }
@@ -1287,8 +1285,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 let Some(children) = self.member_rows(args, tables, anchor)? else {
                     return Ok(None);
                 };
-                let Some(children) =
-                    self.admit_flat_children(tuple_record(), children, anchor)?
+                let Some(children) = self.admit_flat_children(tuple_record(), children, anchor)?
                 else {
                     return Ok(None);
                 };
@@ -1733,12 +1730,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     fn is_import_binding(&self, name: &str) -> bool {
-        self.module.declarations.iter().enumerate().any(|(index, declaration)| {
-            self.live[index]
-                && declaration.kind == DeclarationKind::Alias
-                && declaration.value_span.is_some()
-                && declaration.name == name
-        })
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .any(|(index, declaration)| {
+                self.live[index]
+                    && declaration.kind == DeclarationKind::Alias
+                    && declaration.value_span.is_some()
+                    && declaration.name == name
+            })
     }
 
     /// Lowers a union: expressible exactly when every member lowers to a
@@ -1858,8 +1859,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             end: occurrence.span.end,
                         })
                     })?;
-                    let target =
-                        foreign_package(module_spelling, binding, imported, None)?;
+                    let target = foreign_package(module_spelling, binding, imported, None)?;
                     let confidence = match checked {
                         Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                         _ => OccurrenceConfidence::Index,
@@ -1993,9 +1993,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 Some(EntityKind::Field),
                             )?;
                             let confidence = match checked {
-                                Some(SymbolOutcome::Foreign { .. }) => {
-                                    OccurrenceConfidence::Import
-                                }
+                                Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                                 _ => OccurrenceConfidence::Index,
                             };
                             return Ok(Some((target, confidence)));
@@ -2030,10 +2028,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         let skip = match receiver {
                             Some(receiver) => {
                                 self.annotated_class_attribute_is_ambiguous(occurrence, receiver)
-                                    || self.annotated_base_attribute_is_ambiguous(
-                                        occurrence,
-                                        receiver,
-                                    )
+                                    || self
+                                        .annotated_base_attribute_is_ambiguous(occurrence, receiver)
                             }
                             None => false,
                         };
@@ -2049,8 +2045,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         }
                     }
                     if let Some(receiver) = receiver {
-                        if let Some(resolved) = self
-                            .annotated_receiver_attribute_target(occurrence, receiver, checked)?
+                        if let Some(resolved) =
+                            self.annotated_receiver_attribute_target(occurrence, receiver, checked)?
                         {
                             return Ok(Some(resolved));
                         }
@@ -2069,19 +2065,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         .find(|row| row.name == receiver.as_bytes() && row.imported.is_some())
                     {
                         let imported = row.imported.expect("imported span proven non-None above");
-                        let module_spelling =
-                            self.imported_module_spelling(receiver, imported)?;
+                        let module_spelling = self.imported_module_spelling(receiver, imported)?;
                         let module_span = self
-                            .spelling_span(core::str::from_utf8(module_spelling).map_err(
-                                |_| {
-                                    PythonCollectError::Projection(
-                                        PythonProjectionFault::ForeignSpellingUtf8 {
-                                            start: imported.start,
-                                            end: imported.end,
-                                        },
-                                    )
-                                },
-                            )?)
+                            .spelling_span(core::str::from_utf8(module_spelling).map_err(|_| {
+                                PythonCollectError::Projection(
+                                    PythonProjectionFault::ForeignSpellingUtf8 {
+                                        start: imported.start,
+                                        end: imported.end,
+                                    },
+                                )
+                            })?)
                             .unwrap_or(imported);
                         let binding = self.slice(occurrence.span)?;
                         let binding = core::str::from_utf8(binding).map_err(|_| {
@@ -2092,8 +2085,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 },
                             )
                         })?;
-                        let target =
-                            foreign_package(module_spelling, binding, module_span, None)?;
+                        let target = foreign_package(module_spelling, binding, module_span, None)?;
                         let confidence = match checked {
                             Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
                             _ => OccurrenceConfidence::Index,
@@ -2151,11 +2143,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// Resolves one `super().attr` read by walking same-file bases only.
     /// Fields are decided first; ambiguous fields stay unresolved without
     /// consulting methods.
-    fn super_attribute_read(
-        &self,
-        occurrence: &OccurrenceFact,
-        class_index: usize,
-    ) -> Option<u32> {
+    fn super_attribute_read(&self, occurrence: &OccurrenceFact, class_index: usize) -> Option<u32> {
         let attribute_bytes = occurrence.target.as_bytes();
         match self.inherited_member_status(class_index, DeclarationKind::Field, attribute_bytes) {
             InheritedMemberStatus::Unique(ordinal) => return Some(ordinal),
@@ -2245,15 +2233,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
     ) -> Option<u32> {
         let class_span = self.module.declarations[class_index].span;
         let attribute_bytes = occurrence.target.as_bytes();
-        let local = self.member_ordinals_in_class(
-            class_span,
-            DeclarationKind::Function,
-            attribute_bytes,
-        );
+        let local =
+            self.member_ordinals_in_class(class_span, DeclarationKind::Function, attribute_bytes);
         match local.len() {
             1 => Some(local[0]),
             n if n > 1 => None,
-            _ => self.inherited_member_ordinal(class_index, DeclarationKind::Function, attribute_bytes),
+            _ => self.inherited_member_ordinal(
+                class_index,
+                DeclarationKind::Function,
+                attribute_bytes,
+            ),
         }
     }
 
@@ -2289,11 +2278,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
             InheritedMemberStatus::Ambiguous => return None,
             InheritedMemberStatus::Absent => {}
         }
-        let local_methods = self.member_ordinals_in_class(
-            class_span,
-            DeclarationKind::Function,
-            attribute_bytes,
-        );
+        let local_methods =
+            self.member_ordinals_in_class(class_span, DeclarationKind::Function, attribute_bytes);
         match local_methods.len() {
             1 => return Some(local_methods[0]),
             n if n > 1 => return None,
@@ -2364,7 +2350,14 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let mut visited = HashSet::new();
         let mut found: Option<u32> = None;
         if self
-            .walk_inherited_member(class_index, member_kind, spelling, 0, &mut visited, &mut found)
+            .walk_inherited_member(
+                class_index,
+                member_kind,
+                spelling,
+                0,
+                &mut visited,
+                &mut found,
+            )
             .is_none()
         {
             return InheritedMemberStatus::Ambiguous;
@@ -2664,8 +2657,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         occurrence: &OccurrenceFact,
         receiver: &str,
         checked: Option<&SymbolOutcome>,
-    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError>
-    {
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
         let function_index = match self.enclosing_function_index(occurrence) {
             Some(index) => index,
             None => return Ok(None),
@@ -2695,52 +2687,55 @@ impl<'a, 'source> Emitter<'a, 'source> {
         match declaration.kind {
             DeclarationKind::Class => {
                 let class_span = declaration.span;
-                let field_count = self.field_count_in_class(occurrence, class_span);
-                if field_count > 1 {
+                let attribute_bytes = occurrence.target.as_bytes();
+                let fields = self.member_ordinals_in_class(
+                    class_span,
+                    DeclarationKind::Field,
+                    attribute_bytes,
+                );
+                if fields.len() > 1 {
                     return foreign().map(Some);
                 }
-                if field_count == 1 {
-                    if let InheritedMemberLookup::Unique(ordinal) =
-                        self.member_lookup_in_class(occurrence, class_span, DeclarationKind::Field)
-                    {
-                        return Ok(Some((
-                            OccurrenceTarget::Local(EntityId::new(ordinal)),
-                            local_confidence(),
-                        )));
-                    }
-                    return foreign().map(Some);
+                if let Some(ordinal) = fields.first().copied() {
+                    return Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(ordinal)),
+                        local_confidence(),
+                    )));
                 }
-                match self.inherited_member(index, occurrence, DeclarationKind::Field) {
-                    InheritedMemberLookup::Unique(ordinal) => Ok(Some((
+                match self.inherited_member_status(index, DeclarationKind::Field, attribute_bytes) {
+                    InheritedMemberStatus::Unique(ordinal) => Ok(Some((
                         OccurrenceTarget::Local(EntityId::new(ordinal)),
                         local_confidence(),
                     ))),
-                    InheritedMemberLookup::Ambiguous => foreign().map(Some),
-                    InheritedMemberLookup::Absent => {
-                        let method_count = self.method_count_in_class(occurrence, class_span);
-                        if method_count > 1 {
+                    InheritedMemberStatus::Ambiguous => foreign().map(Some),
+                    InheritedMemberStatus::Absent => {
+                        let methods = self.member_ordinals_in_class(
+                            class_span,
+                            DeclarationKind::Function,
+                            attribute_bytes,
+                        );
+                        if methods.len() > 1 {
                             return foreign().map(Some);
                         }
-                        if method_count == 1 {
-                            if let Some(ordinal) =
-                                self.method_in_class(occurrence, class_span)
-                            {
-                                return Ok(Some((
-                                    OccurrenceTarget::Local(EntityId::new(ordinal)),
-                                    local_confidence(),
-                                )));
-                            }
-                            return foreign().map(Some);
-                        }
-                        if let InheritedMemberLookup::Unique(ordinal) =
-                            self.inherited_member(index, occurrence, DeclarationKind::Function)
-                        {
+                        if let Some(ordinal) = methods.first().copied() {
                             return Ok(Some((
                                 OccurrenceTarget::Local(EntityId::new(ordinal)),
                                 local_confidence(),
                             )));
                         }
-                        foreign().map(Some)
+                        match self.inherited_member_status(
+                            index,
+                            DeclarationKind::Function,
+                            attribute_bytes,
+                        ) {
+                            InheritedMemberStatus::Unique(ordinal) => Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                local_confidence(),
+                            ))),
+                            InheritedMemberStatus::Ambiguous | InheritedMemberStatus::Absent => {
+                                foreign().map(Some)
+                            }
+                        }
                     }
                 }
             }
@@ -2968,13 +2963,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
                 (0, 0) => {
                     if self
-                        .walk_inherited_attribute(
-                            base_index,
-                            occurrence,
-                            depth + 1,
-                            visited,
-                            found,
-                        )
+                        .walk_inherited_attribute(base_index, occurrence, depth + 1, visited, found)
                         .is_none()
                     {
                         return None;
@@ -3110,8 +3099,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         None => return Ok(None),
                     }
                 }
-                let Some(children) =
-                    self.admit_flat_children(tuple_record(), children, anchor)?
+                let Some(children) = self.admit_flat_children(tuple_record(), children, anchor)?
                 else {
                     return Ok(None);
                 };
@@ -3128,8 +3116,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         None => return Ok(None),
                     }
                 }
-                let Some(children) =
-                    self.admit_flat_children(union_record(), children, anchor)?
+                let Some(children) = self.admit_flat_children(union_record(), children, anchor)?
                 else {
                     return Ok(None);
                 };
@@ -3454,9 +3441,7 @@ fn alias_import_module_span(source: &[u8], statement: Span) -> Option<Span> {
         }
         let rest = rest.get(rlo..rhi)?;
         let rest_base = base + 5 + rlo as u32;
-        let import_pos = rest
-            .windows(8)
-            .position(|window| window == b" import ")?;
+        let import_pos = rest.windows(8).position(|window| window == b" import ")?;
         let module = rest.get(..import_pos)?;
         let (mlo, mhi) = trim_ascii_bounds(module);
         if mlo >= mhi {
@@ -3512,7 +3497,10 @@ const fn trim_ascii_bounds(bytes: &[u8]) -> (usize, usize) {
     (start, end)
 }
 
-fn collect_import_bindings(source: &str, module_name: &str) -> (HashMap<String, String>, HashSet<String>) {
+fn collect_import_bindings(
+    source: &str,
+    module_name: &str,
+) -> (HashMap<String, String>, HashSet<String>) {
     let is_package = module_name.ends_with("__init__");
     let mut bound = HashMap::new();
     let mut ambiguous = HashSet::new();
@@ -3524,16 +3512,24 @@ fn collect_import_bindings(source: &str, module_name: &str) -> (HashMap<String, 
                 let origin = import_origin(module_name, is_package, level, module);
                 for part in names.split(',') {
                     let part = part.trim();
-                    if part.is_empty() || part == "*" { continue; }
+                    if part.is_empty() || part == "*" {
+                        continue;
+                    }
                     let (imported, local) = parse_import_alias(part);
-                    let target = if origin.is_empty() { imported.to_owned() } else { format!("{origin}.{imported}") };
+                    let target = if origin.is_empty() {
+                        imported.to_owned()
+                    } else {
+                        format!("{origin}.{imported}")
+                    };
                     record_import_target(&mut bound, &mut ambiguous, local, target);
                 }
             }
         } else if let Some(rest) = line.strip_prefix("import ") {
             for part in rest.split(',') {
                 let part = part.trim();
-                if part.is_empty() { continue; }
+                if part.is_empty() {
+                    continue;
+                }
                 let (imported, local) = parse_import_alias(part);
                 record_import_target(&mut bound, &mut ambiguous, local, imported.to_owned());
             }
@@ -3545,34 +3541,65 @@ fn collect_import_bindings(source: &str, module_name: &str) -> (HashMap<String, 
 fn parse_relative_origin(origin: &str) -> (u32, Option<&str>) {
     let dots = origin.chars().take_while(|c| *c == '.').count();
     let tail = origin[dots..].trim();
-    (u32::try_from(dots).unwrap_or(0), if tail.is_empty() { None } else { Some(tail) })
+    (
+        u32::try_from(dots).unwrap_or(0),
+        if tail.is_empty() { None } else { Some(tail) },
+    )
 }
 
 fn parse_import_alias(part: &str) -> (&str, &str) {
     let mut words = part.split_whitespace();
     let imported = words.next().unwrap_or(part);
-    if words.next() == Some("as") { (imported, words.next().unwrap_or(imported)) } else { (imported, imported.split('.').next().unwrap_or(imported)) }
+    if words.next() == Some("as") {
+        (imported, words.next().unwrap_or(imported))
+    } else {
+        (imported, imported.split('.').next().unwrap_or(imported))
+    }
 }
 
 fn import_origin(module_name: &str, is_package: bool, level: u32, module: Option<&str>) -> String {
-    if level == 0 { return module.unwrap_or("").to_owned(); }
+    if level == 0 {
+        return module.unwrap_or("").to_owned();
+    }
     let mut parts: Vec<&str> = module_name.split('.').filter(|p| !p.is_empty()).collect();
-    if !is_package { parts.pop(); }
+    if !is_package {
+        parts.pop();
+    }
     let extra = (level as usize).saturating_sub(1);
-    if extra >= parts.len() { parts.clear(); } else if extra > 0 { parts.truncate(parts.len() - extra); }
+    if extra >= parts.len() {
+        parts.clear();
+    } else if extra > 0 {
+        parts.truncate(parts.len() - extra);
+    }
     let mut origin = parts.join(".");
     if let Some(module) = module.filter(|n| !n.is_empty()) {
-        origin = if origin.is_empty() { module.to_owned() } else { format!("{origin}.{module}") };
+        origin = if origin.is_empty() {
+            module.to_owned()
+        } else {
+            format!("{origin}.{module}")
+        };
     }
     origin
 }
 
-fn record_import_target(bound: &mut HashMap<String, String>, ambiguous: &mut HashSet<String>, local: &str, target: String) {
-    if ambiguous.contains(local) { return; }
+fn record_import_target(
+    bound: &mut HashMap<String, String>,
+    ambiguous: &mut HashSet<String>,
+    local: &str,
+    target: String,
+) {
+    if ambiguous.contains(local) {
+        return;
+    }
     match bound.get(local) {
         Some(existing) if existing == &target => {}
-        Some(_) => { bound.remove(local); ambiguous.insert(local.to_owned()); }
-        None => { bound.insert(local.to_owned(), target); }
+        Some(_) => {
+            bound.remove(local);
+            ambiguous.insert(local.to_owned());
+        }
+        None => {
+            bound.insert(local.to_owned(), target);
+        }
     }
 }
 
@@ -3668,7 +3695,10 @@ fn import_binding_resolution(target: &str, classes: &[(&[u8], u32)]) -> BindingR
 }
 
 fn annotation_root_name(annotation: &Annotation) -> Option<String> {
-    match annotation { Annotation::Name { name, .. } => Some(name.clone()), _ => None }
+    match annotation {
+        Annotation::Name { name, .. } => Some(name.clone()),
+        _ => None,
+    }
 }
 
 /// Python legally rebinds a name in the same scope at runtime, but the syntax
