@@ -550,7 +550,7 @@ fn semantic_rows(
             let mut opened = Vec::new();
             let mut pending = activated.images();
             while let Some((image, rest)) = pending.split_first() {
-                match super::image_rows::open_compiled_image(image.as_ref(), admission, residence)?
+                match super::image_rows::open_compiled_snapshot(image, admission, residence)?
                 {
                     super::image_rows::CompiledImage::Opened { path, identity, view } => {
                         super::image_rows::bind_opened_image(

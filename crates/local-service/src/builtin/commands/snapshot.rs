@@ -85,11 +85,11 @@ pub(super) fn semantic_package_snapshot<'view>(
             found_publication = true;
             let activated =
                 activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
-            for bytes in activated.images() {
+            for image in activated.images() {
                 append_semantic_image(
                     view,
                     package,
-                    bytes.as_ref(),
+                    image,
                     &mut declarations,
                     &mut links,
                 )?;
@@ -106,15 +106,16 @@ pub(super) fn semantic_package_snapshot<'view>(
 fn append_semantic_image<'view>(
     view: &'view backend_engine::ViewRoot,
     package: backend_engine::PackageKey,
-    bytes: &[u8],
+    image: &backend_library::interface::SemanticImageSnapshot,
     declarations: &mut Vec<(
         backend_semantic::ir::DeclarationIdentity,
         SemanticDeclaration<'view>,
     )>,
     links: &mut Vec<SemanticLinkSummary>,
 ) -> Result<(), BuiltinModelError> {
-    let image = backend_semantic::ir::SemanticImageView::reopen(bytes)
-        .map_err(|error| BuiltinModelError(format!("reopen semantic diff image: {error}")))?;
+    let image = image.reopen().map_err(|error| {
+        BuiltinModelError(format!("reopen semantic diff image: {error}"))
+    })?;
     for entity in image.canonical_entities() {
         let identity = entity.version.identity();
         let symbol = super::super::view_build::semantic_symbol(package, identity);
@@ -149,7 +150,7 @@ fn append_semantic_image<'view>(
         ));
     }
     let snapshot = SemanticSnapshot {
-        generation: backend_semantic::ir::GenerationId::from_canonical_bytes(bytes),
+        generation: backend_semantic::ir::GenerationId::from_canonical_bytes(image.as_ref()),
         reader: &image,
     };
     for link in SemanticStableLinks::new(snapshot) {

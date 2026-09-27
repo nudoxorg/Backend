@@ -83,5 +83,10 @@ name = "semantic_admission"
 path = "benches/semantic_admission.rs"
 harness = false
 
+[[bench]]
+name = "semantic_image_proof"
+path = "benches/semantic_image_proof.rs"
+harness = false
+
 [lints]
 workspace = true

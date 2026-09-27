@@ -25,4 +25,7 @@ pub use fault::{
     FullSemanticImageIdentityField,
 };
 pub(crate) use typed::FullTypedPlan;
-pub use view::SemanticImageView;
+pub use view::{
+    AdmittedSemanticImage, SemanticImageView, reset_semantic_image_validations,
+    semantic_image_validations,
+};

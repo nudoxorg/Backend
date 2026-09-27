@@ -81,6 +81,11 @@ pub(super) fn measure_semantic_admission() {
     image_rows::measure_semantic_admission();
 }
 
+/// Times validating semantic images against reusing their structural proofs.
+pub(super) fn measure_semantic_image_proof() {
+    image_rows::measure_semantic_image_proof();
+}
+
 /// Times one query-image validation against the three the corpus used to pay.
 pub(super) fn measure_semantic_query_walk() {
     query::measure_semantic_query_walk();

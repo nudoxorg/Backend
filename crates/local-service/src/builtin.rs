@@ -1281,6 +1281,14 @@ pub fn measure_semantic_admission() {
     view_build::measure_semantic_admission();
 }
 
+/// Times validating semantic images against reusing their structural proofs.
+///
+/// The snapshots are built before either timer. The printed line is the
+/// release measurement for an image whose proof is already stored.
+pub fn measure_semantic_image_proof() {
+    view_build::measure_semantic_image_proof();
+}
+
 /// Starts the compiled locald profile. It does all startup work before the
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]

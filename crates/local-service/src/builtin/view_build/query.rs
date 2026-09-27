@@ -391,7 +391,7 @@ fn open_query_publications<'a>(
         let mut images = Vec::new();
         let mut rest = publication.activated.images();
         while let Some((bytes, next)) = rest.split_first() {
-            let view = SemanticImageView::reopen(bytes.as_ref()).map_err(|error| {
+            let view = bytes.reopen().map_err(|error| {
                 BuiltinModelError(format!("reopen semantic query image: {error}"))
             })?;
             let path = compiled_source_path(&view)?;
