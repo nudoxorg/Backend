@@ -3963,6 +3963,40 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     let value_span = value.span();
                     self.declare_expression_bindings(value_span.start, value_span.end, 0)?;
                 }
+            } else if let Some(definition) = kind.as_accessor_property() {
+                let key_span = definition.key.span();
+                if self.fact_at_name_start(key_span.start).is_some() {
+                    continue;
+                }
+                let name_bytes = self
+                    .slice_span(key_span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: key_span.start,
+                        end: key_span.end,
+                    })?;
+                let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let member_base = self.staged_members.len();
+                let cells = match definition.type_annotation.as_ref() {
+                    Some(annotation) => {
+                        let inner = annotation.type_annotation.span();
+                        self.owner_cells(inner.start, inner.end, 0)?
+                    }
+                    None => TypeCells::unknown(TypeReason::Unannotated),
+                };
+                let extension = self.extension(type_parameter_start)?;
+                let mut base = SemanticFact::new(EntityKind::Field, name_bytes, LEAF_PRODUCT)
+                    .with_extension(extension);
+                if definition.r#static {
+                    base = base.static_member();
+                }
+                let fact = with_cells(base, cells);
+                let ordinal = self.push(fact)?;
+                self.register(ordinal, declaration_span, key_span, EntityKind::Field)?;
+                self.claim_staged_members(member_base, ordinal);
+                if let Some(value) = definition.value.as_ref() {
+                    let value_span = value.span();
+                    self.declare_expression_bindings(value_span.start, value_span.end, 0)?;
+                }
             } else if let Some(definition) = kind.as_method_definition() {
                 let key_span = definition.key.span();
                 if self.fact_at_name_start(key_span.start).is_some() {
