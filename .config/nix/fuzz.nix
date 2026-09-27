@@ -239,6 +239,9 @@ let
     else
       {
         schema = "nudox.continuous-fuzz.v1";
+        # Document id above is metadata only. Lattice authors write
+        # check.continuousFuzz. This repo does not define that module.
+        latticeKind = "continuous-fuzz";
         attrs = {
           contract = "packages.\${system}.continuous-fuzz";
           bins = "packages.\${system}.continuous-fuzz.bins.<id>";

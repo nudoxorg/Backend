@@ -1,6 +1,6 @@
 # Continuous fuzzing
 
-`packages.${system}.continuous-fuzz` is the only contract. Its `passthru` is `bins`, `corpora`, `engines`, and `metadata`. Schema id is `nudox.continuous-fuzz.v1`. Auth copies that shape and sets `engine_catalog` entry `go-native` to `linked = true` and `adapter = "testing.F"`. This repo links `libfuzzer` with `adapter = "bolero"`. `aflpp`, `honggfuzz`, and `go-native` are the same records with `linked = false`. `.#fuzz-<id>` is an optional alias of `bins.<id>`. This repository does not configure MachineConfigurations.
+`packages.${system}.continuous-fuzz` is the package contract. Its `passthru` is only `bins`, `corpora`, `engines`, and `metadata`. `.#fuzz-<id>` aliases `bins.<id>`. Lattice authors write `check.continuousFuzz { … }` for kind `continuous-fuzz`. That function belongs to Nix Test DSL. This repository does not define it. Harness repos do not author through the schema id. `metadata.schema` is `"nudox.continuous-fuzz.v1"`, the document id inside metadata. `metadata.latticeKind` is `"continuous-fuzz"`. Auth copies the metadata keys and sets `engine_catalog` entry `go-native` to `linked = true` and `adapter = "testing.F"`. This repo links `libfuzzer` with `adapter = "bolero"`. `aflpp`, `honggfuzz`, and `go-native` are the same records with `linked = false`. This repository does not configure MachineConfigurations.
 
 ```sh
 nix build .#continuous-fuzz
@@ -34,7 +34,7 @@ Create the mount before the unit starts. The wrapper writes new coverage only th
 | `packages.${system}.continuous-fuzz.corpora.<id>` | Committed seeds. Does not build the instrumented binary |
 | `packages.${system}.continuous-fuzz.engines.<id>` | Adapter derivation. `passthru.adapter` is `{ id, family, linked, adapter }` |
 | `packages.${system}.continuous-fuzz.engines.<id>.adapter` | Plug record. Here `id = "libfuzzer"` and `adapter = "bolero"` |
-| `packages.${system}.continuous-fuzz.metadata` | `nudox.continuous-fuzz.v1` document. `nix eval --json` |
+| `packages.${system}.continuous-fuzz.metadata` | Metadata document. `schema` is `nudox.continuous-fuzz.v1`. `latticeKind` is `continuous-fuzz` |
 | `packages.${system}.fuzz-<id>` | Optional alias of `bins.<id>` |
 
 `metadata.target_fields` is the row schema. Every fuzz, property, and backlog row has the same keys. `metadata.engine_catalog` is the adapter list. `metadata.kinds` is `[ "fuzz", "property" ]`. `rank` is `complexity.score * gap.score * blast.score`. Recompute it. Skip `rank == null` and `schedule == false`. `start_order` is not an input to rank. A fuzz row with gap 0 has rank 0 and `schedule` true, so it still runs.
@@ -46,6 +46,7 @@ Consumers read `metadata.consumers`. There is no second path: no cargo command, 
 ```json
 {
   "schema": "nudox.continuous-fuzz.v1",
+  "latticeKind": "continuous-fuzz",
   "kinds": ["fuzz", "property"],
   "engine_catalog": [
     {"id": "libfuzzer", "family": "coverage-guided", "linked": true, "adapter": "bolero"},
@@ -141,7 +142,7 @@ FUZZ_TARGET=wire-workspace \
 
 Confirmed on this host on 2026-09-27. `x86_64-linux`. `nix (Determinate Nix 3.22.5) 2.35.2`.
 
-`nix eval --json .#continuous-fuzz.metadata` exited 0. The first run also fetched the `nuenv` flake input and took 4.409 s. The stdout was 18601 bytes, including one trailing newline, sha256 `2d6e4e8d362203975fb8a0466c254770932eb7c4e4cecd563269a9dc881f7264`. A later run of the same command on the tree that was built took 0.263 s and produced the same bytes.
+`nix eval --json .#continuous-fuzz.metadata` on the tree that sets `latticeKind` exited 0 in 0.415 s. Stdout was 18633 bytes, including one trailing newline, sha256 `2a51f7fd523065b78ffc945f97ebc4feba83973f564724225ba5144fa12ac5df`. Top-level keys, in the order Nix printed them: `attrs`, `backlog`, `consumers`, `engine_catalog`, `formula`, `kinds`, `latticeKind`, `scales`, `schema`, `supervision`, `target_fields`, `targets`, `throughput_note`. `latticeKind` is `continuous-fuzz`. `schema` is `nudox.continuous-fuzz.v1`. An earlier eval, before `latticeKind`, was 18601 bytes, sha256 `2d6e4e8d362203975fb8a0466c254770932eb7c4e4cecd563269a9dc881f7264`.
 
 `nix eval --json .#continuous-fuzz.engines.journal-codec.adapter` exited 0 in 0.580 s and printed:
 
@@ -149,9 +150,9 @@ Confirmed on this host on 2026-09-27. `x86_64-linux`. `nix (Determinate Nix 3.22
 {"adapter":"bolero","family":"coverage-guided","id":"libfuzzer","linked":true}
 ```
 
-`nix build .#continuous-fuzz -o /tmp/continuous-fuzz-result` exited 0 in 386.998 s. Inside that build, cargo reported `Finished release profile [optimized] target(s) in 6m 18s`. The result is `/nix/store/ravxgrh8bhl99523a62v16ggfh34p0is-continuous-fuzz`. `nix path-info -S` reported a closure of 1354046904 bytes. The output contains seven `bin/fuzz-*` links, seven `engines/fuzz-engine-*` links, seven `corpora/<id>/` directories, and `metadata.json`. That file's JSON equals the eval stdout. The journal corpus directory contains `canonical`, `empty`, `bad_magic`, `dispatch`, and `cancelled-root`. The engine script execs `/nix/store/rw7v93r0xyaa0agymyrs48n23lhgklhr-backend-fuzz-engine-0.1.0/libexec/fuzz-target` (24 MB).
+`nix build .#continuous-fuzz -o /tmp/continuous-fuzz-result` exited 0 in 386.998 s before `latticeKind` was added. Inside that build, cargo reported `Finished release profile [optimized] target(s) in 6m 18s`. The result is `/nix/store/ravxgrh8bhl99523a62v16ggfh34p0is-continuous-fuzz`. `nix path-info -S` reported a closure of 1354046904 bytes. The output contains seven `bin/fuzz-*` links, seven `engines/fuzz-engine-*` links, seven `corpora/<id>/` directories, and `metadata.json`. That file matches the pre-`latticeKind` eval, not the 18633-byte document above. The journal corpus directory contains `canonical`, `empty`, `bad_magic`, `dispatch`, and `cancelled-root`. The engine script execs `/nix/store/rw7v93r0xyaa0agymyrs48n23lhgklhr-backend-fuzz-engine-0.1.0/libexec/fuzz-target` (24 MB). This amend did not rebuild the package. `latticeKind` is a metadata field, confirmed by the eval above.
 
-The eval document's `schema` is `nudox.continuous-fuzz.v1`. `kinds` is `["fuzz", "property"]`. Scheduled fuzz rows and their `rank` / `start_order` from that stdout: `pack-decode` 27750/1, `journal-codec` 7990/2, `native-protocol` 8930/3, `store-raw-property` 0/4, `wire-workspace` 25570/5, `wire-replication` 14310/6, `flow-evaluator` 4776/7. Property rows `laws` and `store-frame` have `schedule` false and null `rank`. `engine_catalog` links `libfuzzer` (`bolero`) and `property` (`proptest`). `aflpp`, `honggfuzz`, and `go-native` are `linked` false.
+From the 18633-byte stdout, `kinds` is `["fuzz", "property"]` and `formula` is `complexity.score * gap.score * blast.score`. Scheduled fuzz rows and their `rank` / `start_order`: `pack-decode` 27750/1, `journal-codec` 7990/2, `native-protocol` 8930/3, `store-raw-property` 0/4, `wire-workspace` 25570/5, `wire-replication` 14310/6, `flow-evaluator` 4776/7. Property rows `laws` and `store-frame` have `schedule` false and null `bin`, `corpus`, `rank`, and `start_order`. `engine_catalog` links `libfuzzer` (`bolero`) and `property` (`proptest`). `aflpp`, `honggfuzz`, and `go-native` are `linked` false.
 
 ## Measurements
 
