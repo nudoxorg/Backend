@@ -122,10 +122,10 @@ let
     ] (complexity.score * gap.score * blast.score);
   # Every target row uses these keys. Null means that kind has no such
   # artifact. start_order is the supervised start sequence. It is not rank.
-  # durable_corpus on a scheduled fuzz row is { name, corporaAttr }.
-  # name is the harness id. bins.<id> accepts only argv[1] equal to
-  # /durable/fuzz/<name>/corpus. corporaAttr is the committed seed attr.
-  warmVault = id: {
+  # warmVault is { name, corporaAttr }. durableMount is the argv[1] string.
+  # bins.<id> accepts only that path.
+  durableMountOf = id: "/durable/fuzz/${id}/corpus";
+  corpusVault = id: {
     name = id;
     corporaAttr = "packages.\${system}.continuous-fuzz.corpora.${id}";
   };
@@ -133,7 +133,8 @@ let
     bin = null;
     corpus = null;
     committed_corpus = null;
-    durable_corpus = null;
+    warmVault = null;
+    durableMount = null;
     dictionary = null;
     max_input_bytes = null;
   };
@@ -150,7 +151,8 @@ let
       bin = "packages.\${system}.continuous-fuzz.bins.${name}";
       corpus = "packages.\${system}.continuous-fuzz.corpora.${name}";
       committed_corpus = "tests/fuzz/targets/${name}/corpus";
-      durable_corpus = warmVault name;
+      warmVault = corpusVault name;
+      durableMount = durableMountOf name;
       dictionary = "tests/fuzz/targets/${name}/dictionary.txt";
       max_input_bytes = maxLenOf name;
       schedule = true;
@@ -300,6 +302,11 @@ let
         # Document fields only. Nix Test DSL owns check.continuousFuzz.
         # This repository does not define that function.
         latticeKind = "continuous-fuzz";
+        # Package WarmVault. Per-corpus records live on corpora.<id>.warmVault.
+        warmVault = {
+          name = "backend";
+          corporaAttr = "packages.\${system}.continuous-fuzz.corpora";
+        };
         attrs = {
           contract = "packages.\${system}.continuous-fuzz";
           bins = "packages.\${system}.continuous-fuzz.bins.<id>";
@@ -363,7 +370,8 @@ let
           "bin"
           "corpus"
           "committed_corpus"
-          "durable_corpus"
+          "warmVault"
+          "durableMount"
           "dictionary"
           "max_input_bytes"
           "schedule"
@@ -378,7 +386,7 @@ let
         ];
         consumers = {
           rank = "Recompute complexity.score * gap.score * blast.score. Skip rank null and schedule false. Do not multiply by churn. start_order is not an input. Do not trust list order.";
-          corpus = "For kind=fuzz, durable_corpus is { name, corporaAttr }. name is the harness id. bins.<id> requires argv[1] to be exactly /durable/fuzz/<name>/corpus and exits 2 otherwise. It does not fall back to TMPDIR, /tmp, or XDG state. corporaAttr is the committed seed attr, passed read-only. Property and backlog rows set durable_corpus null.";
+          corpus = "metadata.warmVault is the package record { name, corporaAttr } with name = backend. corpora.<id>.warmVault is the same shape with corporaAttr = packages.\${system}.continuous-fuzz.corpora.<id>. corpora.<id>.durableMount and the scheduled row's durableMount are the string /durable/fuzz/<id>/corpus. bins.<id> requires argv[1] to equal that durableMount and exits 2 otherwise. It does not fall back to TMPDIR, /tmp, or XDG state. Property and backlog rows set warmVault and durableMount null.";
           engines = "engines.<id>.adapter is the plug record (id, family, linked, adapter). This repo links libfuzzer. aflpp, honggfuzz, and go-native stay linked false. Do not point an unlinked engine at bins.<id>.";
           aliases = "packages.\${system}.fuzz-<id> aliases bins.<id>. The contract package is continuous-fuzz. Do not add either to nix flake check.";
         };
@@ -675,7 +683,12 @@ let
       lib.listToAttrs (
         map (name: {
           inherit name;
-          value = pkgs.runCommand "fuzz-corpus-${name}" { } ''
+          value = pkgs.runCommand "fuzz-corpus-${name}" {
+            passthru = {
+              warmVault = corpusVault name;
+              durableMount = durableMountOf name;
+            };
+          } ''
             mkdir -p "$out"
             find ${targetRoot + "/${name}/corpus"} -type f ! -name '.*' -exec cp -a {} "$out/" \;
             test -f "$out/canonical"
@@ -747,7 +760,7 @@ let
               set -eu
               seeds=${corpora.${name}}
               dict=${dicts.${name}}
-              mount=/durable/fuzz/${name}/corpus
+              mount=${durableMountOf name}
               if [ "$#" -lt 1 ] || [ "$1" != "$mount" ]; then
                 echo "refusing to start: argv[1] must be $mount. bins.${name} does not create a corpus under TMPDIR, /tmp, or XDG state." >&2
                 exit 2
