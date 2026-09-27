@@ -21,7 +21,9 @@ required-features = ["visual-harness"]
 [dependencies]
 anyhow.workspace = true
 backend-client = { path = "../../crates/client" }
-backend-facet = { path = "../facet" }
+# `release-fixture`: the upgrade lens's stand-in data until the index serves
+# release diffs (`runtime::fixture_releases`).
+backend-facet = { path = "../facet", features = ["release-fixture"] }
 backend-library = { path = "../../crates/library" }
 backend-local-service = { path = "../../crates/local-service" }
 backend-platform = { path = "../../crates/platform" }
