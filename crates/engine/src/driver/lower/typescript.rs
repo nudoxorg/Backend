@@ -5297,12 +5297,27 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             ClassMemberMatch::Ambiguous => {
                                 self.syntactic_property_target(property_span)
                             }
-                            ClassMemberMatch::Absent => self.this_member_target(
-                                class,
-                                name,
-                                EntityKind::Function,
-                                property_span,
-                            ),
+                            ClassMemberMatch::Absent => {
+                                match self.inherited_implemented_member(
+                                    class,
+                                    name,
+                                    EntityKind::Field,
+                                ) {
+                                    ClassMemberMatch::Unique(fact) => Ok((
+                                        OccurrenceTarget::Local(EntityId::new(fact)),
+                                        OccurrenceConfidence::Index,
+                                    )),
+                                    ClassMemberMatch::Ambiguous => {
+                                        self.syntactic_property_target(property_span)
+                                    }
+                                    ClassMemberMatch::Absent => self.this_member_target(
+                                        class,
+                                        name,
+                                        EntityKind::Function,
+                                        property_span,
+                                    ),
+                                }
+                            }
                         }
                     }
                 },
@@ -5561,9 +5576,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     }
 
     /// Resolves one `this.property` member through the enclosing class, then
-    /// through inherited bases, then through `implements` interfaces, using
-    /// [`class_member_of_owner`], [`inherited_class_member`], and
-    /// [`implemented_class_member`].
+    /// through inherited bases, then through `implements` interfaces, then
+    /// through `implements` on inherited bases, using
+    /// [`class_member_of_owner`], [`inherited_class_member`],
+    /// [`implemented_class_member`], and [`inherited_implemented_member`].
     fn this_member_target(
         &self,
         class: u32,
@@ -5592,8 +5608,17 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         OccurrenceTarget::Local(EntityId::new(fact)),
                         OccurrenceConfidence::Index,
                     )),
-                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
-                        self.syntactic_property_target(property_span)
+                    ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                    ClassMemberMatch::Absent => {
+                        match self.inherited_implemented_member(class, name, expected_kind) {
+                            ClassMemberMatch::Unique(fact) => Ok((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            )),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                self.syntactic_property_target(property_span)
+                            }
+                        }
                     }
                 },
             },
@@ -5683,6 +5708,43 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 None => return ClassMemberMatch::Absent,
             };
             match self.class_member_of_owner(base, name, expected_kind) {
+                ClassMemberMatch::Unique(fact) => return ClassMemberMatch::Unique(fact),
+                ClassMemberMatch::Ambiguous => return ClassMemberMatch::Ambiguous,
+                ClassMemberMatch::Absent => current = base,
+            }
+        }
+        ClassMemberMatch::Absent
+    }
+
+    /// Walks `extends` from `start_class`, resolving members through each
+    /// base's `implements` clauses when the enclosing class and inherited
+    /// class-body members are absent.
+    fn inherited_implemented_member(
+        &self,
+        start_class: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+    ) -> ClassMemberMatch {
+        let mut visited = Vec::new();
+        let mut current = start_class;
+        for _ in 0..MAX_INHERITANCE_DEPTH {
+            if visited.contains(&current) {
+                return ClassMemberMatch::Absent;
+            }
+            visited.push(current);
+            let super_span = match self.record_super_class_name_span(current) {
+                Some(span) => span,
+                None => return ClassMemberMatch::Absent,
+            };
+            let super_name = match self.slice_span(super_span) {
+                Some(name) => name,
+                None => return ClassMemberMatch::Absent,
+            };
+            let base = match self.unique_file_record(super_name) {
+                Some(record) => record,
+                None => return ClassMemberMatch::Absent,
+            };
+            match self.implemented_class_member(base, name, expected_kind) {
                 ClassMemberMatch::Unique(fact) => return ClassMemberMatch::Unique(fact),
                 ClassMemberMatch::Ambiguous => return ClassMemberMatch::Ambiguous,
                 ClassMemberMatch::Absent => current = base,
