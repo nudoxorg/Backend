@@ -218,7 +218,7 @@ fn graph_query_certificate(
                 "structured graph-query continuation does not match its request".to_owned(),
             ));
         }
-        add_certificate_claim(
+        add_finished_claim(
             &mut certificate,
             WireClaim::KeyBytes {
                 schema: backend_engine::WireSchema::ViewRecipe,
@@ -239,7 +239,7 @@ fn graph_query_certificate(
 }
 
 fn append_cursor_claim(certificate: &mut WireCertificate, cursor: backend_engine::Cursor) {
-    add_certificate_claim(
+    add_finished_claim(
         certificate,
         WireClaim::Cursor {
             recipe: backend_engine::encode_id(cursor.recipe().as_bytes()),
@@ -281,8 +281,59 @@ fn identity_preimage(parts: &[&[u8]]) -> Vec<u8> {
     bytes
 }
 
-fn add_certificate_claim(certificate: &mut WireCertificate, claim: WireClaim) {
-    *certificate = std::mem::take(certificate).with_claim_once(claim);
+struct ClaimBuilder {
+    claims: Vec<WireClaim>,
+    index: std::collections::HashMap<u64, Vec<usize>>,
+}
+
+impl ClaimBuilder {
+    fn from_claims(claims: Vec<WireClaim>) -> Self {
+        let mut index: std::collections::HashMap<u64, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (slot, claim) in claims.iter().enumerate() {
+            index.entry(claim_fingerprint(claim)).or_default().push(slot);
+        }
+        Self { claims, index }
+    }
+
+    fn push_once(&mut self, claim: WireClaim) {
+        let fingerprint = claim_fingerprint(&claim);
+        if let Some(slots) = self.index.get(&fingerprint)
+            && slots
+                .iter()
+                .any(|&slot| self.claims.get(slot).is_some_and(|existing| existing == &claim))
+        {
+            return;
+        }
+        self.index
+            .entry(fingerprint)
+            .or_default()
+            .push(self.claims.len());
+        self.claims.push(claim);
+    }
+
+    fn finish(self) -> WireCertificate {
+        WireCertificate {
+            claims: self.claims.into_boxed_slice(),
+        }
+    }
+}
+
+fn claim_fingerprint(claim: &WireClaim) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    claim.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn add_finished_claim(certificate: &mut WireCertificate, claim: WireClaim) {
+    let mut builder = ClaimBuilder::from_claims(std::mem::take(certificate).claims.into_vec());
+    builder.push_once(claim);
+    *certificate = builder.finish();
+}
+
+fn add_certificate_claim(certificate: &mut ClaimBuilder, claim: WireClaim) {
+    certificate.push_once(claim);
 }
 
 fn view_certificate(
@@ -291,29 +342,38 @@ fn view_certificate(
     basis_root: Option<&ViewRoot>,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
-    let rows = root.rows();
-    view_certificate_with_rows(root, recipe_preimage, basis_root, rows, false, base)
+    view_certificate_with_rows(
+        root,
+        recipe_preimage,
+        basis_root,
+        root.row_refs(),
+        false,
+        base,
+    )
 }
 
-fn view_commitment_certificate(
+fn view_commitment_certificate<'a>(
     root: &ViewRoot,
     recipe_preimage: &[u8],
     basis_root: Option<&ViewRoot>,
-    rows: &[backend_engine::Row],
+    rows: impl IntoIterator<Item = &'a backend_engine::Row>,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
     view_certificate_with_rows(root, recipe_preimage, basis_root, rows, true, base)
 }
 
-fn view_certificate_with_rows(
+fn view_certificate_with_rows<'a>(
     root: &ViewRoot,
     recipe_preimage: &[u8],
     basis_root: Option<&ViewRoot>,
-    rows: &[backend_engine::Row],
+    rows: impl IntoIterator<Item = &'a backend_engine::Row>,
     commitment_only: bool,
     base: Option<WireCertificate>,
 ) -> Result<WireCertificate, BuiltinModelError> {
-    let mut certificate = base.unwrap_or_default();
+    let mut certificate = ClaimBuilder::from_claims(
+        base.map(|certificate| certificate.claims.into_vec())
+            .unwrap_or_default(),
+    );
     add_certificate_claim(
         &mut certificate,
         WireClaim::KeyBytes {
@@ -414,7 +474,7 @@ fn view_certificate_with_rows(
         },
     );
     add_row_certificate_claims_for_rows(&mut certificate, basis_root.unwrap_or(root), rows);
-    Ok(certificate)
+    Ok(certificate.finish())
 }
 
 /// Builds the bounded certificate carried by one reset hydration page.
@@ -437,7 +497,10 @@ pub(crate) fn certificate_for_snapshot_page(
             "builtin snapshot root has an unknown recipe identity".to_owned(),
         ));
     }
-    let mut certificate = base.unwrap_or_default();
+    let mut certificate = ClaimBuilder::from_claims(
+        base.map(|certificate| certificate.claims.into_vec())
+            .unwrap_or_default(),
+    );
     add_certificate_claim(
         &mut certificate,
         WireClaim::KeyBytes {
@@ -528,10 +591,10 @@ pub(crate) fn certificate_for_snapshot_page(
             sequence: cursor.sequence(),
         },
     );
-    Ok(certificate)
+    Ok(certificate.finish())
 }
 
-fn add_row_id_commitment(certificate: &mut WireCertificate, id: RowId) {
+fn add_row_id_commitment(certificate: &mut ClaimBuilder, id: RowId) {
     match id {
         RowId::Package(package) => add_certificate_claim(
             certificate,
@@ -579,13 +642,13 @@ pub(crate) fn certificate_for_compact_event(
             "reset transitions are persisted as a bounded snapshot".to_owned(),
         ));
     }
-    let mut certificate = WireCertificate::new().with_claim(WireClaim::Delta {
+    let mut certificate = ClaimBuilder::from_claims(vec![WireClaim::Delta {
         schema: backend_engine::WireSchema::ViewRelation,
         id: backend_engine::encode_id(delta.id().as_bytes()),
         base: backend_engine::encode_id(delta.base_root().as_bytes()),
         target: backend_engine::encode_id(delta.target_root().as_bytes()),
         changes: delta.canonical_changes().to_vec().into_boxed_slice(),
-    });
+    }]);
     match delta.delta() {
         backend_engine::ViewDelta::Upsert { row } => {
             add_row_certificate_claims_for_rows(
@@ -632,7 +695,7 @@ pub(crate) fn certificate_for_compact_event(
             ));
         }
     }
-    Ok(certificate)
+    Ok(certificate.finish())
 }
 
 fn required_row(
@@ -669,54 +732,112 @@ fn append_row_once_if_present(root: &ViewRoot, id: RowId, rows: &mut Vec<backend
     }
 }
 
-fn add_row_certificate_claims_for_rows(
-    certificate: &mut WireCertificate,
+struct RowClaimSeed {
+    id: RowId,
+    label: String,
+    preimage: Option<String>,
+    package: Option<backend_engine::PackageKey>,
+    parent: Option<backend_engine::SymbolKey>,
+    links: Vec<backend_engine::SymbolKey>,
+}
+
+fn row_claim_seed(row: &backend_engine::Row) -> RowClaimSeed {
+    RowClaimSeed {
+        id: row.id,
+        label: row.label.clone(),
+        preimage: row
+            .identity_preimage()
+            .map(|preimage| preimage.as_str().to_owned()),
+        package: row.package,
+        parent: row.parent,
+        links: row
+            .document
+            .iter()
+            .filter_map(|fragment| match fragment {
+                backend_engine::Fragment::Link { target, .. } => Some(*target),
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
+fn add_row_certificate_claims_for_rows<'a>(
+    certificate: &mut ClaimBuilder,
     root: &ViewRoot,
-    rows: &[backend_engine::Row],
+    rows: impl IntoIterator<Item = &'a backend_engine::Row>,
 ) {
-    for row in rows {
-        match row.id {
+    let seeds = rows.into_iter().map(row_claim_seed).collect::<Vec<_>>();
+    // The root does not change while claims are collected. The first lookup of a
+    // package or symbol is the claim every later reference would repeat.
+    let mut seen_packages = std::collections::HashSet::new();
+    let mut seen_symbols = std::collections::HashSet::new();
+    for seed in &seeds {
+        match seed.id {
             RowId::Package(package) => {
-                add_package_row_claim(certificate, package, row);
+                add_package_row_claim(certificate, package, &seed.label, seed.preimage.as_deref());
             }
             RowId::Symbol(symbol) => {
-                add_symbol_row_claim(certificate, symbol, row);
+                add_symbol_row_claim(certificate, symbol, &seed.label, seed.preimage.as_deref());
             }
             RowId::Object(_) => {}
         }
-        if let Some(package) = row.package
+        if let Some(package) = seed.package
+            && seen_packages.insert(package)
             && let Some(package_row) = root.row_ref(RowId::Package(package))
         {
-            add_package_row_claim(certificate, package, package_row);
+            add_package_row_claim(
+                certificate,
+                package,
+                &package_row.label,
+                package_row
+                    .identity_preimage()
+                    .map(backend_engine::RowIdentityPreimage::as_str),
+            );
         }
-        if let Some(parent) = row.parent {
+        if let Some(parent) = seed.parent
+            && !seen_symbols.contains(&parent)
+        {
             if let Some(parent_row) = root.row_ref(RowId::Symbol(parent)) {
-                add_symbol_row_claim(certificate, parent, parent_row);
+                seen_symbols.insert(parent);
+                add_symbol_row_claim(
+                    certificate,
+                    parent,
+                    &parent_row.label,
+                    parent_row
+                        .identity_preimage()
+                        .map(backend_engine::RowIdentityPreimage::as_str),
+                );
             } else {
+                seen_symbols.insert(parent);
                 add_row_id_commitment(certificate, RowId::Symbol(parent));
             }
         }
-        for fragment in &row.document {
-            let backend_engine::Fragment::Link { target, .. } = fragment else {
+        for target in &seed.links {
+            if seen_symbols.contains(target) {
                 continue;
-            };
-            if root.row(RowId::Symbol(*target)).is_some() {
-                if let Some(target_row) = root.row_ref(RowId::Symbol(*target)) {
-                    add_symbol_row_claim(certificate, *target, target_row);
-                } else {
-                    add_row_id_commitment(certificate, RowId::Symbol(*target));
-                }
+            }
+            if let Some(target_row) = root.row_ref(RowId::Symbol(*target)) {
+                seen_symbols.insert(*target);
+                add_symbol_row_claim(
+                    certificate,
+                    *target,
+                    &target_row.label,
+                    target_row
+                        .identity_preimage()
+                        .map(backend_engine::RowIdentityPreimage::as_str),
+                );
             }
         }
     }
 }
 
 fn add_package_row_claim(
-    certificate: &mut WireCertificate,
+    certificate: &mut ClaimBuilder,
     package: backend_engine::PackageKey,
-    row: &backend_engine::Row,
+    label: &str,
+    preimage: Option<&str>,
 ) {
-    if let Some(preimage) = row.identity_preimage() {
+    if let Some(preimage) = preimage {
         add_row_identity_claim(
             certificate,
             backend_engine::WireSchema::Package,
@@ -724,16 +845,17 @@ fn add_package_row_claim(
             preimage,
         );
     } else {
-        add_package_claim(certificate, package, &row.label);
+        add_package_claim(certificate, package, label);
     }
 }
 
 fn add_symbol_row_claim(
-    certificate: &mut WireCertificate,
+    certificate: &mut ClaimBuilder,
     symbol: backend_engine::SymbolKey,
-    row: &backend_engine::Row,
+    label: &str,
+    preimage: Option<&str>,
 ) {
-    if let Some(preimage) = row.identity_preimage() {
+    if let Some(preimage) = preimage {
         add_row_identity_claim(
             certificate,
             backend_engine::WireSchema::Symbol,
@@ -741,28 +863,28 @@ fn add_symbol_row_claim(
             preimage,
         );
     } else {
-        add_symbol_claim(certificate, symbol, &row.label);
+        add_symbol_claim(certificate, symbol, label);
     }
 }
 
 fn add_row_identity_claim(
-    certificate: &mut WireCertificate,
+    certificate: &mut ClaimBuilder,
     schema: backend_engine::WireSchema,
     id: &[u8; 32],
-    preimage: &backend_engine::RowIdentityPreimage,
+    preimage: &str,
 ) {
     add_certificate_claim(
         certificate,
         WireClaim::RowIdentity {
             schema,
             id: backend_engine::encode_id(id),
-            preimage: preimage.as_str().to_owned(),
+            preimage: preimage.to_owned(),
         },
     );
 }
 
 fn add_package_claim(
-    certificate: &mut WireCertificate,
+    certificate: &mut ClaimBuilder,
     package: backend_engine::PackageKey,
     label: &str,
 ) {
@@ -780,7 +902,7 @@ fn add_package_claim(
 }
 
 fn add_symbol_claim(
-    certificate: &mut WireCertificate,
+    certificate: &mut ClaimBuilder,
     symbol: backend_engine::SymbolKey,
     label: &str,
 ) {
@@ -845,6 +967,321 @@ mod tests {
                 .claims
                 .iter()
                 .any(|claim| matches!(claim, WireClaim::Root { .. }))
+        );
+    }
+
+    fn checked_root(rows: Vec<backend_engine::Row>) -> ViewRoot {
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let capability = super::super::test_builtin_view_capability().expect("coverage");
+        ViewRoot::new_checked(
+            template.recipe(),
+            template.basis(),
+            template.frontier(),
+            rows,
+            vec![backend_engine::ViewCoverage::Complete],
+            capability,
+        )
+        .expect("checked root")
+    }
+
+    fn row_claims<'a>(
+        root: &ViewRoot,
+        rows: impl IntoIterator<Item = &'a backend_engine::Row>,
+    ) -> Vec<WireClaim> {
+        let mut certificate = ClaimBuilder::from_claims(Vec::new());
+        add_row_certificate_claims_for_rows(&mut certificate, root, rows);
+        certificate.finish().claims.to_vec()
+    }
+
+    fn claim_mentions(claims: &[WireClaim], id: &[u8; 32]) -> bool {
+        let encoded = backend_engine::encode_id(id);
+        claims.iter().any(|claim| match claim {
+            WireClaim::Key { id, .. }
+            | WireClaim::KeyCommitment { id, .. }
+            | WireClaim::RowIdentity { id, .. } => id == &encoded,
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn borrowed_row_claims_match_owned_rows_including_links() {
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let basis = template.basis();
+        let package_label = "certificate-pkg";
+        let package = backend_engine::package_key(package_label);
+        let parent_label = "parent";
+        let parent = backend_engine::symbol_key(parent_label);
+        let child_label = "child";
+        let child = backend_engine::symbol_key(child_label);
+        let witness = "occurrence\0child";
+        let witness_key = backend_engine::symbol_key(witness);
+        let missing_parent = backend_engine::symbol_key("missing-parent");
+        let missing_link = backend_engine::symbol_key("missing-link");
+        let root = checked_root(vec![
+            backend_engine::Row::new(RowId::Package(package), basis, package_label),
+            backend_engine::Row::in_package(RowId::Symbol(parent), basis, package, parent_label),
+            backend_engine::Row::in_package(RowId::Symbol(child), basis, package, child_label)
+                .with_parent(parent)
+                .with_document(vec![
+                    backend_engine::Fragment::Text("x".repeat(256)),
+                    backend_engine::Fragment::Link {
+                        label: "parent".to_owned(),
+                        target: parent,
+                    },
+                    backend_engine::Fragment::Link {
+                        label: "gone".to_owned(),
+                        target: missing_link,
+                    },
+                ]),
+            backend_engine::Row::in_package(
+                RowId::Symbol(backend_engine::symbol_key("orphan")),
+                basis,
+                package,
+                "orphan",
+            )
+            .with_parent(missing_parent),
+            backend_engine::Row::new(RowId::Symbol(witness_key), basis, "shown-label")
+                .try_with_identity_preimage(witness)
+                .expect("witness"),
+        ]);
+
+        let borrowed = view_certificate(&root, b"library-view-v1", None, None).expect("borrowed");
+        let owned = view_certificate_with_rows(
+            &root,
+            b"library-view-v1",
+            None,
+            root.rows(),
+            false,
+            None,
+        )
+        .expect("owned");
+        assert_eq!(borrowed.claims, owned.claims);
+        assert_eq!(row_claims(&root, root.row_refs()), row_claims(&root, root.rows()));
+        assert!(claim_mentions(&borrowed.claims, package.as_bytes()));
+        assert!(claim_mentions(&borrowed.claims, parent.as_bytes()));
+        assert!(claim_mentions(&borrowed.claims, child.as_bytes()));
+        assert!(claim_mentions(&borrowed.claims, missing_parent.as_bytes()));
+        assert!(!claim_mentions(&borrowed.claims, missing_link.as_bytes()));
+        assert!(borrowed.claims.iter().any(|claim| matches!(
+            claim,
+            WireClaim::RowIdentity { preimage, .. } if preimage == witness
+        )));
+        assert!(borrowed.claims.iter().any(|claim| matches!(
+            claim,
+            WireClaim::KeyCommitment {
+                schema: backend_engine::WireSchema::Symbol,
+                id,
+            } if id == &backend_engine::encode_id(missing_parent.as_bytes())
+        )));
+    }
+
+    #[test]
+    fn shared_reference_claims_match_separate_admission() {
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let basis = template.basis();
+        let package_label = "certificate-pkg";
+        let package = backend_engine::package_key(package_label);
+        let parent = backend_engine::symbol_key("parent");
+        let child = backend_engine::symbol_key("child");
+        let peer = backend_engine::symbol_key("peer");
+        let linked = |symbol, label: &str| {
+            backend_engine::Row::in_package(RowId::Symbol(symbol), basis, package, label)
+                .with_parent(parent)
+                .with_document(vec![
+                    backend_engine::Fragment::Text("x".repeat(64)),
+                    backend_engine::Fragment::Link {
+                        label: "parent".to_owned(),
+                        target: parent,
+                    },
+                ])
+        };
+        let root = checked_root(vec![
+            backend_engine::Row::new(RowId::Package(package), basis, package_label),
+            backend_engine::Row::in_package(RowId::Symbol(parent), basis, package, "parent"),
+            linked(child, "child"),
+            linked(peer, "peer"),
+        ]);
+        let child_row = root
+            .row_ref(RowId::Symbol(child))
+            .expect("child row");
+        let peer_row = root.row_ref(RowId::Symbol(peer)).expect("peer row");
+        let mut separate = WireCertificate {
+            claims: row_claims(&root, std::slice::from_ref(child_row)).into_boxed_slice(),
+        };
+        for claim in row_claims(&root, std::slice::from_ref(peer_row)) {
+            separate = separate.with_claim_once(claim);
+        }
+        assert_eq!(
+            row_claims(&root, [child_row, peer_row]),
+            separate.claims.to_vec()
+        );
+    }
+
+    #[test]
+    fn missing_link_does_not_hide_a_later_parent_commitment() {
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let basis = template.basis();
+        let package = backend_engine::package_key("certificate-pkg");
+        let missing = backend_engine::symbol_key("missing-link");
+        let linker = backend_engine::symbol_key("linker");
+        let child = backend_engine::symbol_key("child");
+        let root = checked_root(vec![
+            backend_engine::Row::in_package(RowId::Symbol(linker), basis, package, "linker")
+                .with_document(vec![backend_engine::Fragment::Link {
+                    label: "gone".to_owned(),
+                    target: missing,
+                }]),
+            backend_engine::Row::in_package(RowId::Symbol(child), basis, package, "child")
+                .with_parent(missing),
+        ]);
+        let linker_row = root.row_ref(RowId::Symbol(linker)).expect("linker");
+        let child_row = root.row_ref(RowId::Symbol(child)).expect("child");
+        let claims = row_claims(&root, [linker_row, child_row]);
+        assert!(claims.iter().any(|claim| matches!(
+            claim,
+            WireClaim::KeyCommitment {
+                schema: backend_engine::WireSchema::Symbol,
+                id,
+            } if id == &backend_engine::encode_id(missing.as_bytes())
+        )));
+        let mut separate = WireCertificate {
+            claims: row_claims(&root, std::slice::from_ref(linker_row)).into_boxed_slice(),
+        };
+        for claim in row_claims(&root, std::slice::from_ref(child_row)) {
+            separate = separate.with_claim_once(claim);
+        }
+        assert_eq!(claims, separate.claims.to_vec());
+    }
+
+    #[test]
+    fn borrowed_row_claims_skip_cloning_heavy_documents() {
+        const ROWS: usize = 4096;
+        let (template, _) = super::super::initial_view().expect("initial view");
+        let basis = template.basis();
+        let package_label = "heavy-pkg";
+        let package = backend_engine::package_key(package_label);
+        let anchor = backend_engine::symbol_key("anchor");
+        let mut rows = Vec::with_capacity(ROWS + 2);
+        rows.push(backend_engine::Row::new(
+            RowId::Package(package),
+            basis,
+            package_label,
+        ));
+        rows.push(
+            backend_engine::Row::in_package(RowId::Symbol(anchor), basis, package, "anchor")
+                .with_document(vec![backend_engine::Fragment::Text("x".repeat(256))]),
+        );
+        for index in 0..ROWS {
+            let label = format!("symbol-{index:04}");
+            rows.push(
+                backend_engine::Row::in_package(
+                    RowId::Symbol(backend_engine::symbol_key(&label)),
+                    basis,
+                    package,
+                    label,
+                )
+                .with_parent(anchor)
+                .with_document(vec![
+                    backend_engine::Fragment::Text("x".repeat(256)),
+                    backend_engine::Fragment::Link {
+                        label: "anchor".to_owned(),
+                        target: anchor,
+                    },
+                ]),
+            );
+        }
+        let root = checked_root(rows);
+        let owned = root.row_refs().cloned().collect::<Vec<_>>();
+        let owned_claims = row_claims(&root, &owned);
+        let borrowed_claims = row_claims(&root, root.row_refs());
+        assert_eq!(owned_claims, borrowed_claims);
+
+        let mut owned_samples = Vec::with_capacity(9);
+        let mut borrowed_samples = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            let owned = root.row_refs().cloned().collect::<Vec<_>>();
+            let mut certificate = ClaimBuilder::from_claims(Vec::new());
+            add_row_certificate_claims_for_rows(&mut certificate, &root, &owned);
+            std::hint::black_box(certificate.finish());
+            owned_samples.push(started.elapsed().as_nanos());
+
+            let started = std::time::Instant::now();
+            let mut certificate = ClaimBuilder::from_claims(Vec::new());
+            add_row_certificate_claims_for_rows(&mut certificate, &root, root.row_refs());
+            std::hint::black_box(certificate.finish());
+            borrowed_samples.push(started.elapsed().as_nanos());
+        }
+        owned_samples.sort_unstable();
+        borrowed_samples.sort_unstable();
+        let owned_median = owned_samples[owned_samples.len() / 2];
+        let borrowed_median = borrowed_samples[borrowed_samples.len() / 2];
+        eprintln!(
+            "view_certificate_rows rows={ROWS} owned_median_ns={owned_median} \
+             borrowed_median_ns={borrowed_median}"
+        );
+
+        let mut clone_samples = Vec::with_capacity(9);
+        let mut seed_samples = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            std::hint::black_box(root.row_refs().cloned().collect::<Vec<_>>());
+            clone_samples.push(started.elapsed().as_nanos());
+
+            let started = std::time::Instant::now();
+            std::hint::black_box(root.row_refs().map(row_claim_seed).collect::<Vec<_>>());
+            seed_samples.push(started.elapsed().as_nanos());
+        }
+        clone_samples.sort_unstable();
+        seed_samples.sort_unstable();
+        let clone_median = clone_samples[clone_samples.len() / 2];
+        let seed_median = seed_samples[seed_samples.len() / 2];
+        eprintln!(
+            "view_certificate_materialize rows={ROWS} clone_median_ns={clone_median} \
+             seed_median_ns={seed_median}"
+        );
+        assert!(
+            seed_median < clone_median,
+            "seed {seed_median} ns, clone {clone_median} ns"
+        );
+
+        let distinct = (0..ROWS)
+            .map(|index| WireClaim::Key {
+                schema: backend_engine::WireSchema::Symbol,
+                id: format!("symbol-{index:04}"),
+                value: format!("symbol-{index:04}"),
+            })
+            .collect::<Vec<_>>();
+        let mut once_samples = Vec::with_capacity(9);
+        let mut builder_samples = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            let mut certificate = WireCertificate::new();
+            for claim in distinct.clone() {
+                certificate = certificate.with_claim_once(claim);
+            }
+            std::hint::black_box(certificate);
+            once_samples.push(started.elapsed().as_nanos());
+
+            let started = std::time::Instant::now();
+            let mut certificate = ClaimBuilder::from_claims(Vec::new());
+            for claim in distinct.clone() {
+                certificate.push_once(claim);
+            }
+            std::hint::black_box(certificate.finish());
+            builder_samples.push(started.elapsed().as_nanos());
+        }
+        once_samples.sort_unstable();
+        builder_samples.sort_unstable();
+        let once_median = once_samples[once_samples.len() / 2];
+        let builder_median = builder_samples[builder_samples.len() / 2];
+        eprintln!(
+            "certificate_claim_append rows={ROWS} once_median_ns={once_median} \
+             builder_median_ns={builder_median}"
+        );
+        assert!(
+            builder_median * 4 < once_median,
+            "builder {builder_median} ns, once {once_median} ns"
         );
     }
 }
