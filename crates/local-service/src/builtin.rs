@@ -658,14 +658,14 @@ fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
 /// `changes` must be strictly ordered by identity. A removal names a resident
 /// row. An upsert replaces that identity or inserts one the resident view does
 /// not hold.
-pub(super) fn admitted_bytes_after_row_changes(
-    current: &[Row],
+pub(super) fn admitted_bytes_after_row_changes<'row>(
+    current: impl IntoIterator<Item = &'row Row>,
     changes: &[backend_engine::RowChange],
 ) -> Result<usize, BuiltinModelError> {
     use std::cmp::Ordering;
 
     let overflow = || BuiltinModelError("workspace view bytes overflow".to_owned());
-    let mut ordered: Vec<&Row> = current.iter().collect();
+    let mut ordered: Vec<&Row> = current.into_iter().collect();
     ordered.sort_by_key(|row| row.id);
     if ordered.windows(2).any(|pair| pair[0].id == pair[1].id) {
         return Err(BuiltinModelError(
@@ -983,6 +983,43 @@ fn publish_package_view(
     let mut activated = prior.activated.clone();
     activated.retain(|(key, _)| *key != package);
     activated.extend(projected.activated);
+    let coverage = view_coverage(&snapshot, &activated, deployment)?;
+    let same_witness = activated == prior.activated
+        && coverage.as_slice() == current.coverage()
+        && current.basis() == initial.basis();
+    if same_witness {
+        match view_publish::row_changes_replacing_package(
+            current.row_refs(),
+            package,
+            &projected.rows,
+        ) {
+            Ok(changes) if changes.is_empty() => {
+                return Ok(Some(package_publication(
+                    Vec::new(),
+                    prior,
+                    source_target,
+                    semantic_target,
+                    files,
+                )));
+            }
+            Ok(changes) if view_publish::row_patch_fits(current.row_count(), changes.len()) => {
+                if let Some(deltas) = try_commit_row_patch(daemon, current.clone(), changes)? {
+                    return Ok(Some(package_publication(
+                        deltas,
+                        prior,
+                        source_target,
+                        semantic_target,
+                        files,
+                    )));
+                }
+            }
+            Ok(_) => {}
+            Err(
+                view_publish::RowSpliceError::Collision
+                | view_publish::RowSpliceError::UnscopedSemantic,
+            ) => return Ok(None),
+        }
+    }
     let merged = match view_publish::rows_replacing_package(current.rows(), package, projected.rows)
     {
         Ok(rows) => rows,
@@ -1029,7 +1066,7 @@ fn try_commit_row_patch(
     current: ViewRoot,
     changes: Vec<backend_engine::RowChange>,
 ) -> Result<Option<Vec<backend_engine::CommittedViewDelta>>, BuiltinModelError> {
-    let _admitted = admitted_bytes_after_row_changes(current.rows(), &changes)?;
+    let _admitted = admitted_bytes_after_row_changes(current.row_refs(), &changes)?;
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let workspace_root = snapshot.root();
     let capability = builtin_view_capability_for_workspace(&snapshot)?;
