@@ -540,7 +540,7 @@ mod tests {
         let result = canonical_dag();
         assert!(result.is_ok());
         let Some(dag) = result.ok() else { return };
-        assert_eq!(dag.packages.len(), 29);
+        assert_eq!(dag.packages.len(), 30);
         assert_eq!(dag.core_names.len(), 11);
         let names = dag
             .packages
