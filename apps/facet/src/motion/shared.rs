@@ -871,7 +871,17 @@ mod tests {
             // first frame is the newly supplied actual canvas rectangle.
             let second = seed(404.0, 92.0);
             cx.update(|window, cx| super::super::remember("gem", second, window, cx));
-            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (410.0, 98.0, 12.0));
+            let interrupted = centre(&frame(cx, &seen), "page.gem");
+            for (actual, expected) in [
+                (interrupted.0, 410.0),
+                (interrupted.1, 98.0),
+                (interrupted.2, 12.0),
+            ] {
+                assert!(
+                    (actual - expected).abs() < 1e-4,
+                    "the retained destination starts at its explicit source: {interrupted:?}"
+                );
+            }
             cx.executor().advance_clock(Duration::from_millis(700));
             cx.run_until_parked();
             assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));

@@ -213,15 +213,105 @@ impl Path {
     }
 }
 
+/// Card-free space in isotropic screen units: both axes are normalized by
+/// the full viewport width, relative to its centre.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlightRoom {
+    /// Left boundary relative to the full viewport centre.
+    pub left: f64,
+    /// Right boundary relative to the full viewport centre.
+    pub right: f64,
+    /// Top boundary, in viewport-width units.
+    pub top: f64,
+    /// Bottom boundary, in viewport-width units.
+    pub bottom: f64,
+    /// The symbol's reading position within the clear room.
+    pub anchor: (f64, f64),
+}
+
+impl FlightRoom {
+    /// Whether a projected landmark is currently in the actual reading room.
+    #[must_use]
+    pub fn contains(self, point: (f64, f64)) -> bool {
+        point.0 >= self.left
+            && point.0 <= self.right
+            && point.1 >= self.top
+            && point.1 <= self.bottom
+    }
+
+    // Reserve a quarter of directional clearance for the signed bow and
+    // readable endpoint marks. A collapsed presentation must not demand
+    // unbounded lift; six percent of full width is the minimum fit aperture.
+    fn width_for(self, offset: (f64, f64)) -> f64 {
+        let axis = |value: f64, negative: f64, positive: f64| {
+            value.abs() / ((if value < 0.0 { negative } else { positive }) * 0.75).max(0.06)
+        };
+        axis(
+            offset.0,
+            self.anchor.0 - self.left,
+            self.right - self.anchor.0,
+        )
+        .max(axis(
+            offset.1,
+            self.anchor.1 - self.top,
+            self.bottom - self.anchor.1,
+        ))
+    }
+}
+
+/// Semantic navigation intent; proximity is still evaluated against the
+/// current camera, so an old focus outside the view never dictates a detour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusKind {
+    /// A nearby symbol in the same module.
+    Handoff,
+    /// An explicit relation selected from the current reading.
+    Follow,
+    /// A move between territories or from overview into reading.
+    Transfer,
+}
+
+/// Pure geometry for a graph reading flight. Graph-owned IDs and relation
+/// provenance stay in the view; motion needs only the visible landmarks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FocusRoute {
+    /// Previous symbol, used only when it is still visibly in the room.
+    pub departure: Option<(f64, f64)>,
+    /// Actual destination symbol in world coordinates.
+    pub arrival: (f64, f64),
+    /// Common module or endpoint corridor, not an unrelated waypoint.
+    pub context: Camera,
+    /// Measured clear space for this navigation.
+    pub room: FlightRoom,
+    /// Semantic intent captured before the view changes focus.
+    pub kind: FocusKind,
+}
+
 /// The purpose and stable spatial context of graph navigation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Travel {
-    /// Approach a symbol through its enclosing package or module.
+    /// Legacy package-context approach.
     Focus(Camera),
+    /// Read a symbol using its endpoints and the measured card-free room.
+    Reading(FocusRoute),
     /// Reveal a region through the larger territory it belongs to.
     Survey(Camera),
     /// Quietly correct a measured viewport or card without a scenic detour.
     Reframe,
+}
+
+impl Travel {
+    /// Measured geometry changes the room, retaining the route's meaning.
+    #[must_use]
+    pub fn in_room(self, room: FlightRoom) -> Self {
+        match self {
+            Self::Reading(mut route) => {
+                route.room = room;
+                Self::Reading(route)
+            }
+            other => other,
+        }
+    }
 }
 
 /// Graph navigation: a bounded contextual lift, one spatially meaningful
@@ -232,10 +322,60 @@ pub struct GraphPath {
     metric: Path,
     travel: Travel,
     apex: f64,
-    log_ratio: f64,
-    lift: f64,
+    lens: Lens,
     normal: (f64, f64),
     bend: f64,
+    anchor: (f64, f64),
+    advance: f64,
+}
+
+/// The projection model is explicit: legacy routes retain their exact log
+/// lens; reading routes own two independently monotone endpoint weights.
+#[derive(Clone, Copy, Debug)]
+enum Lens {
+    Harmonic,
+    Log { ratio: f64, lift: f64 },
+    Reading { powers: (f64, f64) },
+}
+
+fn log_add(a: f64, b: f64) -> f64 {
+    let larger = a.max(b);
+    larger + (a.min(b) - larger).exp().ln_1p()
+}
+
+/// A convex denominator has one minimum. Bracket its derivative once when
+/// planning; the opposite bracket endpoints give a rigorous width bound.
+fn reading_apex(from: f64, to: f64, powers: (f64, f64)) -> f64 {
+    let (a, b) = powers;
+    let (l0, l1) = (from.ln(), to.ln());
+    let left = |p: f64| {
+        a.ln() - l0
+            + if a == 1.0 {
+                0.0
+            } else {
+                (a - 1.0) * (-p).ln_1p()
+            }
+    };
+    let right = |p: f64| b.ln() - l1 + if b == 1.0 { 0.0 } else { (b - 1.0) * p.ln() };
+    if right(0.0) >= left(0.0) {
+        return from.max(to);
+    }
+    if right(1.0) <= left(1.0) {
+        return from.max(to);
+    }
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..48 {
+        let mid = (low + high) / 2.0;
+        if right(mid) < left(mid) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    (-log_add(a * (-high).ln_1p() - l0, b * low.ln() - l1))
+        .exp()
+        .max(from)
+        .max(to)
 }
 
 impl GraphPath {
@@ -247,38 +387,128 @@ impl GraphPath {
         let widest = from.w.max(to.w);
         let (context, limit) = match travel {
             Travel::Focus(context) => (context, 0.085),
+            Travel::Reading(route) => (route.context, 0.0),
             Travel::Survey(context) => (context, 0.055),
             Travel::Reframe => (from, 0.0),
         };
-        let apex = if matches!(travel, Travel::Reframe) {
+        let mut apex = if matches!(travel, Travel::Reframe) {
             widest
         } else {
             widest
                 .max(1.3 * distance)
                 .max(context.w.min(widest + 1.8 * distance))
         };
-        let normal = if distance > 1e-12 {
+        let mut normal = if distance > 1e-12 {
             (-(to.y - from.y) / distance, (to.x - from.x) / distance)
         } else {
             (0.0, 0.0)
         };
         let guide = normal.0 * (context.x - (from.x + to.x) / 2.0)
             + normal.1 * (context.y - (from.y + to.y) / 2.0);
-        let bend = (0.3 * guide / apex).clamp(-limit, limit) * (3.0 * distance / apex).min(1.0);
+        let mut bend = (0.3 * guide / apex).clamp(-limit, limit) * (3.0 * distance / apex).min(1.0);
+        let mut anchor = (0.0, 0.0);
+        let mut advance = 0.0;
         let rise = (apex / from.w).ln();
         let fall = (apex / to.w).ln();
-        // The concave log-width arch has one apex, exactly at the selected
-        // altitude. Its nonnegative lens sits above geometric endpoint
-        // interpolation, which itself bounds the harmonic screen path.
-        let lift = (rise + fall) / 4.0 + (rise * fall).sqrt() / 2.0;
+        let mut lens = if matches!(travel, Travel::Reframe) {
+            Lens::Harmonic
+        } else {
+            Lens::Log {
+                ratio: (to.w / from.w).ln(),
+                lift: (rise + fall) / 4.0 + (rise * fall).sqrt() / 2.0,
+            }
+        };
+        if let Travel::Reading(route) = travel {
+            let final_anchor = (
+                (route.arrival.0 - to.x) / to.w,
+                (route.arrival.1 - to.y) / to.w,
+            );
+            anchor = if route.room.contains(final_anchor) {
+                final_anchor
+            } else {
+                route.room.anchor
+            };
+            let clear = (route.room.right - route.room.left)
+                .min(route.room.bottom - route.room.top)
+                .max(0.0);
+            // A hint left behind by a pan/overview or previous flight is not
+            // the departure of the camera currently being painted.
+            let departure = route.departure.filter(|&(x, y)| {
+                let screen = ((x - from.x) / from.w, (y - from.y) / from.w);
+                route.room.contains(screen)
+                    && (screen.0 - anchor.0).hypot(screen.1 - anchor.1) <= 0.02 * clear
+            });
+            let source =
+                departure.unwrap_or((from.x + anchor.0 * from.w, from.y + anchor.1 * from.w));
+            // The bow is perpendicular to the goal's actual reading axis,
+            // including a camera retarget whose old symbol is offset.
+            let direction = (
+                route.arrival.0 - from.x - anchor.0 * from.w,
+                route.arrival.1 - from.y - anchor.1 * from.w,
+            );
+            let span_world = direction.0.hypot(direction.1);
+            normal = if span_world > 1e-12 {
+                (-direction.1 / span_world, direction.0 / span_world)
+            } else {
+                (0.0, 0.0)
+            };
+            let room = FlightRoom {
+                anchor,
+                ..route.room
+            };
+            let required = |point: (f64, f64), camera: Camera| {
+                room.width_for((
+                    (point.0 - camera.x) / camera.w - anchor.0,
+                    (point.1 - camera.y) / camera.w - anchor.1,
+                ))
+            };
+            // Each exponent independently contracts its real landmark into
+            // the clear room. A missing source never forces an invented one
+            // into a huge lift under extreme wheel→focus zoom ratios.
+            let mut powers = (
+                required(route.arrival, from).max(1.0).log2().max(1.0),
+                departure.map_or(1.0, |point| required(point, to).max(1.0).log2().max(1.0)),
+            );
+            apex = reading_apex(from.w, to.w, powers);
+            let local = matches!(route.kind, FocusKind::Handoff) && apex <= widest * 1.12;
+            if !local && departure.is_some() {
+                let context_extra =
+                    (route.context.w.min(widest + 0.6 * distance) - widest).max(0.0);
+                let boost = (1.0 + (context_extra / widest).min(0.18)).log2();
+                powers.0 += boost;
+                powers.1 += boost;
+                apex = reading_apex(from.w, to.w, powers);
+            }
+            let span = (span_world / widest).min(1.0);
+            advance = if local {
+                0.15 * span
+            } else if matches!(route.kind, FocusKind::Follow) {
+                0.4 * span
+            } else {
+                0.6 * span
+            };
+            let room_guide = normal.0 * ((route.room.left + route.room.right) / 2.0 - anchor.0)
+                + normal.1 * ((route.room.top + route.room.bottom) / 2.0 - anchor.1);
+            let guide = normal.0 * (context.x - (source.0 + route.arrival.0) / 2.0)
+                + normal.1 * (context.y - (source.1 + route.arrival.1) / 2.0);
+            let context_guide = if departure.is_some() {
+                0.3 * guide / apex
+            } else {
+                0.0
+            };
+            let bow_limit = clear * if local { 0.025 } else { 0.075 };
+            bend = (context_guide + 0.25 * room_guide).clamp(-bow_limit, bow_limit) * span;
+            lens = Lens::Reading { powers };
+        }
         Self {
             metric,
             travel,
             apex,
-            log_ratio: (to.w / from.w).ln(),
-            lift,
+            lens,
             normal,
             bend,
+            anchor,
+            advance,
         }
     }
 
@@ -293,7 +523,32 @@ impl GraphPath {
         if progress >= 1.0 {
             return to;
         }
-        let p = progress;
+        let p = progress + self.advance * progress * (1.0 - progress);
+        if p >= 1.0 {
+            return to;
+        }
+        if let Lens::Reading { powers: (a, b) } = self.lens {
+            let (la, lb) = (a * (-p).ln_1p(), b * p.ln());
+            let (l0, l1) = (la - from.w.ln(), lb - to.w.ln());
+            let denominator = log_add(l0, l1);
+            let (q, remaining) = ((l1 - denominator).exp(), (l0 - denominator).exp());
+            let (x, y) = if q <= 0.5 {
+                (from.x + (to.x - from.x) * q, from.y + (to.y - from.y) * q)
+            } else {
+                (
+                    to.x - (to.x - from.x) * remaining,
+                    to.y - (to.y - from.y) * remaining,
+                )
+            };
+            let w = (-denominator).exp();
+            let lens = (la.exp() + lb.exp() - 1.0) * w;
+            let bow = w * self.bend * 4.0 * p * (1.0 - p);
+            return Camera::new(
+                x + lens * self.anchor.0 + self.normal.0 * bow,
+                y + lens * self.anchor.1 + self.normal.1 * bow,
+                w,
+            );
+        }
         let denominator = (1.0 - p) * to.w + p * from.w;
         let q = p * from.w / denominator;
         let remaining = (1.0 - p) * to.w / denominator;
@@ -309,17 +564,24 @@ impl GraphPath {
         if matches!(self.travel, Travel::Reframe) {
             return Camera::new(x, y, harmonic);
         }
-        let lens = 4.0 * self.lift * p * (1.0 - p);
+        let Lens::Log { ratio, lift } = self.lens else {
+            return Camera::new(x, y, harmonic);
+        };
+        let lens = 4.0 * lift * p * (1.0 - p);
         // Evaluate from the nearer endpoint to retain narrow landing
         // precision, without a soft-max blend that can introduce extra
         // zoom turns. The clock leaves and lands at C2 rest.
         let w = if p <= 0.5 {
-            from.w * (p * self.log_ratio + lens).exp()
+            from.w * (p * ratio + lens).exp()
         } else {
-            to.w * ((p - 1.0) * self.log_ratio + lens).exp()
+            to.w * ((p - 1.0) * ratio + lens).exp()
         };
         let arc = w * self.bend * 4.0 * p * (1.0 - p);
-        Camera::new(x + self.normal.0 * arc, y + self.normal.1 * arc, w)
+        Camera::new(
+            x + (harmonic - w) * self.anchor.0 + self.normal.0 * arc,
+            y + (harmonic - w) * self.anchor.1 + self.normal.1 * arc,
+            w,
+        )
     }
 }
 
@@ -372,8 +634,8 @@ impl Route {
             Self::Graph(p) => (
                 p.apex,
                 (
-                    (p.normal.0 * p.bend).abs() * p.apex,
-                    (p.normal.1 * p.bend).abs() * p.apex,
+                    (p.normal.0 * p.bend).abs() * p.apex + p.anchor.0.abs() * p.apex,
+                    (p.normal.1 * p.bend).abs() * p.apex + p.anchor.1.abs() * p.apex,
                 ),
             ),
         }
@@ -801,6 +1063,23 @@ impl Flights {
             };
             publish(cx, &key, &shot, trip.as_ref(), camera, now(cx));
         }
+    }
+
+    /// Linear phase of the existing trip at a caller's sampled timestamp.
+    /// Reading this never advances a camera or requests a frame.
+    #[must_use]
+    pub fn phase(&self, key: impl Into<ElementId>, at: Instant) -> Option<f64> {
+        self.store
+            .borrow()
+            .get(&key.into())
+            .and_then(|state| match state {
+                State::Flying(trip) => Some(
+                    (at.saturating_duration_since(trip.start).as_secs_f64()
+                        / trip.duration.as_secs_f64().max(1e-12))
+                    .clamp(0.0, 1.0),
+                ),
+                _ => None,
+            })
     }
 
     /// Where `key`'s camera is now, without stepping it (picking, input
