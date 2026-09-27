@@ -37,3 +37,8 @@ harness = false
 name = "residence_rebind"
 path = "benches/residence_rebind.rs"
 harness = false
+
+[[bench]]
+name = "coordinate_warm"
+path = "benches/coordinate_warm.rs"
+harness = false
