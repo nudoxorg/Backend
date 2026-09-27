@@ -3379,12 +3379,73 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     None
                 }
             }
+            OccurrenceReceiver::InstanceAttribute { class, attribute } => self
+                .enclosing_class_index(occurrence, class)
+                .and_then(|class_index| {
+                    self.field_annotation_class_name_for_class(class_index, attribute)
+                })
+                .and_then(|field_class| self.unique_live_class_index(&field_class))
+                .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
+            OccurrenceReceiver::NamedAttribute { name, attribute } => {
+                if self.receiver_assigned_in_scope(occurrence, name) {
+                    None
+                } else {
+                    self.named_attribute_class_index(occurrence, name)
+                        .and_then(|class_index| {
+                            self.field_annotation_class_name_for_class(class_index, attribute)
+                        })
+                        .and_then(|field_class| self.unique_live_class_index(&field_class))
+                        .and_then(|class_index| {
+                            self.call_return_method_return_class(class_index, method)
+                        })
+                }
+            }
+            OccurrenceReceiver::ChainedAttribute { root, attributes } => {
+                let class_index = match root {
+                    AttributeChainRoot::Enclosing { class } => {
+                        self.enclosing_class_index(occurrence, class)
+                    }
+                    AttributeChainRoot::Name { name } => {
+                        if self.receiver_assigned_in_scope(occurrence, name) {
+                            None
+                        } else {
+                            self.named_attribute_class_index(occurrence, name)
+                        }
+                    }
+                };
+                if let Some(mut class_index) = class_index {
+                    for attribute in attributes {
+                        let Some(class_name) =
+                            self.field_annotation_class_name_for_class(class_index, attribute)
+                        else {
+                            return self.instance_or_named_attribute_target(
+                                occurrence,
+                                checked,
+                                None,
+                            );
+                        };
+                        let Some(next_index) = self.unique_live_class_index(&class_name) else {
+                            return self.instance_or_named_attribute_target(
+                                occurrence,
+                                checked,
+                                None,
+                            );
+                        };
+                        class_index = next_index;
+                    }
+                    return self.instance_or_named_attribute_target(
+                        occurrence,
+                        checked,
+                        self.call_return_method_return_class(class_index, method),
+                    );
+                }
+                None
+            }
+            OccurrenceReceiver::Constructed { class } => self
+                .unique_live_class_index(class)
+                .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
             OccurrenceReceiver::Foreign { receiver: None }
             | OccurrenceReceiver::Module
-            | OccurrenceReceiver::InstanceAttribute { .. }
-            | OccurrenceReceiver::NamedAttribute { .. }
-            | OccurrenceReceiver::ChainedAttribute { .. }
-            | OccurrenceReceiver::Constructed { .. }
             | OccurrenceReceiver::Super { .. }
             | OccurrenceReceiver::CallReturn { .. } => None,
         };
