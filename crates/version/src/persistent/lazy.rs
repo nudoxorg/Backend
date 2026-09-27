@@ -186,7 +186,13 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 break;
             };
             let node = self.load(claim)?;
-            self.take_page(&node, PageStart::Beginning, limit, &mut entries, &mut pending)?;
+            self.take_page(
+                &node,
+                PageStart::Beginning,
+                limit,
+                &mut entries,
+                &mut pending,
+            )?;
         }
         let next = (entries.len() == limit)
             .then(|| entries.last().map(|(key, _)| key.clone()))
@@ -227,7 +233,13 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 break;
             };
             let node = self.load(claim)?;
-            self.take_page(&node, PageStart::Beginning, limit, &mut entries, &mut pending)?;
+            self.take_page(
+                &node,
+                PageStart::Beginning,
+                limit,
+                &mut entries,
+                &mut pending,
+            )?;
         }
         let next = (entries.len() == limit)
             .then(|| entries.last().map(|(key, _)| key.clone()))
