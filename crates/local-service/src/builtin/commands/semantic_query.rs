@@ -177,6 +177,7 @@ pub(super) fn execute_semantic_graph(
         package
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
+    let sources = read_package_sources(&snapshot, package)?;
     let view = library.view();
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -218,7 +219,6 @@ pub(super) fn execute_semantic_graph(
     let Some(binding) = source_binding else {
         return Ok(None);
     };
-    let sources = read_package_sources(&snapshot, package)?;
     let project_paths = project_paths_for_package(&sources, package);
     let mut relations = project_semantic_graph_relations(
         &activations,
@@ -931,7 +931,7 @@ pub(super) fn execute_references(
         (target_symbol, package)
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let sources = read_indexed_sources(&snapshot)?;
+    let sources = read_package_sources(&snapshot, package)?;
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
@@ -967,7 +967,6 @@ pub(super) fn execute_references(
     if !publication_found {
         return execute_structural_references(daemon, target);
     }
-    let sources = read_package_sources(&snapshot, package)?;
     let project_paths = project_paths_for_package(&sources, package);
     let mut opened = Vec::with_capacity(image_slots.len());
     for (activation_index, image_index) in &image_slots {
