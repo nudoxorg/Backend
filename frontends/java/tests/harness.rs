@@ -220,6 +220,10 @@ fn legacy_yield_fails_release21_then_java8_alternate_succeeds_with_exact_image()
     assert_eq!(image.source_digest(), expected);
 }
 
+/// A corpus root that does not exist: the harness then uses no fleet corpus,
+/// whatever `NUDOX_JAVA_CORPUS_DIR` names on this host.
+const NO_CORPUS: &str = "/nonexistent/nudox-java-corpus";
+
 /// A source file that imports a package not on the source or class path must
 /// fail as an unresolved dependency graph. `javac` still runs at full
 /// strictness — the package is not sealed with the import erased.
@@ -257,8 +261,10 @@ public final class App {
         release: JavaRelease::Java21,
     };
     let mut output = Vec::new();
+    // The host's fleet corpus carries Guava's sources, which would make the
+    // import resolvable; this proof is about a dependency that is absent.
     let error = harness
-        .image(&jdk, request, &mut output)
+        .image_with_corpus(&jdk, request, &[], Some(Path::new(NO_CORPUS)), &mut output)
         .expect_err("a missing guava import must not seal");
     let _ = fs::remove_dir_all(&root);
     let (packages, stderr) = match error {
@@ -621,14 +627,16 @@ fn module_root_is_excluded_and_its_absence_stays_a_typed_compilation_refusal() {
             &mut output,
         )
         .unwrap_err();
-    assert_eq!(
-        error.unavailable_cause(),
-        Some(UnavailableCause::Compilation),
-        "{error}"
-    );
-    let HarnessError::Command { stderr, .. } = &error else {
-        panic!("unexpected error: {error}")
+    // With the module root excluded, the unnamed compilation cannot see
+    // `org.modlib`: a typed refusal naming the missing package, never a
+    // weakened compile.
+    let HarnessError::UnresolvedDependencies {
+        packages, stderr, ..
+    } = &error
+    else {
+        panic!("an excluded module root must refuse as unresolved dependencies: {error}")
     };
+    assert_eq!(packages, "org.modlib");
     assert!(
         stderr.contains("ModDep"),
         "the missing type must be named: {stderr}"

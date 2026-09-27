@@ -907,8 +907,13 @@ fn assert_spot(
             }
             actual.reverse();
             if actual.as_slice() != kinds {
+                let context = entities[ordinal.saturating_sub(6)..=ordinal]
+                    .iter()
+                    .map(|(name, kind)| format!("{:?} {}", kind, String::from_utf8_lossy(name)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return Err(fact(format!(
-                    "spot parameter kinds {symbol} decoded {actual:?}, expected {kinds:?}"
+                    "spot parameter kinds {symbol} decoded {actual:?}, expected {kinds:?}; preceding facts: [{context}]"
                 )));
             }
         }

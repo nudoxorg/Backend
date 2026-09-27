@@ -150,8 +150,17 @@ fn generic_box_flow() {
         release: HarnessRelease::Java21,
     };
     let mut output = Vec::new();
+    // The host's fleet corpus carries Guava's sources, which would make the
+    // import resolvable; this proof is about a dependency that is absent, so
+    // name a corpus root that does not exist.
     let error = harness
-        .image(&jdk, request, &mut output)
+        .image_with_corpus(
+            &jdk,
+            request,
+            &[],
+            Some(Path::new("/nonexistent/nudox-java-corpus")),
+            &mut output,
+        )
         .expect_err("a missing import must not seal as success");
     match error {
         HarnessError::UnresolvedDependencies { packages, stderr, .. } => {

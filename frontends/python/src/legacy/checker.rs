@@ -1933,6 +1933,8 @@ mod tests {
         let facts = extract(source, PythonVersion::Python314).map_err(|_| TestError::Authority)?;
         let plan = super::build_probe_plan(source, &facts).map_err(TestError::Live)?;
         let text = core::str::from_utf8(plan.text.as_slice()).map_err(|_| TestError::Plan)?;
+        // Shown only when the test fails: the spliced plan every check reads.
+        eprintln!("probe plan:\n{text}");
         // `value` is probed once; `rebound` (bound twice) is probed exactly
         // once, and only the final binding's span is the reveal site.
         if !text.contains("\nreveal_type(value)") {

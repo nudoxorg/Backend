@@ -1018,6 +1018,17 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
                 .unwrap_or_else(|| Gap::new(GapReason::ReadFailed, "members were not read")),
         )
     };
+    // Without a compiler publication the engine answers references from
+    // structure alone, and an empty structural answer cannot prove there are
+    // none: that stays a typed gap rather than a claimed empty list.
+    let unpublished = neighbourhood.is_some_and(|hood| hood.relations.is_none());
+    let references = match references(inputs.references, outline) {
+        Known::Known(sites) if sites.is_empty() && unpublished => Known::unknown(
+            GapReason::NoSemanticPublication,
+            "no use was found structurally; proving there are none needs a complete semantic publication for this package",
+        ),
+        other => other,
+    };
     SymbolPage {
         package: coordinate.package().map_or_else(
             || {
@@ -1038,7 +1049,7 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             neighbourhood,
             inputs.related.as_ref().err().cloned(),
         ),
-        references: references(inputs.references, outline),
+        references,
         outline: outline_position(centre, outline, inputs.outline.as_ref().err().cloned()),
         identity,
     }

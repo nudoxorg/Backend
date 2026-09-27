@@ -154,8 +154,27 @@ fn compile_flow(dotnet: &Path, source: &[u8]) -> Result<(Ir, Duration), String> 
         .filter(|declared| declared.name.bytes == b"Changed")
         .collect();
     if changed.len() != 2 {
+        let decode_errors = authority
+            .declarations()
+            .filter_map(|declared| declared.err())
+            .map(|error| format!("{error:?}"))
+            .collect::<Vec<_>>();
+        let events = authority
+            .declarations()
+            .filter_map(|declared| declared.ok())
+            .filter(|declared| declared.kind == DeclarationKind::Event)
+            .map(|declared| {
+                format!(
+                    "{} {}..{} explicit={}",
+                    String::from_utf8_lossy(&declared.name.bytes),
+                    declared.decl_start,
+                    declared.decl_end,
+                    declared.flags.is_explicit_interface
+                )
+            })
+            .collect::<Vec<_>>();
         return Err(format!(
-            "authority must carry both explicit Changed events, found {changed:?}"
+            "authority must carry both explicit Changed events; events {events:?}; declaration decode errors {decode_errors:?}"
         ));
     }
 
