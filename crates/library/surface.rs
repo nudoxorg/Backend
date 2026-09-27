@@ -532,6 +532,13 @@ pub enum SurfaceCommand {
         /// Include descendants.
         branch: bool,
     },
+    /// Read one project's dependency tree.
+    ProjectTree {
+        /// Absolute project directory (any directory inside the workspace).
+        root: ProductText,
+    },
+    /// Refresh every configured advisory source.
+    AdvisoryRefresh,
 }
 
 impl SurfaceCommand {
@@ -568,6 +575,8 @@ impl SurfaceCommand {
             Self::Tree => CommandId::Tree,
             Self::TreeOpen { .. } => CommandId::TreeOpen,
             Self::TreeClose { .. } => CommandId::TreeClose,
+            Self::ProjectTree { .. } => CommandId::ProjectTree,
+            Self::AdvisoryRefresh => CommandId::AdvisoryRefresh,
         }
     }
     /// Verifies collection and page bounds after syntactic decoding.
@@ -1156,6 +1165,10 @@ pub enum SurfaceReply {
     TreeOpened(TreeNodeRecord),
     /// Number of closed nodes.
     TreeClosed(u64),
+    /// One project's dependency tree.
+    ProjectTree(Box<crate::browse::ProjectTree>),
+    /// Each advisory source after a refresh.
+    AdvisoryRefreshed(Box<[crate::browse::AdvisorySourceState]>),
 }
 
 impl SurfaceReply {
@@ -1192,6 +1205,8 @@ impl SurfaceReply {
             Self::Tree(_) => CommandId::Tree,
             Self::TreeOpened(_) => CommandId::TreeOpen,
             Self::TreeClosed(_) => CommandId::TreeClose,
+            Self::ProjectTree(_) => CommandId::ProjectTree,
+            Self::AdvisoryRefreshed(_) => CommandId::AdvisoryRefresh,
         }
     }
     /// Verifies command identity and reply collection bounds.
@@ -1254,6 +1269,13 @@ impl SurfaceReply {
             Self::Releases(v) => v.len(),
             Self::Projects(v) => v.len(),
             Self::Tree(v) => v.len(),
+            Self::AdvisoryRefreshed(v) => v.len(),
+            Self::ProjectTree(tree)
+                if tree.packages.len() > crate::browse::MAX_TREE_PACKAGES
+                    || tree.direct.len() > tree.packages.len() =>
+            {
+                return Err(ProductAdmissionError::RowBound);
+            }
             _ => 1,
         };
         if count > MAX_PRODUCT_ROWS {
@@ -1351,6 +1373,10 @@ impl SurfaceReply {
                 bound.saturating_add(tree_node_record_bound(record))
             }),
             Self::TreeOpened(record) => tree_node_record_bound(record),
+            Self::ProjectTree(tree) => serde_json::to_vec(tree).map_or(0, |bytes| bytes.len()),
+            Self::AdvisoryRefreshed(states) => {
+                serde_json::to_vec(states).map_or(0, |bytes| bytes.len())
+            }
         };
         ENVELOPE_BYTES.saturating_add(payload)
     }

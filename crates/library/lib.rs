@@ -16,6 +16,7 @@ pub use backend_discovery::{
 };
 
 mod arrangement;
+pub mod browse;
 pub mod canonical;
 mod capability;
 mod catalog;
@@ -49,7 +50,8 @@ pub use backend_advisory::{
     NativeAdvisoryId, OverrideEvidence, PolicyReason, SeverityLevel,
 };
 pub use backend_compile::{
-    DeclarationKind, SourceExcerpt, SourceExcerptExtent, SourceLanguage, SourceLocation,
+    DeclarationFacts, DeclarationKind, Deprecation, Fact, Obligation, SourceExcerpt,
+    SourceExcerptExtent, SourceLanguage, SourceLocation,
 };
 pub use backend_semantic::{Read, ReadManifest, ReadSelector};
 pub use backend_version::{
