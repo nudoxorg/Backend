@@ -3,7 +3,7 @@
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {
   name = "journal codec";
-  ilo_priority = 2;
+  start_order = 2;
   complexity = {
     score = 799;
     loc = 763;

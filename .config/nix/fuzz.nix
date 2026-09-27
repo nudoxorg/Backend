@@ -1,6 +1,7 @@
-# Exports one continuous-fuzz attrset plus packages.${system}.fuzz-<id> aliases.
-# ilo builds those aliases. argv[1] is the durable corpus directory to mount.
-# These packages are libFuzzer runners. They are intentionally not flake checks.
+# Backend's adapter for the shared continuous-fuzz package shape.
+# packages.${system}.continuous-fuzz passthru is bins, corpora, engines, metadata.
+# Auth copies that shape and plugs its own engine. This file's engine is libFuzzer.
+# fuzz-<id> packages are optional aliases. These are not flake checks.
 {
   pkgs,
   workspaceRoot,
@@ -81,6 +82,16 @@ let
     assert (score.churn.method == "measured") || abort "${name}: churn.method must be measured";
     assert (score.entrypoints != [ ]) || abort "${name}: entrypoints must name decoder sources";
     complexity.score * gap.score * blast.score;
+  # Every target row uses these keys. Null means that kind has no such
+  # artifact. start_order is the supervised start sequence. It is not rank.
+  absentArtifacts = {
+    bin = null;
+    corpus = null;
+    committed_corpus = null;
+    durable_corpus = null;
+    dictionary = null;
+    max_input_bytes = null;
+  };
   targetMeta = name:
     let
       score = requirePriority name (import (targetRoot + "/${name}/score.nix"));
@@ -88,21 +99,20 @@ let
     in
     {
       id = name;
+      kind = "fuzz";
       inherit (score) name;
+      engine = "libfuzzer";
       bin = "packages.\${system}.continuous-fuzz.bins.${name}";
       corpus = "packages.\${system}.continuous-fuzz.corpora.${name}";
-      engine = "packages.\${system}.continuous-fuzz.engines.${name}";
-      engine_hint = "bolero-libfuzzer";
-      ci_engine_hint = "bolero-test";
       committed_corpus = "tests/fuzz/targets/${name}/corpus";
       durable_corpus = "/durable/fuzz/${name}/corpus";
       dictionary = "tests/fuzz/targets/${name}/dictionary.txt";
-      max_len = maxLenOf name;
-      harnessed = true;
+      max_input_bytes = maxLenOf name;
       schedule = true;
       inherit rank;
+      start_order = score.start_order;
+      reason = null;
       inherit (score)
-        ilo_priority
         complexity
         gap
         blast
@@ -110,46 +120,100 @@ let
         entrypoints
         ;
     };
-  # `|| abort` so a missing or non-integer ilo_priority fails closed at eval.
   requirePriority = name: score:
-    assert (builtins.isInt score.ilo_priority && score.ilo_priority >= 1 && score.ilo_priority <= 9)
-      || abort "${name}: ilo_priority must be an integer from 1 through 9";
+    assert (builtins.isInt score.start_order && score.start_order >= 1 && score.start_order <= 9)
+      || abort "${name}: start_order must be an integer from 1 through 9";
     score;
   closed = spec:
     let
       rank = rankOf spec.id spec;
     in
-    spec
-    // {
-      harnessed = false;
-      schedule = false;
-      bin = null;
-      corpus = null;
+    {
+      inherit (spec)
+        id
+        name
+        reason
+        complexity
+        gap
+        blast
+        churn
+        entrypoints
+        ;
+      kind = "fuzz";
       engine = null;
-      engine_hint = null;
-      ci_engine_hint = null;
-      committed_corpus = null;
-      durable_corpus = null;
-      dictionary = null;
-      max_len = null;
+      schedule = false;
+      start_order = null;
       inherit rank;
-    };
+    }
+    // absentArtifacts;
   deferred = spec:
-    spec
-    // {
-      harnessed = false;
-      schedule = false;
-      bin = null;
-      corpus = null;
+    {
+      inherit (spec)
+        id
+        name
+        reason
+        complexity
+        gap
+        blast
+        churn
+        entrypoints
+        ;
+      kind = "fuzz";
       engine = null;
-      engine_hint = null;
-      ci_engine_hint = null;
-      committed_corpus = null;
-      durable_corpus = null;
-      dictionary = null;
-      max_len = null;
+      schedule = false;
+      start_order = null;
       rank = null;
+    }
+    // absentArtifacts;
+  # Property rows are siblings of fuzz rows. They are not supervised bins.
+  # Complexity stays null: those modules were not counted for this rank.
+  propertyTarget = spec:
+    {
+      inherit (spec)
+        id
+        name
+        complexity
+        gap
+        blast
+        churn
+        entrypoints
+        ;
+      kind = "property";
+      engine = "property";
+      schedule = false;
+      start_order = null;
+      rank = null;
+      reason = null;
+    }
+    // absentArtifacts;
+  unscored = locPaths: {
+    complexity = {
+      score = null;
+      loc = null;
+      error_variants = null;
+      discriminants = null;
+      method = "unscored";
+      loc_paths = locPaths;
     };
+    gap = {
+      score = null;
+      method = "unscored";
+      label = "property-kind";
+      llvm_cov_percent = null;
+    };
+    blast = {
+      score = null;
+      method = "unscored";
+      boundary = "in-process";
+    };
+    churn = {
+      commits = null;
+      method = "unscored";
+      ranking_factor = false;
+      paths = locPaths;
+    };
+    entrypoints = locPaths;
+  };
   # Evaluated only when the workspace sources exist. A config-only flake
   # leaves `contract` null instead of failing closed on a missing Cargo tree.
   discovered =
@@ -164,17 +228,17 @@ let
       assert (
         lib.length (
           lib.unique (
-            map (name: (import (targetRoot + "/${name}/score.nix")).ilo_priority) directoryNames
+            map (name: (import (targetRoot + "/${name}/score.nix")).start_order) directoryNames
           )
         ) == lib.length directoryNames
-      ) || abort "fuzz ilo_priority values must be unique across harness directories";
+      ) || abort "fuzz start_order values must be unique across harness directories";
       directoryNames;
   metadata =
     if discovered == null then
       null
     else
       {
-        schema = "backend.continuous-fuzz.v1";
+        schema = "nudox.continuous-fuzz.v1";
         attrs = {
           contract = "packages.\${system}.continuous-fuzz";
           bins = "packages.\${system}.continuous-fuzz.bins.<id>";
@@ -183,56 +247,79 @@ let
           metadata = "packages.\${system}.continuous-fuzz.metadata";
           short = ".#continuous-fuzz";
           optional_alias = "packages.\${system}.fuzz-<id>";
-          fuzz_packages = [
-            ".#fuzz-pack-decode"
-            ".#fuzz-journal-codec"
-            ".#fuzz-native-protocol"
-            ".#fuzz-store-raw-property"
-            ".#fuzz-wire-workspace"
-            ".#fuzz-wire-replication"
-            ".#fuzz-flow-evaluator"
-          ];
-          corpus_mount = "/durable/fuzz/<id>/corpus";
-          committed_corpus = "tests/fuzz/targets/<id>/corpus";
-          systems = [
-            "aarch64-darwin"
-            "aarch64-linux"
-            "x86_64-linux"
-          ];
         };
+        kinds = [
+          "fuzz"
+          "property"
+        ];
+        # Adapter catalog. linked is this repo. Auth copies the same records
+        # and sets go-native.linked = true with adapter = "testing.F".
+        engine_catalog = [
+          {
+            id = "libfuzzer";
+            family = "coverage-guided";
+            linked = true;
+            adapter = "bolero";
+          }
+          {
+            id = "aflpp";
+            family = "coverage-guided";
+            linked = false;
+            adapter = null;
+          }
+          {
+            id = "honggfuzz";
+            family = "coverage-guided";
+            linked = false;
+            adapter = null;
+          }
+          {
+            id = "go-native";
+            family = "coverage-guided";
+            linked = false;
+            adapter = null;
+          }
+          {
+            id = "property";
+            family = "bounded";
+            linked = true;
+            adapter = "proptest";
+          }
+        ];
         formula = "complexity.score * gap.score * blast.score";
         scales = {
-          complexity = "loc + error_variants + discriminants. method=measured counts wc -l and enum variants. Not premultiplied by gap or blast.";
-          gap = "Ordinal classification, not a coverage percentage. 0 = raw bytes already have bolero or an exhaustive scan. 2 = fixed hostile examples only. 3 = decoder is not callable outside its crate. 1 is unused. llvm_cov_percent stays null until it is measured.";
+          complexity = "loc + error_variants + discriminants. method=measured counts source lines and enum variants. Not premultiplied by gap or blast.";
+          gap = "Ordinal classification, not a coverage percentage. 0 = raw bytes already have an in-process engine or an exhaustive scan. 2 = fixed hostile examples only. 3 = decoder is not callable outside its package. 1 is unused. llvm_cov_percent stays null until it is measured.";
           blast = "Trust boundary. 5 = untrusted remote or durable bytes. 4 = session frame from a peer. 3 = local process facade.";
-          churn = "Measured git log --oneline counts. ranking_factor is false. Do not multiply churn into the rank; history includes an import and commit counts are not comparable.";
-          ilo_priority = "Ascending systemd start order for packages.\${system}.fuzz-<id>. Independent of rank. Rank 0 with schedule true still runs; gap 0 makes the product zero.";
+          churn = "Measured commit counts. ranking_factor is false. Do not multiply churn into the rank.";
+          start_order = "Ascending start sequence for scheduled fuzz targets. Independent of rank. Rank 0 with schedule true still runs; gap 0 makes the product zero. Property rows leave it null.";
         };
-        ilo = {
-          packages = "nix build .#fuzz-<id>. The derivation is the supervised runner.";
-          order = "Start fuzz-<id> by metadata.targets[].ilo_priority ascending. Do not sort the units by rank.";
-          mount = "Create /durable/fuzz/<id>/corpus and pass it as argv[1]. The wrapper also passes corpora.<id> as a read-only second corpus. New coverage is written only to the mount.";
-          engine = "bolero-libfuzzer. Ziggy should select its libFuzzer engine, or exec the script with the corpus mount. AFL++ forkserver and honggfuzz persistent mode are not linked into this binary.";
-        };
-        ember = {
-          warm_vault = "On first start, copy corpora.<id> into metadata.targets[].durable_corpus (/durable/fuzz/<id>/corpus). That directory is the incremental corpus. It must survive process restarts and replacement of the nix store paths.";
-          diff_wake = "Rank metadata.targets by rank, which is complexity.score * gap.score * blast.score. Recompute it; do not trust list order. Skip every row whose rank is null or whose schedule is false. Do not multiply by churn. ilo_priority is not an input.";
-          fabric = "Build packages.\${system}.fuzz-<id> or .#continuous-fuzz. Do not add these packages to nix flake check. The rust build is one shared engine; corpora.<id> does not depend on it.";
-          triage_plane = "Alert when bins.<id> exits non-zero and the artifacts/ directory beside the durable corpus contains a file. Wrapper exit 2, an empty artifacts directory, and a missing BOLERO_LIBFUZZER_ARGS are supervision failures.";
-          nudox_fuzz = "nix build .#fuzz-<id> && ./result/bin/fuzz-<id> /durable/fuzz/<id>/corpus";
-        };
-        reentry = {
-          add_target = "Add tests/fuzz/targets/<id>/{oracle.rs,max_len,dictionary.txt,score.nix,corpus/{canonical,empty,bad_magic}}. Do not add a Cargo bin and do not edit default.nix. build.rs and this module discover the directory. Add a line to tests/fuzz/instrumented only when a new decoder crate joins the link closure.";
-          resume = "Replace the store path of bins.<id> and pass the same /durable/fuzz/<id>/corpus. LibFuzzer loads that directory first and writes new coverage only there. corpora.<id> is passed second, read-only, so committed seeds survive an empty durable dir.";
-          seeds_vs_corpus = "corpora.<id> is the committed seed derivation. The durable directory is the corpus that grows. Code changes do not rebuild corpora.<id> unless the seed files change.";
-          laws = "tests/laws/proptest-regressions/lib.txt stores proptest RNG fingerprints, not wire bytes. If a shrink comment contains bytes, copy the minimized buffer into targets/<id>/corpus/<flat-name> and re-run cargo test -p backend-fuzz. Do not name the file after the fingerprint.";
-        };
-        ci = {
-          command = "cargo test -p backend-fuzz";
-          engine_hint = "bolero-test";
-          iterations = 16;
-          test_time_ms = 150;
-          note = "Do not export --cfg fuzzing, --cfg fuzzing_libfuzzer, or BOLERO_RANDOM_* into this command. The bounded run is a smoke cap. Acceptance is the committed canonical seed.";
+        target_fields = [
+          "id"
+          "kind"
+          "name"
+          "engine"
+          "bin"
+          "corpus"
+          "committed_corpus"
+          "durable_corpus"
+          "dictionary"
+          "max_input_bytes"
+          "schedule"
+          "rank"
+          "start_order"
+          "complexity"
+          "gap"
+          "blast"
+          "churn"
+          "entrypoints"
+          "reason"
+        ];
+        consumers = {
+          rank = "Recompute complexity.score * gap.score * blast.score. Skip rank null and schedule false. Do not multiply by churn. start_order is not an input. Do not trust list order.";
+          corpus = "For kind=fuzz, durable_corpus is the writable mount and argv[1] of bins.<id>. corpora.<id> is the committed seed derivation, passed read-only. New coverage is written only to the mount. Property rows have no corpus.";
+          engines = "engines.<id>.adapter is the plug record (id, family, linked, adapter). This repo links libfuzzer. aflpp, honggfuzz, and go-native stay linked false. Do not point an unlinked engine at bins.<id>.";
+          aliases = "packages.\${system}.fuzz-<id> aliases bins.<id>. The contract package is continuous-fuzz. Do not add either to nix flake check.";
         };
         supervision = {
           per_input_timeout_seconds = 10;
@@ -240,20 +327,25 @@ let
           refuse = [ "-max_total_time" ];
           artifact_directory = "sibling artifacts/ of the durable corpus, never inside it";
         };
-        laws_regressions = "tests/laws/proptest-regressions/lib.txt";
-        linked_crates = [
-          "tests/fuzz"
-          "crates/engine"
-          "crates/compile"
-          "crates/semantic"
-          "crates/flow"
-          "crates/replication"
-          "crates/store"
-          "crates/version"
-          "crates/platform"
-        ];
-        throughput_note = "exec/s and time-to-useful-coverage are not flake attributes. Nix does not measure them. Confirmed campaign numbers live in docs/operations/continuous-fuzzing.md and the pull request.";
-        targets = map targetMeta discovered;
+        throughput_note = "exec/s and time-to-useful-coverage are not flake attributes. Confirmed campaign numbers live in docs/operations/continuous-fuzzing.md.";
+        targets =
+          map targetMeta discovered
+          ++ [
+            (propertyTarget (
+              {
+                id = "laws";
+                name = "structured laws";
+              }
+              // (unscored [ "tests/laws" ])
+            ))
+            (propertyTarget (
+              {
+                id = "store-frame";
+                name = "store frame property";
+              }
+              // (unscored [ "crates/store/src/view/validate/raw_property.rs" ])
+            ))
+          ];
         backlog = [
           (closed {
             id = "session-frame";
@@ -485,18 +577,35 @@ let
       null
     else
       lib.listToAttrs (
-        map (name: {
-          inherit name;
-          value = pkgs.writeShellScriptBin "fuzz-engine-${name}" ''
-            set -eu
-            if [ -z "''${BOLERO_LIBFUZZER_ARGS:-}" ]; then
-              echo "BOLERO_LIBFUZZER_ARGS is unset. Supervised runs use fuzz-${name}, which sets the durable corpus and the caps." >&2
-              exit 2
-            fi
-            export FUZZ_TARGET=${name}
-            exec ${engineBinary}/libexec/fuzz-target
-          '';
-        }) discovered
+        map (
+          name:
+          let
+            script = pkgs.writeShellScript "fuzz-engine-${name}.sh" ''
+              set -eu
+              if [ -z "''${BOLERO_LIBFUZZER_ARGS:-}" ]; then
+                echo "engine adapter env is unset. Supervised runs use bins.${name}, which sets the durable corpus and the caps." >&2
+                exit 2
+              fi
+              export FUZZ_TARGET=${name}
+              exec ${engineBinary}/libexec/fuzz-target
+            '';
+          in
+          {
+            inherit name;
+            value = pkgs.runCommand "fuzz-engine-${name}" {
+              passthru.adapter = {
+                id = "libfuzzer";
+                family = "coverage-guided";
+                linked = true;
+                adapter = "bolero";
+              };
+            } ''
+              mkdir -p "$out/bin"
+              cp ${script} "$out/bin/fuzz-engine-${name}"
+              chmod +x "$out/bin/fuzz-engine-${name}"
+            '';
+          }
+        ) discovered
       );
   bins =
     if discovered == null then

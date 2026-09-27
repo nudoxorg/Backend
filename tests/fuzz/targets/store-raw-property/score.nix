@@ -3,7 +3,7 @@
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {
   name = "store raw property";
-  ilo_priority = 4;
+  start_order = 4;
   complexity = {
     score = 934;
     loc = 908;
@@ -19,7 +19,7 @@
       "crates/store/src/view/validate/directory/record.rs"
       "crates/store/src/view/validate/directory/span.rs"
     ];
-    loc_note = "wc -l of the production validator. cfg(test) raw_property and tests.rs are excluded. Those files already contain bolero and the exhaustive u8 scan.";
+    loc_note = "wc -l of the production validator. The cfg(test) property module and tests.rs are excluded. Those files already contain an in-process engine and the exhaustive u8 scan.";
     error_enums = [
       "crates/store/src/view/validate/error.rs ValidateError"
       "crates/store/src/view/validate/error.rs DescriptorError"
@@ -29,7 +29,7 @@
   gap = {
     score = 0;
     method = "classified";
-    label = "bolero-already";
+    label = "in-process-engine";
     llvm_cov_percent = null;
   };
   blast = {

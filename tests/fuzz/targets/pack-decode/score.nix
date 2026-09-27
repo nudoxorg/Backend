@@ -3,7 +3,7 @@
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {
   name = "index pack decode";
-  ilo_priority = 1;
+  start_order = 1;
   complexity = {
     score = 2775;
     loc = 2737;
