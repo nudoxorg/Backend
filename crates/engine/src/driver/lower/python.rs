@@ -2905,8 +2905,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-    /// Resolves one receiver through live module-constant annotations when
-    /// binding scopes show the name is not a function-local assignment.
+    /// Resolves one receiver through enclosing function-local `AnnAssign`
+    /// annotations and live module-constant annotations. A local binding with
+    /// an annotation binds that annotation; a local binding without one stays
+    /// foreign.
     fn module_annotation_name(
         &self,
         function: &DeclarationFact,
@@ -2932,7 +2934,28 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 return self.module_constant_annotation(receiver);
             }
             if scope.locals.iter().any(|name| name == receiver) {
-                return LocalBinding::Foreign;
+                let scope_function = self
+                    .module
+                    .declarations
+                    .iter()
+                    .enumerate()
+                    .find(|(index, declaration)| {
+                        declaration.kind == DeclarationKind::Function
+                            && self.live[*index]
+                            && declaration.span == scope.span
+                    })
+                    .map(|(_, declaration)| declaration);
+                return match scope_function {
+                    Some(scope_function) => match self.local_binding_name(
+                        scope_function,
+                        receiver,
+                        occurrence,
+                    ) {
+                        LocalBinding::Unique(name) => LocalBinding::Unique(name),
+                        LocalBinding::Absent | LocalBinding::Foreign => LocalBinding::Foreign,
+                    },
+                    None => LocalBinding::Foreign,
+                };
             }
         }
         self.module_constant_annotation(receiver)
