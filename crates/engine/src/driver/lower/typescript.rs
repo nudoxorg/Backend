@@ -5088,7 +5088,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             } else {
                 match self.namespace_property_target(object_span, property_span, kind)? {
                     Some(pair) => pair,
-                    None => self.syntactic_property_target(property_span)?,
+                    None => match self.class_qualified_property_target(
+                        object_span,
+                        property_span,
+                        kind,
+                    )? {
+                        Some(pair) => pair,
+                        None => self.syntactic_property_target(property_span)?,
+                    },
                 }
             };
             self.commit_occurrence(owner, property_span, kind, target, confidence)?;
@@ -5135,7 +5142,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             } else {
                 match self.namespace_property_target(object_span, property_span, kind)? {
                     Some(pair) => pair,
-                    None => self.syntactic_property_target(property_span)?,
+                    None => match self.class_qualified_property_target(
+                        object_span,
+                        property_span,
+                        kind,
+                    )? {
+                        Some(pair) => pair,
+                        None => self.syntactic_property_target(property_span)?,
+                    },
                 }
             };
             self.commit_occurrence(owner, property_span, kind, target, confidence)?;
@@ -5502,6 +5516,100 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 }
             }
             _ => ClassMemberMatch::Absent,
+        }
+    }
+
+    /// Resolves one `Class.member` site when the receiver peels to a
+    /// file-unique class identifier. Returns `None` when the receiver is not
+    /// a class or no unique member binds.
+    fn class_qualified_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(identifier_span) =
+            self.peel_object_identifier_span(object_span.start, object_span.end)
+        else {
+            return Ok(None);
+        };
+        let class_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
+            start: identifier_span.start,
+            end: identifier_span.end,
+        })?;
+        let Some(record) = self.unique_file_record(class_name) else {
+            return Ok(None);
+        };
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match kind {
+            ReferenceKind::FunctionCall => {
+                match self.class_member_of_owner(record, property_name, EntityKind::Function) {
+                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    ClassMemberMatch::Ambiguous => Ok(None),
+                    ClassMemberMatch::Absent => {
+                        match self.inherited_class_member(record, property_name, EntityKind::Function)
+                        {
+                            ClassMemberMatch::Unique(fact) => Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            ))),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => Ok(None),
+                        }
+                    }
+                }
+            }
+            ReferenceKind::FieldAccess => {
+                match self.class_member_of_owner(record, property_name, EntityKind::Field) {
+                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    ClassMemberMatch::Ambiguous => Ok(None),
+                    ClassMemberMatch::Absent => {
+                        match self.inherited_class_member(record, property_name, EntityKind::Field) {
+                            ClassMemberMatch::Unique(fact) => Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            ))),
+                            ClassMemberMatch::Ambiguous => Ok(None),
+                            ClassMemberMatch::Absent => {
+                                match self.class_member_of_owner(
+                                    record,
+                                    property_name,
+                                    EntityKind::Function,
+                                ) {
+                                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                                        OccurrenceTarget::Local(EntityId::new(fact)),
+                                        OccurrenceConfidence::Index,
+                                    ))),
+                                    ClassMemberMatch::Ambiguous => Ok(None),
+                                    ClassMemberMatch::Absent => match self.inherited_class_member(
+                                        record,
+                                        property_name,
+                                        EntityKind::Function,
+                                    ) {
+                                        ClassMemberMatch::Unique(fact) => Ok(Some((
+                                            OccurrenceTarget::Local(EntityId::new(fact)),
+                                            OccurrenceConfidence::Index,
+                                        ))),
+                                        ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                            Ok(None)
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => Ok(None),
         }
     }
 
