@@ -2732,9 +2732,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 OccurrenceTarget::Local(EntityId::new(ordinal)),
                                 local_confidence(),
                             ))),
-                            InheritedMemberStatus::Ambiguous | InheritedMemberStatus::Absent => {
-                                foreign().map(Some)
-                            }
+                            // Two inherited methods stay a universe key. No
+                            // member at all falls through so a unique module
+                            // field can still bind.
+                            InheritedMemberStatus::Ambiguous => foreign().map(Some),
+                            InheritedMemberStatus::Absent => Ok(None),
                         }
                     }
                 }

@@ -313,10 +313,9 @@ fn set_note_in_owner<'a>(
     occurrences: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
     owner: u32,
 ) -> Option<&'a backend_semantic::ir::DecodedOccurrence<'a>> {
-    occurrences.iter().find(|row| {
-        row.owner.raw == owner
-            && row.occurrence.kind == ReferenceKind::MethodCall
-    })
+    occurrences
+        .iter()
+        .find(|row| row.owner.raw == owner && row.occurrence.kind == ReferenceKind::MethodCall)
 }
 
 #[test]
@@ -453,8 +452,7 @@ def paired(service: Pair):
 
     let ambiguous_fragment =
         compile_python_fragment(AMBIGUOUS_SOURCE, &work, &toolchain, &cancelled)?;
-    let ambiguous =
-        FragmentView::validate(&ambiguous_fragment).map_err(|_| TestError::Validate)?;
+    let ambiguous = FragmentView::validate(&ambiguous_fragment).map_err(|_| TestError::Validate)?;
     let mut ambiguous_occurrences: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
     if let Some(mut cursor) = ambiguous.occurrences() {
         for row in cursor.by_ref() {
@@ -487,8 +485,7 @@ def paired(service: Pair):
         ));
     }
 
-    let paired_fragment =
-        compile_python_fragment(PAIRED_SOURCE, &work, &toolchain, &cancelled)?;
+    let paired_fragment = compile_python_fragment(PAIRED_SOURCE, &work, &toolchain, &cancelled)?;
     let paired = FragmentView::validate(&paired_fragment).map_err(|_| TestError::Validate)?;
     let mut paired_occurrences: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
     if let Some(mut cursor) = paired.occurrences() {
@@ -643,7 +640,9 @@ fn method_ordinal_in_class(
         }
     }
     if class_method_indexes.len() != 1 {
-        return Err(TestError::Falsified("method declaration in class not unique"));
+        return Err(TestError::Falsified(
+            "method declaration in class not unique",
+        ));
     }
     let mut prior_methods = 0_usize;
     for (index, declaration) in module.declarations.iter().enumerate() {
@@ -691,9 +690,7 @@ fn exactly_one_method_call_in_owner<'a>(
 ) -> Result<&'a backend_semantic::ir::DecodedOccurrence<'a>, TestError> {
     let calls: Vec<_> = rows
         .iter()
-        .filter(|row| {
-            row.owner.raw == owner && row.occurrence.kind == ReferenceKind::MethodCall
-        })
+        .filter(|row| row.owner.raw == owner && row.occurrence.kind == ReferenceKind::MethodCall)
         .collect();
     if calls.len() != 1 {
         return Err(TestError::Falsified(
@@ -830,7 +827,9 @@ def use(child: Child):
     let child_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     if child_note == base_note {
-        return Err(TestError::Falsified("Child.note and Base.note are one fact"));
+        return Err(TestError::Falsified(
+            "Child.note and Base.note are one fact",
+        ));
     }
     let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
     assert_local_method_call(call, child_note, OccurrenceConfidence::Index)
@@ -861,7 +860,9 @@ def use(child: Child):
     let left_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
     let right_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
     if left_note == right_note {
-        return Err(TestError::Falsified("Left.note and Right.note are one fact"));
+        return Err(TestError::Falsified(
+            "Left.note and Right.note are one fact",
+        ));
     }
     let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
     assert_universe_method_call(call, b"note")
@@ -966,14 +967,18 @@ def use(child: Child):
     let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
     let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     if methods_in_class(&module, b"Child", b"note")? != 2 {
-        return Err(TestError::Falsified("Child does not declare two note methods"));
+        return Err(TestError::Falsified(
+            "Child does not declare two note methods",
+        ));
     }
     let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
     if matches!(
         &call.occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note.raw
     ) {
-        return Err(TestError::Falsified("ambiguous Child.note walked to Base.note"));
+        return Err(TestError::Falsified(
+            "ambiguous Child.note walked to Base.note",
+        ));
     }
     assert_universe_method_call(call, b"note")
 }
@@ -1030,15 +1035,23 @@ fn field_access_in_owner<'a>(
         .filter(|row| row.owner.raw == owner && row.occurrence.kind == ReferenceKind::FieldAccess)
         .collect();
     if matches.len() != 1 {
-        return Err(TestError::Falsified("expected exactly one FieldAccess in owner"));
+        return Err(TestError::Falsified(
+            "expected exactly one FieldAccess in owner",
+        ));
     }
     Ok(matches[0])
 }
 
 fn decode_occurrences(
     fragment: &[u8],
-) -> Result<(FragmentView<'_>, Vec<&[u8]>, Vec<backend_semantic::ir::DecodedOccurrence<'_>>), TestError>
-{
+) -> Result<
+    (
+        FragmentView<'_>,
+        Vec<&[u8]>,
+        Vec<backend_semantic::ir::DecodedOccurrence<'_>>,
+    ),
+    TestError,
+> {
     let decoded = FragmentView::validate(fragment).map_err(|_| TestError::Validate)?;
     let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
     let mut occurrences: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
@@ -1205,7 +1218,12 @@ def mixed(service: Both):
         entity_ordinal_by_name(&decoded, &atoms, b"set_note", EntityKind::Function)?;
 
     let sync_read = field_access_in_owner(&occurrences, sync_owner)?;
-    assert_foreign_package_field(&sync_read.occurrence.target, "workout.service", "set_note", "workout")?;
+    assert_foreign_package_field(
+        &sync_read.occurrence.target,
+        "workout.service",
+        "set_note",
+        "workout",
+    )?;
 
     let local_read = field_access_in_owner(&occurrences, local_owner)?;
     match &local_read.occurrence.target {
@@ -1220,7 +1238,8 @@ def mixed(service: Both):
     let (field_decoded, field_atoms, field_occurrences) = decode_occurrences(&field_fragment)?;
     let read_owner =
         entity_ordinal_by_name(&field_decoded, &field_atoms, b"read", EntityKind::Function)?;
-    let note_field = entity_ordinal_by_name(&field_decoded, &field_atoms, b"note", EntityKind::Field)?;
+    let note_field =
+        entity_ordinal_by_name(&field_decoded, &field_atoms, b"note", EntityKind::Field)?;
     let field_read = field_access_in_owner(&field_occurrences, read_owner)?;
     match &field_read.occurrence.target {
         OccurrenceTarget::Local(target) if target.raw == note_field => {}
@@ -1231,8 +1250,12 @@ def mixed(service: Both):
         compile_python_fragment(AMBIGUOUS_SOURCE, &work, &toolchain, &cancelled)?;
     let (ambiguous_decoded, ambiguous_atoms, ambiguous_occurrences) =
         decode_occurrences(&ambiguous_fragment)?;
-    let ambiguous_sync =
-        entity_ordinal_by_name(&ambiguous_decoded, &ambiguous_atoms, b"sync", EntityKind::Function)?;
+    let ambiguous_sync = entity_ordinal_by_name(
+        &ambiguous_decoded,
+        &ambiguous_atoms,
+        b"sync",
+        EntityKind::Function,
+    )?;
     let ambiguous_read = field_access_in_owner(&ambiguous_occurrences, ambiguous_sync)?;
     assert_foreign_package_field(
         &ambiguous_read.occurrence.target,
@@ -1242,19 +1265,26 @@ def mixed(service: Both):
     )?;
     match &ambiguous_read.occurrence.target {
         OccurrenceTarget::Foreign(key) if key.path == "other.place" => {
-            return Err(TestError::Falsified("ambiguous import resolved through other.place"));
+            return Err(TestError::Falsified(
+                "ambiguous import resolved through other.place",
+            ));
         }
         _ => {}
     }
 
-    let paired_fragment =
-        compile_python_fragment(PAIRED_SOURCE, &work, &toolchain, &cancelled)?;
+    let paired_fragment = compile_python_fragment(PAIRED_SOURCE, &work, &toolchain, &cancelled)?;
     let (paired_decoded, paired_atoms, paired_occurrences) = decode_occurrences(&paired_fragment)?;
-    let paired_owner =
-        entity_ordinal_by_name(&paired_decoded, &paired_atoms, b"paired", EntityKind::Function)?;
+    let paired_owner = entity_ordinal_by_name(
+        &paired_decoded,
+        &paired_atoms,
+        b"paired",
+        EntityKind::Function,
+    )?;
     let paired_read = field_access_in_owner(&paired_occurrences, paired_owner)?;
     if matches!(&paired_read.occurrence.target, OccurrenceTarget::Local(_)) {
-        return Err(TestError::Falsified("paired attribute read must not be local"));
+        return Err(TestError::Falsified(
+            "paired attribute read must not be local",
+        ));
     }
     assert_universe_field(&paired_read.occurrence.target, "set_note", "set_note")?;
 
@@ -1262,11 +1292,17 @@ def mixed(service: Both):
     let (mixed_decoded, mixed_atoms, mixed_occurrences) = decode_occurrences(&mixed_fragment)?;
     let mixed_owner =
         entity_ordinal_by_name(&mixed_decoded, &mixed_atoms, b"mixed", EntityKind::Function)?;
+    let mixed_field =
+        entity_ordinal_by_name(&mixed_decoded, &mixed_atoms, b"note", EntityKind::Field)?;
     let mixed_read = field_access_in_owner(&mixed_occurrences, mixed_owner)?;
-    if matches!(&mixed_read.occurrence.target, OccurrenceTarget::Local(_)) {
-        return Err(TestError::Falsified("mixed attribute read must not be local"));
+    match &mixed_read.occurrence.target {
+        OccurrenceTarget::Local(target) if target.raw == mixed_field => {}
+        _ => {
+            return Err(TestError::Falsified(
+                "mixed attribute read resolves to the field",
+            ));
+        }
     }
-    assert_universe_field(&mixed_read.occurrence.target, "note", "note")?;
 
     fs::remove_dir_all(&work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -1291,7 +1327,9 @@ fn field_ordinal_in_class(
         }
     }
     if class_field_indexes.len() != 1 {
-        return Err(TestError::Falsified("field declaration in class not unique"));
+        return Err(TestError::Falsified(
+            "field declaration in class not unique",
+        ));
     }
     let mut prior_fields = 0_usize;
     for (index, declaration) in module.declarations.iter().enumerate() {
@@ -1327,7 +1365,9 @@ fn assert_local_field_access(
         return Err(TestError::Falsified("attribute read is not FieldAccess"));
     }
     if read.occurrence.confidence != OccurrenceConfidence::Index {
-        return Err(TestError::Falsified("local FieldAccess confidence is not Index"));
+        return Err(TestError::Falsified(
+            "local FieldAccess confidence is not Index",
+        ));
     }
     if !matches!(
         &read.occurrence.target,
@@ -1348,7 +1388,9 @@ fn assert_universe_field_access(
         return Err(TestError::Falsified("attribute read is not FieldAccess"));
     }
     if read.occurrence.confidence != OccurrenceConfidence::Index {
-        return Err(TestError::Falsified("universe FieldAccess confidence is not Index"));
+        return Err(TestError::Falsified(
+            "universe FieldAccess confidence is not Index",
+        ));
     }
     assert_universe_field(&read.occurrence.target, spelling, spelling)?;
     Ok(())
@@ -1414,7 +1456,9 @@ def read(item: Child):
     }
     let read = field_access_in_owner(&occurrences, read_owner)?;
     if read.occurrence.kind == ReferenceKind::MethodCall {
-        return Err(TestError::Falsified("attribute read must not be MethodCall"));
+        return Err(TestError::Falsified(
+            "attribute read must not be MethodCall",
+        ));
     }
     assert_local_field_access(read, base_note)?;
     Ok(())
@@ -1446,7 +1490,8 @@ def read(item: Child):
 }
 
 #[test]
-fn annotated_inherited_attribute_read_prefers_child_field_over_base_method() -> Result<(), TestError> {
+fn annotated_inherited_attribute_read_prefers_child_field_over_base_method() -> Result<(), TestError>
+{
     const SOURCE: &[u8] = b"\
 class Other:
     note = 9
@@ -1464,7 +1509,9 @@ def read(item: Child):
     let child_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
     let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     if child_note == base_note {
-        return Err(TestError::Falsified("Child field and Base method must differ"));
+        return Err(TestError::Falsified(
+            "Child field and Base method must differ",
+        ));
     }
     let read = field_access_in_owner(&occurrences, read_owner)?;
     assert_local_field_access(read, child_note)?;
@@ -1472,7 +1519,8 @@ def read(item: Child):
 }
 
 #[test]
-fn annotated_inherited_attribute_read_stays_universe_for_ambiguous_local_members() -> Result<(), TestError> {
+fn annotated_inherited_attribute_read_prefers_child_field_over_local_method()
+-> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Other:
     note = 9
@@ -1497,12 +1545,13 @@ def read(item: Child):
         ));
     }
     let read = field_access_in_owner(&occurrences, read_owner)?;
-    assert_universe_field_access(read, "note")?;
+    assert_local_field_access(read, EntityId::new(child_field))?;
     Ok(())
 }
 
 #[test]
-fn annotated_inherited_attribute_read_stays_universe_for_ambiguous_bases() -> Result<(), TestError> {
+fn annotated_inherited_attribute_read_stays_universe_for_ambiguous_bases() -> Result<(), TestError>
+{
     const SOURCE: &[u8] = b"\
 class Other:
     note = 9
@@ -1529,7 +1578,8 @@ def read(item: Child):
 }
 
 #[test]
-fn annotated_inherited_attribute_read_stays_universe_for_field_method_across_bases() -> Result<(), TestError> {
+fn annotated_inherited_attribute_read_prefers_inherited_field_over_base_method()
+-> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Other:
     note = 9
@@ -1549,16 +1599,18 @@ def read(item: Child):
     let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
     let right_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
     if left_note == right_note {
-        return Err(TestError::Falsified("Left field and Right method must differ"));
+        return Err(TestError::Falsified(
+            "Left field and Right method must differ",
+        ));
     }
     let read = field_access_in_owner(&occurrences, read_owner)?;
-    assert_universe_field_access(read, "note")?;
+    assert_local_field_access(read, EntityId::new(left_note))?;
     Ok(())
 }
 
 #[test]
-fn annotated_inherited_attribute_read_stays_universe_when_base_has_field_and_method(
-) -> Result<(), TestError> {
+fn annotated_inherited_attribute_read_prefers_base_field_over_base_method() -> Result<(), TestError>
+{
     const SOURCE: &[u8] = b"\
 class Base:
     note = 1
@@ -1575,16 +1627,18 @@ def read(item: Child):
     let base_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     let base_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
     if base_field == base_method {
-        return Err(TestError::Falsified("Base field and Base method must differ"));
+        return Err(TestError::Falsified(
+            "Base field and Base method must differ",
+        ));
     }
     let read = field_access_in_owner(&occurrences, read_owner)?;
-    assert_universe_field_access(read, "note")?;
+    assert_local_field_access(read, EntityId::new(base_field))?;
     Ok(())
 }
 
 #[test]
-fn annotated_inherited_attribute_read_keeps_unique_module_field_when_bases_declare_none(
-) -> Result<(), TestError> {
+fn annotated_inherited_attribute_read_keeps_unique_module_field_when_bases_declare_none()
+-> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 class Other:
     note = 1
@@ -1672,7 +1726,8 @@ def read(item: Child):
 }
 
 #[test]
-fn annotated_inherited_attribute_read_stays_universe_for_imported_only_base() -> Result<(), TestError> {
+fn annotated_inherited_attribute_read_stays_universe_for_imported_only_base()
+-> Result<(), TestError> {
     const SOURCE: &[u8] = b"\
 from workout.service import WorkoutService
 class Child(WorkoutService):
@@ -1900,7 +1955,9 @@ class Child(Base):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified("self.note must not resolve to Decoy.note"));
+        return Err(TestError::Falsified(
+            "self.note must not resolve to Decoy.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2032,7 +2089,9 @@ class Child(Left, Right):
             OccurrenceTarget::Local(target) if target.raw == right_note
         )
     {
-        return Err(TestError::Falsified("self.note must not bind either base note"));
+        return Err(TestError::Falsified(
+            "self.note must not bind either base note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2189,7 +2248,9 @@ class Child(mod.Base):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified("qualified base must not bind local Base.note"));
+        return Err(TestError::Falsified(
+            "qualified base must not bind local Base.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2222,7 +2283,9 @@ class Child(\"Base\"):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified("quoted base must not bind local Base.note"));
+        return Err(TestError::Falsified(
+            "quoted base must not bind local Base.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2326,7 +2389,11 @@ class Child(A7):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(calls[0], base_note, "eighth base link resolves to Base.note")?;
+    assert_local_index(
+        calls[0],
+        base_note,
+        "eighth base link resolves to Base.note",
+    )?;
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
@@ -2382,7 +2449,9 @@ class Child(A8):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified("ninth base link must not bind Base.note"));
+        return Err(TestError::Falsified(
+            "ninth base link must not bind Base.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2471,7 +2540,9 @@ def read(obj):
         &calls[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified("plain receiver must not bind Base.note"));
+        return Err(TestError::Falsified(
+            "plain receiver must not bind Base.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2512,7 +2583,9 @@ class Child:
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified("self.note must not resolve to Decoy.note"));
+        return Err(TestError::Falsified(
+            "self.note must not resolve to Decoy.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2554,7 +2627,9 @@ class Child(Base):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified("self.note must not resolve to Decoy.note"));
+        return Err(TestError::Falsified(
+            "self.note must not resolve to Decoy.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2595,7 +2670,9 @@ class Child(Base):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified("self.note must not resolve to Base.note"));
+        return Err(TestError::Falsified(
+            "self.note must not resolve to Base.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2629,12 +2706,18 @@ class Child:
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(reads[0], note_field, "self.note resolves to Child.note field")?;
+    assert_local_index(
+        reads[0],
+        note_field,
+        "self.note resolves to Child.note field",
+    )?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_method
     ) {
-        return Err(TestError::Falsified("self.note must not resolve to Child.note method"));
+        return Err(TestError::Falsified(
+            "self.note must not resolve to Child.note method",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2779,7 +2862,9 @@ def read(obj):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified("plain receiver must not bind Child.note"));
+        return Err(TestError::Falsified(
+            "plain receiver must not bind Child.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2821,7 +2906,9 @@ class Child(Mid):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified("self.note must not resolve to Base.note"));
+        return Err(TestError::Falsified(
+            "self.note must not resolve to Base.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2862,7 +2949,9 @@ def read(service: Child):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_note
     ) {
-        return Err(TestError::Falsified("service.note must not resolve to Decoy.note"));
+        return Err(TestError::Falsified(
+            "service.note must not resolve to Decoy.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2929,12 +3018,18 @@ def read(service: Child):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(reads[0], child_score, "service.score resolves to Child.score")?;
+    assert_local_index(
+        reads[0],
+        child_score,
+        "service.score resolves to Child.score",
+    )?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == decoy_score
     ) {
-        return Err(TestError::Falsified("service.score must not resolve to Decoy.score"));
+        return Err(TestError::Falsified(
+            "service.score must not resolve to Decoy.score",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -2975,7 +3070,9 @@ def read(service: Child):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == base_note
     ) {
-        return Err(TestError::Falsified("service.note must not resolve to Base.note"));
+        return Err(TestError::Falsified(
+            "service.note must not resolve to Base.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3009,12 +3106,18 @@ def read(service: Child):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_local_index(reads[0], note_field, "service.note resolves to Child.note field")?;
+    assert_local_index(
+        reads[0],
+        note_field,
+        "service.note resolves to Child.note field",
+    )?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == note_method
     ) {
-        return Err(TestError::Falsified("service.note must not resolve to Child.note method"));
+        return Err(TestError::Falsified(
+            "service.note must not resolve to Child.note method",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3055,7 +3158,9 @@ def read(service: Child):
     }
     assert_inherited_universe_field(reads[0], "service.note stays a pypi universe field key")?;
     if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
-        return Err(TestError::Falsified("service.note universe field confidence is Index"));
+        return Err(TestError::Falsified(
+            "service.note universe field confidence is Index",
+        ));
     }
     if matches!(
         &reads[0].occurrence.target,
@@ -3067,7 +3172,9 @@ def read(service: Child):
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == right_note
     ) {
-        return Err(TestError::Falsified("service.note must not bind Right.note"));
+        return Err(TestError::Falsified(
+            "service.note must not bind Right.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3100,13 +3207,17 @@ def read(obj):
     }
     assert_inherited_universe_field(reads[0], "plain receiver stays a universe field key")?;
     if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
-        return Err(TestError::Falsified("plain receiver universe field confidence is Index"));
+        return Err(TestError::Falsified(
+            "plain receiver universe field confidence is Index",
+        ));
     }
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
     ) {
-        return Err(TestError::Falsified("plain receiver must not bind Child.note"));
+        return Err(TestError::Falsified(
+            "plain receiver must not bind Child.note",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
@@ -3133,7 +3244,11 @@ def read(service: Child):
     if calls.len() != 1 {
         return Err(TestError::Falsified("read owns one MethodCall"));
     }
-    assert_local_index(calls[0], child_note, "service.note() resolves to Child.note")?;
+    assert_local_index(
+        calls[0],
+        child_note,
+        "service.note() resolves to Child.note",
+    )?;
     let reads = read_field_accesses(&view, read_owner)?;
     if !reads.is_empty() {
         return Err(TestError::Falsified("read owns zero FieldAccess rows"));
@@ -3180,10 +3295,14 @@ def read(service: WorkoutService):
         ));
     }
     if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
-        return Err(TestError::Falsified("service.score package field confidence is Index"));
+        return Err(TestError::Falsified(
+            "service.score package field confidence is Index",
+        ));
     }
     if matches!(&reads[0].occurrence.target, OccurrenceTarget::Local(_)) {
-        return Err(TestError::Falsified("service.score must not resolve locally"));
+        return Err(TestError::Falsified(
+            "service.score must not resolve locally",
+        ));
     }
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
