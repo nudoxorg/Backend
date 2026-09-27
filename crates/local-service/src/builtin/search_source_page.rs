@@ -8,6 +8,7 @@ use super::{BuiltinModelError, IndexedSources, ProductSourceRecord};
 use backend_engine::WorkspaceSnapshot;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 struct StoredSnapshot {
     snapshot: WorkspaceSnapshot,
@@ -282,8 +283,12 @@ fn store_relation(
     relation: backend_engine::RelationState<backend_engine::ProductSourceRelation>,
     label: String,
 ) -> Result<StoredSnapshot, BuiltinModelError> {
-    let directory =
-        std::env::temp_dir().join(format!("nudox-source-page-{}-{label}", std::process::id()));
+    static NEXT_STORE: AtomicU64 = AtomicU64::new(0);
+    let generation = NEXT_STORE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "nudox-source-page-{}-{generation}-{label}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory)
         .map_err(|error| BuiltinModelError(format!("create source store directory: {error}")))?;
