@@ -6,10 +6,12 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use backend_semantic::index_core::{EntityDocumentId, LexicalSegment, LexicalSegmentId, MAX_LEXICAL_ROWS};
+use backend_semantic::index_core::{
+    EntityDocumentId, LexicalSegment, LexicalSegmentId, MAX_LEXICAL_ROWS,
+};
 use tantivy::{
     Index, IndexReader, doc,
-    schema::{FieldType, IndexRecordOption, STORED, STRING, Schema, Type, Value},
+    schema::{FAST, FieldType, IndexRecordOption, STORED, STRING, Schema, Type, Value},
 };
 
 use super::{
@@ -21,7 +23,7 @@ use super::{
 const INDEX_DIR: &str = "tantivy";
 const RECIPE_DIR: &str = "ntvx-v3";
 const WRITER_MEMORY_BYTES: usize = 15_000_000;
-const RECIPE: &[u8] = b"ntvx-segment-v3/sentinel-hex-string-stored-bytes-ordinal";
+const RECIPE: &[u8] = b"ntvx-segment-v4/fast-ordinal";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn ensure_recipe_root(root: &Path) -> io::Result<()> {
@@ -94,7 +96,7 @@ pub(crate) fn build_projection(
     let mut schema_builder = Schema::builder();
     let body_field = schema_builder.add_text_field("body", STRING | STORED);
     let document_field = schema_builder.add_bytes_field("document", STORED);
-    let ordinal_field = schema_builder.add_u64_field("ordinal", STORED);
+    let ordinal_field = schema_builder.add_u64_field("ordinal", STORED | FAST);
     let index_path = path.join(INDEX_DIR);
     fs::create_dir(&index_path)
         .map_err(|source| io_error(StorePhase::CreateIndex, &index_path, source))?;
@@ -105,7 +107,8 @@ pub(crate) fn build_projection(
         .map_err(|source| backend_error(StorePhase::Writer, &index_path, source))?;
     for (ordinal, row) in rows.iter().enumerate() {
         let text = codec::encode_term(&row.term)?;
-        let bytes: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] = row.document.into();
+        let bytes: [u8; backend_semantic::index_core::ENTITY_DOCUMENT_ID_BYTES] =
+            row.document.into();
         let ordinal =
             u64::try_from(ordinal).map_err(|_| TantivySegmentStoreError::CountOverflow)?;
         writer.add_document(doc!(body_field => text, document_field => bytes.to_vec(), ordinal_field => ordinal))
@@ -212,6 +215,7 @@ pub(crate) fn open_segment(
             .value_type()
             != Type::U64
         || !schema.get_field_entry(ordinal_field).is_stored()
+        || !schema.get_field_entry(ordinal_field).is_fast()
     {
         return Err(TantivySegmentStoreError::Corrupt {
             path: index_path.clone(),

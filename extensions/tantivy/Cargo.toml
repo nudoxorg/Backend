@@ -37,3 +37,8 @@ harness = false
 name = "projection_revision"
 path = "benches/projection_revision.rs"
 harness = false
+
+[[bench]]
+name = "segment_collect"
+path = "benches/segment_collect.rs"
+harness = false
