@@ -10881,6 +10881,17 @@ mod references_tests {
             borrowed_presence[sample] = started.elapsed().as_nanos();
             std::hint::black_box(absent_count);
         }
+        let materialized_first = view
+            .rows()
+            .iter()
+            .find(|row| row.label == "pkg::shared")
+            .map(|row| row.id);
+        if materialized_first != borrowed_first {
+            return Err(format!(
+                "borrowed target {borrowed_first:?} differs from rows() target \
+                 {materialized_first:?}"
+            ));
+        }
         owned_find.sort_unstable();
         borrowed_find.sort_unstable();
         owned_presence.sort_unstable();
