@@ -3053,7 +3053,7 @@ def read(service: Child):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_universe_field(reads[0], "service.note stays a pypi universe field key")?;
+    assert_inherited_universe_field(reads[0], "service.note stays a pypi universe field key")?;
     if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
         return Err(TestError::Falsified("service.note universe field confidence is Index"));
     }
@@ -3098,7 +3098,7 @@ def read(obj):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_universe_field(reads[0], "plain receiver stays a universe field key")?;
+    assert_inherited_universe_field(reads[0], "plain receiver stays a universe field key")?;
     if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
         return Err(TestError::Falsified("plain receiver universe field confidence is Index"));
     }
