@@ -11,9 +11,11 @@ use std::{
 };
 
 use backend_engine::driver::{
-    CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
-    ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
+    AuthorityFailure, CompileControl, CompileFailure, CompileOutput, CompileRequest,
+    CompileScratch, NativeTool, ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection,
+    compile, compile_ir,
 };
+use backend_frontend_typescript::legacy::AuthorityError;
 use backend_semantic::ir::{
     DecodedOccurrence, DecodedTypeFact, DocFragmentInput, EntityId, EntityKind, ForeignOrigin,
     FragmentView, ItemKind, OccurrenceConfidence, OccurrenceTarget, PrimitiveShape, ReferenceKind,
@@ -263,7 +265,11 @@ struct StackLowered {
 }
 
 impl StackLowered {
-    fn compile(source: &[u8]) -> Self {
+    fn try_compile<'diagnostic>(
+        source: &[u8],
+        diagnostic: &'diagnostic mut [u8],
+        fragment_output: &mut [u8],
+    ) -> Result<usize, CompileFailure<'diagnostic>> {
         let authority = report(source);
         let toolchain = ResolvedToolchain::from_version(
             NativeTool::TypeScriptCompiler,
@@ -271,10 +277,8 @@ impl StackLowered {
             b"typescript-authority-test",
         )
         .unwrap();
-        let mut diagnostic = [0u8; 4096];
-        let mut output = vec![0_u8; 8 * 1024 * 1024];
         let cancelled = AtomicBool::new(false);
-        let compiled = compile(
+        compile(
             CompileRequest {
                 profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
                 stage: Stage::LowerIr,
@@ -288,15 +292,20 @@ impl StackLowered {
                 },
             },
             CompileScratch {
-                diagnostic_output: &mut diagnostic,
+                diagnostic_output: diagnostic,
                 native_work: Path::new("/tmp"),
             },
             CompileOutput {
-                fragment_output: &mut output,
+                fragment_output,
             },
         )
-        .unwrap();
-        let len = compiled.fragment.as_ref().len();
+        .map(|compiled| compiled.fragment.as_ref().len())
+    }
+
+    fn compile(source: &[u8]) -> Self {
+        let mut diagnostic = [0u8; 4096];
+        let mut output = vec![0_u8; 8 * 1024 * 1024];
+        let len = Self::try_compile(source, &mut diagnostic, &mut output).unwrap();
         FragmentView::validate(&output[..len]).expect("fragment validates");
         Self { output, len }
     }
@@ -1565,6 +1574,312 @@ fn this_inherited_field_imported_base_stays_syntactic() {
     }
     assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Syntactic);
     assert_property_token_site(SOURCE, None, &site, b"score", score_token_start);
+}
+
+#[test]
+fn private_field_read_targets_same_class_score() {
+    const SOURCE: &[u8] =
+        b"export class Child { #score: number; read(): number { return this.#score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_fields = entities_named(&v, b"#score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 1);
+    let child_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"#score");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_score))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+}
+
+#[test]
+fn private_method_call_targets_same_class_note() {
+    const SOURCE: &[u8] =
+        b"export class Child { #note(): number { return 1; } read(): number { return this.#note(); } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_methods = entities_named(&v, b"#note", EntityKind::Function);
+    assert_eq!(note_methods.len(), 1);
+    let child_note = note_methods[0];
+    let (read_owner, _) = named(&v, b"read");
+    let note_token_start = property_token(SOURCE, b"this.", b"#note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"#note", note_token_start);
+}
+
+#[test]
+fn private_method_value_targets_same_class_note() {
+    const SOURCE: &[u8] =
+        b"export class Child { #note(): number { return 1; } read(): unknown { return this.#note; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_methods = entities_named(&v, b"#note", EntityKind::Function);
+    assert_eq!(note_methods.len(), 1);
+    let child_note = note_methods[0];
+    let (read_owner, _) = named(&v, b"read");
+    let note_token_start = property_token(SOURCE, b"this.", b"#note");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_note))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#note", note_token_start);
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    assert_eq!(calls, 0);
+}
+
+#[test]
+fn private_field_read_child_does_not_see_base_score() {
+    const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { read(): number { return this.#score; } }";
+    let mut diagnostic = [0u8; 4096];
+    let mut output = vec![0_u8; 8 * 1024 * 1024];
+    let failure = StackLowered::try_compile(SOURCE, &mut diagnostic, &mut output).expect_err(
+        "child must not compile when it reads an undeclared private field",
+    );
+    let CompileFailure::Authority { failure, .. } = failure else {
+        panic!("expected authority rejection, got {failure:?}");
+    };
+    let AuthorityFailure::TypeScript {
+        diagnostic,
+        cause: AuthorityError::Binding { .. },
+    } = failure
+    else {
+        panic!("expected TypeScript binding authority rejection, got {failure:?}");
+    };
+    assert_eq!(diagnostic.primary, b"#score");
+}
+
+#[test]
+fn private_field_read_child_own_score_wins_over_base() {
+    const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { #score: number; read(): number { return this.#score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_fields = entities_named(&v, b"#score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 2);
+    let base_score = score_fields[0];
+    let child_score = score_fields[1];
+    assert_ne!(base_score, child_score);
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"#score");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_score))
+    );
+    assert_ne!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_score))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+}
+
+#[test]
+fn private_field_read_other_receiver_stays_syntactic() {
+    const SOURCE: &[u8] =
+        b"export class Child { #score: number; read(obj: Child): number { return obj.#score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_fields = entities_named(&v, b"#score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 1);
+    let child_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"obj.", b"#score");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    match &sites[0].occurrence.target {
+        OccurrenceTarget::Foreign(key) => {
+            assert_eq!(key.path, "#score");
+            assert_eq!(key.display, "#score");
+            assert!(key.kind.is_none());
+            assert!(matches!(
+                key.origin,
+                ForeignOrigin::Universe { ecosystem: "npm" }
+            ));
+        }
+        OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
+            panic!("other-receiver private access must stay syntactic")
+        }
+    }
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_ne!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_score))
+    );
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+}
+
+#[test]
+fn private_static_field_read_targets_same_class_score() {
+    const SOURCE: &[u8] =
+        b"export class Child { static #score = 1; static read(): number { return this.#score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_fields = entities_named(&v, b"#score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 1);
+    let child_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"#score");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_score))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+}
+
+#[test]
+fn private_field_read_parenthesized_this_targets_same_class_score() {
+    const SOURCE: &[u8] =
+        b"export class Child { #score: number; read(): number { return (this).#score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_fields = entities_named(&v, b"#score", EntityKind::Field);
+    assert_eq!(score_fields.len(), 1);
+    let child_score = score_fields[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"(this).", b"#score");
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_score))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"#score", score_token_start);
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    assert_eq!(calls, 0);
+}
+
+#[test]
+fn private_method_call_child_own_note_wins_over_base() {
+    const SOURCE: &[u8] = b"export class Other { #note(): number { return 9; } } export class Base { #note(): number { return 1; } } export class Child extends Base { #note(): number { return 2; } read(): number { return this.#note(); } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_methods = entities_named(&v, b"#note", EntityKind::Function);
+    assert_eq!(note_methods.len(), 3);
+    let other_note = note_methods[0];
+    let base_note = note_methods[1];
+    let child_note = note_methods[2];
+    assert_ne!(other_note, base_note);
+    assert_ne!(child_note, base_note);
+    let (read_owner, _) = named(&v, b"read");
+    let note_token_start = property_token(SOURCE, b"this.", b"#note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"#note", note_token_start);
+    let sites = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .count();
+    assert_eq!(sites, 0);
+}
+
+#[test]
+fn private_super_field_is_rejected() {
+    const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { read(): number { return super.#score; } }";
+    let mut diagnostic = [0u8; 4096];
+    let mut output = vec![0_u8; 8 * 1024 * 1024];
+    let failure = StackLowered::try_compile(SOURCE, &mut diagnostic, &mut output)
+        .expect_err("super.#score must not lower");
+    let CompileFailure::Authority { failure, .. } = failure else {
+        panic!("expected authority rejection, got {failure:?}");
+    };
+    let AuthorityFailure::TypeScript {
+        diagnostic,
+        cause: AuthorityError::Syntax { .. },
+    } = failure
+    else {
+        panic!("expected TypeScript syntax authority rejection, got {failure:?}");
+    };
+    assert_eq!(diagnostic.primary, b"super.#score");
+}
+
+#[test]
+fn private_parenthesized_super_is_rejected() {
+    const SOURCE: &[u8] = b"export class Base { #score: number; } export class Child extends Base { #other: number; read(): number { return (super).#score; } }";
+    let mut diagnostic = [0u8; 4096];
+    let mut output = vec![0_u8; 8 * 1024 * 1024];
+    let failure = StackLowered::try_compile(SOURCE, &mut diagnostic, &mut output)
+        .expect_err("(super).#score must not lower");
+    let CompileFailure::Authority { failure, .. } = failure else {
+        panic!("expected authority rejection, got {failure:?}");
+    };
+    let AuthorityFailure::TypeScript {
+        diagnostic,
+        cause: AuthorityError::Syntax { .. },
+    } = failure
+    else {
+        panic!("expected TypeScript syntax authority rejection, got {failure:?}");
+    };
+    assert_eq!(diagnostic.primary, b"super");
 }
 
 #[test]

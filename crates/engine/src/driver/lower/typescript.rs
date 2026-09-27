@@ -4969,6 +4969,37 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             };
             self.commit_occurrence(owner, property_span, kind, target, confidence)?;
         }
+        for node in nodes.iter() {
+            let Some(member) = node.kind().as_private_field_expression() else {
+                continue;
+            };
+            let property_span = member.field.span;
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let parent = nodes.get_node(nodes.parent_id(node.id())).kind();
+            let kind = if parent
+                .as_call_expression()
+                .is_some_and(|call| call.callee.span() == member.span)
+            {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::FieldAccess
+            };
+            let object_kind = AstKind::from_expression(&member.object);
+            let (target, confidence) = if Self::is_this_receiver(object_kind) {
+                self.this_private_property_target(property_span, kind)?
+            } else {
+                self.syntactic_property_target(property_span)?
+            };
+            self.commit_occurrence(owner, property_span, kind, target, confidence)?;
+        }
         Ok(())
     }
 
@@ -5094,6 +5125,56 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     ),
                 },
             },
+            _ => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Resolves one `this.#name` site through the enclosing class only.
+    /// Private names are class-branded and never walk `extends`.
+    fn this_private_property_target(
+        &self,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let Some(class) = self.enclosing_record(property_span.start) else {
+            return self.syntactic_property_target(property_span);
+        };
+        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match kind {
+            ReferenceKind::FunctionCall => {
+                match self.class_member_of_owner(class, name, EntityKind::Function) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                        self.syntactic_property_target(property_span)
+                    }
+                }
+            }
+            ReferenceKind::FieldAccess => {
+                match self.class_member_of_owner(class, name, EntityKind::Field) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                    ClassMemberMatch::Absent => {
+                        match self.class_member_of_owner(class, name, EntityKind::Function) {
+                            ClassMemberMatch::Unique(fact) => Ok((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            )),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                self.syntactic_property_target(property_span)
+                            }
+                        }
+                    }
+                }
+            }
             _ => self.syntactic_property_target(property_span),
         }
     }
