@@ -1426,18 +1426,17 @@ pub(crate) fn view_row_for_structural_coordinate(
     package: backend_engine::PackageKey,
     coordinate: &str,
 ) -> Option<RowId> {
-    let parsed = parsed_declaration_coordinate(coordinate);
+    if let Some(id) = view.first_package_label(package, coordinate) {
+        return Some(id);
+    }
+    let Some(parsed) = parsed_declaration_coordinate(coordinate) else {
+        return None;
+    };
     let mut semantic_matches = Vec::new();
     for row in view.row_refs() {
         if row.package != Some(package) {
             continue;
         }
-        if row.label == coordinate {
-            return Some(row.id);
-        }
-        let Some(parsed) = parsed.as_ref() else {
-            continue;
-        };
         let Some(location) = row.source.captured() else {
             continue;
         };
@@ -1517,29 +1516,22 @@ pub(crate) fn structural_call_graph_relations(
             "structural call graph source is absent from the view".to_owned(),
         ));
     }
-    // Duplicate labels keep the later row. Relation order is `RowId` order.
-    let mut coordinate_ids = BTreeMap::<String, RowId>::new();
-    for row in view.row_refs() {
-        if row.package == Some(package) {
-            coordinate_ids.insert(row.label.clone(), row.id);
-        }
-    }
     let mut relations = BTreeSet::new();
     for (caller_coordinate, callee_coordinate) in structural_call_coordinate_pairs(sources, package)?
     {
-        let caller_id = coordinate_ids.get(&caller_coordinate).ok_or_else(|| {
+        let caller_id = view.last_package_label(package, &caller_coordinate).ok_or_else(|| {
             BuiltinModelError(
                 "structural call graph caller is absent from the published view".to_owned(),
             )
         })?;
-        let callee_id = coordinate_ids.get(&callee_coordinate).ok_or_else(|| {
+        let callee_id = view.last_package_label(package, &callee_coordinate).ok_or_else(|| {
             BuiltinModelError(
                 "structural call graph callee is absent from the published view".to_owned(),
             )
         })?;
         relations.insert(backend_engine::GraphRelation::new(
-            *caller_id,
-            *callee_id,
+            caller_id,
+            callee_id,
             backend_library::SemanticLinkKind::Calls,
         ));
     }

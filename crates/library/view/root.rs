@@ -6,14 +6,15 @@ use super::{
     ViewRootDescriptor, ViewSnapshotPage,
 };
 use crate::canonical::{
-    Frontier, ViewEntry, ViewEntryKey, ViewMetadata, ViewRecipeId, ViewStateRoot, ViewVersion,
-    package_key, symbol_key, view_version_preimage,
+    Frontier, PackageKey, ViewEntry, ViewEntryKey, ViewMetadata, ViewRecipeId, ViewStateRoot,
+    ViewVersion, package_key, symbol_key, view_version_preimage,
 };
 use backend_version::{
     Coverage as BackendCoverage, CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope,
     prepare_delta_with_state,
 };
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::{Arc, OnceLock};
 
@@ -40,6 +41,8 @@ pub struct ViewRoot {
     pub(crate) frontier: Frontier,
     /// Lazy compatibility materialization of canonical relation rows.
     pub(super) rows_cache: Arc<OnceLock<Arc<[Row]>>>,
+    /// First and last label in each package, built without cloning row documents.
+    pub(super) package_labels: Arc<OnceLock<PackageLabelIndex>>,
     /// Coverage for each requested lane.
     pub(crate) coverage: Box<[Coverage]>,
     /// Producer-admitted witness for complete source coverage.
@@ -52,6 +55,17 @@ pub struct ViewRoot {
     /// Persistent canonical relation state for this exact root. Backend
     /// updates path-copy this state and retain untouched canonical nodes.
     pub(super) relation: RelationState<crate::ViewRelation>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PackageLabelMaps {
+    first: BTreeMap<String, RowId>,
+    last: BTreeMap<String, RowId>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct PackageLabelIndex {
+    by_package: BTreeMap<PackageKey, PackageLabelMaps>,
 }
 
 impl PartialEq for ViewRoot {
@@ -272,6 +286,44 @@ impl ViewRoot {
         }
     }
 
+    /// Returns the earliest row in relation order with this package and label.
+    ///
+    /// The index is built from borrowed rows, so the compatibility slice stays
+    /// empty. Duplicate labels keep that first row.
+    #[must_use]
+    pub fn first_package_label(&self, package: PackageKey, label: &str) -> Option<RowId> {
+        self.package_label_index()
+            .by_package
+            .get(&package)
+            .and_then(|maps| maps.first.get(label).copied())
+    }
+
+    /// Returns the latest row in relation order with this package and label.
+    ///
+    /// Call-graph coordinate maps keep this later row when labels collide.
+    #[must_use]
+    pub fn last_package_label(&self, package: PackageKey, label: &str) -> Option<RowId> {
+        self.package_label_index()
+            .by_package
+            .get(&package)
+            .and_then(|maps| maps.last.get(label).copied())
+    }
+
+    fn package_label_index(&self) -> &PackageLabelIndex {
+        self.package_labels.get_or_init(|| {
+            let mut index = PackageLabelIndex::default();
+            for row in self.row_refs() {
+                let Some(package) = row.package else {
+                    continue;
+                };
+                let maps = index.by_package.entry(package).or_default();
+                maps.first.entry(row.label.clone()).or_insert(row.id);
+                maps.last.insert(row.label.clone(), row.id);
+            }
+            index
+        })
+    }
+
     /// Resolves an opaque symbol selector by membership in this exact view.
     ///
     /// The claimed digest is never promoted directly. Symbol rows sit in
@@ -395,6 +447,7 @@ impl ViewRoot {
             basis,
             frontier,
             rows_cache: Arc::new(OnceLock::new()),
+            package_labels: Arc::new(OnceLock::new()),
             coverage,
             capability: None,
             relation,
@@ -501,6 +554,7 @@ impl ViewRoot {
             basis,
             frontier,
             rows_cache: Arc::new(OnceLock::new()),
+            package_labels: Arc::new(OnceLock::new()),
             coverage,
             capability,
             relation,
@@ -826,6 +880,56 @@ mod tests {
             capability(object),
         )
         .expect("paged view root")
+    }
+
+    #[test]
+    fn package_labels_keep_first_and_last_without_materializing_rows() {
+        let source = view_state_root(&[]);
+        let object = object_version(b"package-labels");
+        let basis = Basis::new(source, object);
+        let package = package_key("pkg:alpha");
+        let early = symbol_key("early-label");
+        let late = symbol_key("late-label");
+        let (first_key, last_key) = if RowId::Symbol(early) < RowId::Symbol(late) {
+            (early, late)
+        } else {
+            (late, early)
+        };
+        let label = "pkg:alpha::src/lib.rs:1::draw";
+        let body = "x".repeat(4096);
+        let mut rows = vec![
+            Row::in_package(RowId::Symbol(first_key), basis, package, label),
+            Row::in_package(RowId::Symbol(last_key), basis, package, label),
+        ];
+        let sibling = package_key("pkg:beta");
+        for index in 0..32 {
+            let name = format!("sibling-{index}");
+            rows.push(
+                Row::in_package(RowId::Symbol(symbol_key(&name)), basis, sibling, name)
+                    .with_document(vec![crate::Fragment::Text(body.clone())]),
+            );
+        }
+        let root = ViewRoot::new_checked(
+            view_key(b"package-labels"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+            rows,
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("view");
+        assert!(root.rows_cache.get().is_none());
+        assert_eq!(
+            root.first_package_label(package, label),
+            Some(RowId::Symbol(first_key))
+        );
+        assert_eq!(
+            root.last_package_label(package, label),
+            Some(RowId::Symbol(last_key))
+        );
+        assert!(root.rows_cache.get().is_none());
+        assert!(root.first_package_label(package, "missing").is_none());
+        assert!(root.last_package_label(sibling, label).is_none());
     }
 
     #[test]

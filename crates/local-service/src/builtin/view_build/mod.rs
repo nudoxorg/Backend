@@ -173,8 +173,7 @@ mod tests {
     use super::{
         STALE_NOTE, SourceRowProjection, StructuralParent, StructuralProjectionPlan,
         append_structural_query_facts, semantic_profile_is_complete,
-        structural_call_coordinate_pairs, structural_call_graph_relations,
-        structural_call_graph_relations_mapped,
+        structural_call_coordinate_pairs,         structural_call_graph_relations, structural_call_graph_relations_mapped,
         structural_excerpt_calls, structural_reference_facts, view_row_for_structural_coordinate,
     };
     use backend_engine::{
@@ -2219,6 +2218,9 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         if owned != borrowed || borrowed.len() != 1 || borrowed[0].to != callee_id {
             return Err(format!("owned {owned:?} borrowed {borrowed:?}"));
         }
+        if heavy.last_package_label(package, callee) != Some(callee_id) {
+            return Err(format!("label resolution {borrowed:?} last {callee_id:?}"));
+        }
         let pairs = structural_call_coordinate_pairs(&sources, package)
             .map_err(|error| error.to_string())?;
         let mapped = structural_call_graph_relations_mapped(&heavy, &pairs, package, sync, false);
@@ -2309,8 +2311,11 @@ pub fn decoy_mention() { let _ = "parse_config("; }
         let doubled = republish(&view, doubled_rows)?;
         let first = view_row_for_structural_coordinate(&doubled, package, target)
             .ok_or("missing first coordinate")?;
-        if first != original {
+        if first != original || doubled.first_package_label(package, target) != Some(original) {
             return Err(format!("coordinate resolved {first:?}, first row is {original:?}"));
+        }
+        if doubled.last_package_label(package, target) != Some(RowId::Symbol(later)) {
+            return Err("graph label map lost the later row".to_owned());
         }
         let relations = calls_relations(&doubled, &sources, package, sync, false)?;
         if relations.len() != 1 || relations[0].to != RowId::Symbol(later) {
