@@ -182,6 +182,24 @@ impl RegistryGateway {
         Ok(records)
     }
 
+    /// Identity of the opened catalog generations.
+    ///
+    /// The stamp changes when a source commits a package or a forge link.
+    /// Callers keep a resident dependency index until it changes. Opening a
+    /// source that is already resident only reads the generation counter.
+    pub(super) fn publication_stamp(&mut self) -> Result<[u8; 32], String> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.registry.publication-stamp.v1\0");
+        for source in self.sources.sources().cloned().collect::<Vec<_>>() {
+            let service = self
+                .service_for(&source)
+                .map_err(|error| format!("open registry source: {error}"))?;
+            hasher.update(&source.id().as_bytes());
+            hasher.update(&service.catalog_generation().to_le_bytes());
+        }
+        Ok(*hasher.finalize().as_bytes())
+    }
+
     /// Returns dependency facts from the same immutable publication records as
     /// the catalog. Unknown and unavailable metadata stay typed all the way to
     /// the product surface; an empty known set is the only representation of
