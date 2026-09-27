@@ -972,6 +972,43 @@ fn publish_package_view(
     let mut activated = prior.activated.clone();
     activated.retain(|(key, _)| *key != package);
     activated.extend(projected.activated);
+    let coverage = view_coverage(&snapshot, &activated, deployment)?;
+    let same_witness = activated == prior.activated
+        && coverage.as_slice() == current.coverage()
+        && current.basis() == initial.basis();
+    if same_witness {
+        match view_publish::row_changes_replacing_package(
+            current.row_refs(),
+            package,
+            &projected.rows,
+        ) {
+            Ok(changes) if changes.is_empty() => {
+                return Ok(Some(package_publication(
+                    Vec::new(),
+                    prior,
+                    source_target,
+                    semantic_target,
+                    files,
+                )));
+            }
+            Ok(changes) if view_publish::row_patch_fits(current.row_count(), changes.len()) => {
+                if let Some(deltas) = try_commit_row_patch(daemon, current.clone(), changes)? {
+                    return Ok(Some(package_publication(
+                        deltas,
+                        prior,
+                        source_target,
+                        semantic_target,
+                        files,
+                    )));
+                }
+            }
+            Ok(_) => {}
+            Err(
+                view_publish::RowSpliceError::Collision
+                | view_publish::RowSpliceError::UnscopedSemantic,
+            ) => return Ok(None),
+        }
+    }
     let merged =
         match view_publish::rows_replacing_package(current.row_refs(), package, projected.rows) {
             Ok(rows) => rows,

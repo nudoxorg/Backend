@@ -227,6 +227,55 @@ pub(super) fn rows_replacing_package<'row>(
     Ok(rows)
 }
 
+/// Projects one package replacement into row changes.
+///
+/// Sibling rows stay in the resident view. The result is the removes and
+/// upserts a patch applies, in identity order. An empty result means the
+/// replacement does not change a row.
+pub(super) fn row_changes_replacing_package<'row>(
+    current: impl IntoIterator<Item = &'row Row>,
+    package: PackageKey,
+    replacement: &[Row],
+) -> Result<Vec<RowChange>, RowSpliceError> {
+    let mut resident = BTreeMap::new();
+    for row in current {
+        if resident.insert(row.id, row).is_some() {
+            return Err(RowSpliceError::Collision);
+        }
+    }
+    let mut incoming = BTreeMap::new();
+    for row in replacement {
+        if !row_belongs_to_package(row, package) {
+            return Err(RowSpliceError::Collision);
+        }
+        if incoming.insert(row.id, row).is_some() {
+            return Err(RowSpliceError::Collision);
+        }
+        if resident
+            .get(&row.id)
+            .is_some_and(|existing| !row_belongs_to_package(existing, package))
+        {
+            return Err(RowSpliceError::Collision);
+        }
+    }
+    let mut changes = Vec::new();
+    for (id, row) in &resident {
+        if !row_belongs_to_package(row, package) {
+            continue;
+        }
+        match incoming.remove(id) {
+            Some(next) if next == *row => {}
+            Some(next) => changes.push(RowChange::Upsert(Box::new(next.clone()))),
+            None => changes.push(RowChange::Remove(*id)),
+        }
+    }
+    for row in incoming.into_values() {
+        changes.push(RowChange::Upsert(Box::new(row.clone())));
+    }
+    changes.sort_by_key(RowChange::id);
+    Ok(changes)
+}
+
 /// Whether a row is the package frontier or a declaration that package owns.
 pub(super) fn row_belongs_to_package(row: &Row, package: PackageKey) -> bool {
     row.package == Some(package) || row.id == RowId::Package(package)
@@ -620,6 +669,69 @@ pub(super) fn measure_package_publication() {
     let (splice_median, splice_p95) = percentiles(&spliced);
     println!(
         "package_publication rows total={total} replaced={replaced} rebuild_median_ns={rebuild_median} rebuild_p95_ns={rebuild_p95} splice_median_ns={splice_median} splice_p95_ns={splice_p95}"
+    );
+
+    let patch_head = super::genesis().expect("genesis");
+    let (patch_initial, _) =
+        super::initial_view_for_workspace(&patch_head.snapshot()).expect("basis");
+    let patch_capability =
+        super::builtin_view_capability_for_workspace(&patch_head.snapshot()).expect("capability");
+    let resident = backend_engine::ViewRoot::new_checked(
+        patch_initial.recipe(),
+        patch_initial.basis(),
+        patch_initial.frontier(),
+        base_rows.clone(),
+        patch_initial.coverage().to_vec(),
+        patch_capability.clone(),
+    )
+    .expect("resident package view");
+    const PATCH_SAMPLES: usize = 16;
+    const PATCH_WARMUPS: usize = 4;
+    let owned_admit = time_samples(PATCH_SAMPLES, PATCH_WARMUPS, || {
+        let merged =
+            rows_replacing_package(&base_rows, package, replacement.clone()).expect("splice");
+        let target = backend_engine::ViewRoot::new_checked(
+            patch_initial.recipe(),
+            patch_initial.basis(),
+            patch_initial.frontier(),
+            merged,
+            patch_initial.coverage().to_vec(),
+            patch_capability.clone(),
+        )
+        .expect("owned admit");
+        let changes = super::changed_rows(&resident, &target);
+        std::hint::black_box(
+            resident
+                .prepare(
+                    backend_engine::ViewDelta::Patch {
+                        changes: Arc::from(changes),
+                    },
+                    patch_capability.clone(),
+                )
+                .expect("owned patch"),
+        );
+    });
+    let direct_patch = time_samples(PATCH_SAMPLES, PATCH_WARMUPS, || {
+        let changes =
+            row_changes_replacing_package(base_rows.iter(), package, &replacement).expect("patch");
+        std::hint::black_box(
+            resident
+                .prepare(
+                    backend_engine::ViewDelta::Patch {
+                        changes: Arc::from(changes),
+                    },
+                    patch_capability.clone(),
+                )
+                .expect("direct patch"),
+        );
+    });
+    let (owned_median, owned_p95) = percentiles(&owned_admit);
+    let (direct_median, direct_p95) = percentiles(&direct_patch);
+    let direct_changes =
+        row_changes_replacing_package(base_rows.iter(), package, &replacement).expect("size");
+    println!(
+        "package_row_patch rows={total} changes={} owned_median_ns={owned_median} owned_p95_ns={owned_p95} patch_median_ns={direct_median} patch_p95_ns={direct_p95}",
+        direct_changes.len()
     );
 
     const ACTIVATED_FILES: usize = 128;
@@ -1163,6 +1275,145 @@ mod tests {
             rows_replacing_package(current.row_refs(), alpha, stolen).expect_err("collision");
         assert!(!current.compatibility_rows_are_materialized());
         assert_eq!(error, RowSpliceError::Collision);
+    }
+
+    #[test]
+    fn a_package_patch_matches_the_merged_view_and_leaves_the_sibling() {
+        let (base, _) = super::super::initial_view().expect("initial");
+        let basis = base.basis();
+        let alpha = backend_engine::package_key("pkg:alpha");
+        let beta = backend_engine::package_key("pkg:beta");
+        let sibling = Row::in_package(
+            RowId::Symbol(backend_engine::symbol_key("pkg:beta::kept")),
+            basis,
+            beta,
+            "pkg:beta::kept",
+        )
+        .with_signature("fn kept()")
+        .with_document(vec![backend_engine::Fragment::Text(
+            "untouched sibling".to_owned(),
+        )]);
+        let current_rows = vec![
+            Row::new(RowId::Package(alpha), basis, "pkg:alpha"),
+            Row::in_package(
+                RowId::Symbol(backend_engine::symbol_key("pkg:alpha::old")),
+                basis,
+                alpha,
+                "pkg:alpha::old",
+            ),
+            Row::new(RowId::Package(beta), basis, "pkg:beta"),
+            sibling.clone(),
+        ];
+        let current = admitted(current_rows.clone());
+        let replacement = vec![
+            Row::new(RowId::Package(alpha), basis, "pkg:alpha"),
+            Row::in_package(
+                RowId::Symbol(backend_engine::symbol_key("pkg:alpha::new")),
+                basis,
+                alpha,
+                "pkg:alpha::new",
+            )
+            .with_signature("fn new()"),
+        ];
+        let changes = row_changes_replacing_package(current.row_refs(), alpha, &replacement)
+            .expect("package patch");
+        let merged =
+            rows_replacing_package(current.rows(), alpha, replacement.clone()).expect("splice");
+        let target = admitted(merged);
+        assert_eq!(super::super::changed_rows(&current, &target), changes);
+        assert!(changes.iter().all(|change| match change {
+            RowChange::Remove(id) => *id != sibling.id && *id != RowId::Package(beta),
+            RowChange::Upsert(row) => row.id != sibling.id && row.id != RowId::Package(beta),
+        }));
+        let stolen = vec![sibling.clone()];
+        let error = row_changes_replacing_package(current.row_refs(), alpha, &stolen)
+            .expect_err("stolen");
+        assert_eq!(error, RowSpliceError::Collision);
+        let alpha_rows = current_rows
+            .iter()
+            .filter(|row| row_belongs_to_package(row, alpha))
+            .cloned()
+            .collect::<Vec<_>>();
+        let unchanged =
+            row_changes_replacing_package(current.row_refs(), alpha, &alpha_rows).expect("same");
+        assert!(unchanged.is_empty());
+        let capability = super::super::test_builtin_view_capability().expect("capability");
+        let prepared = current
+            .prepare(
+                ViewDelta::Patch {
+                    changes: Arc::from(changes),
+                },
+                capability,
+            )
+            .expect("prepare");
+        let (patched, _) = current.commit(prepared).expect("commit");
+        assert_eq!(patched.rows(), target.rows());
+        let kept = patched
+            .rows()
+            .iter()
+            .find(|row| row.label == "pkg:beta::kept")
+            .expect("sibling");
+        assert_eq!(kept, &sibling);
+
+        let (base_rows, replacement, package) = row_fixtures(32, 64);
+        let resident = admitted(base_rows.clone());
+        let capability = super::super::test_builtin_view_capability().expect("capability");
+        let owned = time_samples(8, 2, || {
+            let merged =
+                rows_replacing_package(&base_rows, package, replacement.clone()).expect("splice");
+            let target = ViewRoot::new_checked(
+                resident.recipe(),
+                resident.basis(),
+                resident.frontier(),
+                merged,
+                resident.coverage().to_vec(),
+                capability.clone(),
+            )
+            .expect("owned admit");
+            let changes = super::super::changed_rows(&resident, &target);
+            std::hint::black_box(
+                resident
+                    .prepare(
+                        ViewDelta::Patch {
+                            changes: Arc::from(changes),
+                        },
+                        capability.clone(),
+                    )
+                    .expect("owned patch"),
+            );
+        });
+        let direct = time_samples(8, 2, || {
+            let changes = row_changes_replacing_package(resident.row_refs(), package, &replacement)
+                .expect("patch");
+            std::hint::black_box(
+                resident
+                    .prepare(
+                        ViewDelta::Patch {
+                            changes: Arc::from(changes),
+                        },
+                        capability.clone(),
+                    )
+                    .expect("prepare"),
+            );
+        });
+        let (owned_median, _) = percentiles(&owned);
+        let (direct_median, _) = percentiles(&direct);
+        let changes =
+            row_changes_replacing_package(resident.row_refs(), package, &replacement).expect("size");
+        eprintln!(
+            "package_row_patch rows={} changes={} owned_median_ns={owned_median} patch_median_ns={direct_median}",
+            base_rows.len(),
+            changes.len()
+        );
+        assert!(direct_median < owned_median);
+        assert!(changes.len() <= backend_engine::MAX_VIEW_PATCH_ROWS);
+        assert!(changes.iter().all(|change| match change {
+            RowChange::Upsert(row) => row_belongs_to_package(row, package),
+            RowChange::Remove(id) => base_rows
+                .iter()
+                .find(|row| row.id == *id)
+                .is_some_and(|row| row_belongs_to_package(row, package)),
+        }));
     }
 
     fn declaration(
