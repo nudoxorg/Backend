@@ -24,3 +24,8 @@ workspace = true
 name = "package_graph"
 path = "benches/package_graph.rs"
 harness = false
+
+[[bench]]
+name = "row_move"
+path = "benches/row_move.rs"
+harness = false
