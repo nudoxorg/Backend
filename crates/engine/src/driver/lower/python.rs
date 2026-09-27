@@ -1875,25 +1875,67 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         }
                         None => {
                             if let Some(class_index) = self.enclosing_class_index(occurrence, class)
-                                && self.field_count_in_class(
-                                    occurrence,
-                                    self.module.declarations[class_index].span,
-                                ) == 0
-                                && let InheritedMemberLookup::Unique(ordinal) = self
-                                    .inherited_member(
+                            {
+                                let class_span = self.module.declarations[class_index].span;
+                                if self.field_count_in_class(occurrence, class_span) == 0 {
+                                    match self.inherited_member(
                                         class_index,
                                         occurrence,
                                         DeclarationKind::Field,
-                                    )
-                            {
-                                let confidence = match checked {
-                                    Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
-                                    _ => OccurrenceConfidence::Index,
-                                };
-                                return Ok(Some((
-                                    OccurrenceTarget::Local(EntityId::new(ordinal)),
-                                    confidence,
-                                )));
+                                    ) {
+                                        InheritedMemberLookup::Unique(ordinal) => {
+                                            let confidence = match checked {
+                                                Some(SymbolOutcome::Local) => {
+                                                    OccurrenceConfidence::Oracle
+                                                }
+                                                _ => OccurrenceConfidence::Index,
+                                            };
+                                            return Ok(Some((
+                                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                                confidence,
+                                            )));
+                                        }
+                                        InheritedMemberLookup::Ambiguous => {}
+                                        InheritedMemberLookup::Absent => {
+                                            if let Some(ordinal) =
+                                                self.enclosing_method(occurrence, class)
+                                            {
+                                                let confidence = match checked {
+                                                    Some(SymbolOutcome::Local) => {
+                                                        OccurrenceConfidence::Oracle
+                                                    }
+                                                    _ => OccurrenceConfidence::Index,
+                                                };
+                                                return Ok(Some((
+                                                    OccurrenceTarget::Local(EntityId::new(
+                                                        ordinal,
+                                                    )),
+                                                    confidence,
+                                                )));
+                                            }
+                                            if let InheritedMemberLookup::Unique(ordinal) = self
+                                                .inherited_member(
+                                                    class_index,
+                                                    occurrence,
+                                                    DeclarationKind::Function,
+                                                )
+                                            {
+                                                let confidence = match checked {
+                                                    Some(SymbolOutcome::Local) => {
+                                                        OccurrenceConfidence::Oracle
+                                                    }
+                                                    _ => OccurrenceConfidence::Index,
+                                                };
+                                                return Ok(Some((
+                                                    OccurrenceTarget::Local(EntityId::new(
+                                                        ordinal,
+                                                    )),
+                                                    confidence,
+                                                )));
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Ok(Some((
                                 foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
