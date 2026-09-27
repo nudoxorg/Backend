@@ -121,7 +121,12 @@ impl RenderOnce for Can {
                 .child(words(key, StyledText::new(word), vec![(0..len, link)], palette))
         });
         if !self.bare {
-            root = root.child(heading("can", &m, palette));
+            root = root.child(heading(
+                ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("heading")),
+                "can",
+                &m,
+                palette,
+            ));
         }
         root = root.child(
             div()

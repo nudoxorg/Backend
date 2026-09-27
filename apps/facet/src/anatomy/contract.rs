@@ -62,12 +62,22 @@ impl RenderOnce for ContractView {
         let mut root = div().id(self.id.clone()).flex().flex_col();
         if !self.contract.write.is_empty() {
             root = root
-                .child(heading("you write", &m, palette))
+                .child(heading(
+                    ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("write-heading")),
+                    "you write",
+                    &m,
+                    palette,
+                ))
                 .child(rows(&self.id, "write", &self.contract.write, true, &m, &self.links, palette));
         }
         if !self.contract.get.is_empty() {
             root = root
-                .child(heading("you get", &m, palette))
+                .child(heading(
+                    ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("get-heading")),
+                    "you get",
+                    &m,
+                    palette,
+                ))
                 .child(rows(&self.id, "get", &self.contract.get, false, &m, &self.links, palette));
         }
         let n = self.contract.implementors;

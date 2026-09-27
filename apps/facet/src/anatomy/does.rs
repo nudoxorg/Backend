@@ -166,13 +166,15 @@ pub fn does(id: impl Into<ElementId>, does: Does, measure: &Measure, links: &Lin
     DoesView { id: id.into(), does, measure: *measure, links: links.clone() }
 }
 
-fn group_heading(text: &str, measure: &Measure, palette: &Palette) -> gpui::Div {
-    div()
+fn group_heading(id: ElementId, text: &str, measure: &Measure, palette: &Palette) -> crate::probe::Text {
+    let text = SharedString::from(text.to_owned());
+    let words = div()
         .set(roles::GROUP, measure)
-        .text_color(palette.ink4.hsla())
+        .text_color(palette.ink3.hsla())
         .pt(k(measure, 12.0))
         .pb(k(measure, 2.0))
-        .child(SharedString::from(text.to_owned()))
+        .child(text.clone());
+    crate::probe::text(id, text, measure.role(roles::GROUP), 1.0, crate::probe::TextOverflow::Wrap, words)
 }
 
 impl RenderOnce for DoesView {
@@ -186,7 +188,7 @@ impl RenderOnce for DoesView {
         root = root.child(section_title("Does", &m, palette));
         let sub = |part: String| ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(part));
         for (g, group) in self.does.groups.iter().enumerate() {
-            root = root.child(group_heading(group.receiver.heading(), &m, palette));
+            root = root.child(group_heading(sub(format!("group-{g}-heading")), group.receiver.heading(), &m, palette));
             for (r, member) in group.rows.iter().enumerate() {
                 let kind = match member {
                     Row::One(one) => icon_kind(one.kind),
@@ -197,7 +199,7 @@ impl RenderOnce for DoesView {
             }
         }
         if !self.does.through.is_empty() {
-            root = root.child(group_heading("through its traits", &m, palette));
+            root = root.child(group_heading(sub("traits-heading".to_owned()), "through its traits", &m, palette));
             for (t, through) in self.does.through.iter().enumerate() {
                 let mut line = Line::new();
                 line.push(&through.trait_name, roles::ROW, palette.ink2.hsla());

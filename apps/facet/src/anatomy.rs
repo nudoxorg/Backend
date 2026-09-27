@@ -134,14 +134,22 @@ pub fn row_pad(measure: &Measure, value: f32) -> Pixels {
     px(value * measure.scale() * measure.density().row())
 }
 
-/// A part's heading: quiet UI words above the part.
+/// A part's heading: quiet UI words above the part, published to the probe
+/// under `id`.
 #[must_use]
-pub fn heading(text: impl Into<SharedString>, measure: &Measure, palette: &Palette) -> Div {
-    div()
+pub fn heading(
+    id: impl Into<gpui::ElementId>,
+    text: impl Into<SharedString>,
+    measure: &Measure,
+    palette: &Palette,
+) -> crate::probe::Text {
+    let text = text.into();
+    let words = div()
         .set(roles::HEAD, measure)
-        .text_color(palette.ink4.hsla())
+        .text_color(palette.ink3.hsla())
         .mb(k(measure, 6.0))
-        .child(text.into())
+        .child(text.clone());
+    crate::probe::text(id, text, measure.role(roles::HEAD), 1.0, crate::probe::TextOverflow::Wrap, words)
 }
 
 /// A section's title in the display face (`Does`, `In use`).
