@@ -106,6 +106,141 @@ pub(super) fn measure_search_source_page() {
     );
 }
 
+/// Times a full source-relation page against one package's key lookups.
+///
+/// The relation is written before the timer. `page` clones every file, which
+/// is what a package graph query used to do. `lookup` opens the same tree and
+/// reads one project's frontier plus its files.
+#[allow(clippy::expect_used, clippy::print_stdout)]
+pub(super) fn measure_package_source_lookup() -> (u128, u128) {
+    const PROJECTS: usize = 64;
+    const FILES_PER_PROJECT: usize = 16;
+    const DECLARATIONS_PER_FILE: usize = 4;
+    const SAMPLES: usize = 16;
+    const WARMUPS: usize = 2;
+    let declarations = shared_declarations(DECLARATIONS_PER_FILE).expect("declarations");
+    let entries = source_entries(PROJECTS, FILES_PER_PROJECT, &declarations).expect("entries");
+    let relation =
+        backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+            entries,
+            super::admitted_coverage().expect("coverage"),
+        )
+        .expect("relation");
+    let directory = std::env::temp_dir().join(format!(
+        "nudox-package-source-lookup-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("store directory");
+    let registry = backend_engine::RelationAdmissionRegistry::new()
+        .with_relation::<backend_engine::ProductSourceRelation>()
+        .expect("register");
+    let store =
+        backend_engine::FileStore::open_with_registry(&directory, 64 * 1024 * 1024, registry)
+            .expect("store");
+    store
+        .write_relation_state(&relation)
+        .expect("write relation");
+    let root = *relation.root().as_bytes();
+    let target = backend_engine::package_key("pkg-63");
+    let target_key = target.to_bytes();
+    let claim = || {
+        backend_engine::UntrustedId::<backend_engine::ProductSourceRelation>::from_wire(
+            &root,
+            backend_engine::IdContext::relation::<backend_engine::ProductSourceRelation>(),
+        )
+        .expect("root claim")
+    };
+    let open = || backend_engine::LazyTree::open(&store, claim()).expect("open");
+    let paged = {
+        let tree = open();
+        let mut after = None;
+        let mut files = Vec::new();
+        loop {
+            let page = tree
+                .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .expect("page");
+            for (key, record) in page.entries() {
+                if record
+                    .file_fields()
+                    .is_some_and(|file| file.project == target_key)
+                {
+                    files.push((*key, record.clone()));
+                }
+            }
+            let Some(next) = page.next().copied() else {
+                break;
+            };
+            after = Some(next);
+        }
+        files.sort_by_key(|(key, _)| *key);
+        files
+    };
+    let looked_up = {
+        let tree = open();
+        let project = tree
+            .lookup(&target_key)
+            .expect("lookup project")
+            .expect("project row");
+        let fields = project.project_fields().expect("project fields");
+        let mut files = Vec::with_capacity(fields.files.len());
+        for key in fields.files {
+            let record = tree.lookup(key).expect("lookup file").expect("file row");
+            files.push((*key, record));
+        }
+        files.sort_by_key(|(key, _)| *key);
+        files
+    };
+    (paged.len() == FILES_PER_PROJECT
+        && looked_up.len() == FILES_PER_PROJECT
+        && paged == looked_up)
+        .then_some(())
+        .expect("package lookup did not match the filtered page");
+
+    let page = sample(WARMUPS, SAMPLES, || {
+        let tree = open();
+        let mut after = None;
+        let mut files = Vec::new();
+        loop {
+            let page = tree
+                .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .expect("page");
+            for (key, record) in page.entries() {
+                if record.file_fields().is_some() {
+                    files.push((*key, record.clone()));
+                }
+            }
+            let Some(next) = page.next().copied() else {
+                break;
+            };
+            after = Some(next);
+        }
+        files.len()
+    });
+    let lookup = sample(WARMUPS, SAMPLES, || {
+        let tree = open();
+        let project = tree
+            .lookup(&target_key)
+            .expect("lookup project")
+            .expect("project row");
+        let fields = project.project_fields().expect("project fields");
+        let mut files = Vec::with_capacity(fields.files.len());
+        for key in fields.files {
+            files.push(tree.lookup(key).expect("lookup file").expect("file row"));
+        }
+        files.len()
+    });
+    let (page_median, page_p95) = percentiles(&page);
+    let (lookup_median, lookup_p95) = percentiles(&lookup);
+    println!(
+        "package_source_lookup projects={PROJECTS} files={} target_files={FILES_PER_PROJECT} declarations={DECLARATIONS_PER_FILE} page_median_ns={page_median} page_p95_ns={page_p95} lookup_median_ns={lookup_median} lookup_p95_ns={lookup_p95}",
+        PROJECTS * FILES_PER_PROJECT
+    );
+    drop(store);
+    let _ = std::fs::remove_dir_all(&directory);
+    (page_median, lookup_median)
+}
+
 fn snapshot_holding(
     projects: usize,
     files_per_project: usize,
@@ -246,6 +381,52 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::{shared_declarations, snapshot_holding};
+
+    #[test]
+    fn one_package_lookup_matches_its_rows_in_the_full_page() {
+        let declarations = shared_declarations(4).expect("declarations");
+        let snapshot = snapshot_holding(8, 8, &declarations).expect("snapshot");
+        let full = super::super::read_indexed_sources(&snapshot).expect("page");
+        let package = backend_engine::package_key("pkg-7");
+        let scoped = super::super::read_package_sources(&snapshot, package).expect("lookup");
+        let project_key = package.to_bytes();
+        let mut expected = full
+            .files
+            .iter()
+            .filter(|(_, record)| {
+                record
+                    .file_fields()
+                    .is_some_and(|file| file.project == project_key)
+            })
+            .map(|(key, record)| (*key, record.clone()))
+            .collect::<Vec<_>>();
+        expected.sort_by_key(|(key, _)| *key);
+        let mut actual = scoped.files.clone();
+        actual.sort_by_key(|(key, _)| *key);
+        assert_eq!(full.files.len(), 64);
+        assert_eq!(scoped.projects.len(), 1);
+        assert_eq!(
+            scoped
+                .projects
+                .values()
+                .next()
+                .map(|project| project.label.as_str()),
+            Some("pkg-7")
+        );
+        assert_eq!(actual, expected);
+        let missing = super::super::read_package_sources(
+            &snapshot,
+            backend_engine::package_key("pkg-missing"),
+        )
+        .expect("missing package");
+        assert!(missing.projects.is_empty());
+        assert!(missing.files.is_empty());
+        let (page_median, lookup_median) = super::measure_package_source_lookup();
+        assert!(
+            lookup_median < page_median,
+            "package lookup {lookup_median} ns was not cheaper than paging every file {page_median} ns"
+        );
+    }
 
     #[test]
     fn paged_sources_keep_project_labels_paths_and_declarations() {

@@ -620,6 +620,25 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
     Ok(IndexedSources { projects, files })
 }
 
+/// Loads one package's project frontier and source files by key.
+///
+/// Graph and reference queries name a single package. Point lookup reads that
+/// frontier and its files. The full page in [`read_indexed_sources`] stays the
+/// path for workspace-wide search and publication recovery.
+fn read_package_sources(
+    snapshot: &WorkspaceSnapshot,
+    package: backend_engine::PackageKey,
+) -> Result<IndexedSources, BuiltinModelError> {
+    view_publish::read_project_sources(snapshot, package)
+}
+
+fn empty_indexed_sources() -> IndexedSources {
+    IndexedSources {
+        projects: BTreeMap::new(),
+        files: Vec::new(),
+    }
+}
+
 fn row_admission_bytes(row: &Row) -> Option<usize> {
     let document = row.document.iter().try_fold(0usize, |bytes, fragment| {
         bytes.checked_add(match fragment {
@@ -1458,6 +1477,11 @@ pub fn measure_search_corpus() {
 /// measurement for the source page a warm search used to read and discard.
 pub fn measure_search_source_page() {
     search_source_page::measure_search_source_page();
+}
+
+/// Times paging every source file against looking up one package's frontier.
+pub fn measure_package_source_lookup() {
+    search_source_page::measure_package_source_lookup();
 }
 
 /// Times one semantic-image validation against the three validations view
