@@ -726,3 +726,49 @@ mod stale_generation {
         let _ = fs::remove_file(path);
     }
 }
+
+#[test]
+fn a_reopened_journal_keeps_every_row_fact_with_its_text() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("backend-locald-view-facts-{stamp}.journal"));
+    let head = super::super::genesis().expect("checked builtin genesis");
+    let capability = super::super::test_builtin_view_capability().expect("coverage");
+    let (base, _) = super::super::initial_view().expect("checked initial view");
+    let facts = backend_compile::DeclarationFacts {
+        deprecation: backend_compile::Fact::Present(backend_compile::Deprecation::new(
+            Some("1.2.0"),
+            Some("use `fresh` instead"),
+        )),
+        obligation: backend_compile::Fact::Present(backend_compile::Obligation::Required),
+    };
+    let row = backend_engine::Row::new(
+        backend_engine::RowId::Symbol(backend_engine::symbol_key("journal::stale")),
+        base.basis(),
+        "journal::stale",
+    )
+    .with_facts(facts.clone());
+    let prepared = base
+        .prepare(backend_engine::ViewDelta::Upsert { row }, capability.clone())
+        .expect("prepare facts row");
+    let (view, _) = base.commit(prepared).expect("commit facts row");
+    let cursor = Cursor::for_view_root(&view);
+    let mut journal = ViewJournal::open(&path).expect("open view journal");
+    journal
+        .persist(head.root(), &view, cursor, None)
+        .expect("persist facts row");
+    let reopened = ViewJournal::open(&path).expect("reopen view journal");
+    let recovered = reopened
+        .load_for_workspace(head.root(), &capability)
+        .expect("load facts row")
+        .expect("facts snapshot");
+    assert_eq!(recovered.view.root(), view.root());
+    let row = &recovered.view.rows()[0];
+    let notice = row.facts.deprecation.present().expect("deprecation survived");
+    assert_eq!(notice.since(), Some("1.2.0"));
+    assert_eq!(notice.note(), Some("use `fresh` instead"));
+    assert_eq!(row.facts, facts);
+    let _ = fs::remove_file(path);
+}
