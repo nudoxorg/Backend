@@ -3,7 +3,7 @@
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {
   name = "native protocol";
-  ilo_priority = 3;
+  start_order = 3;
   complexity = {
     score = 893;
     loc = 867;

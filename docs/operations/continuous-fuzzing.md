@@ -1,83 +1,72 @@
 # Continuous fuzzing
 
-ilo builds these packages and mounts one durable corpus directory per target.
-The binary is a bolero libFuzzer runner. argv[1] is that mount. AFL++ and
-honggfuzz are not linked; ziggy should select its libFuzzer engine or exec
-the script below. This repository does not configure MachineConfigurations.
-
-```sh
-nix build .#fuzz-pack-decode
-nix build .#fuzz-journal-codec
-nix build .#fuzz-native-protocol
-nix build .#fuzz-store-raw-property
-nix build .#fuzz-wire-workspace
-nix build .#fuzz-wire-replication
-nix build .#fuzz-flow-evaluator
-./result/bin/fuzz-pack-decode /durable/fuzz/pack-decode/corpus
-```
-
-| Package | ilo order | Mount before exec | Committed seeds |
-| --- | ---: | --- | --- |
-| `.#fuzz-pack-decode` | 1 | `/durable/fuzz/pack-decode/corpus` | `tests/fuzz/targets/pack-decode/corpus` |
-| `.#fuzz-journal-codec` | 2 | `/durable/fuzz/journal-codec/corpus` | `tests/fuzz/targets/journal-codec/corpus` |
-| `.#fuzz-native-protocol` | 3 | `/durable/fuzz/native-protocol/corpus` | `tests/fuzz/targets/native-protocol/corpus` |
-| `.#fuzz-store-raw-property` | 4 | `/durable/fuzz/store-raw-property/corpus` | `tests/fuzz/targets/store-raw-property/corpus` |
-| `.#fuzz-wire-workspace` | 5 | `/durable/fuzz/wire-workspace/corpus` | `tests/fuzz/targets/wire-workspace/corpus` |
-| `.#fuzz-wire-replication` | 6 | `/durable/fuzz/wire-replication/corpus` | `tests/fuzz/targets/wire-replication/corpus` |
-| `.#fuzz-flow-evaluator` | 7 | `/durable/fuzz/flow-evaluator/corpus` | `tests/fuzz/targets/flow-evaluator/corpus` |
-
-`fuzz-pack-decode` calls `IndexPack::open`. `fuzz-journal-codec` calls `JournalCodec` for `EffectLog` and `DispatchLog`. `fuzz-native-protocol` calls `NativeEnvelope::decode`. `wire-workspace` is the version/delta wire harness. Create the mount directory before the unit starts. The wrapper writes new coverage only there and passes the committed seeds as a second, read-only corpus. Crashes go to the sibling `artifacts/` directory, never inside the corpus.
-
-The same runners are also `.#continuous-fuzz.bins.<id>`. `.#continuous-fuzz` is the bundle Ember already copies. `.#fuzz-<id>` is the alias ilo systemd should hang.
+`packages.${system}.continuous-fuzz` is the only contract. Its `passthru` is `bins`, `corpora`, `engines`, and `metadata`. Schema id is `nudox.continuous-fuzz.v1`. Auth copies that shape and sets `engine_catalog` entry `go-native` to `linked = true` and `adapter = "testing.F"`. This repo links `libfuzzer` with `adapter = "bolero"`. `aflpp`, `honggfuzz`, and `go-native` are the same records with `linked = false`. `.#fuzz-<id>` is an optional alias of `bins.<id>`. This repository does not configure MachineConfigurations.
 
 ```sh
 nix build .#continuous-fuzz
-nix build .#continuous-fuzz.corpora.store-raw-property
 nix eval --json .#continuous-fuzz.metadata
-cargo test -p backend-fuzz
+nix build .#continuous-fuzz.bins.journal-codec
+./result/bin/fuzz-journal-codec /durable/fuzz/journal-codec/corpus
 ```
 
-`cargo test` must not be built with `--cfg fuzzing` or `--cfg fuzzing_libfuzzer`,
-and it must not inherit `BOLERO_RANDOM_ITERATIONS`, `BOLERO_RANDOM_TEST_TIME_MS`,
-or `BOLERO_RANDOM_MAX_LEN`. The harness exits 2 when those variables are set.
+| `start_order` | Alias | Mount (argv[1]) | Committed seeds |
+| ---: | --- | --- | --- |
+| 1 | `.#fuzz-pack-decode` | `/durable/fuzz/pack-decode/corpus` | `tests/fuzz/targets/pack-decode/corpus` |
+| 2 | `.#fuzz-journal-codec` | `/durable/fuzz/journal-codec/corpus` | `tests/fuzz/targets/journal-codec/corpus` |
+| 3 | `.#fuzz-native-protocol` | `/durable/fuzz/native-protocol/corpus` | `tests/fuzz/targets/native-protocol/corpus` |
+| 4 | `.#fuzz-store-raw-property` | `/durable/fuzz/store-raw-property/corpus` | `tests/fuzz/targets/store-raw-property/corpus` |
+| 5 | `.#fuzz-wire-workspace` | `/durable/fuzz/wire-workspace/corpus` | `tests/fuzz/targets/wire-workspace/corpus` |
+| 6 | `.#fuzz-wire-replication` | `/durable/fuzz/wire-replication/corpus` | `tests/fuzz/targets/wire-replication/corpus` |
+| 7 | `.#fuzz-flow-evaluator` | `/durable/fuzz/flow-evaluator/corpus` | `tests/fuzz/targets/flow-evaluator/corpus` |
+
+`kind = "fuzz"` rows are scheduled. `kind = "property"` rows are siblings in the same `targets` array: `laws` (`tests/laws`) and `store-frame` (`crates/store/src/view/validate/raw_property.rs`). They have `engine = "property"`, `schedule = false`, and null `bin`, `corpus`, `rank`, and `start_order`. They are not overnight units.
+
+Create the mount before the unit starts. The wrapper writes new coverage only there and passes `corpora.<id>` as a second, read-only corpus. Crashes go to the sibling `artifacts/` directory.
 
 ## Attr paths
 
-The root flake's `packages` output cannot store a bare attrset: `nix flake check`
-requires each package to be a derivation. `.#continuous-fuzz` is that derivation.
-`bins`, `corpora`, `engines`, and `metadata` are `passthru`, so they are real
-attributes of the same package. Short `.#` selects the evaluating system.
-The systems are `aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`.
+`nix flake check` requires each package to be a derivation, so `.#continuous-fuzz` is a derivation and the four collections are `passthru`. Short `.#` selects the evaluating system (`aarch64-darwin`, `aarch64-linux`, `x86_64-linux`).
 
-| Path | What Ember gets |
+| Path | Value |
 | --- | --- |
 | `packages.${system}.continuous-fuzz` | Bundle. `$out/bin/fuzz-<id>`, `$out/engines/fuzz-engine-<id>`, `$out/corpora/<id>/`, `$out/metadata.json` |
-| `packages.${system}.continuous-fuzz.bins.<id>` | Supervised runner. Writable corpus first, committed seeds second |
-| `packages.${system}.continuous-fuzz.corpora.<id>` | Committed seeds only. Does not build the Rust engine |
-| `packages.${system}.continuous-fuzz.engines.<id>` | Instrumented bolero/libFuzzer binary with `FUZZ_TARGET=<id>` |
-| `packages.${system}.continuous-fuzz.metadata` | DiffWake scores, scales, re-entry, triage. Pure data, `nix eval --json` |
-| `packages.${system}.fuzz-<id>` | Alias of `bins.<id>`. This is the package ilo builds |
+| `packages.${system}.continuous-fuzz.bins.<id>` | Supervised runner for a `kind=fuzz` target. argv[1] is the writable corpus |
+| `packages.${system}.continuous-fuzz.corpora.<id>` | Committed seeds. Does not build the instrumented binary |
+| `packages.${system}.continuous-fuzz.engines.<id>` | Adapter derivation. `passthru.adapter` is `{ id, family, linked, adapter }` |
+| `packages.${system}.continuous-fuzz.engines.<id>.adapter` | Plug record. Here `id = "libfuzzer"` and `adapter = "bolero"` |
+| `packages.${system}.continuous-fuzz.metadata` | `nudox.continuous-fuzz.v1` document. `nix eval --json` |
+| `packages.${system}.fuzz-<id>` | Optional alias of `bins.<id>` |
 
-Current packages, in `ilo_priority` order: `fuzz-pack-decode`, `fuzz-journal-codec`, `fuzz-native-protocol`, `fuzz-store-raw-property`, `fuzz-wire-workspace`, `fuzz-wire-replication`, `fuzz-flow-evaluator`.
+`metadata.target_fields` is the row schema. Every fuzz, property, and backlog row has the same keys. `metadata.engine_catalog` is the adapter list. `metadata.kinds` is `[ "fuzz", "property" ]`. `rank` is `complexity.score * gap.score * blast.score`. Recompute it. Skip `rank == null` and `schedule == false`. `start_order` is not an input to rank. A fuzz row with gap 0 has rank 0 and `schedule` true, so it still runs.
 
-| Ember piece | How it uses the attrset |
-| --- | --- |
-| WarmVault | On first start, copy `corpora.<id>` into `metadata.targets[].durable_corpus` (`/durable/fuzz/<id>/corpus`). That directory is the incremental corpus. It must outlive the nix store paths |
-| DiffWake | Rank `metadata.targets` by `rank` = `complexity.score * gap.score * blast.score`. Recompute it. Skip `rank == null` and `schedule == false`. Do not multiply by `churn` |
-| Fabric | Build `.#fuzz-<id>` or `.#continuous-fuzz`. Do not add them to `nix flake check`. One shared Rust derivation feeds every engine; seed changes do not rebuild it |
-| TriagePlane | Alert when `bins.<id>` exits non-zero and `artifacts/` beside the durable corpus contains a file. Exit 2 and an empty `artifacts/` are supervision failures |
-| `nudox fuzz` | `nix build .#fuzz-<id> && ./result/bin/fuzz-<id> /durable/fuzz/<id>/corpus` |
-| ilo | Start `fuzz-<id>` by `ilo_priority` ascending. Mount `/durable/fuzz/<id>/corpus` and pass it as argv[1]. The engine hint is `bolero-libfuzzer`. Do not point AFL++ or honggfuzz at the binary |
+Consumers read `metadata.consumers`. There is no second path: no cargo command, no test-runner filter, and no per-language field names in that document.
 
-`engine_hint` on a harnessed target is `bolero-libfuzzer`. `ci_engine_hint` is `bolero-test`. `ilo_priority` is the systemd start order. It is not an input to `rank`. A harness with gap 0 has rank 0 and `schedule` true; ilo still starts it.
+## Schema
+
+```json
+{
+  "schema": "nudox.continuous-fuzz.v1",
+  "kinds": ["fuzz", "property"],
+  "engine_catalog": [
+    {"id": "libfuzzer", "family": "coverage-guided", "linked": true, "adapter": "bolero"},
+    {"id": "aflpp", "family": "coverage-guided", "linked": false, "adapter": null},
+    {"id": "honggfuzz", "family": "coverage-guided", "linked": false, "adapter": null},
+    {"id": "go-native", "family": "coverage-guided", "linked": false, "adapter": null},
+    {"id": "property", "family": "bounded", "linked": true, "adapter": "proptest"}
+  ],
+  "formula": "complexity.score * gap.score * blast.score"
+}
+```
+
+A fuzz row sets `kind` to `"fuzz"`, `engine` to a catalog id, `bin` and `corpus` to the passthru paths, `max_input_bytes` to the cap, and `start_order` to the start sequence. A property row sets `kind` to `"property"`, `engine` to `"property"`, and the artifact fields to null. Auth keeps every key. It flips `go-native.linked` to true, sets that record's `adapter` to `"testing.F"`, and points fuzz rows at `engine = "go-native"` when that is the plug. Corpus path strings are per repo; the field name is `committed_corpus`.
 
 ## Rank
 
-`complexity.score` is `loc + error_variants + discriminants`, measured with `wc -l` and enum reads on 2026-09-27. It is not premultiplied. `gap` is an ordinal classification, not an llvm-cov percentage (`llvm_cov_percent` is null; that percentage was not measured). `0` means raw bytes already have bolero or an exhaustive scan. `2` means only fixed hostile examples exist. `3` means the decoder is not callable outside its crate. `1` is unused. `blast` is the trust boundary: `5` untrusted remote or durable bytes, `4` a session frame, `3` a local process facade. `churn` is `git log --oneline` and `ranking_factor` is false. History reaches `2026-01-11`, and `crates/engine/src/lib.rs` has 18 commits, but `decode_command_dto` is `serde_json::from_slice`, so commit count is not a factor.
+`complexity.score` is `loc + error_variants + discriminants`, measured with `wc -l` and enum reads on 2026-09-27. It is not premultiplied. `gap` is an ordinal classification, not an llvm-cov percentage (`llvm_cov_percent` is null; that percentage was not measured). `0` means raw bytes already have an in-process engine or an exhaustive scan. `2` means only fixed hostile examples exist. `3` means the decoder is not callable outside its crate. `1` is unused. `blast` is the trust boundary: `5` untrusted remote or durable bytes, `4` a session frame, `3` a local process facade. `churn` is `git log --oneline` and `ranking_factor` is false. History reaches `2026-01-11`, and `crates/engine/src/lib.rs` has 18 commits, but `decode_command_dto` is `serde_json::from_slice`, so commit count is not a factor.
 
 Nix recomputes `rank` and aborts unless `complexity.score` equals the sum of its parts.
 
-| id | loc | variants | discriminants | complexity | gap | blast | rank | ilo | schedule |
+| id | loc | variants | discriminants | complexity | gap | blast | rank | start | schedule |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `pack-decode` | 2737 | 33 | 5 | 2775 | 2 | 5 | 27750 | 1 | harness. `IndexPack::open` |
 | `journal-codec` | 763 | 18 | 18 | 799 | 2 | 5 | 7990 | 2 | harness. Effect and dispatch records |
@@ -97,7 +86,7 @@ Nix recomputes `rank` and aborts unless `complexity.score` equals the sum of its
 
 `native-protocol` calls `NativeEnvelope::decode` and requires `encode` to reproduce the input. Loc is `wc -l` of the four native payload files (867). `NativeProtocolError` has 20 variants. Discriminants are the 6 `NativeRecordKind` variants. Gap is 2. Blast is 5: the bytes are an untrusted helper payload. The cap is 4096, below `MAX_NATIVE_PAYLOAD_BYTES` (262144). The canonical seed is the encoder output of one declaration record (135 bytes). Linking `backend-compile` pulls semantic and tree-sitter; the fuzz derivation no longer shrinks the workspace member list, because `backend-engine` path dependencies are members.
 
-`store-raw-property` calls `ValidatedFrame::validate`. Loc is `wc -l` of the production validator (908), not the 35-line `raw_property.rs` test module. `ValidateError` has 12 variants and `DescriptorError` has 10. Discriminants are the `NDX1` magic plus `SectionKind` (`Metadata`, `Rows`, `Data`). Gap stays 0 because `raw_property.rs` already runs `bolero::check!` and scans every `u8`. Blast is 5: the error type describes untrusted frame bytes, and the frame is the durable store envelope. The harness cap is 4096 bytes, below `MAX_FRAME_BYTES` (1_048_576). There is no public encoder. The canonical seed is the 41-byte one-section literal. `structural_mutation_laws` stays `pub(super)`.
+`store-raw-property` calls `ValidatedFrame::validate`. Loc is `wc -l` of the production validator (908), not the 35-line `raw_property.rs` test module. `ValidateError` has 12 variants and `DescriptorError` has 10. Discriminants are the `NDX1` magic plus `SectionKind` (`Metadata`, `Rows`, `Data`). Gap stays 0 because `raw_property.rs` already runs an in-process property engine and scans every `u8`. The same file is the property sibling `store-frame`. Blast is 5: the error type describes untrusted frame bytes, and the frame is the durable store envelope. The harness cap is 4096 bytes, below `MAX_FRAME_BYTES` (1_048_576). There is no public encoder. The canonical seed is the 41-byte one-section literal. `structural_mutation_laws` stays `pub(super)`.
 
 `flow-evaluator` is a structured grammar (`FLW1` plus 16-byte records), not a production decoder. It calls `reduce_rows`, `filter`, and `distinct`. The independent oracle is an `i128` sum. Loc is `wc -l` of `operators/support.rs`, `operators/stateless.rs`, `types/errors.rs`, and `batch/schema.rs` (772). `FlowError` has 23 variants. The only input discriminant is `FLW1`. Gap is 2. Blast is 3 because this grammar is not a trust boundary on the wire. `types/row.rs` and `types/time.rs` are value holders and are not in the loc sum.
 
@@ -120,7 +109,7 @@ Create `tests/fuzz/targets/<id>/`:
 | `corpus/bad_magic` | Must be rejected |
 | `corpus/.gitattributes` | `* binary` |
 
-`<id>` matches `[a-z][a-z0-9-]*`. `score.nix` must set `ilo_priority` to a unique integer from 1 through 9. Nix aborts when two harnesses share one. Do not add a `[[bin]]` and do not edit `default.nix`. `tests/fuzz/build.rs` and `.config/nix/fuzz.nix` discover the directory. The package name is `fuzz-<id>`. Add a line to `tests/fuzz/instrumented` only when a new decoder crate joins the link closure. The list today is `backend_fuzz`, `fuzz_target`, `backend_engine`, `backend_compile`, `backend_semantic`, `backend_flow`, `backend_replication`, `backend_version`, `backend_store`, and `backend_platform`.
+`<id>` matches `[a-z][a-z0-9-]*`. `score.nix` must set `start_order` to a unique integer from 1 through 9. Nix aborts when two harnesses share one. The exported row key is `start_order`. This repo's discoverer reads `oracle.rs`; that filename is the Rust plug, not a schema field. Do not add a `[[bin]]` and do not edit `default.nix`. `tests/fuzz/build.rs` and `.config/nix/fuzz.nix` discover the directory. The optional alias is `fuzz-<id>`. Add a line to `tests/fuzz/instrumented` only when a new decoder crate joins the link closure. The list today is `backend_fuzz`, `fuzz_target`, `backend_engine`, `backend_compile`, `backend_semantic`, `backend_flow`, `backend_replication`, `backend_version`, `backend_store`, and `backend_platform`.
 
 ```sh
 cargo test -p backend-fuzz
@@ -166,17 +155,27 @@ libFuzzer `DONE` lines: pack `cov: 415 ft: 462 corp: 13/1057b exec/s: 23189`; jo
 
 Re-entry used the same writable directories and `-max_total_time=3`. Pack loaded 13 durable files plus the 3 committed seeds and `INITED` at cov 415 (the 10-second run's final coverage); `new_units_added` was 0. Journal loaded 127 durable files plus the 5 committed seeds and `INITED` at cov 627. Native loaded 40 durable files plus the 3 seeds and `INITED` at cov 345. Store loaded 32 durable files plus the 3 committed seeds and `INITED` at cov 550 at 0.066 s. Flow loaded 299 durable files plus the 3 seeds; process output started at 0.054 s and `INITED` at cov 1488 at 2.172 s, which is the time spent replaying that corpus. Workspace loaded 136 durable files plus the 3 seeds and `INITED` at cov 795 at 0.060 s. Replication loaded 124 durable files plus the 3 seeds and `INITED` at cov 955 at 0.040 s. The 3-second runs' exec/s are startup-dominated and are not the rates in the table. Pack's 3-second average was 14571. Journal's was 7235. Native's was 37569.
 
+### One-line harness change, then warm re-entry
+
+Measured on 2026-09-27 against `/tmp/fuzz-runs/journal-codec/corpus` with a pty so libFuzzer flushed `INITED`. The clock is `time.monotonic` from process start.
+
+Unchanged binary, 3 seconds: `INITED` at 0.065 s, `cov: 627 ft: 913`, `exec/s: 7371`, `new_units_added: 2`, directory listing 128 files to 130, 0 files in `artifacts/`.
+
+One line in `tests/fuzz/targets/journal-codec/oracle.rs` then an incremental instrumented rebuild (`cargo build --offline -p backend-fuzz --bin fuzz-target`, 4.00 s). The line was a period added to the stable-encode error string, then reverted so the tree does not keep a probe. Same warm directory, 3 seconds: `INITED` at 0.058 s, still `cov: 627 ft: 913` (the previous useful coverage), `stat::average_exec_per_sec: 6238`, `new_units_added: 1`, directory listing 130 files to 131, 0 crash artifacts. Coverage did not grow. The 6238 exec/s figure is the 3-second average, which includes corpus replay, and is not the 10-second rate of 56797.
+
+`cargo test --offline -p backend-fuzz` was run twice after the revert, without `--cfg fuzzing` or `--cfg fuzzing_libfuzzer`. Each run reported 10 passed, 0 failed. That is 0 failures in 2 smoke runs. A flake rate is not estimated from two runs. Unique crashes in the two journal re-entry runs: 0.
+
 `cargo test -p backend-fuzz` on the same host after these harnesses: 10 passed, 0 failed. Libtest reported the library suite at 0.00 s. The test-profile compile of that invocation finished in 3.16 s because the dependency crates were already built. That is the smoke, not a coverage proof. Clippy `cargo clippy -p backend-fuzz --all-targets --no-deps -- -D warnings` exited 0.
 
-## What other projects do
+## What other organizations do
 
-**s2n-quic** keeps one bolero `check!` per component, commits the corpus, and replays it with `cargo test`. CI restores `corpus.tar.gz` before tests ([workflow](https://github.com/aws/s2n-quic/blob/main/.github/workflows/ci.yml), [guide](https://github.com/aws/s2n-quic/blob/main/docs/dev-guide/ci.md)). Online QUIC and UDP fuzzers are different programs. Copy the split and the committed seeds. Do not adopt corpus tarballs, Kani, or an online protocol fuzzer.
+**OSS-Fuzz** takes a project `build.sh` that links `$LIB_FUZZING_ENGINE` and writes one binary per target. The default engine list is libFuzzer, AFL++, Honggfuzz, and Centipede. The project does not pick the engine inside the harness. A seed zip sits beside the binary ([new project guide](https://google.github.io/oss-fuzz/getting-started/new-project-guide/)). Copy: one target list, seeds separate from the binary, engines as plugs. Do not copy `build.sh`, Centipede, or a per-language schema.
 
-**rustls** puts cargo-fuzz in a side workspace `fuzz/`. CI job `fuzz` in [`.github/workflows/build.yml`](https://github.com/rustls/rustls/blob/main/.github/workflows/build.yml) runs `cargo fuzz build` and then `cargo fuzz run $target -- -max_total_time=10`. OSS-Fuzz [`projects/rustls/build.sh`](https://github.com/google/oss-fuzz/blob/master/projects/rustls/build.sh) copies release binaries out and zips an external seed corpus. Copy the smoke-versus-always-on split and the seed corpus beside the binary. Do not make cargo-fuzz the discovery root.
+**ClusterFuzz** runs those binaries. A fuzz target is the thing that accepts bytes. A fuzzing engine (libFuzzer or AFL) is the thing that mutates and keeps the corpus. LibFuzzer and AFL jobs share the corpus for the same targets; the job name selects the engine ([libFuzzer and AFL++](https://google.github.io/clusterfuzz/setting-up-fuzzing/libfuzzer-and-afl/), [glossary](https://google.github.io/clusterfuzz/reference/glossary/)). Copy: `engine` is a field on the target, not a second package layout. Do not run ClusterFuzz, and do not point AFL++ at a binary whose catalog entry says `linked = false`.
 
-**tokio** CI job `check-fuzzing` only runs `cargo fuzz check` ([`tokio/.github/workflows/ci.yml`](https://github.com/tokio-rs/tokio/blob/master/.github/workflows/ci.yml)). Always-on execution is OSS-Fuzz [`projects/tokio/build.sh`](https://github.com/google/oss-fuzz/blob/master/projects/tokio/build.sh). The integration is [tokio-rs/tokio#5391](https://github.com/tokio-rs/tokio/issues/5391) and [oss-fuzz#9480](https://github.com/google/oss-fuzz/pull/9480). Copy "CI proves the short oracle; a supervisor runs overnight."
+**OneFuzz** splits a libFuzzer task into `setup` (the executable), `inputs` (the corpus that grows), `readonly_inputs` (extra seeds that are not written back), and `crashes` ([containers](https://microsoft.github.io/onefuzz/containers.html)). A new build replaces `setup` and keeps `inputs`. Copy: `bins.<id>` can be replaced while `durable_corpus` stays, and `corpora.<id>` is the read-only seed set. Do not adopt Azure containers or OneFuzz templates.
 
-Bolero's [corpus replay](https://camshaft.github.io/bolero/features/corpus-replay.html) looks beside a `#[test]`, under `__fuzz__/`, not at the committed tree. These harnesses read `targets/<id>/corpus` themselves. The OSS-Fuzz Rust guide ([getting started](https://google.github.io/oss-fuzz/getting-started/new-project-guide/rust-lang/)) ships a seed zip next to the binary and treats crashes as artifacts, not as CI success.
+Go's `testing.F` is the adapter auth sets on `go-native`. It is an engine plug, not a second schema ([Go fuzzing](https://go.dev/doc/security/fuzz/)).
 
 ## Adversarial findings
 
@@ -192,7 +191,7 @@ Bolero's [corpus replay](https://camshaft.github.io/bolero/features/corpus-repla
 10. **Shared encoder/decoder bugs.** A bug on both sides can still look like a fixpoint. `tests/laws` is the independent model. This package does not invent a second parser.
 11. **Release `panic = "abort"`.** Only the fuzz derivation rewrites that profile to `unwind` and disables symbol stripping.
 12. **`#[test]` corpus discovery.** Bolero's test engine looks beside the test. Replay reads the committed directory itself.
-13. **Nextest group traps.** `.config/nix/control.nix` routes tests whose names match `corpus`, `native`, or `process` into scarce groups. The `native` alternative is unanchored. The filter now also excludes `binary(backend_laws)` and the three `raw_property` bolero names, so that substring cannot move the laws suite or the store bolero tests into the 45-second native-compiler group. Harness test names still avoid those substrings. `backend test changed` is the PR library gate (there is no `backend test pr`). Its expression is `kind(lib) | (package(backend-laws) & kind(test))`. `kind(lib)` includes `tests/laws/src/lib.rs` and `crates/store/src/view/validate/raw_property.rs` when those packages are in the changed set. The second clause includes `tests/laws/tests/*.rs`, which `kind(lib)` alone dropped. `--package` is AND-ed with the expression, so a PR that does not touch `backend-laws` or `backend-store` does not run them. That is changed-path selection.
+13. **Test-runner filters are not the lattice.** `.#continuous-fuzz` has no test-runner command and no check layout. Backend's library gate still excludes `binary(backend_laws)` and the store property names from the native-compiler group so a substring in `control.nix` cannot drop them. That filter is a Backend test runner. Auth does not copy it.
 14. **Hand-listed packages drift.** Discovery is `tests/fuzz/targets/<id>/` plus `readDir`. Nix aborts when `score.nix` disagrees with its own sum, when `llvm_cov_percent` is set, or when a seed file is missing.
 15. **Bounded smoke is not a proof.** Sixteen iterations can stay green while bugs remain. CI acceptance is the canonical seed plus replay.
 16. **LibFuzzer abort versus the shrunk input.** On an oracle failure bolero prints the shrunk input and then aborts. The crash artifact may be the pre-shrink buffer. Triage copies the shrunk bytes from stderr into `corpus/` after checking the cap.
@@ -200,8 +199,8 @@ Bolero's [corpus replay](https://camshaft.github.io/bolero/features/corpus-repla
 18. **Uninstrumented libFuzzer is a false failure.** Without sancov, libFuzzer loads the seeds and exits 1 with `no interesting inputs were found`. Applying sancov to every crate fails the link of build scripts. The wrapper allowlist is `tests/fuzz/instrumented`.
 19. **A one-shot temp corpus throws away coverage.** The durable directory is outside the nix store and outside the git tree. The re-entry run above reloaded it and `INITED` at the previous final coverage.
 20. **Adding a harness used to mean a new Cargo bin and a new Nix function.** One `fuzz-target` binary and `FUZZ_TARGET` select the oracle. `.#fuzz-<id>` appears from the directory listing.
-21. **`fuzz-*` is not an AFL++ or honggfuzz target.** The package ilo builds is a bolero libFuzzer runner. It reads `BOLERO_LIBFUZZER_ARGS` and a corpus directory. AFL++ forkserver mode and honggfuzz persistent mode are not linked. Ziggy should select libFuzzer, or exec `result/bin/fuzz-<id> /durable/fuzz/<id>/corpus`.
-22. **Gap 0 makes rank 0.** `store-raw-property` already has in-crate bolero, so the product is 0. Sorting units by rank would start it last. `ilo_priority` is a separate integer and `schedule` stays true.
+21. **Unlinked engines are catalog rows.** `engine_catalog` lists `aflpp`, `honggfuzz`, and `go-native` with `linked = false`. `bins.<id>` is the libFuzzer adapter. Do not exec those bins under AFL++ or honggfuzz. Auth sets `go-native.linked` and does not exec this repo's binary.
+22. **Gap 0 makes rank 0.** `store-raw-property` already has an in-process property engine, so the product is 0. Sorting units by rank would start it last. `start_order` is a separate integer and `schedule` stays true. The property sibling is `store-frame`, which is not scheduled.
 23. **Byte-identical journal encode is the wrong law.** A minimized `DispatchRecord::Terminal` of kind `Cancelled` decodes, and `encode` writes the unused 32-byte output root back as zeros. The first journal campaign aborted on that (libFuzzer exit 77, artifact 85 bytes, now `corpus/cancelled-root`). The oracle now requires a stable canonical encode: `decode(encode(record)) == record` and a second encode equals the first. It does not require the input bytes to equal that canonical form. The native envelope law stays byte-identical; its 10-second campaign did not trip it.
 
 ## Crash triage
@@ -212,4 +211,4 @@ An always-on crash lands in `artifacts/`. Do not file a decoder bug for an empty
 
 ## MachineConfigurations
 
-This repository does not configure runners. ilo should `nix build .#fuzz-<id>` and exec `result/bin/fuzz-<id> /durable/fuzz/<id>/corpus`. Do not add those packages to `nix flake check`. Do not export `BOLERO_RANDOM_*` into `cargo test`. The binary reads a corpus directory, not AFL++ stdin, and it is not a honggfuzz persistent-mode target.
+This repository does not configure runners. Build `.#continuous-fuzz` or the `.#fuzz-<id>` alias and exec `result/bin/fuzz-<id> /durable/fuzz/<id>/corpus`. Do not add those packages to `nix flake check`. The scheduled binary is the libFuzzer adapter. Catalog rows with `linked = false` are not runners.
