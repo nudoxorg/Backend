@@ -1419,8 +1419,13 @@ pub(crate) fn view_row_for_structural_coordinate(
     package: backend_engine::PackageKey,
     coordinate: &str,
 ) -> Option<RowId> {
+    if let Some(row) = view.row_by_label(coordinate)
+        && row.package == Some(package)
+    {
+        return Some(row.id);
+    }
     let mut semantic_matches = Vec::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if row.package != Some(package) {
             continue;
         }
@@ -1498,7 +1503,7 @@ pub(crate) fn structural_call_graph_relations(
         BuiltinModelError("structural call graph source is absent from the view".to_owned())
     })?;
     let mut coordinate_ids = BTreeMap::<String, RowId>::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if row.package == Some(package) {
             coordinate_ids.insert(row.label.clone(), row.id);
         }
@@ -1550,9 +1555,7 @@ pub(crate) fn structural_reference_facts(
     target: &str,
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
     let target_row = view
-        .rows()
-        .iter()
-        .find(|row| row.label == target)
+        .row_by_label(target)
         .ok_or_else(|| {
             BuiltinModelError("structural references target is absent from the view".to_owned())
         })?;

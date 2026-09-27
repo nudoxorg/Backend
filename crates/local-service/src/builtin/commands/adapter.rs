@@ -242,10 +242,7 @@ impl CommandAdapter {
         if !query.basis().matches(root) {
             return None;
         }
-        let row =
-            library.view().rows().iter().find(|row| {
-                row.label == label && matches!(row.id, backend_engine::RowId::Symbol(_))
-            })?;
+        let row = symbol_row_by_label(library.view(), label)?;
         let backend_engine::RowId::Symbol(_) = row.id else {
             return None;
         };
@@ -415,10 +412,9 @@ impl CommandAdapter {
         }) else {
             return query;
         };
-        view.rows()
-            .iter()
-            .find_map(|row| match row.id {
-                backend_engine::RowId::Symbol(symbol) if row.label == label => Some(symbol),
+        symbol_row_by_label(view, label)
+            .and_then(|row| match row.id {
+                backend_engine::RowId::Symbol(symbol) => Some(symbol),
                 _ => None,
             })
             .map_or(query, |symbol| query.with_resolved_symbol(symbol))
@@ -878,6 +874,19 @@ fn commit_builtin_intent(
         _ => Err(BuiltinModelError(
             "builtin intent was sent to the wrong owner lane".to_owned(),
         )),
+    }
+}
+
+fn symbol_row_by_label<'a>(
+    view: &'a backend_engine::ViewRoot,
+    label: &str,
+) -> Option<&'a backend_engine::Row> {
+    match view.row_by_label(label) {
+        Some(row) if matches!(row.id, backend_engine::RowId::Symbol(_)) => Some(row),
+        Some(_) => view.row_refs().find(|row| {
+            row.label == label && matches!(row.id, backend_engine::RowId::Symbol(_))
+        }),
+        None => None,
     }
 }
 
