@@ -333,6 +333,9 @@ impl QdrantHttpClient {
                 batches: 0,
             });
         }
+        let bound = BindingText::from_binding(binding);
+        let identity = PhysicalPointId::candidate_prefix(binding);
+        let mut scratch = Vec::new();
         let mut points = 0;
         let mut batches = 0;
         for batch in documents.chunks(self.transport.config.max_batch_points) {
@@ -340,18 +343,15 @@ impl QdrantHttpClient {
                 .iter()
                 .map(|document| {
                     let values = document.point().values();
+                    let candidate = document.point().id();
                     UpsertPoint {
-                        id: PhysicalPointId::for_candidate(binding, document.point().id()),
+                        id: PhysicalPointId::from_candidate_prefix(&identity, candidate),
                         vector: values,
-                        payload: PointPayload::for_candidate(
-                            binding,
-                            document.point().id(),
-                            values,
-                        ),
+                        payload: PointPayload::for_bound(&bound, candidate, values, &mut scratch),
                     }
                 })
                 .collect();
-            let observed = self.retrieve_coordinate_keys(binding, &points_in_batch)?;
+            let observed = self.retrieve_coordinate_keys(&bound, &identity, &points_in_batch)?;
             let mut due_points = Vec::new();
             for point in &points_in_batch {
                 match coordinate_disposition(
@@ -392,7 +392,8 @@ impl QdrantHttpClient {
 
     fn retrieve_coordinate_keys(
         &self,
-        binding: Binding,
+        bound: &BindingText,
+        identity: &blake3::Hasher,
         points: &[UpsertPoint<'_>],
     ) -> Result<HashMap<PhysicalPointId, String>, HttpProviderError> {
         let body = RetrieveRequest {
@@ -418,8 +419,8 @@ impl QdrantHttpClient {
             let Some(candidate) = payload.candidate() else {
                 return Err(HttpProviderError::BindingMismatch);
             };
-            if !payload.matches_binding(binding)
-                || point.id != PhysicalPointId::for_candidate(binding, candidate)
+            if !payload.matches_text(bound)
+                || point.id != PhysicalPointId::from_candidate_prefix(identity, candidate)
             {
                 return Err(HttpProviderError::BindingMismatch);
             }
@@ -440,13 +441,14 @@ impl QdrantHttpClient {
         if binding.recipe != self.recipe.version() || ids.iter().any(|id| !id.is_valid()) {
             return Err(HttpProviderError::BindingMismatch);
         }
+        let identity = PhysicalPointId::candidate_prefix(binding);
         let mut batches = 0;
         for batch in ids.chunks(self.transport.config.max_batch_points) {
             let body = DeleteRequest {
                 points: batch
                     .iter()
                     .copied()
-                    .map(|id| PhysicalPointId::for_candidate(binding, id))
+                    .map(|id| PhysicalPointId::from_candidate_prefix(&identity, id))
                     .collect(),
             };
             let response = require_success(
@@ -500,6 +502,9 @@ impl QdrantHttpClient {
                 batches: 0,
             });
         }
+        let bound = BindingText::from_binding(binding);
+        let identity = PhysicalPointId::residence_prefix(binding.workspace, binding.recipe);
+        let mut scratch = Vec::new();
         let mut seen = HashSet::with_capacity(documents.len());
         let mut probes = Vec::with_capacity(documents.len());
         for document in documents {
@@ -507,21 +512,19 @@ impl QdrantHttpClient {
                 return Err(HttpProviderError::BindingMismatch);
             }
             let values = document.document.point().values();
+            let candidate = document.document.point().id();
             probes.push(ResidenceProbe {
-                id: PhysicalPointId::for_residence(
-                    binding.workspace,
-                    binding.recipe,
-                    document.residence,
-                ),
+                id: PhysicalPointId::from_residence_prefix(&identity, document.residence),
                 residence: document.residence,
                 write: document.write,
-                candidate: document.document.point().id(),
+                candidate,
                 vector: values,
-                payload: PointPayload::for_residence(
-                    binding,
+                payload: PointPayload::for_residence_bound(
+                    &bound,
                     document.residence,
-                    document.document.point().id(),
+                    candidate,
                     values,
+                    &mut scratch,
                 ),
             });
         }
@@ -537,8 +540,8 @@ impl QdrantHttpClient {
                         return Err(HttpProviderError::BindingMismatch);
                     };
                     if stored_residence != probe.residence
-                        || stored.workspace != hex(binding.workspace.as_bytes())
-                        || stored.recipe != hex(binding.recipe.as_bytes())
+                        || stored.workspace != bound.workspace
+                        || stored.recipe != bound.recipe
                     {
                         return Err(HttpProviderError::BindingMismatch);
                     }
@@ -547,7 +550,7 @@ impl QdrantHttpClient {
                     match coordinate_disposition(&probe.payload.coordinate_key, observed_key) {
                         CoordinateDisposition::Due => write_vectors.push(probe),
                         CoordinateDisposition::Unchanged
-                            if stored.matches_projection(binding, probe.candidate) =>
+                            if stored.matches_projection(&bound, probe.candidate) =>
                         {
                             unchanged += 1;
                         }
@@ -666,13 +669,14 @@ impl QdrantHttpClient {
         if recipe != self.recipe.version() {
             return Err(HttpProviderError::BindingMismatch);
         }
+        let identity = PhysicalPointId::residence_prefix(workspace, recipe);
         let mut batches = 0;
         for batch in residences.chunks(self.transport.config.max_batch_points) {
             let body = DeleteRequest {
                 points: batch
                     .iter()
                     .copied()
-                    .map(|residence| PhysicalPointId::for_residence(workspace, recipe, residence))
+                    .map(|residence| PhysicalPointId::from_residence_prefix(&identity, residence))
                     .collect(),
             };
             let response = require_success(
@@ -1134,8 +1138,17 @@ struct PointPayload {
     residence: String,
 }
 
-impl PointPayload {
-    fn for_candidate(binding: Binding, candidate: CandidateId, values: &[f32]) -> Self {
+struct BindingText {
+    workspace: String,
+    root: String,
+    recipe: String,
+    authority: String,
+    read_manifest: String,
+    frontier: String,
+}
+
+impl BindingText {
+    fn from_binding(binding: Binding) -> Self {
         Self {
             workspace: hex(binding.workspace.as_bytes()),
             root: hex(binding.root.as_bytes()),
@@ -1143,8 +1156,36 @@ impl PointPayload {
             authority: hex(binding.authority.as_bytes()),
             read_manifest: hex(binding.read_manifest.as_bytes()),
             frontier: hex(binding.frontier.as_bytes()),
+        }
+    }
+}
+
+impl PointPayload {
+    fn for_candidate(binding: Binding, candidate: CandidateId, values: &[f32]) -> Self {
+        let mut scratch = Vec::new();
+        Self::for_bound(
+            &BindingText::from_binding(binding),
+            candidate,
+            values,
+            &mut scratch,
+        )
+    }
+
+    fn for_bound(
+        bound: &BindingText,
+        candidate: CandidateId,
+        values: &[f32],
+        scratch: &mut Vec<u8>,
+    ) -> Self {
+        Self {
+            workspace: bound.workspace.clone(),
+            root: bound.root.clone(),
+            recipe: bound.recipe.clone(),
+            authority: bound.authority.clone(),
+            read_manifest: bound.read_manifest.clone(),
+            frontier: bound.frontier.clone(),
             candidate: format!("{:016x}", candidate.0),
-            coordinate_key: coordinate_key(values),
+            coordinate_key: coordinate_key_with(values, scratch),
             residence: String::new(),
         }
     }
@@ -1155,13 +1196,30 @@ impl PointPayload {
         candidate: CandidateId,
         values: &[f32],
     ) -> Self {
-        let mut payload = Self::for_candidate(binding, candidate, values);
+        let mut scratch = Vec::new();
+        Self::for_residence_bound(
+            &BindingText::from_binding(binding),
+            residence,
+            candidate,
+            values,
+            &mut scratch,
+        )
+    }
+
+    fn for_residence_bound(
+        bound: &BindingText,
+        residence: PointResidence,
+        candidate: CandidateId,
+        values: &[f32],
+        scratch: &mut Vec<u8>,
+    ) -> Self {
+        let mut payload = Self::for_bound(bound, candidate, values, scratch);
         payload.residence = hex(&residence.0);
         payload
     }
 
-    fn matches_projection(&self, binding: Binding, candidate: CandidateId) -> bool {
-        self.matches_binding(binding) && self.candidate() == Some(candidate)
+    fn matches_projection(&self, bound: &BindingText, candidate: CandidateId) -> bool {
+        self.matches_text(bound) && self.candidate() == Some(candidate)
     }
 
     fn physical_id(&self, binding: Binding, candidate: CandidateId) -> PhysicalPointId {
@@ -1174,12 +1232,16 @@ impl PointPayload {
     }
 
     fn matches_binding(&self, binding: Binding) -> bool {
-        self.workspace == hex(binding.workspace.as_bytes())
-            && self.root == hex(binding.root.as_bytes())
-            && self.recipe == hex(binding.recipe.as_bytes())
-            && self.authority == hex(binding.authority.as_bytes())
-            && self.read_manifest == hex(binding.read_manifest.as_bytes())
-            && self.frontier == hex(binding.frontier.as_bytes())
+        self.matches_text(&BindingText::from_binding(binding))
+    }
+
+    fn matches_text(&self, bound: &BindingText) -> bool {
+        self.workspace == bound.workspace
+            && self.root == bound.root
+            && self.recipe == bound.recipe
+            && self.authority == bound.authority
+            && self.read_manifest == bound.read_manifest
+            && self.frontier == bound.frontier
     }
 
     fn candidate(&self) -> Option<CandidateId> {
@@ -1212,14 +1274,15 @@ struct FilterMatch {
 
 impl BindingFilter {
     fn new(binding: Binding) -> Self {
+        let bound = BindingText::from_binding(binding);
         Self {
             must: vec![
-                condition("workspace", hex(binding.workspace.as_bytes())),
-                condition("root", hex(binding.root.as_bytes())),
-                condition("recipe", hex(binding.recipe.as_bytes())),
-                condition("authority", hex(binding.authority.as_bytes())),
-                condition("read_manifest", hex(binding.read_manifest.as_bytes())),
-                condition("frontier", hex(binding.frontier.as_bytes())),
+                condition("workspace", bound.workspace),
+                condition("root", bound.root),
+                condition("recipe", bound.recipe),
+                condition("authority", bound.authority),
+                condition("read_manifest", bound.read_manifest),
+                condition("frontier", bound.frontier),
             ],
         }
     }
@@ -1234,8 +1297,20 @@ impl BindingFilter {
 #[serde(transparent)]
 struct PhysicalPointId(String);
 
+fn format_point_id(digest: blake3::Hash) -> PhysicalPointId {
+    let bytes = &digest.as_bytes()[..16];
+    PhysicalPointId(format!(
+        "{}-{}-{}-{}-{}",
+        hex(&bytes[..4]),
+        hex(&bytes[4..6]),
+        hex(&bytes[6..8]),
+        hex(&bytes[8..10]),
+        hex(&bytes[10..16]),
+    ))
+}
+
 impl PhysicalPointId {
-    fn for_candidate(binding: Binding, candidate: CandidateId) -> Self {
+    fn candidate_prefix(binding: Binding) -> blake3::Hasher {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"backend.qdrant.physical-point.v1\0");
         hasher.update(binding.workspace.as_bytes());
@@ -1244,35 +1319,35 @@ impl PhysicalPointId {
         hasher.update(binding.authority.as_bytes());
         hasher.update(binding.read_manifest.as_bytes());
         hasher.update(binding.frontier.as_bytes());
-        hasher.update(&candidate.0.to_be_bytes());
-        let digest = hasher.finalize();
-        let bytes = &digest.as_bytes()[..16];
-        Self(format!(
-            "{}-{}-{}-{}-{}",
-            hex(&bytes[..4]),
-            hex(&bytes[4..6]),
-            hex(&bytes[6..8]),
-            hex(&bytes[8..10]),
-            hex(&bytes[10..16]),
-        ))
+        hasher
     }
 
-    fn for_residence(workspace: WorkspaceRoot, recipe: Recipe, residence: PointResidence) -> Self {
+    fn for_candidate(binding: Binding, candidate: CandidateId) -> Self {
+        Self::from_candidate_prefix(&Self::candidate_prefix(binding), candidate)
+    }
+
+    fn from_candidate_prefix(prefix: &blake3::Hasher, candidate: CandidateId) -> Self {
+        let mut hasher = prefix.clone();
+        hasher.update(&candidate.0.to_be_bytes());
+        format_point_id(hasher.finalize())
+    }
+
+    fn residence_prefix(workspace: WorkspaceRoot, recipe: Recipe) -> blake3::Hasher {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"backend.qdrant.physical-residence.v1\0");
         hasher.update(workspace.as_bytes());
         hasher.update(recipe.as_bytes());
+        hasher
+    }
+
+    fn for_residence(workspace: WorkspaceRoot, recipe: Recipe, residence: PointResidence) -> Self {
+        Self::from_residence_prefix(&Self::residence_prefix(workspace, recipe), residence)
+    }
+
+    fn from_residence_prefix(prefix: &blake3::Hasher, residence: PointResidence) -> Self {
+        let mut hasher = prefix.clone();
         hasher.update(&residence.0);
-        let digest = hasher.finalize();
-        let bytes = &digest.as_bytes()[..16];
-        Self(format!(
-            "{}-{}-{}-{}-{}",
-            hex(&bytes[..4]),
-            hex(&bytes[4..6]),
-            hex(&bytes[6..8]),
-            hex(&bytes[8..10]),
-            hex(&bytes[10..16]),
-        ))
+        format_point_id(hasher.finalize())
     }
 }
 
@@ -1319,13 +1394,21 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn coordinate_key(values: &[f32]) -> String {
+    let mut bytes = Vec::new();
+    coordinate_key_with(values, &mut bytes)
+}
+
+fn coordinate_key_with(values: &[f32], bytes: &mut Vec<u8>) -> String {
+    bytes.clear();
+    bytes.reserve(values.len().saturating_mul(4));
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.qdrant.coordinate-key.v1\0");
     let len = u32::try_from(values.len()).unwrap_or(u32::MAX);
     hasher.update(&len.to_le_bytes());
-    for value in values {
-        hasher.update(&value.to_le_bytes());
-    }
+    hasher.update(bytes);
     hex(hasher.finalize().as_bytes())
 }
 
