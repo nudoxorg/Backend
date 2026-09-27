@@ -261,6 +261,24 @@ fn workspace_manifest_from_root(
     .map_err(|error| BuiltinModelError(error.to_string()))
 }
 
+fn append_relation_nodes<R: backend_engine::CanonicalRelation>(
+    objects: &mut Vec<TypedObject>,
+    relation: &RelationState<R>,
+) -> Result<(), BuiltinModelError> {
+    let mut closure = relation.node_closure();
+    while let Some(node) = closure
+        .try_next()
+        .map_err(|error| BuiltinModelError(format!("walk relation closure: {error}")))?
+    {
+        objects.push(
+            TypedObject::from_checked_state_object_ref(node.state_object()).map_err(|error| {
+                BuiltinModelError(format!("materialize relation node: {error:?}"))
+            })?,
+        );
+    }
+    Ok(())
+}
+
 fn genesis_closure(
     manifest: &WorkspaceManifest,
     relation: &RelationState<BuiltinWorkspaceRelation>,
@@ -270,15 +288,10 @@ fn genesis_closure(
     transition: &WorkspaceDelta,
 ) -> Result<WorkspaceClosure, BuiltinModelError> {
     let authority_key = ObjectKey::<AuthorityVersionSchema>::from_value(AUTHORITY_VALUE);
-    let relation_object = TypedObject::from_relation_state(relation)
-        .map_err(|error| BuiltinModelError(format!("materialize relation closure: {error:?}")))?;
-    let mut objects = vec![
-        relation_object,
-        TypedObject::from_relation_state(semantic).map_err(|error| {
-            BuiltinModelError(format!("materialize semantic relation closure: {error:?}"))
-        })?,
-        TypedObject::from_value(&authority_key, AUTHORITY_VALUE),
-    ];
+    let mut objects = Vec::new();
+    append_relation_nodes(&mut objects, relation)?;
+    append_relation_nodes(&mut objects, semantic)?;
+    objects.push(TypedObject::from_value(&authority_key, AUTHORITY_VALUE));
     let transaction_bytes = transaction.as_bytes();
     let transaction_key = ObjectKey::<TransactionSchema>::from_value(&transaction_bytes[..]);
     objects.push(TypedObject::from_value(
