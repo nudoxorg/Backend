@@ -176,14 +176,19 @@ fn main() {
         if sample >= WARMUPS {
             rare_samples[sample - WARMUPS] = elapsed;
         }
+        adapter.clear_rank_cache().expect("clear rank");
+        let before = adapter.rank_evaluations();
         let started = Instant::now();
         let seen = drain(&adapter, binding, &broad);
         let elapsed = started.elapsed().as_nanos();
         assert_eq!(black_box(seen), broad_hits);
+        assert_eq!(adapter.rank_evaluations(), before.saturating_add(1));
         if sample >= WARMUPS {
             drain_samples[sample - WARMUPS] = elapsed;
         }
     }
+    let drains = u64::try_from(WARMUPS + SAMPLES).expect("sample count");
+    assert_eq!(adapter.rank_evaluations(), drains);
     println!(
         "lexical_rank documents={DOCUMENTS} postings={postings} broad_hits={broad_hits} rare_hits={rare_hits} broad_median_ns={} broad_p95_ns={} rare_median_ns={} rare_p95_ns={} drain_median_ns={} drain_p95_ns={} drain_evaluations={}",
         percentile(&mut broad_samples, SAMPLES / 2),
@@ -192,7 +197,6 @@ fn main() {
         percentile(&mut rare_samples, SAMPLES * 95 / 100),
         percentile(&mut drain_samples, SAMPLES / 2),
         percentile(&mut drain_samples, SAMPLES * 95 / 100),
-        adapter.rank_evaluations(),
+        adapter.rank_evaluations() / drains,
     );
-    assert_eq!(adapter.rank_evaluations(), 1);
 }

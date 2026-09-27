@@ -317,6 +317,19 @@ impl TantivySource {
         self.rank_evaluations.load(Ordering::Relaxed)
     }
 
+    /// Drops the retained rank so the next page computes it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns a corrupt-projection error when the rank lock is poisoned.
+    pub fn clear_rank_cache(&self) -> Result<(), TantivySourceError> {
+        self.rank_cache
+            .lock()
+            .map_err(|_| Self::corrupt("rank cache lock poisoned"))?
+            .take();
+        Ok(())
+    }
+
     fn ensure_live(&self) -> Result<(), TantivySourceError> {
         if self.poisoned {
             Err(Self::corrupt(
@@ -1062,6 +1075,15 @@ impl crate::Adapter<TantivySource> {
     #[must_use]
     pub fn rank_evaluations(&self) -> u64 {
         self.source().rank_evaluations()
+    }
+
+    /// Drops the retained rank so the next page computes it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the source failure when the rank lock is poisoned.
+    pub fn clear_rank_cache(&self) -> Result<(), TantivySourceError> {
+        self.source().clear_rank_cache()
     }
 }
 
