@@ -75,6 +75,8 @@ pub enum LocalPackageSource {
     Manifest(CargoFailure),
     /// The project root has no readable Cargo manifest.
     NoManifest,
+    /// README projection only. Package facts came from the canonical graph.
+    Readme,
 }
 
 /// Why the Cargo reader did not produce the facts.
@@ -197,10 +199,42 @@ impl LocalPackageLoader {
         self
     }
 
+    /// Projects the project's README without reading package facts.
+    ///
+    /// The canonical graph owns name, version, and dependencies. This reader
+    /// only recovers the document the dossier renders.
+    #[must_use]
+    #[allow(clippy::unused_self)]
+    pub fn readme(&self, project: &LocalProjectId) -> Option<LocalPackage> {
+        let readme = readme::project_readme(project.path());
+        if readme.is_empty() {
+            return None;
+        }
+        Some(LocalPackage {
+            project: project.clone(),
+            source: LocalPackageSource::Readme,
+            name: Arc::from(folder_name(project.path())),
+            version: None,
+            description: None,
+            license: None,
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme,
+            dependencies: Arc::from([]),
+            features: Arc::from([]),
+            members: 0,
+        })
+    }
+
     /// Loads the facts for one local project.
     ///
     /// This blocks for at most the configured Cargo bound plus manifest
-    /// reads; call it from a worker thread.
+    /// reads; call it from a worker thread. Callers that already hold a
+    /// canonical package record use [`Self::readme`] instead.
     #[must_use]
     pub fn load(&self, project: &LocalProjectId) -> LocalPackage {
         let root = project.path();

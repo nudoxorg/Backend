@@ -1466,6 +1466,9 @@ fn dependencies(
     if let Some(value) = index.dependencies(facts, package) {
         return Ok(value.clone());
     }
+    if let Some(value) = local_manifest_dependencies(facts, index, package)? {
+        return Ok(value);
+    }
     Ok(DependencyFacts::Unavailable(
         ProductText::new(format!(
             "dependency facts are unavailable for {} because the package is not recorded",
@@ -1473,6 +1476,31 @@ fn dependencies(
         ))
         .map_err(|error| error.to_string())?,
     ))
+}
+
+/// Answers a local directory from the canonical manifest reader.
+///
+/// Indexed facts are keyed by the manifest coordinate. A path query resolves
+/// that coordinate and reuses the resident rows. A path the index has not
+/// seen yet is read through the same parser.
+fn local_manifest_dependencies(
+    facts: &[PackageDependencySourceFacts],
+    index: &PackageGraphIndex,
+    package: &PackageReference,
+) -> Result<Option<DependencyFacts<Box<[PackageDependencyRecord]>>>, String> {
+    let PackageReference::Local(label) = package else {
+        return Ok(None);
+    };
+    let root = Path::new(label.as_str());
+    if !root.is_dir() {
+        return Ok(None);
+    }
+    if let Some(manifest) = super::local_manifest::read_local_manifest(root)?
+        && let Some(value) = index.dependencies(facts, &manifest.record.coordinate)
+    {
+        return Ok(Some(value.clone()));
+    }
+    Ok(super::local_manifest::local_dependency_facts(root)?.map(|(_, state)| state))
 }
 
 fn dependents(
@@ -1959,6 +1987,111 @@ mod tests {
                 .is_err()
         );
         assert_eq!(state.state, before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_local_path_reuses_indexed_manifest_dependencies() {
+        let root = fixture("local-deps");
+        fs::write(
+            root.join("Cargo.toml"),
+            "\
+[package]
+name = \"demo\"
+version = \"1.0.0\"
+edition = \"2021\"
+
+[dependencies]
+serde = \"1\"
+",
+        )
+        .expect("manifest");
+        let package = PackageReference::parse(root.to_str().expect("utf8 path")).expect("local");
+        let empty = PackageGraphIndex::from_facts(&[]);
+        let parsed = dependencies(&[], &empty, &package).expect("parsed");
+        let DependencyFacts::Known(rows) = &parsed else {
+            panic!("parsed dependencies should be known");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target.name.as_str(), "serde");
+        assert_eq!(rows[0].target.requirement.as_str(), "1");
+
+        let coordinate = PackageReference::parse("pkg:cargo/demo@1.0.0").expect("purl");
+        let resident = PackageDependencyRecord::new(
+            coordinate.clone(),
+            PackageDependencyTarget::new(RegistryEcosystem::Cargo, "serde", "from-index", None)
+                .expect("target"),
+            DependencyScope::Runtime,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [9; 32],
+                provenance: [8; 32],
+            },
+        );
+        let facts = [(
+            coordinate,
+            DependencyFacts::Known(vec![resident].into_boxed_slice()),
+        )];
+        let index = PackageGraphIndex::from_facts(&facts);
+        let reused = dependencies(&facts, &index, &package).expect("reused");
+        let DependencyFacts::Known(rows) = &reused else {
+            panic!("indexed dependencies should be known");
+        };
+        assert_eq!(rows[0].target.requirement.as_str(), "from-index");
+
+        let missing = PackageReference::parse("pkg:cargo/absent@1.0.0").expect("purl");
+        let unavailable = dependencies(&[], &empty, &missing).expect("missing");
+        assert!(matches!(unavailable, DependencyFacts::Unavailable(_)));
+        let file = root.join("not-a-directory");
+        fs::write(&file, "x").expect("file");
+        let file_ref = PackageReference::parse(file.to_str().expect("utf8 path")).expect("file");
+        let file_deps = dependencies(&[], &empty, &file_ref).expect("file deps");
+        assert!(matches!(file_deps, DependencyFacts::Unavailable(_)));
+
+        let mut body = String::from(
+            "\
+[package]
+name = \"demo\"
+version = \"1.0.0\"
+edition = \"2021\"
+
+[dependencies]
+",
+        );
+        for index in 0..1_024 {
+            body.push_str(&format!("dep{index} = \"1\"\n"));
+        }
+        fs::write(root.join("Cargo.toml"), body).expect("wide manifest");
+        let mut parsed_ns = Vec::with_capacity(9);
+        let mut reused_ns = Vec::with_capacity(9);
+        for _ in 0..2 {
+            let _ = dependencies(&[], &empty, &package).expect("warmup parse");
+            let _ = dependencies(&facts, &index, &package).expect("warmup reuse");
+        }
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            let parsed = dependencies(&[], &empty, &package).expect("wide parse");
+            parsed_ns.push(started.elapsed().as_nanos());
+            let DependencyFacts::Known(rows) = parsed else {
+                panic!("wide parse should be known");
+            };
+            assert_eq!(rows.len(), 1_024);
+            let started = std::time::Instant::now();
+            let reused = dependencies(&facts, &index, &package).expect("wide reuse");
+            reused_ns.push(started.elapsed().as_nanos());
+            let DependencyFacts::Known(rows) = reused else {
+                panic!("wide reuse should be known");
+            };
+            assert_eq!(rows[0].target.requirement.as_str(), "from-index");
+        }
+        parsed_ns.sort_unstable();
+        reused_ns.sort_unstable();
+        eprintln!(
+            "local dependency parse median {} ns; indexed coordinate reuse median {} ns",
+            parsed_ns[parsed_ns.len() / 2],
+            reused_ns[reused_ns.len() / 2]
+        );
         let _ = fs::remove_dir_all(root);
     }
 }
