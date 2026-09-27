@@ -56,6 +56,8 @@ pub struct LexicalPage {
     pub hits: Vec<RankedHit>,
     /// Next page cursor.
     pub next: Option<Cursor>,
+    /// Exact number of ranked hits in the whole result, including other pages.
+    pub total: usize,
     /// Authority coverage.
     pub coverage: CoverageWitness,
 }
@@ -86,6 +88,8 @@ pub struct QueryResult {
     pub hits: Vec<RankedHit>,
     /// Cursor for the next page.
     pub next: Option<Cursor>,
+    /// Exact number of ranked hits in the whole result, including other pages.
+    pub total: usize,
 }
 
 /// Deterministic in-memory lexical source for tests and local fallback.
@@ -171,6 +175,7 @@ impl LexicalSource for MemorySource {
             query: self.query,
             hits: self.hits[offset..end].to_vec(),
             next,
+            total: self.hits.len(),
             coverage: self.coverage,
         })
     }
@@ -258,15 +263,22 @@ impl<S: LexicalSource> Adapter<S> {
             return Err(AdapterError::Extension(Error::MalformedInput));
         }
         let current_offset = request.cursor.map_or(0, Cursor::offset);
+        let end = current_offset
+            .checked_add(hits.len())
+            .ok_or(AdapterError::Extension(Error::SizeLimit))?;
+        if page.total < end {
+            return Err(AdapterError::Extension(Error::InvalidCursor));
+        }
         if let Some(next) = page.next
             && (next.binding() != request.binding
                 || next.query() != request.query.version
                 || next.offset() <= current_offset
-                || next.offset()
-                    != current_offset
-                        .checked_add(hits.len())
-                        .ok_or(AdapterError::Extension(Error::SizeLimit))?)
+                || next.offset() != end
+                || page.total == end)
         {
+            return Err(AdapterError::Extension(Error::InvalidCursor));
+        }
+        if page.next.is_none() && page.total != end {
             return Err(AdapterError::Extension(Error::InvalidCursor));
         }
         Ok(QueryResult {
@@ -275,6 +287,7 @@ impl<S: LexicalSource> Adapter<S> {
             coverage: page.coverage,
             hits,
             next: page.next,
+            total: page.total,
         })
     }
 }

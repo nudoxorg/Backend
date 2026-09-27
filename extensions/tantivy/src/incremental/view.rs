@@ -202,6 +202,7 @@ impl LexicalView {
             coverage: self.base.coverage(),
             hits: hits[offset..end].to_vec(),
             next: (end < hits.len()).then(|| Cursor::new(self.binding(), query.version, end)),
+            total: hits.len(),
         })
     }
 

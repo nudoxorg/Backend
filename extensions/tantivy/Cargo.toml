@@ -42,3 +42,8 @@ harness = false
 name = "segment_collect"
 path = "benches/segment_collect.rs"
 harness = false
+
+[[bench]]
+name = "lexical_rank"
+path = "benches/lexical_rank.rs"
+harness = false
