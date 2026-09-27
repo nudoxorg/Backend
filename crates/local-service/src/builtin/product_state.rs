@@ -15,7 +15,7 @@ use backend_library::{
 };
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -88,6 +88,7 @@ impl ProductState {
         command: SurfaceCommand,
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
+        catalog_index: &CatalogLookupIndex,
         dependency_facts: &[PackageDependencySourceFacts],
         dependency_index: &PackageGraphIndex,
         workspace: Option<&Path>,
@@ -99,6 +100,7 @@ impl ProductState {
                     command,
                     view,
                     catalog,
+                    catalog_index,
                     dependency_facts,
                     dependency_index,
                     workspace,
@@ -118,6 +120,7 @@ impl ProductState {
                     command,
                     view,
                     catalog,
+                    catalog_index,
                     dependency_facts,
                     dependency_index,
                     workspace,
@@ -137,6 +140,7 @@ impl ProductState {
         command: SurfaceCommand,
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
+        catalog_index: &CatalogLookupIndex,
         dependency_facts: &[PackageDependencySourceFacts],
         dependency_index: &PackageGraphIndex,
         workspace: Option<&Path>,
@@ -146,9 +150,8 @@ impl ProductState {
                 package,
                 override_evidence,
             } => {
-                let advisory = catalog
-                    .iter()
-                    .find(|record| record.coordinate == package)
+                let advisory = catalog_index
+                    .first_coordinate(catalog, &package)?
                     .map(|record| record.advisory.clone())
                     .unwrap_or_else(backend_engine::AdvisoryPackageDto::unknown);
                 let advisory = override_evidence.map_or(advisory.clone(), |evidence| {
@@ -180,7 +183,10 @@ impl ProductState {
                 false,
             ),
             SurfaceCommand::Package { package } => {
-                (SurfaceReply::Package(package_page(view, catalog, &package)?), false)
+                (
+                    SurfaceReply::Package(package_page(view, catalog, catalog_index, &package)?),
+                    false,
+                )
             }
             SurfaceCommand::ForgeAdd { .. } | SurfaceCommand::ForgeReference { .. } => {
                 return Err(
@@ -197,7 +203,11 @@ impl ProductState {
             ),
             SurfaceCommand::PackageVersions { package } => (
                 SurfaceReply::PackageVersions(package_versions(
-                    view, catalog, &package, workspace,
+                    view,
+                    catalog,
+                    catalog_index,
+                    &package,
+                    workspace,
                 )?),
                 false,
             ),
@@ -208,7 +218,10 @@ impl ProductState {
                 );
             }
             SurfaceCommand::PackageProfile { package } => {
-                (profile(view, catalog, &package, workspace)?, false)
+                (
+                    profile(view, catalog, catalog_index, &package, workspace)?,
+                    false,
+                )
             }
             SurfaceCommand::Dependents { package } => (
                 SurfaceReply::Dependents(dependents(
@@ -222,7 +235,13 @@ impl ProductState {
             SurfaceCommand::Owner { owner } => {
                 let workspace = self.workspace_path()?;
                 (
-                    SurfaceReply::Owner(owner_page(view, catalog, workspace, &owner)?),
+                    SurfaceReply::Owner(owner_page(
+                        view,
+                        catalog,
+                        catalog_index,
+                        workspace,
+                        &owner,
+                    )?),
                     false,
                 )
             }
@@ -238,7 +257,13 @@ impl ProductState {
                 false,
             ),
             SurfaceCommand::Releases { mark_seen } => (
-                SurfaceReply::Releases(self.releases(view, catalog, mark_seen, workspace)?),
+                SurfaceReply::Releases(self.releases(
+                    view,
+                    catalog,
+                    catalog_index,
+                    mark_seen,
+                    workspace,
+                )?),
                 mark_seen,
             ),
             SurfaceCommand::Projects => (
@@ -366,17 +391,17 @@ impl ProductState {
         &mut self,
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
+        catalog_index: &CatalogLookupIndex,
         mark_seen: bool,
         workspace: Option<&Path>,
     ) -> Result<Box<[ReleaseRecord]>, String> {
         let mut result = Vec::new();
         for subscription in &mut self.state.subscriptions {
-            let indexed =
-                indexed_package_records(view, &subscription.package, workspace)?;
+            let indexed = indexed_package_records(view, &subscription.package, workspace)?;
             let mut matches = if indexed.is_empty() {
-                catalog
-                    .iter()
-                    .filter(|row| package_matches(&subscription.package, row))
+                catalog_index
+                    .records_for(catalog, &subscription.package, false)?
+                    .into_iter()
                     .cloned()
                     .collect::<Vec<_>>()
             } else {
@@ -601,6 +626,7 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
 fn owner_page(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     workspace: &Path,
     query: &ProductText,
 ) -> Result<RegistryMetadata<Box<[RegistryPackageRecord]>>, String> {
@@ -649,9 +675,9 @@ fn owner_page(
         }
     }
     if records.is_empty() {
-        let registry = catalog
-            .iter()
-            .filter(|record| record.name.as_str() == needle)
+        let registry = catalog_index
+            .records_named(catalog, needle)?
+            .into_iter()
             .cloned()
             .collect::<Vec<_>>();
         if registry.is_empty() {
@@ -1148,24 +1174,131 @@ fn member_manifest_name(
         }
     }
 }
+/// Catalog positions grouped by coordinate and by registry name.
+///
+/// Built once for a resident catalog. Package, version, release, owner, and
+/// advisory lookups read these positions instead of scanning every row.
+pub(super) struct CatalogLookupIndex {
+    by_coordinate: BTreeMap<PackageReference, Vec<usize>>,
+    by_name: BTreeMap<String, Vec<usize>>,
+}
+
+impl CatalogLookupIndex {
+    pub(super) fn from_catalog(catalog: &[RegistryPackageRecord]) -> Self {
+        let mut by_coordinate: BTreeMap<PackageReference, Vec<usize>> = BTreeMap::new();
+        let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, record) in catalog.iter().enumerate() {
+            by_coordinate
+                .entry(record.coordinate.clone())
+                .or_default()
+                .push(index);
+            by_name
+                .entry(record.name.as_str().to_owned())
+                .or_default()
+                .push(index);
+        }
+        Self {
+            by_coordinate,
+            by_name,
+        }
+    }
+
+    fn first_coordinate<'a>(
+        &self,
+        catalog: &'a [RegistryPackageRecord],
+        package: &PackageReference,
+    ) -> Result<Option<&'a RegistryPackageRecord>, String> {
+        let Some(index) = self
+            .by_coordinate
+            .get(package)
+            .and_then(|indexes| indexes.first().copied())
+        else {
+            return Ok(None);
+        };
+        catalog.get(index).map(Some).ok_or_else(|| {
+            "catalog lookup index does not match the catalog".to_owned()
+        })
+    }
+
+    fn records_named<'a>(
+        &self,
+        catalog: &'a [RegistryPackageRecord],
+        name: &str,
+    ) -> Result<Vec<&'a RegistryPackageRecord>, String> {
+        let Some(indexes) = self.by_name.get(name) else {
+            return Ok(Vec::new());
+        };
+        self.records_at(catalog, indexes)
+    }
+
+    /// Rows whose coordinate or registry name matches `package`.
+    ///
+    /// `include_lineage` also accepts the purl lineage name, which is how
+    /// version lookup finds every release of one package.
+    fn records_for<'a>(
+        &self,
+        catalog: &'a [RegistryPackageRecord],
+        package: &PackageReference,
+        include_lineage: bool,
+    ) -> Result<Vec<&'a RegistryPackageRecord>, String> {
+        let mut positions = Vec::new();
+        if let Some(indexes) = self.by_coordinate.get(package) {
+            positions.extend(indexes.iter().copied());
+        }
+        if let Some(indexes) = self.by_name.get(package.as_str()) {
+            positions.extend(indexes.iter().copied());
+        }
+        if include_lineage
+            && let PackageReference::Purl(coordinate) = package
+        {
+            let lineage = coordinate.lineage_name();
+            if lineage != package.as_str()
+                && let Some(indexes) = self.by_name.get(lineage)
+            {
+                positions.extend(indexes.iter().copied());
+            }
+        }
+        positions.sort_unstable();
+        positions.dedup();
+        self.records_at(catalog, &positions)
+    }
+
+    fn records_at<'a>(
+        &self,
+        catalog: &'a [RegistryPackageRecord],
+        positions: &[usize],
+    ) -> Result<Vec<&'a RegistryPackageRecord>, String> {
+        let mut records = Vec::with_capacity(positions.len());
+        for index in positions {
+            let record = catalog.get(*index).ok_or_else(|| {
+                "catalog lookup index does not match the catalog".to_owned()
+            })?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+}
+
 fn packages(
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     package: &PackageReference,
-) -> Box<[RegistryPackageRecord]> {
-    catalog
-        .iter()
-        .filter(|row| package_matches(package, row))
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    Ok(catalog_index
+        .records_for(catalog, package, false)?
+        .into_iter()
         .cloned()
         .collect::<Vec<_>>()
-        .into_boxed_slice()
+        .into_boxed_slice())
 }
 
 fn package_page(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     package: &PackageReference,
 ) -> Result<Box<[RegistryPackageRecord]>, String> {
-    let records = packages(catalog, package);
+    let records = packages(catalog, catalog_index, package)?;
     if !records.is_empty() {
         return Ok(records);
     }
@@ -1205,11 +1338,12 @@ fn package_page(
 }
 fn versions(
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     package: &PackageReference,
-) -> Box<[RegistryPackageRecord]> {
-    let mut rows = packages(catalog, package).into_vec();
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    let mut rows = packages(catalog, catalog_index, package)?.into_vec();
     rows.sort_by(|a, b| b.version.cmp(&a.version));
-    rows.into_boxed_slice()
+    Ok(rows.into_boxed_slice())
 }
 
 fn indexed_package_coordinates(
@@ -1233,6 +1367,7 @@ fn indexed_package_coordinates(
     Ok(coordinates)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn version_matches(package: &PackageReference, row: &RegistryPackageRecord) -> bool {
     if package_matches(package, row) {
         return true;
@@ -1246,13 +1381,14 @@ fn version_matches(package: &PackageReference, row: &RegistryPackageRecord) -> b
 fn indexed_catalog_versions(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     workspace: &Path,
     package: &PackageReference,
 ) -> Result<Vec<RegistryPackageRecord>, String> {
     let indexed = indexed_package_coordinates(view, workspace)?;
-    Ok(catalog
-        .iter()
-        .filter(|row| version_matches(package, row))
+    Ok(catalog_index
+        .records_for(catalog, package, true)?
+        .into_iter()
         .filter(|row| indexed.contains(row.coordinate.as_str()))
         .cloned()
         .collect())
@@ -1261,6 +1397,7 @@ fn indexed_catalog_versions(
 fn package_versions(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     package: &PackageReference,
     workspace: Option<&Path>,
 ) -> Result<Box<[RegistryPackageRecord]>, String> {
@@ -1268,13 +1405,14 @@ fn package_versions(
     let mut rows = if !indexed.is_empty() {
         indexed
     } else if let Some(workspace) = workspace {
-        let from_catalog = indexed_catalog_versions(view, catalog, workspace, package)?;
+        let from_catalog =
+            indexed_catalog_versions(view, catalog, catalog_index, workspace, package)?;
         if from_catalog.is_empty() {
-            return Ok(versions(catalog, package));
+            return versions(catalog, catalog_index, package);
         }
         from_catalog
     } else {
-        return Ok(versions(catalog, package));
+        return versions(catalog, catalog_index, package);
     };
     rows.sort_by(|a, b| b.version.cmp(&a.version));
     Ok(rows.into_boxed_slice())
@@ -1283,10 +1421,11 @@ fn package_versions(
 fn profile(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     package: &PackageReference,
     workspace: Option<&Path>,
 ) -> Result<SurfaceReply, String> {
-    let rows = package_versions(view, catalog, package, workspace)?;
+    let rows = package_versions(view, catalog, catalog_index, package, workspace)?;
     Ok(SurfaceReply::PackageProfile {
         latest: rows.first().cloned(),
         versions: rows.len() as u64,
@@ -1574,6 +1713,138 @@ mod tests {
         );
     }
 
+    fn clone_records(rows: Vec<&RegistryPackageRecord>) -> Vec<RegistryPackageRecord> {
+        rows.into_iter().cloned().collect()
+    }
+
+    #[test]
+    fn catalog_lookup_preserves_order_duplicates_and_lineage() {
+        let mut first = registry_row("pkg:cargo/serde@1.0.0", "serde");
+        first.version = ProductText::new("1.0.0").expect("version");
+        let mut second = registry_row("pkg:cargo/serde@2.0.0", "serde");
+        second.version = ProductText::new("2.0.0").expect("version");
+        let mut named_like_coordinate =
+            registry_row("pkg:cargo/other@1.0.0", "pkg:cargo/serde@1.0.0");
+        named_like_coordinate.version = ProductText::new("9.0.0").expect("version");
+        let catalog = [
+            registry_row("pkg:cargo/zzz@1.0.0", "zzz"),
+            first,
+            named_like_coordinate,
+            second,
+        ];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let exact = PackageReference::parse("pkg:cargo/serde@1.0.0").expect("exact");
+        let exact_rows = clone_records(index.records_for(&catalog, &exact, false).expect("exact"));
+        let scanned = catalog
+            .iter()
+            .filter(|row| package_matches(&exact, row))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(exact_rows, scanned);
+        assert_eq!(
+            exact_rows
+                .iter()
+                .map(|row| row.coordinate.as_str())
+                .collect::<Vec<_>>(),
+            ["pkg:cargo/serde@1.0.0", "pkg:cargo/other@1.0.0",]
+        );
+        let lineage = PackageReference::parse("pkg:cargo/serde@9.9.9").expect("lineage");
+        let lineage_rows =
+            clone_records(index.records_for(&catalog, &lineage, true).expect("lineage"));
+        let scanned_lineage = catalog
+            .iter()
+            .filter(|row| version_matches(&lineage, row))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(lineage_rows, scanned_lineage);
+        assert_eq!(
+            lineage_rows
+                .iter()
+                .map(|row| row.version.as_str())
+                .collect::<Vec<_>>(),
+            ["1.0.0", "2.0.0",]
+        );
+        let named = clone_records(index.records_named(&catalog, "serde").expect("named"));
+        assert_eq!(named.len(), 2);
+        assert_eq!(named[0].version.as_str(), "1.0.0");
+        let first_hit = index.first_coordinate(&catalog, &exact).expect("first");
+        assert_eq!(
+            first_hit.map(|row| row.version.as_str()),
+            Some("1.0.0")
+        );
+        let stale = CatalogLookupIndex::from_catalog(&catalog);
+        let error = stale
+            .records_named(&catalog[..1], "serde")
+            .expect_err("stale catalog");
+        assert!(error.contains("does not match the catalog"));
+    }
+
+    #[test]
+    #[allow(clippy::print_stdout)]
+    fn catalog_name_lookup_skips_unrelated_rows() {
+        const ROWS: usize = 4096;
+        const HITS: usize = 8;
+        const SAMPLES: usize = 32;
+        let catalog: Vec<_> = (0..ROWS)
+            .map(|index| {
+                if index >= ROWS - HITS {
+                    let version = index - (ROWS - HITS);
+                    registry_row(
+                        &format!("pkg:cargo/target-lib@{version}.0.0"),
+                        "target-lib",
+                    )
+                } else {
+                    registry_row(&format!("pkg:cargo/pkg-{index:04}@1.0.0"), "pkg")
+                }
+            })
+            .collect();
+        let package = PackageReference::parse("pkg:cargo/target-lib@9.9.9").expect("package");
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let scan = || {
+            catalog
+                .iter()
+                .filter(|row| version_matches(&package, row))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let lookup = || {
+            index
+                .records_for(&catalog, &package, true)
+                .expect("lookup")
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(scan(), lookup());
+        assert_eq!(lookup().len(), HITS);
+        let mut scan_samples = Vec::with_capacity(SAMPLES);
+        let mut lookup_samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..4 {
+            std::hint::black_box(scan());
+            std::hint::black_box(lookup());
+        }
+        for _ in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            std::hint::black_box(scan());
+            scan_samples.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(lookup());
+            lookup_samples.push(started.elapsed().as_nanos());
+        }
+        scan_samples.sort_unstable();
+        lookup_samples.sort_unstable();
+        let scan_median = scan_samples[SAMPLES / 2];
+        let lookup_median = lookup_samples[SAMPLES / 2];
+        println!(
+            "catalog_name_index rows={ROWS} hits={HITS} scan_median_ns={scan_median} \
+             lookup_median_ns={lookup_median}"
+        );
+        assert!(
+            lookup_median < scan_median,
+            "lookup {lookup_median} scan {scan_median}"
+        );
+    }
+
     #[test]
     fn committed_state_reopens_at_the_exact_epoch() {
         let root = fixture("reopen");
@@ -1584,6 +1855,7 @@ mod tests {
                 create("Nudox"),
                 &view(),
                 &[],
+                &CatalogLookupIndex::from_catalog(&[]),
                 &[],
                 &PackageGraphIndex::from_facts(&[]),
                 None,
@@ -1610,6 +1882,7 @@ mod tests {
                 create("Canonical"),
                 &view(),
                 &[],
+                &CatalogLookupIndex::from_catalog(&[]),
                 &[],
                 &PackageGraphIndex::from_facts(&[]),
                 None,
@@ -1651,6 +1924,7 @@ mod tests {
                     create("Unpublished"),
                     &view(),
                     &[],
+                    &CatalogLookupIndex::from_catalog(&[]),
                     &[],
                     &PackageGraphIndex::from_facts(&[]),
                     None,
