@@ -934,7 +934,7 @@ mod tests {
         .expect("symbol commitment view");
         assert!(!root.compatibility_rows_are_materialized());
         let mut symbols: Vec<_> = root
-            .row_refs()
+            .iter_rows()
             .filter_map(|row| match row.id {
                 RowId::Symbol(symbol) => Some(symbol),
                 RowId::Package(_) | RowId::Object(_) => None,
@@ -950,13 +950,13 @@ mod tests {
             borrowed[sample] = started.elapsed().as_nanos();
             std::hint::black_box(hit);
             let started = std::time::Instant::now();
-            let cloned: Vec<_> = root.row_refs().cloned().collect();
+            let cloned: Vec<_> = root.iter_rows().cloned().collect();
             let hit = slice_symbol_commitment(&cloned, claimed);
             owned[sample] = started.elapsed().as_nanos();
             std::hint::black_box(hit);
         }
         assert!(!root.compatibility_rows_are_materialized());
-        let cloned: Vec<_> = root.row_refs().cloned().collect();
+        let cloned: Vec<_> = root.iter_rows().cloned().collect();
         for symbol in &symbols {
             let bytes = symbol.to_bytes();
             assert_eq!(
