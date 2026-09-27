@@ -1864,8 +1864,8 @@ mod tests {
              lookup_median_ns={lookup_median}"
         );
         assert!(
-            lookup_median.saturating_mul(2) < scan_median,
-            "lookup {lookup_median} ns was not twice as fast as scanning every row \
+            lookup_median.saturating_mul(4) < scan_median,
+            "lookup {lookup_median} ns was not 4× faster than scanning every row \
              {scan_median} ns"
         );
     }
