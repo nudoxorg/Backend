@@ -5117,7 +5117,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             kind,
                         )? {
                             Some(pair) => pair,
-                            None => self.syntactic_property_target(property_span)?,
+                            None => match self.constructed_property_target(
+                                object_span,
+                                property_span,
+                                kind,
+                            )? {
+                                Some(pair) => pair,
+                                None => self.syntactic_property_target(property_span)?,
+                            },
                         },
                     },
                 }
@@ -5178,7 +5185,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             kind,
                         )? {
                             Some(pair) => pair,
-                            None => self.syntactic_property_target(property_span)?,
+                            None => match self.constructed_property_target(
+                                object_span,
+                                property_span,
+                                kind,
+                            )? {
+                                Some(pair) => pair,
+                                None => self.syntactic_property_target(property_span)?,
+                            },
                         },
                     },
                 }
@@ -5703,6 +5717,80 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             ClassMemberMatch::Unique(fact) => Some(fact),
             ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => None,
         }
+    }
+
+    /// Resolves one `new Receiver().member` site when the receiver peels to a
+    /// `new` expression whose callee names a unique file-local class or a
+    /// namespace-qualified record prefix.
+    fn constructed_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let mut span = object_span;
+        loop {
+            let Some(ast_kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
+                return Ok(None);
+            };
+            if let Some(parenthesized) = ast_kind.as_parenthesized_expression() {
+                span = parenthesized.expression.span();
+                continue;
+            }
+            break;
+        }
+        let Some(ast_kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
+            return Ok(None);
+        };
+        let Some(new_expression) = ast_kind.as_new_expression() else {
+            return Ok(None);
+        };
+        let mut callee_span = new_expression.callee.span();
+        loop {
+            let Some(callee_kind) = self.ast_kind_at_exact_span(callee_span.start, callee_span.end)
+            else {
+                return Ok(None);
+            };
+            if let Some(parenthesized) = callee_kind.as_parenthesized_expression() {
+                callee_span = parenthesized.expression.span();
+                continue;
+            }
+            break;
+        }
+        let record = if let Some(identifier_span) =
+            self.peel_object_identifier_span(callee_span.start, callee_span.end)
+        {
+            let class_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
+                start: identifier_span.start,
+                end: identifier_span.end,
+            })?;
+            match self.unique_file_record(class_name) {
+                Some(record) => record,
+                None => return Ok(None),
+            }
+        } else {
+            let Some(container) =
+                self.namespace_qualified_fact(callee_span.start, callee_span.end, 0)
+            else {
+                return Ok(None);
+            };
+            let container_index = usize::try_from(container).map_err(|_| lane_rejection())?;
+            let container_kind = self
+                .fact_kinds
+                .get(container_index)
+                .copied()
+                .ok_or(lane_rejection())?;
+            if container_kind != EntityKind::Record {
+                return Ok(None);
+            }
+            container
+        };
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        self.record_qualified_property_target(record, property_name, kind)
     }
 
     /// Resolves one `Namespace.Prefix.member` site when the receiver is a
