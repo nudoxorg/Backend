@@ -4679,18 +4679,31 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let Some((target, confidence, kind)) = self.checker_only_target(reference)? else {
                 continue;
             };
-            if kind == ReferenceKind::FieldAccess
-                && matches!(
-                    target,
+            let retarget_to_enclosing_function = match (&kind, &target) {
+                (
+                    ReferenceKind::FieldAccess,
                     OccurrenceTarget::Foreign(ForeignKey {
                         kind: Some(EntityKind::Field),
                         ..
-                    })
-                )
+                    }),
+                ) => true,
+                (
+                    ReferenceKind::VariableUse,
+                    OccurrenceTarget::Foreign(ForeignKey {
+                        kind: Some(EntityKind::Constant | EntityKind::Static | EntityKind::Function),
+                        ..
+                    }),
+                ) => true,
+                (
+                    ReferenceKind::FunctionCall,
+                    OccurrenceTarget::Foreign(ForeignKey { kind: None, .. }),
+                ) => true,
+                _ => false,
+            };
+            if retarget_to_enclosing_function
+                && let Some(function) = self.enclosing_function_owner(reference.span.start)
             {
-                if let Some(function) = self.enclosing_function_owner(reference.span.start) {
-                    owner = function;
-                }
+                owner = function;
             }
             self.commit_occurrence(owner, span, kind, target, confidence)?;
         }
@@ -5073,8 +5086,18 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             } else {
                 None
             };
-            if let Some(key) = self.checker_foreign_key(span, module, reference.name, member_kind)?
+            if let Some(mut key) =
+                self.checker_foreign_key(span, module, reference.name, member_kind)?
             {
+                if !call && !reference.is_field && !reference.is_enum_member {
+                    key.kind = Some(if reference.is_const {
+                        EntityKind::Constant
+                    } else if reference.is_variable {
+                        EntityKind::Static
+                    } else {
+                        EntityKind::Function
+                    });
+                }
                 let kind = if call {
                     ReferenceKind::FunctionCall
                 } else if member_kind == Some(EntityKind::Field) {
@@ -7785,6 +7808,8 @@ mod lane_tests {
                 overload_index: None,
                 is_field: false,
                 is_enum_member: false,
+                is_const: false,
+                is_variable: false,
             }],
         )
     }
