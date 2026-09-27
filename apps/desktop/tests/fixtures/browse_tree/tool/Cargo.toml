@@ -1,0 +1,9 @@
+[package]
+name = "browse-tool"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Checks the app's compile errors."
+
+[dependencies]
+trybuild = "1.0.118"
