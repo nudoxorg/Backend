@@ -1020,3 +1020,670 @@ def use(child: Child):
     let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
     assert_universe_method_call(call, b"note")
 }
+
+fn field_access_in_owner<'a>(
+    occurrences: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner: u32,
+) -> Result<&'a backend_semantic::ir::DecodedOccurrence<'a>, TestError> {
+    let matches: Vec<_> = occurrences
+        .iter()
+        .filter(|row| row.owner.raw == owner && row.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    if matches.len() != 1 {
+        return Err(TestError::Falsified("expected exactly one FieldAccess in owner"));
+    }
+    Ok(matches[0])
+}
+
+fn decode_occurrences(
+    fragment: &[u8],
+) -> Result<(FragmentView<'_>, Vec<&[u8]>, Vec<backend_semantic::ir::DecodedOccurrence<'_>>), TestError>
+{
+    let decoded = FragmentView::validate(fragment).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let mut occurrences: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
+    if let Some(mut cursor) = decoded.occurrences() {
+        for row in cursor.by_ref() {
+            occurrences.push(row.map_err(|_| TestError::Falsified("occurrence decode"))?);
+        }
+    }
+    Ok((decoded, atoms, occurrences))
+}
+
+fn assert_foreign_package_field(
+    target: &OccurrenceTarget<'_>,
+    path: &str,
+    display: &str,
+    lineage: &str,
+) -> Result<(), TestError> {
+    match target {
+        OccurrenceTarget::Foreign(key) => {
+            if key.path != path {
+                return Err(TestError::Falsified("foreign package path mismatch"));
+            }
+            if key.display != display {
+                return Err(TestError::Falsified("foreign package display mismatch"));
+            }
+            if key.kind != Some(EntityKind::Field) {
+                return Err(TestError::Falsified("foreign package kind is not Field"));
+            }
+            if !matches!(
+                key.origin,
+                ForeignOrigin::Package(package)
+                    if package.ecosystem == "pypi" && package.name == lineage
+            ) {
+                return Err(TestError::Falsified("foreign package lineage mismatch"));
+            }
+            Ok(())
+        }
+        OccurrenceTarget::Local(_) => Err(TestError::Falsified("expected foreign package target")),
+        OccurrenceTarget::Stable(_) => Err(TestError::Falsified("expected foreign package target")),
+    }
+}
+
+fn assert_universe_field(
+    target: &OccurrenceTarget<'_>,
+    path: &str,
+    display: &str,
+) -> Result<(), TestError> {
+    match target {
+        OccurrenceTarget::Foreign(key) => {
+            if key.path != path {
+                return Err(TestError::Falsified("universe field path mismatch"));
+            }
+            if key.display != display {
+                return Err(TestError::Falsified("universe field display mismatch"));
+            }
+            if key.kind != Some(EntityKind::Field) {
+                return Err(TestError::Falsified("universe field kind is not Field"));
+            }
+            if !matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" }) {
+                return Err(TestError::Falsified("universe field ecosystem is not pypi"));
+            }
+            Ok(())
+        }
+        OccurrenceTarget::Local(_) => Err(TestError::Falsified("expected universe field target")),
+        OccurrenceTarget::Stable(_) => Err(TestError::Falsified("expected universe field target")),
+    }
+}
+
+#[test]
+fn annotated_receiver_attribute_read_uses_the_imported_or_local_class() -> Result<(), TestError> {
+    const ANNOTATED_SOURCE: &[u8] = b"\
+from workout.service import WorkoutService
+
+class LocalService:
+    def set_note(self):
+        return 1
+
+def sync(service: WorkoutService):
+    bound = service.set_note
+
+def local(service: LocalService):
+    bound = service.set_note
+
+def plain(service):
+    seen = service.set_note
+";
+
+    const FIELD_SOURCE: &[u8] = b"\
+class LocalService:
+    note = 1
+
+def read(service: LocalService):
+    seen = service.note
+";
+
+    const AMBIGUOUS_SOURCE: &[u8] = b"\
+from workout.service import Service
+from other.place import Service
+
+def sync(service: Service):
+    seen = service.set_note
+";
+
+    const PAIRED_SOURCE: &[u8] = b"\
+class Pair:
+    def set_note(self):
+        return 1
+    class Inner:
+        def set_note(self):
+            return 2
+
+def paired(service: Pair):
+    seen = service.set_note
+";
+
+    const MIXED_SOURCE: &[u8] = b"\
+class Both:
+    note = 1
+    def note(self):
+        return 2
+
+def mixed(service: Both):
+    seen = service.note
+";
+
+    let executable = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("python3"))
+                .find(|candidate| candidate.is_file())
+        })
+        .ok_or(TestError::MissingPython)?;
+    let version = Command::new(&executable)
+        .arg("--version")
+        .output()
+        .map_err(TestError::Tool)?;
+    let version_bytes = if version.stdout.is_empty() {
+        version.stderr.as_slice()
+    } else {
+        version.stdout.as_slice()
+    };
+    let toolchain = ResolvedToolchain::from_version(NativeTool::Python, &executable, version_bytes)
+        .map_err(|_| TestError::Resolve)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(TestError::Clock)?
+        .as_nanos();
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-annotated-attr-read-{nonce}-{}-{}",
+        std::process::id(),
+        fixture_sequence()
+    ));
+    fs::create_dir_all(&work).map_err(|source| TestError::Io("create scratch", source))?;
+    let cancelled = AtomicBool::new(false);
+
+    let annotated_fragment =
+        compile_python_fragment(ANNOTATED_SOURCE, &work, &toolchain, &cancelled)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&annotated_fragment)?;
+
+    let sync_owner = entity_ordinal_by_name(&decoded, &atoms, b"sync", EntityKind::Function)?;
+    let local_owner = entity_ordinal_by_name(&decoded, &atoms, b"local", EntityKind::Function)?;
+    let plain_owner = entity_ordinal_by_name(&decoded, &atoms, b"plain", EntityKind::Function)?;
+    let set_note_method =
+        entity_ordinal_by_name(&decoded, &atoms, b"set_note", EntityKind::Function)?;
+
+    let sync_read = field_access_in_owner(&occurrences, sync_owner)?;
+    assert_foreign_package_field(&sync_read.occurrence.target, "workout.service", "set_note", "workout")?;
+
+    let local_read = field_access_in_owner(&occurrences, local_owner)?;
+    match &local_read.occurrence.target {
+        OccurrenceTarget::Local(target) if target.raw == set_note_method => {}
+        _ => return Err(TestError::Falsified("local attribute read target mismatch")),
+    }
+
+    let plain_read = field_access_in_owner(&occurrences, plain_owner)?;
+    assert_universe_field(&plain_read.occurrence.target, "set_note", "set_note")?;
+
+    let field_fragment = compile_python_fragment(FIELD_SOURCE, &work, &toolchain, &cancelled)?;
+    let (field_decoded, field_atoms, field_occurrences) = decode_occurrences(&field_fragment)?;
+    let read_owner =
+        entity_ordinal_by_name(&field_decoded, &field_atoms, b"read", EntityKind::Function)?;
+    let note_field = entity_ordinal_by_name(&field_decoded, &field_atoms, b"note", EntityKind::Field)?;
+    let field_read = field_access_in_owner(&field_occurrences, read_owner)?;
+    match &field_read.occurrence.target {
+        OccurrenceTarget::Local(target) if target.raw == note_field => {}
+        _ => return Err(TestError::Falsified("field attribute read target mismatch")),
+    }
+
+    let ambiguous_fragment =
+        compile_python_fragment(AMBIGUOUS_SOURCE, &work, &toolchain, &cancelled)?;
+    let (ambiguous_decoded, ambiguous_atoms, ambiguous_occurrences) =
+        decode_occurrences(&ambiguous_fragment)?;
+    let ambiguous_sync =
+        entity_ordinal_by_name(&ambiguous_decoded, &ambiguous_atoms, b"sync", EntityKind::Function)?;
+    let ambiguous_read = field_access_in_owner(&ambiguous_occurrences, ambiguous_sync)?;
+    assert_foreign_package_field(
+        &ambiguous_read.occurrence.target,
+        "workout.service",
+        "set_note",
+        "workout",
+    )?;
+    match &ambiguous_read.occurrence.target {
+        OccurrenceTarget::Foreign(key) if key.path == "other.place" => {
+            return Err(TestError::Falsified("ambiguous import resolved through other.place"));
+        }
+        _ => {}
+    }
+
+    let paired_fragment =
+        compile_python_fragment(PAIRED_SOURCE, &work, &toolchain, &cancelled)?;
+    let (paired_decoded, paired_atoms, paired_occurrences) = decode_occurrences(&paired_fragment)?;
+    let paired_owner =
+        entity_ordinal_by_name(&paired_decoded, &paired_atoms, b"paired", EntityKind::Function)?;
+    let paired_read = field_access_in_owner(&paired_occurrences, paired_owner)?;
+    if matches!(&paired_read.occurrence.target, OccurrenceTarget::Local(_)) {
+        return Err(TestError::Falsified("paired attribute read must not be local"));
+    }
+    assert_universe_field(&paired_read.occurrence.target, "set_note", "set_note")?;
+
+    let mixed_fragment = compile_python_fragment(MIXED_SOURCE, &work, &toolchain, &cancelled)?;
+    let (mixed_decoded, mixed_atoms, mixed_occurrences) = decode_occurrences(&mixed_fragment)?;
+    let mixed_owner =
+        entity_ordinal_by_name(&mixed_decoded, &mixed_atoms, b"mixed", EntityKind::Function)?;
+    let mixed_read = field_access_in_owner(&mixed_occurrences, mixed_owner)?;
+    if matches!(&mixed_read.occurrence.target, OccurrenceTarget::Local(_)) {
+        return Err(TestError::Falsified("mixed attribute read must not be local"));
+    }
+    assert_universe_field(&mixed_read.occurrence.target, "note", "note")?;
+
+    fs::remove_dir_all(&work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+fn field_ordinal_in_class(
+    decoded: &FragmentView<'_>,
+    atoms: &[&[u8]],
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    class_name: &[u8],
+    field_name: &[u8],
+) -> Result<EntityId, TestError> {
+    let class_span = class_span(module, class_name)?;
+    let mut class_field_indexes: Vec<usize> = Vec::new();
+    for (index, declaration) in module.declarations.iter().enumerate() {
+        if declaration.kind == DeclarationKind::Field
+            && declaration.name.as_bytes() == field_name
+            && declaration.span.start >= class_span.start
+            && declaration.span.end <= class_span.end
+        {
+            class_field_indexes.push(index);
+        }
+    }
+    if class_field_indexes.len() != 1 {
+        return Err(TestError::Falsified("field declaration in class not unique"));
+    }
+    let mut prior_fields = 0_usize;
+    for (index, declaration) in module.declarations.iter().enumerate() {
+        if index == class_field_indexes[0] {
+            break;
+        }
+        if declaration.kind == DeclarationKind::Field && declaration.name.as_bytes() == field_name {
+            prior_fields += 1;
+        }
+    }
+    let named_fields: Vec<EntityId> = decoded
+        .entities()
+        .filter(|entity| {
+            entity.kind == EntityKind::Field
+                && atoms.get(entity.name.raw as usize).copied() == Some(field_name)
+        })
+        .map(|entity| entity.entity)
+        .collect();
+    if named_fields.is_empty() {
+        return Err(TestError::Falsified("named field entities absent"));
+    }
+    named_fields
+        .get(prior_fields)
+        .copied()
+        .ok_or(TestError::Falsified("field entity ordinal absent"))
+}
+
+fn assert_local_field_access(
+    read: &backend_semantic::ir::DecodedOccurrence<'_>,
+    expected: EntityId,
+) -> Result<(), TestError> {
+    if read.occurrence.kind != ReferenceKind::FieldAccess {
+        return Err(TestError::Falsified("attribute read is not FieldAccess"));
+    }
+    if read.occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("local FieldAccess confidence is not Index"));
+    }
+    if !matches!(
+        &read.occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == expected.raw
+    ) {
+        return Err(TestError::Falsified(
+            "local FieldAccess target does not match the class-scoped entity",
+        ));
+    }
+    Ok(())
+}
+
+fn assert_universe_field_access(
+    read: &backend_semantic::ir::DecodedOccurrence<'_>,
+    spelling: &str,
+) -> Result<(), TestError> {
+    if read.occurrence.kind != ReferenceKind::FieldAccess {
+        return Err(TestError::Falsified("attribute read is not FieldAccess"));
+    }
+    if read.occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("universe FieldAccess confidence is not Index"));
+    }
+    assert_universe_field(&read.occurrence.target, spelling, spelling)?;
+    Ok(())
+}
+
+fn run_inherited_read_fixture(
+    source: &[u8],
+) -> Result<(Vec<u8>, backend_frontend_python::legacy::ModuleFacts), TestError> {
+    let fixture = python_fixture()?;
+    let toolchain = resolved_toolchain(&fixture)?;
+    let (fragment_bytes, module) =
+        compile_with_module(source, &fixture.work, &toolchain, &fixture.cancelled)?;
+    fs::remove_dir_all(&fixture.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok((fragment_bytes, module))
+}
+
+#[test]
+fn annotated_inherited_attribute_read_resolves_unique_base_field() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Base:
+    note = 1
+class Child(Base):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if other_note == base_note {
+        return Err(TestError::Falsified("Other.note and Base.note must differ"));
+    }
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_local_field_access(read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_resolves_unique_base_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    def note(self):
+        return 9
+class Base:
+    def note(self):
+        return 1
+class Child(Base):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let other_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if other_note == base_note {
+        return Err(TestError::Falsified("Other.note and Base.note must differ"));
+    }
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    if read.occurrence.kind == ReferenceKind::MethodCall {
+        return Err(TestError::Falsified("attribute read must not be MethodCall"));
+    }
+    assert_local_field_access(read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_resolves_two_level_base_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    def note(self):
+        return 9
+class Grand:
+    def note(self):
+        return 1
+class Base(Grand):
+    pass
+class Child(Base):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let grand_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Grand", b"note")?;
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_local_field_access(read, grand_note)?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_prefers_child_field_over_base_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Base:
+    def note(self):
+        return 1
+class Child(Base):
+    note = 1
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let child_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if child_note == base_note {
+        return Err(TestError::Falsified("Child field and Base method must differ"));
+    }
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_local_field_access(read, child_note)?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_stays_universe_for_ambiguous_local_members() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Base:
+    note = 1
+class Child(Base):
+    note = 1
+    def note(self):
+        return 2
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let child_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    let child_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    let base_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if child_field == child_method || child_field == base_field || child_method == base_field {
+        return Err(TestError::Falsified(
+            "child field, child method, and base field must be three distinct ordinals",
+        ));
+    }
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_universe_field_access(read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_stays_universe_for_ambiguous_bases() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Left:
+    note = 1
+class Right:
+    note = 2
+class Child(Left, Right):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
+    let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if left_note == right_note {
+        return Err(TestError::Falsified("Left.note and Right.note must differ"));
+    }
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_universe_field_access(read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_stays_universe_for_field_method_across_bases() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Left:
+    note = 1
+class Right:
+    def note(self):
+        return 2
+class Child(Left, Right):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
+    let right_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if left_note == right_note {
+        return Err(TestError::Falsified("Left field and Right method must differ"));
+    }
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_universe_field_access(read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_stays_universe_when_base_has_field_and_method(
+) -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Base:
+    note = 1
+    def note(self):
+        return 2
+class Child(Base):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let base_field = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let base_method = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if base_field == base_method {
+        return Err(TestError::Falsified("Base field and Base method must differ"));
+    }
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_universe_field_access(read, "note")?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_keeps_unique_module_field_when_bases_declare_none(
+) -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 1
+class Child:
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let other_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_local_field_access(read, other_note)?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_resolves_diamond_base_field() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Base:
+    note = 1
+class Left(Base):
+    pass
+class Right(Base):
+    pass
+class Child(Left, Right):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_local_field_access(read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_skips_unresolved_base() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    def note(self):
+        return 9
+class Base:
+    def note(self):
+        return 1
+class Child(object, Base):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_local_field_access(read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_resolves_generic_base_field() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Base:
+    note = 1
+class Child(Base[int]):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let base_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_local_field_access(read, base_note)?;
+    Ok(())
+}
+
+#[test]
+fn annotated_inherited_attribute_read_stays_universe_for_imported_only_base() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+from workout.service import WorkoutService
+class Child(WorkoutService):
+    pass
+def read(item: Child):
+    return item.note
+";
+    let (fragment_bytes, _) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let read_owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let read = field_access_in_owner(&occurrences, read_owner)?;
+    assert_universe_field_access(read, "note")?;
+    Ok(())
+}

@@ -2020,14 +2020,33 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         }
                     }
                     if let Some(ordinal) = self.module_field(occurrence) {
-                        let confidence = match checked {
-                            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
-                            _ => OccurrenceConfidence::Index,
+                        let skip = match receiver {
+                            Some(receiver) => {
+                                self.annotated_class_attribute_is_ambiguous(occurrence, receiver)
+                                    || self.annotated_base_attribute_is_ambiguous(
+                                        occurrence,
+                                        receiver,
+                                    )
+                            }
+                            None => false,
                         };
-                        return Ok(Some((
-                            OccurrenceTarget::Local(EntityId::new(ordinal)),
-                            confidence,
-                        )));
+                        if !skip {
+                            let confidence = match checked {
+                                Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                                _ => OccurrenceConfidence::Index,
+                            };
+                            return Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence,
+                            )));
+                        }
+                    }
+                    if let Some(receiver) = receiver {
+                        if let Some(resolved) = self
+                            .annotated_receiver_attribute_target(occurrence, receiver, checked)?
+                        {
+                            return Ok(Some(resolved));
+                        }
                     }
                     return Ok(Some((
                         foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
@@ -2480,6 +2499,152 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
+    /// Whether one annotated class receiver names both a live field and a live
+    /// method for the attribute spelling, so a lone module-field match must
+    /// not short-circuit before annotated resolution.
+    fn annotated_class_attribute_is_ambiguous(
+        &self,
+        occurrence: &OccurrenceFact,
+        receiver: &str,
+    ) -> bool {
+        let function_index = match self.enclosing_function_index(occurrence) {
+            Some(index) => index,
+            None => return false,
+        };
+        let function = &self.module.declarations[function_index];
+        let type_name = match receiver_annotation_name(function, receiver) {
+            Some(name) => name,
+            None => return false,
+        };
+        let candidates = self.live_class_or_alias_indices(type_name);
+        if candidates.len() != 1 {
+            return false;
+        }
+        let declaration = &self.module.declarations[candidates[0]];
+        if declaration.kind != DeclarationKind::Class {
+            return false;
+        }
+        let fields = self.fields_in_class(occurrence, declaration.span);
+        let methods = self.methods_in_class(occurrence, declaration.span);
+        fields.len() >= 1 && methods.len() >= 1
+    }
+
+    /// Whether a class that declares neither a field nor a method of this
+    /// spelling has an ambiguous same-file base walk. An empty walk is not
+    /// ambiguous, so a unique module field can still bind.
+    fn annotated_base_attribute_is_ambiguous(
+        &self,
+        occurrence: &OccurrenceFact,
+        receiver: &str,
+    ) -> bool {
+        let function_index = match self.enclosing_function_index(occurrence) {
+            Some(index) => index,
+            None => return false,
+        };
+        let function = &self.module.declarations[function_index];
+        let type_name = match receiver_annotation_name(function, receiver) {
+            Some(name) => name,
+            None => return false,
+        };
+        let candidates = self.live_class_or_alias_indices(type_name);
+        if candidates.len() != 1 {
+            return false;
+        }
+        let index = candidates[0];
+        let declaration = &self.module.declarations[index];
+        if declaration.kind != DeclarationKind::Class {
+            return false;
+        }
+        let fields = self.fields_in_class(occurrence, declaration.span);
+        let methods = self.methods_in_class(occurrence, declaration.span);
+        if fields.len() != 0 || methods.len() != 0 {
+            return false;
+        }
+        let mut visited = HashSet::new();
+        let mut found = None;
+        self.walk_inherited_attribute(index, occurrence, 0, &mut visited, &mut found)
+            .is_none()
+    }
+
+    /// Resolves one plain-name receiver through its parameter annotation for
+    /// an attribute read when the import-binding and module-field arms did
+    /// not apply: a unique live class yields the sole field or method inside
+    /// that class, or a unique same-file base field or method when the
+    /// annotated class declares neither; a unique live import alias yields the
+    /// alias statement's package field key. Every ambiguous or unproven case keeps today's
+    /// universe field key by returning `None`.
+    fn annotated_receiver_attribute_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        receiver: &str,
+        checked: Option<&SymbolOutcome>,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        let function_index = match self.enclosing_function_index(occurrence) {
+            Some(index) => index,
+            None => return Ok(None),
+        };
+        let function = &self.module.declarations[function_index];
+        let type_name = match receiver_annotation_name(function, receiver) {
+            Some(name) => name,
+            None => return Ok(None),
+        };
+        let candidates = self.live_class_or_alias_indices(type_name);
+        if candidates.len() != 1 {
+            return Ok(None);
+        }
+        let index = candidates[0];
+        let declaration = &self.module.declarations[index];
+        match declaration.kind {
+            DeclarationKind::Class => {
+                let fields = self.fields_in_class(occurrence, declaration.span);
+                let methods = self.methods_in_class(occurrence, declaration.span);
+                let ordinal = match (fields.len(), methods.len()) {
+                    (1, 0) => fields[0],
+                    (0, 1) => methods[0],
+                    (0, 0) => match self.inherited_attribute_ordinal(occurrence, index) {
+                        Some(ordinal) => ordinal,
+                        None => return Ok(None),
+                    },
+                    _ => return Ok(None),
+                };
+                let confidence = match checked {
+                    Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                    _ => OccurrenceConfidence::Index,
+                };
+                Ok(Some((
+                    OccurrenceTarget::Local(EntityId::new(ordinal)),
+                    confidence,
+                )))
+            }
+            DeclarationKind::Alias => {
+                let module_span = match alias_import_module_span(self.source, declaration.span) {
+                    Some(span) => span,
+                    None => return Ok(None),
+                };
+                let module_spelling = self.slice(module_span)?;
+                let binding = self.slice(occurrence.span)?;
+                let binding = core::str::from_utf8(binding).map_err(|_| {
+                    PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+                        start: occurrence.span.start,
+                        end: occurrence.span.end,
+                    })
+                })?;
+                let target = foreign_package(
+                    module_spelling,
+                    binding,
+                    module_span,
+                    Some(EntityKind::Field),
+                )?;
+                let confidence = match checked {
+                    Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
+                    _ => OccurrenceConfidence::Index,
+                };
+                Ok(Some((target, confidence)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Resolves one plain-name receiver through its parameter annotation when
     /// the import-binding arm did not apply: a unique live class yields the
     /// unique method inside that class, or a unique same-file base method when
@@ -2606,9 +2771,114 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .collect()
     }
 
-    /// The lane ordinal of the sole live method with the attribute spelling
-    /// inside `class_span`, or `None` when zero or more than one match.
-    fn method_in_class(&self, occurrence: &OccurrenceFact, class_span: Span) -> Option<u32> {
+    /// Exactly one live class declaration index for a bare same-file name.
+    fn unique_live_class_index(&self, name: &str) -> Option<usize> {
+        let name_bytes = name.as_bytes();
+        let mut matches = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind == DeclarationKind::Class
+                && self.live[index]
+                && declaration.name.as_bytes() == name_bytes
+            {
+                matches.push(index);
+            }
+        }
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
+    /// One inherited field or method ordinal when same-file bases contribute
+    /// exactly one live row of either kind with the attribute spelling.
+    fn inherited_attribute_ordinal(
+        &self,
+        occurrence: &OccurrenceFact,
+        class_index: usize,
+    ) -> Option<u32> {
+        let mut visited = HashSet::new();
+        let mut found: Option<u32> = None;
+        if self
+            .walk_inherited_attribute(class_index, occurrence, 0, &mut visited, &mut found)
+            .is_none()
+        {
+            return None;
+        }
+        found
+    }
+
+    /// Walks same-file bases for one attribute spelling. `found` accumulates the
+    /// sole distinct ordinal across branches; `None` means the walk is ambiguous.
+    fn walk_inherited_attribute(
+        &self,
+        class_index: usize,
+        occurrence: &OccurrenceFact,
+        depth: u8,
+        visited: &mut HashSet<(u32, u32)>,
+        found: &mut Option<u32>,
+    ) -> Option<()> {
+        if depth >= INHERITED_MEMBER_DEPTH_LIMIT {
+            return Some(());
+        }
+        let declaration = &self.module.declarations[class_index];
+        for base in &declaration.bases {
+            let Some(base_name) = same_file_base_name(base) else {
+                continue;
+            };
+            if base_name.contains('.') {
+                continue;
+            }
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            let base_declaration = &self.module.declarations[base_index];
+            let key = (base_declaration.span.start, base_declaration.span.end);
+            if visited.contains(&key) {
+                continue;
+            }
+            visited.insert(key);
+            let fields = self.fields_in_class(occurrence, base_declaration.span);
+            let methods = self.methods_in_class(occurrence, base_declaration.span);
+            match (fields.len(), methods.len()) {
+                (1, 0) => {
+                    let ordinal = fields[0];
+                    match *found {
+                        None => *found = Some(ordinal),
+                        Some(existing) if existing == ordinal => {}
+                        Some(_) => return None,
+                    }
+                }
+                (0, 1) => {
+                    let ordinal = methods[0];
+                    match *found {
+                        None => *found = Some(ordinal),
+                        Some(existing) if existing == ordinal => {}
+                        Some(_) => return None,
+                    }
+                }
+                (0, 0) => {
+                    if self
+                        .walk_inherited_attribute(
+                            base_index,
+                            occurrence,
+                            depth + 1,
+                            visited,
+                            found,
+                        )
+                        .is_none()
+                    {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
+        Some(())
+    }
+
+    /// Live method ordinals with the attribute spelling inside `class_span`.
+    fn methods_in_class(&self, occurrence: &OccurrenceFact, class_span: Span) -> Vec<u32> {
         let attribute_bytes = occurrence.target.as_bytes();
         let mut matches = Vec::new();
         for (index, declaration) in self.module.declarations.iter().enumerate() {
@@ -2623,6 +2893,32 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 matches.push(ordinal);
             }
         }
+        matches
+    }
+
+    /// Live field ordinals with the attribute spelling inside `class_span`.
+    fn fields_in_class(&self, occurrence: &OccurrenceFact, class_span: Span) -> Vec<u32> {
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut matches = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Field
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+                || !span_contains(class_span, declaration.span)
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        matches
+    }
+
+    /// The lane ordinal of the sole live method with the attribute spelling
+    /// inside `class_span`, or `None` when zero or more than one match.
+    fn method_in_class(&self, occurrence: &OccurrenceFact, class_span: Span) -> Option<u32> {
+        let matches = self.methods_in_class(occurrence, class_span);
         if matches.len() == 1 {
             Some(matches[0])
         } else {
@@ -2973,7 +3269,7 @@ const fn combined_tier(any_checked: bool, any_resolved: bool) -> Confidence {
     }
 }
 
-/// Maximum same-file base depth for inherited member resolution.
+/// Maximum same-file base depth for inherited member and attribute resolution.
 const INHERITED_MEMBER_DEPTH_LIMIT: u8 = 8;
 
 /// Peels a same-file base class name from one written base annotation.
