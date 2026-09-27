@@ -933,12 +933,22 @@ fn compose_package(
     check(context.cancel)?;
     let outline = outline(engine, package, context);
     check(context.cancel)?;
+    let engine_record = matches!(
+        records,
+        Ok(SurfaceReply::Package(ref rows)) if !rows.is_empty()
+    );
     let local = package
         .is_local()
         .then(|| LocalProjectId::from_path(Path::new(package.as_str())).ok())
         .flatten()
         .filter(|project| project.path().is_dir())
-        .map(|project| loader.load(&project));
+        .and_then(|project| {
+            if engine_record {
+                loader.readme(&project)
+            } else {
+                Some(loader.load(&project))
+            }
+        });
     // Every part failing the same way means the package itself is unknown.
     if let (Err(error), None) = (&records, &local)
         && matches!(

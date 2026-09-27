@@ -6,7 +6,7 @@
 //! keeps the engine's availability distinctions: a reply that could not
 //! answer becomes a typed [`Gap`], never an empty list.
 
-use crate::model::local_package::{DependencyKind, LocalPackage};
+use crate::model::local_package::{DependencyKind, LocalPackage, LocalPackageSource};
 use crate::model::pages::{
     AdvisorySummary, Arrival, ByteSpan, DeclRef, Dependency, DependencyScope, Derivation,
     DocFragment, Downloads, Excerpt, FaultProgress, FileSpan, Gap, GapReason, HealthModel,
@@ -1337,6 +1337,31 @@ pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
     }
 }
 
+fn local_manifest_facts(local: &LocalPackage) -> bool {
+    matches!(
+        local.source,
+        LocalPackageSource::Cargo | LocalPackageSource::Manifest(_)
+    )
+}
+
+fn local_manifest_record(
+    package: &PackageRef,
+    local: Option<&LocalPackage>,
+    is_local: bool,
+) -> Known<PackageRecord> {
+    if let Some(manifest) = local.filter(|manifest| local_manifest_facts(manifest)) {
+        return Known::Known(local_record(package, manifest));
+    }
+    Known::Unknown(if is_local {
+        local_gap("a registry record")
+    } else {
+        Gap::new(
+            GapReason::NotRecorded,
+            "the local registry has no committed record for this release",
+        )
+    })
+}
+
 fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
     PackageRecord {
         package: package.clone(),
@@ -1411,26 +1436,25 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         Ok(SurfaceReply::Package(records)) => Ok(records.as_ref()),
         other => Err(surface_gap(other, "package")),
     };
-    let record = match (inputs.local, &registry_records) {
-        (Some(manifest), _) => Known::Known(local_record(package, manifest)),
-        (None, Ok(records)) => records
+    let record = match &registry_records {
+        Ok(records) => records
             .iter()
             .find(|record| record.coordinate == *package.reference())
             .or_else(|| records.first())
             .map_or_else(
-                || {
-                    Known::Unknown(if local {
-                        local_gap("a registry record")
-                    } else {
-                        Gap::new(
-                            GapReason::NotRecorded,
-                            "the local registry has no committed record for this release",
-                        )
-                    })
-                },
+                || local_manifest_record(package, inputs.local, local),
                 |record| Known::Known(registry_record(record)),
             ),
-        (None, Err(gap)) => Known::Unknown(gap.clone()),
+        Err(gap) => inputs.local.map_or_else(
+            || Known::Unknown(gap.clone()),
+            |manifest| {
+                if local_manifest_facts(manifest) {
+                    Known::Known(local_record(package, manifest))
+                } else {
+                    Known::Unknown(gap.clone())
+                }
+            },
+        ),
     };
     let current_version = record
         .known()
@@ -1475,9 +1499,10 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
                     .into(),
             )
         }
-        // A local project's own manifest names its dependencies even when
-        // the registry graph has no record of the project.
-        (Some(manifest), _) => Known::Known(
+        // The canonical graph had no dependency rows. A manifest read is the
+        // recovery path for a project the index has not recorded. A README
+        // projection leaves dependency availability on the surface reply.
+        (Some(manifest), _) if local_manifest_facts(manifest) => Known::Known(
             manifest
                 .dependencies
                 .iter()
@@ -1495,14 +1520,14 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
                 .collect::<Vec<_>>()
                 .into(),
         ),
-        (None, Ok(SurfaceReply::Dependencies(backend_library::DependencyFacts::Unknown(text)))) => {
+        (_, Ok(SurfaceReply::Dependencies(backend_library::DependencyFacts::Unknown(text)))) => {
             Known::unknown(GapReason::NotRecorded, text.as_str())
         }
         (
-            None,
+            _,
             Ok(SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(text))),
         ) => Known::unknown(GapReason::Unavailable, text.as_str()),
-        (None, other) => Known::Unknown(surface_gap(other, "dependencies")),
+        (_, other) => Known::Unknown(surface_gap(other, "dependencies")),
     };
     let dependents = match inputs.dependents {
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Recorded(records))) => {
@@ -2288,6 +2313,133 @@ mod tests {
         assert!(matches!(
             dossier.readme.known().map(AsRef::as_ref),
             Some([ReadmeBlock::Paragraph(text)]) if text.as_ref() == "Presentation model."
+        ));
+    }
+
+    #[test]
+    fn an_engine_package_record_wins_over_the_local_manifest() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
+            source: LocalPackageSource::Cargo,
+            name: Arc::from("secret-local"),
+            version: Some(Arc::from("9.9.9")),
+            description: None,
+            license: None,
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("From the checkout."))]),
+            dependencies: Arc::from([LocalDependency {
+                name: Arc::from("local-only"),
+                requirement: Arc::from("0.1"),
+                kind: DependencyKind::Normal,
+                users: 1,
+            }]),
+            features: Arc::from([]),
+            members: 1,
+        };
+        let record = crate::runtime::tests::registry_record("engine-name", "1.2.3");
+        let records = SurfaceReply::Package(Box::new([record]));
+        let versions = SurfaceReply::PackageVersions(Box::new([]));
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Known(Box::new([
+                backend_library::PackageDependencyRecord::new(
+                    package.reference().clone(),
+                    backend_library::PackageDependencyTarget::new(
+                        backend_library::RegistryEcosystem::Cargo,
+                        "from-engine",
+                        "^2",
+                        None,
+                    )
+                    .expect("target"),
+                    backend_library::DependencyScope::Runtime,
+                    false,
+                    backend_library::DependencyEvidence {
+                        authority: backend_library::DependencyAuthority::RegistryMetadata,
+                        frontier: [7; 32],
+                        provenance: [8; 32],
+                    },
+                ),
+            ])));
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
+            backend_library::ProductText::new("not recorded").expect("reason"),
+        ));
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Ok(&versions),
+            dependencies: Ok(&dependencies),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
+            local: Some(&local),
+        });
+        let head = dossier.record.known().expect("engine record");
+        assert_eq!(head.source, RecordSource::Registry);
+        assert_eq!(head.name.as_ref(), "engine-name");
+        assert_eq!(head.version.known().map(AsRef::as_ref), Some("1.2.3"));
+        let dependencies = dossier.dependencies.known().expect("engine dependencies");
+        assert_eq!(dependencies[0].name.as_ref(), "from-engine");
+        assert_eq!(dependencies[0].requirement.as_ref(), "^2");
+        assert!(matches!(
+            dossier.readme.known().map(AsRef::as_ref),
+            Some([ReadmeBlock::Paragraph(text)]) if text.as_ref() == "From the checkout."
+        ));
+    }
+
+    #[test]
+    fn a_readme_projection_does_not_invent_package_facts() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
+            source: LocalPackageSource::Readme,
+            name: Arc::from("present"),
+            version: None,
+            description: None,
+            license: None,
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("Visible."))]),
+            dependencies: Arc::from([]),
+            features: Arc::from([]),
+            members: 0,
+        };
+        let records = SurfaceReply::Package(Box::new([]));
+        let versions = SurfaceReply::PackageVersions(Box::new([]));
+        let reason = "dependency facts are unavailable because the package is not recorded";
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::new(reason).expect("reason"),
+            ));
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
+            backend_library::ProductText::new("not recorded").expect("reason"),
+        ));
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Ok(&versions),
+            dependencies: Ok(&dependencies),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
+            local: Some(&local),
+        });
+        assert_eq!(
+            dossier.record.gap().map(|gap| gap.reason),
+            Some(GapReason::LocalProject)
+        );
+        let dependencies = dossier.dependencies.gap().expect("unavailable dependencies");
+        assert_eq!(dependencies.reason, GapReason::Unavailable);
+        assert_eq!(dependencies.detail.as_ref(), reason);
+        assert!(matches!(
+            dossier.readme.known().map(AsRef::as_ref),
+            Some([ReadmeBlock::Paragraph(text)]) if text.as_ref() == "Visible."
         ));
     }
 
