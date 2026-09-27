@@ -31,7 +31,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::CSharp,
-        b"tree-sitter-c-sharp-0.23.5/tags-v2",
+        b"tree-sitter-c-sharp-0.23.5/tags-v3",
         vec![GrammarVariant::new(
             &["cs"],
             tree_sitter_c_sharp::LANGUAGE.into(),
