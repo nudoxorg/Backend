@@ -717,7 +717,7 @@ fn run_mcp_surface_matrix(
         .expect("MCP tools list");
     assert!(
         tools.iter().any(|tool| tool["name"] == "backend.index"),
-        "MCP session list omitted backend.index: {tools}"
+        "MCP session list omitted backend.index: {tools:?}"
     );
     assert!(
         tools.iter().all(|tool| tool["name"] != "backend.surface"),
