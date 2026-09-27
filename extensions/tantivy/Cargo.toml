@@ -37,3 +37,8 @@ harness = false
 name = "projection_revision"
 path = "benches/projection_revision.rs"
 harness = false
+
+[[bench]]
+name = "nested_collect"
+path = "benches/nested_collect.rs"
+harness = false
