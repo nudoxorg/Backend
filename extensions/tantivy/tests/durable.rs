@@ -86,7 +86,7 @@ fn project_reopen_and_reuse_roundtrip() {
     assert_eq!(hit.provenance().segment(), segment.id);
     assert_eq!(hit.provenance().document(), document(1));
     assert_eq!(hit.term(), b"alpha");
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn temporary_selection_slice_can_yield_a_longer_lived_segment_hit() {
         output[0]
     };
     assert_eq!(hit.expect("hit").term(), b"alpha");
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn corrupt_final_projection_is_rebuilt_and_incomplete_is_not_authority() {
     let rebuilt = store.project(segment).expect("rebuild");
     assert_eq!(rebuilt.id(), segment.id);
     drop(rebuilt);
-    fs::remove_dir_all(directory.join("tantivy")).expect("backend corruption");
+    remove_index_dir(&directory.join("tantivy")).expect("backend corruption");
     assert_eq!(
         store.project(segment).expect("backend rebuild").id(),
         segment.id
@@ -158,13 +158,13 @@ fn corrupt_final_projection_is_rebuilt_and_incomplete_is_not_authority() {
         segment.id
     );
     let final_path = directory;
-    fs::remove_dir_all(&final_path).expect("remove rebuilt projection");
+    remove_index_dir(&final_path).expect("remove rebuilt projection");
     fs::write(&final_path, b"invalid final identity").expect("invalid final file");
     assert_eq!(
         store.project(segment).expect("file identity rebuild").id(),
         segment.id
     );
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn newest_tombstone_shadows_old_key_and_same_document_terms_survive() {
         1
     );
     assert_eq!(output[0].expect("beta").term(), b"beta");
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -283,7 +283,7 @@ fn durable_union_matches_core_manifest_for_overlapping_terms_and_tombstones() {
     assert_eq!(durable_hit.provenance().document(), exact_hits[0].document);
     assert_eq!(durable_hit.term(), exact_hits[0].term);
     assert_eq!(durable_hit.score(), exact_hits[0].score);
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -317,7 +317,7 @@ fn prefix_selector_returns_multiple_backend_ordinals_and_byte_grammar() {
     assert_eq!(written, 2);
     assert_eq!(output[0].expect("alpha").term(), b"alpha");
     assert_eq!(output[1].expect("alpine").term(), b"alpine");
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -379,7 +379,7 @@ fn byte_exact_and_empty_prefix_preserve_core_terms() {
             .expect("punctuation prefix"),
         0
     );
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn encoded_term_bound_is_checked_before_tantivy_writer() {
             ..
         })
     ));
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -435,7 +435,7 @@ fn wrong_snapshot_selection_is_typed() {
         result,
         Err(TantivySegmentStoreError::SnapshotSegmentOrder { .. })
     ));
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -478,7 +478,7 @@ fn concurrent_same_identity_projects_reopen_without_clobbering() {
             .filter_map(Result::ok)
             .all(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
     );
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
 }
 
 #[test]
@@ -498,5 +498,22 @@ fn abandoned_temporary_directory_is_not_reopenable_authority() {
         store.reopen(segment.id),
         Err(TantivySegmentStoreError::Missing { .. })
     ));
-    fs::remove_dir_all(path).expect("cleanup");
+    remove_index_dir(&path).expect("cleanup");
+}
+
+/// Removes a test index directory once Tantivy's background threads, which
+/// shut down asynchronously after the last handle drops, stop touching it.
+fn remove_index_dir(path: &std::path::Path) -> std::io::Result<()> {
+    let mut attempts = 0;
+    loop {
+        match std::fs::remove_dir_all(path) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempts < 40 =>
+            {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
 }

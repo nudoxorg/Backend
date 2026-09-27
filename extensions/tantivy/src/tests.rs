@@ -944,7 +944,7 @@ fn concrete_tantivy_can_commit_its_projection_to_disk() {
         TantivySource::open_in_dir(&other_state, Limits::default(), &directory),
         Err(TantivySourceError::Contract(Error::StaleRoot))
     ));
-    std::fs::remove_dir_all(directory).expect("remove test index directory");
+    remove_index_dir(&directory).expect("remove test index directory");
 }
 
 fn state_for(
@@ -1164,4 +1164,21 @@ fn workspace_alt() -> WorkspaceRoot {
     )
     .expect("alternate workspace")
     .root()
+}
+
+/// Removes a test index directory once Tantivy's background threads, which
+/// shut down asynchronously after the last handle drops, stop touching it.
+fn remove_index_dir(path: &std::path::Path) -> std::io::Result<()> {
+    let mut attempts = 0;
+    loop {
+        match std::fs::remove_dir_all(path) {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempts < 40 =>
+            {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            result => return result,
+        }
+    }
 }
