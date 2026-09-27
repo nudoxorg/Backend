@@ -663,6 +663,10 @@ pub(super) struct FactSet<'source> {
     child_counts: Box<[u8]>,
     child_starts: Box<[u32]>,
     extensions: Box<[Option<EmissionExtension>]>,
+    /// Attributes a producer staged for the generic item plane directly,
+    /// independent of its language extension row (Rust has no attribute
+    /// list in its extension).
+    item_attributes: Box<[Option<backend_semantic::ir::AtomListId>]>,
     key_digests: Box<[CorePayloadHash]>,
     visibility: Box<[Visibility]>,
     visibility_captured: Box<[bool]>,
@@ -975,6 +979,7 @@ impl<'source> FactSet<'source> {
             child_counts: vec![0; plan.facts].into_boxed_slice(),
             child_starts: vec![0; plan.facts].into_boxed_slice(),
             extensions: vec![None; plan.facts].into_boxed_slice(),
+            item_attributes: vec![None; plan.facts].into_boxed_slice(),
             key_digests: vec![CorePayloadHash::from_raw([0; 16]); plan.facts].into_boxed_slice(),
             visibility: vec![Visibility::Unknown; plan.facts].into_boxed_slice(),
             visibility_captured: vec![false; plan.facts].into_boxed_slice(),
@@ -1128,12 +1133,7 @@ impl<'source> FactSet<'source> {
                 ))
             }
         };
-        let attributes = self
-            .extensions
-            .get(ordinal)
-            .and_then(Option::as_ref)
-            .and_then(extension_item_attributes)
-            .is_some();
+        let attributes = self.item_attribute_list(ordinal).is_some();
         Ok(EntityAuthorityFacts {
             parentage,
             source: if source_present {
@@ -1487,6 +1487,40 @@ impl<'source> FactSet<'source> {
         }
         self.extensions[ordinal] = Some(extension);
         Ok(())
+    }
+
+    /// Stages the attributes written on one declaration for the generic item
+    /// plane, marking that plane captured for it (an empty list is the
+    /// honest "written with no attributes").
+    pub(super) fn attach_item_attributes(
+        &mut self,
+        ordinal: usize,
+        attributes: backend_semantic::ir::AtomListId,
+    ) -> Result<(), FactFault> {
+        if ordinal >= self.len {
+            return Err(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::AtomLists,
+                raw: ordinal as u32,
+                fact_count: self.len,
+            });
+        }
+        self.item_attributes[ordinal] = Some(attributes);
+        Ok(())
+    }
+
+    /// The item-plane attribute list of one fact: a directly staged list,
+    /// else the one its language extension shares with the item plane.
+    fn item_attribute_list(&self, ordinal: usize) -> Option<backend_semantic::ir::AtomListId> {
+        self.item_attributes
+            .get(ordinal)
+            .copied()
+            .flatten()
+            .or_else(|| {
+                self.extensions
+                    .get(ordinal)
+                    .and_then(Option::as_ref)
+                    .and_then(extension_item_attributes)
+            })
     }
 
     /// Captures an explicit list range at the producer's close point.  This
@@ -2703,8 +2737,8 @@ impl<'source> FactSet<'source> {
             .transpose()?;
         let mut item_attribute_ranges = vec![(0_usize, 0_usize); fact_count].into_boxed_slice();
         let mut item_attribute_total = 0_usize;
-        for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
-            let Some(list) = extension.as_ref().and_then(extension_item_attributes) else {
+        for ordinal in 0..fact_count {
+            let Some(list) = self.item_attribute_list(ordinal) else {
                 continue;
             };
             let list = list.raw as usize;
@@ -2728,8 +2762,8 @@ impl<'source> FactSet<'source> {
         }
         let empty_attribute: &'source [u8] = &[];
         let mut item_attributes = vec![empty_attribute; item_attribute_total].into_boxed_slice();
-        for (ordinal, extension) in self.extensions[..fact_count].iter().enumerate() {
-            let Some(list) = extension.as_ref().and_then(extension_item_attributes) else {
+        for ordinal in 0..fact_count {
+            let Some(list) = self.item_attribute_list(ordinal) else {
                 continue;
             };
             let list = list.raw as usize;
