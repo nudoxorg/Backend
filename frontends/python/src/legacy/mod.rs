@@ -354,10 +354,20 @@ pub struct OccurrenceFact {
 pub enum Confidence {
     Index,
 }
+/// One `for` clause of a comprehension. Its iterable is evaluated before
+/// `targets` exist. The leftmost iterable is also outside the comprehension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComprehensionClause {
+    pub iterable: Span,
+    pub targets: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingScopeFact {
     /// Span of the function, lambda, or comprehension.
     pub span: Span,
+    /// Empty for functions and lambdas. Comprehension clauses are in source order.
+    pub clauses: Vec<ComprehensionClause>,
     pub locals: Vec<String>,
     /// Names assigned inside this scope, excluding parameters.
     pub assigned: Vec<String>,
@@ -1056,6 +1066,7 @@ enum BodyKind {
 struct BodyFrame {
     kind: BodyKind,
     span: Span,
+    clauses: Vec<ComprehensionClause>,
     locals: HashSet<String>,
     assigned: HashSet<String>,
     globals: HashSet<String>,
@@ -1652,6 +1663,7 @@ impl<'a> Projection<'a> {
         self.bodies.push(BodyFrame {
             kind,
             span: span(range),
+            clauses: Vec::new(),
             locals: HashSet::new(),
             assigned: HashSet::new(),
             globals: HashSet::new(),
@@ -1673,6 +1685,7 @@ impl<'a> Projection<'a> {
                     nonlocals.sort();
                     self.facts.binding_scopes.push(BindingScopeFact {
                         span: frame.span,
+                        clauses: frame.clauses,
                         locals,
                         assigned,
                         globals,
@@ -1796,6 +1809,26 @@ impl<'a> Projection<'a> {
         }
     }
 
+    fn comprehension_target_names(target: &ast::Expr, names: &mut Vec<String>) {
+        match target {
+            ast::Expr::Name(name) if name.ctx.is_store() => names.push(name.id.as_str().to_owned()),
+            ast::Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    Self::comprehension_target_names(element, names);
+                }
+            }
+            ast::Expr::List(list) => {
+                for element in &list.elts {
+                    Self::comprehension_target_names(element, names);
+                }
+            }
+            ast::Expr::Starred(starred) => {
+                Self::comprehension_target_names(starred.value.as_ref(), names);
+            }
+            _ => {}
+        }
+    }
+
     fn visit_comprehension_target(&mut self, target: &'a ast::Expr) {
         match target {
             ast::Expr::Name(name) if name.ctx.is_store() => self.note_local(name.id.as_str()),
@@ -1821,10 +1854,25 @@ impl<'a> Projection<'a> {
         element: &'a ast::Expr,
         key: Option<&'a ast::Expr>,
     ) {
+        let clauses = generators
+            .iter()
+            .map(|generator| {
+                let mut targets = Vec::new();
+                Self::comprehension_target_names(&generator.target, &mut targets);
+                targets.sort();
+                ComprehensionClause {
+                    iterable: span(generator.iter.range()),
+                    targets,
+                }
+            })
+            .collect();
         if let Some(first) = generators.first() {
             self.visit_expr(&first.iter);
         }
         self.push_binding_frame(BodyKind::Comprehension, comp_range);
+        if let Some(frame) = self.bodies.last_mut() {
+            frame.clauses = clauses;
+        }
         if let Some(first) = generators.first() {
             self.visit_comprehension_target(&first.target);
             for condition in &first.ifs {

@@ -3063,6 +3063,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
             foreign_field(self.slice(occurrence.span)?, occurrence.span)
                 .map(|target| (target, OccurrenceConfidence::Index))
         };
+        if !self.assigned_name_hides_annotation(occurrence, receiver) {
+            if let Some(class_index) = self.receiver_self_class_index(occurrence, receiver) {
+                let class_name = self.module.declarations[class_index].name.clone();
+                return self.instance_or_named_attribute_target(
+                    occurrence,
+                    checked,
+                    Some(class_name),
+                );
+            }
+        }
         let (type_name, from_local) = match self.local_binding_name(function, receiver, occurrence) {
             LocalBinding::Foreign => return foreign().map(Some),
             LocalBinding::Unique(name) => (name, true),
@@ -3223,6 +3233,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
             foreign_method(self.slice(occurrence.span)?, occurrence.span)
                 .map(|target| (target, OccurrenceConfidence::Index))
         };
+        if !self.assigned_name_hides_annotation(occurrence, receiver) {
+            if let Some(class_index) = self.receiver_self_class_index(occurrence, receiver) {
+                let class_name = self.module.declarations[class_index].name.clone();
+                return self.instance_or_named_attribute_target(
+                    occurrence,
+                    checked,
+                    Some(class_name),
+                );
+            }
+        }
         let (type_name, from_local) = match self.local_binding_name(function, receiver, occurrence) {
             LocalBinding::Foreign => return foreign().map(Some),
             LocalBinding::Unique(name) => (name, true),
@@ -3394,7 +3414,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .binding_scopes
             .iter()
             .filter(|scope| {
-                span_contains(scope.span, occurrence.span)
+                scope_encloses_occurrence(scope, occurrence)
                     && (span_contains(function.span, scope.span)
                         || span_contains(scope.span, function.span))
             })
@@ -3407,7 +3427,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             if scope.globals.iter().any(|name| name == receiver) {
                 return self.module_constant_annotation(receiver);
             }
-            if scope.locals.iter().any(|name| name == receiver) {
+            if scope_local_visible(scope, occurrence, receiver) {
                 let scope_function = self
                     .module
                     .declarations
@@ -4058,10 +4078,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// The class name one call-return callee's return annotation names, when
-    /// unique and usable.
+    /// unique and usable. A `Self` return is the receiver class, including
+    /// when the method is inherited (PEP 673), not a class literally named `Self`.
     fn call_return_method_return_class(&self, class_index: usize, method: &str) -> Option<String> {
         match self.call_return_method_index(class_index, method) {
             CallReturnMethodLookup::Unique(index) => {
+                let declaration = &self.module.declarations[index];
+                if let Some(fact) = self.return_annotation(declaration) {
+                    if annotation_is_self_type(&fact.annotation) {
+                        return Some(self.module.declarations[class_index].name.clone());
+                    }
+                }
                 self.return_annotation_class_name_from_index(index)
             }
             CallReturnMethodLookup::Absent | CallReturnMethodLookup::Ambiguous => None,
@@ -4182,8 +4209,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
 
     /// An assigned parameter hides its annotation, including from a nested
     /// function. A function-local `AnnAssign` does not: that store is the
-    /// annotation. A `global` name keeps the module annotation.
+    /// annotation. A `global` name keeps the module annotation. A lambda
+    /// parameter or comprehension target is a closer binding too, even though
+    /// it is recorded in `locals` rather than `assigned`.
     fn assigned_name_hides_annotation(&self, occurrence: &OccurrenceFact, name: &str) -> bool {
+        if self.closer_scope_binds_name(occurrence, name) {
+            return true;
+        }
         if matches!(
             self.raw_name_receiver_annotation(occurrence, name),
             RawReceiverAnnotation::Local(_)
@@ -4197,6 +4229,62 @@ impl<'a, 'source> Emitter<'a, 'source> {
             return false;
         }
         self.receiver_assigned_in_scope(occurrence, name)
+    }
+
+    /// The closest scope that binds `name` is a lambda, a comprehension, or a
+    /// nested function that does not itself annotate `name`. The enclosing
+    /// function's own parameter or `AnnAssign` is not a closer binding.
+    fn closer_scope_binds_name(&self, occurrence: &OccurrenceFact, name: &str) -> bool {
+        let Some(function_index) = self.enclosing_function_index(occurrence) else {
+            return false;
+        };
+        let function = &self.module.declarations[function_index];
+        let mut scopes: Vec<&BindingScopeFact> = self
+            .module
+            .binding_scopes
+            .iter()
+            .filter(|scope| {
+                scope_encloses_occurrence(scope, occurrence)
+                    && (span_contains(function.span, scope.span)
+                        || span_contains(scope.span, function.span))
+            })
+            .collect();
+        scopes.sort_by_key(|scope| scope.span.end - scope.span.start);
+        for scope in scopes {
+            if scope.nonlocals.iter().any(|bound| bound == name) {
+                continue;
+            }
+            if scope.globals.iter().any(|bound| bound == name) {
+                return false;
+            }
+            // A comprehension local that is not visible yet is an unbound
+            // local. It hides an outer annotation instead of falling through.
+            if scope.locals.iter().any(|local| local == name)
+                && !scope_local_visible(scope, occurrence, name)
+            {
+                return true;
+            }
+            if !scope_local_visible(scope, occurrence, name) {
+                continue;
+            }
+            let scope_function = self.module.declarations.iter().enumerate().find_map(
+                |(index, declaration)| {
+                    if declaration.kind == DeclarationKind::Function
+                        && self.live[index]
+                        && declaration.span == scope.span
+                    {
+                        Some(declaration)
+                    } else {
+                        None
+                    }
+                },
+            );
+            let Some(scope_function) = scope_function else {
+                return true;
+            };
+            return !self.function_claims_name(scope_function, name, occurrence);
+        }
+        false
     }
 
     fn return_annotation_class_name_from_index(&self, fn_index: usize) -> Option<String> {
@@ -4259,11 +4347,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// The annotated class name one field on a class names, when unique.
+    /// A `Self` annotation names `class_index`, including an inherited field.
     fn field_annotation_class_name_for_class(
         &self,
         class_index: usize,
         attribute: &str,
     ) -> Option<String> {
+        if let Some(raw) = self.raw_field_annotation_for_class(class_index, attribute) {
+            if annotation_is_self_type(raw) {
+                return Some(self.module.declarations[class_index].name.clone());
+            }
+        }
         let class_span = self.module.declarations[class_index].span;
         let own_fields = self.own_field_indices_named(class_span, attribute);
         match own_fields.len() {
@@ -4450,7 +4544,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .binding_scopes
             .iter()
             .filter(|scope| {
-                span_contains(scope.span, occurrence.span)
+                scope_encloses_occurrence(scope, occurrence)
                     && (span_contains(function.span, scope.span)
                         || span_contains(scope.span, function.span))
             })
@@ -4466,7 +4560,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     None => RawReceiverAnnotation::Blocked,
                 };
             }
-            if scope.locals.iter().any(|assigned| assigned == name) {
+            if scope_local_visible(scope, occurrence, name) {
                 let scope_function = self
                     .module
                     .declarations
@@ -4529,9 +4623,19 @@ impl<'a, 'source> Emitter<'a, 'source> {
 
     /// Class named by `annotation` after `count` one-argument index peels.
     /// A failed peel is `None` and does not fall back to a same-named class.
-    fn peeled_index_class(&self, annotation: &Annotation, count: usize) -> Option<usize> {
+    /// A peeled `Self` is `self_class` (the receiver, or the class that wrote
+    /// the annotation), not a class literally named `Self`.
+    fn peeled_index_class(
+        &self,
+        annotation: &Annotation,
+        count: usize,
+        self_class: Option<usize>,
+    ) -> Option<usize> {
         let expanded = self.expand_type_alias(annotation)?;
         let peeled = peel_indexes(&expanded, count)?;
+        if annotation_is_self_type(&peeled) {
+            return self_class;
+        }
         match classify_receiver_annotation(&peeled) {
             ReceiverAnnotationName::Unique(class_name) => self.unique_live_class_index(class_name),
             ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => None,
@@ -4557,14 +4661,20 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 let class_only = groups.is_empty()
                     && steps.iter().all(|step| matches!(step, AttributeStep::NameIndex));
                 match self.raw_name_receiver_annotation(occurrence, name) {
-                    RawReceiverAnnotation::Local(annotation) => {
-                        self.peeled_index_class(annotation, leading_indexes)?
-                    }
+                    RawReceiverAnnotation::Local(annotation) => self.peeled_index_class(
+                        annotation,
+                        leading_indexes,
+                        self.in_function_annotation_class(occurrence, name),
+                    )?,
                     RawReceiverAnnotation::Inherited(annotation) => {
                         if assigned {
                             return None;
                         }
-                        self.peeled_index_class(annotation, leading_indexes)?
+                        self.peeled_index_class(
+                            annotation,
+                            leading_indexes,
+                            self.in_function_annotation_class(occurrence, name),
+                        )?
                     }
                     RawReceiverAnnotation::Blocked => return None,
                     // `Child[int].note` has no value annotation. A plain-name
@@ -4599,17 +4709,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 };
                 class_index = self.unique_live_class_index(&class_name)?;
             } else {
+                let owner = class_index;
                 let raw = self.raw_field_annotation_for_class(class_index, &field)?;
-                let expanded = self.expand_type_alias(raw)?;
-                let peeled = peel_indexes(&expanded, index_count)?;
-                match classify_receiver_annotation(&peeled) {
-                    ReceiverAnnotationName::Unique(class_name) => {
-                        class_index = self.unique_live_class_index(class_name)?;
-                    }
-                    ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => {
-                        return None;
-                    }
-                }
+                class_index = self.peeled_index_class(raw, index_count, Some(owner))?;
             }
         }
         Some(self.module.declarations[class_index].name.clone())
@@ -4629,7 +4731,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
             let fn_index = self.call_return_method_fn_index(occurrence, method, receiver)?;
             let declaration = &self.module.declarations[fn_index];
             let raw = &self.return_annotation(declaration)?.annotation;
-            self.peeled_index_class(raw, leading_indexes)?
+            let self_class = self.call_return_receiver_class_index(occurrence, receiver);
+            self.peeled_index_class(raw, leading_indexes, self_class)?
         } else {
             let class_name = self.call_return_returned_class(occurrence, method, receiver)?;
             self.unique_live_class_index(&class_name)?
@@ -4643,35 +4746,25 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 };
                 class_index = self.unique_live_class_index(&class_name)?;
             } else {
+                let owner = class_index;
                 let raw = self.raw_field_annotation_for_class(class_index, &field)?;
-                let expanded = self.expand_type_alias(raw)?;
-                let peeled = peel_indexes(&expanded, index_count)?;
-                match classify_receiver_annotation(&peeled) {
-                    ReceiverAnnotationName::Unique(class_name) => {
-                        class_index = self.unique_live_class_index(class_name)?;
-                    }
-                    ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => {
-                        return None;
-                    }
-                }
+                class_index = self.peeled_index_class(raw, index_count, Some(owner))?;
             }
         }
         Some(self.module.declarations[class_index].name.clone())
     }
 
-    /// Live function declaration index for one call-return callee, using the
-    /// same receiver walk as `call_return_returned_class` but without classifying
-    /// the return annotation.
-    fn call_return_method_fn_index(
+    /// The class a call-return receiver is resolved on, before the method name.
+    /// A module function has no class.
+    fn call_return_receiver_class_index(
         &self,
         occurrence: &OccurrenceFact,
-        method: &str,
         receiver: &OccurrenceReceiver,
     ) -> Option<usize> {
         match receiver {
-            OccurrenceReceiver::EnclosingClass { class } => self
-                .enclosing_class_index(occurrence, class)
-                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
+            OccurrenceReceiver::EnclosingClass { class } => {
+                self.enclosing_class_index(occurrence, class)
+            }
             OccurrenceReceiver::Foreign { receiver: Some(name) } => {
                 let assigned = self.receiver_assigned_in_scope(occurrence, name);
                 if assigned
@@ -4682,17 +4775,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 {
                     None
                 } else {
-                    self.named_attribute_class_index(occurrence, name).and_then(|class_index| {
-                        self.call_return_method_fn_index_on_class(class_index, method)
-                    })
-                }
-            }
-            OccurrenceReceiver::None => {
-                let indices = self.module_level_function_indices_named(method);
-                if indices.len() == 1 {
-                    Some(indices[0])
-                } else {
-                    None
+                    self.named_attribute_class_index(occurrence, name)
                 }
             }
             OccurrenceReceiver::InstanceAttribute { class, attribute } => self
@@ -4700,8 +4783,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 .and_then(|class_index| {
                     self.field_annotation_class_name_for_class(class_index, attribute)
                 })
-                .and_then(|field_class| self.unique_live_class_index(&field_class))
-                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
+                .and_then(|field_class| self.unique_live_class_index(&field_class)),
             OccurrenceReceiver::NamedAttribute { name, attribute } => {
                 let assigned = self.receiver_assigned_in_scope(occurrence, name);
                 if assigned
@@ -4717,9 +4799,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             self.field_annotation_class_name_for_class(class_index, attribute)
                         })
                         .and_then(|field_class| self.unique_live_class_index(&field_class))
-                        .and_then(|class_index| {
-                            self.call_return_method_fn_index_on_class(class_index, method)
-                        })
                 }
             }
             OccurrenceReceiver::ChainedAttribute { root, attributes } => {
@@ -4741,47 +4820,58 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         }
                     }
                 };
-                if let Some(mut class_index) = class_index {
-                    for attribute in attributes {
-                        let Some(class_name) =
-                            self.field_annotation_class_name_for_class(class_index, attribute)
-                        else {
-                            return None;
-                        };
-                        let Some(next_index) = self.unique_live_class_index(&class_name) else {
-                            return None;
-                        };
-                        class_index = next_index;
-                    }
-                    self.call_return_method_fn_index_on_class(class_index, method)
-                } else {
-                    None
+                let mut class_index = class_index?;
+                for attribute in attributes {
+                    let class_name =
+                        self.field_annotation_class_name_for_class(class_index, attribute)?;
+                    class_index = self.unique_live_class_index(&class_name)?;
                 }
+                Some(class_index)
             }
             OccurrenceReceiver::SubscriptedAttribute { root, steps } => self
                 .subscripted_attribute_class_name(occurrence, root, steps)
-                .and_then(|class_name| self.unique_live_class_index(&class_name))
-                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
-            OccurrenceReceiver::Constructed { class } => self
-                .unique_live_class_index(class)
-                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
+                .and_then(|class_name| self.unique_live_class_index(&class_name)),
+            OccurrenceReceiver::Constructed { class } => self.unique_live_class_index(class),
             OccurrenceReceiver::CallReturn {
                 method: inner_method,
                 receiver: inner_receiver,
             } => {
-                let inner_class =
-                    self.call_return_returned_class(occurrence, inner_method, inner_receiver.as_ref())?;
-                let class_index = self.unique_live_class_index(&inner_class)?;
-                self.call_return_method_fn_index_on_class(class_index, method)
+                let inner_class = self.call_return_returned_class(
+                    occurrence,
+                    inner_method,
+                    inner_receiver.as_ref(),
+                )?;
+                self.unique_live_class_index(&inner_class)
             }
             OccurrenceReceiver::SubscriptedCall { call, steps } => self
                 .subscripted_call_class_name(occurrence, call.as_ref(), steps)
-                .and_then(|class_name| self.unique_live_class_index(&class_name))
-                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
-            OccurrenceReceiver::Foreign { receiver: None }
+                .and_then(|class_name| self.unique_live_class_index(&class_name)),
+            OccurrenceReceiver::None
+            | OccurrenceReceiver::Foreign { receiver: None }
             | OccurrenceReceiver::Module
             | OccurrenceReceiver::Super { .. } => None,
         }
+    }
+
+    /// Live function declaration index for one call-return callee, using the
+    /// same receiver walk as `call_return_returned_class` but without classifying
+    /// the return annotation.
+    fn call_return_method_fn_index(
+        &self,
+        occurrence: &OccurrenceFact,
+        method: &str,
+        receiver: &OccurrenceReceiver,
+    ) -> Option<usize> {
+        if let OccurrenceReceiver::None = receiver {
+            let indices = self.module_level_function_indices_named(method);
+            return if indices.len() == 1 {
+                Some(indices[0])
+            } else {
+                None
+            };
+        }
+        let class_index = self.call_return_receiver_class_index(occurrence, receiver)?;
+        self.call_return_method_fn_index_on_class(class_index, method)
     }
 
     fn call_return_method_fn_index_on_class(
@@ -4851,6 +4941,141 @@ impl<'a, 'source> Emitter<'a, 'source> {
         })
     }
 
+    /// Innermost live class whose body contains `span`.
+    fn lexical_class_index(&self, span: Span) -> Option<usize> {
+        let mut best: Option<(u32, usize)> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Class
+                || !self.live[index]
+                || !span_contains(declaration.span, span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let tighter = best.map_or(true, |(best_area, _)| area < best_area);
+            if tighter {
+                best = Some((area, index));
+            }
+        }
+        best.map(|(_, index)| index)
+    }
+
+    /// The function that writes `name`'s local or parameter annotation, if
+    /// that annotation is not a module constant. A closer lambda parameter or
+    /// comprehension target owns the name and is not a function, so this
+    /// returns `None` instead of the enclosing annotation.
+    fn annotation_owner_function<'b>(
+        &'b self,
+        function: &'b DeclarationFact,
+        name: &str,
+        occurrence: &OccurrenceFact,
+    ) -> Option<&'b DeclarationFact> {
+        let mut scopes: Vec<&BindingScopeFact> = self
+            .module
+            .binding_scopes
+            .iter()
+            .filter(|scope| {
+                scope_encloses_occurrence(scope, occurrence)
+                    && (span_contains(function.span, scope.span)
+                        || span_contains(scope.span, function.span))
+            })
+            .collect();
+        scopes.sort_by_key(|scope| scope.span.end - scope.span.start);
+        for scope in scopes {
+            if scope.nonlocals.iter().any(|assigned| assigned == name) {
+                continue;
+            }
+            if scope.globals.iter().any(|assigned| assigned == name) {
+                return None;
+            }
+            if scope.locals.iter().any(|local| local == name)
+                && !scope_local_visible(scope, occurrence, name)
+            {
+                return None;
+            }
+            if scope_local_visible(scope, occurrence, name) {
+                return self.module.declarations.iter().enumerate().find_map(
+                    |(index, declaration)| {
+                        if declaration.kind == DeclarationKind::Function
+                            && self.live[index]
+                            && declaration.span == scope.span
+                        {
+                            Some(declaration)
+                        } else {
+                            None
+                        }
+                    },
+                );
+            }
+        }
+        if self.function_claims_name(function, name, occurrence) {
+            return Some(function);
+        }
+        None
+    }
+
+    fn function_claims_name(
+        &self,
+        function: &DeclarationFact,
+        name: &str,
+        occurrence: &OccurrenceFact,
+    ) -> bool {
+        match self.raw_local_annotation(function, name, occurrence) {
+            RawReceiverAnnotation::Local(_) | RawReceiverAnnotation::Blocked => true,
+            RawReceiverAnnotation::Inherited(_) | RawReceiverAnnotation::Absent => {
+                parameter_annotation_raw(function, name).is_some()
+            }
+        }
+    }
+
+    /// Class that contains the function which annotates `name`, when that
+    /// annotation is a parameter or a local `AnnAssign` rather than a module
+    /// constant.
+    fn in_function_annotation_class(
+        &self,
+        occurrence: &OccurrenceFact,
+        name: &str,
+    ) -> Option<usize> {
+        let function_index = self.enclosing_function_index(occurrence)?;
+        let function = &self.module.declarations[function_index];
+        let owner = self.annotation_owner_function(function, name, occurrence)?;
+        if !self.function_claims_name(owner, name, occurrence) {
+            return None;
+        }
+        self.lexical_class_index(owner.span)
+    }
+
+    /// Receiver class for a parameter or local annotation that is `Self`.
+    /// A module constant annotated `Self` is not rewritten.
+    fn receiver_self_class_index(
+        &self,
+        occurrence: &OccurrenceFact,
+        name: &str,
+    ) -> Option<usize> {
+        if self.assigned_name_hides_annotation(occurrence, name) {
+            return None;
+        }
+        let function_index = self.enclosing_function_index(occurrence)?;
+        let function = &self.module.declarations[function_index];
+        let owner = self.annotation_owner_function(function, name, occurrence)?;
+        match self.raw_local_annotation(owner, name, occurrence) {
+            RawReceiverAnnotation::Local(annotation) => {
+                if annotation_is_self_type(annotation) {
+                    return self.lexical_class_index(owner.span);
+                }
+                return None;
+            }
+            RawReceiverAnnotation::Blocked => return None,
+            RawReceiverAnnotation::Inherited(_) | RawReceiverAnnotation::Absent => {}
+        }
+        let annotation = parameter_annotation_raw(owner, name)?;
+        if annotation_is_self_type(annotation) {
+            self.lexical_class_index(owner.span)
+        } else {
+            None
+        }
+    }
+
     /// Resolves one plain-name receiver to a live class index for a named
     /// attribute chain.
     fn named_attribute_class_index(
@@ -4858,6 +5083,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
         occurrence: &OccurrenceFact,
         name: &str,
     ) -> Option<usize> {
+        if let Some(class_index) = self.receiver_self_class_index(occurrence, name) {
+            return Some(class_index);
+        }
         let function_index = self.enclosing_function_index(occurrence)?;
         let function = &self.module.declarations[function_index];
         match self.local_binding_name(function, name, occurrence) {
@@ -4895,6 +5123,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let Some(fact) = self.field_annotation(declaration) else {
             return InstanceAttributeClassLookup::Unannotated;
         };
+        if annotation_is_self_type(&fact.annotation) {
+            return InstanceAttributeClassLookup::Unique {
+                field_index,
+                class_name: "Self".to_owned(),
+            };
+        }
         match classify_receiver_annotation(&fact.annotation) {
             ReceiverAnnotationName::Unique(name) => InstanceAttributeClassLookup::Unique {
                 field_index,
@@ -5609,6 +5843,34 @@ fn same_file_base_name(annotation: &Annotation) -> Option<&str> {
     }
 }
 
+/// A comprehension's leftmost iterable is inside the recorded span but is
+/// evaluated in the enclosing scope.
+fn scope_encloses_occurrence(scope: &BindingScopeFact, occurrence: &OccurrenceFact) -> bool {
+    if !span_contains(scope.span, occurrence.span) {
+        return false;
+    }
+    match scope.clauses.first() {
+        Some(clause) if span_contains(clause.iterable, occurrence.span) => false,
+        Some(_) | None => true,
+    }
+}
+
+/// `name` is bound in `scope` at this occurrence. A `for` iterable does not
+/// see that clause's targets, or targets of later clauses.
+fn scope_local_visible(scope: &BindingScopeFact, occurrence: &OccurrenceFact, name: &str) -> bool {
+    if !scope.locals.iter().any(|local| local == name) {
+        return false;
+    }
+    for (index, clause) in scope.clauses.iter().enumerate() {
+        if !span_contains(clause.iterable, occurrence.span) {
+            continue;
+        }
+        return !scope.clauses[index..]
+            .iter()
+            .any(|later| later.targets.iter().any(|target| target == name));
+    }
+    true
+}
 /// True when `outer` fully contains `inner`.
 const fn span_contains(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
@@ -5864,6 +6126,25 @@ fn optional_or_union_base(name: &str) -> Option<&'static str> {
         Some("Union")
     } else {
         None
+    }
+}
+
+fn self_type_name(name: &str) -> bool {
+    matches!(name, "Self" | "typing.Self" | "typing_extensions.Self")
+}
+
+/// `Self`, `typing.Self`, or `typing_extensions.Self`, including `Self | None`
+/// and `Optional[Self]`. A union with another class is not a self type.
+fn annotation_is_self_type(annotation: &Annotation) -> bool {
+    match strip_optional_layers(annotation) {
+        Annotation::Name { name, .. } => self_type_name(name),
+        Annotation::Generic { .. }
+        | Annotation::Union(_)
+        | Annotation::List(_)
+        | Annotation::StringLiteral(_)
+        | Annotation::Literal(_)
+        | Annotation::None
+        | Annotation::Unknown(_) => false,
     }
 }
 
