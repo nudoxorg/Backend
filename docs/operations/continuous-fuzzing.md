@@ -21,7 +21,11 @@ nix build .#continuous-fuzz.bins.journal-codec
 
 `kind = "fuzz"` rows are scheduled. `kind = "property"` rows are siblings in the same `targets` array: `laws` (`tests/laws`) and `store-frame` (`crates/store/src/view/validate/raw_property.rs`). They have `engine = "property"`, `schedule = false`, and null `bin`, `corpus`, `rank`, and `start_order`. They are not overnight units.
 
-Create the mount before the unit starts. The wrapper writes new coverage only there and passes `corpora.<id>` as a second, read-only corpus. Crashes go to the sibling `artifacts/` directory.
+`bins.<id>` exits 2 unless argv[1] is exactly `/durable/fuzz/<id>/corpus`. It does not create a corpus under `$TMPDIR`, `/tmp`, `$XDG_STATE_HOME`, or `$HOME/.local/state`. Create that mount before the unit starts. The wrapper writes new coverage only there and passes `corpora.<id>` as a second, read-only corpus. Crashes go to the sibling `artifacts/` directory.
+
+On a scheduled fuzz row, `durable_corpus` is `{ name, corporaAttr }`. `name` is the harness id. `corporaAttr` is `packages.${system}.continuous-fuzz.corpora.<name>`. The required argv[1] is `/durable/fuzz/<name>/corpus`. Property and backlog rows set `durable_corpus` to null. This record is the package's WarmVault shape. It is not `check.continuousFuzz`, and it is not an always-on WarmVault deployment.
+
+`nix build .#continuous-fuzz.bins.journal-codec -o /tmp/fuzz-journal-bin` exited 0 in 409.722 s. That script's `mount` is `/durable/fuzz/journal-codec/corpus`. Invoking it with no arguments, with `/tmp/wv-journal/corpus`, with `$HOME/.local/state/backend-fuzz/journal-codec/corpus`, and with `/durable/fuzz/pack-decode/corpus` each exited 2 and printed `argv[1] must be /durable/fuzz/journal-codec/corpus`. Invoking it with argv[1] equal to that mount passed the check, loaded the store seeds, and printed `INITED`. `timeout` stopped that process after 4 s (exit 124). That start is not a WarmVault campaign.
 
 ## Attr paths
 
@@ -30,7 +34,7 @@ Create the mount before the unit starts. The wrapper writes new coverage only th
 | Path | Value |
 | --- | --- |
 | `packages.${system}.continuous-fuzz` | Bundle. `$out/bin/fuzz-<id>`, `$out/engines/fuzz-engine-<id>`, `$out/corpora/<id>/`, `$out/metadata.json` |
-| `packages.${system}.continuous-fuzz.bins.<id>` | Supervised runner for a `kind=fuzz` target. argv[1] is the writable corpus |
+| `packages.${system}.continuous-fuzz.bins.<id>` | Supervised runner for a `kind=fuzz` target. argv[1] must be exactly `/durable/fuzz/<id>/corpus`. Any other path, including an omitted argv[1], exits 2 |
 | `packages.${system}.continuous-fuzz.corpora.<id>` | Committed seeds. Does not build the instrumented binary |
 | `packages.${system}.continuous-fuzz.engines.<id>` | Adapter derivation. `passthru.adapter` is `{ id, family, linked, adapter }` |
 | `packages.${system}.continuous-fuzz.engines.<id>.adapter` | Plug record. Here `id = "libfuzzer"` and `adapter = "bolero"` |
@@ -121,7 +125,7 @@ The bounded engine is 16 iterations and 150 ms. That smoke is not a proof. Accep
 
 ## Corpora that survive
 
-`corpora.<id>` is the committed seed derivation. The runner's first argument, when it does not start with `-`, is the writable corpus. Continuous Fuzzing should pass `/durable/fuzz/<id>/corpus`. LibFuzzer writes new coverage only to that first directory and treats the store seeds as a second, read-only corpus. Replacing the binary and passing the same directory resumes from the inputs already there. Crashes go to the sibling `artifacts/` directory. `-max_total_time` is refused on `bins.<id>`; the supervisor owns campaign lifetime. `-timeout=10` is the per-input hang cap.
+`corpora.<id>` is the committed seed derivation, named by `durable_corpus.corporaAttr` on scheduled rows. `bins.<id>` requires argv[1] to be `/durable/fuzz/<id>/corpus` and exits 2 otherwise. LibFuzzer writes new coverage only to that directory and treats the store seeds as a second, read-only corpus. Replacing the binary and passing the same directory resumes from the inputs already there. Crashes go to the sibling `artifacts/` directory. `-max_total_time` is refused on `bins.<id>`; the supervisor owns campaign lifetime. `-timeout=10` is the per-input hang cap.
 
 A local always-on build, without Nix, needs both cfg flags. Bolero 0.13.4 selects libFuzzer from `fuzzing_libfuzzer` and only then stops naming `crate::test::TestEngine` when `fuzzing` is also set.
 
@@ -152,7 +156,7 @@ Confirmed on this host on 2026-09-27. `x86_64-linux`. `nix (Determinate Nix 3.22
 
 `nix eval --json --apply 'drv: builtins.attrNames drv.passthru' .#continuous-fuzz` printed `["bins","corpora","engines","metadata"]`.
 
-The 18449-byte eval is not the store file from the 405.385 s build. That `metadata.json` predates the scales sentence. This follow-up did not rebuild the package. Ranks are unchanged.
+A later eval, after `durable_corpus` became `{ name, corporaAttr }`, exited 0 in 0.261 s. Stdout was 19073 bytes, including one trailing newline, sha256 `bf572fc02c4fe794ec8b5ce0d2f2354160755cda445d20764b1eb9c86493d9d7`. Scheduled rows carry that record. Property rows leave it null. `oracle.rs` occurs 0 times. The 18449-byte eval above predates that record. Neither eval was copied into the 405.385 s store file. That `metadata.json` still has the old string mount. Ranks are unchanged.
 
 `nix build .#continuous-fuzz -o /tmp/continuous-fuzz-result` exited 0 in 405.385 s. The result is `/nix/store/1z28qdnk44svl1qg50gz2phxm2v2a79c-continuous-fuzz`. `nix path-info -S` reported a closure of 1354053888 bytes. The output contains seven `bin/fuzz-*` links, seven `engines/fuzz-engine-*` links, seven `corpora/<id>/` directories, and `metadata.json`. That file is 18307 bytes, sha256 `83dd00eff39c26a6128efb47da47b39961dec00cc16c5d9118c8a88228760f71`, the eval document without its trailing newline. It includes `latticeKind` = `continuous-fuzz` and does not include `oracle.rs`. The journal corpus directory contains `canonical`, `empty`, `bad_magic`, `dispatch`, and `cancelled-root`. The engine script execs `/nix/store/y7y1kms6wxfdvvwsi8wl59kjj7vy55cg-backend-fuzz-engine-linked/libexec/fuzz-target`. `readelf -d` on that binary shows RUNPATH `/nix/store/8lahnh9pn3lrrnhax5nk7ibvjcbjmnkm-gcc-15.2.0-lib/lib`. The unpatched cargo output, `/nix/store/rw7v93r0xyaa0agymyrs48n23lhgklhr-backend-fuzz-engine-0.1.0/libexec/fuzz-target`, has an empty RUNPATH and exits before `INITED` because the nix loader cannot find `libstdc++.so.6`. `bins.<id>` runs the linked copy. An earlier build, before `latticeKind`, was `/nix/store/ravxgrh8bhl99523a62v16ggfh34p0is-continuous-fuzz` (386.998 s, closure 1354046904, cargo `Finished release profile [optimized] target(s) in 6m 18s`). A build that added `latticeKind` while `entrypoints` still named `oracle.rs` was `/nix/store/kiywyfahwnz0y9akm57k4vh1pdcjd9zl-continuous-fuzz` (3.226 s, closure 1354046936). This build replaces both. This file is part of the engine derivation's workspace `src`. A later edit here changes that input hash and the output path. It does not change the metadata keys. `nix eval` of `metadata` does not hash this file.
 
@@ -212,6 +216,8 @@ The binary reports 7862 inline 8-bit counters. Coverage below is edges in that o
 
 Measured on 2026-09-27 on this host. This is a harness re-entry, not an always-on WarmVault deployment and not a clearance to run one. The binary is the dev-profile instrumented `fuzz-target` (`rustc 1.99.0-nightly (375b1431b 2026-07-10)`, `CARGO_TARGET_DIR=/tmp/fuzz-engine`). Cold and warm use the same sancov `RUSTFLAGS` and `tests/fuzz/libfuzzer-rustc`. The Nix release package was not the binary that was replaced. A store rebuild of that package is a sandbox build of the crate closure. This measurement uses a process the host can rebuild in place.
 
+Those runs called the dev-profile `fuzz-target` with an explicit directory. They did not call `bins.<id>`. `bins.<id>` now exits 2 for any argv[1] other than `/durable/fuzz/<id>/corpus`, so a repeat of this measurement has to use that mount or call the engine binary the way these runs did.
+
 Methodology. Each target gets a fresh directory outside the store and outside git. Cold: binary A, empty writable corpus, committed seeds as the second corpus, pty, SIGINT at 20 seconds. Replace: one character added to the journal stable-encode error string in `tests/fuzz/targets/journal-codec/oracle.rs`, then `cargo build --offline -p backend-fuzz --bin fuzz-target`. Cargo reported `Finished dev profile [unoptimized] target(s) in 51.27s`. The probe character was reverted after the warm runs, so the tree does not keep it. Binary A sha256 `e0142c6ecead669e040137b40f5a9c5718ccc7f237743c2b25e9cc2c57c71f75`. Binary B sha256 `58fea68546ca38d4a18f73f2b71baa47ee9a0d29e1785a5f9de33dba718c7d21`. Warm: binary B, the same writable directory, SIGINT at 10 seconds. The clock is `time.monotonic` on the pty read that contains `INITED`. That timestamp is an upper bound. Coverage numbers are this dev-profile map. They are not the 7862-counter release map above.
 
 | Target | Phase | Binary | `INITED` by | `INITED` cov | Final cov / features | Writable corpus | Artifacts |
@@ -239,7 +245,7 @@ Go's `testing.F` is the adapter auth sets on `go-native`. It is an engine plug, 
 2. **Bolero drops `String` errors.** `OracleFailure` implements `std::error::Error`.
 3. **Inherited bolero budget.** `with_iterations` keeps an environment value that was already set. Unsetting it is `unsafe` here, so `drive` exits 2.
 4. **LibFuzzer ignores argv.** `bolero-libfuzzer` reads only `BOLERO_LIBFUZZER_ARGS` and splits on spaces. The runner sets that variable, rejects spaces, and rejects `-max_total_time`.
-5. **Read-only store corpus.** The writable directory is first. `corpora.<id>` is second and read-only.
+5. **Read-only store corpus.** The writable directory is first and must be `/durable/fuzz/<id>/corpus`. `corpora.<id>` is second and read-only. Omitting argv[1] used to create a corpus under XDG state, `$HOME/.local/state`, or `$TMPDIR`/`/tmp`. That fallback is gone. `bins.<id>` exits 2.
 6. **Crash files inside the corpus.** `-artifact_prefix` is the sibling `artifacts/` directory. Replay does not scan it.
 7. **Symlinks and path traversal.** Replay rejects symlinks. Seed names must be one path segment.
 8. **Corpus poisoning and proptest fingerprints.** Dictionaries live outside `corpus/`. The laws bridge refuses a `cc <64 hex>` line as decoder input, and fails if a shrink comment contains `bytes` until a human copies the minimized buffer.

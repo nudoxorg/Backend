@@ -122,6 +122,13 @@ let
     ] (complexity.score * gap.score * blast.score);
   # Every target row uses these keys. Null means that kind has no such
   # artifact. start_order is the supervised start sequence. It is not rank.
+  # durable_corpus on a scheduled fuzz row is { name, corporaAttr }.
+  # name is the harness id. bins.<id> accepts only argv[1] equal to
+  # /durable/fuzz/<name>/corpus. corporaAttr is the committed seed attr.
+  warmVault = id: {
+    name = id;
+    corporaAttr = "packages.\${system}.continuous-fuzz.corpora.${id}";
+  };
   absentArtifacts = {
     bin = null;
     corpus = null;
@@ -143,7 +150,7 @@ let
       bin = "packages.\${system}.continuous-fuzz.bins.${name}";
       corpus = "packages.\${system}.continuous-fuzz.corpora.${name}";
       committed_corpus = "tests/fuzz/targets/${name}/corpus";
-      durable_corpus = "/durable/fuzz/${name}/corpus";
+      durable_corpus = warmVault name;
       dictionary = "tests/fuzz/targets/${name}/dictionary.txt";
       max_input_bytes = maxLenOf name;
       schedule = true;
@@ -371,14 +378,18 @@ let
         ];
         consumers = {
           rank = "Recompute complexity.score * gap.score * blast.score. Skip rank null and schedule false. Do not multiply by churn. start_order is not an input. Do not trust list order.";
-          corpus = "For kind=fuzz, durable_corpus is the writable mount and argv[1] of bins.<id>. corpora.<id> is the committed seed derivation, passed read-only. New coverage is written only to the mount. Property rows have no corpus.";
+          corpus = "For kind=fuzz, durable_corpus is { name, corporaAttr }. name is the harness id. bins.<id> requires argv[1] to be exactly /durable/fuzz/<name>/corpus and exits 2 otherwise. It does not fall back to TMPDIR, /tmp, or XDG state. corporaAttr is the committed seed attr, passed read-only. Property and backlog rows set durable_corpus null.";
           engines = "engines.<id>.adapter is the plug record (id, family, linked, adapter). This repo links libfuzzer. aflpp, honggfuzz, and go-native stay linked false. Do not point an unlinked engine at bins.<id>.";
           aliases = "packages.\${system}.fuzz-<id> aliases bins.<id>. The contract package is continuous-fuzz. Do not add either to nix flake check.";
         };
         supervision = {
           per_input_timeout_seconds = 10;
           rss_limit_mb = 4096;
-          refuse = [ "-max_total_time" ];
+          refuse = [
+            "-max_total_time"
+            "omitted-argv1"
+            "corpus-path-other-than-/durable/fuzz/<name>/corpus"
+          ];
           artifact_directory = "sibling artifacts/ of the durable corpus, never inside it";
         };
         throughput_note = "exec/s and time-to-useful-coverage are not flake attributes. Confirmed campaign numbers live in docs/operations/continuous-fuzzing.md.";
@@ -736,20 +747,13 @@ let
               set -eu
               seeds=${corpora.${name}}
               dict=${dicts.${name}}
-              writable=""
-              if [ "$#" -ge 1 ] && [ "''${1#-}" = "$1" ]; then
-                writable=$1
-                shift
-              else
-                if [ -n "''${XDG_STATE_HOME:-}" ]; then
-                  base=$XDG_STATE_HOME
-                elif [ -n "''${HOME:-}" ]; then
-                  base=$HOME/.local/state
-                else
-                  base=''${TMPDIR:-/tmp}
-                fi
-                writable=$base/backend-fuzz/${name}/corpus
+              mount=/durable/fuzz/${name}/corpus
+              if [ "$#" -lt 1 ] || [ "$1" != "$mount" ]; then
+                echo "refusing to start: argv[1] must be $mount. bins.${name} does not create a corpus under TMPDIR, /tmp, or XDG state." >&2
+                exit 2
               fi
+              writable=$1
+              shift
               artifacts=$(dirname "$writable")/artifacts
               case "$writable$seeds$dict$artifacts" in
                 *" "*)
