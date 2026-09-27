@@ -29,6 +29,9 @@ let
     "tests"
     "tools"
     "vendor/gpui_ce_components"
+    "vendor/gpui_ce_components_base"
+    "vendor/gpui_ce_macos"
+    "vendor/gpui-ce"
   ];
   workspaceSource =
     if workspaceAvailable then

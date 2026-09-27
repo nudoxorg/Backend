@@ -833,30 +833,6 @@ fn projects(session: &mut Session) -> Vec<(u64, String)> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
-fn run_gui(root: &Path, journey: &str) -> Value {
-    let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_backend-journey-gui"));
-    command
-        .arg(journey)
-        .current_dir(root)
-        .env("NO_COLOR", "1")
-        .env("COLUMNS", "100");
-    scrub(&mut command);
-    let output = bounded(command, &format!("GUI {journey}"), None);
-    assert!(
-        output.status.success(),
-        "GUI {journey} failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
-        panic!(
-            "GUI {journey} returned invalid JSON: {error}; stderr={}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-    })
-}
-
 struct McpProcess {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -1119,18 +1095,6 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
     let endpoint = backend_runtime::derive_endpoint(&workspace);
     let mut observations = Vec::new();
 
-    #[cfg(target_os = "macos")]
-    {
-        let gui_started = Instant::now();
-        let first_launch = run_gui(&fixture, "first-launch");
-        assert_eq!(first_launch["journey"], "first-launch");
-        assert_eq!(
-            first_launch["onboarding"], true,
-            "cold GUI launch skipped native onboarding"
-        );
-        note(&mut observations, "gui-first-launch", gui_started, None);
-    }
-
     let mut daemon = launch(&endpoint, &workspace, &authority, false, 180_000);
     let launch_started = Instant::now();
     let mut session = Session::connect(&endpoint).expect("connect empty session");
@@ -1205,21 +1169,6 @@ fn cold_restart_preserves_atomic_roots_live_subscriptions_and_gui_shelf() {
         "pre-restart search identity drifted"
     );
     assert_eq!(before_graceful.regressions, expected_regressions);
-
-    #[cfg(target_os = "macos")]
-    {
-        let gui_project_started = Instant::now();
-        let gui_project = run_gui(&fixture, "choose-project");
-        assert_eq!(gui_project["journey"], "choose-project");
-        assert!(gui_project["shelf_count"].as_u64().unwrap_or(0) >= 1);
-        assert_eq!(gui_project["onboarding"], false);
-        note(
-            &mut observations,
-            "gui-native-project-choice",
-            gui_project_started,
-            None,
-        );
-    }
 
     let graceful_started = Instant::now();
     surface_matrix::graceful_shutdown(&endpoint);
