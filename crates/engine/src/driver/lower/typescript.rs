@@ -257,43 +257,34 @@ struct ParamRow {
 
 /// Bounded staging for one signature's parameters. One slot beyond the fact
 /// lane's child bound lets an over-wide signature reach the lane's own typed
-/// child-capacity rejection instead of a staging one.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// child-capacity rejection instead of a staging one. The rows live on the
+/// heap: at the 255-wide lane an inline array made every `ParamRows` about
+/// 12 KiB, and a type-literal member stages several per recursive frame, so
+/// nested object types overflowed a 2 MiB worker stack.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ParamRows {
-    rows: [ParamRow; MAX_FACT_CHILDREN + 1],
-    len: usize,
+    rows: Vec<ParamRow>,
 }
 
 impl ParamRows {
-    const fn new() -> Self {
-        Self {
-            rows: [ParamRow {
-                name: Span::new(0, 0),
-                annotation: None,
-                default: None,
-                flags: 0,
-            }; MAX_FACT_CHILDREN + 1],
-            len: 0,
-        }
+    fn new() -> Self {
+        Self { rows: Vec::new() }
     }
 
     fn push(&mut self, row: ParamRow) -> Result<(), TypeScriptCollectError> {
-        match self.rows.get_mut(self.len) {
-            Some(slot) => {
-                *slot = row;
-                self.len += 1;
-                Ok(())
-            }
-            None => Err(fault(FactFault::ChildCapacity)),
+        if self.rows.len() > MAX_FACT_CHILDREN {
+            return Err(fault(FactFault::ChildCapacity));
         }
+        self.rows.push(row);
+        Ok(())
     }
 
     fn count(&self) -> usize {
-        self.len
+        self.rows.len()
     }
 
     fn iter(&self) -> impl Iterator<Item = &ParamRow> {
-        self.rows.iter().take(self.len)
+        self.rows.iter()
     }
 }
 
@@ -449,6 +440,11 @@ struct Projector<'x, 'report, 'source> {
     /// member before its embodying fact exists, so claim sites bind staged
     /// suffixes to the embodiment they just pushed.
     staged_members: Vec<u32>,
+    /// Parameters declared inside a type position (the `acc` of
+    /// `iteratee: (acc: R) => void`), in push order. The parameter whose
+    /// annotation declared them claims them, so a callback's parameter never
+    /// becomes a sibling of a same-named parameter of the enclosing function.
+    type_bindings: Vec<u32>,
     /// Claimed embodiment per member fact (`UNSET` when the span-containment
     /// parent stands). Indexed by fact ordinal.
     member_parents: Box<[u32]>,
@@ -1006,6 +1002,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 })?;
             let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
             let member_base = self.staged_members.len();
+            let binding_base = self.type_bindings.len();
             let cells = match row.annotation {
                 Some(span) => self.owner_cells(span.start, span.end, 0)?,
                 None => TypeCells::unknown(TypeReason::Unannotated),
@@ -1019,6 +1016,17 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let ordinal = self.push(fact)?;
             self.register(ordinal, row.name, row.name, EntityKind::Parameter)?;
             self.claim_staged_members(member_base, ordinal);
+            for binding in self.type_bindings.split_off(binding_base) {
+                let Some(slot) = usize::try_from(binding)
+                    .ok()
+                    .and_then(|index| self.member_parents.get_mut(index))
+                else {
+                    continue;
+                };
+                if *slot == UNSET {
+                    *slot = ordinal;
+                }
+            }
             if let Some(default) = row.default {
                 self.declare_expression_bindings(default.start, default.end, 0)?;
             }
@@ -1887,7 +1895,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 default: None,
                 flags,
             })?;
-            self.push_parameter_facts(&params)?;
+            let ordinals = self.push_parameter_facts(&params)?;
+            if let Some(ordinal) = ordinals.first().copied() {
+                self.type_bindings.push(ordinal);
+            }
         }
         if let Some(span) = annotation {
             self.declare_bindings_in_span(span.start, span.end, depth.saturating_add(1))?;
@@ -2957,15 +2968,27 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         .with_extension(extension),
                     cells,
                 );
-                let ordinal = self.push(fact)?;
-                self.register(ordinal, member_span, name_span, EntityKind::Field)?;
-                self.staged_members.push(ordinal);
-                self.claim_staged_members(member_base, ordinal);
                 let flags = if signature.readonly {
                     SemanticTypeChild::FLAG_READONLY
                 } else {
                     0
                 };
+                // A callback parameter's annotation is lowered both for its
+                // declared binding and for the enclosing function type. One
+                // written index signature keeps the one row its first route
+                // registered at this exact name position.
+                if let Some(existing) = self.fact_at_name_start(name_span.start)
+                    && usize::try_from(existing)
+                        .ok()
+                        .and_then(|index| self.fact_kinds.get(index))
+                        == Some(&EntityKind::Field)
+                {
+                    return Ok(Some((existing, name, flags)));
+                }
+                let ordinal = self.push(fact)?;
+                self.register(ordinal, member_span, name_span, EntityKind::Field)?;
+                self.staged_members.push(ordinal);
+                self.claim_staged_members(member_base, ordinal);
                 return Ok(Some((ordinal, name, flags)));
             }
             if let Some(method) = member_kind.as_ts_method_signature() {
@@ -3206,6 +3229,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             pending_type_parameters: 0,
             extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             staged_members: Vec::new(),
+            type_bindings: Vec::new(),
             member_parents: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             synthetic_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),

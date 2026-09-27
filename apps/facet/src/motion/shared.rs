@@ -871,10 +871,20 @@ mod tests {
             // first frame is the newly supplied actual canvas rectangle.
             let second = seed(404.0, 92.0);
             cx.update(|window, cx| super::super::remember("gem", second, window, cx));
-            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (410.0, 98.0, 12.0));
+            // Positions are float arithmetic whose last bit differs between
+            // targets (98.0 vs 97.99999 on x86-64); compare as the glide does.
+            let near = |actual: (f32, f32, f32), expected: (f32, f32, f32)| {
+                assert!(
+                    (actual.0 - expected.0).abs() < 0.05
+                        && (actual.1 - expected.1).abs() < 0.05
+                        && (actual.2 - expected.2).abs() < 0.05,
+                    "{actual:?} vs {expected:?}"
+                );
+            };
+            near(centre(&frame(cx, &seen), "page.gem"), (410.0, 98.0, 12.0));
             cx.executor().advance_clock(Duration::from_millis(700));
             cx.run_until_parked();
-            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
+            near(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0));
             // Re-seeding a retained target also honors reduced motion.
             cx.update(|window, cx| {
                 let mut facet = crate::theme::Facet::default();
