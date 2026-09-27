@@ -709,6 +709,7 @@ fn row_encoded_size(row: &Row) -> usize {
         row.identity_preimage()
             .map_or(0, |preimage| preimage.as_str().len()),
     );
+    size = size.saturating_add(row.facts.text_bytes());
     for fragment in &row.document {
         size = size.saturating_add(match fragment {
             super::Fragment::Text(value) | super::Fragment::Code(value) => {
