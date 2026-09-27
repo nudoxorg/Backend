@@ -21,6 +21,7 @@ pub(crate) mod highlight;
 pub mod interaction;
 pub mod layout;
 pub mod model;
+pub(crate) mod cold_tour;
 pub(crate) mod navigation;
 pub mod peek;
 pub mod prism;
