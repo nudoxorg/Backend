@@ -139,6 +139,10 @@ pub(super) fn encode_row(value: &Row, out: &mut Vec<u8>) {
         crate::SourceAvailability::NotCaptured => out.push(0),
         crate::SourceAvailability::NotHydrated => out.push(2),
         crate::SourceAvailability::Unconfigured => out.push(3),
+        crate::SourceAvailability::StaleFile { path } => {
+            out.push(4);
+            append_bytes(out, path.as_bytes());
+        }
     }
     match &value.excerpt {
         crate::SourceExcerpt::NotCaptured => out.push(0),

@@ -331,8 +331,7 @@ pub(super) fn paths_for_files(
 /// Drops one package's rows at `paths` and admits their replacement.
 ///
 /// A replacement row must belong to `package` and carry one of those paths,
-/// unless it is a projected semantic row whose source was cleared because the
-/// compiled line is no longer the file's line.
+/// unless it is a projected semantic row that no longer names a file.
 pub(super) fn rows_replacing_paths(
     current: &[Row],
     package: PackageKey,
@@ -341,11 +340,7 @@ pub(super) fn rows_replacing_paths(
 ) -> Result<Vec<Row>, RowSpliceError> {
     let mut rows = Vec::with_capacity(current.len().saturating_add(replacement.len()));
     for row in current {
-        let replaced = row.package == Some(package)
-            && row
-                .source
-                .captured()
-                .is_some_and(|location| paths.contains(location.path()));
+        let replaced = row_on_package_path(row, package, paths);
         if !replaced {
             rows.push(row.clone());
         }
@@ -354,10 +349,10 @@ pub(super) fn rows_replacing_paths(
     if replacement.iter().any(|row| {
         let on_path = row
             .source
-            .captured()
-            .is_some_and(|location| paths.contains(location.path()));
-        let stale_semantic = row.source.captured().is_none() && row_is_projected_semantic(row);
-        kept.contains(&row.id) || row.package != Some(package) || (!on_path && !stale_semantic)
+            .file_path()
+            .is_some_and(|path| paths.contains(path));
+        let unscoped_semantic = row.source.file_path().is_none() && row_is_projected_semantic(row);
+        kept.contains(&row.id) || row.package != Some(package) || (!on_path && !unscoped_semantic)
     }) {
         return Err(RowSpliceError::Collision);
     }
@@ -372,28 +367,21 @@ pub(super) fn rows_replacing_paths(
 /// Replaces structural rows at `paths` and marks that file's semantic rows stale.
 ///
 /// Semantic rows are the ones whose coordinate contains `::semantic::`. A
-/// semantic row with no captured path belongs to some image in the package,
-/// and this splice cannot tell whether that image is the file that changed.
+/// semantic row with no file path belongs to some image in the package, and
+/// this splice cannot tell whether that image is the file that changed. A
+/// stale row keeps its path and drops the line.
 pub(super) fn rows_splicing_changed_files(
     current: &[Row],
     package: PackageKey,
     paths: &BTreeSet<String>,
     mut structural: Vec<Row>,
 ) -> Result<Vec<Row>, RowSpliceError> {
-    if current.iter().any(|row| {
-        row.package == Some(package)
-            && row_is_projected_semantic(row)
-            && row.source.captured().is_none()
-    }) {
+    if current.iter().any(|row| semantic_row_lacks_file(row, package)) {
         return Err(RowSpliceError::UnscopedSemantic);
     }
     let structural_ids = BTreeSet::from_iter(structural.iter().map(|row| row.id));
     for row in current {
-        let on_path = row.package == Some(package)
-            && row
-                .source
-                .captured()
-                .is_some_and(|location| paths.contains(location.path()));
+        let on_path = row_on_package_path(row, package, paths);
         if !on_path || !row_is_projected_semantic(row) {
             continue;
         }
@@ -421,10 +409,7 @@ pub(super) fn row_changes_splicing_changed_files(
         if resident.insert(row.id, row).is_some() {
             return Err(RowSpliceError::Collision);
         }
-        if row.package == Some(package)
-            && row_is_projected_semantic(row)
-            && row.source.captured().is_none()
-        {
+        if semantic_row_lacks_file(row, package) {
             return Err(RowSpliceError::UnscopedSemantic);
         }
     }
@@ -449,9 +434,9 @@ pub(super) fn row_changes_splicing_changed_files(
     for row in &replacement {
         let on_path = row
             .source
-            .captured()
-            .is_some_and(|location| paths.contains(location.path()));
-        let stale_semantic = row.source.captured().is_none() && row_is_projected_semantic(row);
+            .file_path()
+            .is_some_and(|path| paths.contains(path));
+        let stale_semantic = row.source.file_path().is_none() && row_is_projected_semantic(row);
         let kept = resident
             .get(&row.id)
             .is_some_and(|existing| !row_on_package_path(existing, package, paths));
@@ -493,8 +478,14 @@ fn row_on_package_path(row: &Row, package: PackageKey, paths: &BTreeSet<String>)
     row.package == Some(package)
         && row
             .source
-            .captured()
-            .is_some_and(|location| paths.contains(location.path()))
+            .file_path()
+            .is_some_and(|path| paths.contains(path))
+}
+
+fn semantic_row_lacks_file(row: &Row, package: PackageKey) -> bool {
+    row.package == Some(package)
+        && row_is_projected_semantic(row)
+        && row.source.file_path().is_none()
 }
 
 /// Changed files that still need structural rows.
@@ -558,7 +549,11 @@ fn mark_semantic_row_stale(row: &Row) -> Row {
         ));
         stale.document = document.into();
     }
-    stale.source = backend_library::SourceAvailability::NotCaptured;
+    if let Some(path) = row.source.file_path() {
+        stale.source = backend_library::SourceAvailability::StaleFile {
+            path: Arc::from(path),
+        };
+    }
     stale.excerpt = backend_compile::SourceExcerpt::NotCaptured;
     stale
 }
@@ -717,6 +712,64 @@ pub(super) fn measure_package_publication() {
     println!(
         "activated_file_patch files={ACTIVATED_FILES} semantic={} changes={patch_changes} splice_median_ns={splice_median} splice_p95_ns={splice_p95} patch_median_ns={patch_median} patch_p95_ns={patch_p95}",
         semantic_rows.len()
+    );
+
+    let other_path = all_paths
+        .difference(&one_paths)
+        .next()
+        .expect("another file")
+        .clone();
+    let other_paths = BTreeSet::from([other_path]);
+    let stale_rows = rows_splicing_changed_files(&semantic_rows, package, &one_paths, Vec::new())
+        .expect("stale file");
+    let stale_view = backend_engine::ViewRoot::new_checked(
+        initial.recipe(),
+        initial.basis(),
+        initial.frontier(),
+        stale_rows.clone(),
+        initial.coverage().to_vec(),
+        capability.clone(),
+    )
+    .expect("stale view");
+    let stale_full = time_samples(ACTIVATED_SAMPLES, ACTIVATED_WARMUPS, || {
+        let merged = rows_splicing_changed_files(&stale_rows, package, &other_paths, Vec::new())
+            .expect("stale splice");
+        std::hint::black_box(
+            backend_engine::ViewRoot::new_checked(
+                initial.recipe(),
+                initial.basis(),
+                initial.frontier(),
+                merged,
+                initial.coverage().to_vec(),
+                capability.clone(),
+            )
+            .expect("stale admit"),
+        );
+    });
+    let stale_patch = time_samples(ACTIVATED_SAMPLES, ACTIVATED_WARMUPS, || {
+        let changes =
+            row_changes_splicing_changed_files(&stale_rows, package, &other_paths, &[])
+                .expect("stale patch");
+        std::hint::black_box(
+            stale_view
+                .prepare(
+                    backend_engine::ViewDelta::Patch {
+                        changes: Arc::from(changes),
+                    },
+                    capability.clone(),
+                )
+                .expect("stale prepare"),
+        );
+    });
+    let (stale_splice_median, stale_splice_p95) = percentiles(&stale_full);
+    let (stale_patch_median, stale_patch_p95) = percentiles(&stale_patch);
+    let stale_changes =
+        row_changes_splicing_changed_files(&stale_rows, package, &other_paths, &[])
+            .expect("stale size")
+            .len();
+    println!(
+        "stale_file_splice files={ACTIVATED_FILES} semantic={} changes={stale_changes} splice_median_ns={stale_splice_median} splice_p95_ns={stale_splice_p95} patch_median_ns={stale_patch_median} patch_p95_ns={stale_patch_p95}",
+        stale_rows.len()
     );
 }
 
@@ -1328,6 +1381,7 @@ mod tests {
             matches!(fragment, backend_engine::Fragment::Text(text) if text == super::super::view_build::STALE_NOTE)
         }));
         assert!(stale.source.captured().is_none());
+        assert_eq!(stale.source.file_path(), Some("src/impl.rs"));
         assert_eq!(stale.excerpt, backend_compile::SourceExcerpt::NotCaptured);
         assert_eq!(
             stale
@@ -1339,9 +1393,17 @@ mod tests {
                 .count(),
             1
         );
-        let again =
-            rows_splicing_changed_files(&merged, package, &paths, Vec::new()).expect_err("unscoped");
-        assert_eq!(again, RowSpliceError::UnscopedSemantic);
+        let again = rows_splicing_changed_files(&merged, package, &paths, Vec::new()).expect("second");
+        assert_eq!(
+            again.iter().find(|row| row.label == widget.label),
+            Some(&widget)
+        );
+        let again_draw = again
+            .iter()
+            .find(|row| row.label == draw_semantic.label)
+            .expect("stale draw remains");
+        assert_eq!(again_draw.source.file_path(), Some("src/impl.rs"));
+        assert!(again_draw.source.captured().is_none());
         let unscoped = semantic_row(&initial, package, "src/widget.rs", "bare");
         let mut unscoped = unscoped;
         unscoped.source = backend_library::SourceAvailability::NotCaptured;
@@ -1625,9 +1687,65 @@ mod tests {
             .find(|row| row.label == widget.label)
             .expect("widget");
         assert_eq!(kept_widget, &widget);
+        let stale_draw = patched
+            .rows()
+            .iter()
+            .find(|row| row.label.ends_with("::draw"))
+            .expect("stale draw");
+        assert_eq!(stale_draw.source.file_path(), Some("src/impl.rs"));
+        assert!(stale_draw.source.captured().is_none());
         let again = row_changes_splicing_changed_files(patched.rows(), package, &paths, &[])
-            .expect_err("second splice");
-        assert_eq!(again, RowSpliceError::UnscopedSemantic);
+            .expect("second splice");
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn a_second_file_patches_without_touching_the_stale_file() {
+        let (initial, _) = super::super::initial_view().expect("initial");
+        let package = backend_engine::package_key("pkg:alpha");
+        let widget = semantic_row(&initial, package, "src/widget.rs", "Widget");
+        let draw = semantic_row(&initial, package, "src/impl.rs", "draw");
+        let current = vec![widget.clone(), draw];
+        let impl_paths = BTreeSet::from(["src/impl.rs".to_owned()]);
+        let first = rows_splicing_changed_files(&current, package, &impl_paths, Vec::new())
+            .expect("first");
+        let stale_draw = first
+            .iter()
+            .find(|row| row.label.ends_with("::draw"))
+            .expect("stale draw")
+            .clone();
+        let widget_paths = BTreeSet::from(["src/widget.rs".to_owned()]);
+        let changes =
+            row_changes_splicing_changed_files(&first, package, &widget_paths, &[]).expect("second");
+        assert_eq!(changes.len(), 1);
+        assert!(changes.iter().all(|change| {
+            matches!(change, RowChange::Upsert(row) if row.label == widget.label)
+        }));
+        let merged =
+            rows_splicing_changed_files(&first, package, &widget_paths, Vec::new()).expect("merge");
+        let kept_draw = merged
+            .iter()
+            .find(|row| row.label == stale_draw.label)
+            .expect("kept draw");
+        assert_eq!(kept_draw, &stale_draw);
+        assert_eq!(
+            super::super::admitted_bytes_after_row_changes(&first, &changes).expect("patch bytes"),
+            super::super::admitted_view_bytes(&merged).expect("merged bytes")
+        );
+        let current_view = admitted(first);
+        let target = admitted(merged);
+        assert_eq!(super::super::changed_rows(&current_view, &target), changes);
+        let capability = super::super::test_builtin_view_capability().expect("capability");
+        let prepared = current_view
+            .prepare(
+                ViewDelta::Patch {
+                    changes: Arc::from(changes),
+                },
+                capability,
+            )
+            .expect("prepare");
+        let (patched, _) = current_view.commit(prepared).expect("commit");
+        assert_eq!(patched.rows(), target.rows());
     }
 
     #[test]
