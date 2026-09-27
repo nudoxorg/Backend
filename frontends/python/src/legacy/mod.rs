@@ -192,6 +192,18 @@ pub enum AttributeChainRoot {
     Name { name: String },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttributeStep {
+    /// One field name, root to leaf, excluding the member being resolved.
+    Field(String),
+    /// A runtime index whose slice is not a plain name (`value[0]`, `value[-1]`).
+    /// Not a slice (`value[0:1]`). A numeric subscript of a class name is not that class.
+    Index,
+    /// A subscript whose slice is a plain name (`items[index]`, `Child[int]`).
+    /// An annotated value peels to the element type. A bare class name falls
+    /// back to that class, which is how `Child[int].note` stays `Child.note`.
+    NameIndex,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OccurrenceReceiver {
     /// A bare-name call (`fn()`): resolved through module names alone.
     None,
@@ -223,18 +235,27 @@ pub enum OccurrenceReceiver {
     /// `self.child.note` / `self.child.note()` and the `cls` form, one attribute
     /// deep. `class` is the enclosing class. `attribute` is the field name
     /// (`child`). Two or more fields before the member are `ChainedAttribute`.
-    /// Subscripts (`self.child[0].note`) are not this variant.
+    /// Index subscripts (`self.child[0].note`) are `SubscriptedAttribute`.
     InstanceAttribute { class: String, attribute: String },
     /// `obj.child.note` / `obj.child.note()` when `obj` is a plain name other than
     /// the enclosing `self`/`cls` form. `name` is `obj`. `attribute` is `child`.
-    /// Two or more fields before the member are `ChainedAttribute`. Subscripts
-    /// stay foreign.
+    /// Two or more fields before the member are `ChainedAttribute`. Index
+    /// subscripts are `SubscriptedAttribute`.
     NamedAttribute { name: String, attribute: String },
     /// `self.child.other.note` and `obj.child.other.note`, two or more fields
-    /// before the member. Deeper chains are included. Subscripts are not.
+    /// before the member. Deeper chains are included. Index subscripts are
+    /// `SubscriptedAttribute`.
     ChainedAttribute {
         root: AttributeChainRoot,
         attributes: Vec<String>,
+    },
+    /// `self.child[0].note`, `items[0].note`, `self.child[0].other.note` when the
+    /// receiver contains at least one index subscript. `steps` are root-to-leaf
+    /// and exclude the member. A slice, a subscript of a call, and a chain with
+    /// no index are not this variant.
+    SubscriptedAttribute {
+        root: AttributeChainRoot,
+        steps: Vec<AttributeStep>,
     },
     /// `self.note().extra` / `obj.note().extra()` / `note().extra()` and one
     /// or more hops through an attribute or constructed receiver before the
@@ -243,9 +264,9 @@ pub enum OccurrenceReceiver {
     /// `receiver` is `EnclosingClass` for `self`/`cls`,
     /// `Foreign { receiver: Some(name) }` for another plain name, or `None`
     /// for a bare call. The inner receiver may be `InstanceAttribute`,
-    /// `NamedAttribute`, `ChainedAttribute`, `Constructed`, or a nested
-    /// `CallReturn` for successive calls. Still not `Super`, not `Module`,
-    /// and not a subscript.
+    /// `NamedAttribute`, `ChainedAttribute`, `SubscriptedAttribute`,
+    /// `Constructed`, or a nested `CallReturn` for successive calls. Still not
+    /// `Super`, not `Module`, and not a slice or subscript of a call.
     CallReturn {
         method: String,
         receiver: Box<OccurrenceReceiver>,
@@ -1145,6 +1166,66 @@ impl<'a> Projection<'a> {
         Some(OccurrenceReceiver::ChainedAttribute { root, attributes })
     }
 
+    /// `self.child[0].note` / `items[0].note` when `expr` is an attribute or
+    /// index subscript chain containing at least one index subscript before the
+    /// member. Slices and subscripts of calls are not this receiver.
+    fn subscripted_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let mut steps = Vec::new();
+        let mut current = expr;
+        loop {
+            match current {
+                ast::Expr::Attribute(inner) => {
+                    steps.push(AttributeStep::Field(inner.attr.as_str().to_owned()));
+                    current = inner.value.as_ref();
+                }
+                ast::Expr::Subscript(subscript) => {
+                    if matches!(subscript.slice.as_ref(), ast::Expr::Slice(_)) {
+                        return None;
+                    }
+                    let step = if matches!(subscript.slice.as_ref(), ast::Expr::Name(_)) {
+                        AttributeStep::NameIndex
+                    } else {
+                        AttributeStep::Index
+                    };
+                    steps.push(step);
+                    current = subscript.value.as_ref();
+                }
+                ast::Expr::Name(name) => {
+                    let id = name.id.as_str();
+                    steps.reverse();
+                    if !steps.iter().any(|step| {
+                        matches!(step, AttributeStep::Index | AttributeStep::NameIndex)
+                    }) {
+                        return None;
+                    }
+                    if matches!(id, "self" | "cls") {
+                        if self.function_depth != 1 {
+                            return None;
+                        }
+                        let class = self.enclosing_class.clone()?;
+                        if !steps
+                            .iter()
+                            .any(|step| matches!(step, AttributeStep::Field(_)))
+                        {
+                            return None;
+                        }
+                        return Some(OccurrenceReceiver::SubscriptedAttribute {
+                            root: AttributeChainRoot::Enclosing { class },
+                            steps,
+                        });
+                    }
+                    return Some(OccurrenceReceiver::SubscriptedAttribute {
+                        root: AttributeChainRoot::Name {
+                            name: id.to_owned(),
+                        },
+                        steps,
+                    });
+                }
+                _ => return None,
+            }
+        }
+    }
+
     /// `self.note().extra` / `obj.note().extra()` / `note().extra()` when `expr`
     /// is the call before the member, including one or more hops through an
     /// attribute, constructed, or call-return receiver (`self.child.note().extra()`
@@ -1181,6 +1262,7 @@ impl<'a> Projection<'a> {
                             .instance_attribute_receiver(value)
                             .or_else(|| self.named_attribute_receiver(value))
                             .or_else(|| self.chained_attribute_receiver(value))
+                            .or_else(|| self.subscripted_attribute_receiver(value))
                             .or_else(|| self.call_return_receiver(value))
                             .or_else(|| self.constructed_class_receiver(value));
                         let inner = match inner {
@@ -1195,6 +1277,21 @@ impl<'a> Projection<'a> {
                                 ..
                             }) if matches!(name.as_str(), "self" | "cls")
                                 && self.function_depth != 1 =>
+                            {
+                                None
+                            }
+                            Some(OccurrenceReceiver::SubscriptedAttribute {
+                                root: AttributeChainRoot::Name { ref name },
+                                ..
+                            }) if matches!(name.as_str(), "self" | "cls")
+                                && self.function_depth != 1 =>
+                            {
+                                None
+                            }
+                            Some(OccurrenceReceiver::SubscriptedAttribute {
+                                root: AttributeChainRoot::Enclosing { .. },
+                                ..
+                            }) if self.function_depth != 1 =>
                             {
                                 None
                             }
@@ -1245,6 +1342,9 @@ impl<'a> Projection<'a> {
             return receiver;
         }
         if let Some(receiver) = self.call_return_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.subscripted_attribute_receiver(value) {
             return receiver;
         }
         if let Some(receiver) = self.constructed_class_receiver(value) {

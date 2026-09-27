@@ -28,11 +28,11 @@
 use std::collections::{HashMap, HashSet};
 
 use backend_frontend_python::legacy::{
-    Annotation, AnnotationFact, AnnotationPosition, AttributeChainRoot, BindingScopeFact,
-    CheckerError, CheckerReport, ClassForm, DeclarationFact, DeclarationKind, ExtractionError,
-    InferredType, LiteralValue, ModuleFacts, OccurrenceFact, OccurrenceKind, OccurrenceReceiver,
-    ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome, TypeReason as ExtractedReason,
-    extract,
+    Annotation, AnnotationFact, AnnotationPosition, AttributeChainRoot, AttributeStep,
+    BindingScopeFact, CheckerError, CheckerReport, ClassForm, DeclarationFact, DeclarationKind,
+    ExtractionError, InferredType, LiteralValue, ModuleFacts, OccurrenceFact, OccurrenceKind,
+    OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
+    TypeReason as ExtractedReason, extract,
 };
 use backend_semantic::ir::{
     AnonRecordForm, Confidence, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
@@ -2085,6 +2085,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
                 self.instance_or_named_attribute_target(occurrence, checked, None)
             }
+            OccurrenceReceiver::SubscriptedAttribute { root, steps } => self
+                .instance_or_named_attribute_target(
+                    occurrence,
+                    checked,
+                    self.subscripted_attribute_class_name(occurrence, root, steps),
+                ),
             OccurrenceReceiver::CallReturn { method, receiver } => {
                 self.call_return_target(occurrence, checked, method, receiver.as_ref())
             }
@@ -3429,6 +3435,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     None
                 }
             }
+            OccurrenceReceiver::SubscriptedAttribute { root, steps } => self
+                .subscripted_attribute_class_name(occurrence, root, steps)
+                .and_then(|class_name| self.unique_live_class_index(&class_name))
+                .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
             OccurrenceReceiver::Constructed { class } => self
                 .unique_live_class_index(class)
                 .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
@@ -3737,6 +3747,321 @@ impl<'a, 'source> Emitter<'a, 'source> {
             },
             _ => None,
         }
+    }
+
+    /// Raw field annotation for one attribute on a class, with the same ownership
+    /// rules as `field_annotation_class_name_for_class`.
+    fn raw_field_annotation_for_class(
+        &self,
+        class_index: usize,
+        attribute: &str,
+    ) -> Option<&'a Annotation> {
+        let class_span = self.module.declarations[class_index].span;
+        let own_fields = self.own_field_indices_named(class_span, attribute);
+        match own_fields.len() {
+            0 => {
+                let attribute_bytes = attribute.as_bytes();
+                let mut instance_facts: Vec<&AnnotationFact> = Vec::new();
+                for fact in &self.module.annotations {
+                    if fact.position != AnnotationPosition::Instance {
+                        continue;
+                    }
+                    if fact.owner.as_bytes() != attribute_bytes {
+                        continue;
+                    }
+                    if !span_contains(class_span, fact.span) {
+                        continue;
+                    }
+                    if self.module.declarations.iter().enumerate().any(|(index, declaration)| {
+                        declaration.kind == DeclarationKind::Class
+                            && self.live[index]
+                            && span_contains(class_span, declaration.span)
+                            && declaration.span != class_span
+                            && span_contains(declaration.span, fact.span)
+                    }) {
+                        continue;
+                    }
+                    instance_facts.push(fact);
+                }
+                if instance_facts.len() > 1 {
+                    return None;
+                }
+                if let Some(fact) = instance_facts.first() {
+                    return Some(&fact.annotation);
+                }
+                match self.inherited_field_annotation_class_name(class_index, attribute) {
+                    InstanceAttributeClassLookup::Unique { field_index, .. } => {
+                        let declaration = &self.module.declarations[field_index];
+                        self.field_annotation(declaration)
+                            .map(|fact| &fact.annotation)
+                    }
+                    InstanceAttributeClassLookup::Absent
+                    | InstanceAttributeClassLookup::Ambiguous
+                    | InstanceAttributeClassLookup::Unannotated => None,
+                }
+            }
+            1 => {
+                let declaration = &self.module.declarations[own_fields[0]];
+                self.field_annotation(declaration)
+                    .map(|fact| &fact.annotation)
+            }
+            _ => None,
+        }
+    }
+
+    /// Raw annotation for a plain-name receiver with leading index subscripts.
+    fn raw_local_annotation(
+        &self,
+        function: &DeclarationFact,
+        name: &str,
+        occurrence: &OccurrenceFact,
+    ) -> RawReceiverAnnotation<'a> {
+        let mut relevant: Vec<&AnnotationFact> = Vec::new();
+        for fact in &self.module.annotations {
+            if fact.position != AnnotationPosition::Local {
+                continue;
+            }
+            if fact.owner != name {
+                continue;
+            }
+            if !span_contains(function.span, fact.span) {
+                continue;
+            }
+            if self
+                .module
+                .declarations
+                .iter()
+                .enumerate()
+                .any(|(index, declaration)| {
+                    declaration.kind == DeclarationKind::Function
+                        && self.live[index]
+                        && span_contains(function.span, declaration.span)
+                        && declaration.span != function.span
+                        && span_contains(declaration.span, fact.span)
+                })
+            {
+                continue;
+            }
+            if fact.span.start >= occurrence.span.start {
+                continue;
+            }
+            relevant.push(fact);
+        }
+        match relevant.len() {
+            0 => RawReceiverAnnotation::Absent,
+            1 => RawReceiverAnnotation::Local(&relevant[0].annotation),
+            _ => RawReceiverAnnotation::Blocked,
+        }
+    }
+
+    fn raw_name_receiver_annotation(
+        &self,
+        occurrence: &OccurrenceFact,
+        name: &str,
+    ) -> RawReceiverAnnotation<'a> {
+        let Some(function_index) = self.enclosing_function_index(occurrence) else {
+            return RawReceiverAnnotation::Absent;
+        };
+        let function = &self.module.declarations[function_index];
+        match self.raw_local_annotation(function, name, occurrence) {
+            RawReceiverAnnotation::Local(annotation) => {
+                return RawReceiverAnnotation::Local(annotation);
+            }
+            RawReceiverAnnotation::Inherited(annotation) => {
+                return RawReceiverAnnotation::Inherited(annotation);
+            }
+            RawReceiverAnnotation::Blocked => return RawReceiverAnnotation::Blocked,
+            RawReceiverAnnotation::Absent => {}
+        }
+        match self.local_binding_name(function, name, occurrence) {
+            LocalBinding::Foreign | LocalBinding::Unique(_) => {
+                return RawReceiverAnnotation::Blocked;
+            }
+            LocalBinding::Absent => {}
+        }
+        for parameter in &function.parameters {
+            if is_receiver_parameter(function.receiver, &parameter.name) {
+                continue;
+            }
+            if parameter.name == name {
+                return RawReceiverAnnotation::Inherited(&parameter.annotation);
+            }
+        }
+        self.raw_module_level_name_annotation(function, name, occurrence)
+    }
+
+    fn raw_module_level_name_annotation(
+        &self,
+        function: &DeclarationFact,
+        name: &str,
+        occurrence: &OccurrenceFact,
+    ) -> RawReceiverAnnotation<'a> {
+        let mut scopes: Vec<&BindingScopeFact> = self
+            .module
+            .binding_scopes
+            .iter()
+            .filter(|scope| {
+                span_contains(scope.span, occurrence.span)
+                    && (span_contains(function.span, scope.span)
+                        || span_contains(scope.span, function.span))
+            })
+            .collect();
+        scopes.sort_by_key(|scope| scope.span.end - scope.span.start);
+        for scope in scopes {
+            if scope.nonlocals.iter().any(|assigned| assigned == name) {
+                continue;
+            }
+            if scope.globals.iter().any(|assigned| assigned == name) {
+                return match self.raw_module_constant_annotation(name) {
+                    Some(annotation) => RawReceiverAnnotation::Inherited(annotation),
+                    None => RawReceiverAnnotation::Blocked,
+                };
+            }
+            if scope.locals.iter().any(|assigned| assigned == name) {
+                let scope_function = self
+                    .module
+                    .declarations
+                    .iter()
+                    .enumerate()
+                    .find(|(index, declaration)| {
+                        declaration.kind == DeclarationKind::Function
+                            && self.live[*index]
+                            && declaration.span == scope.span
+                    })
+                    .map(|(_, declaration)| declaration);
+                let Some(scope_function) = scope_function else {
+                    return RawReceiverAnnotation::Blocked;
+                };
+                match self.raw_local_annotation(scope_function, name, occurrence) {
+                    RawReceiverAnnotation::Local(annotation) => {
+                        return RawReceiverAnnotation::Local(annotation);
+                    }
+                    RawReceiverAnnotation::Inherited(annotation) => {
+                        return RawReceiverAnnotation::Inherited(annotation);
+                    }
+                    RawReceiverAnnotation::Blocked => return RawReceiverAnnotation::Blocked,
+                    RawReceiverAnnotation::Absent => {}
+                }
+                if let Some(annotation) = parameter_annotation_raw(scope_function, name) {
+                    return RawReceiverAnnotation::Inherited(annotation);
+                }
+                return RawReceiverAnnotation::Blocked;
+            }
+        }
+        match self.raw_module_constant_annotation(name) {
+            Some(annotation) => RawReceiverAnnotation::Inherited(annotation),
+            None => RawReceiverAnnotation::Absent,
+        }
+    }
+
+    fn raw_module_constant_annotation(&self, name: &str) -> Option<&'a Annotation> {
+        let mut annotated: Vec<&AnnotationFact> = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Constant
+                || declaration.name != name
+                || !self.live[index]
+            {
+                continue;
+            }
+            if let Some(fact) = self.module.annotations.iter().find(|fact| {
+                fact.position == AnnotationPosition::Field
+                    && fact.owner == name
+                    && span_contains(declaration.span, fact.span)
+            }) {
+                annotated.push(fact);
+            }
+        }
+        if annotated.len() == 1 {
+            Some(&annotated[0].annotation)
+        } else {
+            None
+        }
+    }
+
+    /// Class named by `annotation` after `count` one-argument index peels.
+    /// A failed peel is `None` and does not fall back to a same-named class.
+    fn peeled_index_class(&self, annotation: &Annotation, count: usize) -> Option<usize> {
+        let peeled = peel_indexes(annotation, count)?;
+        match classify_receiver_annotation(&peeled) {
+            ReceiverAnnotationName::Unique(class_name) => self.unique_live_class_index(class_name),
+            ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => None,
+        }
+    }
+
+    fn subscripted_attribute_class_name(
+        &self,
+        occurrence: &OccurrenceFact,
+        root: &AttributeChainRoot,
+        steps: &[AttributeStep],
+    ) -> Option<String> {
+        let assigned = match root {
+            AttributeChainRoot::Name { name } => self.receiver_assigned_in_scope(occurrence, name),
+            AttributeChainRoot::Enclosing { .. } => false,
+        };
+        let (leading_indexes, groups) = split_subscript_steps(root, steps)?;
+        let mut class_index = match root {
+            AttributeChainRoot::Enclosing { class } => {
+                self.enclosing_class_index(occurrence, class)?
+            }
+            AttributeChainRoot::Name { name } if leading_indexes > 0 => {
+                let class_only = groups.is_empty()
+                    && steps.iter().all(|step| matches!(step, AttributeStep::NameIndex));
+                match self.raw_name_receiver_annotation(occurrence, name) {
+                    RawReceiverAnnotation::Local(annotation) => {
+                        self.peeled_index_class(annotation, leading_indexes)?
+                    }
+                    RawReceiverAnnotation::Inherited(annotation) => {
+                        if assigned {
+                            return None;
+                        }
+                        self.peeled_index_class(annotation, leading_indexes)?
+                    }
+                    RawReceiverAnnotation::Blocked => return None,
+                    // `Child[int].note` has no value annotation. A plain-name
+                    // subscript of a live class is that class. A numeric
+                    // `Holder[0]` is not, and a failed peel does not fall back.
+                    RawReceiverAnnotation::Absent if class_only && !assigned => {
+                        self.unique_live_class_index(name)?
+                    }
+                    RawReceiverAnnotation::Absent => return None,
+                }
+            }
+            AttributeChainRoot::Name { name } => {
+                // A local `AnnAssign` store is not a shadow. A parameter,
+                // enclosing parameter, or module binding is.
+                if assigned
+                    && !matches!(
+                        self.raw_name_receiver_annotation(occurrence, name),
+                        RawReceiverAnnotation::Local(_)
+                    )
+                {
+                    return None;
+                }
+                self.named_attribute_class_index(occurrence, name)?
+            }
+        };
+        for (field, index_count) in groups {
+            if index_count == 0 {
+                let Some(class_name) =
+                    self.field_annotation_class_name_for_class(class_index, &field)
+                else {
+                    return None;
+                };
+                class_index = self.unique_live_class_index(&class_name)?;
+            } else {
+                let raw = self.raw_field_annotation_for_class(class_index, &field)?;
+                let peeled = peel_indexes(raw, index_count)?;
+                match classify_receiver_annotation(&peeled) {
+                    ReceiverAnnotationName::Unique(class_name) => {
+                        class_index = self.unique_live_class_index(class_name)?;
+                    }
+                    ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(self.module.declarations[class_index].name.clone())
     }
 
     /// Resolves one instance-attribute annotation written on `self.name` or
@@ -4601,6 +4926,18 @@ enum LocalBinding {
     Unique(String),
 }
 
+/// A raw annotation for a subscripted name, before generic arguments are peeled.
+enum RawReceiverAnnotation<'a> {
+    /// A function-local `AnnAssign`. Its own store is not a shadow.
+    Local(&'a Annotation),
+    /// A parameter or enclosing binding. A later assignment of the name shadows it.
+    Inherited(&'a Annotation),
+    /// A binding exists, but it must not be subscripted and must not fall through.
+    Blocked,
+    /// No binding. A bare class name may still be `Child[int]`.
+    Absent,
+}
+
 /// Classification of one receiver parameter annotation for class-name binding.
 enum ReceiverAnnotationName<'a> {
     /// No undotted class name is available for candidate lookup.
@@ -4620,6 +4957,109 @@ fn optional_or_union_base(name: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn is_none_annotation(annotation: &Annotation) -> bool {
+    matches!(annotation, Annotation::Name { name, .. } if name == "None")
+        || matches!(annotation, Annotation::None)
+}
+
+fn strip_optional_layers(annotation: &Annotation) -> &Annotation {
+    match annotation {
+        Annotation::Generic { base, args } => {
+            if let Annotation::Name { name, .. } = base.as_ref() {
+                if optional_or_union_base(name) == Some("Optional") && args.len() == 1 {
+                    return strip_optional_layers(&args[0]);
+                }
+            }
+            annotation
+        }
+        Annotation::Union(members) => {
+            let mut flattened: Vec<&Annotation> = Vec::new();
+            flatten_receiver_union_members(members, &mut flattened);
+            let class_members: Vec<&&Annotation> = flattened
+                .iter()
+                .filter(|member| !is_none_annotation(member))
+                .collect();
+            if class_members.len() == 1 {
+                return strip_optional_layers(class_members[0]);
+            }
+            annotation
+        }
+        _ => annotation,
+    }
+}
+
+fn peel_indexes(annotation: &Annotation, count: usize) -> Option<Annotation> {
+    let mut current = annotation.clone();
+    for _ in 0..count {
+        current = strip_optional_layers(&current).clone();
+        match &current {
+            Annotation::Generic { base, args } => {
+                if let Annotation::Name { name, .. } = base.as_ref() {
+                    if optional_or_union_base(name).is_some() {
+                        return None;
+                    }
+                }
+                if args.len() != 1 {
+                    return None;
+                }
+                current = args[0].clone();
+            }
+            _ => return None,
+        }
+    }
+    Some(strip_optional_layers(&current).clone())
+}
+
+fn is_subscript_index(step: &AttributeStep) -> bool {
+    matches!(step, AttributeStep::Index | AttributeStep::NameIndex)
+}
+
+fn split_subscript_steps(
+    root: &AttributeChainRoot,
+    steps: &[AttributeStep],
+) -> Option<(usize, Vec<(String, usize)>)> {
+    let mut index = 0;
+    while index < steps.len() && is_subscript_index(&steps[index]) {
+        index += 1;
+    }
+    let leading_indexes = index;
+    if matches!(root, AttributeChainRoot::Enclosing { .. }) && leading_indexes > 0 {
+        return None;
+    }
+    let mut groups = Vec::new();
+    while index < steps.len() {
+        let AttributeStep::Field(field) = &steps[index] else {
+            return None;
+        };
+        index += 1;
+        let mut index_count = 0;
+        while index < steps.len() && is_subscript_index(&steps[index]) {
+            index_count += 1;
+            index += 1;
+        }
+        groups.push((field.clone(), index_count));
+    }
+    if matches!(root, AttributeChainRoot::Enclosing { .. }) && groups.is_empty() {
+        return None;
+    }
+    Some((leading_indexes, groups))
+}
+
+fn parameter_annotation_raw<'a>(
+    function: &'a DeclarationFact,
+    name: &str,
+) -> Option<&'a Annotation> {
+    for parameter in &function.parameters {
+        if is_receiver_parameter(function.receiver, &parameter.name) {
+            continue;
+        }
+        if parameter.name == name {
+            return Some(&parameter.annotation);
+        }
+    }
+    None
 }
 
 fn classify_receiver_annotation<'a>(annotation: &'a Annotation) -> ReceiverAnnotationName<'a> {
