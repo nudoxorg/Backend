@@ -1301,6 +1301,18 @@ mod tests {
             RowChange::Remove(id) => *id != sibling.id && *id != RowId::Package(beta),
             RowChange::Upsert(row) => row.id != sibling.id && row.id != RowId::Package(beta),
         }));
+        let stolen = vec![sibling.clone()];
+        let error = row_changes_replacing_package(current.row_refs(), alpha, &stolen)
+            .expect_err("stolen");
+        assert_eq!(error, RowSpliceError::Collision);
+        let alpha_rows = current_rows
+            .iter()
+            .filter(|row| row_belongs_to_package(row, alpha))
+            .cloned()
+            .collect::<Vec<_>>();
+        let unchanged =
+            row_changes_replacing_package(current.row_refs(), alpha, &alpha_rows).expect("same");
+        assert!(unchanged.is_empty());
         let capability = super::super::test_builtin_view_capability().expect("capability");
         let prepared = current
             .prepare(
@@ -1318,18 +1330,6 @@ mod tests {
             .find(|row| row.label == "pkg:beta::kept")
             .expect("sibling");
         assert_eq!(kept, &sibling);
-        let stolen = vec![sibling.clone()];
-        let error = row_changes_replacing_package(current.row_refs(), alpha, &stolen)
-            .expect_err("stolen");
-        assert_eq!(error, RowSpliceError::Collision);
-        let alpha_rows = current_rows
-            .iter()
-            .filter(|row| row_belongs_to_package(row, alpha))
-            .cloned()
-            .collect::<Vec<_>>();
-        let unchanged =
-            row_changes_replacing_package(current.row_refs(), alpha, &alpha_rows).expect("same");
-        assert!(unchanged.is_empty());
 
         let (base_rows, replacement, package) = row_fixtures(32, 64);
         let resident = admitted(base_rows.clone());
