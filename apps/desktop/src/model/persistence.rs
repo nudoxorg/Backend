@@ -21,6 +21,23 @@ const SCHEMA: u32 = 1;
 const MAX_STATE_BYTES: u64 = 1024 * 1024;
 static RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// One card of the hand. The order is not stored: it is recomputed from
+/// the held set on load.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PersistedHeld {
+    /// The package's route spelling.
+    pub package: String,
+    /// The declaration's coordinate (none for a held package).
+    #[serde(default)]
+    pub coordinate: Option<String>,
+    /// `pin`, `copy`, `compare` or `add`.
+    pub why: String,
+    /// When it was held (unix ms).
+    pub held_at: u64,
+    /// When it was last touched (unix ms).
+    pub touched_at: u64,
+}
+
 /// Persistent shelf entry.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PersistedShelfItem {
@@ -245,6 +262,9 @@ pub struct PersistedDesktopState {
     /// Cache retention in days.
     #[serde(default = "default_cache_days")]
     pub cache_days: u16,
+    /// What you hold (at most five).
+    #[serde(default)]
+    pub hand: Vec<PersistedHeld>,
 }
 
 fn default_true() -> bool {
@@ -277,6 +297,7 @@ impl Default for PersistedDesktopState {
             advisories: true,
             cache_enabled: true,
             cache_days: 14,
+            hand: Vec::new(),
         }
     }
 }
@@ -705,11 +726,35 @@ impl PersistentState {
             advisories: snapshot.settings().advisories,
             cache_enabled: snapshot.settings().cache_enabled,
             cache_days: snapshot.settings().cache_days,
+            hand: snapshot
+                .session()
+                .hand
+                .held()
+                .iter()
+                .map(|held| PersistedHeld {
+                    package: held.package.as_str().to_owned(),
+                    coordinate: held.id.as_ref().map(|id| id.as_str().to_owned()),
+                    why: match held.why {
+                        crate::model::hand::HeldWhy::Pin => "pin",
+                        crate::model::hand::HeldWhy::Copy => "copy",
+                        crate::model::hand::HeldWhy::Compare => "compare",
+                        crate::model::hand::HeldWhy::Add => "add",
+                    }
+                    .to_owned(),
+                    held_at: held.held_at,
+                    touched_at: held.touched_at,
+                })
+                .collect(),
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
                     match snapshot.route() {
-                        Route::Orbit(crate::navigation::OrbitRoute::Home) => PersistedRoute::Home,
+                        // A browsing page reopens at home: its read model is
+                        // one owner round trip away, and its route is not a
+                        // persisted shape yet.
+                        Route::Orbit(
+                            crate::navigation::OrbitRoute::Home | crate::navigation::OrbitRoute::Browse(_),
+                        ) => PersistedRoute::Home,
                         Route::Orbit(crate::navigation::OrbitRoute::Project(project)) => {
                             PersistedRoute::Project {
                                 project: project.get().get(),
@@ -819,9 +864,27 @@ impl PersistentState {
                 *line,
             ),
         };
+        let hand = crate::model::hand::Hand::of(state.hand.iter().filter_map(|held| {
+            Some(crate::model::hand::Held {
+                package: crate::core::PackageId::new(&held.package).ok()?,
+                id: match &held.coordinate {
+                    Some(coordinate) => Some(Coordinate::new(coordinate).ok()?),
+                    None => None,
+                },
+                why: match held.why.as_str() {
+                    "copy" => crate::model::hand::HeldWhy::Copy,
+                    "compare" => crate::model::hand::HeldWhy::Compare,
+                    "add" => crate::model::hand::HeldWhy::Add,
+                    _ => crate::model::hand::HeldWhy::Pin,
+                },
+                held_at: held.held_at,
+                touched_at: held.touched_at,
+            })
+        }));
         SessionState {
             route,
             overlay,
+            hand,
             ..SessionState::default()
         }
     }
