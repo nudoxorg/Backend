@@ -33,6 +33,37 @@ where
         .min(children.len().saturating_sub(1));
     children.get(index).and_then(|child| get_node(child, key))
 }
+
+/// Binary-searches one canonical tree with a key-order predicate.
+///
+/// `ord` returns [`Ordering::Less`] when the stored key is before the target,
+/// [`Ordering::Equal`] on the single matching key, and [`Ordering::Greater`]
+/// when the stored key is after the target. The predicate must follow the
+/// tree's key order. The returned key and value are borrowed from the node
+/// that already stores them.
+pub(super) fn find_node<'a, R: Relation>(
+    node: &'a Node<R>,
+    ord: &mut impl FnMut(&R::Key) -> Ordering,
+) -> Option<(&'a R::Key, &'a R::Value)> {
+    if let Some(entries) = node.entries() {
+        return entries
+            .binary_search_by(|(candidate, _)| ord(candidate))
+            .ok()
+            .map(|index| (&entries[index].0, &entries[index].1));
+    }
+    let children = node.children()?;
+    let index = children
+        .partition_point(|child| {
+            child
+                .first_key()
+                .is_some_and(|first| ord(first) != Ordering::Greater)
+        })
+        .saturating_sub(1)
+        .min(children.len().saturating_sub(1));
+    children
+        .get(index)
+        .and_then(|child| find_node(child, ord))
+}
 pub(super) fn target_shape<R: Relation>(
     root: &Node<R>,
     changes: &[TreeChange<R>],
