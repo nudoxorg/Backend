@@ -148,9 +148,33 @@ impl StructuralProjectionPlan {
         sources: &IndexedSources,
         complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     ) -> Result<Self, BuiltinModelError> {
+        Self::plan(sources, complete, None)
+    }
+
+    /// Plans structural rows for `only` these file keys.
+    ///
+    /// The type index still walks every file. An attached parent declared in
+    /// an untouched file keeps that file's coordinate; the row builder resolves
+    /// the coordinate against the resident view.
+    pub(super) fn of_files(
+        sources: &IndexedSources,
+        complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+        only: &BTreeSet<[u8; 32]>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::plan(sources, complete, Some(only))
+    }
+
+    fn plan(
+        sources: &IndexedSources,
+        complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+        only: Option<&BTreeSet<[u8; 32]>>,
+    ) -> Result<Self, BuiltinModelError> {
         let types = ProjectTypeIndex::of(sources);
         let mut plan = Self::default();
         for (file_key, record) in &sources.files {
+            if only.is_some_and(|keys| !keys.contains(file_key)) {
+                continue;
+            }
             let Some(file) = record.file_fields() else {
                 continue;
             };
@@ -207,6 +231,15 @@ impl StructuralProjectionPlan {
                 },
             );
         }
+        if let Some(only) = only {
+            for key in only {
+                if !plan.files.contains_key(key) {
+                    return Err(BuiltinModelError(
+                        "structural file splice omitted a requested source".to_owned(),
+                    ));
+                }
+            }
+        }
         for symbols in plan.by_coordinate.values_mut() {
             symbols.sort_unstable_by_key(|symbol| {
                 (structural_parent_rank(symbol.kind), symbol.kind, symbol.id)
@@ -256,6 +289,22 @@ impl StructuralProjectionPlan {
             return Ok(StructuralParent::Symbol(symbol.id));
         }
         Ok(StructuralParent::Package(file.package))
+    }
+
+    /// The retained symbol at this coordinate, with no module fallback.
+    ///
+    /// [`Self::parent_id`] substitutes the file module when the coordinate was
+    /// not planned. A one-file splice must not use that fallback for a parent
+    /// that still lives in another file.
+    pub(super) fn symbol_for_coordinate(
+        &self,
+        project: [u8; 32],
+        coordinate: &str,
+    ) -> Option<RowId> {
+        self.by_coordinate
+            .get(&(project, coordinate.to_owned()))
+            .and_then(|symbols| symbols.first())
+            .map(|symbol| symbol.id)
     }
 }
 

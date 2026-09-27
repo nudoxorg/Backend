@@ -71,8 +71,13 @@ mod worker;
 use worker::connect_worker;
 #[path = "builtin/view_build/mod.rs"]
 mod view_build;
+#[path = "builtin/generation_residence.rs"]
+mod generation_residence;
+use generation_residence::SemanticGenerationResidence;
 #[path = "builtin/view_journal.rs"]
 mod view_journal;
+#[path = "builtin/view_publish.rs"]
+mod view_publish;
 use view_build::rows_for_indexed_sources;
 use view_journal::ViewJournal;
 #[path = "builtin/commands/mod.rs"]
@@ -85,6 +90,8 @@ mod product_state;
 use product_state::ProductState;
 #[path = "builtin/local_manifest.rs"]
 mod local_manifest;
+#[path = "builtin/search_source_page.rs"]
+mod search_source_page;
 #[path = "builtin/coverage.rs"]
 mod coverage;
 use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};
@@ -162,33 +169,48 @@ pub(crate) fn admitted_coverage() -> Result<CoverageWitness, BuiltinModelError> 
 /// from receiving an image whose manifest is valid under another package or
 /// language scope.
 pub(super) struct ActivatedProductSemantics {
-    publication: backend_engine::application::ActivatedSemanticPackage,
+    images: Arc<[backend_library::interface::SemanticImageSnapshot]>,
 }
 
 impl ActivatedProductSemantics {
     pub(super) fn images(&self) -> &[backend_library::interface::SemanticImageSnapshot] {
-        &self.publication.images
+        &self.images
+    }
+
+    /// Shared image bytes. A second activation of the same claim returns this allocation.
+    #[must_use]
+    pub(super) fn image_set(
+        &self,
+    ) -> &Arc<[backend_library::interface::SemanticImageSnapshot]> {
+        &self.images
     }
 }
 
-pub(super) fn activate_semantic_publication(
+fn load_semantic_publication(
     compiler: &backend_engine::application::LocalCompilerClient,
     key: &backend_engine::builtin::ProductSemanticPublicationKey,
     claim: backend_engine::builtin::SemanticPublicationClaim,
+    generations: &mut SemanticGenerationResidence,
 ) -> Result<ActivatedProductSemantics, BuiltinModelError> {
-    let publication = compiler
-        .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
-        .map_err(|error| BuiltinModelError(format!("activate semantic publication: {error}")))?;
-    for image in &publication.images {
-        let view =
-            backend_semantic::ir::SemanticImageView::reopen(image.as_ref()).map_err(|error| {
-                BuiltinModelError(format!("reopen activated semantic publication: {error}"))
-            })?;
-        key.admit_image(&view).map_err(|error| {
-            BuiltinModelError(format!("bind semantic publication to product key: {error}"))
-        })?;
-    }
-    Ok(ActivatedProductSemantics { publication })
+    let images = generations.load(claim, || {
+        compiler
+            .activate_semantic_generation(key.profile(), claim.manifest(), claim.binding())
+            .map(|activated| activated.images)
+            .map_err(|error| BuiltinModelError(format!("activate semantic publication: {error}")))
+    })?;
+    Ok(ActivatedProductSemantics { images })
+}
+
+pub(in crate::builtin) fn activate_semantic_publication(
+    compiler: &backend_engine::application::LocalCompilerClient,
+    key: &backend_engine::builtin::ProductSemanticPublicationKey,
+    claim: backend_engine::builtin::SemanticPublicationClaim,
+    generations: &mut SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
+) -> Result<ActivatedProductSemantics, BuiltinModelError> {
+    let activated = load_semantic_publication(compiler, key, claim, generations)?;
+    view_build::admit_activated_images(activated.images(), key, image_rows)?;
+    Ok(activated)
 }
 
 fn workspace_relation(
@@ -380,7 +402,12 @@ pub(crate) fn genesis() -> Result<WorkspaceHead, BuiltinModelError> {
 /// The manifest root is a pure function of the selected relations, so this is
 /// also how two heads that share a root under different commits are built.
 fn head_for_intent(intent: Option<&BuiltinIntent>) -> Result<WorkspaceHead, BuiltinModelError> {
-    let relation = workspace_relation(intent)?;
+    head_from_relation(workspace_relation(intent)?)
+}
+
+fn head_from_relation(
+    relation: RelationState<BuiltinWorkspaceRelation>,
+) -> Result<WorkspaceHead, BuiltinModelError> {
     let semantic = semantic_relation()?;
     let manifest = workspace_manifest(&relation, &semantic)?;
     // `WorkspaceHead::genesis` derives this same deterministic transaction and
@@ -593,23 +620,21 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
     Ok(IndexedSources { projects, files })
 }
 
-fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
-    let bytes = rows
-        .iter()
-        .try_fold(0usize, |total, row| {
-            let document = row.document.iter().try_fold(0usize, |bytes, fragment| {
-                bytes.checked_add(match fragment {
-                    Fragment::Text(value) | Fragment::Code(value) => value.len(),
-                    Fragment::Link { label, .. } => label.len(),
-                    Fragment::Break => 1,
-                })
-            })?;
-            total
-                .checked_add(row.label.len())?
-                .checked_add(row.signature.as_deref().map_or(0, str::len))?
-                .checked_add(document)
+fn row_admission_bytes(row: &Row) -> Option<usize> {
+    let document = row.document.iter().try_fold(0usize, |bytes, fragment| {
+        bytes.checked_add(match fragment {
+            Fragment::Text(value) | Fragment::Code(value) => value.len(),
+            Fragment::Link { label, .. } => label.len(),
+            Fragment::Break => 1,
         })
-        .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned()))?;
+    })?;
+    row.label
+        .len()
+        .checked_add(row.signature.as_deref().map_or(0, str::len))?
+        .checked_add(document)
+}
+
+fn finish_admitted_bytes(bytes: usize) -> Result<usize, BuiltinModelError> {
     if bytes > MAX_REBUILD_BYTES {
         return Err(BuiltinModelError(
             "workspace view exceeds rebuild byte bound".to_owned(),
@@ -618,14 +643,118 @@ fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
     Ok(bytes)
 }
 
+fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
+    let bytes = rows
+        .iter()
+        .try_fold(0usize, |total, row| {
+            total.checked_add(row_admission_bytes(row)?)
+        })
+        .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned()))?;
+    finish_admitted_bytes(bytes)
+}
+
+/// Byte budget of `current` after `changes`, without cloning a resident row.
+///
+/// `changes` must be strictly ordered by identity. A removal names a resident
+/// row. An upsert replaces that identity or inserts one the resident view does
+/// not hold.
+pub(super) fn admitted_bytes_after_row_changes(
+    current: &[Row],
+    changes: &[backend_engine::RowChange],
+) -> Result<usize, BuiltinModelError> {
+    use std::cmp::Ordering;
+
+    let overflow = || BuiltinModelError("workspace view bytes overflow".to_owned());
+    let mut ordered: Vec<&Row> = current.iter().collect();
+    ordered.sort_by_key(|row| row.id);
+    if ordered.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return Err(BuiltinModelError(
+            "row patch saw duplicate resident identities".to_owned(),
+        ));
+    }
+    if changes.windows(2).any(|pair| pair[0].id() >= pair[1].id()) {
+        return Err(BuiltinModelError(
+            "row patch is not strictly ordered".to_owned(),
+        ));
+    }
+    let mut total = 0usize;
+    let mut rows = ordered.iter().peekable();
+    let mut pending = changes.iter().peekable();
+    loop {
+        let row_bytes = |row: &Row| row_admission_bytes(row).ok_or_else(overflow);
+        match (rows.peek(), pending.peek()) {
+            (Some(row), Some(change)) => match row.id.cmp(&change.id()) {
+                Ordering::Less => {
+                    total = total.checked_add(row_bytes(row)?).ok_or_else(overflow)?;
+                    let _ = rows.next();
+                }
+                Ordering::Greater => {
+                    total = bytes_for_inserted_change(total, change)?;
+                    let _ = pending.next();
+                }
+                Ordering::Equal => {
+                    total = bytes_for_resident_change(total, change)?;
+                    let _ = rows.next();
+                    let _ = pending.next();
+                }
+            },
+            (Some(row), None) => {
+                total = total.checked_add(row_bytes(row)?).ok_or_else(overflow)?;
+                let _ = rows.next();
+            }
+            (None, Some(change)) => {
+                total = bytes_for_inserted_change(total, change)?;
+                let _ = pending.next();
+            }
+            (None, None) => break,
+        }
+    }
+    finish_admitted_bytes(total)
+}
+
+fn bytes_for_inserted_change(
+    total: usize,
+    change: &backend_engine::RowChange,
+) -> Result<usize, BuiltinModelError> {
+    match change {
+        backend_engine::RowChange::Remove(_) => Err(BuiltinModelError(
+            "row patch removed a row the resident view does not hold".to_owned(),
+        )),
+        backend_engine::RowChange::Upsert(row) => total
+            .checked_add(
+                row_admission_bytes(row)
+                    .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned()))?,
+            )
+            .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned())),
+    }
+}
+
+fn bytes_for_resident_change(
+    total: usize,
+    change: &backend_engine::RowChange,
+) -> Result<usize, BuiltinModelError> {
+    match change {
+        backend_engine::RowChange::Remove(_) => Ok(total),
+        backend_engine::RowChange::Upsert(row) => total
+            .checked_add(
+                row_admission_bytes(row)
+                    .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned()))?,
+            )
+            .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned())),
+    }
+}
+
 fn view_for_workspace(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
     filesystem_workspace: &std::path::Path,
-) -> Result<ViewRoot, BuiltinModelError> {
+    image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
+) -> Result<(ViewRoot, coverage::ActivatedProfiles, usize), BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_indexed_sources(&snapshot)?;
+    let files = sources.files.len();
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
     let projected = rows_for_indexed_sources(
         &initial,
@@ -633,10 +762,13 @@ fn view_for_workspace(
         &snapshot,
         compiler,
         filesystem_workspace,
+        view_build::ForeignPublication::Reject,
+        image_rows,
+        generations,
     )?;
     let coverage = view_coverage(&snapshot, &projected.activated, deployment)?;
     let _admitted_bytes = admitted_view_bytes(&projected.rows)?;
-    ViewRoot::new_checked(
+    let view = ViewRoot::new_checked(
         initial.recipe(),
         initial.basis(),
         initial.frontier(),
@@ -644,7 +776,8 @@ fn view_for_workspace(
         coverage,
         builtin_view_capability_for_workspace(&snapshot)?,
     )
-    .map_err(|error| BuiltinModelError(format!("{error:?}")))
+    .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
+    Ok((view, projected.activated, files))
 }
 
 fn publish_builtin_view(
@@ -652,9 +785,327 @@ fn publish_builtin_view(
     compiler: &backend_engine::application::LocalCompilerClient,
     deployment: SemanticDeployment,
     filesystem_workspace: &std::path::Path,
+    prior: Option<&view_publish::PublishedRoots>,
+    edit: Option<&BuiltinIntent>,
+    image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
+) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let source_target = view_publish::source_root(&snapshot)?;
+    let semantic_target = view_publish::semantic_root(&snapshot)?;
+    let (source_base, source_transition_target) = snapshot
+        .transition_relation_roots::<BuiltinWorkspaceRelation>()
+        .ok_or_else(|| BuiltinModelError("workspace has no source transition".to_owned()))?;
+    let (semantic_base, semantic_transition_target) = snapshot
+        .transition_relation_roots::<BuiltinSemanticRelation>()
+        .ok_or_else(|| BuiltinModelError("workspace has no semantic transition".to_owned()))?;
+    if source_transition_target != source_target || semantic_transition_target != semantic_target {
+        return Err(BuiltinModelError(
+            "relation transition target differs from the selected root".to_owned(),
+        ));
+    }
+    let plan = view_publish::publication_plan(
+        prior,
+        view_publish::TransitionRoots {
+            source_base,
+            source_target,
+            semantic_base,
+            semantic_target,
+        },
+        edit,
+    );
+    if let view_publish::PublicationPlan::Reuse = plan {
+        let prior = prior.ok_or_else(|| {
+            BuiltinModelError("reused publication is missing its witness".to_owned())
+        })?;
+        return Ok(view_publish::PublicationOutcome {
+            deltas: Vec::new(),
+            roots: prior.clone(),
+            path: view_publish::PublicationPath::Reused,
+        });
+    }
+    if let view_publish::PublicationPlan::Package { package } = plan
+        && let Some(outcome) = publish_package_view(
+            daemon,
+            compiler,
+            deployment,
+            filesystem_workspace,
+            prior,
+            package,
+            edit,
+            source_target,
+            semantic_target,
+            image_rows,
+            generations,
+        )?
+    {
+        return Ok(outcome);
+    }
+    let current = daemon.engine().daemon().library().view().clone();
+    let (target, activated, files) = view_for_workspace(
+        daemon,
+        compiler,
+        deployment,
+        filesystem_workspace,
+        image_rows,
+        generations,
+    )?;
+    let deltas = commit_published_target(daemon, current, target)?;
+    Ok(view_publish::PublicationOutcome {
+        deltas,
+        roots: view_publish::PublishedRoots {
+            source: source_target,
+            semantic: semantic_target,
+            activated,
+        },
+        path: view_publish::PublicationPath::Hydrated { files },
+    })
+}
+
+fn publish_package_view(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    compiler: &backend_engine::application::LocalCompilerClient,
+    deployment: SemanticDeployment,
+    filesystem_workspace: &std::path::Path,
+    prior: Option<&view_publish::PublishedRoots>,
+    package: backend_engine::PackageKey,
+    edit: Option<&BuiltinIntent>,
+    source_target: [u8; 32],
+    semantic_target: [u8; 32],
+    image_rows: &mut view_build::ImageRowResidence,
+    generations: &mut SemanticGenerationResidence,
+) -> Result<Option<view_publish::PublicationOutcome>, BuiltinModelError> {
+    let Some(prior) = prior else {
+        return Ok(None);
+    };
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let sources = view_publish::read_project_sources(&snapshot, package)?;
+    if sources.projects.is_empty() {
+        return Ok(None);
+    }
+    let (initial, _) = initial_view_for_workspace(&snapshot)?;
+    let current = daemon.engine().daemon().library().view().clone();
+    if let Some(edit) = edit
+        && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
+        && let Some(resident) = view_publish::resident_symbols(current.rows(), package)
+    {
+        let structural_keys = view_publish::structural_splice_keys(
+            &prior.activated,
+            package,
+            &sources,
+            &changed,
+        )?;
+        let replacement = if structural_keys.is_empty() {
+            Vec::new()
+        } else {
+            view_build::rows_for_structural_files(
+                &initial,
+                &sources,
+                &structural_keys,
+                &resident,
+            )?
+        };
+        let paths = view_publish::paths_for_files(&sources, &changed)?;
+        match view_publish::row_changes_splicing_changed_files(
+            current.rows(),
+            package,
+            &paths,
+            &replacement,
+        ) {
+            Ok(changes) => {
+                let coverage = view_coverage(&snapshot, &prior.activated, deployment)?;
+                let same_coverage = coverage.as_slice() == current.coverage();
+                let same_basis = current.basis() == initial.basis();
+                if changes.is_empty() && same_coverage && same_basis {
+                    return Ok(Some(package_publication(
+                        Vec::new(),
+                        prior,
+                        source_target,
+                        semantic_target,
+                        changed.len(),
+                    )));
+                }
+                if same_coverage
+                    && same_basis
+                    && view_publish::row_patch_fits(current.row_count(), changes.len())
+                {
+                    if let Some(deltas) = try_commit_row_patch(daemon, current.clone(), changes)? {
+                        return Ok(Some(package_publication(
+                            deltas,
+                            prior,
+                            source_target,
+                            semantic_target,
+                            changed.len(),
+                        )));
+                    }
+                }
+                let merged = match view_publish::rows_splicing_changed_files(
+                    current.rows(),
+                    package,
+                    &paths,
+                    replacement,
+                ) {
+                    Ok(rows) => rows,
+                    Err(
+                        view_publish::RowSpliceError::Collision
+                        | view_publish::RowSpliceError::UnscopedSemantic,
+                    ) => return Ok(None),
+                };
+                return admit_spliced_package(
+                    daemon,
+                    &snapshot,
+                    &initial,
+                    deployment,
+                    current,
+                    merged,
+                    prior.activated.clone(),
+                    source_target,
+                    semantic_target,
+                    changed.len(),
+                )
+                .map(Some);
+            }
+            Err(view_publish::RowSpliceError::Collision) => return Ok(None),
+            Err(view_publish::RowSpliceError::UnscopedSemantic) => {}
+        }
+    }
+    let files = sources.files.len();
+    let projected = rows_for_indexed_sources(
+        &initial,
+        &sources,
+        &snapshot,
+        compiler,
+        filesystem_workspace,
+        view_build::ForeignPublication::Skip,
+        image_rows,
+        generations,
+    )?;
+    let mut activated = prior.activated.clone();
+    activated.retain(|(key, _)| *key != package);
+    activated.extend(projected.activated);
+    let merged = match view_publish::rows_replacing_package(current.rows(), package, projected.rows)
+    {
+        Ok(rows) => rows,
+        Err(
+            view_publish::RowSpliceError::Collision
+            | view_publish::RowSpliceError::UnscopedSemantic,
+        ) => return Ok(None),
+    };
+    admit_spliced_package(
+        daemon,
+        &snapshot,
+        &initial,
+        deployment,
+        current,
+        merged,
+        activated,
+        source_target,
+        semantic_target,
+        files,
+    )
+    .map(Some)
+}
+
+fn package_publication(
+    deltas: Vec<backend_engine::CommittedViewDelta>,
+    prior: &view_publish::PublishedRoots,
+    source_target: [u8; 32],
+    semantic_target: [u8; 32],
+    files: usize,
+) -> view_publish::PublicationOutcome {
+    view_publish::PublicationOutcome {
+        deltas,
+        roots: view_publish::PublishedRoots {
+            source: source_target,
+            semantic: semantic_target,
+            activated: prior.activated.clone(),
+        },
+        path: view_publish::PublicationPath::Package { files },
+    }
+}
+
+fn try_commit_row_patch(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    current: ViewRoot,
+    changes: Vec<backend_engine::RowChange>,
+) -> Result<Option<Vec<backend_engine::CommittedViewDelta>>, BuiltinModelError> {
+    let _admitted = admitted_bytes_after_row_changes(current.rows(), &changes)?;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let workspace_root = snapshot.root();
+    let capability = builtin_view_capability_for_workspace(&snapshot)?;
+    let prepared = match current.prepare(
+        ViewDelta::Patch {
+            changes: Arc::from(changes),
+        },
+        capability,
+    ) {
+        Ok(prepared) => prepared,
+        Err(_) => return Ok(None),
+    };
+    let (view, committed) = match current.commit(prepared) {
+        Ok(committed) => committed,
+        Err(_) => return Ok(None),
+    };
+    let cursor = backend_engine::Cursor::for_view_root(&view);
+    let admission = BuiltinViewAdmission {
+        workspace_root,
+        source_root: view.basis().root,
+    };
+    daemon
+        .engine_mut()
+        .daemon_mut()
+        .publish_view(
+            view,
+            cursor,
+            &admission,
+            Some(backend_engine::CursorEvent::View {
+                delta: Box::new(committed.clone()),
+            }),
+        )
+        .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
+    Ok(Some(vec![committed]))
+}
+
+fn admit_spliced_package(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &WorkspaceSnapshot,
+    initial: &ViewRoot,
+    deployment: SemanticDeployment,
+    current: ViewRoot,
+    merged: Vec<Row>,
+    activated: coverage::ActivatedProfiles,
+    source_target: [u8; 32],
+    semantic_target: [u8; 32],
+    files: usize,
+) -> Result<view_publish::PublicationOutcome, BuiltinModelError> {
+    let coverage = view_coverage(snapshot, &activated, deployment)?;
+    let _admitted_bytes = admitted_view_bytes(&merged)?;
+    let target = ViewRoot::new_checked(
+        initial.recipe(),
+        initial.basis(),
+        initial.frontier(),
+        merged,
+        coverage,
+        builtin_view_capability_for_workspace(snapshot)?,
+    )
+    .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
+    let deltas = commit_published_target(daemon, current, target)?;
+    Ok(view_publish::PublicationOutcome {
+        deltas,
+        roots: view_publish::PublishedRoots {
+            source: source_target,
+            semantic: semantic_target,
+            activated,
+        },
+        path: view_publish::PublicationPath::Package { files },
+    })
+}
+
+fn commit_published_target(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    mut current: ViewRoot,
+    target: ViewRoot,
 ) -> Result<Vec<backend_engine::CommittedViewDelta>, BuiltinModelError> {
-    let mut current = daemon.engine().daemon().library().view().clone();
-    let target = view_for_workspace(daemon, compiler, deployment, filesystem_workspace)?;
     if current.basis() == target.basis()
         && current.coverage() == target.coverage()
         && current.rows() == target.rows()
@@ -839,6 +1290,8 @@ pub(crate) fn compose_owner(
         .engine_mut()
         .daemon_mut()
         .set_view_persistence(Box::new(view_journal));
+    let mut image_rows = view_build::ImageRowResidence::default();
+    let mut generations = SemanticGenerationResidence::default();
     if let Some(recovered) = recovered_view {
         let admission = BuiltinViewAdmission {
             workspace_root,
@@ -856,8 +1309,15 @@ pub(crate) fn compose_owner(
             )
             .map_err(|error| ProcessError::Profile(error.to_string()))?;
     } else {
-        let view = view_for_workspace(&daemon, &compiler, semantic_deployment, &config.workspace)
-            .map_err(|error| ProcessError::Profile(error.to_string()))?;
+        let (view, _, _) = view_for_workspace(
+            &daemon,
+            &compiler,
+            semantic_deployment,
+            &config.workspace,
+            &mut image_rows,
+            &mut generations,
+        )
+        .map_err(|error| ProcessError::Profile(error.to_string()))?;
         let cursor = backend_engine::Cursor::for_view_root(&view);
         let admission = BuiltinViewAdmission {
             workspace_root,
@@ -872,9 +1332,18 @@ pub(crate) fn compose_owner(
     // The workspace journal is authoritative. A crash can occur after a
     // workspace commit and between several bounded view-row publications;
     // repair that derived suffix before the listener becomes visible.
-    let _recovered_view_deltas =
-        publish_builtin_view(&mut daemon, &compiler, semantic_deployment, &config.workspace)
-            .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
+    let published = publish_builtin_view(
+        &mut daemon,
+        &compiler,
+        semantic_deployment,
+        &config.workspace,
+        None,
+        None,
+        &mut image_rows,
+        &mut generations,
+    )
+    .map_err(|error| ProcessError::Profile(format!("repair product view: {error}")))?;
+    let published_roots = published.roots;
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
     let mut sql_projection = futures_executor::block_on(
         backend_extension_turso::TursoProjection::open_or_rebuild(&projection_path),
@@ -938,6 +1407,9 @@ pub(crate) fn compose_owner(
         compiler,
         search_snapshots,
         remote_semantic,
+        Some(published_roots),
+        image_rows,
+        generations,
     );
     let command = move |daemon: &mut crate::Locald<
         BuiltinModel,
@@ -946,6 +1418,106 @@ pub(crate) fn compose_owner(
     >,
                         body: &[u8]| { commands.execute(daemon, body) };
     Ok(daemon.into_owner_with_admission(command, NoCompletionAdmission, replication))
+}
+
+/// Times one-package structural projection against a full workspace rebuild.
+///
+/// Fixture construction happens before the timer. The printed lines are the
+/// release measurement for package-scoped view publication.
+pub fn measure_package_publication() {
+    view_publish::measure_package_publication();
+}
+
+/// Times local manifest parsing against a byte-identical refresh.
+///
+/// Fixture construction happens before the timer. The printed line is the
+/// release measurement for resident local dependency facts.
+pub fn measure_manifest_residence() {
+    local_manifest::measure_manifest_residence();
+}
+
+/// Times a workspace refresh whose members share one ancestor manifest.
+///
+/// Fixture construction happens before the timer. The printed line is the
+/// release measurement for reading that ancestor once per refresh.
+pub fn measure_manifest_ancestor() {
+    local_manifest::measure_manifest_ancestor();
+}
+
+/// Times admitting a typed search corpus against reusing the resident one.
+///
+/// Fixture rows are built before the timer. The printed line is the release
+/// measurement for a repeated search over an unchanged workspace.
+pub fn measure_search_corpus() {
+    query::measure_search_corpus();
+}
+
+/// Times paging the workspace source relation against a resident corpus hit.
+///
+/// The snapshot is built before the timer. The printed line is the release
+/// measurement for the source page a warm search used to read and discard.
+pub fn measure_search_source_page() {
+    search_source_page::measure_search_source_page();
+}
+
+/// Times one semantic-image validation against the three validations view
+/// publication used to perform, and against projecting that image's rows.
+pub fn measure_semantic_image_reopen() {
+    view_build::measure_semantic_image_reopen();
+}
+
+/// Times projecting one semantic image against reusing those rows.
+///
+/// The image and view basis are built before the timer. The printed line is
+/// the release measurement for an unchanged semantic image.
+pub fn measure_semantic_image_rows() {
+    view_build::measure_semantic_image_rows();
+}
+
+/// Times thirty-two semantic images against reusing each admitted image.
+///
+/// The images and view basis are built before the timer. The printed line is
+/// the release measurement for a publication whose images were already admitted.
+pub fn measure_semantic_image_batch() {
+    view_build::measure_semantic_image_batch();
+}
+
+/// Times one semantic-query image validation against the three validations
+/// the corpus used to perform before emitting facts.
+pub fn measure_semantic_query_walk() {
+    view_build::measure_semantic_query_walk();
+}
+
+/// Times a compiler-owner semantic reopen against the resident generation.
+///
+/// The package is compiled before either timer. The printed line is the
+/// release measurement for an unchanged semantic claim.
+pub fn measure_semantic_generation() {
+    generation_residence::measure_semantic_generation();
+}
+
+/// Times admitting a batch of semantic images against reusing that admission.
+///
+/// The images and publication key are built before either timer. The printed
+/// line is the release measurement for a key that has already admitted them.
+pub fn measure_semantic_admission() {
+    view_build::measure_semantic_admission();
+}
+
+/// Times validating semantic images against reusing their structural proofs.
+///
+/// The snapshots are built before either timer. The printed line is the
+/// release measurement for an image whose proof is already stored.
+pub fn measure_semantic_image_proof() {
+    view_build::measure_semantic_image_proof();
+}
+
+/// Times snapshot admission and an overlay miss.
+///
+/// The snapshots and publication key are built before any timer. The printed
+/// line is the release measurement for a digest and proof already stored.
+pub fn measure_semantic_snapshot_residence() {
+    view_build::measure_semantic_snapshot_residence();
 }
 
 /// Starts the compiled locald profile. It does all startup work before the

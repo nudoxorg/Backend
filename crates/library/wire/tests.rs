@@ -757,6 +757,7 @@ fn reply_round_trip_fixtures() -> (Basis, ViewStateRoot, Vec<CommandReply>) {
         SourceAvailability::NotCaptured,
         SourceAvailability::NotHydrated,
         SourceAvailability::Unconfigured,
+        SourceAvailability::stale_file("src/lib.rs").expect("stale file"),
     ]
     .map(|source| {
         let mut row = Row::new(RowId::Symbol(symbol), basis, "Thing");

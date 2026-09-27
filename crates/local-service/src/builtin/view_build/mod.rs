@@ -15,6 +15,8 @@ mod identity;
 mod query;
 mod semantic;
 mod structural;
+mod image_reopen;
+mod image_rows;
 
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
@@ -27,7 +29,9 @@ pub(crate) use identity::query_semantic_id;
 pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(crate) use identity::semantic_coordinate;
 pub(super) use query::semantic_query_corpus;
-pub(super) use semantic::{ProjectedRows, StructuralSites, rows_for_indexed_sources};
+pub(super) use semantic::{
+    ForeignPublication, ProjectedRows, StructuralSites, rows_for_indexed_sources,
+};
 pub(crate) use semantic::compiled_source_path;
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
@@ -39,13 +43,87 @@ use query::append_structural_query_facts;
 use semantic::{ProfileStalePaths, SourceRowProjection};
 use structural::{StructuralParent, StructuralProjectionPlan};
 
+/// Builds the structural declaration plan and drops it. Benchmarks time this.
+pub(super) fn project_structural_plan(
+    sources: &super::IndexedSources,
+) -> Result<(), super::BuiltinModelError> {
+    StructuralProjectionPlan::of(sources, &std::collections::BTreeSet::new()).map(|_| ())
+}
+
+/// Plans structural rows for `only` these files and drops the plan.
+///
+/// The type index still walks every file in `sources`.
+pub(super) fn project_structural_files(
+    sources: &super::IndexedSources,
+    only: &std::collections::BTreeSet<[u8; 32]>,
+) -> Result<(), super::BuiltinModelError> {
+    StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only).map(|_| ())
+}
+
+/// Times one semantic-image validation against three validations and against
+/// projecting that image's rows.
+pub(super) fn measure_semantic_image_reopen() {
+    image_reopen::measure_semantic_image_reopen();
+}
+
+/// Times projecting one semantic image against reusing the resident rows.
+pub(super) fn measure_semantic_image_rows() {
+    image_rows::measure_semantic_image_rows();
+}
+
+/// Times a batch of semantic images against reusing their admitted rows.
+pub(super) fn measure_semantic_image_batch() {
+    image_rows::measure_semantic_image_batch();
+}
+
+/// Times admitting a batch of images against reusing that admission.
+pub(super) fn measure_semantic_admission() {
+    image_rows::measure_semantic_admission();
+}
+
+/// Times validating semantic images against reusing their structural proofs.
+pub(super) fn measure_semantic_image_proof() {
+    image_rows::measure_semantic_image_proof();
+}
+
+/// Times snapshot admission and an overlay miss against the stored digest and proof.
+pub(super) fn measure_semantic_snapshot_residence() {
+    image_rows::measure_semantic_snapshot_residence();
+}
+
+/// Times one query-image validation against the three the corpus used to pay.
+pub(super) fn measure_semantic_query_walk() {
+    query::measure_semantic_query_walk();
+}
+
+/// Projected semantic rows reused across publications of the same image.
+pub(in crate::builtin) use image_rows::ImageRowResidence;
+
+/// Admits activated image bytes, reopening only when this key has not admitted them.
+pub(in crate::builtin) use image_rows::admit_activated_images;
+
+/// Projects structural rows for `only` these files.
+///
+/// A parent coordinate planned in this call wins. Otherwise `resident_labels`
+/// supplies the symbol already published for that coordinate.
+pub(super) fn rows_for_structural_files(
+    initial: &backend_engine::ViewRoot,
+    sources: &super::IndexedSources,
+    only: &std::collections::BTreeSet<[u8; 32]>,
+    resident_labels: &std::collections::BTreeMap<String, backend_engine::SymbolKey>,
+) -> Result<Vec<backend_engine::Row>, super::BuiltinModelError> {
+    let plan =
+        StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only)?;
+    semantic::rows_for_changed_structural_files(initial, sources, &plan, resident_labels)
+}
+
 const MAX_SEMANTIC_TYPE_DEPTH: usize = 256;
 const MAX_SEMANTIC_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAX_SEMANTIC_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_SEMANTIC_QUERY_ROWS: usize = 65_536;
 
 /// Document note appended to every row projected from a stale semantic image.
-const STALE_NOTE: &str =
+pub(super) const STALE_NOTE: &str =
     "stale semantic image: compiled from an earlier source snapshot; re-index to refresh";
 
 type DeclarationOccurrenceKey = (String, String, String);

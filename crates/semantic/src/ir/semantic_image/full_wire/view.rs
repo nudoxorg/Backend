@@ -5,6 +5,7 @@
 //! an owned semantic plane or exposes native-layout slices.
 
 use core::{iter::FusedIterator, ops::Deref};
+use std::cell::Cell;
 
 use crate::ir::{
     AtomId, AtomListId, CSharpFacts, ClangFacts, CoreSemanticEntity, DeclarationIdentity,
@@ -26,6 +27,32 @@ use super::{
     wire::{FullDirectoryKind, FullImageLayout, SPARSE_BINDING_ROW_BYTES, get_u32},
 };
 
+std::thread_local! {
+    static VALIDATIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Validations performed by [`SemanticImageView::reopen`] on this thread.
+///
+/// [`SemanticImageView::reopen_proven`] does not increment this counter.
+#[must_use]
+pub fn semantic_image_validations() -> u64 {
+    VALIDATIONS.with(Cell::get)
+}
+
+/// Zeroes [`semantic_image_validations`] on this thread.
+pub fn reset_semantic_image_validations() {
+    VALIDATIONS.with(|cell| cell.set(0));
+}
+
+/// Structural proof that one digest of image bytes has already been validated.
+///
+/// The proof stores directory spans, not pointers. It is only sound for the
+/// bytes [`SemanticImageView::reopen`] validated when the proof was taken.
+#[derive(Clone, Copy, Debug)]
+pub struct AdmittedSemanticImage {
+    validated: ValidatedFullImage,
+}
+
 /// Fully validated borrowed `NXFI` semantic image.
 ///
 /// It borrows exactly the caller-owned fragment/mmap bytes; all iterators
@@ -39,13 +66,38 @@ pub struct SemanticImageView<'bytes> {
 }
 
 impl<'bytes> SemanticImageView<'bytes> {
+    /// Validates every plane of `bytes` and returns the borrowed reader.
     pub fn reopen(bytes: &'bytes [u8]) -> Result<Self, FullSemanticImageError> {
+        VALIDATIONS.with(|cell| cell.set(cell.get().saturating_add(1)));
         let validated = validate::reopen_full_semantic_image(bytes)?;
         Ok(Self {
             bytes,
             facts: validated.image,
             validated,
         })
+    }
+
+    /// Copies the structural proof of this view.
+    ///
+    /// The caller must keep it paired with these exact bytes.
+    #[must_use]
+    pub fn proof(&self) -> AdmittedSemanticImage {
+        AdmittedSemanticImage {
+            validated: self.validated,
+        }
+    }
+
+    /// Rebuilds a view from a proof previously taken for these exact bytes.
+    ///
+    /// This does not validate. [`crate`]'s snapshot owner is the safe caller:
+    /// it stores the proof beside the bytes `reopen` just proved.
+    #[must_use]
+    pub fn reopen_proven(bytes: &'bytes [u8], proof: AdmittedSemanticImage) -> Self {
+        Self {
+            bytes,
+            facts: proof.validated.image,
+            validated: proof.validated,
+        }
     }
 
     fn layout(&self) -> FullImageLayout {

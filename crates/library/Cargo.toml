@@ -34,3 +34,8 @@ path = "lib.rs"
 name = "client_sync"
 path = "benches/client_sync.rs"
 harness = false
+
+[[bench]]
+name = "package_graph"
+path = "benches/package_graph.rs"
+harness = false

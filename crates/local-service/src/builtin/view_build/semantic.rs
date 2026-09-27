@@ -1,7 +1,7 @@
 use super::super::{
     BuiltinModelError, BuiltinSemanticRelation, FileLane, IndexedProject, IndexedSources,
     MAX_REBUILD_BYTES, MAX_REBUILD_PACKAGES, ProjectionLedger, SemanticFreshness, StructuralCause,
-    WorkspaceSnapshot, activate_semantic_publication,
+    WorkspaceSnapshot,
 };
 use super::identity::{
     declaration_coordinate, declaration_family, declaration_kind, external_semantic_symbol,
@@ -13,6 +13,7 @@ use super::structural::{
     duplicate_declaration_coordinates, is_file_module, profile_source_identities,
     profile_source_paths, projected_source_capacity,
 };
+use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::{
     MAX_SEMANTIC_DOCUMENT_BYTES, MAX_SEMANTIC_SIGNATURE_BYTES, MAX_SEMANTIC_TYPE_DEPTH, STALE_NOTE,
     semantic_profile_is_complete,
@@ -49,12 +50,24 @@ pub(crate) struct ProjectedRows {
 /// Current paths per (project, profile) whose published image is stale.
 pub(super) type ProfileStalePaths =
     BTreeMap<([u8; 32], backend_semantic::vocabulary::LanguageProfile), BTreeSet<String>>;
+/// How a semantic publication for a package outside `sources` is treated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ForeignPublication {
+    /// A complete publication whose package frontier is absent is corrupt.
+    Reject,
+    /// Package-scoped publication leaves every other package's image closed.
+    Skip,
+}
+
 pub(crate) fn rows_for_indexed_sources(
     initial: &ViewRoot,
     sources: &IndexedSources,
     snapshot: &WorkspaceSnapshot,
     compiler: &LocalCompilerClient,
     workspace: &std::path::Path,
+    foreign: ForeignPublication,
+    residence: &mut super::image_rows::ImageRowResidence,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
 ) -> Result<ProjectedRows, BuiltinModelError> {
     if sources.projects.len() > MAX_REBUILD_PACKAGES {
         return Err(BuiltinModelError(
@@ -73,6 +86,9 @@ pub(crate) fn rows_for_indexed_sources(
         &sites,
         initial,
         MAX_REBUILD_PACKAGES - sources.projects.len(),
+        foreign,
+        residence,
+        generations,
     )?;
     let source_capacity = projected_source_capacity(sources, &semantics.complete)?;
     let total_capacity = source_capacity
@@ -239,8 +255,15 @@ impl<'a> SourceRowProjection<'a> {
         }
         for (index, declaration) in declarations.iter().enumerate() {
             let prepared = self.structural_plan.declaration(file_key, index)?;
-            let row =
-                self.declaration_row(declaration, path, file_key, package, language, prepared)?;
+            let row = self.declaration_row(
+                declaration,
+                path,
+                file_key,
+                project_key,
+                package,
+                language,
+                prepared,
+            )?;
             self.rows.push(row);
         }
         Ok(())
@@ -252,42 +275,23 @@ impl<'a> SourceRowProjection<'a> {
         declaration: &backend_compile::SourceDeclaration,
         path: &str,
         file_key: [u8; 32],
+        project: [u8; 32],
         package: backend_engine::PackageKey,
         language: backend_engine::SourceLanguage,
         prepared: &StructuralDeclaration,
     ) -> Result<Row, BuiltinModelError> {
-        let coordinate = &prepared.coordinate;
-        let symbol = prepared.id;
-        let prose = if prepared.is_file_module {
-            format!("{} source · {path}", language.name())
-        } else if declaration.documentation().is_empty() {
-            format!(
-                "{} in {path}:{}",
-                declaration.kind_name(),
-                declaration.line()
-            )
-        } else {
-            declaration.documentation().to_owned()
-        };
-        let row = Row::in_package(symbol, self.initial.basis(), package, coordinate.as_str())
-            .with_document(vec![Fragment::Text(prose)])
-            .with_signature(declaration.signature())
-            .with_kind(declaration.kind())
-            .with_source(declaration.location().clone())
-            .with_excerpt(declaration.source_excerpt().clone());
-        let row = match prepared.identity_preimage.clone() {
-            Some(preimage) => row.with_identity_preimage(preimage),
-            None => row,
-        };
-        Ok(match prepared.parent.as_deref() {
-            Some(parent) => match self.structural_plan.parent_id(file_key, parent)? {
-                StructuralParent::Symbol(RowId::Symbol(parent)) => row.with_parent(parent),
-                StructuralParent::Symbol(RowId::Package(_))
-                | StructuralParent::Symbol(RowId::Object(_))
-                | StructuralParent::Package(_) => row,
-            },
-            None => row,
-        })
+        structural_declaration_row(
+            self.initial,
+            self.structural_plan,
+            None,
+            declaration,
+            path,
+            file_key,
+            project,
+            package,
+            language,
+            prepared,
+        )
     }
 
     pub(super) fn finish(mut self, semantic_rows: Vec<Row>) -> Result<Vec<Row>, BuiltinModelError> {
@@ -305,6 +309,132 @@ impl<'a> SourceRowProjection<'a> {
         Ok(self.rows)
     }
 }
+
+/// Projects structural rows for files the plan retained.
+///
+/// `resident_labels` maps a coordinate to the symbol already published for
+/// this package. A parent planned in this call wins. Otherwise the resident
+/// symbol is kept, so a method edited in one file stays attached to a type
+/// declared in a file this call did not replan.
+pub(super) fn rows_for_changed_structural_files(
+    initial: &ViewRoot,
+    sources: &IndexedSources,
+    plan: &StructuralProjectionPlan,
+    resident_labels: &BTreeMap<String, backend_engine::SymbolKey>,
+) -> Result<Vec<Row>, BuiltinModelError> {
+    let mut rows = Vec::new();
+    for (file_key, record) in &sources.files {
+        if plan.file(*file_key).is_none() {
+            continue;
+        }
+        let file = record.file_fields().ok_or_else(|| {
+            BuiltinModelError("structural file splice received a non-file record".to_owned())
+        })?;
+        let project = sources.projects.get(&file.project).ok_or_else(|| {
+            BuiltinModelError("structural source refers to a missing project".to_owned())
+        })?;
+        if product_source_file_key(file.project, file.path) != *file_key
+            || project.files.binary_search(file_key).is_err()
+        {
+            return Err(BuiltinModelError(
+                "source file is outside its project's canonical frontier".to_owned(),
+            ));
+        }
+        for (index, declaration) in file.declarations.iter().enumerate() {
+            let prepared = plan.declaration(*file_key, index)?;
+            rows.push(structural_declaration_row(
+                initial,
+                plan,
+                Some(resident_labels),
+                declaration,
+                file.path,
+                *file_key,
+                file.project,
+                project.package,
+                file.language,
+                prepared,
+            )?);
+        }
+    }
+    Ok(rows)
+}
+
+fn structural_declaration_row(
+    initial: &ViewRoot,
+    plan: &StructuralProjectionPlan,
+    resident_labels: Option<&BTreeMap<String, backend_engine::SymbolKey>>,
+    declaration: &backend_compile::SourceDeclaration,
+    path: &str,
+    file_key: [u8; 32],
+    project: [u8; 32],
+    package: backend_engine::PackageKey,
+    language: backend_engine::SourceLanguage,
+    prepared: &StructuralDeclaration,
+) -> Result<Row, BuiltinModelError> {
+        let coordinate = &prepared.coordinate;
+        let symbol = prepared.id;
+        let prose = if prepared.is_file_module {
+            format!("{} source · {path}", language.name())
+        } else if declaration.documentation().is_empty() {
+            format!(
+                "{} in {path}:{}",
+                declaration.kind_name(),
+                declaration.line()
+            )
+        } else {
+            declaration.documentation().to_owned()
+        };
+        let row = Row::in_package(symbol, initial.basis(), package, coordinate.as_str())
+            .with_document(vec![Fragment::Text(prose)])
+            .with_signature(declaration.signature())
+            .with_kind(declaration.kind())
+            .with_source(declaration.location().clone())
+            .with_excerpt(declaration.source_excerpt().clone());
+        let row = match prepared.identity_preimage.clone() {
+            Some(preimage) => row.with_identity_preimage(preimage),
+            None => row,
+        };
+        Ok(match prepared.parent.as_deref() {
+            Some(parent) => match structural_parent_symbol(
+                plan,
+                file_key,
+                project,
+                parent,
+                resident_labels,
+            )? {
+                Some(parent) => row.with_parent(parent),
+                None => row,
+            },
+            None => row,
+        })
+}
+
+fn structural_parent_symbol(
+    plan: &StructuralProjectionPlan,
+    file_key: [u8; 32],
+    project: [u8; 32],
+    parent: &str,
+    resident_labels: Option<&BTreeMap<String, backend_engine::SymbolKey>>,
+) -> Result<Option<backend_engine::SymbolKey>, BuiltinModelError> {
+    if let Some(id) = plan.symbol_for_coordinate(project, parent) {
+        return Ok(match id {
+            RowId::Symbol(symbol) => Some(symbol),
+            RowId::Package(_) | RowId::Object(_) => None,
+        });
+    }
+    if let Some(labels) = resident_labels
+        && let Some(symbol) = labels.get(parent)
+    {
+        return Ok(Some(*symbol));
+    }
+    Ok(match plan.parent_id(file_key, parent)? {
+        StructuralParent::Symbol(RowId::Symbol(parent)) => Some(parent),
+        StructuralParent::Symbol(RowId::Package(_))
+        | StructuralParent::Symbol(RowId::Object(_))
+        |         StructuralParent::Package(_) => None,
+    })
+}
+
 fn targets_unavailable_cause(
     targets: &SemanticTargets,
     package: backend_engine::PackageKey,
@@ -352,6 +482,9 @@ fn semantic_rows(
     sites: &StructuralSites<'_>,
     initial: &ViewRoot,
     row_capacity: usize,
+    foreign: ForeignPublication,
+    residence: &mut super::image_rows::ImageRowResidence,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
 ) -> Result<SemanticRows, BuiltinModelError> {
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -377,6 +510,11 @@ fn semantic_rows(
             if !key.is_selected() {
                 continue;
             }
+            if !projects.contains_key(key.package_key().as_bytes())
+                && matches!(foreign, ForeignPublication::Skip)
+            {
+                continue;
+            }
             let target = (
                 *key.package_key().as_bytes(),
                 super::super::ingest::lane_profile(key.profile()),
@@ -396,27 +534,69 @@ fn semantic_rows(
                     "semantic publication refers to a missing package frontier".to_owned(),
                 )
             })?;
-            let activated = activate_semantic_publication(compiler, key, *claim)?;
-            let decision = {
-                let compiled_sources = compiled_source_identities(&activated)?;
-                let empty = BTreeSet::new();
-                freshness_decision(
-                    &compiled_sources,
-                    current_paths.get(&target).unwrap_or(&empty),
-                    current_identities.get(&target),
-                )
-            };
-            for image in activated.images() {
-                let view = SemanticImageView::reopen(image.as_ref()).map_err(|error| {
-                    BuiltinModelError(format!("reopen activated semantic image: {error}"))
-                })?;
-                let path = compiled_source_path(&view)?;
+            let activated = super::super::load_semantic_publication(compiler, key, *claim, generations)?;
+            // An image already admitted for this publication key keeps its
+            // path and source identity. Row projection is reused when the
+            // freshness overlay is already resident.
+            let lineage = key.lineage().map_err(|error| {
+                BuiltinModelError(format!("semantic publication lineage: {error}"))
+            })?;
+            let admission = super::image_rows::publication_admission(
+                key.profile(),
+                lineage.ecosystem,
+                lineage.name,
+                key.coordinate().as_str(),
+            );
+            let mut opened = Vec::new();
+            let mut pending = activated.images();
+            while let Some((image, rest)) = pending.split_first() {
+                match super::image_rows::open_compiled_snapshot(image, admission, residence)?
+                {
+                    super::image_rows::CompiledImage::Opened { path, identity, view } => {
+                        super::image_rows::bind_opened_image(
+                            image.as_ref(),
+                            admission,
+                            &view,
+                            key,
+                            residence,
+                        )?;
+                        opened.push(super::image_rows::CompiledImage::Opened {
+                            path,
+                            identity,
+                            view,
+                        });
+                    }
+                    resident => opened.push(resident),
+                }
+                pending = rest;
+            }
+            let mut compiled_sources = BTreeMap::new();
+            for image in &opened {
+                let (path, identity) = match image {
+                    super::image_rows::CompiledImage::Resident { path, identity, .. }
+                    | super::image_rows::CompiledImage::Opened { path, identity, .. } => {
+                        (path, identity)
+                    }
+                };
+                compiled_sources.insert(path.clone(), *identity);
+            }
+            let empty = BTreeSet::new();
+            let decision = freshness_decision(
+                &compiled_sources,
+                current_paths.get(&target).unwrap_or(&empty),
+                current_identities.get(&target),
+            );
+            for image in &opened {
+                let path = match image {
+                    super::image_rows::CompiledImage::Resident { path, .. }
+                    | super::image_rows::CompiledImage::Opened { path, .. } => path.as_str(),
+                };
                 // Staleness is per image: this image is stale exactly when the
                 // current file compiled from its path no longer hashes to the
                 // image's own source identity. A legacy scan without persisted
                 // identities falls back to the coarse path-set comparison.
-                let stale = match decision.compiled.get(&path) {
-                    Some(identity) => decision.image_stale(&path, *identity),
+                let stale = match decision.compiled.get(path) {
+                    Some(compiled) => decision.image_stale(path, *compiled),
                     None => decision.path_sets_differ,
                 };
                 // A stale image was compiled from other bytes than the
@@ -425,7 +605,7 @@ fn semantic_rows(
                 let site_declarations = if stale {
                     &[][..]
                 } else {
-                    sites.declarations(key.package_key().as_bytes(), &path)
+                    sites.declarations(key.package_key().as_bytes(), path)
                 };
                 let mut sink = SemanticRowSink {
                     initial,
@@ -434,10 +614,47 @@ fn semantic_rows(
                     capacity: row_capacity,
                     remaining_bytes: &mut remaining_bytes,
                     stale,
-                    path: &path,
+                    path,
                     site_declarations,
                 };
-                append_image_rows(&view, project, key.profile(), &mut sink)?;
+                match image {
+                    super::image_rows::CompiledImage::Opened { view, .. } => {
+                        super::image_rows::append_resident_image_rows(
+                            view,
+                            project,
+                            key.profile(),
+                            &mut sink,
+                            residence,
+                        )?;
+                    }
+                    super::image_rows::CompiledImage::Resident {
+                        bytes,
+                        digest,
+                        snapshot,
+                        ..
+                    } => {
+                        if !super::image_rows::apply_resident_image(
+                            *digest,
+                            project,
+                            key.profile(),
+                            &mut sink,
+                            residence,
+                        )? {
+                            let view = super::image_rows::reopen_resident_image(
+                                bytes,
+                                *snapshot,
+                                residence,
+                            )?;
+                            super::image_rows::append_resident_image_rows(
+                                &view,
+                                project,
+                                key.profile(),
+                                &mut sink,
+                                residence,
+                            )?;
+                        }
+                    }
+                }
             }
             complete.insert((
                 project.package.to_bytes(),
@@ -573,26 +790,6 @@ pub(super) fn freshness_decision(
         identity_decisive,
         path_sets_differ,
     }
-}
-
-/// Returns the relative source path and semantic content identity of every
-/// activated image.
-///
-/// The publication binding already proves each image carries captured
-/// provenance, so a missing path atom or identity is a broken invariant, not
-/// a display gap.
-fn compiled_source_identities(
-    activated: &super::super::ActivatedProductSemantics,
-) -> Result<CompiledSources, BuiltinModelError> {
-    let mut compiled = BTreeMap::new();
-    for image in activated.images() {
-        let view = SemanticImageView::reopen(image.as_ref()).map_err(|error| {
-            BuiltinModelError(format!("reopen activated semantic image: {error}"))
-        })?;
-        let (path, identity) = compiled_source(&view)?;
-        compiled.insert(path, identity);
-    }
-    Ok(compiled)
 }
 
 /// Returns one image's relative source path and its source content identity.
@@ -744,15 +941,19 @@ pub(super) struct SemanticRowContent {
     encoded_bytes: usize,
 }
 
-pub(super) fn append_image_rows(
+/// Projects one semantic image into rows whose basis is stamped on admission.
+pub(super) fn project_image_rows(
     image: &SemanticImageView<'_>,
+    image_identity: [u8; 32],
     project: &IndexedProject,
     profile: backend_semantic::vocabulary::LanguageProfile,
-    sink: &mut SemanticRowSink<'_>,
-) -> Result<(), BuiltinModelError> {
+    basis: backend_engine::Basis,
+    stale: bool,
+    path: &str,
+    site_declarations: &[&backend_compile::SourceDeclaration],
+) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
-    let image_identity = *blake3::hash(image.as_ref()).as_bytes();
-    let sites = semantic_sites(&session, sink.site_declarations)?;
+    let sites = semantic_sites(&session, site_declarations)?;
     let canonical_identities = session
         .canonical_entities()
         .map(|entity| {
@@ -763,12 +964,8 @@ pub(super) fn append_image_rows(
                 })
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
+    let mut projected = Vec::new();
     for entity in session.canonical_entities() {
-        if sink.rows.len() == sink.capacity {
-            return Err(BuiltinModelError(
-                "workspace semantic declarations exceed the rebuild row bound".to_owned(),
-            ));
-        }
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
         let name = std::str::from_utf8(entity.name)
@@ -776,11 +973,6 @@ pub(super) fn append_image_rows(
         let identity = entity.entity.version.identity();
         let coordinate = semantic_coordinate(&project.label, identity, name);
         let symbol = semantic_symbol(project.package, identity);
-        if !sink.symbols.insert(RowId::Symbol(symbol)) {
-            return Err(BuiltinModelError(
-                "semantic publication contains a duplicate declaration identity".to_owned(),
-            ));
-        }
         let content =
             semantic_row_content(profile, image, &entity, project.package, image_identity)?;
         let row_bytes = coordinate
@@ -789,26 +981,15 @@ pub(super) fn append_image_rows(
             .ok_or_else(|| {
                 BuiltinModelError("project semantic row byte count overflow".to_owned())
             })?;
-        *sink.remaining_bytes = sink.remaining_bytes.checked_sub(row_bytes).ok_or_else(|| {
-            BuiltinModelError(
-                "workspace semantic declarations exceed the rebuild byte bound".to_owned(),
-            )
-        })?;
+        let mut charges = vec![Charge::Sub(row_bytes)];
         let mut document = content.document;
-        if sink.stale {
-            *sink.remaining_bytes = sink
-                .remaining_bytes
-                .checked_add(STALE_NOTE.len())
-                .ok_or_else(|| {
-                    BuiltinModelError(
-                        "workspace semantic declarations exceed the rebuild byte bound".to_owned(),
-                    )
-                })?;
+        if stale {
+            charges.push(Charge::Add(STALE_NOTE.len()));
             document.push(Fragment::Text(STALE_NOTE.to_owned()));
         }
         let mut row = Row::in_package(
             RowId::Symbol(symbol),
-            sink.initial.basis(),
+            basis,
             project.package,
             coordinate,
         )
@@ -818,19 +999,10 @@ pub(super) fn append_image_rows(
         .with_document(document);
         if let Some(site) = sites.get(&identity) {
             let excerpt_bytes = site.source_excerpt().text().map_or(0, str::len);
-            *sink.remaining_bytes =
-                sink.remaining_bytes
-                    .checked_sub(excerpt_bytes)
-                    .ok_or_else(|| {
-                        BuiltinModelError(
-                            "workspace semantic declarations exceed the rebuild byte bound"
-                                .to_owned(),
-                        )
-                    })?;
-            let location =
-                backend_compile::SourceLocation::new(sink.path, site.line()).map_err(|error| {
-                    BuiltinModelError(format!("semantic declaration source site: {error}"))
-                })?;
+            charges.push(Charge::Sub(excerpt_bytes));
+            let location = backend_compile::SourceLocation::new(path, site.line()).map_err(|error| {
+                BuiltinModelError(format!("semantic declaration source site: {error}"))
+            })?;
             row = row
                 .with_source(location)
                 .with_excerpt(site.source_excerpt().clone());
@@ -860,7 +1032,11 @@ pub(super) fn append_image_rows(
             }
             row = row.with_parent(semantic_symbol(project.package, parent_identity));
         }
-        sink.rows.push(row);
+        projected.push(ProjectedRow {
+            row,
+            duplicate: DuplicatePolicy::Error,
+            charges,
+        });
         for (_, link) in image.links_from(entity.entity.id) {
             let LinkTarget::External(target) = link.target else {
                 continue;
@@ -871,39 +1047,45 @@ pub(super) fn append_image_rows(
                 ))
             })?;
             let symbol = external_semantic_symbol(project.package, image_identity, identity);
-            if !sink.symbols.insert(RowId::Symbol(symbol)) {
-                continue;
-            }
-            if sink.rows.len() == sink.capacity {
-                return Err(BuiltinModelError(
-                    "workspace semantic declarations exceed the rebuild row bound".to_owned(),
-                ));
-            }
             let label = "external semantic target";
-            *sink.remaining_bytes =
-                sink.remaining_bytes
-                    .checked_sub(label.len())
-                    .ok_or_else(|| {
-                        BuiltinModelError(
-                            "workspace semantic declarations exceed the rebuild byte bound"
-                                .to_owned(),
-                        )
-                    })?;
             let preimage = backend_engine::encode_id(
                 identity
                     .in_scope(project.package.to_bytes(), image_identity)
                     .as_bytes(),
             );
-            sink.rows.push(
-                Row::new(RowId::Symbol(symbol), sink.initial.basis(), label)
+            projected.push(ProjectedRow {
+                row: Row::new(RowId::Symbol(symbol), basis, label)
                     .try_with_identity_preimage(&preimage)
                     .map_err(|error| {
                         BuiltinModelError(format!("external row identity preimage: {error}"))
                     })?,
-            );
+                duplicate: DuplicatePolicy::Skip,
+                charges: vec![Charge::Sub(label.len())],
+            });
         }
     }
-    Ok(())
+    Ok(ProjectedImage { rows: projected })
+}
+
+/// Projects one image and admits those rows into `sink`.
+pub(super) fn append_image_rows(
+    image: &SemanticImageView<'_>,
+    project: &IndexedProject,
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    sink: &mut SemanticRowSink<'_>,
+) -> Result<(), BuiltinModelError> {
+    let image_identity = *blake3::hash(image.as_ref()).as_bytes();
+    let projected = project_image_rows(
+        image,
+        image_identity,
+        project,
+        profile,
+        sink.initial.basis(),
+        sink.stale,
+        sink.path,
+        sink.site_declarations,
+    )?;
+    super::image_rows::apply_projected_image(&projected, sink)
 }
 
 fn semantic_signature<Reader: backend_semantic::ir::SemanticReader + ?Sized>(

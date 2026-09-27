@@ -39,6 +39,9 @@ pub(crate) enum SourceAvailabilityWire {
     NotCaptured,
     NotHydrated,
     Unconfigured,
+    StaleFile {
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -168,6 +171,9 @@ pub(crate) fn source_availability_to_wire(source: &SourceAvailability) -> Source
         SourceAvailability::NotCaptured => SourceAvailabilityWire::NotCaptured,
         SourceAvailability::NotHydrated => SourceAvailabilityWire::NotHydrated,
         SourceAvailability::Unconfigured => SourceAvailabilityWire::Unconfigured,
+        SourceAvailability::StaleFile { path } => SourceAvailabilityWire::StaleFile {
+            path: path.to_string(),
+        },
     }
 }
 
@@ -181,6 +187,7 @@ pub(crate) fn source_availability_from_wire(
         SourceAvailabilityWire::NotCaptured => SourceAvailability::NotCaptured,
         SourceAvailabilityWire::NotHydrated => SourceAvailability::NotHydrated,
         SourceAvailabilityWire::Unconfigured => SourceAvailability::Unconfigured,
+        SourceAvailabilityWire::StaleFile { path } => SourceAvailability::stale_file(path)?,
     })
 }
 

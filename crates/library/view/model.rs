@@ -641,6 +641,11 @@ pub enum SourceAvailability {
     NotHydrated,
     /// This deployment has no source provider for the row's origin.
     Unconfigured,
+    /// The file is known and the compiled line is not that file's line anymore.
+    StaleFile {
+        /// Package-relative path retained from the last compiled location.
+        path: Arc<str>,
+    },
 }
 
 impl SourceAvailability {
@@ -649,8 +654,37 @@ impl SourceAvailability {
     pub const fn captured(&self) -> Option<&SourceLocation> {
         match self {
             Self::Captured(location) => Some(location),
+            Self::NotCaptured | Self::NotHydrated | Self::Unconfigured | Self::StaleFile { .. } => {
+                None
+            }
+        }
+    }
+
+    /// Returns the file path when this row still names one.
+    ///
+    /// A stale file keeps the path and drops the line. Callers that need a
+    /// jump target use [`Self::captured`].
+    #[must_use]
+    pub fn file_path(&self) -> Option<&str> {
+        match self {
+            Self::Captured(location) => Some(location.path()),
+            Self::StaleFile { path } => Some(path),
             Self::NotCaptured | Self::NotHydrated | Self::Unconfigured => None,
         }
+    }
+
+    /// Admits a stale file path with no line.
+    ///
+    /// # Errors
+    /// Returns an error when the path is empty or longer than a source location path.
+    pub fn stale_file(path: impl Into<String>) -> Result<Self, String> {
+        let path = path.into();
+        if path.is_empty() || path.len() > SourceLocation::MAX_PATH_BYTES {
+            return Err("stale source path is empty or oversized".to_owned());
+        }
+        Ok(Self::StaleFile {
+            path: Arc::from(path),
+        })
     }
 }
 

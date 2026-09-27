@@ -394,6 +394,10 @@ fn availability_gap(availability: &SourceAvailability) -> Gap {
             GapReason::Unconfigured,
             "this deployment has no source provider for the declaration's origin",
         ),
+        SourceAvailability::StaleFile { path } => Gap::new(
+            GapReason::Stale,
+            format!("the compiled line for {path} is no longer that file's line"),
+        ),
     }
 }
 

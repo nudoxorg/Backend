@@ -29,6 +29,21 @@ pub(in crate::builtin) struct CommandAdapter {
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     remote_semantic: super::super::query::RemoteSemantic,
+    published: Option<super::super::view_publish::PublishedRoots>,
+    manifests: super::super::local_manifest::LocalManifestResidence,
+    image_rows: super::super::view_build::ImageRowResidence,
+    generations: super::super::generation_residence::SemanticGenerationResidence,
+    dependencies: Option<ResidentDependencies>,
+}
+
+struct ResidentDependencies {
+    stamp: [u8; 32],
+    local_witness: [u8; 32],
+    catalog: Vec<backend_engine::RegistryPackageRecord>,
+    registry_facts: Vec<backend_engine::PackageDependencySourceFacts>,
+    facts: Vec<backend_engine::PackageDependencySourceFacts>,
+    index: backend_library::PackageGraphIndex,
+    synced_root: Option<[u8; 32]>,
 }
 
 impl CommandAdapter {
@@ -39,6 +54,9 @@ impl CommandAdapter {
         compiler: LocalCompilerClient,
         search_snapshots: super::super::query::SearchSnapshotOwner,
         remote_semantic: super::super::query::RemoteSemantic,
+        published: Option<super::super::view_publish::PublishedRoots>,
+        image_rows: super::super::view_build::ImageRowResidence,
+        generations: super::super::generation_residence::SemanticGenerationResidence,
     ) -> Self {
         Self {
             sql_projection,
@@ -47,6 +65,11 @@ impl CommandAdapter {
             compiler,
             search_snapshots,
             remote_semantic,
+            published,
+            manifests: super::super::local_manifest::LocalManifestResidence::default(),
+            image_rows,
+            generations,
+            dependencies: None,
         }
     }
 
@@ -92,7 +115,15 @@ impl CommandAdapter {
             Command::Graph(query) => self.graph(daemon, query, certificate, false),
             Command::Related(query) => self.graph(daemon, query, certificate, true),
             Command::GraphQuery(request) => {
-                execute_certified_graph_query(daemon, &self.compiler, &request, certificate)
+                execute_certified_graph_query(
+                    daemon,
+                    &self.compiler,
+                    &mut self.search_snapshots,
+                    &mut self.generations,
+                    &mut self.image_rows,
+                    &request,
+                    certificate,
+                )
             }
             Command::Surface(surface) => self.surface(daemon, surface, request_id),
             command => self.standard(daemon, &command, certificate),
@@ -116,12 +147,15 @@ impl CommandAdapter {
         } else {
             Some(BuiltinIntent::add(package, label.clone())?)
         };
-        if let Some(intent) = intent {
+        let committed = if let Some(intent) = intent {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                 BuiltinModelError(format!("commit product source intent: {error}"))
             })?;
-        }
-        self.publish_view(daemon)?;
+            Some(intent)
+        } else {
+            None
+        };
+        self.publish_view(daemon, committed.as_ref())?;
         let intent_id = backend_engine::intent_id("request_package", requested_package.as_bytes());
         let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
             id: backend_engine::encode_id(intent_id.as_bytes()),
@@ -238,12 +272,15 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
-        if let Some(intent) = remove_project_intent(daemon, package, &label)? {
+        let committed = if let Some(intent) = remove_project_intent(daemon, package, &label)? {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                 BuiltinModelError(format!("commit product source intent: {error}"))
             })?;
-        }
-        self.publish_view(daemon)?;
+            Some(intent)
+        } else {
+            None
+        };
+        self.publish_view(daemon, committed.as_ref())?;
         let intent_id = backend_engine::intent_id("remove_package", requested_package.as_bytes());
         let certificate = WireCertificate::new().with_claim(WireClaim::Intent {
             id: backend_engine::encode_id(intent_id.as_bytes()),
@@ -253,17 +290,33 @@ impl CommandAdapter {
         Ok((CommandReply::Removed(intent_id), Some(certificate)))
     }
 
-    fn publish_view(&mut self, daemon: &mut ProductDaemon) -> Result<(), BuiltinModelError> {
+    fn publish_view(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        edit: Option<&BuiltinIntent>,
+    ) -> Result<(), BuiltinModelError> {
         // Reconcile even after a no-op source intent so a retry heals a crash
         // between the durable source commit and its derived view publication.
+        // A missing witness, or an edit that is not the transition adjacent to
+        // it, still hydrates the selected relations.
         let deployment = super::super::SemanticDeployment::from_remote(&self.remote_semantic);
         let filesystem_workspace = self
             .product_state
             .workspace_path()
             .map_err(BuiltinModelError)?;
-        let deltas = publish_builtin_view(daemon, &self.compiler, deployment, filesystem_workspace)
-            .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
-        project_view_deltas(&mut self.sql_projection, daemon, &deltas)
+        let outcome = publish_builtin_view(
+            daemon,
+            &self.compiler,
+            deployment,
+            filesystem_workspace,
+            self.published.as_ref(),
+            edit,
+            &mut self.image_rows,
+            &mut self.generations,
+        )
+        .map_err(|error| BuiltinModelError(format!("publish product source view: {error}")))?;
+        self.published = Some(outcome.roots);
+        project_view_deltas(&mut self.sql_projection, daemon, &outcome.deltas)
     }
 
     fn search(
@@ -278,6 +331,8 @@ impl CommandAdapter {
             &self.compiler,
             &mut self.search_snapshots,
             &mut self.remote_semantic,
+            &mut self.generations,
+            &mut self.image_rows,
             query,
         )
         .unwrap_or_else(|error| CommandReply::Error(error.to_string()));
@@ -285,7 +340,7 @@ impl CommandAdapter {
     }
 
     fn graph(
-        &self,
+        &mut self,
         daemon: &ProductDaemon,
         query: backend_engine::GraphNeighborhoodQuery,
         certificate: Option<WireCertificate>,
@@ -297,7 +352,14 @@ impl CommandAdapter {
             Command::Graph(query)
         };
         let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
-        let reply = match execute_semantic_graph(daemon, &self.compiler, query, include_incoming)? {
+        let reply = match execute_semantic_graph(
+            daemon,
+            &self.compiler,
+            &mut self.generations,
+            &mut self.image_rows,
+            query,
+            include_incoming,
+        )? {
             Some(snapshot) => CommandReply::Graph(snapshot),
             None => match execute_structural_call_graph(daemon, query, include_incoming)? {
                 Some(snapshot) => CommandReply::Graph(snapshot),
@@ -370,7 +432,14 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
             backend_engine::SurfaceCommand::References { target } => {
-                execute_references(daemon, &self.compiler, &target).map_or_else(
+                execute_references(
+                    daemon,
+                    &self.compiler,
+                    &mut self.generations,
+                    &mut self.image_rows,
+                    &target,
+                )
+                .map_or_else(
                     |error| {
                         CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
                             error.to_string(),
@@ -380,7 +449,15 @@ impl CommandAdapter {
                 )
             }
             backend_engine::SurfaceCommand::Diff { from, to } => {
-                execute_semantic_diff(daemon, &self.compiler, &from, &to).map_or_else(
+                execute_semantic_diff(
+                    daemon,
+                    &self.compiler,
+                    &mut self.generations,
+                    &mut self.image_rows,
+                    &from,
+                    &to,
+                )
+                    .map_or_else(
                     |error| {
                         CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
                             error.to_string(),
@@ -428,59 +505,99 @@ impl CommandAdapter {
                     },
                 ),
             surface => {
-                let catalog = self
-                    .registry
-                    .as_mut()
-                    .map_or(Ok(Vec::new()), RegistryGateway::catalog)
+                let roots = local_project_roots(daemon)?;
+                self.manifests
+                    .refresh(roots.iter().map(std::path::PathBuf::as_path))
                     .map_err(BuiltinModelError)?;
-                let mut dependency_facts = self
-                    .registry
-                    .as_mut()
-                    .map_or_else(Vec::new, RegistryGateway::dependency_facts);
-                let indexed = super::super::read_indexed_sources(
-                    &daemon.engine().daemon().owner().snapshot(),
-                )?;
-                for project in indexed.projects.values() {
-                    if project.label.starts_with("pkg:") {
-                        continue;
-                    }
-                    let project_root = std::path::Path::new(&project.label);
-                    if !project_root.is_dir() {
-                        continue;
-                    }
-                    match super::super::local_manifest::local_dependency_facts(project_root) {
-                        Ok(Some(fact)) => dependency_facts.push(fact),
-                        Ok(None) => {}
-                        Err(error) => return Err(BuiltinModelError(error)),
-                    }
+                let local_witness = self.manifests.witness();
+                let stamp = match self.registry.as_mut() {
+                    Some(registry) => registry.publication_stamp().map_err(BuiltinModelError)?,
+                    None => [0; 32],
+                };
+                let root = *daemon
+                    .engine()
+                    .daemon()
+                    .library()
+                    .view()
+                    .root()
+                    .as_bytes();
+                let stamp_changed = self
+                    .dependencies
+                    .as_ref()
+                    .is_none_or(|cached| cached.stamp != stamp);
+                let local_changed = self
+                    .dependencies
+                    .as_ref()
+                    .is_none_or(|cached| cached.local_witness != local_witness);
+                if stamp_changed || local_changed {
+                    let (catalog, registry_facts, synced_root) = if stamp_changed {
+                        let catalog = self
+                            .registry
+                            .as_mut()
+                            .map_or(Ok(Vec::new()), RegistryGateway::catalog)
+                            .map_err(BuiltinModelError)?;
+                        let registry_facts = self
+                            .registry
+                            .as_mut()
+                            .map_or_else(Vec::new, RegistryGateway::dependency_facts);
+                        let synced_root = self
+                            .dependencies
+                            .as_ref()
+                            .and_then(|cached| cached.synced_root);
+                        (catalog, registry_facts, synced_root)
+                    } else {
+                        let cached = self.dependencies.take().ok_or_else(|| {
+                            BuiltinModelError(
+                                "dependency index disappeared during a local refresh".to_owned(),
+                            )
+                        })?;
+                        (cached.catalog, cached.registry_facts, cached.synced_root)
+                    };
+                    let mut facts = registry_facts.clone();
+                    facts.extend(self.manifests.facts().cloned());
+                    let index = backend_library::PackageGraphIndex::from_facts(&facts);
+                    self.dependencies = Some(ResidentDependencies {
+                        stamp,
+                        local_witness,
+                        catalog,
+                        registry_facts,
+                        facts,
+                        index,
+                        synced_root,
+                    });
                 }
-                futures_executor::block_on(self.sql_projection.synchronize_package_graph(
-                    daemon.engine().daemon().library().view().root(),
-                    &dependency_facts,
-                ))
-                .map_err(|error| {
-                    BuiltinModelError(format!("align package graph projection: {error}"))
-                })?;
                 let workspace = self
                     .registry
                     .as_ref()
-                    .map(|gateway| gateway.workspace_root());
-                self.product_state
-                    .execute(
-                        surface,
-                        daemon.engine().daemon().library().view(),
-                        &catalog,
-                        &dependency_facts,
-                        workspace,
-                    )
-                    .map_or_else(
-                        |error| {
-                            CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(
-                                error,
-                            ))
-                        },
-                        CommandReply::Surface,
-                    )
+                    .map(|gateway| gateway.workspace_root().to_path_buf());
+                let mut cached = self.dependencies.take().ok_or_else(|| {
+                    BuiltinModelError("dependency index disappeared after refresh".to_owned())
+                })?;
+                if cached.synced_root != Some(root) {
+                    futures_executor::block_on(self.sql_projection.synchronize_package_graph(
+                        daemon.engine().daemon().library().view().root(),
+                        &cached.facts,
+                    ))
+                    .map_err(|error| {
+                        BuiltinModelError(format!("align package graph projection: {error}"))
+                    })?;
+                    cached.synced_root = Some(root);
+                }
+                let reply = self.product_state.execute(
+                    surface,
+                    daemon.engine().daemon().library().view(),
+                    &cached.catalog,
+                    &cached.facts,
+                    &cached.index,
+                    workspace.as_deref(),
+                );
+                self.dependencies = Some(cached);
+                reply.map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
+                    CommandReply::Surface,
+                )
             }
         };
         Ok((reply, None))
@@ -529,7 +646,7 @@ impl CommandAdapter {
                 let before = relation.lookup(&selected_key).map_err(|error| {
                     BuiltinModelError(format!("read selected semantic generation: {error}"))
                 })?;
-                if before != Some(record.clone()) {
+                let committed = if before != Some(record.clone()) {
                     let intent = BuiltinIntent::select_semantic_generation(
                         package_key,
                         package.as_str(),
@@ -541,8 +658,11 @@ impl CommandAdapter {
                     commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
                         BuiltinModelError(format!("commit semantic generation selection: {error}"))
                     })?;
-                }
-                self.publish_view(daemon)?;
+                    Some(intent)
+                } else {
+                    None
+                };
+                self.publish_view(daemon, committed.as_ref())?;
                 return Ok(semantic_version_record(
                     &selected_key,
                     coverage,
@@ -759,4 +879,20 @@ fn commit_builtin_intent(
             "builtin intent was sent to the wrong owner lane".to_owned(),
         )),
     }
+}
+
+fn local_project_roots(daemon: &ProductDaemon) -> Result<Vec<std::path::PathBuf>, BuiltinModelError> {
+    let indexed =
+        super::super::read_indexed_sources(&daemon.engine().daemon().owner().snapshot())?;
+    let mut roots = Vec::new();
+    for project in indexed.projects.values() {
+        if project.label.starts_with("pkg:") {
+            continue;
+        }
+        let project_root = Path::new(&project.label);
+        if project_root.is_dir() {
+            roots.push(project_root.to_path_buf());
+        }
+    }
+    Ok(roots)
 }

@@ -1,7 +1,7 @@
 //! Durable typed owner for follows, projects, and the shared session tree.
 
 use backend_engine::{
-    DeclarationRecord, DependencyFacts, DependencyScope, PackageDependencyRecord,
+    DeclarationRecord, DependencyFacts, PackageDependencyRecord,
     PackageDependencySourceFacts, PackageReference, ProductText, ProductTreeNodeId as TreeNodeId,
     ProjectId, ProjectName, ProjectRecord, ProjectSelector, RegistryMetadata,
     RegistryPackageRecord, ReleaseRecord, RowId, SemanticGenerationId, SemanticLanguageProfile,
@@ -9,8 +9,9 @@ use backend_engine::{
     TreeOpener, TreeSubject, ViewRoot,
 };
 use backend_library::{
-    AdvisoryPackageDto, CommandMutation, Fragment, RegistryDownloadCount, RegistryEcosystem,
-    RegistryFactAvailability, RegistryNativeMetadata, RegistryReleaseStanding, Row, command_spec,
+    AdvisoryPackageDto, CommandMutation, DependentSources, Fragment, PackageGraphIndex,
+    RegistryDownloadCount, RegistryEcosystem, RegistryFactAvailability, RegistryNativeMetadata,
+    RegistryReleaseStanding, Row, command_spec,
 };
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
@@ -88,13 +89,20 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         dependency_facts: &[PackageDependencySourceFacts],
+        dependency_index: &PackageGraphIndex,
         workspace: Option<&Path>,
     ) -> Result<SurfaceReply, String> {
         command.admit().map_err(|error| error.to_string())?;
         match command_spec(command.id()).mutation {
             CommandMutation::Read => {
-                let (reply, changed) =
-                    self.execute_admitted(command, view, catalog, dependency_facts, workspace)?;
+                let (reply, changed) = self.execute_admitted(
+                    command,
+                    view,
+                    catalog,
+                    dependency_facts,
+                    dependency_index,
+                    workspace,
+                )?;
                 if changed {
                     return Err("read command attempted to mutate product state".to_owned());
                 }
@@ -106,8 +114,14 @@ impl ProductState {
                     path: self.path.clone(),
                     state: self.state.clone(),
                 };
-                let (reply, changed) =
-                    pending.execute_admitted(command, view, catalog, dependency_facts, workspace)?;
+                let (reply, changed) = pending.execute_admitted(
+                    command,
+                    view,
+                    catalog,
+                    dependency_facts,
+                    dependency_index,
+                    workspace,
+                )?;
                 reply.admit(reply.id()).map_err(|error| error.to_string())?;
                 if changed {
                     pending.commit()?;
@@ -124,6 +138,7 @@ impl ProductState {
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
         dependency_facts: &[PackageDependencySourceFacts],
+        dependency_index: &PackageGraphIndex,
         workspace: Option<&Path>,
     ) -> Result<(SurfaceReply, bool), String> {
         let (reply, changed) = match command {
@@ -173,7 +188,11 @@ impl ProductState {
                 );
             }
             SurfaceCommand::Dependencies { package } => (
-                SurfaceReply::Dependencies(dependencies(dependency_facts, &package)?),
+                SurfaceReply::Dependencies(dependencies(
+                    dependency_facts,
+                    dependency_index,
+                    &package,
+                )?),
                 false,
             ),
             SurfaceCommand::PackageVersions { package } => (
@@ -192,7 +211,12 @@ impl ProductState {
                 (profile(view, catalog, &package, workspace)?, false)
             }
             SurfaceCommand::Dependents { package } => (
-                SurfaceReply::Dependents(dependents(catalog, dependency_facts, &package)?),
+                SurfaceReply::Dependents(dependents(
+                    catalog,
+                    dependency_facts,
+                    dependency_index,
+                    &package,
+                )?),
                 false,
             ),
             SurfaceCommand::Owner { owner } => {
@@ -1270,12 +1294,10 @@ fn profile(
 }
 fn dependencies(
     facts: &[PackageDependencySourceFacts],
+    index: &PackageGraphIndex,
     package: &PackageReference,
 ) -> Result<DependencyFacts<Box<[PackageDependencyRecord]>>, String> {
-    if let Some((_, value)) = facts
-        .iter()
-        .find(|(source, _)| source == package || source.as_str() == package.as_str())
-    {
+    if let Some(value) = index.dependencies(facts, package) {
         return Ok(value.clone());
     }
     Ok(DependencyFacts::Unavailable(
@@ -1290,6 +1312,7 @@ fn dependencies(
 fn dependents(
     catalog: &[RegistryPackageRecord],
     facts: &[PackageDependencySourceFacts],
+    index: &PackageGraphIndex,
     package: &PackageReference,
 ) -> Result<RegistryMetadata<Box<[RegistryPackageRecord]>>, String> {
     if facts.is_empty() {
@@ -1298,42 +1321,19 @@ fn dependents(
                 .map_err(|error| error.to_string())?,
         ));
     }
-    let PackageReference::Purl(target) = package else {
-        return Ok(RegistryMetadata::NotRecorded(
-            ProductText::new("reverse dependency lookup requires a pinned package URL")
-                .map_err(|error| error.to_string())?,
-        ));
+    let (sources, gap) = match index.dependent_sources(facts, package) {
+        DependentSources::NotPurl => {
+            return Ok(RegistryMetadata::NotRecorded(
+                ProductText::new("reverse dependency lookup requires a pinned package URL")
+                    .map_err(|error| error.to_string())?,
+            ));
+        }
+        DependentSources::Matched { sources, gap } => (sources, gap),
     };
-    let ecosystem = target.package_type().registry();
-    let mut sources = BTreeSet::new();
-    let mut saw_unknown = None;
-    for (source, value) in facts {
-        match value {
-            DependencyFacts::Known(rows) => {
-                if rows.iter().any(|row| {
-                    matches!(
-                        row.scope,
-                        DependencyScope::Runtime | DependencyScope::Optional
-                    ) && Some(row.target.ecosystem) == ecosystem
-                        && row.target.name.as_str() == target.lineage_name()
-                        && row
-                            .target
-                            .resolved
-                            .as_ref()
-                            .is_none_or(|resolved| resolved.as_str() == target.as_str())
-                }) {
-                    sources.insert(source.clone());
-                }
-            }
-            DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
-                saw_unknown.get_or_insert(reason.clone());
-            }
-        }
-    }
-    if sources.is_empty() {
-        if let Some(reason) = saw_unknown {
-            return Ok(RegistryMetadata::NotRecorded(reason));
-        }
+    if sources.is_empty()
+        && let Some(reason) = gap
+    {
+        return Ok(RegistryMetadata::NotRecorded(reason));
     }
     let mut records = catalog
         .iter()
@@ -1556,7 +1556,8 @@ mod tests {
             dependency_edge("pkg:cargo/peer-src@1.0.0", DependencyScope::Peer, 4),
             dependency_edge("pkg:cargo/optional-src@1.0.0", DependencyScope::Optional, 5),
         ];
-        let result = dependents(&catalog, &facts, &target).expect("dependents");
+        let index = PackageGraphIndex::from_facts(&facts);
+        let result = dependents(&catalog, &facts, &index, &target).expect("dependents");
         let RegistryMetadata::Recorded(rows) = result else {
             panic!("expected recorded dependents");
         };
@@ -1579,7 +1580,14 @@ mod tests {
         let path = root.join("product-state.json");
         let mut state = ProductState::open(path.clone()).expect("open empty state");
         let reply = state
-            .execute(create("Nudox"), &view(), &[], &[], None)
+            .execute(
+                create("Nudox"),
+                &view(),
+                &[],
+                &[],
+                &PackageGraphIndex::from_facts(&[]),
+                None,
+            )
             .expect("create project");
         assert!(matches!(reply, SurfaceReply::ProjectCreated(_)));
         assert_eq!(state.state.epoch, 1);
@@ -1598,7 +1606,14 @@ mod tests {
         let path = root.join("product-state.json");
         let mut state = ProductState::open(path.clone()).expect("open empty state");
         state
-            .execute(create("Canonical"), &view(), &[], &[], None)
+            .execute(
+                create("Canonical"),
+                &view(),
+                &[],
+                &[],
+                &PackageGraphIndex::from_facts(&[]),
+                None,
+            )
             .expect("create project");
         fs::write(root.join(".product-state.json.9.9.tmp"), b"partial")
             .expect("interrupted sibling");
@@ -1632,7 +1647,14 @@ mod tests {
         let before = state.state.clone();
         assert!(
             state
-                .execute(create("Unpublished"), &view(), &[], &[], None)
+                .execute(
+                    create("Unpublished"),
+                    &view(),
+                    &[],
+                    &[],
+                    &PackageGraphIndex::from_facts(&[]),
+                    None,
+                )
                 .is_err()
         );
         assert_eq!(state.state, before);

@@ -316,6 +316,187 @@ pub fn admit_dependency_rows(
     Ok(rows.into_boxed_slice())
 }
 
+/// Reverse package edges retained for repeated dependent lookups.
+///
+/// The index owns only the coordinates a lookup compares. Runtime and
+/// optional edges are addressable by ecosystem and lineage. An unresolved
+/// requirement matches every version of that lineage; a resolved edge matches
+/// only that exact package URL. Development, build, and peer edges are omitted
+/// because dependent answers do not count them.
+#[derive(Clone, Debug, Default)]
+pub struct PackageGraphIndex {
+    by_source: BTreeMap<String, usize>,
+    reverse: BTreeMap<(RegistryEcosystem, String), Vec<ReverseEdge>>,
+    first_gap: Option<ProductText>,
+}
+
+#[derive(Clone, Debug)]
+struct ReverseEdge {
+    source_index: usize,
+    resolved: Option<String>,
+}
+
+/// Sources that declare a runtime or optional edge onto one package.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DependentSources {
+    /// Reverse lookup is defined for a pinned package URL.
+    NotPurl,
+    /// Matching sources, plus the first unknown or unavailable reason.
+    ///
+    /// The reason is reported only when no runtime or optional source matched.
+    /// A later gap does not replace an earlier one.
+    Matched {
+        /// Packages that declare a counted edge onto the target.
+        sources: BTreeSet<PackageReference>,
+        /// First unknown or unavailable fact, in source order.
+        gap: Option<ProductText>,
+    },
+}
+
+impl PackageGraphIndex {
+    /// Builds forward and reverse adjacency from source order.
+    ///
+    /// The first fact for a source spelling wins the forward map. Duplicate
+    /// coordinates later in the slice stay in the reverse map when they carry
+    /// a counted edge, matching a scan that inserts into a set.
+    #[must_use]
+    pub fn from_facts(facts: &[PackageDependencySourceFacts]) -> Self {
+        let mut index = Self::default();
+        for (source_index, (source, state)) in facts.iter().enumerate() {
+            index
+                .by_source
+                .entry(source.as_str().to_owned())
+                .or_insert(source_index);
+            match state {
+                DependencyFacts::Known(rows) => {
+                    for row in rows.iter() {
+                        if !matches!(
+                            row.scope,
+                            DependencyScope::Runtime | DependencyScope::Optional
+                        ) {
+                            continue;
+                        }
+                        index
+                            .reverse
+                            .entry((row.target.ecosystem, row.target.name.as_str().to_owned()))
+                            .or_default()
+                            .push(ReverseEdge {
+                                source_index,
+                                resolved: row
+                                    .target
+                                    .resolved
+                                    .as_ref()
+                                    .map(|resolved| resolved.as_str().to_owned()),
+                            });
+                    }
+                }
+                DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
+                    if index.first_gap.is_none() {
+                        index.first_gap = Some(reason.clone());
+                    }
+                }
+            }
+        }
+        index
+    }
+
+    /// Returns the first fact whose source spelling matches `package`.
+    #[must_use]
+    pub fn dependencies<'a>(
+        &self,
+        facts: &'a [PackageDependencySourceFacts],
+        package: &PackageReference,
+    ) -> Option<&'a DependencyFacts<Box<[PackageDependencyRecord]>>> {
+        self.by_source
+            .get(package.as_str())
+            .and_then(|index| facts.get(*index))
+            .map(|(_, state)| state)
+    }
+
+    /// Returns the packages that depend on `package` under the counted scopes.
+    #[must_use]
+    pub fn dependent_sources(
+        &self,
+        facts: &[PackageDependencySourceFacts],
+        package: &PackageReference,
+    ) -> DependentSources {
+        let PackageReference::Purl(target) = package else {
+            return DependentSources::NotPurl;
+        };
+        let Some(ecosystem) = target.package_type().registry() else {
+            return DependentSources::Matched {
+                sources: BTreeSet::new(),
+                gap: self.first_gap.clone(),
+            };
+        };
+        let mut sources = BTreeSet::new();
+        if let Some(edges) = self
+            .reverse
+            .get(&(ecosystem, target.lineage_name().to_owned()))
+        {
+            for edge in edges {
+                let matches_version = edge
+                    .resolved
+                    .as_ref()
+                    .is_none_or(|resolved| resolved.as_str() == target.as_str());
+                if !matches_version {
+                    continue;
+                }
+                if let Some((source, _)) = facts.get(edge.source_index) {
+                    sources.insert(source.clone());
+                }
+            }
+        }
+        DependentSources::Matched {
+            sources,
+            gap: self.first_gap.clone(),
+        }
+    }
+}
+
+/// Walks every fact the same way the reverse index does.
+///
+/// Benchmarks and tests use this as the baseline. Production answers use
+/// [`PackageGraphIndex`].
+#[must_use]
+pub fn linear_dependent_sources(
+    facts: &[PackageDependencySourceFacts],
+    package: &PackageReference,
+) -> DependentSources {
+    let PackageReference::Purl(target) = package else {
+        return DependentSources::NotPurl;
+    };
+    let ecosystem = target.package_type().registry();
+    let mut sources = BTreeSet::new();
+    let mut gap = None;
+    for (source, state) in facts {
+        match state {
+            DependencyFacts::Known(rows) => {
+                if rows.iter().any(|row| {
+                    matches!(
+                        row.scope,
+                        DependencyScope::Runtime | DependencyScope::Optional
+                    ) && Some(row.target.ecosystem) == ecosystem
+                        && row.target.name.as_str() == target.lineage_name()
+                        && row
+                            .target
+                            .resolved
+                            .as_ref()
+                            .is_none_or(|resolved| resolved.as_str() == target.as_str())
+                }) {
+                    sources.insert(source.clone());
+                }
+            }
+            DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
+                if gap.is_none() {
+                    gap = Some(reason.clone());
+                }
+            }
+        }
+    }
+    DependentSources::Matched { sources, gap }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +625,309 @@ mod tests {
         assert_eq!(collapsed[0].scope, DependencyScope::Runtime);
         assert!(!collapsed[0].optional);
         assert_eq!(collapsed[0].facts_version, required_runtime.facts_version);
+    }
+
+    fn fact(
+        source: &str,
+        scope: DependencyScope,
+        name: &str,
+        ecosystem: RegistryEcosystem,
+        resolved: Option<&str>,
+        frontier: u8,
+    ) -> PackageDependencySourceFacts {
+        let source_ref = PackageReference::parse(source).expect("source");
+        let resolved = resolved.map(|value| PackageReference::parse(value).expect("resolved"));
+        let row = PackageDependencyRecord::new(
+            source_ref.clone(),
+            PackageDependencyTarget::new(ecosystem, name, "^1", resolved).expect("target"),
+            scope,
+            false,
+            DependencyEvidence {
+                authority: DependencyAuthority::RegistryMetadata,
+                frontier: [frontier; 32],
+                provenance: [frontier.wrapping_add(1); 32],
+            },
+        );
+        (
+            source_ref,
+            DependencyFacts::Known(vec![row].into_boxed_slice()),
+        )
+    }
+
+    #[test]
+    fn reverse_index_matches_the_linear_scan_on_adversarial_edges() {
+        let target_v1 = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("v1");
+        let target_v2 = PackageReference::parse("pkg:cargo/target-lib@2.0.0").expect("v2");
+        let mut facts = vec![
+            fact(
+                "pkg:cargo/exact@1.0.0",
+                DependencyScope::Runtime,
+                "target-lib",
+                RegistryEcosystem::Cargo,
+                Some("pkg:cargo/target-lib@1.0.0"),
+                1,
+            ),
+            fact(
+                "pkg:cargo/other-version@1.0.0",
+                DependencyScope::Runtime,
+                "target-lib",
+                RegistryEcosystem::Cargo,
+                Some("pkg:cargo/target-lib@2.0.0"),
+                2,
+            ),
+            fact(
+                "pkg:cargo/unresolved@1.0.0",
+                DependencyScope::Runtime,
+                "target-lib",
+                RegistryEcosystem::Cargo,
+                None,
+                3,
+            ),
+            fact(
+                "pkg:cargo/optional-src@1.0.0",
+                DependencyScope::Optional,
+                "target-lib",
+                RegistryEcosystem::Cargo,
+                None,
+                4,
+            ),
+            fact(
+                "pkg:cargo/dev-src@1.0.0",
+                DependencyScope::Development,
+                "target-lib",
+                RegistryEcosystem::Cargo,
+                None,
+                5,
+            ),
+            fact(
+                "pkg:cargo/build-src@1.0.0",
+                DependencyScope::Build,
+                "target-lib",
+                RegistryEcosystem::Cargo,
+                None,
+                6,
+            ),
+            fact(
+                "pkg:cargo/peer-src@1.0.0",
+                DependencyScope::Peer,
+                "target-lib",
+                RegistryEcosystem::Cargo,
+                None,
+                7,
+            ),
+            fact(
+                "pkg:npm/same-name@1.0.0",
+                DependencyScope::Runtime,
+                "target-lib",
+                RegistryEcosystem::Npm,
+                None,
+                8,
+            ),
+            (
+                PackageReference::parse("pkg:cargo/unknown-src@1.0.0").expect("unknown"),
+                DependencyFacts::Unknown(ProductText::new("first gap").expect("gap")),
+            ),
+            (
+                PackageReference::parse("pkg:cargo/later-gap@1.0.0").expect("later"),
+                DependencyFacts::Unavailable(ProductText::new("second gap").expect("gap")),
+            ),
+        ];
+        let index = PackageGraphIndex::from_facts(&facts);
+        let indexed = index.dependent_sources(&facts, &target_v1);
+        let linear = linear_dependent_sources(&facts, &target_v1);
+        assert_eq!(indexed, linear);
+        let DependentSources::Matched { sources, gap } = indexed else {
+            panic!("purl lookup");
+        };
+        assert_eq!(
+            sources
+                .iter()
+                .map(PackageReference::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "pkg:cargo/exact@1.0.0",
+                "pkg:cargo/optional-src@1.0.0",
+                "pkg:cargo/unresolved@1.0.0",
+            ]
+        );
+        assert_eq!(gap.expect("gap").as_str(), "first gap");
+        let v2 = index.dependent_sources(&facts, &target_v2);
+        assert_eq!(v2, linear_dependent_sources(&facts, &target_v2));
+        let DependentSources::Matched { sources, .. } = v2 else {
+            panic!("v2");
+        };
+        assert!(
+            sources
+                .iter()
+                .any(|source| source.as_str() == "pkg:cargo/other-version@1.0.0")
+        );
+        assert!(
+            sources
+                .iter()
+                .all(|source| source.as_str() != "pkg:cargo/exact@1.0.0")
+        );
+        assert_eq!(
+            index.dependent_sources(
+                &facts,
+                &PackageReference::parse("local-pkg").expect("local")
+            ),
+            DependentSources::NotPurl
+        );
+        facts.retain(|(_, state)| !matches!(state, DependencyFacts::Known(_)));
+        let gaps = PackageGraphIndex::from_facts(&facts);
+        let DependentSources::Matched { sources, gap } = gaps.dependent_sources(&facts, &target_v1)
+        else {
+            panic!("gaps");
+        };
+        assert!(sources.is_empty());
+        assert_eq!(gap.expect("only gap").as_str(), "first gap");
+        let known = fact(
+            "pkg:cargo/exact@1.0.0",
+            DependencyScope::Runtime,
+            "target-lib",
+            RegistryEcosystem::Cargo,
+            Some("pkg:cargo/target-lib@1.0.0"),
+            1,
+        );
+        assert!(
+            PackageGraphIndex::from_facts(std::slice::from_ref(&known))
+                .dependencies(std::slice::from_ref(&known), &known.0)
+                .expect("forward")
+                .is_known()
+        );
+    }
+
+    #[test]
+    fn reverse_index_matches_linear_scan_across_seeded_graphs() {
+        let mut state = 0x7a89_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            state
+        };
+        let ecosystems = [
+            (RegistryEcosystem::Cargo, "cargo"),
+            (RegistryEcosystem::Npm, "npm"),
+            (RegistryEcosystem::Pypi, "pypi"),
+        ];
+        let scopes = [
+            DependencyScope::Runtime,
+            DependencyScope::Optional,
+            DependencyScope::Development,
+            DependencyScope::Build,
+            DependencyScope::Peer,
+        ];
+        for _graph in 0..64 {
+            let source_count = usize::try_from(next() % 24).expect("count");
+            let mut facts = Vec::<PackageDependencySourceFacts>::with_capacity(source_count);
+            for source_index in 0..source_count {
+                let &(ecosystem, token) = ecosystems
+                    .get(usize::try_from(next() % 3).expect("eco"))
+                    .expect("ecosystem");
+                let name = format!("lib-{}", next() % 5);
+                let version = next() % 3;
+                let spelling = format!("pkg:{token}/{name}@{version}.0.0");
+                let reuse = !facts.is_empty() && next() % 7 == 0;
+                let source_ref = if reuse {
+                    facts.first().expect("duplicate source").0.clone()
+                } else {
+                    PackageReference::parse(&spelling).expect("source")
+                };
+                match next() % 5 {
+                    0 => facts.push((
+                        source_ref,
+                        DependencyFacts::Unknown(
+                            ProductText::new(format!("unknown-{source_index}")).expect("reason"),
+                        ),
+                    )),
+                    1 => facts.push((
+                        source_ref,
+                        DependencyFacts::Unavailable(
+                            ProductText::new(format!("unavailable-{source_index}"))
+                                .expect("reason"),
+                        ),
+                    )),
+                    _ => {
+                        let edge_count = usize::try_from(next() % 5).expect("edges");
+                        let mut rows = Vec::with_capacity(edge_count);
+                        for edge in 0..edge_count {
+                            let target_name = format!("dep-{}", next() % 4);
+                            let target_version = next() % 3;
+                            let resolved = if next() % 2 == 0 {
+                                Some(
+                                    PackageReference::parse(format!(
+                                        "pkg:{token}/{target_name}@{target_version}.0.0"
+                                    ))
+                                    .expect("resolved"),
+                                )
+                            } else {
+                                None
+                            };
+                            let scope = *scopes
+                                .get(usize::try_from(next() % 5).expect("scope"))
+                                .expect("scope");
+                            rows.push(PackageDependencyRecord::new(
+                                source_ref.clone(),
+                                PackageDependencyTarget::new(
+                                    ecosystem,
+                                    target_name,
+                                    "^1",
+                                    resolved,
+                                )
+                                .expect("target"),
+                                scope,
+                                next() % 2 == 0,
+                                DependencyEvidence {
+                                    authority: DependencyAuthority::RegistryMetadata,
+                                    frontier: [u8::try_from(edge).unwrap_or(0); 32],
+                                    provenance: [u8::try_from(source_index).unwrap_or(0); 32],
+                                },
+                            ));
+                        }
+                        facts.push((source_ref, DependencyFacts::Known(rows.into_boxed_slice())));
+                    }
+                }
+            }
+            let index = PackageGraphIndex::from_facts(&facts);
+            let mut queries = vec![
+                PackageReference::parse("local-pkg").expect("local"),
+                PackageReference::parse("pkg:cargo/missing@9.0.0").expect("missing"),
+            ];
+            for (source, state) in &facts {
+                queries.push(source.clone());
+                if let DependencyFacts::Known(rows) = state {
+                    for row in rows.iter() {
+                        if let Some(resolved) = &row.target.resolved {
+                            queries.push(resolved.clone());
+                        }
+                        queries.push(
+                            PackageReference::parse(format!(
+                                "pkg:cargo/{}@7.0.0",
+                                row.target.name.as_str()
+                            ))
+                            .expect("other version"),
+                        );
+                    }
+                }
+            }
+            for query in &queries {
+                assert_eq!(
+                    index.dependent_sources(&facts, query),
+                    linear_dependent_sources(&facts, query),
+                    "dependents diverged for {}",
+                    query.as_str()
+                );
+                assert_eq!(
+                    index.dependencies(&facts, query),
+                    facts
+                        .iter()
+                        .find(|(source, _)| source.as_str() == query.as_str())
+                        .map(|(_, state)| state),
+                    "forward lookup diverged for {}",
+                    query.as_str()
+                );
+            }
+        }
     }
 }

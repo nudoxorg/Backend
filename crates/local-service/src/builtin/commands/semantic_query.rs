@@ -90,6 +90,8 @@ fn execute_semantic_query_job(job: SemanticQueryJob) {
 pub(super) fn execute_semantic_graph(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
     query: backend_engine::GraphNeighborhoodQuery,
     include_incoming: bool,
 ) -> Result<Option<backend_engine::ViewSnapshot>, BuiltinModelError> {
@@ -140,7 +142,8 @@ pub(super) fn execute_semantic_graph(
                 continue;
             }
             let binding = claim.binding();
-            let activated = activate_semantic_publication(compiler, key, *claim)?;
+            let activated =
+                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
             let activation_index = activations.len();
             activations.push(activated);
             publication_bindings.push(binding);
@@ -155,10 +158,11 @@ pub(super) fn execute_semantic_graph(
     }
     let mut source_binding = None;
     for (activation_index, image_index) in &image_slots {
-        let bytes = activations[*activation_index].images()[*image_index].as_ref();
-        let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
-            BuiltinModelError(format!("reopen semantic graph image: {error}"))
-        })?;
+        let image = activations[*activation_index].images()[*image_index]
+            .reopen()
+            .map_err(|error| {
+                BuiltinModelError(format!("reopen semantic graph image: {error}"))
+            })?;
         if semantic_entity_for_symbol(&image, package, source_symbol)?.is_some() {
             source_binding = Some(publication_bindings[*activation_index]);
             break;
@@ -286,15 +290,12 @@ fn semantic_entity_for_symbol(
         .transpose()
 }
 
-fn published_identities_from_images(
-    images: &[&[u8]],
+fn published_identities_from_views(
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
 ) -> Result<BTreeSet<DeclarationIdentity>, BuiltinModelError> {
     let mut published = BTreeSet::new();
-    for bytes in images {
-        let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
-            BuiltinModelError(format!("reopen semantic graph published image: {error}"))
-        })?;
-        let session = DocumentationSession::new(&image);
+    for image in images {
+        let session = DocumentationSession::new(image);
         for entity in session.canonical_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic graph published entity: {error}"))
@@ -434,16 +435,42 @@ fn project_semantic_graph_relations_from_bytes(
     include_incoming: bool,
     project_paths: &BTreeSet<String>,
 ) -> Result<BTreeSet<backend_engine::GraphRelation>, BuiltinModelError> {
-    let callable_index = ProjectCallableIndex::build_from_bytes(images)?;
-    let published = published_identities_from_images(images)?;
-    let mut relations = BTreeSet::new();
+    let mut opened = Vec::with_capacity(images.len());
     for bytes in images {
-        let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
-            BuiltinModelError(format!("reopen semantic graph image: {error}"))
-        })?;
-        let caller_path = view_build::compiled_source_path(&image)?;
+        opened.push(
+            backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
+                BuiltinModelError(format!("reopen semantic graph image: {error}"))
+            })?,
+        );
+    }
+    project_opened_semantic_graph(
+        &opened,
+        view,
+        package,
+        symbol,
+        source_id,
+        include_incoming,
+        project_paths,
+    )
+}
+
+fn project_opened_semantic_graph(
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    symbol: backend_engine::SymbolKey,
+    source_id: backend_engine::RowId,
+    include_incoming: bool,
+    project_paths: &BTreeSet<String>,
+) -> Result<BTreeSet<backend_engine::GraphRelation>, BuiltinModelError> {
+    let image_refs = images.iter().collect::<Vec<_>>();
+    let callable_index = ProjectCallableIndex::build_from_views(&image_refs)?;
+    let published = published_identities_from_views(images)?;
+    let mut relations = BTreeSet::new();
+    for image in images {
+        let caller_path = view_build::compiled_source_path(image)?;
         let image_identity = *blake3::hash(image.as_ref()).as_bytes();
-        let session = DocumentationSession::new(&image);
+        let session = DocumentationSession::new(image);
         if let Some(source_entity) = semantic_entity_for_symbol(&image, package, symbol)? {
             for (_, link) in image.links_from(source_entity) {
                 let Some(target) = semantic_link_row_id(
@@ -537,14 +564,18 @@ fn project_semantic_graph_relations(
     include_incoming: bool,
     project_paths: &BTreeSet<String>,
 ) -> Result<BTreeSet<backend_engine::GraphRelation>, BuiltinModelError> {
-    let bytes = image_slots
-        .iter()
-        .map(|(activation_index, image_index)| {
-            activations[*activation_index].images()[*image_index].as_ref()
-        })
-        .collect::<Vec<_>>();
-    project_semantic_graph_relations_from_bytes(
-        &bytes,
+    let mut opened = Vec::with_capacity(image_slots.len());
+    for (activation_index, image_index) in image_slots {
+        opened.push(
+            activations[*activation_index].images()[*image_index]
+                .reopen()
+                .map_err(|error| {
+                    BuiltinModelError(format!("reopen semantic graph image: {error}"))
+                })?,
+        );
+    }
+    project_opened_semantic_graph(
+        &opened,
         view,
         package,
         symbol,
@@ -572,18 +603,42 @@ fn project_reference_facts_from_bytes(
     project_paths: &BTreeSet<String>,
     structural_pairs: &[(String, String)],
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
-    let mut facts = Vec::new();
+    let mut opened = Vec::with_capacity(images.len());
     for bytes in images {
-        append_reference_facts(package, bytes, target_symbol, &mut facts)?;
+        opened.push(
+            backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
+                BuiltinModelError(format!("reopen semantic references image: {error}"))
+            })?,
+        );
     }
-    let callable_index = ProjectCallableIndex::build_from_bytes(images)?;
+    project_opened_reference_facts(
+        &opened,
+        view,
+        package,
+        target_symbol,
+        project_paths,
+        structural_pairs,
+    )
+}
+
+fn project_opened_reference_facts(
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    target_symbol: backend_engine::SymbolKey,
+    project_paths: &BTreeSet<String>,
+    structural_pairs: &[(String, String)],
+) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
+    let image_refs = images.iter().collect::<Vec<_>>();
+    let mut facts = Vec::new();
+    for image in images {
+        append_reference_facts(package, image, target_symbol, &mut facts)?;
+    }
+    let callable_index = ProjectCallableIndex::build_from_views(&image_refs)?;
     let target_row_id = backend_engine::RowId::Symbol(target_symbol);
     let mut published = BTreeSet::new();
-    for bytes in images {
-        let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
-            BuiltinModelError(format!("reopen semantic references published image: {error}"))
-        })?;
-        let session = DocumentationSession::new(&image);
+    for image in images {
+        let session = DocumentationSession::new(image);
         for entity in session.canonical_entities() {
             let entity = entity.map_err(|error| {
                 BuiltinModelError(format!("read semantic references published entity: {error}"))
@@ -591,12 +646,9 @@ fn project_reference_facts_from_bytes(
             published.insert(entity.entity.version.identity());
         }
     }
-    for bytes in images {
-        let image = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
-            BuiltinModelError(format!("reopen semantic references image: {error}"))
-        })?;
-        let caller_path = view_build::compiled_source_path(&image)?;
-        let session = DocumentationSession::new(&image);
+    for image in images {
+        let caller_path = view_build::compiled_source_path(image)?;
+        let session = DocumentationSession::new(image);
         for source in session.canonical_entities() {
             let source = source.map_err(|error| {
                 BuiltinModelError(format!("read semantic references caller: {error}"))
@@ -686,7 +738,7 @@ fn project_reference_facts_from_bytes(
                         declaration: semantic_declaration_identity(identity),
                     },
                     relation,
-                    evidence: semantic_link_evidence(&image, link)?,
+                    evidence: semantic_link_evidence(image, link)?,
                 });
                 if facts.len() > backend_engine::MAX_PRODUCT_ROWS {
                     return Err(BuiltinModelError(
@@ -810,6 +862,8 @@ fn project_reference_facts_from_bytes(
 pub(super) fn execute_references(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
+    generations: &mut super::super::generation_residence::SemanticGenerationResidence,
+    image_rows: &mut view_build::ImageRowResidence,
     target: &backend_engine::ProductText,
 ) -> Result<backend_engine::SurfaceReply, BuiltinModelError> {
     let library = daemon.engine().daemon().library();
@@ -862,7 +916,8 @@ pub(super) fn execute_references(
                 continue;
             };
             publication_found = true;
-            let activated = activate_semantic_publication(compiler, key, *claim)?;
+            let activated =
+                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
             let activation_index = activations.len();
             activations.push(activated);
             for image_index in 0..activations[activation_index].images().len() {
@@ -879,19 +934,23 @@ pub(super) fn execute_references(
     }
     let sources = read_indexed_sources(&snapshot)?;
     let project_paths = project_paths_for_package(&sources, package);
-    let bytes = image_slots
-        .iter()
-        .map(|(activation_index, image_index)| {
-            activations[*activation_index].images()[*image_index].as_ref()
-        })
-        .collect::<Vec<_>>();
+    let mut opened = Vec::with_capacity(image_slots.len());
+    for (activation_index, image_index) in &image_slots {
+        opened.push(
+            activations[*activation_index].images()[*image_index]
+                .reopen()
+                .map_err(|error| {
+                    BuiltinModelError(format!("reopen semantic references image: {error}"))
+                })?,
+        );
+    }
     let pairs = if package_indexed_in_sources(&sources, package) {
         view_build::structural_call_coordinate_pairs(&sources, package)?
     } else {
         Vec::new()
     };
-    let facts = project_reference_facts_from_bytes(
-        &bytes,
+    let facts = project_opened_reference_facts(
+        &opened,
         view,
         package,
         target_symbol,
@@ -942,13 +1001,11 @@ fn execute_structural_references(
 /// Appends every occurrence of one image that targets `target_symbol`.
 fn append_reference_facts(
     package: backend_engine::PackageKey,
-    image_bytes: &[u8],
+    image: &backend_semantic::ir::SemanticImageView<'_>,
     target_symbol: backend_engine::SymbolKey,
     facts: &mut Vec<backend_engine::ReferenceFact>,
 ) -> Result<(), BuiltinModelError> {
-    let image = backend_semantic::ir::SemanticImageView::reopen(image_bytes)
-        .map_err(|error| BuiltinModelError(format!("reopen semantic references image: {error}")))?;
-    let session = backend_engine::application::DocumentationSession::new(&image);
+    let session = backend_engine::application::DocumentationSession::new(image);
     let target_entity = session
         .canonical_entities()
         .find_map(|entity| match entity {
@@ -8746,10 +8803,20 @@ mod project_call_tests {
         )
         .map_err(|error| error.to_string())?;
         let sync_symbol = semantic_symbol(package, sync_identity);
-        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
-        if sync_site_facts != 0 {
+        let sync_site_facts: Vec<_> = facts
+            .iter()
+            .filter(|fact| fact.site == sync_symbol)
+            .collect();
+        if sync_site_facts.len() != 1 {
             return Err(format!(
-                "Reads foreign link produced {sync_site_facts} sync-site facts"
+                "resolved function read produced {} sync-site facts",
+                sync_site_facts.len()
+            ));
+        }
+        if sync_site_facts[0].relation != backend_engine::SemanticLinkKind::Reads {
+            return Err(format!(
+                "function read was recorded as {:?}",
+                sync_site_facts[0].relation
             ));
         }
         Ok(())
@@ -9956,7 +10023,9 @@ mod references_tests {
             fixture_version(2).identity(),
         );
         let mut facts = Vec::new();
-        append_reference_facts(package, &bytes, callee_symbol, &mut facts)
+        let image = backend_semantic::ir::SemanticImageView::reopen(&bytes)
+            .map_err(|error| error.to_string())?;
+        append_reference_facts(package, &image, callee_symbol, &mut facts)
             .map_err(|error| error.to_string())?;
         if facts.len() != 1 {
             return Err(format!("expected one reference fact, got {}", facts.len()));
@@ -10009,7 +10078,9 @@ mod references_tests {
             fixture_version(9).identity(),
         );
         let mut facts = Vec::new();
-        append_reference_facts(package, &bytes, absent, &mut facts)
+        let image = backend_semantic::ir::SemanticImageView::reopen(&bytes)
+            .map_err(|error| error.to_string())?;
+        append_reference_facts(package, &image, absent, &mut facts)
             .map_err(|error| error.to_string())?;
         if !facts.is_empty() {
             return Err(format!("absent target produced {} facts", facts.len()));

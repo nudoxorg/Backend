@@ -169,8 +169,9 @@ pub use semantic_image::{
     CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
     CoreSemanticImageField, ExtensionPlanFault, FullEntityFault, FullPlanError,
     FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
-    FullSemanticImageIdentityField, GraphPlanFault, ScopeComponent, SemanticImageEncodeError,
-    SemanticImageIdentity, SemanticImageReopenError, SemanticImageView, TerminalPoolDomain,
+    AdmittedSemanticImage, FullSemanticImageIdentityField, GraphPlanFault, ScopeComponent,
+    SemanticImageEncodeError, SemanticImageIdentity, SemanticImageReopenError, SemanticImageView,
+    TerminalPoolDomain, reset_semantic_image_validations, semantic_image_validations,
     TerminalPoolFault, encode_full_semantic_image, full_semantic_image_len,
 };
 pub use semantic_render::{

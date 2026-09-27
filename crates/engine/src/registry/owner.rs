@@ -276,6 +276,7 @@ pub struct RegistryOwner<S: FeedSchema = CanonicalFeedV1> {
     forge_associations: BTreeMap<[u8; 32], backend_library::RegistryForgeAssociation>,
     forge_refcounts: BTreeMap<[u8; 32], u32>,
     facts_map: FactsMerkleMap,
+    catalog_generation: u64,
     faults: Arc<Faults>,
     readiness: RegistryReadiness,
     advisory_gate: Option<AcquisitionGate>,
@@ -372,6 +373,7 @@ impl RegistryOwner {
         let mut forge_associations = BTreeMap::new();
         let mut forge_refcounts = BTreeMap::new();
         let mut facts_map = FactsMerkleMap::try_new().map_err(facts_store_error)?;
+        let mut catalog_generation = 0u64;
         for frame in recovery.frames {
             match RegistryLog::decode_record(&frame.payload)? {
                 RegistryRecord::Prepared(intent) => {
@@ -424,6 +426,7 @@ impl RegistryOwner {
                         &receipt,
                         prepared_facts,
                     )?;
+                    catalog_generation = catalog_generation.saturating_add(1);
                     cursor = receipt.target;
                     last_receipt = Some(receipt);
                 }
@@ -449,6 +452,7 @@ impl RegistryOwner {
                         &mut facts_map,
                         prepared,
                     )?;
+                    catalog_generation = catalog_generation.saturating_add(1);
                 }
             }
         }
@@ -488,6 +492,7 @@ impl RegistryOwner {
                 forge_associations,
                 forge_refcounts,
                 facts_map,
+                catalog_generation,
                 faults: Arc::new(Faults::default()),
                 readiness,
                 advisory_gate: None,
@@ -619,6 +624,7 @@ impl RegistryOwner {
             &receipt,
             prepared_facts,
         )?;
+        self.note_catalog_mutation();
         self.cursor = target;
         self.readiness = RegistryReadiness::Ready {
             source: self.endpoint.id(),
@@ -793,7 +799,21 @@ impl RegistryOwner {
             &mut self.facts_map,
             prepared,
         )?;
+        self.note_catalog_mutation();
         Ok(())
+    }
+
+    /// Monotonic count of catalog commits and forge-link updates.
+    ///
+    /// A projection cache compares this value instead of cloning the catalog.
+    /// Replay counts every applied record, and each later commit advances it.
+    #[must_use]
+    pub fn catalog_generation(&self) -> u64 {
+        self.catalog_generation
+    }
+
+    fn note_catalog_mutation(&mut self) {
+        self.catalog_generation = self.catalog_generation.saturating_add(1);
     }
 
     /// Content identity of the mutable release-facts/advisory frontier.
@@ -989,6 +1009,7 @@ impl RegistryOwner {
             &receipt,
             prepared_facts,
         )?;
+        self.note_catalog_mutation();
         self.cursor = target;
         self.readiness = RegistryReadiness::Ready {
             source: self.endpoint.id(),
