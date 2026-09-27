@@ -200,9 +200,11 @@ pub enum OccurrenceReceiver {
         /// starts after `Start`.
         after: Option<String>,
     },
-    /// `Child().note` / `Child().note()` where the callee is a simple name.
-    /// The lowerer binds that class's member when the name is one live class.
-    /// `factory().note()` keeps a universe key when `factory` is not a class.
+    /// `Child().note` / `Child().note()`, `Child[int]().note`,
+    /// `Child[int][str]().note()`, and `Child[int].note` when subscripts peel
+    /// to one simple name. The lowerer binds that class's member when the name
+    /// is one live class. Non-class names (`factory`, `list`) and attribute
+    /// callees (`pkg.Child[int]().note()`) keep universe keys.
     Constructed { class: String },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
@@ -813,6 +815,19 @@ fn terminal_name(expr: &ast::Expr) -> Option<&str> {
     }
 }
 
+/// Walks only `Subscript::value` until a `Name` is reached. Stops on anything
+/// else, so `pkg.Child[int]` does not peel and `list[Child]` peels to `list`.
+fn peel_subscript_name(expr: &ast::Expr) -> Option<&str> {
+    let mut current = expr;
+    loop {
+        match current {
+            ast::Expr::Subscript(subscript) => current = subscript.value.as_ref(),
+            ast::Expr::Name(name) => return Some(name.id.as_str()),
+            _ => return None,
+        }
+    }
+}
+
 fn docstring(body: &[ast::Stmt], text: &str) -> Result<Option<DocstringFact>, ExtractionError> {
     let Some(first) = body.first() else {
         return Ok(None);
@@ -972,17 +987,17 @@ impl<'a> Projection<'a> {
         Some(OccurrenceReceiver::Super { class, after })
     }
 
-    /// `Child().note` / `Child().note()` when the receiver call's callee is a
-    /// simple name. Attribute callees (`pkg.Child().note()`) stay foreign.
+    /// `Child().note` / `Child().note()`, `Child[int]().note`, and
+    /// `Child[int].note` when subscripts on the callee peel to one simple name.
+    /// Attribute callees (`pkg.Child[int]().note()`) stay foreign.
     fn constructed_class_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
-        let ast::Expr::Call(call) = expr else {
-            return None;
-        };
-        let ast::Expr::Name(name) = call.func.as_ref() else {
-            return None;
-        };
+        let class = match expr {
+            ast::Expr::Call(call) => peel_subscript_name(call.func.as_ref()),
+            ast::Expr::Subscript(_) => peel_subscript_name(expr),
+            _ => None,
+        }?;
         Some(OccurrenceReceiver::Constructed {
-            class: name.id.as_str().to_owned(),
+            class: class.to_owned(),
         })
     }
 
