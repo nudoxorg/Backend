@@ -38,6 +38,9 @@ default = ["highlight"]
 highlight = ["gpui_component/tree-sitter-rust", "gpui_component/tree-sitter-typescript", "gpui_component/tree-sitter-python", "gpui_component/tree-sitter-go", "gpui_component/tree-sitter-java", "gpui_component/tree-sitter-csharp", "gpui_component/tree-sitter-cpp"]
 # Lane W-Float bring-up gate for new overlay modules (removed at the end).
 overlay-wip = []
+# The release fixture (toml, smallvec; ~395 KB embedded) outside the gallery:
+# the desktop's stand-in for index-served release diffs.
+release-fixture = []
 # Lane W-Graph bring-up gate for unfinished `facet::graph` modules.
 graph-wip = []
 # The gallery binary: every component state as a scene, captured headless
