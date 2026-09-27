@@ -473,6 +473,31 @@ pub(super) struct SemanticTargets {
     >,
 }
 
+/// Lower bounds for every indexed project, in map order.
+///
+/// `None` means a label is not the package reference that produced its key, so
+/// the caller pages the whole relation. An empty project set seeks nothing.
+fn publication_seek_bounds(
+    projects: &BTreeMap<[u8; 32], IndexedProject>,
+) -> Option<
+    Vec<(
+        backend_engine::PackageReference,
+        backend_engine::ProductSemanticPublicationKey,
+    )>,
+> {
+    let mut bounds = Vec::with_capacity(projects.len());
+    for project in projects.values() {
+        let reference = backend_engine::PackageReference::parse(project.label.clone()).ok()?;
+        if backend_engine::package_key(reference.as_str()) != project.package {
+            return None;
+        }
+        let start =
+            backend_engine::ProductSemanticPublicationKey::package_lower_bound(reference.clone());
+        bounds.push((reference, start));
+    }
+    Some(bounds)
+}
+
 fn semantic_rows(
     snapshot: &WorkspaceSnapshot,
     compiler: &LocalCompilerClient,
@@ -499,14 +524,40 @@ fn semantic_rows(
     let mut symbols = BTreeSet::new();
     let mut remaining_bytes = MAX_REBUILD_BYTES;
     let mut targets = SemanticTargets::default();
+    // Package publication already named its projects. Seek each one instead of
+    // paging every other package's publications and discarding them.
+    let bounds = match foreign {
+        ForeignPublication::Skip => publication_seek_bounds(projects),
+        ForeignPublication::Reject => None,
+    };
+    let mut bound_index = 0usize;
+    let mut from = bounds
+        .as_ref()
+        .and_then(|bounds| bounds.first().map(|(_, start)| start.clone()));
     let mut after = None;
     loop {
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| {
-                BuiltinModelError(format!("read semantic publication page: {error}"))
-            })?;
+        if let Some(bounds) = &bounds
+            && bound_index >= bounds.len()
+        {
+            break;
+        }
+        let page = if let Some(start) = from.take() {
+            relation.page_from(&start, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        } else {
+            relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        }
+        .map_err(|error| {
+            BuiltinModelError(format!("read semantic publication page: {error}"))
+        })?;
+        let mut package_ended = false;
         for (key, record) in page.entries() {
+            if let Some(bounds) = &bounds
+                && let Some((reference, _)) = bounds.get(bound_index)
+                && key.package() != reference
+            {
+                package_ended = true;
+                break;
+            }
             if !key.is_selected() {
                 continue;
             }
@@ -672,6 +723,16 @@ fn semantic_rows(
                 }
             }
             activated_publications.insert((key.package_key(), key.profile()));
+        }
+        if package_ended || (bounds.is_some() && page.next().is_none()) {
+            bound_index = bound_index.saturating_add(1);
+            from = bounds.as_ref().and_then(|bounds| {
+                bounds
+                    .get(bound_index)
+                    .map(|(_, start)| start.clone())
+            });
+            after = None;
+            continue;
         }
         let Some(next) = page.next().cloned() else {
             break;
@@ -1215,4 +1276,146 @@ fn documentation_fragment<Reader: backend_semantic::ir::SemanticReader + ?Sized>
             },
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    fn median(mut body: impl FnMut() -> usize) -> u128 {
+        for _ in 0..2 {
+            let _ = body();
+        }
+        let mut samples = Vec::new();
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            let _ = body();
+            samples.push(started.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+        samples[samples.len() / 2]
+    }
+
+    use super::publication_seek_bounds;
+    use super::super::super::IndexedProject;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn skip_seeks_one_package_inside_a_full_publication_relation() {
+        const PACKAGES: usize = 4_096;
+        let value = backend_engine::builtin::ProductSemanticPublicationRecord::Unavailable(
+            backend_engine::builtin::SemanticUnavailableReason::Toolchain,
+        );
+        let mut entries = Vec::with_capacity(PACKAGES);
+        for index in 0..PACKAGES {
+            let name = format!("pkg:cargo/p{index:04}@1.0.0");
+            let key = backend_engine::ProductSemanticPublicationKey::new(
+                backend_engine::PackageReference::parse(name.clone()).expect("package"),
+                backend_semantic::vocabulary::PackageUrl::parse(name).expect("coordinate"),
+                backend_semantic::vocabulary::LanguageProfile::Rust(
+                    backend_semantic::vocabulary::RustEdition::Rust2015,
+                ),
+            )
+            .expect("key");
+            entries.push((key, value.clone()));
+        }
+        let target = entries[PACKAGES - 1].0.clone();
+        let relation = backend_version::RelationState::<
+            super::super::super::BuiltinSemanticRelation,
+        >::from_entries(
+            entries,
+            super::super::super::admitted_coverage().expect("coverage"),
+        )
+        .expect("relation");
+        let directory = std::env::temp_dir().join(format!(
+            "nudox-semantic-rebuild-seek-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let registry = backend_store::RelationAdmissionRegistry::default()
+            .with_relation::<super::super::super::BuiltinSemanticRelation>()
+            .expect("register");
+        let store = Arc::new(
+            backend_store::FileStore::open_with_registry(&directory, 32 * 1024 * 1024, registry)
+                .expect("store"),
+        );
+        store.write_relation_state(&relation).expect("write");
+        let handle = backend_engine::workspace::WorkspaceRelationHandle::<
+            super::super::super::BuiltinSemanticRelation,
+        >::open(Arc::clone(&store), relation.root().to_bytes())
+        .expect("open");
+        let mut projects = BTreeMap::new();
+        projects.insert(
+            target.package_key().to_bytes(),
+            IndexedProject {
+                package: target.package_key(),
+                label: target.package().as_str().to_owned(),
+                files: Arc::from([]),
+            },
+        );
+        let bounds = publication_seek_bounds(&projects).expect("seek bounds");
+        assert_eq!(bounds.len(), 1);
+        assert_eq!(&bounds[0].0, target.package());
+
+        let collect = |start: &backend_engine::ProductSemanticPublicationKey| {
+            let reference = start.package().clone();
+            let mut found = Vec::new();
+            let mut from = Some(start.clone());
+            let mut after = None;
+            loop {
+                let page = if let Some(cursor) = from.take() {
+                    handle
+                        .page_from(&cursor, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                        .expect("page_from")
+                } else {
+                    handle
+                        .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                        .expect("page")
+                };
+                let mut ended = false;
+                for (key, _) in page.entries() {
+                    if key.package() != &reference {
+                        ended = true;
+                        break;
+                    }
+                    found.push(key.clone());
+                }
+                if ended {
+                    break;
+                }
+                let Some(next) = page.next().cloned() else {
+                    break;
+                };
+                after = Some(next);
+            }
+            found
+        };
+        assert_eq!(collect(&bounds[0].1), vec![target]);
+
+        let page_median = median(|| {
+            let mut count = 0usize;
+            let mut after = None;
+            loop {
+                let page = handle
+                    .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                    .expect("page");
+                count += page.entries().len();
+                let Some(next) = page.next().cloned() else {
+                    return count;
+                };
+                after = Some(next);
+            }
+        });
+        let range_median = median(|| collect(&bounds[0].1).len());
+        eprintln!(
+            "semantic_rebuild_seek packages={PACKAGES} page_median_ns={page_median} \
+             range_median_ns={range_median}"
+        );
+        assert!(
+            range_median.saturating_mul(8) < page_median,
+            "package seek {range_median} ns was not 8× cheaper than a full publication page \
+             {page_median} ns"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 }
