@@ -5763,7 +5763,7 @@ fn class_qualified_other_receiver_stays_syntactic() {
 }
 
 #[test]
-fn class_qualified_namespace_hop_stays_syntactic() {
+fn namespace_qualified_class_call_targets_box_note() {
     const SOURCE: &[u8] = b"export namespace Box { export class Child { static note(): number { return 1; } } } export function read(): number { return Box.Child.note(); }";
     let stack = StackLowered::compile(SOURCE);
     let v = stack.view();
@@ -5796,10 +5796,266 @@ fn class_qualified_namespace_hop_stays_syntactic() {
         .collect::<Vec<_>>();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].owner.raw, read_owner);
-    match &calls[0].occurrence.target {
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
+fn namespace_qualified_enum_variant_targets_box_red_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export enum Color { Red = 9 } } namespace Box { export enum Color { Red = 1 } } export function read(): number { return Box.Color.Red; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
+    assert_eq!(red_variants.len(), 2);
+    let other_red = red_variants[0];
+    let box_red = red_variants[1];
+    let color_enums = entities_named(&v, b"Color", EntityKind::Enum);
+    assert_eq!(color_enums.len(), 2);
+    let other_color = color_enums[0];
+    let box_color = color_enums[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let color_token_start = property_token(SOURCE, b"Box.", b"Color");
+    let red_token_start = property_token(SOURCE, b"Color.", b"Red");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 2);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_red))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_red))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
+    assert_eq!(field_reads[1].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[1].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_color))
+    );
+    assert_ne!(
+        field_reads[1].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_color))
+    );
+    assert_eq!(field_reads[1].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[1], b"Color", color_token_start);
+    let function_calls = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    assert_eq!(function_calls, 0);
+}
+
+#[test]
+fn namespace_qualified_parenthesized_variant_targets_box_red() {
+    const SOURCE: &[u8] = b"namespace Other { export enum Color { Red = 9 } } namespace Box { export enum Color { Red = 1 } } export function read(): number { return (Box.Color).Red; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
+    assert_eq!(red_variants.len(), 2);
+    let other_red = red_variants[0];
+    let box_red = red_variants[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let red_token_start = property_token(SOURCE, b"Color).", b"Red");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 2);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_red))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_red))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
+}
+
+#[test]
+fn namespace_qualified_computed_variant_targets_box_red_not_blue() {
+    const SOURCE: &[u8] = b"namespace Box { export enum Color { Red = 1, Blue = 2 } } export function read(): number { return Box.Color[\"Red\"]; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
+    assert_eq!(red_variants.len(), 1);
+    let box_red = red_variants[0];
+    let blue_variants = entities_named(&v, b"Blue", EntityKind::Variant);
+    assert_eq!(blue_variants.len(), 1);
+    let box_blue = blue_variants[0];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let red_token_start = property_token(SOURCE, b"Color[\"", b"Red");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 2);
+    assert_eq!(field_reads[1].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[1].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_red))
+    );
+    assert_ne!(
+        field_reads[1].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_blue))
+    );
+    assert_eq!(field_reads[1].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[1], b"Red", red_token_start);
+}
+
+#[test]
+fn namespace_qualified_computed_escape_does_not_bind_red() {
+    const SOURCE: &[u8] = b"namespace Box { export enum Color { Red = 1 } } export function read(): number { return Box.Color[\"R\\u0065d\"]; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
+    assert_eq!(red_variants.len(), 1);
+    let box_red = red_variants[0];
+    let color_enums = entities_named(&v, b"Color", EntityKind::Enum);
+    assert_eq!(color_enums.len(), 1);
+    let box_color = color_enums[0];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_color))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_red))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    let function_calls = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    assert_eq!(function_calls, 0);
+}
+
+#[test]
+fn namespace_qualified_nested_call_targets_box_note_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export namespace Inner { export function note(): number { return 9; } } } namespace Box { export namespace Inner { export function note(): number { return 1; } } } export function read(): number { return Box.Inner.note(); }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 2);
+    let other_note = note_functions[0];
+    let box_note = note_functions[1];
+    let inner_modules = entities_named(&v, b"Inner", EntityKind::Module);
+    assert_eq!(inner_modules.len(), 2);
+    let other_inner = inner_modules[0];
+    let box_inner = inner_modules[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let inner_token_start = property_token(SOURCE, b"Box.", b"Inner");
+    let note_token_start = property_token(SOURCE, b"Inner.", b"note");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_inner))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_inner))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Inner", inner_token_start);
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
+fn namespace_qualified_deep_call_targets_note() {
+    const SOURCE: &[u8] = b"namespace Box { export namespace Inner { export namespace Deep { export function note(): number { return 1; } } } } export function read(): number { return Box.Inner.Deep.note(); }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 1);
+    let note = note_functions[0];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let note_token_start = property_token(SOURCE, b"Deep.", b"note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
+fn namespace_qualified_other_receiver_stays_syntactic() {
+    const SOURCE: &[u8] = b"namespace Box { export enum Color { Red = 1 } } export function read(obj: { Color: { Red: number } }): number { return obj.Color.Red; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let red_variants = entities_named(&v, b"Red", EntityKind::Variant);
+    assert_eq!(red_variants.len(), 1);
+    let box_red = red_variants[0];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let red_token_start = property_token(SOURCE, b"Color.", b"Red");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 2);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    match &field_reads[0].occurrence.target {
         OccurrenceTarget::Foreign(key) => {
-            assert_eq!(key.path, "note");
-            assert_eq!(key.display, "note");
+            assert_eq!(key.path, "Red");
+            assert_eq!(key.display, "Red");
             assert!(key.kind.is_none());
             assert!(matches!(
                 key.origin,
@@ -5807,15 +6063,36 @@ fn class_qualified_namespace_hop_stays_syntactic() {
             ));
         }
         OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
-            panic!("namespace-hop class member access must stay syntactic")
+            panic!("other-receiver enum member access must stay syntactic")
         }
     }
-    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
     assert_ne!(
-        calls[0].occurrence.target,
-        OccurrenceTarget::Local(EntityId::new(note))
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_red))
     );
-    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Red", red_token_start);
+    assert_eq!(field_reads[1].owner.raw, read_owner);
+    match &field_reads[1].occurrence.target {
+        OccurrenceTarget::Foreign(key) => {
+            assert_eq!(key.path, "Color");
+            assert_eq!(key.display, "Color");
+            assert!(key.kind.is_none());
+            assert!(matches!(
+                key.origin,
+                ForeignOrigin::Universe { ecosystem: "npm" }
+            ));
+        }
+        OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
+            panic!("other-receiver enum member access must stay syntactic")
+        }
+    }
+    assert_eq!(field_reads[1].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    let function_calls = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    assert_eq!(function_calls, 0);
 }
 
 #[test]

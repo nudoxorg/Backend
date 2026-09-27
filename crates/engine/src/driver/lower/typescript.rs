@@ -4720,42 +4720,59 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 continue;
             };
             let object_span = member.object.span();
-            let Some(identifier_span) =
-                self.peel_object_identifier_span(object_span.start, object_span.end)
-            else {
-                continue;
-            };
             let property_bytes = self
                 .slice_span(property_span)
                 .ok_or(TypeScriptCollectError::Span {
                     start: property_span.start,
                     end: property_span.end,
                 })?;
-            if let Some(enum_fact) = self.enum_fact_for_identifier_span(identifier_span) {
-                let Some(variant) = self.variant_in_enum(enum_fact, property_bytes) else {
+            if let Some(identifier_span) =
+                self.peel_object_identifier_span(object_span.start, object_span.end)
+            {
+                if let Some(enum_fact) = self.enum_fact_for_identifier_span(identifier_span) {
+                    let Some(variant) = self.variant_in_enum(enum_fact, property_bytes) else {
+                        continue;
+                    };
+                    self.commit_occurrence(
+                        owner,
+                        property_span,
+                        ReferenceKind::FieldAccess,
+                        OccurrenceTarget::Local(EntityId::new(variant)),
+                        OccurrenceConfidence::Index,
+                    )?;
                     continue;
+                }
+                if let Some(target) = self.cross_file_enum_member_target(
+                    identifier_span,
+                    property_span,
+                    property_bytes,
+                )? {
+                    self.commit_occurrence(
+                        owner,
+                        property_span,
+                        ReferenceKind::FieldAccess,
+                        target,
+                        OccurrenceConfidence::Oracle,
+                    )?;
+                }
+            } else if let Some(container) =
+                self.namespace_qualified_fact(object_span.start, object_span.end, 0)
+            {
+                let container_index = match usize::try_from(container) {
+                    Ok(index) => index,
+                    Err(_) => continue,
                 };
-                self.commit_occurrence(
-                    owner,
-                    property_span,
-                    ReferenceKind::FieldAccess,
-                    OccurrenceTarget::Local(EntityId::new(variant)),
-                    OccurrenceConfidence::Index,
-                )?;
-                continue;
-            }
-            if let Some(target) = self.cross_file_enum_member_target(
-                identifier_span,
-                property_span,
-                property_bytes,
-            )? {
-                self.commit_occurrence(
-                    owner,
-                    property_span,
-                    ReferenceKind::FieldAccess,
-                    target,
-                    OccurrenceConfidence::Oracle,
-                )?;
+                if self.fact_kinds.get(container_index) == Some(&EntityKind::Enum)
+                    && let Some(variant) = self.variant_in_enum(container, property_bytes)
+                {
+                    self.commit_occurrence(
+                        owner,
+                        property_span,
+                        ReferenceKind::FieldAccess,
+                        OccurrenceTarget::Local(EntityId::new(variant)),
+                        OccurrenceConfidence::Index,
+                    )?;
+                }
             }
         }
         Ok(())
@@ -5094,7 +5111,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         kind,
                     )? {
                         Some(pair) => pair,
-                        None => self.syntactic_property_target(property_span)?,
+                        None => match self.namespace_qualified_property_target(
+                            object_span,
+                            property_span,
+                            kind,
+                        )? {
+                            Some(pair) => pair,
+                            None => self.syntactic_property_target(property_span)?,
+                        },
                     },
                 }
             };
@@ -5148,7 +5172,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                         kind,
                     )? {
                         Some(pair) => pair,
-                        None => self.syntactic_property_target(property_span)?,
+                        None => match self.namespace_qualified_property_target(
+                            object_span,
+                            property_span,
+                            kind,
+                        )? {
+                            Some(pair) => pair,
+                            None => self.syntactic_property_target(property_span)?,
+                        },
                     },
                 }
             };
@@ -5484,6 +5515,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             EntityKind::Function,
                             EntityKind::Record,
                             EntityKind::Enum,
+                            EntityKind::Module,
                         ] {
                             let matches = modules
                                 .iter()
@@ -5519,32 +5551,15 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         }
     }
 
-    /// Resolves one `Class.member` site when the receiver peels to a
-    /// file-unique class identifier. Returns `None` when the receiver is not
-    /// a class or no unique member binds.
-    fn class_qualified_property_target(
+    /// Resolves one member on a published class `record` using the same local
+    /// and inherited class-body rules as a class-qualified receiver.
+    fn record_qualified_property_target(
         &self,
-        object_span: Span,
-        property_span: Span,
+        record: u32,
+        property_name: &[u8],
         kind: ReferenceKind,
     ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
     {
-        let Some(identifier_span) =
-            self.peel_object_identifier_span(object_span.start, object_span.end)
-        else {
-            return Ok(None);
-        };
-        let class_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
-            start: identifier_span.start,
-            end: identifier_span.end,
-        })?;
-        let Some(record) = self.unique_file_record(class_name) else {
-            return Ok(None);
-        };
-        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
         match kind {
             ReferenceKind::FunctionCall => {
                 match self.class_member_of_owner(record, property_name, EntityKind::Function) {
@@ -5607,6 +5622,133 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             }
                         }
                     }
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Resolves one `Class.member` site when the receiver peels to a
+    /// file-unique class identifier. Returns `None` when the receiver is not
+    /// a class or no unique member binds.
+    fn class_qualified_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(identifier_span) =
+            self.peel_object_identifier_span(object_span.start, object_span.end)
+        else {
+            return Ok(None);
+        };
+        let class_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
+            start: identifier_span.start,
+            end: identifier_span.end,
+        })?;
+        let Some(record) = self.unique_file_record(class_name) else {
+            return Ok(None);
+        };
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        self.record_qualified_property_target(record, property_name, kind)
+    }
+
+    /// Resolves one namespace-qualified receiver such as `Box.Child` or
+    /// `Box.Inner.Deep` to the published fact named by the full prefix.
+    fn namespace_qualified_fact(&self, start: u32, end: u32, depth: u8) -> Option<u32> {
+        if depth >= MAX_INHERITANCE_DEPTH {
+            return None;
+        }
+        let mut span = Span::new(start, end);
+        loop {
+            let Some(kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
+                return None;
+            };
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                span = parenthesized.expression.span();
+                continue;
+            }
+            break;
+        }
+        let kind = self.ast_kind_at_exact_span(span.start, span.end)?;
+        let member = kind.as_static_member_expression()?;
+        let property_name = self.slice_span(member.property.span)?;
+        let object_span = member.object.span();
+        let modules = if let Some(identifier_span) =
+            self.peel_object_identifier_span(object_span.start, object_span.end)
+        {
+            let name = self.slice_span(identifier_span)?;
+            let modules = self.namespace_modules_for_name(name);
+            if modules.is_empty() {
+                return None;
+            }
+            modules
+        } else {
+            let container = self.namespace_qualified_fact(
+                object_span.start,
+                object_span.end,
+                depth.saturating_add(1),
+            )?;
+            let container_index = usize::try_from(container).ok()?;
+            if self.fact_kinds.get(container_index) != Some(&EntityKind::Module) {
+                return None;
+            }
+            vec![container]
+        };
+        match self.namespace_member_match(&modules, property_name, ReferenceKind::FieldAccess) {
+            ClassMemberMatch::Unique(fact) => Some(fact),
+            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => None,
+        }
+    }
+
+    /// Resolves one `Namespace.Prefix.member` site when the receiver is a
+    /// namespace-qualified prefix that names a published module, record, or
+    /// enum fact.
+    fn namespace_qualified_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(container) = self.namespace_qualified_fact(object_span.start, object_span.end, 0)
+        else {
+            return Ok(None);
+        };
+        let container_index = usize::try_from(container).map_err(|_| lane_rejection())?;
+        let container_kind = self
+            .fact_kinds
+            .get(container_index)
+            .copied()
+            .ok_or(lane_rejection())?;
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match container_kind {
+            EntityKind::Module => {
+                match self.namespace_member_match(&[container], property_name, kind) {
+                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => Ok(None),
+                }
+            }
+            EntityKind::Record => {
+                self.record_qualified_property_target(container, property_name, kind)
+            }
+            EntityKind::Enum if kind == ReferenceKind::FieldAccess => {
+                match self.variant_in_enum(container, property_name) {
+                    Some(variant) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(variant)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    None => Ok(None),
                 }
             }
             _ => Ok(None),
