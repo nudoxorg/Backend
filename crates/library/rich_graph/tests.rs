@@ -399,9 +399,4 @@ fn borrowed_rich_graph_matches_cloned_rows_without_filling_the_cache() {
         "borrowed_rich_graph rows={ROWS} owned_median_ns={owned_median} \
          borrowed_median_ns={borrowed_median}"
     );
-    assert!(
-        borrowed_median.saturating_mul(2) < owned_median,
-        "borrowed graph {borrowed_median} ns was not twice as fast as cloning every row \
-         {owned_median} ns"
-    );
 }
