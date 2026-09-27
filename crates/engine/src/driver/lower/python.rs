@@ -2611,6 +2611,46 @@ impl<'a, 'source> Emitter<'a, 'source> {
 
     /// The borrowed module spelling of one import binding when a `from … import
     /// …` row carries a dotted module in `value_source`; otherwise the
+    fn enclosing_field(&self, occurrence: &OccurrenceFact, class: &str) -> Option<u32> {
+        let class_bytes = class.as_bytes();
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut class_span: Option<Span> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Class
+                || declaration.name.as_bytes() != class_bytes
+                || !self.live[index]
+                || !span_contains(declaration.span, occurrence.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let occupied = class_span.map_or(true, |span| area < span.end - span.start);
+            if occupied {
+                class_span = Some(declaration.span);
+            }
+        }
+        let class_span = class_span?;
+        let mut matches: Vec<u32> = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Field
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+                || !span_contains(class_span, declaration.span)
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
+    }
+
+
     /// binding's own `value_span` spelling.
     fn imported_module_spelling(
         &self,
@@ -2864,8 +2904,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
         };
         let function = &self.module.declarations[function_index];
         let type_name = match receiver_annotation_name(function, receiver) {
-            Some(name) => name,
-            None => return false,
+            ReceiverAnnotationName::Unique(name) => name,
+            ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => return false,
         };
         let candidates = self.live_class_or_alias_indices(type_name);
         if candidates.len() != 1 {
@@ -2894,8 +2934,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
         };
         let function = &self.module.declarations[function_index];
         let type_name = match receiver_annotation_name(function, receiver) {
-            Some(name) => name,
-            None => return false,
+            ReceiverAnnotationName::Unique(name) => name,
+            ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => return false,
         };
         let candidates = self.live_class_or_alias_indices(type_name);
         if candidates.len() != 1 {
@@ -2936,8 +2976,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
         };
         let function = &self.module.declarations[function_index];
         let type_name = match receiver_annotation_name(function, receiver) {
-            Some(name) => name,
-            None => return Ok(None),
+            ReceiverAnnotationName::Unique(name) => name,
+            ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => return Ok(None),
         };
         let candidates = self.live_class_or_alias_indices(type_name);
         if candidates.len() != 1 {
@@ -3617,6 +3657,196 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
+    fn enclosing_class_index(&self, occurrence: &OccurrenceFact, class: &str) -> Option<usize> {
+        let class_bytes = class.as_bytes();
+        let mut best: Option<(Span, usize)> = None;
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Class
+                || declaration.name.as_bytes() != class_bytes
+                || !self.live[index]
+                || !span_contains(declaration.span, occurrence.span)
+            {
+                continue;
+            }
+            let area = declaration.span.end - declaration.span.start;
+            let occupied = best.map_or(true, |(span, _)| area < span.end - span.start);
+            if occupied {
+                best = Some((declaration.span, index));
+            }
+        }
+        best.map(|(_, index)| index)
+    }
+
+    /// Live field declarations with the attribute spelling inside `class_span`.
+    fn field_count_in_class(&self, occurrence: &OccurrenceFact, class_span: Span) -> usize {
+        let attribute_bytes = occurrence.target.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter(|(index, declaration)| {
+                declaration.kind == DeclarationKind::Field
+                    && declaration.name.as_bytes() == attribute_bytes
+                    && self.live[*index]
+                    && span_contains(class_span, declaration.span)
+            })
+            .count()
+    }
+
+    /// Live method declarations with the attribute spelling inside `class_span`.
+    fn method_count_in_class(&self, occurrence: &OccurrenceFact, class_span: Span) -> usize {
+        let attribute_bytes = occurrence.target.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter(|(index, declaration)| {
+                declaration.kind == DeclarationKind::Function
+                    && declaration.name.as_bytes() == attribute_bytes
+                    && self.live[*index]
+                    && span_contains(class_span, declaration.span)
+            })
+            .count()
+    }
+
+    /// Resolves one inherited member by walking simple same-file base classes.
+    fn inherited_member(
+        &self,
+        class_index: usize,
+        occurrence: &OccurrenceFact,
+        member_kind: DeclarationKind,
+    ) -> InheritedMemberLookup {
+        self.inherited_member_from_bases(class_index, occurrence, member_kind, 0)
+    }
+
+    /// Walks the base classes of `class_index`. Each sibling base starts its
+    /// own path with a fresh depth budget and visited set.
+    fn inherited_member_from_bases(
+        &self,
+        class_index: usize,
+        occurrence: &OccurrenceFact,
+        member_kind: DeclarationKind,
+        depth: usize,
+    ) -> InheritedMemberLookup {
+        let declaration = &self.module.declarations[class_index];
+        let mut base_results = Vec::new();
+        for base in &declaration.bases {
+            let Some(base_name) = simple_base_name(base) else {
+                continue;
+            };
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            if depth >= MAX_INHERITED_BASE_LINKS {
+                continue;
+            }
+            let mut visited = HashSet::new();
+            visited.insert(class_index);
+            let result = self.inherited_member_in_class(
+                base_index,
+                occurrence,
+                member_kind,
+                depth + 1,
+                &mut visited,
+            );
+            if result != InheritedMemberLookup::Absent {
+                base_results.push(result);
+            }
+        }
+        merge_inherited_base_results(base_results)
+    }
+
+    fn inherited_member_in_class(
+        &self,
+        class_index: usize,
+        occurrence: &OccurrenceFact,
+        member_kind: DeclarationKind,
+        depth: usize,
+        visited: &mut HashSet<usize>,
+    ) -> InheritedMemberLookup {
+        if !visited.insert(class_index) {
+            return InheritedMemberLookup::Absent;
+        }
+        let class_span = self.module.declarations[class_index].span;
+        match self.member_lookup_in_class(occurrence, class_span, member_kind) {
+            InheritedMemberLookup::Unique(ordinal) => InheritedMemberLookup::Unique(ordinal),
+            InheritedMemberLookup::Ambiguous => InheritedMemberLookup::Ambiguous,
+            InheritedMemberLookup::Absent => self.inherited_member_from_bases_with_visited(
+                class_index,
+                occurrence,
+                member_kind,
+                depth,
+                visited,
+            ),
+        }
+    }
+
+    /// Continues one inherited-member path through `class_index`'s bases,
+    /// sharing the path-local visited set and depth counter.
+    fn inherited_member_from_bases_with_visited(
+        &self,
+        class_index: usize,
+        occurrence: &OccurrenceFact,
+        member_kind: DeclarationKind,
+        depth: usize,
+        visited: &mut HashSet<usize>,
+    ) -> InheritedMemberLookup {
+        let declaration = &self.module.declarations[class_index];
+        let mut base_results = Vec::new();
+        for base in &declaration.bases {
+            let Some(base_name) = simple_base_name(base) else {
+                continue;
+            };
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            if depth >= MAX_INHERITED_BASE_LINKS {
+                continue;
+            }
+            let result = self.inherited_member_in_class(
+                base_index,
+                occurrence,
+                member_kind,
+                depth + 1,
+                visited,
+            );
+            if result != InheritedMemberLookup::Absent {
+                base_results.push(result);
+            }
+        }
+        merge_inherited_base_results(base_results)
+    }
+
+    /// The lane ordinal of the sole live declaration of `member_kind` with
+    /// the attribute spelling inside `class_span`.
+    fn member_lookup_in_class(
+        &self,
+        occurrence: &OccurrenceFact,
+        class_span: Span,
+        member_kind: DeclarationKind,
+    ) -> InheritedMemberLookup {
+        let attribute_bytes = occurrence.target.as_bytes();
+        let mut matches = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != member_kind
+                || declaration.name.as_bytes() != attribute_bytes
+                || !self.live[index]
+                || !span_contains(class_span, declaration.span)
+            {
+                continue;
+            }
+            if let Some(ordinal) = self.ordinals[index] {
+                matches.push(ordinal);
+            }
+        }
+        match matches.len() {
+            0 => InheritedMemberLookup::Absent,
+            1 => InheritedMemberLookup::Unique(matches[0]),
+            _ => InheritedMemberLookup::Ambiguous,
+        }
+    }
+
+    /// Live own-field declaration indices with one name inside `class_span`.
     /// Live own-field declaration indices with one name inside `class_span`.
     fn own_field_indices_named(&self, class_span: Span, field_name: &str) -> Vec<usize> {
         let field_bytes = field_name.as_bytes();
