@@ -1936,7 +1936,7 @@ mod tests {
         // Shown only when the test fails: the spliced plan every check reads.
         eprintln!("probe plan:\n{text}");
         // `value` is probed once; `rebound` (bound twice) is probed exactly
-        // once, and only the final binding's span is the reveal site.
+        // once, at the binding the extractor keeps.
         if !text.contains("\nreveal_type(value)") {
             return Err(TestError::Plan);
         }
@@ -1953,8 +1953,10 @@ mod tests {
             .iter()
             .find(|reveal| site_bytes(reveal) == Some(b"rebound".as_slice()))
             .ok_or(TestError::Plan)?;
-        // The second `rebound` binding starts at byte 23 (`rebound = 2`).
-        if rebound_reveal.site.start != 23 {
+        // The extractor keeps a module name's first binding (as lowering
+        // keeps the first live binding), so the site is `rebound = 1` at
+        // byte 11.
+        if rebound_reveal.site.start != 11 {
             return Err(TestError::Plan);
         }
         // `area`'s parameter is probed on its own indented body line;

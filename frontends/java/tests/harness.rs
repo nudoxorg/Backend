@@ -267,10 +267,11 @@ public final class App {
         .image_with_corpus(&jdk, request, &[], Some(Path::new(NO_CORPUS)), &mut output)
         .expect_err("a missing guava import must not seal");
     let _ = fs::remove_dir_all(&root);
-    let (packages, stderr) = match error {
-        HarnessError::UnresolvedDependencies {
-            packages, stderr, ..
-        } => (packages, stderr),
+    // The refusal's rendered message is what promises strictness; javac's
+    // own stderr carries only its diagnostics.
+    let message = error.to_string();
+    let packages = match error {
+        HarnessError::UnresolvedDependencies { packages, .. } => packages,
         HarnessError::Command { status, stderr, .. } => panic!(
             "missing dependency packages must be UnresolvedDependencies, not a weakened compile; javac exited {status}:\n{stderr}"
         ),
@@ -283,8 +284,8 @@ public final class App {
         "the missing package must be named: {packages}"
     );
     assert!(
-        stderr.contains("not weakened"),
-        "the error must say the compiler was not relaxed: {stderr}"
+        message.contains("not weakened"),
+        "the error must say the compiler was not relaxed: {message}"
     );
 }
 

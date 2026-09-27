@@ -483,12 +483,11 @@ const ADDITIONS: [PackageFacts; 15] = [
         docs: false,
         foreign_pypi: true,
         decorators: &[b"overload"],
+        // `SectionWrapper.lineof(self, name)`: the `self` receiver is not a
+        // parameter fact (d287a7d4d), so only `name` precedes the function.
         spot: SpotCheck::ParameterKinds {
             symbol: "lineof",
-            kinds: &[
-                PythonParameterKind::PositionalOrKeyword,
-                PythonParameterKind::PositionalOrKeyword,
-            ],
+            kinds: &[PythonParameterKind::PositionalOrKeyword],
         },
     },
     PackageFacts {

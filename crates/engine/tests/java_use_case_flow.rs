@@ -162,15 +162,18 @@ fn generic_box_flow() {
             &mut output,
         )
         .expect_err("a missing import must not seal as success");
+    // The refusal's rendered message is what promises strictness; javac's
+    // own stderr carries only its diagnostics.
+    let message = error.to_string();
     match error {
-        HarnessError::UnresolvedDependencies { packages, stderr, .. } => {
+        HarnessError::UnresolvedDependencies { packages, .. } => {
             assert!(
                 packages.contains("com.google.common.base"),
                 "the missing package must be named: {packages:?}"
             );
             assert!(
-                stderr.contains("not weakened"),
-                "the compiler must stay at full strictness: {stderr}"
+                message.contains("not weakened"),
+                "the compiler must stay at full strictness: {message}"
             );
         }
         HarnessError::Command { status, stderr, .. } => panic!(

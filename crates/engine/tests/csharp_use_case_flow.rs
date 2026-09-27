@@ -152,6 +152,9 @@ fn compile_flow(dotnet: &Path, source: &[u8]) -> Result<(Ir, Duration), String> 
         .filter_map(|declared| declared.ok())
         .filter(|declared| declared.kind == DeclarationKind::Event)
         .filter(|declared| declared.name.bytes == b"Changed")
+        // I1 and I2 declare their own `Changed`; only Host's two explicit
+        // implementations are the proof.
+        .filter(|declared| declared.flags.is_explicit_interface)
         .collect();
     if changed.len() != 2 {
         let decode_errors = authority
@@ -224,9 +227,15 @@ fn explicit_events_flow() {
         Err(error) => panic!("explicit interface events must lower: {error}"),
     };
 
+    // I1 and I2 lower their own `Changed` too; the proof is Host's pair.
+    let host = ir
+        .items()
+        .find(|item| item.kind() == EntityKind::Record && item.name() == b"Host")
+        .map(|item| item.id());
     let changed: Vec<_> = ir
         .items()
         .filter(|item| item.kind() == EntityKind::Field && item.name() == b"Changed")
+        .filter(|item| host.is_some() && item.parent() == host)
         .collect();
     assert_eq!(
         changed.len(),
