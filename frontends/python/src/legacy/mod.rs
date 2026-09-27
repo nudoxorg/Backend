@@ -236,6 +236,15 @@ pub enum OccurrenceReceiver {
         root: AttributeChainRoot,
         attributes: Vec<String>,
     },
+    /// `self.note().extra` / `obj.note().extra()` / `note().extra()`.
+    /// `method` is the called name (`note`). `receiver` is `EnclosingClass`
+    /// for `self`/`cls`, `Foreign { receiver: Some(name) }` for another plain
+    /// name, or `None` for a bare call. Attribute receivers (`self.child.note()`)
+    /// and constructed calls (`Child().note()`) are not this variant.
+    CallReturn {
+        method: String,
+        receiver: Box<OccurrenceReceiver>,
+    },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -316,6 +325,8 @@ pub struct BindingScopeFact {
     /// Span of the function, lambda, or comprehension.
     pub span: Span,
     pub locals: Vec<String>,
+    /// Names assigned inside this scope, excluding parameters.
+    pub assigned: Vec<String>,
     pub globals: Vec<String>,
     pub nonlocals: Vec<String>,
 }
@@ -977,6 +988,7 @@ struct BodyFrame {
     kind: BodyKind,
     span: Span,
     locals: HashSet<String>,
+    assigned: HashSet<String>,
     globals: HashSet<String>,
     nonlocals: HashSet<String>,
 }
@@ -1128,9 +1140,77 @@ impl<'a> Projection<'a> {
         Some(OccurrenceReceiver::ChainedAttribute { root, attributes })
     }
 
+    /// `self.note().extra` / `obj.note().extra()` / `note().extra()` when `expr`
+    /// is the call before the member. Attribute receivers and constructed calls
+    /// are not this variant.
+    fn call_return_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let ast::Expr::Call(call) = expr else {
+            return None;
+        };
+        match call.func.as_ref() {
+            ast::Expr::Attribute(attribute) => {
+                let method = attribute.attr.as_str().to_owned();
+                match attribute.value.as_ref() {
+                    ast::Expr::Name(name) => {
+                        let id = name.id.as_str();
+                        if matches!(id, "self" | "cls") && self.function_depth == 1 {
+                            if let Some(class) = self.enclosing_class.clone() {
+                                return Some(OccurrenceReceiver::CallReturn {
+                                    method,
+                                    receiver: Box::new(OccurrenceReceiver::EnclosingClass {
+                                        class,
+                                    }),
+                                });
+                            }
+                        }
+                        Some(OccurrenceReceiver::CallReturn {
+                            method,
+                            receiver: Box::new(OccurrenceReceiver::Foreign {
+                                receiver: Some(id.to_owned()),
+                            }),
+                        })
+                    }
+                    _ => None,
+                }
+            }
+            ast::Expr::Name(name) => {
+                let id = name.id.as_str();
+                if self.module_level_function_name(id) {
+                    Some(OccurrenceReceiver::CallReturn {
+                        method: id.to_owned(),
+                        receiver: Box::new(OccurrenceReceiver::None),
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// True when `name` is one live module-level function declaration.
+    fn module_level_function_name(&self, name: &str) -> bool {
+        self.facts.declarations.iter().any(|declaration| {
+            declaration.kind == DeclarationKind::Function
+                && declaration.name == name
+                && !self
+                    .facts
+                    .declarations
+                    .iter()
+                    .any(|class| {
+                        class.kind == DeclarationKind::Class
+                            && class.span.start <= declaration.span.start
+                            && declaration.span.end <= class.span.end
+                    })
+        })
+    }
+
     /// Receiver classification shared by attribute reads and method calls.
     fn attribute_occurrence_receiver(&self, value: &ast::Expr) -> OccurrenceReceiver {
         if let Some(receiver) = self.super_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.call_return_receiver(value) {
             return receiver;
         }
         if let Some(receiver) = self.constructed_class_receiver(value) {
@@ -1332,6 +1412,7 @@ impl<'a> Projection<'a> {
             kind,
             span: span(range),
             locals: HashSet::new(),
+            assigned: HashSet::new(),
             globals: HashSet::new(),
             nonlocals: HashSet::new(),
         });
@@ -1343,6 +1424,8 @@ impl<'a> Projection<'a> {
                 BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
                     let mut locals: Vec<String> = frame.locals.into_iter().collect();
                     locals.sort();
+                    let mut assigned: Vec<String> = frame.assigned.into_iter().collect();
+                    assigned.sort();
                     let mut globals: Vec<String> = frame.globals.into_iter().collect();
                     globals.sort();
                     let mut nonlocals: Vec<String> = frame.nonlocals.into_iter().collect();
@@ -1350,6 +1433,7 @@ impl<'a> Projection<'a> {
                     self.facts.binding_scopes.push(BindingScopeFact {
                         span: frame.span,
                         locals,
+                        assigned,
                         globals,
                         nonlocals,
                     });
@@ -1370,12 +1454,28 @@ impl<'a> Projection<'a> {
         }
     }
 
+    fn note_assigned(&mut self, name: &str) {
+        if let Some(frame) = self.bodies.last_mut() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda => {
+                    frame.locals.insert(name.to_owned());
+                    frame.assigned.insert(name.to_owned());
+                }
+                BodyKind::Comprehension => {
+                    frame.locals.insert(name.to_owned());
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
     fn note_walrus(&mut self, name: &str) {
         for frame in self.bodies.iter_mut().rev() {
             match frame.kind {
                 BodyKind::Comprehension => continue,
                 BodyKind::Function | BodyKind::Lambda => {
                     frame.locals.insert(name.to_owned());
+                    frame.assigned.insert(name.to_owned());
                     return;
                 }
                 BodyKind::Class => return,
@@ -1762,7 +1862,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
     fn visit_except_handler(&mut self, handler: &'a ast::ExceptHandler) {
         let ast::ExceptHandler::ExceptHandler(inner) = handler;
         if let Some(name) = &inner.name {
-            self.note_local(name.as_str());
+            self.note_assigned(name.as_str());
         }
         visitor::walk_except_handler(self, handler);
     }
@@ -1771,7 +1871,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
         match pattern {
             ast::Pattern::MatchAs(match_as) => {
                 if let Some(name) = &match_as.name {
-                    self.note_local(name.as_str());
+                    self.note_assigned(name.as_str());
                 }
                 if let Some(inner) = &match_as.pattern {
                     self.visit_pattern(inner);
@@ -1779,12 +1879,12 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
             ast::Pattern::MatchStar(match_star) => {
                 if let Some(name) = &match_star.name {
-                    self.note_local(name.as_str());
+                    self.note_assigned(name.as_str());
                 }
             }
             ast::Pattern::MatchMapping(mapping) => {
                 if let Some(rest) = &mapping.rest {
-                    self.note_local(rest.as_str());
+                    self.note_assigned(rest.as_str());
                 }
                 for pattern in &mapping.patterns {
                     self.visit_pattern(pattern);
@@ -1857,7 +1957,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
         }
         if let ast::Expr::Name(name) = expr {
             if name.ctx.is_store() {
-                self.note_local(name.id.as_str());
+                self.note_assigned(name.id.as_str());
             }
             return;
         }

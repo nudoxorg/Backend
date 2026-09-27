@@ -2085,6 +2085,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
                 self.instance_or_named_attribute_target(occurrence, checked, None)
             }
+            OccurrenceReceiver::CallReturn { method, receiver } => {
+                self.call_return_target(occurrence, checked, method, receiver.as_ref())
+            }
             OccurrenceReceiver::Super { class, after } => {
                 let confidence = |checked: Option<&SymbolOutcome>| match checked {
                     Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
@@ -3349,6 +3352,242 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .collect()
     }
 
+    fn call_return_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        checked: Option<&SymbolOutcome>,
+        method: &str,
+        receiver: &OccurrenceReceiver,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        let class_name = match receiver {
+            OccurrenceReceiver::EnclosingClass { class } => self
+                .enclosing_class_index(occurrence, class)
+                .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
+            OccurrenceReceiver::Foreign { receiver: Some(name) } => {
+                if self.receiver_assigned_in_scope(occurrence, name) {
+                    None
+                } else {
+                    self.named_attribute_class_index(occurrence, name)
+                        .and_then(|class_index| self.call_return_method_return_class(class_index, method))
+                }
+            }
+            OccurrenceReceiver::None => {
+                let indices = self.module_level_function_indices_named(method);
+                if indices.len() == 1 {
+                    self.return_annotation_class_name_from_index(indices[0])
+                } else {
+                    None
+                }
+            }
+            OccurrenceReceiver::Foreign { receiver: None }
+            | OccurrenceReceiver::Module
+            | OccurrenceReceiver::InstanceAttribute { .. }
+            | OccurrenceReceiver::NamedAttribute { .. }
+            | OccurrenceReceiver::ChainedAttribute { .. }
+            | OccurrenceReceiver::Constructed { .. }
+            | OccurrenceReceiver::Super { .. }
+            | OccurrenceReceiver::CallReturn { .. } => None,
+        };
+        self.instance_or_named_attribute_target(occurrence, checked, class_name)
+    }
+
+    /// Live module-level function declaration indices with one name outside
+    /// every live class body.
+    fn module_level_function_indices_named(&self, method: &str) -> Vec<usize> {
+        let method_bytes = method.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, declaration)| {
+                if declaration.kind != DeclarationKind::Function
+                    || declaration.name.as_bytes() != method_bytes
+                    || !self.live[index]
+                {
+                    return None;
+                }
+                let in_class = self.module.declarations.iter().enumerate().any(|(class_index, class)| {
+                    class.kind == DeclarationKind::Class
+                        && self.live[class_index]
+                        && span_contains(class.span, declaration.span)
+                });
+                if in_class {
+                    None
+                } else {
+                    Some(index)
+                }
+            })
+            .collect()
+    }
+
+    /// Live own-method declaration indices with one name inside `class_span`
+    /// and outside any strictly inner live class.
+    fn own_method_indices_named(&self, class_span: Span, method_name: &str) -> Vec<usize> {
+        let method_bytes = method_name.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, declaration)| {
+                if declaration.kind != DeclarationKind::Function
+                    || declaration.name.as_bytes() != method_bytes
+                    || !self.live[index]
+                    || !span_contains(class_span, declaration.span)
+                    || self
+                        .module
+                        .declarations
+                        .iter()
+                        .enumerate()
+                        .any(|(inner_index, inner)| {
+                            inner.kind == DeclarationKind::Class
+                                && self.live[inner_index]
+                                && span_contains(class_span, inner.span)
+                                && inner.span != class_span
+                                && span_contains(inner.span, declaration.span)
+                        })
+                {
+                    None
+                } else {
+                    Some(index)
+                }
+            })
+            .collect()
+    }
+
+    /// The class name one call-return callee's return annotation names, when
+    /// unique and usable.
+    fn call_return_method_return_class(&self, class_index: usize, method: &str) -> Option<String> {
+        match self.call_return_method_index(class_index, method) {
+            CallReturnMethodLookup::Unique(index) => {
+                self.return_annotation_class_name_from_index(index)
+            }
+            CallReturnMethodLookup::Absent | CallReturnMethodLookup::Ambiguous => None,
+        }
+    }
+
+    fn call_return_method_index(
+        &self,
+        class_index: usize,
+        method: &str,
+    ) -> CallReturnMethodLookup {
+        let class_span = self.module.declarations[class_index].span;
+        let own = self.own_method_indices_named(class_span, method);
+        match own.len() {
+            0 => self.call_return_inherited_method_from_bases(class_index, method, 0),
+            1 => CallReturnMethodLookup::Unique(own[0]),
+            _ => CallReturnMethodLookup::Ambiguous,
+        }
+    }
+
+    fn call_return_inherited_method_from_bases(
+        &self,
+        class_index: usize,
+        method: &str,
+        depth: usize,
+    ) -> CallReturnMethodLookup {
+        let declaration = &self.module.declarations[class_index];
+        let mut base_results = Vec::new();
+        for base in &declaration.bases {
+            let Some(base_name) = simple_base_name(base) else {
+                continue;
+            };
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            if depth >= MAX_INHERITED_BASE_LINKS {
+                continue;
+            }
+            let mut visited = HashSet::new();
+            visited.insert(class_index);
+            let result = self.call_return_inherited_method_index(
+                base_index,
+                method,
+                depth + 1,
+                &mut visited,
+            );
+            if result != CallReturnMethodLookup::Absent {
+                base_results.push(result);
+            }
+        }
+        merge_call_return_method_results(base_results)
+    }
+
+    fn call_return_inherited_method_index(
+        &self,
+        class_index: usize,
+        method: &str,
+        depth: usize,
+        visited: &mut HashSet<usize>,
+    ) -> CallReturnMethodLookup {
+        if !visited.insert(class_index) {
+            return CallReturnMethodLookup::Absent;
+        }
+        let class_span = self.module.declarations[class_index].span;
+        let own = self.own_method_indices_named(class_span, method);
+        match own.len() {
+            0 => self.call_return_inherited_method_from_bases_with_visited(
+                class_index,
+                method,
+                depth,
+                visited,
+            ),
+            1 => CallReturnMethodLookup::Unique(own[0]),
+            _ => CallReturnMethodLookup::Ambiguous,
+        }
+    }
+
+    fn call_return_inherited_method_from_bases_with_visited(
+        &self,
+        class_index: usize,
+        method: &str,
+        depth: usize,
+        visited: &mut HashSet<usize>,
+    ) -> CallReturnMethodLookup {
+        let declaration = &self.module.declarations[class_index];
+        let mut base_results = Vec::new();
+        for base in &declaration.bases {
+            let Some(base_name) = simple_base_name(base) else {
+                continue;
+            };
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            if depth >= MAX_INHERITED_BASE_LINKS {
+                continue;
+            }
+            let result = self.call_return_inherited_method_index(
+                base_index,
+                method,
+                depth + 1,
+                visited,
+            );
+            if result != CallReturnMethodLookup::Absent {
+                base_results.push(result);
+            }
+        }
+        merge_call_return_method_results(base_results)
+    }
+
+    /// True when a binding scope containing the occurrence records `name` as
+    /// assigned inside that scope.
+    fn receiver_assigned_in_scope(&self, occurrence: &OccurrenceFact, name: &str) -> bool {
+        self.module.binding_scopes.iter().any(|scope| {
+            span_contains(scope.span, occurrence.span)
+                && scope.assigned.iter().any(|assigned| assigned == name)
+        })
+    }
+
+    fn return_annotation_class_name_from_index(&self, fn_index: usize) -> Option<String> {
+        let declaration = &self.module.declarations[fn_index];
+        let Some(fact) = self.return_annotation(declaration) else {
+            return None;
+        };
+        match classify_receiver_annotation(&fact.annotation) {
+            ReceiverAnnotationName::Unique(name) => Some(name.to_owned()),
+            ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => None,
+        }
+    }
+
     fn instance_or_named_attribute_target(
         &self,
         occurrence: &OccurrenceFact,
@@ -4168,6 +4407,31 @@ fn simple_base_name(annotation: &Annotation) -> Option<&str> {
         | Annotation::None
         | Annotation::Unknown(_) => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallReturnMethodLookup {
+    Absent,
+    Unique(usize),
+    Ambiguous,
+}
+
+fn merge_call_return_method_results(
+    results: Vec<CallReturnMethodLookup>,
+) -> CallReturnMethodLookup {
+    let mut unique_index: Option<usize> = None;
+    for result in results {
+        match result {
+            CallReturnMethodLookup::Absent => {}
+            CallReturnMethodLookup::Ambiguous => return CallReturnMethodLookup::Ambiguous,
+            CallReturnMethodLookup::Unique(index) => match unique_index {
+                None => unique_index = Some(index),
+                Some(existing) if existing == index => {}
+                Some(_) => return CallReturnMethodLookup::Ambiguous,
+            },
+        }
+    }
+    unique_index.map_or(CallReturnMethodLookup::Absent, CallReturnMethodLookup::Unique)
 }
 
 /// Combines inherited-member results from sibling base classes.
