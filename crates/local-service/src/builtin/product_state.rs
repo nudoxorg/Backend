@@ -15,7 +15,7 @@ use backend_library::{
 };
 use backend_platform::durable;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -88,6 +88,7 @@ impl ProductState {
         command: SurfaceCommand,
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
+        catalog_index: &CatalogCoordinateIndex,
         dependency_facts: &[PackageDependencySourceFacts],
         dependency_index: &PackageGraphIndex,
         workspace: Option<&Path>,
@@ -99,6 +100,7 @@ impl ProductState {
                     command,
                     view,
                     catalog,
+                    catalog_index,
                     dependency_facts,
                     dependency_index,
                     workspace,
@@ -118,6 +120,7 @@ impl ProductState {
                     command,
                     view,
                     catalog,
+                    catalog_index,
                     dependency_facts,
                     dependency_index,
                     workspace,
@@ -137,6 +140,7 @@ impl ProductState {
         command: SurfaceCommand,
         view: &ViewRoot,
         catalog: &[RegistryPackageRecord],
+        catalog_index: &CatalogCoordinateIndex,
         dependency_facts: &[PackageDependencySourceFacts],
         dependency_index: &PackageGraphIndex,
         workspace: Option<&Path>,
@@ -213,6 +217,7 @@ impl ProductState {
             SurfaceCommand::Dependents { package } => (
                 SurfaceReply::Dependents(dependents(
                     catalog,
+                    catalog_index,
                     dependency_facts,
                     dependency_index,
                     &package,
@@ -1309,8 +1314,56 @@ fn dependencies(
     ))
 }
 
+/// Catalog positions grouped by package coordinate.
+///
+/// Built once for a resident catalog. Dependent lookup reads those positions
+/// instead of scanning every registry row.
+pub(super) struct CatalogCoordinateIndex {
+    positions: BTreeMap<PackageReference, Vec<usize>>,
+}
+
+impl CatalogCoordinateIndex {
+    pub(super) fn from_catalog(catalog: &[RegistryPackageRecord]) -> Self {
+        let mut positions: BTreeMap<PackageReference, Vec<usize>> = BTreeMap::new();
+        for (index, record) in catalog.iter().enumerate() {
+            positions
+                .entry(record.coordinate.clone())
+                .or_default()
+                .push(index);
+        }
+        Self { positions }
+    }
+
+    fn records_in_catalog_order<'a>(
+        &self,
+        catalog: &'a [RegistryPackageRecord],
+        sources: &BTreeSet<PackageReference>,
+    ) -> Result<Vec<&'a RegistryPackageRecord>, String> {
+        let mut positions = Vec::new();
+        for source in sources {
+            if let Some(indexes) = self.positions.get(source) {
+                positions.extend(indexes.iter().copied());
+            }
+        }
+        positions.sort_unstable();
+        let mut records = Vec::with_capacity(positions.len());
+        for index in positions {
+            let record = catalog
+                .get(index)
+                .ok_or_else(|| "catalog coordinate index does not match the catalog".to_owned())?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    fn contains(&self, source: &PackageReference) -> bool {
+        self.positions.contains_key(source)
+    }
+}
+
 fn dependents(
     catalog: &[RegistryPackageRecord],
+    coordinates: &CatalogCoordinateIndex,
     facts: &[PackageDependencySourceFacts],
     index: &PackageGraphIndex,
     package: &PackageReference,
@@ -1335,13 +1388,13 @@ fn dependents(
     {
         return Ok(RegistryMetadata::NotRecorded(reason));
     }
-    let mut records = catalog
-        .iter()
-        .filter(|record| sources.contains(&record.coordinate))
+    let mut records = coordinates
+        .records_in_catalog_order(catalog, &sources)?
+        .into_iter()
         .cloned()
         .collect::<Vec<_>>();
     for source in sources {
-        if records.iter().any(|record| record.coordinate == source) {
+        if coordinates.contains(&source) {
             continue;
         }
         records.push(local_manifest_registry_record(&source)?);
@@ -1557,7 +1610,9 @@ mod tests {
             dependency_edge("pkg:cargo/optional-src@1.0.0", DependencyScope::Optional, 5),
         ];
         let index = PackageGraphIndex::from_facts(&facts);
-        let result = dependents(&catalog, &facts, &index, &target).expect("dependents");
+        let coordinates = CatalogCoordinateIndex::from_catalog(&catalog);
+        let result =
+            dependents(&catalog, &coordinates, &facts, &index, &target).expect("dependents");
         let RegistryMetadata::Recorded(rows) = result else {
             panic!("expected recorded dependents");
         };
@@ -1575,6 +1630,110 @@ mod tests {
     }
 
     #[test]
+    fn coordinate_index_preserves_catalog_order_and_duplicate_rows() {
+        let target = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target");
+        let catalog = [
+            registry_row("pkg:cargo/b@1.0.0", "b"),
+            registry_row("pkg:cargo/a@1.0.0", "a"),
+            registry_row("pkg:cargo/a@1.0.0", "a-again"),
+            registry_row("pkg:cargo/z@1.0.0", "z"),
+        ];
+        let facts = [
+            dependency_edge("pkg:cargo/z@1.0.0", DependencyScope::Runtime, 1),
+            dependency_edge("pkg:cargo/a@1.0.0", DependencyScope::Runtime, 2),
+            dependency_edge("pkg:cargo/missing@1.0.0", DependencyScope::Runtime, 3),
+        ];
+        let index = PackageGraphIndex::from_facts(&facts);
+        let coordinates = CatalogCoordinateIndex::from_catalog(&catalog);
+        let result =
+            dependents(&catalog, &coordinates, &facts, &index, &target).expect("dependents");
+        let RegistryMetadata::Recorded(rows) = result else {
+            panic!("expected recorded dependents");
+        };
+        let names = rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["a", "a-again", "z", "missing"]);
+        assert_eq!(rows[3].coordinate.as_str(), "pkg:cargo/missing@1.0.0");
+        assert_eq!(rows[3].bytes, 0);
+    }
+
+    #[test]
+    fn coordinate_index_refuses_a_catalog_shorter_than_its_positions() {
+        let catalog = [
+            registry_row("pkg:cargo/a@1.0.0", "a"),
+            registry_row("pkg:cargo/z@1.0.0", "z"),
+        ];
+        let index = CatalogCoordinateIndex::from_catalog(&catalog);
+        let sources = BTreeSet::from([catalog[1].coordinate.clone()]);
+        let error = index
+            .records_in_catalog_order(&catalog[..1], &sources)
+            .expect_err("stale catalog");
+        assert!(error.contains("does not match the catalog"));
+    }
+
+    #[test]
+    #[allow(clippy::print_stdout)]
+    fn dependent_catalog_lookup_skips_unrelated_rows() {
+        const ROWS: usize = 4096;
+        const HITS: usize = 8;
+        const SAMPLES: usize = 32;
+        let catalog: Vec<_> = (0..ROWS)
+            .map(|index| {
+                registry_row(
+                    &format!("pkg:cargo/pkg-{index:04}@1.0.0"),
+                    &format!("pkg-{index:04}"),
+                )
+            })
+            .collect();
+        let sources = catalog[ROWS - HITS..]
+            .iter()
+            .map(|row| row.coordinate.clone())
+            .collect::<BTreeSet<_>>();
+        let index = CatalogCoordinateIndex::from_catalog(&catalog);
+        let scan = || {
+            catalog
+                .iter()
+                .filter(|record| sources.contains(&record.coordinate))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let lookup = || {
+            index
+                .records_in_catalog_order(&catalog, &sources)
+                .expect("catalog index")
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(scan(), lookup());
+        let mut scan_samples = Vec::with_capacity(SAMPLES);
+        let mut lookup_samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..4 {
+            std::hint::black_box(scan());
+            std::hint::black_box(lookup());
+        }
+        for _ in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            std::hint::black_box(scan());
+            scan_samples.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(lookup());
+            lookup_samples.push(started.elapsed().as_nanos());
+        }
+        scan_samples.sort_unstable();
+        lookup_samples.sort_unstable();
+        let scan_median = scan_samples[SAMPLES / 2];
+        let lookup_median = lookup_samples[SAMPLES / 2];
+        println!(
+            "catalog_coordinate_index rows={ROWS} hits={HITS} scan_median_ns={scan_median} \
+             lookup_median_ns={lookup_median}"
+        );
+        assert!(
+            lookup_median < scan_median,
+            "lookup {lookup_median} scan {scan_median}"
+        );
+    }
+
+    #[test]
     fn committed_state_reopens_at_the_exact_epoch() {
         let root = fixture("reopen");
         let path = root.join("product-state.json");
@@ -1584,6 +1743,7 @@ mod tests {
                 create("Nudox"),
                 &view(),
                 &[],
+                &CatalogCoordinateIndex::from_catalog(&[]),
                 &[],
                 &PackageGraphIndex::from_facts(&[]),
                 None,
@@ -1610,6 +1770,7 @@ mod tests {
                 create("Canonical"),
                 &view(),
                 &[],
+                &CatalogCoordinateIndex::from_catalog(&[]),
                 &[],
                 &PackageGraphIndex::from_facts(&[]),
                 None,
@@ -1651,6 +1812,7 @@ mod tests {
                     create("Unpublished"),
                     &view(),
                     &[],
+                    &CatalogCoordinateIndex::from_catalog(&[]),
                     &[],
                     &PackageGraphIndex::from_facts(&[]),
                     None,

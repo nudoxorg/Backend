@@ -40,6 +40,7 @@ struct ResidentDependencies {
     stamp: [u8; 32],
     local_witness: [u8; 32],
     catalog: Vec<backend_engine::RegistryPackageRecord>,
+    catalog_index: super::super::product_state::CatalogCoordinateIndex,
     registry_facts: Vec<backend_engine::PackageDependencySourceFacts>,
     facts: Vec<backend_engine::PackageDependencySourceFacts>,
     index: backend_library::PackageGraphIndex,
@@ -530,12 +531,16 @@ impl CommandAdapter {
                     .as_ref()
                     .is_none_or(|cached| cached.local_witness != local_witness);
                 if stamp_changed || local_changed {
-                    let (catalog, registry_facts, synced_root) = if stamp_changed {
+                    let (catalog, catalog_index, registry_facts, synced_root) = if stamp_changed {
                         let catalog = self
                             .registry
                             .as_mut()
                             .map_or(Ok(Vec::new()), RegistryGateway::catalog)
                             .map_err(BuiltinModelError)?;
+                        let catalog_index =
+                            super::super::product_state::CatalogCoordinateIndex::from_catalog(
+                                &catalog,
+                            );
                         let registry_facts = self
                             .registry
                             .as_mut()
@@ -544,14 +549,19 @@ impl CommandAdapter {
                             .dependencies
                             .as_ref()
                             .and_then(|cached| cached.synced_root);
-                        (catalog, registry_facts, synced_root)
+                        (catalog, catalog_index, registry_facts, synced_root)
                     } else {
                         let cached = self.dependencies.take().ok_or_else(|| {
                             BuiltinModelError(
                                 "dependency index disappeared during a local refresh".to_owned(),
                             )
                         })?;
-                        (cached.catalog, cached.registry_facts, cached.synced_root)
+                        (
+                            cached.catalog,
+                            cached.catalog_index,
+                            cached.registry_facts,
+                            cached.synced_root,
+                        )
                     };
                     let mut facts = registry_facts.clone();
                     facts.extend(self.manifests.facts().cloned());
@@ -560,6 +570,7 @@ impl CommandAdapter {
                         stamp,
                         local_witness,
                         catalog,
+                        catalog_index,
                         registry_facts,
                         facts,
                         index,
@@ -587,6 +598,7 @@ impl CommandAdapter {
                     surface,
                     daemon.engine().daemon().library().view(),
                     &cached.catalog,
+                    &cached.catalog_index,
                     &cached.facts,
                     &cached.index,
                     workspace.as_deref(),
