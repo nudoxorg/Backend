@@ -161,6 +161,13 @@ let
         || abort "harness ids must match [a-z][a-z0-9-]*";
       assert (lib.all complete directoryNames)
         || abort "a harness directory is missing oracle.rs, max_len, dictionary.txt, score.nix, or corpus/{canonical,empty,bad_magic}";
+      assert (
+        lib.length (
+          lib.unique (
+            map (name: (import (targetRoot + "/${name}/score.nix")).ilo_priority) directoryNames
+          )
+        ) == lib.length directoryNames
+      ) || abort "fuzz ilo_priority values must be unique across harness directories";
       directoryNames;
   metadata =
     if discovered == null then
@@ -177,10 +184,13 @@ let
           short = ".#continuous-fuzz";
           optional_alias = "packages.\${system}.fuzz-<id>";
           fuzz_packages = [
+            ".#fuzz-pack-decode"
+            ".#fuzz-journal-codec"
+            ".#fuzz-native-protocol"
             ".#fuzz-store-raw-property"
-            ".#fuzz-flow-evaluator"
             ".#fuzz-wire-workspace"
             ".#fuzz-wire-replication"
+            ".#fuzz-flow-evaluator"
           ];
           corpus_mount = "/durable/fuzz/<id>/corpus";
           committed_corpus = "tests/fuzz/targets/<id>/corpus";
@@ -233,6 +243,9 @@ let
         laws_regressions = "tests/laws/proptest-regressions/lib.txt";
         linked_crates = [
           "tests/fuzz"
+          "crates/engine"
+          "crates/compile"
+          "crates/semantic"
           "crates/flow"
           "crates/replication"
           "crates/store"
@@ -243,47 +256,9 @@ let
         targets = map targetMeta discovered;
         backlog = [
           (closed {
-            id = "native-envelope";
-            name = "native envelope";
-            reason = "Compile/engine decode, the fourth ilo choice, was not exported. NativeEnvelope::decode is public, but backend-compile pulls semantic, tree-sitter, and turso. It is outside this slice's link closure.";
-            complexity = {
-              score = 893;
-              loc = 867;
-              error_variants = 20;
-              discriminants = 6;
-              method = "measured";
-              loc_paths = [
-                "crates/compile/src/native_protocol.rs"
-                "crates/compile/src/native_protocol_codec.rs"
-                "crates/compile/src/native_protocol_admission.rs"
-                "crates/compile/src/native_protocol_session.rs"
-              ];
-              error_enums = [ "crates/compile/src/native_protocol.rs NativeProtocolError" ];
-              discriminant_note = "NativeRecordKind variants";
-            };
-            gap = {
-              score = 2;
-              method = "classified";
-              label = "fixed-examples-only";
-              llvm_cov_percent = null;
-            };
-            blast = {
-              score = 5;
-              method = "classified";
-              boundary = "untrusted-native-payload";
-            };
-            churn = {
-              commits = 1;
-              method = "measured";
-              ranking_factor = false;
-              paths = [ "crates/compile/src/native_protocol.rs" ];
-            };
-            entrypoints = [ "crates/compile/src/native_protocol_codec.rs" ];
-          })
-          (closed {
             id = "session-frame";
             name = "session frame";
-            reason = "Deferred with native-envelope. The frame decoder lives in backend-compile.";
+            reason = "The native envelope is fuzz-native-protocol. This session frame decoder is a separate grammar and is not that package.";
             complexity = {
               score = 488;
               loc = 477;
@@ -316,7 +291,7 @@ let
           (deferred {
             id = "json-command";
             name = "json command grammar";
-            reason = "decode_command_dto in crates/engine/src/lib.rs is serde_json::from_slice. Random bytes die before admission. Engine commit count is not parser complexity.";
+            reason = "decode_command_dto is serde_json::from_slice. crates/library/protocol/json/wire projects serde_json values, and apps/mcp/src/jsonrpc/codec.rs frames serde_json::Value. None of those is a byte grammar distinct from serde.";
             complexity = {
               score = null;
               loc = 1121;
@@ -445,20 +420,17 @@ let
           end = text.find("]", start)
           if start < 0 or end < 0:
               raise SystemExit("workspace members block not found")
-          members = """members = [
-              "tests/fuzz",
-              "crates/flow",
-              "crates/replication",
-              "crates/store",
-              "crates/version",
-              "crates/platform",
-          ]"""
-          text = text[:start] + members + text[end + 1 :]
+          # Keep the workspace member list. backend-fuzz depends on backend-engine,
+          # and that crate's path dependencies are workspace members. Shrinking
+          # members here would drop them and fail resolution.
+          if "tests/fuzz" not in text:
+              raise SystemExit("workspace is missing tests/fuzz")
           text = text.replace('panic = "abort"', 'panic = "unwind"', 1)
           text = text.replace('strip = "symbols"', 'strip = "none"', 1)
           path.write_text(text)
-          if "tests/fuzz" not in path.read_text():
-              raise SystemExit("fuzz member was not written")
+          patched = path.read_text()
+          if 'panic = "unwind"' not in patched or 'strip = "none"' not in patched:
+              raise SystemExit("release profile was not patched")
           PY
         '';
         preConfigure = ''

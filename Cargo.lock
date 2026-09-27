@@ -1180,8 +1180,11 @@ dependencies = [
 name = "backend-fuzz"
 version = "0.1.0"
 dependencies = [
+ "backend-compile",
+ "backend-engine",
  "backend-flow",
  "backend-replication",
+ "backend-semantic",
  "backend-store",
  "backend-version",
  "bolero",

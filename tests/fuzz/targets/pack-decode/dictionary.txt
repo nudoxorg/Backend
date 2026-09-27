@@ -1,0 +1,5 @@
+# LibFuzzer dictionary for the index-pack grammar.
+# The magic is the private marker from pack/grammar.rs. No keys or tokens.
+
+magic="NUDXIPK\x00"
+version="\x01\x00"

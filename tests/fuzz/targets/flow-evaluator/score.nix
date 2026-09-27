@@ -3,7 +3,7 @@
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {
   name = "flow evaluator";
-  ilo_priority = 2;
+  ilo_priority = 7;
   complexity = {
     score = 796;
     loc = 772;

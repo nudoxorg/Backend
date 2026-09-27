@@ -3,7 +3,7 @@
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {
   name = "store raw property";
-  ilo_priority = 1;
+  ilo_priority = 4;
   complexity = {
     score = 934;
     loc = 908;

@@ -3,7 +3,7 @@
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {
   name = "workspace wire";
-  ilo_priority = 3;
+  ilo_priority = 5;
   complexity = {
     score = 2557;
     loc = 2521;

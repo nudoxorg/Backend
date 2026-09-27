@@ -10,3 +10,6 @@ backend_replication
 backend_version
 backend_store
 backend_platform
+backend_engine
+backend_compile
+backend_semantic

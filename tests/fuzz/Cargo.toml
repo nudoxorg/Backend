@@ -11,8 +11,11 @@ publish = false
 description = "Discovered bolero harnesses for untrusted bytes and structured evaluators"
 
 [dependencies]
+backend-compile = { path = "../../crates/compile" }
+backend-engine = { path = "../../crates/engine" }
 backend-flow = { path = "../../crates/flow" }
 backend-replication = { path = "../../crates/replication" }
+backend-semantic = { path = "../../crates/semantic" }
 backend-store = { path = "../../crates/store" }
 backend-version = { path = "../../crates/version" }
 bolero.workspace = true
