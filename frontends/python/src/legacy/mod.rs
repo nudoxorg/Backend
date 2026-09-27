@@ -182,6 +182,13 @@ pub enum OccurrenceKind {
 /// extractor's original keying; widened attribute rows carry the receiver
 /// class proven by the declaration walk or an honestly foreign receiver.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttributeChainRoot {
+    /// `self` / `cls` inside a class-body method at function_depth 1.
+    Enclosing { class: String },
+    /// Any other plain name, including `obj` in a nested function.
+    Name { name: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OccurrenceReceiver {
     /// A bare-name call (`fn()`): resolved through module names alone.
     None,
@@ -212,13 +219,20 @@ pub enum OccurrenceReceiver {
     Constructed { class: String },
     /// `self.child.note` / `self.child.note()` and the `cls` form, one attribute
     /// deep. `class` is the enclosing class. `attribute` is the field name
-    /// (`child`). Deeper chains (`self.child.other.note`) and subscripts
-    /// (`self.child[0].note`) are not this variant.
+    /// (`child`). Two or more fields before the member are `ChainedAttribute`.
+    /// Subscripts (`self.child[0].note`) are not this variant.
     InstanceAttribute { class: String, attribute: String },
     /// `obj.child.note` / `obj.child.note()` when `obj` is a plain name other than
     /// the enclosing `self`/`cls` form. `name` is `obj`. `attribute` is `child`.
-    /// Deeper chains (`obj.child.other.note`) and subscripts stay foreign.
+    /// Two or more fields before the member are `ChainedAttribute`. Subscripts
+    /// stay foreign.
     NamedAttribute { name: String, attribute: String },
+    /// `self.child.other.note` and `obj.child.other.note`, two or more fields
+    /// before the member. Deeper chains are included. Subscripts are not.
+    ChainedAttribute {
+        root: AttributeChainRoot,
+        attributes: Vec<String>,
+    },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -1081,6 +1095,36 @@ impl<'a> Projection<'a> {
         })
     }
 
+    /// `self.child.other.note` / `obj.child.other.note` when `expr` is two or
+    /// more attribute accesses before the member (`self.child.other`).
+    fn chained_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let mut attributes = Vec::new();
+        let mut current = expr;
+        while let ast::Expr::Attribute(inner) = current {
+            attributes.push(inner.attr.as_str().to_owned());
+            current = inner.value.as_ref();
+        }
+        if attributes.len() < 2 {
+            return None;
+        }
+        attributes.reverse();
+        let root = match current {
+            ast::Expr::Name(name) => {
+                let id = name.id.as_str();
+                if matches!(id, "self" | "cls") && self.function_depth == 1 {
+                    let class = self.enclosing_class.clone()?;
+                    AttributeChainRoot::Enclosing { class }
+                } else {
+                    AttributeChainRoot::Name {
+                        name: id.to_owned(),
+                    }
+                }
+            }
+            _ => return None,
+        };
+        Some(OccurrenceReceiver::ChainedAttribute { root, attributes })
+    }
+
     /// Receiver classification shared by attribute reads and method calls.
     fn attribute_occurrence_receiver(&self, value: &ast::Expr) -> OccurrenceReceiver {
         if let Some(receiver) = self.super_receiver(value) {
@@ -1093,6 +1137,9 @@ impl<'a> Projection<'a> {
             return receiver;
         }
         if let Some(receiver) = self.named_attribute_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.chained_attribute_receiver(value) {
             return receiver;
         }
         match value {

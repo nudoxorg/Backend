@@ -28,10 +28,11 @@
 use std::collections::{HashMap, HashSet};
 
 use backend_frontend_python::legacy::{
-    Annotation, AnnotationFact, AnnotationPosition, BindingScopeFact, CheckerError, CheckerReport,
-    ClassForm, DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue,
-    ModuleFacts, OccurrenceFact, OccurrenceKind, OccurrenceReceiver, ParameterKind, Pyrefly,
-    ReceiverKind, Span, SymbolOutcome, TypeReason as ExtractedReason, extract,
+    Annotation, AnnotationFact, AnnotationPosition, AttributeChainRoot, BindingScopeFact,
+    CheckerError, CheckerReport, ClassForm, DeclarationFact, DeclarationKind, ExtractionError,
+    InferredType, LiteralValue, ModuleFacts, OccurrenceFact, OccurrenceKind, OccurrenceReceiver,
+    ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome, TypeReason as ExtractedReason,
+    extract,
 };
 use backend_semantic::ir::{
     AnonRecordForm, Confidence, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
@@ -2045,6 +2046,44 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         None => None,
                     },
                 )
+            }
+            OccurrenceReceiver::ChainedAttribute { root, attributes } => {
+                let mut class_index = match root {
+                    AttributeChainRoot::Enclosing { class } => {
+                        self.enclosing_class_index(occurrence, class)
+                    }
+                    AttributeChainRoot::Name { name } => {
+                        self.named_attribute_class_index(occurrence, name)
+                    }
+                };
+                if let Some(mut class_index) = class_index {
+                    for attribute in attributes {
+                        let Some(class_name) =
+                            self.field_annotation_class_name_for_class(class_index, attribute)
+                        else {
+                            return self.instance_or_named_attribute_target(
+                                occurrence,
+                                checked,
+                                None,
+                            );
+                        };
+                        let Some(next_index) = self.unique_live_class_index(&class_name) else {
+                            return self.instance_or_named_attribute_target(
+                                occurrence,
+                                checked,
+                                None,
+                            );
+                        };
+                        class_index = next_index;
+                    }
+                    let final_class_name = self.module.declarations[class_index].name.clone();
+                    return self.instance_or_named_attribute_target(
+                        occurrence,
+                        checked,
+                        Some(final_class_name),
+                    );
+                }
+                self.instance_or_named_attribute_target(occurrence, checked, None)
             }
             OccurrenceReceiver::Super { class, after } => {
                 let confidence = |checked: Option<&SymbolOutcome>| match checked {
