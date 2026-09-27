@@ -1818,6 +1818,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .and_then(|report| report.symbol_at(occurrence.span));
         match &occurrence.receiver {
             OccurrenceReceiver::None | OccurrenceReceiver::Module => {
+                if let Some(class_name) = self.class_name_from_qualified_span(occurrence)? {
+                    if let Some(resolved) =
+                        self.class_qualified_call_target(occurrence, class_name, checked)?
+                    {
+                        return Ok(Some(resolved));
+                    }
+                }
                 let matched = rows
                     .iter()
                     .find(|row| row.name == occurrence.target.as_bytes());
@@ -2133,6 +2140,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     }
                     if let Some(receiver) = receiver {
                         if let Some(resolved) =
+                            self.class_qualified_read_target(occurrence, receiver, checked)?
+                        {
+                            return Ok(Some(resolved));
+                        }
+                    }
+                    if let Some(receiver) = receiver {
+                        if let Some(resolved) =
                             self.annotated_receiver_read_target(occurrence, receiver, checked)?
                         {
                             return Ok(Some(resolved));
@@ -2192,6 +2206,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             _ => OccurrenceConfidence::Index,
                         };
                         return Ok(Some((target, confidence)));
+                    }
+                    if let Some(resolved) =
+                        self.class_qualified_call_target(occurrence, receiver, checked)?
+                    {
+                        return Ok(Some(resolved));
                     }
                     if let Some(resolved) =
                         self.annotated_receiver_target(occurrence, receiver, checked)?
@@ -2329,6 +2348,182 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 let end = u32::try_from(end).ok()?;
                 Some(Span { start, end })
             })
+    }
+
+    /// The simple class name on the left of one receiver-qualified occurrence
+    /// span when the right side equals the attribute target and the left is a
+    /// single identifier.
+    fn class_name_from_qualified_span(
+        &self,
+        occurrence: &OccurrenceFact,
+    ) -> Result<Option<&str>, PythonCollectError> {
+        let bytes = self.slice(occurrence.span)?;
+        let text = core::str::from_utf8(bytes).map_err(|_| {
+            PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+                start: occurrence.span.start,
+                end: occurrence.span.end,
+            })
+        })?;
+        if !text.contains('.') {
+            return Ok(None);
+        }
+        let (left, right) = match text.rsplit_once('.') {
+            Some(parts) => parts,
+            None => return Ok(None),
+        };
+        let left = left.trim();
+        let right = right.trim();
+        if right != occurrence.target.as_str() || left.is_empty() || left.contains('.') {
+            return Ok(None);
+        }
+        if !simple_identifier(left) {
+            return Ok(None);
+        }
+        Ok(Some(left))
+    }
+
+    /// Live class declaration indices sharing one exact name. Import aliases are
+    /// ignored.
+    fn live_plain_class_indices(&self, name: &str) -> Vec<usize> {
+        let name_bytes = name.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter(|(index, declaration)| {
+                self.live[*index]
+                    && declaration.kind == DeclarationKind::Class
+                    && declaration.name.as_bytes() == name_bytes
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Resolves one class-qualified call through a live class receiver name.
+    /// Zero live classes fall through; every other class-count case returns a
+    /// target and never reaches module-name or `module_field` lookup.
+    fn class_qualified_call_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        class_name: &str,
+        checked: Option<&SymbolOutcome>,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        let foreign = || {
+            let span = attribute_token_span(self.slice(occurrence.span)?, occurrence)?;
+            foreign_method(self.slice(span)?, span)
+                .map(|target| (target, OccurrenceConfidence::Index))
+        };
+        let candidates = self.live_plain_class_indices(class_name);
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        if candidates.len() >= 2 {
+            return foreign().map(Some);
+        }
+        let index = candidates[0];
+        let declaration = &self.module.declarations[index];
+        let local_confidence = || match checked {
+            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+            _ => OccurrenceConfidence::Index,
+        };
+        if declaration.kind != DeclarationKind::Class {
+            return Ok(None);
+        }
+        if let Some(ordinal) = self.method_in_class(occurrence, declaration.span) {
+            return Ok(Some((
+                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                local_confidence(),
+            )));
+        }
+        if self.method_count_in_class(occurrence, declaration.span) > 1 {
+            return foreign().map(Some);
+        }
+        if let InheritedMemberLookup::Unique(ordinal) =
+            self.inherited_member(index, occurrence, DeclarationKind::Function)
+        {
+            return Ok(Some((
+                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                local_confidence(),
+            )));
+        }
+        foreign().map(Some)
+    }
+
+    /// Resolves one class-qualified attribute read through a live class receiver
+    /// name with the same field-before-method laws as one annotated class.
+    fn class_qualified_read_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        class_name: &str,
+        checked: Option<&SymbolOutcome>,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        let foreign = || {
+            foreign_field(self.slice(occurrence.span)?, occurrence.span)
+                .map(|target| (target, OccurrenceConfidence::Index))
+        };
+        let candidates = self.live_plain_class_indices(class_name);
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        if candidates.len() >= 2 {
+            return foreign().map(Some);
+        }
+        let index = candidates[0];
+        let declaration = &self.module.declarations[index];
+        let local_confidence = || match checked {
+            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+            _ => OccurrenceConfidence::Index,
+        };
+        if declaration.kind != DeclarationKind::Class {
+            return Ok(None);
+        }
+        let class_span = declaration.span;
+        let field_count = self.field_count_in_class(occurrence, class_span);
+        if field_count > 1 {
+            return foreign().map(Some);
+        }
+        if field_count == 1 {
+            if let InheritedMemberLookup::Unique(ordinal) =
+                self.member_lookup_in_class(occurrence, class_span, DeclarationKind::Field)
+            {
+                return Ok(Some((
+                    OccurrenceTarget::Local(EntityId::new(ordinal)),
+                    local_confidence(),
+                )));
+            }
+            return foreign().map(Some);
+        }
+        match self.inherited_member(index, occurrence, DeclarationKind::Field) {
+            InheritedMemberLookup::Unique(ordinal) => Ok(Some((
+                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                local_confidence(),
+            ))),
+            InheritedMemberLookup::Ambiguous => foreign().map(Some),
+            InheritedMemberLookup::Absent => {
+                let method_count = self.method_count_in_class(occurrence, class_span);
+                if method_count > 1 {
+                    return foreign().map(Some);
+                }
+                if method_count == 1 {
+                    if let Some(ordinal) = self.method_in_class(occurrence, class_span) {
+                        return Ok(Some((
+                            OccurrenceTarget::Local(EntityId::new(ordinal)),
+                            local_confidence(),
+                        )));
+                    }
+                    return foreign().map(Some);
+                }
+                if let InheritedMemberLookup::Unique(ordinal) =
+                    self.inherited_member(index, occurrence, DeclarationKind::Function)
+                {
+                    return Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(ordinal)),
+                        local_confidence(),
+                    )));
+                }
+                foreign().map(Some)
+            }
+        }
     }
 
     /// The lane ordinal of the live field one attribute read resolves to when
@@ -3257,6 +3452,51 @@ enum InheritedMemberLookup {
     Absent,
     Unique(u32),
     Ambiguous,
+}
+
+/// The attribute token inside a receiver-qualified callee span (`Child.note`
+/// → `note`). A span that is already the attribute token is unchanged.
+fn attribute_token_span(
+    text_bytes: &[u8],
+    occurrence: &OccurrenceFact,
+) -> Result<Span, PythonCollectError> {
+    let text = core::str::from_utf8(text_bytes).map_err(|_| {
+        PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+            start: occurrence.span.start,
+            end: occurrence.span.end,
+        })
+    })?;
+    let Some(dot) = text.rfind('.') else {
+        return Ok(occurrence.span);
+    };
+    let right = &text[dot + 1..];
+    let trimmed = right.trim();
+    if trimmed != occurrence.target.as_str() {
+        return Ok(occurrence.span);
+    }
+    let leading = right.len() - right.trim_start().len();
+    let Ok(tail) = u32::try_from(dot + 1 + leading) else {
+        return Ok(occurrence.span);
+    };
+    let Ok(width) = u32::try_from(trimmed.len()) else {
+        return Ok(occurrence.span);
+    };
+    let start = occurrence.span.start.saturating_add(tail);
+    let end = start.saturating_add(width);
+    if end > occurrence.span.end || start < occurrence.span.start {
+        return Ok(occurrence.span);
+    }
+    Ok(Span { start, end })
+}
+
+/// True when `name` is one undotted Python identifier.
+fn simple_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 /// The simple undotted class name of one written base annotation, if any.
