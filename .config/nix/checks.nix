@@ -165,6 +165,10 @@ in
         pkgs.libiconv
         pkgs.zlib
       ];
+    }
+    # `apple-sdk` refuses to evaluate on Linux. Omit `SDKROOT` there; Darwin
+    # still receives the MacOSX SDK root the semantic-lint toolchain expects.
+    // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
       SDKROOT = pkgs.apple-sdk.sdkroot;
     };
     build = ''
