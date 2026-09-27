@@ -247,8 +247,11 @@ impl ViewRoot {
             })
     }
 
-    #[cfg(test)]
-    pub(crate) fn compatibility_rows_are_materialized(&self) -> bool {
+    /// Reports whether [`Self::rows`] has filled the owned compatibility slice.
+    ///
+    /// Borrowed publication walks [`Self::row_refs`] and leaves this false.
+    #[must_use]
+    pub fn compatibility_rows_are_materialized(&self) -> bool {
         self.rows_cache.get().is_some()
     }
 

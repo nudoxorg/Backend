@@ -200,11 +200,12 @@ pub(super) fn read_project_sources(
 }
 
 /// Drops one package's rows and admits its replacement.
-pub(super) fn rows_replacing_package(
-    current: &[Row],
+pub(super) fn rows_replacing_package<'row>(
+    current: impl IntoIterator<Item = &'row Row>,
     package: PackageKey,
     replacement: Vec<Row>,
 ) -> Result<Vec<Row>, RowSpliceError> {
+    let current: Vec<&Row> = current.into_iter().collect();
     let mut rows = Vec::with_capacity(current.len().saturating_add(replacement.len()));
     for row in current {
         if !row_belongs_to_package(row, package) {
@@ -279,8 +280,8 @@ pub(super) fn changed_structural_files(
 ///
 /// Duplicate labels mean two declarations share a coordinate. The caller
 /// replans the package instead of guessing which identity owns the parent.
-pub(super) fn resident_symbols(
-    rows: &[Row],
+pub(super) fn resident_symbols<'row>(
+    rows: impl IntoIterator<Item = &'row Row>,
     package: PackageKey,
 ) -> Option<BTreeMap<String, backend_engine::SymbolKey>> {
     let mut labels = BTreeMap::new();
@@ -332,12 +333,13 @@ pub(super) fn paths_for_files(
 ///
 /// A replacement row must belong to `package` and carry one of those paths,
 /// unless it is a projected semantic row that no longer names a file.
-pub(super) fn rows_replacing_paths(
-    current: &[Row],
+pub(super) fn rows_replacing_paths<'row>(
+    current: impl IntoIterator<Item = &'row Row>,
     package: PackageKey,
     paths: &BTreeSet<String>,
     replacement: Vec<Row>,
 ) -> Result<Vec<Row>, RowSpliceError> {
+    let current: Vec<&Row> = current.into_iter().collect();
     let mut rows = Vec::with_capacity(current.len().saturating_add(replacement.len()));
     for row in current {
         let replaced = row_on_package_path(row, package, paths);
@@ -370,17 +372,22 @@ pub(super) fn rows_replacing_paths(
 /// semantic row with no file path belongs to some image in the package, and
 /// this splice cannot tell whether that image is the file that changed. A
 /// stale row keeps its path and drops the line.
-pub(super) fn rows_splicing_changed_files(
-    current: &[Row],
+pub(super) fn rows_splicing_changed_files<'row>(
+    current: impl IntoIterator<Item = &'row Row>,
     package: PackageKey,
     paths: &BTreeSet<String>,
     mut structural: Vec<Row>,
 ) -> Result<Vec<Row>, RowSpliceError> {
-    if current.iter().any(|row| semantic_row_lacks_file(row, package)) {
+    let current = current.into_iter().collect::<Vec<_>>();
+    if current
+        .iter()
+        .any(|row| semantic_row_lacks_file(row, package))
+    {
         return Err(RowSpliceError::UnscopedSemantic);
     }
     let structural_ids = BTreeSet::from_iter(structural.iter().map(|row| row.id));
-    for row in current {
+    for row in &current {
+        let row = *row;
         let on_path = row_on_package_path(row, package, paths);
         if !on_path || !row_is_projected_semantic(row) {
             continue;
@@ -390,7 +397,7 @@ pub(super) fn rows_splicing_changed_files(
         }
         structural.push(mark_semantic_row_stale(row));
     }
-    rows_replacing_paths(current, package, paths, structural)
+    rows_replacing_paths(current.iter().copied(), package, paths, structural)
 }
 
 /// Projects one file splice into row changes.
@@ -398,14 +405,16 @@ pub(super) fn rows_splicing_changed_files(
 /// Unchanged resident rows stay in the current view. The result is the removes
 /// and upserts a patch applies, in identity order. An empty result means the
 /// splice does not change a row.
-pub(super) fn row_changes_splicing_changed_files(
-    current: &[Row],
+pub(super) fn row_changes_splicing_changed_files<'row>(
+    current: impl IntoIterator<Item = &'row Row>,
     package: PackageKey,
     paths: &BTreeSet<String>,
     structural: &[Row],
 ) -> Result<Vec<RowChange>, RowSpliceError> {
+    let current = current.into_iter().collect::<Vec<_>>();
     let mut resident = BTreeMap::new();
-    for row in current {
+    for row in &current {
+        let row = *row;
         if resident.insert(row.id, row).is_some() {
             return Err(RowSpliceError::Collision);
         }
@@ -421,7 +430,8 @@ pub(super) fn row_changes_splicing_changed_files(
         }
         replacement.push(row.clone());
     }
-    for row in current {
+    for row in &current {
+        let row = *row;
         if !row_on_package_path(row, package, paths) || !row_is_projected_semantic(row) {
             continue;
         }
@@ -448,7 +458,8 @@ pub(super) fn row_changes_splicing_changed_files(
         }
     }
     let mut changes = Vec::new();
-    for row in current {
+    for row in &current {
+        let row = *row;
         if row_on_package_path(row, package, paths) && !replacement_ids.contains(&row.id) {
             changes.push(RowChange::Remove(row.id));
         }
@@ -522,8 +533,8 @@ fn semantic_lane_owns_file(
     package: PackageKey,
     path: &str,
 ) -> Result<bool, BuiltinModelError> {
-    let Some(profile) = super::ingest::source_profile(std::path::Path::new(path))
-        .map_err(BuiltinModelError)?
+    let Some(profile) =
+        super::ingest::source_profile(std::path::Path::new(path)).map_err(BuiltinModelError)?
     else {
         return Ok(false);
     };
@@ -747,9 +758,8 @@ pub(super) fn measure_package_publication() {
         );
     });
     let stale_patch = time_samples(ACTIVATED_SAMPLES, ACTIVATED_WARMUPS, || {
-        let changes =
-            row_changes_splicing_changed_files(&stale_rows, package, &other_paths, &[])
-                .expect("stale patch");
+        let changes = row_changes_splicing_changed_files(&stale_rows, package, &other_paths, &[])
+            .expect("stale patch");
         std::hint::black_box(
             stale_view
                 .prepare(
@@ -763,10 +773,9 @@ pub(super) fn measure_package_publication() {
     });
     let (stale_splice_median, stale_splice_p95) = percentiles(&stale_full);
     let (stale_patch_median, stale_patch_p95) = percentiles(&stale_patch);
-    let stale_changes =
-        row_changes_splicing_changed_files(&stale_rows, package, &other_paths, &[])
-            .expect("stale size")
-            .len();
+    let stale_changes = row_changes_splicing_changed_files(&stale_rows, package, &other_paths, &[])
+        .expect("stale size")
+        .len();
     println!(
         "stale_file_splice files={ACTIVATED_FILES} semantic={} changes={stale_changes} splice_median_ns={stale_splice_median} splice_p95_ns={stale_splice_p95} patch_median_ns={stale_patch_median} patch_p95_ns={stale_patch_p95}",
         stale_rows.len()
@@ -1124,9 +1133,13 @@ mod tests {
             )
             .with_signature("fn new()"),
         ];
-        let merged = rows_replacing_package(current.rows(), alpha, replacement).expect("splice");
+        let merged =
+            rows_replacing_package(current.row_refs(), alpha, replacement).expect("splice");
+        assert!(!current.compatibility_rows_are_materialized());
         let target = admitted(merged);
         let changes = super::super::changed_rows(&current, &target);
+        assert!(!current.compatibility_rows_are_materialized());
+        assert!(!target.compatibility_rows_are_materialized());
         assert!(changes.iter().any(|change| matches!(
             change,
             RowChange::Remove(RowId::Symbol(id)) if *id == backend_engine::symbol_key("pkg:alpha::old")
@@ -1146,7 +1159,9 @@ mod tests {
             .expect("sibling");
         assert_eq!(kept, &sibling);
         let stolen = vec![sibling.clone()];
-        let error = rows_replacing_package(current.rows(), alpha, stolen).expect_err("collision");
+        let error =
+            rows_replacing_package(current.row_refs(), alpha, stolen).expect_err("collision");
+        assert!(!current.compatibility_rows_are_materialized());
         assert_eq!(error, RowSpliceError::Collision);
     }
 
@@ -1393,7 +1408,8 @@ mod tests {
                 .count(),
             1
         );
-        let again = rows_splicing_changed_files(&merged, package, &paths, Vec::new()).expect("second");
+        let again =
+            rows_splicing_changed_files(&merged, package, &paths, Vec::new()).expect("second");
         assert_eq!(
             again.iter().find(|row| row.label == widget.label),
             Some(&widget)
@@ -1421,7 +1437,9 @@ mod tests {
     ) -> Row {
         let location = backend_compile::SourceLocation::new(path, 1).expect("location");
         Row::in_package(
-            RowId::Symbol(backend_engine::symbol_key(&format!("semantic-{path}-{name}"))),
+            RowId::Symbol(backend_engine::symbol_key(&format!(
+                "semantic-{path}-{name}"
+            ))),
             initial.basis(),
             package,
             format!("pkg:alpha::semantic::{name}"),
@@ -1472,8 +1490,8 @@ mod tests {
             matches!(fragment, backend_engine::Fragment::Text(text) if text == super::super::view_build::STALE_NOTE)
         }));
         assert!(stale.source.captured().is_none());
-        let structural =
-            structural_splice_keys(&BTreeSet::new(), package, &sources, &changed).expect("structural");
+        let structural = structural_splice_keys(&BTreeSet::new(), package, &sources, &changed)
+            .expect("structural");
         assert_eq!(structural, changed);
         activated.clear();
         activated.insert((
@@ -1707,16 +1725,16 @@ mod tests {
         let draw = semantic_row(&initial, package, "src/impl.rs", "draw");
         let current = vec![widget.clone(), draw];
         let impl_paths = BTreeSet::from(["src/impl.rs".to_owned()]);
-        let first = rows_splicing_changed_files(&current, package, &impl_paths, Vec::new())
-            .expect("first");
+        let first =
+            rows_splicing_changed_files(&current, package, &impl_paths, Vec::new()).expect("first");
         let stale_draw = first
             .iter()
             .find(|row| row.label.ends_with("::draw"))
             .expect("stale draw")
             .clone();
         let widget_paths = BTreeSet::from(["src/widget.rs".to_owned()]);
-        let changes =
-            row_changes_splicing_changed_files(&first, package, &widget_paths, &[]).expect("second");
+        let changes = row_changes_splicing_changed_files(&first, package, &widget_paths, &[])
+            .expect("second");
         assert_eq!(changes.len(), 1);
         assert!(changes.iter().all(|change| {
             matches!(change, RowChange::Upsert(row) if row.label == widget.label)
