@@ -1346,3 +1346,84 @@ fn references_name_sites_from_compiler_facts_against_the_selected_view() {
         Err(LibraryError::NotFound)
     ));
 }
+
+#[test]
+fn borrowed_reference_labels_match_cloned_rows() {
+    const ROWS: usize = 4096;
+    const SAMPLES: usize = 9;
+    let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
+    let site_symbol = symbol_key("pkg::semantic::aa::caller");
+    let target_label = "pkg::semantic::bb::callee";
+    let body = "d".repeat(4096);
+    let mut rows = Vec::with_capacity(ROWS + 2);
+    rows.push(Row::new(RowId::Symbol(site_symbol), basis, "pkg::caller"));
+    rows.push(Row::new(
+        RowId::Symbol(symbol_key("pkg::semantic::bb::callee")),
+        basis,
+        target_label,
+    ));
+    for index in 0..ROWS {
+        let id = symbol_key(&format!("pkg::sibling::{index:08}"));
+        rows.push(
+            Row::new(RowId::Symbol(id), basis, format!("pkg::sibling::{index}"))
+                .with_document(vec![Fragment::Text(body.clone())]),
+        );
+    }
+    let library = projection(rows);
+    assert!(!library.view().compatibility_rows_are_materialized());
+    let fact = ReferenceFact {
+        site: site_symbol,
+        target: SemanticLinkTarget::Local {
+            declaration: SemanticDeclarationIdentity {
+                family: [2; 16],
+                variant: [3; 16],
+            },
+        },
+        relation: SemanticLinkKind::Calls,
+        evidence: SemanticLinkEvidence {
+            confidence: SemanticConfidence::Compiler,
+            source: None,
+        },
+    };
+    let target = ProductText::new(target_label).expect("target");
+    let records = library.references(&target, &[fact.clone()]).expect("references");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].site.as_str(), "pkg::caller");
+    assert!(!library.view().compatibility_rows_are_materialized());
+    let missing = ProductText::new("pkg::semantic::dd::missing").expect("missing");
+    assert!(matches!(
+        library.references(&missing, &[fact.clone()]),
+        Err(LibraryError::NotFound)
+    ));
+    let mut borrowed_samples = [0_u128; SAMPLES];
+    let mut owned_samples = [0_u128; SAMPLES];
+    for sample in 0..SAMPLES {
+        let started = std::time::Instant::now();
+        let hit = library.references(&target, &[fact.clone()]).expect("references");
+        borrowed_samples[sample] = started.elapsed().as_nanos();
+        std::hint::black_box(hit[0].site.as_str());
+        let started = std::time::Instant::now();
+        let cloned: Vec<_> = library.view().row_refs().cloned().collect();
+        let present = cloned.iter().any(|row| row.label == target_label);
+        let site = cloned
+            .iter()
+            .find(|row| row.id == RowId::Symbol(site_symbol))
+            .map(|row| row.label.clone());
+        owned_samples[sample] = started.elapsed().as_nanos();
+        std::hint::black_box((present, site));
+    }
+    assert!(!library.view().compatibility_rows_are_materialized());
+    borrowed_samples.sort_unstable();
+    owned_samples.sort_unstable();
+    let borrowed_median = borrowed_samples[SAMPLES / 2];
+    let owned_median = owned_samples[SAMPLES / 2];
+    eprintln!(
+        "borrowed_reference_labels rows={ROWS} owned_median_ns={owned_median} \
+         borrowed_median_ns={borrowed_median}"
+    );
+    assert!(
+        borrowed_median.saturating_mul(2) < owned_median,
+        "borrowed references {borrowed_median} ns was not twice as fast as cloning every row \
+         {owned_median} ns"
+    );
+}

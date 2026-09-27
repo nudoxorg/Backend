@@ -614,8 +614,7 @@ impl Library {
     ) -> Result<Box<[ReferenceRecord]>, LibraryError> {
         let target_present = self
             .view
-            .rows()
-            .iter()
+            .row_refs()
             .any(|row| row.label == target.as_str());
         if !target_present {
             return Err(LibraryError::NotFound);
@@ -628,12 +627,12 @@ impl Library {
         let records = facts
             .iter()
             .map(|fact| {
-                let row = self
+                let label = self
                     .view
-                    .row(RowId::Symbol(fact.site))
+                    .row_label(RowId::Symbol(fact.site))
                     .ok_or(LibraryError::NotFound)?;
                 Ok(ReferenceRecord {
-                    site: crate::ProductText::new(row.label.clone()).map_err(|_| {
+                    site: crate::ProductText::new(label).map_err(|_| {
                         LibraryError::InvalidQuery(
                             "reference site coordinate violates the text bound".to_owned(),
                         )
