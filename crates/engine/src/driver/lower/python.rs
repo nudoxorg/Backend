@@ -1983,6 +1983,80 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     }
                 }
             }
+            OccurrenceReceiver::Super { class } => {
+                let confidence = |checked: Option<&SymbolOutcome>| match checked {
+                    Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                    _ => OccurrenceConfidence::Index,
+                };
+                let Some(class_index) = self.unique_live_class_index(class) else {
+                    return Ok(Some((
+                        self.super_foreign_target(occurrence)?,
+                        OccurrenceConfidence::Index,
+                    )));
+                };
+                let mut stack = HashSet::new();
+                let Some(mro) = self.c3_mro(class_index, &mut stack) else {
+                    return Ok(Some((
+                        self.super_foreign_target(occurrence)?,
+                        OccurrenceConfidence::Index,
+                    )));
+                };
+                match occurrence.kind {
+                    OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                        match self.super_member_in_mro(
+                            occurrence,
+                            &mro,
+                            DeclarationKind::Function,
+                        ) {
+                            InheritedMemberLookup::Unique(ordinal) => Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence(checked),
+                            ))),
+                            InheritedMemberLookup::Ambiguous | InheritedMemberLookup::Absent => {
+                                Ok(Some((
+                                    foreign_method(
+                                        self.slice(occurrence.span)?,
+                                        occurrence.span,
+                                    )?,
+                                    OccurrenceConfidence::Index,
+                                )))
+                            }
+                        }
+                    }
+                    OccurrenceKind::AttributeRead => {
+                        match self.super_member_in_mro(occurrence, &mro, DeclarationKind::Field) {
+                            InheritedMemberLookup::Unique(ordinal) => Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                confidence(checked),
+                            ))),
+                            InheritedMemberLookup::Ambiguous => Ok(Some((
+                                foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
+                                OccurrenceConfidence::Index,
+                            ))),
+                            InheritedMemberLookup::Absent => {
+                                match self.super_member_in_mro(
+                                    occurrence,
+                                    &mro,
+                                    DeclarationKind::Function,
+                                ) {
+                                    InheritedMemberLookup::Unique(ordinal) => Ok(Some((
+                                        OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                        confidence(checked),
+                                    ))),
+                                    InheritedMemberLookup::Ambiguous
+                                    | InheritedMemberLookup::Absent => Ok(Some((
+                                        foreign_field(
+                                            self.slice(occurrence.span)?,
+                                            occurrence.span,
+                                        )?,
+                                        OccurrenceConfidence::Index,
+                                    ))),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             OccurrenceReceiver::Foreign { receiver } => {
                 if occurrence.kind == OccurrenceKind::AttributeRead {
                     if let Some(receiver) = receiver {
@@ -2718,6 +2792,72 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
+    /// Builds the C3 linearization of one same-file class, including the class
+    /// itself at index zero. Unresolvable bases are skipped; cycles and merge
+    /// failures return `None`.
+    fn c3_mro(&self, class_index: usize, stack: &mut HashSet<usize>) -> Option<Vec<usize>> {
+        if !stack.insert(class_index) {
+            return None;
+        }
+        let declaration = &self.module.declarations[class_index];
+        let mut direct_bases = Vec::new();
+        for base in &declaration.bases {
+            let Some(base_name) = simple_base_name(base) else {
+                continue;
+            };
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            direct_bases.push(base_index);
+        }
+        let mut base_mros = Vec::with_capacity(direct_bases.len());
+        for &base_index in &direct_bases {
+            base_mros.push(self.c3_mro(base_index, stack)?);
+        }
+        let merged = c3_merge(base_mros, direct_bases)?;
+        stack.remove(&class_index);
+        let mut mro = Vec::with_capacity(1 + merged.len());
+        mro.push(class_index);
+        mro.extend(merged);
+        Some(mro)
+    }
+
+    /// Resolves one `super()` member by walking the C3 MRO after the
+    /// enclosing class. Only indexes `1..=MAX_INHERITED_BASE_LINKS` are searched.
+    fn super_member_in_mro(
+        &self,
+        occurrence: &OccurrenceFact,
+        mro: &[usize],
+        member_kind: DeclarationKind,
+    ) -> InheritedMemberLookup {
+        for &class_index in mro.iter().skip(1).take(MAX_INHERITED_BASE_LINKS) {
+            let class_span = self.module.declarations[class_index].span;
+            match self.member_lookup_in_class(occurrence, class_span, member_kind) {
+                InheritedMemberLookup::Unique(ordinal) => {
+                    return InheritedMemberLookup::Unique(ordinal);
+                }
+                InheritedMemberLookup::Ambiguous => return InheritedMemberLookup::Ambiguous,
+                InheritedMemberLookup::Absent => {}
+            }
+        }
+        InheritedMemberLookup::Absent
+    }
+
+    /// Honest foreign key for one unresolved `super()` site.
+    fn super_foreign_target(
+        &self,
+        occurrence: &OccurrenceFact,
+    ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
+        match occurrence.kind {
+            OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                foreign_method(self.slice(occurrence.span)?, occurrence.span)
+            }
+            OccurrenceKind::AttributeRead => {
+                foreign_field(self.slice(occurrence.span)?, occurrence.span)
+            }
+        }
+    }
+
     /// Lowers one checker-inferred type to its root record and the ordered
     /// row coordinates of its children. The root record sits directly on
     /// the owning fact; nested compounds consume pooled anonymous rows.
@@ -3112,6 +3252,37 @@ fn merge_inherited_base_results(results: Vec<InheritedMemberLookup>) -> Inherite
         }
     }
     unique_ordinal.map_or(InheritedMemberLookup::Absent, InheritedMemberLookup::Unique)
+}
+
+/// Standard C3 merge of base MRO sequences plus the direct-base list.
+fn c3_merge(mut sequences: Vec<Vec<usize>>, last: Vec<usize>) -> Option<Vec<usize>> {
+    sequences.push(last);
+    let mut result = Vec::new();
+    loop {
+        sequences.retain(|sequence| !sequence.is_empty());
+        if sequences.is_empty() {
+            break;
+        }
+        let mut chosen: Option<(usize, usize)> = None;
+        'candidate: for (index, sequence) in sequences.iter().enumerate() {
+            let head = sequence[0];
+            for other in &sequences {
+                if other.len() > 1 && other[1..].contains(&head) {
+                    continue 'candidate;
+                }
+            }
+            chosen = Some((index, head));
+            break;
+        }
+        let (_, head) = chosen?;
+        result.push(head);
+        for sequence in &mut sequences {
+            if sequence.first() == Some(&head) {
+                sequence.remove(0);
+            }
+        }
+    }
+    Some(result)
 }
 
 /// `self` on an instance method and `cls` on a classmethod are receivers, not

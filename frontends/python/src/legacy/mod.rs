@@ -188,6 +188,11 @@ pub enum OccurrenceReceiver {
     /// `self.method()` / `cls.method()`: keyed by the attribute name and
     /// the enclosing class, proven by the declaration walk.
     EnclosingClass { class: String },
+    /// Zero-argument `super()` written directly in a class body function
+    /// (`super().note`, `super().note()`). The search starts after `class`.
+    /// `super(Base, self)`, a nested function, and the bare name `super` are
+    /// not this variant.
+    Super { class: String },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -916,6 +921,28 @@ impl<'a> Projection<'a> {
         }
     }
 
+    /// Zero-argument `super()` inside a class-body method at `function_depth`
+    /// 1. Two-argument `super`, nested functions, and bare `super` stay foreign.
+    fn zero_arg_super_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let ast::Expr::Call(call) = expr else {
+            return None;
+        };
+        let ast::Expr::Name(name) = call.func.as_ref() else {
+            return None;
+        };
+        if name.id.as_str() != "super" {
+            return None;
+        }
+        if !call.arguments.args.is_empty() || !call.arguments.keywords.is_empty() {
+            return None;
+        }
+        if self.function_depth != 1 {
+            return None;
+        }
+        let class = self.enclosing_class.clone()?;
+        Some(OccurrenceReceiver::Super { class })
+    }
+
     /// Copies an AST-selected source range only after a checked bounds proof.
     fn source_owned(&mut self, range: ruff_text_size::TextRange) -> Option<String> {
         if self.error.is_some() {
@@ -1268,22 +1295,28 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 }
                 ast::Expr::Attribute(attribute) => {
                     let target = attribute.attr.as_str();
-                    let receiver = match attribute.value.as_ref() {
-                        ast::Expr::Name(name)
-                            if matches!(name.id.as_str(), "self" | "cls")
-                                && self.enclosing_class.is_some() =>
-                        {
-                            OccurrenceReceiver::EnclosingClass {
-                                class: self
-                                    .enclosing_class
-                                    .clone()
-                                    .expect("enclosing class proven above"),
+                    let receiver = if let Some(receiver) =
+                        self.zero_arg_super_receiver(attribute.value.as_ref())
+                    {
+                        receiver
+                    } else {
+                        match attribute.value.as_ref() {
+                            ast::Expr::Name(name)
+                                if matches!(name.id.as_str(), "self" | "cls")
+                                    && self.enclosing_class.is_some() =>
+                            {
+                                OccurrenceReceiver::EnclosingClass {
+                                    class: self
+                                        .enclosing_class
+                                        .clone()
+                                        .expect("enclosing class proven above"),
+                                }
                             }
+                            ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
+                                receiver: Some(name.id.as_str().to_owned()),
+                            },
+                            _ => OccurrenceReceiver::Foreign { receiver: None },
                         }
-                        ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                            receiver: Some(name.id.as_str().to_owned()),
-                        },
-                        _ => OccurrenceReceiver::Foreign { receiver: None },
                     };
                     let receiver_is_module_name = matches!(
                         attribute.value.as_ref(),
@@ -1339,22 +1372,28 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     && occurrence.span.end >= attr_span.end
             });
             if !already_recorded {
-                let receiver = match attribute.value.as_ref() {
-                    ast::Expr::Name(name)
-                        if matches!(name.id.as_str(), "self" | "cls")
-                            && self.enclosing_class.is_some() =>
-                    {
-                        OccurrenceReceiver::EnclosingClass {
-                            class: self
-                                .enclosing_class
-                                .clone()
-                                .expect("enclosing class proven above"),
+                let receiver = if let Some(receiver) =
+                    self.zero_arg_super_receiver(attribute.value.as_ref())
+                {
+                    receiver
+                } else {
+                    match attribute.value.as_ref() {
+                        ast::Expr::Name(name)
+                            if matches!(name.id.as_str(), "self" | "cls")
+                                && self.enclosing_class.is_some() =>
+                        {
+                            OccurrenceReceiver::EnclosingClass {
+                                class: self
+                                    .enclosing_class
+                                    .clone()
+                                    .expect("enclosing class proven above"),
+                            }
                         }
+                        ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
+                            receiver: Some(name.id.as_str().to_owned()),
+                        },
+                        _ => OccurrenceReceiver::Foreign { receiver: None },
                     }
-                    ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                        receiver: Some(name.id.as_str().to_owned()),
-                    },
-                    _ => OccurrenceReceiver::Foreign { receiver: None },
                 };
                 let owner = if self.decorator_ranges.iter().any(|range| {
                     range.start() <= expr.range().start() && range.end() >= expr.range().end()
