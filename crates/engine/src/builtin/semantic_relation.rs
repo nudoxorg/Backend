@@ -1902,8 +1902,8 @@ mod tests {
              range_median_ns={range_median}"
         );
         assert!(
-            range_median * 2 < page_median,
-            "package range {range_median} ns was not cheaper than a full publication page \
+            range_median * 8 < page_median,
+            "package range {range_median} ns was not 8× cheaper than a full publication page \
              {page_median} ns"
         );
         drop(store);
