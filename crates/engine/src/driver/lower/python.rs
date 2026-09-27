@@ -2091,6 +2091,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     checked,
                     self.subscripted_attribute_class_name(occurrence, root, steps),
                 ),
+            OccurrenceReceiver::SubscriptedCall { call, steps } => self
+                .instance_or_named_attribute_target(
+                    occurrence,
+                    checked,
+                    self.subscripted_call_class_name(occurrence, call.as_ref(), steps),
+                ),
             OccurrenceReceiver::CallReturn { method, receiver } => {
                 self.call_return_target(occurrence, checked, method, receiver.as_ref())
             }
@@ -3439,6 +3445,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 .subscripted_attribute_class_name(occurrence, root, steps)
                 .and_then(|class_name| self.unique_live_class_index(&class_name))
                 .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
+            OccurrenceReceiver::SubscriptedCall { call, steps } => self
+                .subscripted_call_class_name(occurrence, call.as_ref(), steps)
+                .and_then(|class_name| self.unique_live_class_index(&class_name))
+                .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
             OccurrenceReceiver::Constructed { class } => self
                 .unique_live_class_index(class)
                 .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
@@ -4062,6 +4072,182 @@ impl<'a, 'source> Emitter<'a, 'source> {
             }
         }
         Some(self.module.declarations[class_index].name.clone())
+    }
+
+    fn subscripted_call_class_name(
+        &self,
+        occurrence: &OccurrenceFact,
+        call: &OccurrenceReceiver,
+        steps: &[AttributeStep],
+    ) -> Option<String> {
+        let OccurrenceReceiver::CallReturn { method, receiver } = call else {
+            return None;
+        };
+        let (leading_indexes, groups) = split_call_subscript_steps(steps)?;
+        let mut class_index = if leading_indexes > 0 {
+            let fn_index = self.call_return_method_fn_index(occurrence, method, receiver)?;
+            let declaration = &self.module.declarations[fn_index];
+            let raw = &self.return_annotation(declaration)?.annotation;
+            self.peeled_index_class(raw, leading_indexes)?
+        } else {
+            let class_name = self.call_return_returned_class(occurrence, method, receiver)?;
+            self.unique_live_class_index(&class_name)?
+        };
+        for (field, index_count) in groups {
+            if index_count == 0 {
+                let Some(class_name) =
+                    self.field_annotation_class_name_for_class(class_index, &field)
+                else {
+                    return None;
+                };
+                class_index = self.unique_live_class_index(&class_name)?;
+            } else {
+                let raw = self.raw_field_annotation_for_class(class_index, &field)?;
+                let peeled = peel_indexes(raw, index_count)?;
+                match classify_receiver_annotation(&peeled) {
+                    ReceiverAnnotationName::Unique(class_name) => {
+                        class_index = self.unique_live_class_index(class_name)?;
+                    }
+                    ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(self.module.declarations[class_index].name.clone())
+    }
+
+    /// Live function declaration index for one call-return callee, using the
+    /// same receiver walk as `call_return_returned_class` but without classifying
+    /// the return annotation.
+    fn call_return_method_fn_index(
+        &self,
+        occurrence: &OccurrenceFact,
+        method: &str,
+        receiver: &OccurrenceReceiver,
+    ) -> Option<usize> {
+        match receiver {
+            OccurrenceReceiver::EnclosingClass { class } => self
+                .enclosing_class_index(occurrence, class)
+                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
+            OccurrenceReceiver::Foreign { receiver: Some(name) } => {
+                let assigned = self.receiver_assigned_in_scope(occurrence, name);
+                if assigned
+                    && !matches!(
+                        self.raw_name_receiver_annotation(occurrence, name),
+                        RawReceiverAnnotation::Local(_)
+                    )
+                {
+                    None
+                } else {
+                    self.named_attribute_class_index(occurrence, name).and_then(|class_index| {
+                        self.call_return_method_fn_index_on_class(class_index, method)
+                    })
+                }
+            }
+            OccurrenceReceiver::None => {
+                let indices = self.module_level_function_indices_named(method);
+                if indices.len() == 1 {
+                    Some(indices[0])
+                } else {
+                    None
+                }
+            }
+            OccurrenceReceiver::InstanceAttribute { class, attribute } => self
+                .enclosing_class_index(occurrence, class)
+                .and_then(|class_index| {
+                    self.field_annotation_class_name_for_class(class_index, attribute)
+                })
+                .and_then(|field_class| self.unique_live_class_index(&field_class))
+                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
+            OccurrenceReceiver::NamedAttribute { name, attribute } => {
+                let assigned = self.receiver_assigned_in_scope(occurrence, name);
+                if assigned
+                    && !matches!(
+                        self.raw_name_receiver_annotation(occurrence, name),
+                        RawReceiverAnnotation::Local(_)
+                    )
+                {
+                    None
+                } else {
+                    self.named_attribute_class_index(occurrence, name)
+                        .and_then(|class_index| {
+                            self.field_annotation_class_name_for_class(class_index, attribute)
+                        })
+                        .and_then(|field_class| self.unique_live_class_index(&field_class))
+                        .and_then(|class_index| {
+                            self.call_return_method_fn_index_on_class(class_index, method)
+                        })
+                }
+            }
+            OccurrenceReceiver::ChainedAttribute { root, attributes } => {
+                let class_index = match root {
+                    AttributeChainRoot::Enclosing { class } => {
+                        self.enclosing_class_index(occurrence, class)
+                    }
+                    AttributeChainRoot::Name { name } => {
+                        let assigned = self.receiver_assigned_in_scope(occurrence, name);
+                        if assigned
+                            && !matches!(
+                                self.raw_name_receiver_annotation(occurrence, name),
+                                RawReceiverAnnotation::Local(_)
+                            )
+                        {
+                            None
+                        } else {
+                            self.named_attribute_class_index(occurrence, name)
+                        }
+                    }
+                };
+                if let Some(mut class_index) = class_index {
+                    for attribute in attributes {
+                        let Some(class_name) =
+                            self.field_annotation_class_name_for_class(class_index, attribute)
+                        else {
+                            return None;
+                        };
+                        let Some(next_index) = self.unique_live_class_index(&class_name) else {
+                            return None;
+                        };
+                        class_index = next_index;
+                    }
+                    self.call_return_method_fn_index_on_class(class_index, method)
+                } else {
+                    None
+                }
+            }
+            OccurrenceReceiver::SubscriptedAttribute { root, steps } => self
+                .subscripted_attribute_class_name(occurrence, root, steps)
+                .and_then(|class_name| self.unique_live_class_index(&class_name))
+                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
+            OccurrenceReceiver::Constructed { class } => self
+                .unique_live_class_index(class)
+                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
+            OccurrenceReceiver::CallReturn {
+                method: inner_method,
+                receiver: inner_receiver,
+            } => {
+                let inner_class =
+                    self.call_return_returned_class(occurrence, inner_method, inner_receiver.as_ref())?;
+                let class_index = self.unique_live_class_index(&inner_class)?;
+                self.call_return_method_fn_index_on_class(class_index, method)
+            }
+            OccurrenceReceiver::SubscriptedCall { .. }
+            | OccurrenceReceiver::Foreign { receiver: None }
+            | OccurrenceReceiver::Module
+            | OccurrenceReceiver::Super { .. } => None,
+        }
+    }
+
+    fn call_return_method_fn_index_on_class(
+        &self,
+        class_index: usize,
+        method: &str,
+    ) -> Option<usize> {
+        match self.call_return_method_index(class_index, method) {
+            CallReturnMethodLookup::Unique(index) => Some(index),
+            CallReturnMethodLookup::Absent | CallReturnMethodLookup::Ambiguous => None,
+        }
     }
 
     /// Resolves one instance-attribute annotation written on `self.name` or
@@ -5014,6 +5200,28 @@ fn peel_indexes(annotation: &Annotation, count: usize) -> Option<Annotation> {
 
 fn is_subscript_index(step: &AttributeStep) -> bool {
     matches!(step, AttributeStep::Index | AttributeStep::NameIndex)
+}
+
+fn split_call_subscript_steps(steps: &[AttributeStep]) -> Option<(usize, Vec<(String, usize)>)> {
+    let mut index = 0;
+    while index < steps.len() && is_subscript_index(&steps[index]) {
+        index += 1;
+    }
+    let leading_indexes = index;
+    let mut groups = Vec::new();
+    while index < steps.len() {
+        let AttributeStep::Field(field) = &steps[index] else {
+            return None;
+        };
+        index += 1;
+        let mut index_count = 0;
+        while index < steps.len() && is_subscript_index(&steps[index]) {
+            index_count += 1;
+            index += 1;
+        }
+        groups.push((field.clone(), index_count));
+    }
+    Some((leading_indexes, groups))
 }
 
 fn split_subscript_steps(

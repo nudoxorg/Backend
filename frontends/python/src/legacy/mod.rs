@@ -250,11 +250,19 @@ pub enum OccurrenceReceiver {
         attributes: Vec<String>,
     },
     /// `self.child[0].note`, `items[0].note`, `self.child[0].other.note` when the
-    /// receiver contains at least one index subscript. `steps` are root-to-leaf
-    /// and exclude the member. A slice, a subscript of a call, and a chain with
-    /// no index are not this variant.
+    /// receiver contains at least one index subscript on a name or `self`/`cls`
+    /// base. `steps` are root-to-leaf and exclude the member. A slice, a subscript
+    /// of a call, and a chain with no index are not this variant.
     SubscriptedAttribute {
         root: AttributeChainRoot,
+        steps: Vec<AttributeStep>,
+    },
+    /// `self.note()[0].extra` when the call's return annotation is peeled by the
+    /// following index steps. `call` is the `CallReturn` of `note()`. `steps` are
+    /// root-to-leaf after that call and before the member, and contain at least
+    /// one index. A slice is not this variant.
+    SubscriptedCall {
+        call: Box<OccurrenceReceiver>,
         steps: Vec<AttributeStep>,
     },
     /// `self.note().extra` / `obj.note().extra()` / `note().extra()` and one
@@ -265,8 +273,8 @@ pub enum OccurrenceReceiver {
     /// `Foreign { receiver: Some(name) }` for another plain name, or `None`
     /// for a bare call. The inner receiver may be `InstanceAttribute`,
     /// `NamedAttribute`, `ChainedAttribute`, `SubscriptedAttribute`,
-    /// `Constructed`, or a nested `CallReturn` for successive calls. Still not
-    /// `Super`, not `Module`, and not a slice or subscript of a call.
+    /// `SubscriptedCall`, `Constructed`, or a nested `CallReturn` for successive
+    /// calls. Still not `Super`, not `Module`, and not a slice.
     CallReturn {
         method: String,
         receiver: Box<OccurrenceReceiver>,
@@ -1166,9 +1174,40 @@ impl<'a> Projection<'a> {
         Some(OccurrenceReceiver::ChainedAttribute { root, attributes })
     }
 
-    /// `self.child[0].note` / `items[0].note` when `expr` is an attribute or
-    /// index subscript chain containing at least one index subscript before the
-    /// member. Slices and subscripts of calls are not this receiver.
+    /// True when a `CallReturn` nested inside `SubscriptedCall` must stay absent
+    /// because `self`/`cls` would name the enclosing class at `function_depth != 1`.
+    fn rejects_nested_self_call_receiver(&self, receiver: &OccurrenceReceiver) -> bool {
+        let OccurrenceReceiver::CallReturn {
+            receiver: inner, ..
+        } = receiver
+        else {
+            return true;
+        };
+        match inner.as_ref() {
+            OccurrenceReceiver::NamedAttribute { name, .. }
+                if matches!(name.as_str(), "self" | "cls") && self.function_depth != 1 =>
+            {
+                true
+            }
+            OccurrenceReceiver::ChainedAttribute {
+                root: AttributeChainRoot::Name { name },
+                ..
+            } if matches!(name.as_str(), "self" | "cls") && self.function_depth != 1 => true,
+            OccurrenceReceiver::SubscriptedAttribute {
+                root: AttributeChainRoot::Name { name },
+                ..
+            } if matches!(name.as_str(), "self" | "cls") && self.function_depth != 1 => true,
+            OccurrenceReceiver::SubscriptedAttribute {
+                root: AttributeChainRoot::Enclosing { .. },
+                ..
+            } if self.function_depth != 1 => true,
+            _ => false,
+        }
+    }
+
+    /// `self.child[0].note` / `items[0].note` / `self.note()[0].extra` when `expr`
+    /// is an attribute or index subscript chain containing at least one index
+    /// subscript before the member. Slices are not this receiver.
     fn subscripted_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
         let mut steps = Vec::new();
         let mut current = expr;
@@ -1189,6 +1228,22 @@ impl<'a> Projection<'a> {
                     };
                     steps.push(step);
                     current = subscript.value.as_ref();
+                }
+                ast::Expr::Call(_) => {
+                    let call = self.call_return_receiver(current)?;
+                    if self.rejects_nested_self_call_receiver(&call) {
+                        return None;
+                    }
+                    steps.reverse();
+                    if !steps.iter().any(|step| {
+                        matches!(step, AttributeStep::Index | AttributeStep::NameIndex)
+                    }) {
+                        return None;
+                    }
+                    return Some(OccurrenceReceiver::SubscriptedCall {
+                        call: Box::new(call),
+                        steps,
+                    });
                 }
                 ast::Expr::Name(name) => {
                     let id = name.id.as_str();
@@ -1292,6 +1347,11 @@ impl<'a> Projection<'a> {
                                 root: AttributeChainRoot::Enclosing { .. },
                                 ..
                             }) if self.function_depth != 1 =>
+                            {
+                                None
+                            }
+                            Some(OccurrenceReceiver::SubscriptedCall { ref call, .. })
+                                if self.rejects_nested_self_call_receiver(call) =>
                             {
                                 None
                             }
