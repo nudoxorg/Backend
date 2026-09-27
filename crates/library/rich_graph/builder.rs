@@ -27,16 +27,17 @@ impl RichGraphSnapshot {
             SemanticConfidence::Compiler,
         );
         let mut builder = RichGraphBuilder::new(revision, GraphNodeId::for_row(center));
-        for row in root.rows() {
+        for row in root.row_refs() {
             let availability = match row.state {
                 crate::RowState::Ready => GraphAvailability::Ready,
                 crate::RowState::Loading => GraphAvailability::Loading,
                 crate::RowState::Failed => GraphAvailability::failed("row failed")?,
             };
+            let label = row.label.clone();
             builder.add_node(RichGraphNode::new(
                 GraphNodeId::for_row(row.id),
-                row.label.clone(),
-                Some(row.label.clone()),
+                label.clone(),
+                Some(label),
                 row.kind.map(|kind| format!("{kind:?}")),
                 availability,
                 Some(provenance),
