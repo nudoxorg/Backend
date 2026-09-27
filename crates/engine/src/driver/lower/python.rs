@@ -4232,8 +4232,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 let class_index = self.unique_live_class_index(&inner_class)?;
                 self.call_return_method_fn_index_on_class(class_index, method)
             }
-            OccurrenceReceiver::SubscriptedCall { .. }
-            | OccurrenceReceiver::Foreign { receiver: None }
+            OccurrenceReceiver::SubscriptedCall { call, steps } => self
+                .subscripted_call_class_name(occurrence, call.as_ref(), steps)
+                .and_then(|class_name| self.unique_live_class_index(&class_name))
+                .and_then(|class_index| self.call_return_method_fn_index_on_class(class_index, method)),
+            OccurrenceReceiver::Foreign { receiver: None }
             | OccurrenceReceiver::Module
             | OccurrenceReceiver::Super { .. } => None,
         }
