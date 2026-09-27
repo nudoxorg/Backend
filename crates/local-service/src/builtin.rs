@@ -620,29 +620,128 @@ fn read_indexed_sources(snapshot: &WorkspaceSnapshot) -> Result<IndexedSources, 
     Ok(IndexedSources { projects, files })
 }
 
-fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
-    let bytes = rows
-        .iter()
-        .try_fold(0usize, |total, row| {
-            let document = row.document.iter().try_fold(0usize, |bytes, fragment| {
-                bytes.checked_add(match fragment {
-                    Fragment::Text(value) | Fragment::Code(value) => value.len(),
-                    Fragment::Link { label, .. } => label.len(),
-                    Fragment::Break => 1,
-                })
-            })?;
-            total
-                .checked_add(row.label.len())?
-                .checked_add(row.signature.as_deref().map_or(0, str::len))?
-                .checked_add(document)
+fn row_admission_bytes(row: &Row) -> Option<usize> {
+    let document = row.document.iter().try_fold(0usize, |bytes, fragment| {
+        bytes.checked_add(match fragment {
+            Fragment::Text(value) | Fragment::Code(value) => value.len(),
+            Fragment::Link { label, .. } => label.len(),
+            Fragment::Break => 1,
         })
-        .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned()))?;
+    })?;
+    row.label
+        .len()
+        .checked_add(row.signature.as_deref().map_or(0, str::len))?
+        .checked_add(document)
+}
+
+fn finish_admitted_bytes(bytes: usize) -> Result<usize, BuiltinModelError> {
     if bytes > MAX_REBUILD_BYTES {
         return Err(BuiltinModelError(
             "workspace view exceeds rebuild byte bound".to_owned(),
         ));
     }
     Ok(bytes)
+}
+
+fn admitted_view_bytes(rows: &[Row]) -> Result<usize, BuiltinModelError> {
+    let bytes = rows
+        .iter()
+        .try_fold(0usize, |total, row| {
+            total.checked_add(row_admission_bytes(row)?)
+        })
+        .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned()))?;
+    finish_admitted_bytes(bytes)
+}
+
+/// Byte budget of `current` after `changes`, without cloning a resident row.
+///
+/// `changes` must be strictly ordered by identity. A removal names a resident
+/// row. An upsert replaces that identity or inserts one the resident view does
+/// not hold.
+pub(super) fn admitted_bytes_after_row_changes(
+    current: &[Row],
+    changes: &[backend_engine::RowChange],
+) -> Result<usize, BuiltinModelError> {
+    use std::cmp::Ordering;
+
+    let overflow = || BuiltinModelError("workspace view bytes overflow".to_owned());
+    let mut ordered: Vec<&Row> = current.iter().collect();
+    ordered.sort_by_key(|row| row.id);
+    if ordered.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return Err(BuiltinModelError(
+            "row patch saw duplicate resident identities".to_owned(),
+        ));
+    }
+    if changes.windows(2).any(|pair| pair[0].id() >= pair[1].id()) {
+        return Err(BuiltinModelError(
+            "row patch is not strictly ordered".to_owned(),
+        ));
+    }
+    let mut total = 0usize;
+    let mut rows = ordered.iter().peekable();
+    let mut pending = changes.iter().peekable();
+    loop {
+        let row_bytes = |row: &Row| row_admission_bytes(row).ok_or_else(overflow);
+        match (rows.peek(), pending.peek()) {
+            (Some(row), Some(change)) => match row.id.cmp(&change.id()) {
+                Ordering::Less => {
+                    total = total.checked_add(row_bytes(row)?).ok_or_else(overflow)?;
+                    let _ = rows.next();
+                }
+                Ordering::Greater => {
+                    total = bytes_for_inserted_change(total, change)?;
+                    let _ = pending.next();
+                }
+                Ordering::Equal => {
+                    total = bytes_for_resident_change(total, change)?;
+                    let _ = rows.next();
+                    let _ = pending.next();
+                }
+            },
+            (Some(row), None) => {
+                total = total.checked_add(row_bytes(row)?).ok_or_else(overflow)?;
+                let _ = rows.next();
+            }
+            (None, Some(change)) => {
+                total = bytes_for_inserted_change(total, change)?;
+                let _ = pending.next();
+            }
+            (None, None) => break,
+        }
+    }
+    finish_admitted_bytes(total)
+}
+
+fn bytes_for_inserted_change(
+    total: usize,
+    change: &backend_engine::RowChange,
+) -> Result<usize, BuiltinModelError> {
+    match change {
+        backend_engine::RowChange::Remove(_) => Err(BuiltinModelError(
+            "row patch removed a row the resident view does not hold".to_owned(),
+        )),
+        backend_engine::RowChange::Upsert(row) => total
+            .checked_add(
+                row_admission_bytes(row)
+                    .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned()))?,
+            )
+            .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned())),
+    }
+}
+
+fn bytes_for_resident_change(
+    total: usize,
+    change: &backend_engine::RowChange,
+) -> Result<usize, BuiltinModelError> {
+    match change {
+        backend_engine::RowChange::Remove(_) => Ok(total),
+        backend_engine::RowChange::Upsert(row) => total
+            .checked_add(
+                row_admission_bytes(row)
+                    .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned()))?,
+            )
+            .ok_or_else(|| BuiltinModelError("workspace view bytes overflow".to_owned())),
+    }
 }
 
 fn view_for_workspace(
@@ -807,13 +906,51 @@ fn publish_package_view(
             )?
         };
         let paths = view_publish::paths_for_files(&sources, &changed)?;
-        match view_publish::rows_splicing_changed_files(
+        match view_publish::row_changes_splicing_changed_files(
             current.rows(),
             package,
             &paths,
-            replacement,
+            &replacement,
         ) {
-            Ok(merged) => {
+            Ok(changes) => {
+                let coverage = view_coverage(&snapshot, &prior.activated, deployment)?;
+                let same_coverage = coverage.as_slice() == current.coverage();
+                let same_basis = current.basis() == initial.basis();
+                if changes.is_empty() && same_coverage && same_basis {
+                    return Ok(Some(package_publication(
+                        Vec::new(),
+                        prior,
+                        source_target,
+                        semantic_target,
+                        changed.len(),
+                    )));
+                }
+                if same_coverage
+                    && same_basis
+                    && view_publish::row_patch_fits(current.row_count(), changes.len())
+                {
+                    if let Some(deltas) = try_commit_row_patch(daemon, current.clone(), changes)? {
+                        return Ok(Some(package_publication(
+                            deltas,
+                            prior,
+                            source_target,
+                            semantic_target,
+                            changed.len(),
+                        )));
+                    }
+                }
+                let merged = match view_publish::rows_splicing_changed_files(
+                    current.rows(),
+                    package,
+                    &paths,
+                    replacement,
+                ) {
+                    Ok(rows) => rows,
+                    Err(
+                        view_publish::RowSpliceError::Collision
+                        | view_publish::RowSpliceError::UnscopedSemantic,
+                    ) => return Ok(None),
+                };
                 return admit_spliced_package(
                     daemon,
                     &snapshot,
@@ -867,6 +1004,66 @@ fn publish_package_view(
         files,
     )
     .map(Some)
+}
+
+fn package_publication(
+    deltas: Vec<backend_engine::CommittedViewDelta>,
+    prior: &view_publish::PublishedRoots,
+    source_target: [u8; 32],
+    semantic_target: [u8; 32],
+    files: usize,
+) -> view_publish::PublicationOutcome {
+    view_publish::PublicationOutcome {
+        deltas,
+        roots: view_publish::PublishedRoots {
+            source: source_target,
+            semantic: semantic_target,
+            activated: prior.activated.clone(),
+        },
+        path: view_publish::PublicationPath::Package { files },
+    }
+}
+
+fn try_commit_row_patch(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    current: ViewRoot,
+    changes: Vec<backend_engine::RowChange>,
+) -> Result<Option<Vec<backend_engine::CommittedViewDelta>>, BuiltinModelError> {
+    let _admitted = admitted_bytes_after_row_changes(current.rows(), &changes)?;
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let workspace_root = snapshot.root();
+    let capability = builtin_view_capability_for_workspace(&snapshot)?;
+    let prepared = match current.prepare(
+        ViewDelta::Patch {
+            changes: Arc::from(changes),
+        },
+        capability,
+    ) {
+        Ok(prepared) => prepared,
+        Err(_) => return Ok(None),
+    };
+    let (view, committed) = match current.commit(prepared) {
+        Ok(committed) => committed,
+        Err(_) => return Ok(None),
+    };
+    let cursor = backend_engine::Cursor::for_view_root(&view);
+    let admission = BuiltinViewAdmission {
+        workspace_root,
+        source_root: view.basis().root,
+    };
+    daemon
+        .engine_mut()
+        .daemon_mut()
+        .publish_view(
+            view,
+            cursor,
+            &admission,
+            Some(backend_engine::CursorEvent::View {
+                delta: Box::new(committed.clone()),
+            }),
+        )
+        .map_err(|error| BuiltinModelError(format!("{error:?}")))?;
+    Ok(Some(vec![committed]))
 }
 
 fn admit_spliced_package(
