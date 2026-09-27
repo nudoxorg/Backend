@@ -1130,6 +1130,39 @@ const fn foreign_entity_kind(class: ReferenceTargetClass) -> EntityKind {
 /// package lineage plus the exact target spelling, under the entity kind
 /// the row's closed target class demands. Unresolved and external uses stay
 /// exactly this — a resolvable, untruncated key — never a dropped row.
+/// A method with no local fact is a namespace key: ecosystem `go`,
+/// namespace the receiver type, path and display the method spelling.
+fn namespace_method_target<'source>(
+    reference: u32,
+    recv_type: &'source [u8],
+    method: &'source [u8],
+) -> Result<OccurrenceTarget<'source>, GoCollectError> {
+    let namespace = str::from_utf8(recv_type).map_err(|_| {
+        terminal(ProjectionFault::Utf8 {
+            plane: GoImagePlane::ReferenceTarget,
+            row: reference,
+        })
+    })?;
+    let name = str::from_utf8(method).map_err(|_| {
+        terminal(ProjectionFault::Utf8 {
+            plane: GoImagePlane::ReferenceTarget,
+            row: reference,
+        })
+    })?;
+    let key = ForeignKey::new(
+        ForeignOrigin::Namespace {
+            ecosystem: ECOSYSTEM,
+            namespace,
+        },
+        name,
+        name,
+        Some(EntityKind::Function),
+    )
+    .map_err(|cause| ProjectionFault::ForeignKey { reference, cause })
+    .map_err(terminal)?;
+    Ok(OccurrenceTarget::Foreign(key))
+}
+
 fn foreign_target<'source>(
     reference: u32,
     package: &'source [u8],
@@ -1279,6 +1312,9 @@ struct MemberKey<'source> {
     cross_file: bool,
     embedded: bool,
     type_root: Option<u32>,
+    /// Source file of the member row. A same-file method stays local
+    /// when a sibling file declares the same name.
+    file: &'source [u8],
 }
 
 /// The two-pass Go projector over one validated authority image.
@@ -1429,6 +1465,17 @@ impl<'x, 'source> Projector<'x, 'source> {
     fn cross_file_type(declaration: &Declaration<'source>) -> bool {
         declaration.name_span.is_some() && !declaration.bound
     }
+
+    /// True when a version-6 concrete method row lives outside the
+    /// digest-bound compile source. Version-5 rows carry no bound fact and
+    /// must not be treated as cross-file.
+    fn cross_file_method(
+        image_version: u16,
+        method: backend_frontend_go::legacy::MethodRow<'source>,
+    ) -> bool {
+        image_version == 6 && !method.bound
+    }
+
 
     /// Reports whether one unqualified identifier already names a declaration
     /// row in the authority image.
@@ -1631,6 +1678,49 @@ impl<'x, 'source> Projector<'x, 'source> {
         Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
     }
 
+    /// Resolves one receiver-qualified method to a local fact. Every
+    /// non-field [`MemberKey`] for the spelling is considered; cross-file
+    /// homonyms stay unresolved unless exactly one bound row lives in the
+    /// use's source file.
+    fn resolve_method_target(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        member: &[u8],
+        use_file: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let matches: Vec<_> = self
+            .members
+            .iter()
+            .filter(|key| {
+                !key.is_field
+                    && key.package == package
+                    && key.type_name == recv_type
+                    && key.member == member
+            })
+            .collect();
+        let bound: Vec<_> = matches.iter().copied().filter(|key| !key.cross_file).collect();
+        let cross: Vec<_> = matches.iter().copied().filter(|key| key.cross_file).collect();
+        if cross.is_empty() {
+            if bound.len() == 1 {
+                Some(OccurrenceTarget::Local(EntityId::new(bound[0].ordinal)))
+            } else {
+                None
+            }
+        } else {
+            let same_file_bound: Vec<_> = bound.iter().copied().filter(|key| key.file == use_file).collect();
+            if same_file_bound.len() == 1 {
+                Some(OccurrenceTarget::Local(EntityId::new(
+                    same_file_bound[0].ordinal,
+                )))
+            } else {
+                None
+            }
+        }
+    }
+
+
+
     /// Records one image declaration's primary-source facts: its fact's
     /// source span (the full authority-bound declaration extent, the exact
     /// basis every owned occurrence's relative span is measured from) and
@@ -1801,6 +1891,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     declaration.package,
                     declaration.name,
                     Self::cross_file_type(declaration),
+                    declaration.file,
                 )?,
                 TypeRowKind::Interface => self.interface_methods(
                     &row,
@@ -1808,12 +1899,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                     type_ordinal,
                     declaration.package,
                     declaration.name,
+                    Self::cross_file_type(declaration),
+                    declaration.file,
                 )?,
                 _ => {}
             }
         }
         let mut methods = Vec::new();
         let mut method_names = Vec::new();
+        let image_version = self.image.version();
         for method_index in 0..self.image.method_count() {
             let method = self
                 .image
@@ -1844,9 +1938,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file: Self::cross_file_method(image_version, method),
                 embedded: false,
                 type_root: None,
+                file: method.file,
             });
             methods.push(ordinal);
             method_names.push(method.name);
@@ -1881,9 +1976,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method_set.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file: Self::cross_file_type(declaration),
                 embedded: false,
                 type_root: None,
+                file: declaration.file,
             });
             methods.push(ordinal);
             method_names.push(method_set.name);
@@ -1963,6 +2059,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         package: &'source [u8],
         type_name: &'source [u8],
         cross_file: bool,
+        file: &'source [u8],
     ) -> Result<(), GoCollectError> {
         let mut field_index = 0usize;
         for member_index in member_run(row) {
@@ -1996,6 +2093,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                 cross_file,
                 embedded: member.embedded,
                 type_root: member.type_root,
+                file,
             });
             fields.push(ordinal);
             self.member_ordinals[member_index] = Some(ordinal);
@@ -2013,6 +2111,8 @@ impl<'x, 'source> Projector<'x, 'source> {
         owner: u32,
         package: &'source [u8],
         type_name: &'source [u8],
+        cross_file: bool,
+        file: &'source [u8],
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
             let member = self
@@ -2038,9 +2138,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file,
                 embedded: false,
                 type_root: None,
+                file,
             });
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
@@ -2339,15 +2440,29 @@ impl<'x, 'source> Projector<'x, 'source> {
                     self.local_const_target(owner_package, row.target)
                 } else if row.target_class == ReferenceTargetClass::Var {
                     self.local_var_target(owner_package, row.target)
+                } else if row.target_class == ReferenceTargetClass::Method {
+                    self.resolve_method_target(
+                        owner_package,
+                        row.recv_type,
+                        row.target,
+                        row.file,
+                    )
+                } else if row.target_class == ReferenceTargetClass::Field {
+                    self.local_member_target(owner_package, row.recv_type, row.target)
                 } else {
                     self.lookup(owner_package, row.target)
                         .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                }
-                .or_else(|| {
-                    self.local_member_target(owner_package, row.recv_type, row.target)
-                });
+                        .or_else(|| {
+                            self.local_member_target(owner_package, row.recv_type, row.target)
+                        })
+                };
                 match local {
                     Some(target) => target,
+                    None if row.target_class == ReferenceTargetClass::Method
+                        && !row.recv_type.is_empty() =>
+                    {
+                        namespace_method_target(reference_index, row.recv_type, row.target)?
+                    }
                     None => self.promoted_or_foreign_field(
                         reference_index,
                         owner_package,
@@ -3765,6 +3880,8 @@ mod tests {
         name_span: Option<(u32, u32)>,
         /// The authority-bound-source flag (version 6).
         bound: bool,
+        /// Optional per-declaration source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3791,6 +3908,8 @@ mod tests {
         span: (u32, u32),
         /// The authority-bound-source flag (version 6).
         bound: bool,
+        /// Optional per-method source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3838,6 +3957,8 @@ mod tests {
         target_class: u8,
         /// The target receiver type-name atom (version 6).
         recv_type: Cell,
+        /// Optional per-reference source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -4093,6 +4214,7 @@ mod tests {
                 span: (0, SPAN_END),
                 name_span: None,
                 bound: false,
+                file: None,
             });
             self.declarations.len() - 1
         }
@@ -4139,6 +4261,7 @@ mod tests {
                 ),
                 span: (0, SPAN_END),
                 bound: false,
+                file: None,
             });
             self.methods.len() - 1
         }
@@ -4198,6 +4321,33 @@ mod tests {
             target_class: u8,
             recv_type: &[u8],
         ) {
+            self.reference_typed_in_file(
+                owner,
+                receiver,
+                target,
+                target_package,
+                start,
+                end,
+                use_kind,
+                target_class,
+                recv_type,
+                None,
+            );
+        }
+
+        fn reference_typed_in_file(
+            &mut self,
+            owner: u32,
+            receiver: &[u8],
+            target: &[u8],
+            target_package: &[u8],
+            start: u32,
+            end: u32,
+            use_kind: u8,
+            target_class: u8,
+            recv_type: &[u8],
+            file: Option<Cell>,
+        ) {
             let target = self.atom(target);
             let package = self.atom(target_package);
             let receiver = self.atom(receiver);
@@ -4212,6 +4362,7 @@ mod tests {
                 use_kind,
                 target_class,
                 recv_type,
+                file,
             });
         }
 
@@ -4261,8 +4412,9 @@ mod tests {
                 declarations.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
                 declarations.extend_from_slice(&row.span.0.to_le_bytes());
                 declarations.extend_from_slice(&row.span.1.to_le_bytes());
-                declarations.extend_from_slice(&file.offset.to_le_bytes());
-                declarations.extend_from_slice(&file.length.to_le_bytes());
+                let row_file = row.file.unwrap_or(file);
+                declarations.extend_from_slice(&row_file.offset.to_le_bytes());
+                declarations.extend_from_slice(&row_file.length.to_le_bytes());
                 declarations.extend_from_slice(&value);
                 declarations.extend_from_slice(&value_len);
                 declarations.extend_from_slice(&row.const_group.to_le_bytes());
@@ -4309,8 +4461,9 @@ mod tests {
                 methods.extend_from_slice(&0_u32.to_le_bytes());
                 methods.extend_from_slice(&row.span.0.to_le_bytes());
                 methods.extend_from_slice(&row.span.1.to_le_bytes());
-                methods.extend_from_slice(&file.offset.to_le_bytes());
-                methods.extend_from_slice(&file.length.to_le_bytes());
+                let row_file = row.file.unwrap_or(file);
+                methods.extend_from_slice(&row_file.offset.to_le_bytes());
+                methods.extend_from_slice(&row_file.length.to_le_bytes());
                 // Version 6: the authority-bound flag.
                 methods.extend_from_slice(&[u8::from(row.bound), 0, 0, 0, 0, 0, 0, 0]);
             }
@@ -4350,6 +4503,7 @@ mod tests {
                 let (package, package_len) = cell(row.target_package);
                 let (receiver, receiver_len) = cell(row.receiver);
                 let (recv_type, recv_type_len) = cell(row.recv_type);
+                let row_file = row.file.unwrap_or(file);
                 references.extend_from_slice(&row.owner.to_le_bytes());
                 references.extend_from_slice(&target);
                 references.extend_from_slice(&target_len);
@@ -4357,8 +4511,8 @@ mod tests {
                 references.extend_from_slice(&package_len);
                 references.extend_from_slice(&row.start.to_le_bytes());
                 references.extend_from_slice(&row.end.to_le_bytes());
-                references.extend_from_slice(&file.offset.to_le_bytes());
-                references.extend_from_slice(&file.length.to_le_bytes());
+                references.extend_from_slice(&row_file.offset.to_le_bytes());
+                references.extend_from_slice(&row_file.length.to_le_bytes());
                 references.extend_from_slice(&receiver);
                 references.extend_from_slice(&receiver_len);
                 // Version 6: the closed use kind, the target class, and the
@@ -5749,6 +5903,7 @@ mod tests {
                 span: (0, SPAN_END),
                 name_span: None,
                 bound: false,
+                file: None,
             });
         }
         let exact_image = fix.encode(b"package demo\n")?;
@@ -5776,6 +5931,7 @@ mod tests {
             span: (0, SPAN_END),
             name_span: None,
             bound: false,
+            file: None,
         });
         let image = fix.encode(b"package demo\n")?;
         let mut facts = FactSet::new();
@@ -6643,6 +6799,592 @@ mod tests {
             return Err(TestError::Missing("exact blocked promoted field occurrences"));
         }
         Ok(())
+    }
+
+    /// The owned IR carries every widened occurrence with an absolute source
+    /// site that verifies against the exact identifier bytes, and the
+    /// satisfaction edge anchors on the subject's declared NAME-TOKEN
+    /// extent instead of the position-free zero-width spelling.
+    #[test]
+    fn ir_links_carry_source_verified_occurrence_sites() -> Result<(), TestError> {
+        use backend_semantic::ir::{LinkKind, LinkTarget, SemanticReader as _};
+        let source: &[u8] = b"package demo\n\ntype Lang struct {\n\tName string\n}\n\nfunc (l *Lang) SetName() {\n}\n\ntype Greeter interface {\n\tRead()\n}\n\nfunc Use() {\n\tl := Lang{}\n\tl.SetName()\n\tvar g Greeter = l\n\t_ = g\n}\n";
+        let mut fix = Fixture::new();
+        let lang = fix.declaration(KIND_TYPE, b"Lang", None);
+        let greeter = fix.declaration(KIND_TYPE, b"Greeter", None);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        let set_name = fix.method(lang, b"SetName", None);
+        let string_row = fix.basic(b"string");
+        let lang_row = fix.start_row(ROW_STRUCT);
+        fix.field(lang_row, b"Name", Some(string_row));
+        fix.declarations[lang].type_root = Some(lang_row);
+        let iface_row = fix.start_row(ROW_INTERFACE);
+        fix.interface_method(iface_row, b"Read", None);
+        fix.declarations[greeter].type_root = Some(iface_row);
+        // Authority-bound rows with their exact declaration extents.
+        let (lang_start, _) = at(source, b"type Lang")?;
+        let (lang_name_start, lang_name_end) = at(source, b"Lang")?;
+        fix.declarations[lang].span = (lang_start, at(source, b"\n\nfunc (l")?.0);
+        fix.declarations[lang].name_span = Some((lang_name_start, lang_name_end));
+        fix.declarations[lang].bound = true;
+        let (greeter_start, _) = at(source, b"type Greeter")?;
+        fix.declarations[greeter].span = (greeter_start, at(source, b"\n\nfunc Use")?.0);
+        fix.declarations[greeter].name_span = Some(at(source, b"Greeter")?);
+        fix.declarations[greeter].bound = true;
+        fix.declarations[use_fn].span = (at(source, b"func Use")?.0, source.len() as u32);
+        fix.declarations[use_fn].name_span = Some(at(source, b"Use")?);
+        fix.declarations[use_fn].bound = true;
+        fix.methods[set_name].span = (
+            at(source, b"func (l *Lang) SetName")?.0,
+            at(source, b"func (l *Lang) SetName() {\n}\n\n")?.1,
+        );
+        fix.methods[set_name].bound = true;
+        // Facts: 0 Lang, 1 Greeter, 2 Name, 3 SetName, 4 Read, 5 Use.
+        // Reference rows, ascending by site: the type use inside the
+        // composite literal, the method call, and the satisfaction edge.
+        let (site, end) = at(source, b"Lang{}")?;
+        let (site, end) = (site, end - 2);
+        fix.reference_typed(use_fn as u32, b"", b"Lang", b"", site, end, 2, 5, b"");
+        let (site, end) = at(source, b"l.SetName()")?;
+        let (site, end) = (site + 2, end - 2);
+        fix.reference_typed(
+            use_fn as u32,
+            b"",
+            b"SetName",
+            b"",
+            site,
+            end,
+            0,
+            1,
+            b"Lang",
+        );
+        let (greeter_site, greeter_end) = at(source, b"Greeter = l")?;
+        let (greeter_site, greeter_end) = (greeter_site, greeter_end - 4);
+        fix.reference_typed(
+            use_fn as u32,
+            b"",
+            b"Greeter",
+            b"",
+            greeter_site,
+            greeter_end,
+            2,
+            5,
+            b"",
+        );
+        fix.satisfaction(lang, b"Greeter", b"");
+        let ir = lower_ir(&fix, source)?;
+
+        // Entities carry their authority-bound declaration spans.
+        let mut lang_source = None;
+        for row in ir.canonical_entities() {
+            let name = ir.atom(row.name).ok_or(TestError::Missing("entity atom"))?;
+            if name == b"Lang" {
+                lang_source = row.source;
+            }
+        }
+        let lang_span = lang_source.ok_or(TestError::Missing("Lang entity source span"))?;
+        if &source[lang_span.start() as usize..lang_span.start() as usize + 9] != b"type Lang" {
+            return Err(TestError::Missing("Lang entity span basis"));
+        }
+
+        // Every link occurrence carries an absolute site whose bytes are
+        // exactly the used identifier, and each kind matches its row's
+        // closed class.
+        let mut sites = Vec::new();
+        for (_, occurrence) in ir.link_occurrences() {
+            let Some(site) = occurrence.source else {
+                return Err(TestError::Missing("absolute occurrence site"));
+            };
+            let link = ir
+                .link(occurrence.link)
+                .ok_or(TestError::Missing("occurrence link"))?;
+            let bytes = &source[site.start() as usize..site.end() as usize];
+            sites.push((bytes.to_vec(), link.kind, link.target));
+        }
+        if sites.len() != 4 {
+            return Err(TestError::Missing("exact link occurrences"));
+        }
+        let (bytes, kind, target) = &sites[0];
+        if bytes != b"Lang"
+            || *kind != LinkKind::TypeReference
+            || *target != LinkTarget::Local(EntityId::new(0))
+        {
+            return Err(TestError::Missing("type-use site"));
+        }
+        let (bytes, kind, target) = &sites[1];
+        if bytes != b"SetName"
+            || *kind != LinkKind::MethodCall
+            || *target != LinkTarget::Local(EntityId::new(3))
+        {
+            return Err(TestError::Missing("method-call site"));
+        }
+        let (bytes, kind, target) = &sites[2];
+        if bytes != b"Greeter"
+            || *kind != LinkKind::TypeReference
+            || *target != LinkTarget::Local(EntityId::new(1))
+        {
+            return Err(TestError::Missing("satisfaction site"));
+        }
+        let (bytes, kind, target) = &sites[3];
+        if bytes != b"Lang"
+            || *kind != LinkKind::TypeReference
+            || *target != LinkTarget::Local(EntityId::new(1))
+        {
+            return Err(TestError::Missing("satisfaction NAME-TOKEN site"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn projected_constant_facts_carry_exact_value_group_and_iota() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        fix.constant(b"First", Some(int), b"0", 1);
+        let with_values = lower(&fix, b"package demo\nconst First = 0\n")?;
+        let view = FragmentView::validate(&with_values)?;
+        let facts = go_extension(&view, 0)?;
+        if facts.constant_group != 1 || facts.constant_flags != 1 {
+            return Err(TestError::Missing("constant group and iota"));
+        }
+        if facts.constant_value.raw != 1 {
+            return Err(TestError::Missing("constant value atom list"));
+        }
+        let listed = pooled_list(
+            &view,
+            backend_semantic::ir::ExtensionPoolListLane::Atoms,
+            facts.constant_value.raw,
+        )?;
+        if listed.len() != 1 {
+            return Err(TestError::Missing("one constant value atom"));
+        }
+        let atom = view
+            .atoms()
+            .nth(usize::try_from(listed[0]).map_err(|_| TestError::Tail)?)
+            .ok_or(TestError::Missing("constant value atom"))?;
+        if atom.bytes != b"0" {
+            return Err(TestError::Missing("exact constant value"));
+        }
+        // Falsifier: changing the image value changes the projected fragment.
+        let mut mutated = fix.clone();
+        mutated.declarations[0].value = mutated.atom(b"255");
+        let other = lower(&mutated, b"package demo\nconst First = 0\n")?;
+        if other == with_values {
+            return Err(TestError::Missing("value-sensitive projection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn constants_outside_groups_and_nonconstants_keep_zero_constant_cells() -> Result<(), TestError>
+    {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let ungrouped_index = fix.constant(b"Ungrouped", Some(int), b"7", 0);
+        fix.declarations[ungrouped_index].iota = false;
+        fix.declaration(KIND_TYPE, b"Named", None);
+        fix.declaration(KIND_FUNC, b"run", None);
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let named = go_extension(&view, 0)?;
+        if named.constant_value.raw != 0 || named.constant_group != 0 || named.constant_flags != 0 {
+            return Err(TestError::Missing("type constant cells"));
+        }
+        let function = go_extension(&view, 2)?;
+        if function.constant_value.raw != 0
+            || function.constant_group != 0
+            || function.constant_flags != 0
+        {
+            return Err(TestError::Missing("function constant cells"));
+        }
+        let ungrouped = go_extension(&view, 1)?;
+        if ungrouped.constant_value.raw != 1 {
+            return Err(TestError::Missing("ungrouped value coordinate"));
+        }
+        if ungrouped.constant_group != 0 {
+            return Err(TestError::Missing("ungrouped group"));
+        }
+        if ungrouped.constant_flags != 0 {
+            return Err(TestError::Missing("ungrouped flags"));
+        }
+        if pooled_list(
+            &view,
+            backend_semantic::ir::ExtensionPoolListLane::Atoms,
+            ungrouped.constant_value.raw,
+        )?
+        .len()
+            != 1
+        {
+            return Err(TestError::Missing("ungrouped value atom"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_cgo_plane_projects_foreign_names() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        fix.declaration(KIND_TYPE, b"Conn", None);
+        fix.unresolved_cgo(b"C.sqlite3");
+        fix.unresolved_cgo(b"example.com/cgo.Conn");
+        let source = b"package cgo\n";
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let conn_count = view
+            .entities()
+            .filter(|entity| {
+                usize::try_from(entity.name.raw)
+                    .ok()
+                    .and_then(|index| view.atoms().nth(index))
+                    .is_some_and(|atom| atom.bytes == b"Conn")
+            })
+            .count();
+        if conn_count != 1 {
+            return Err(TestError::Missing("exactly one Conn entity"));
+        }
+        let sqlite = row_for_name(&view, b"C.sqlite3")?;
+        if entity_kind_of(&view, b"C.sqlite3")? != EntityKind::Alias
+            || sqlite.record.tag != SemanticTypeTag::Unknown
+            || sqlite.record.payload0 != TypeReason::UnresolvedExternal as u32
+            || sqlite.record.text != Some(b"C.sqlite3".as_slice())
+        {
+            return Err(TestError::Missing("foreign cgo alias type"));
+        }
+        if entity_of(&view, b"example.com/cgo.Conn").is_ok() {
+            return Err(TestError::Missing(
+                "duplicate Conn must not project from unresolved cgo plane",
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn package_docs_stay_image_only_without_owner_facts() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        fix.declaration(KIND_TYPE, b"Node", None);
+        fix.doc(DOC_PACKAGE, 0, b"Package demo exercises every plane.");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        if view
+            .docs()
+            .is_some_and(|mut cursor| cursor.next().is_some())
+        {
+            return Err(TestError::Missing("package doc projection"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pooled_entity_lists_admit_the_exact_measured_bound_then_reject() -> Result<(), TestError> {
+        let mut facts = FactSet::new();
+        for _ in 0..MAX_REF_LISTS - 1 {
+            if facts
+                .push(SemanticFact::new(
+                    EntityKind::Record,
+                    b"row",
+                    SemanticProductConstructor::PRODUCT,
+                ))
+                .is_err()
+            {
+                return Err(TestError::Missing("fact setup capacity"));
+            }
+        }
+
+        for index in 0..MAX_REF_LISTS - 1 {
+            if facts.intern_entity_list(&[index as u32]).is_err() {
+                return Err(TestError::Missing("pooled entity list setup"));
+            }
+        }
+        if facts.intern_entity_list(&[0, 1]).is_err() {
+            return Err(TestError::Missing("exact pooled entity-list bound"));
+        }
+        if !matches!(
+            facts.intern_entity_list(&[0, 1, 2]),
+            Err(FactFault::RefListCapacity)
+        ) {
+            return Err(TestError::Missing("pooled entity-list capacity rejection"));
+        }
+        Ok(())
+    }
+
+    fn count_set_note_method_calls(
+        view: &FragmentView<'_>,
+    ) -> Result<(usize, usize), TestError> {
+        let mut local = 0_usize;
+        let mut namespace = 0_usize;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        while let Some(row) = occurrences.next() {
+            let row = row?;
+            if row.occurrence.kind != ReferenceKind::MethodCall
+                || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            {
+                continue;
+            }
+            match row.occurrence.target {
+                OccurrenceTarget::Local(_) => local += 1,
+                OccurrenceTarget::Foreign(key) => {
+                    let ForeignOrigin::Namespace {
+                        ecosystem,
+                        namespace: recv,
+                    } = key.origin
+                    else {
+                        continue;
+                    };
+                    if ecosystem == ECOSYSTEM
+                        && recv == "Workout"
+                        && key.path == "SetNote"
+                        && key.display == "SetNote"
+                        && key.kind == Some(EntityKind::Function)
+                    {
+                        namespace += 1;
+                    }
+                }
+                OccurrenceTarget::Stable(_) => {}
+            }
+        }
+        Ok((local, namespace))
+    }
+
+    fn push_both_workout_set_note_methods(
+        fix: &mut Fixture,
+        bound_first: bool,
+    ) -> Result<(u32, u32, u32), TestError> {
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let push_bound = |fix: &mut Fixture| {
+            let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+            fix.declarations[workout].bound = true;
+            fix.declarations[workout].name_span = Some((0, 7));
+            fix.declarations[workout].file = Some(main);
+            let set_note = fix.method(workout, b"SetNote", None);
+            fix.methods[set_note].bound = true;
+            fix.methods[set_note].file = Some(main);
+        };
+        let push_sibling = |fix: &mut Fixture| {
+            let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+            fix.declarations[workout].bound = false;
+            fix.declarations[workout].name_span = Some((0, 7));
+            fix.declarations[workout].file = Some(sibling);
+            let set_note = fix.method(workout, b"SetNote", None);
+            fix.methods[set_note].bound = false;
+            fix.methods[set_note].file = Some(sibling);
+        };
+        if bound_first {
+            push_bound(fix);
+            push_sibling(fix);
+        } else {
+            push_sibling(fix);
+            push_bound(fix);
+        }
+        let use_main = fix.declaration(KIND_FUNC, b"UseMain", None);
+        fix.declarations[use_main].file = Some(main);
+        let use_sibling = fix.declaration(KIND_FUNC, b"UseSibling", None);
+        fix.declarations[use_sibling].file = Some(sibling);
+        let bound_method_ordinal = if bound_first { 2 } else { 3 };
+        // Facts: two types (0, 1), two methods (2, 3), then the two functions (4, 5).
+        let use_main_ordinal = 4;
+        let use_sibling_ordinal = 5;
+        fix.reference_typed_in_file(
+            u32::try_from(use_main).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        fix.reference_typed_in_file(
+            u32::try_from(use_sibling).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            20,
+            27,
+            0,
+            1,
+            b"Workout",
+            Some(sibling),
+        );
+        Ok((bound_method_ordinal, use_main_ordinal, use_sibling_ordinal))
+    }
+
+    fn assert_cross_file_method_resolution(
+        view: &FragmentView<'_>,
+        bound_method_ordinal: u32,
+        use_main: u32,
+        use_sibling: u32,
+    ) -> Result<(), TestError> {
+        let mut local_main = None;
+        let mut namespace_sibling = None;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        while let Some(row) = occurrences.next() {
+            let row = row?;
+            if row.occurrence.kind != ReferenceKind::MethodCall
+                || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            {
+                continue;
+            }
+            if row.owner.raw == use_main {
+                if !matches!(
+                    row.occurrence.target,
+                    OccurrenceTarget::Local(entity) if entity.raw == bound_method_ordinal
+                ) {
+                    return Err(TestError::Missing("main-file method call"));
+                }
+                if local_main.is_some() {
+                    return Err(TestError::Missing("exact main-file method call"));
+                }
+                local_main = Some(());
+            } else if row.owner.raw == use_sibling {
+                let OccurrenceTarget::Foreign(key) = row.occurrence.target else {
+                    return Err(TestError::Missing("sibling-file namespace method call"));
+                };
+                let ForeignOrigin::Namespace {
+                    ecosystem,
+                    namespace,
+                } = key.origin
+                else {
+                    return Err(TestError::Missing("sibling namespace origin"));
+                };
+                if ecosystem != ECOSYSTEM
+                    || namespace != "Workout"
+                    || key.path != "SetNote"
+                    || key.display != "SetNote"
+                    || key.kind != Some(EntityKind::Function)
+                {
+                    return Err(TestError::Missing("sibling namespace method key"));
+                }
+                if namespace_sibling.is_some() {
+                    return Err(TestError::Missing("exact sibling namespace method call"));
+                }
+                namespace_sibling = Some(());
+            }
+        }
+        if local_main.is_none() || namespace_sibling.is_none() {
+            return Err(TestError::Missing("cross-file method resolution"));
+        }
+        let (local, namespace) = count_set_note_method_calls(view)?;
+        if local != 1 || namespace != 1 {
+            return Err(TestError::Missing("exact homonym method-call counts"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_type_sibling_set_note_use_in_main_is_namespace() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+        fix.declarations[workout].bound = true;
+        fix.declarations[workout].name_span = Some((0, 7));
+        fix.declarations[workout].file = Some(main);
+        let set_note = fix.method(workout, b"SetNote", None);
+        fix.methods[set_note].bound = false;
+        fix.methods[set_note].file = Some(sibling);
+        let drive = fix.declaration(KIND_FUNC, b"Drive", None);
+        fix.declarations[drive].file = Some(main);
+        fix.reference_typed_in_file(
+            u32::try_from(drive).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let (local, namespace) = count_set_note_method_calls(&view)?;
+        if namespace != 1 {
+            return Err(TestError::Missing("namespace SetNote method call"));
+        }
+        if local != 0 {
+            return Err(TestError::Missing("zero local SetNote method calls"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_type_bound_set_note_use_in_main_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+        fix.declarations[workout].bound = false;
+        fix.declarations[workout].name_span = Some((0, 7));
+        fix.declarations[workout].file = Some(sibling);
+        let set_note = fix.method(workout, b"SetNote", None);
+        fix.methods[set_note].bound = true;
+        fix.methods[set_note].file = Some(main);
+        let drive = fix.declaration(KIND_FUNC, b"Drive", None);
+        fix.declarations[drive].file = Some(main);
+        fix.reference_typed_in_file(
+            u32::try_from(drive).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let (local, namespace) = count_set_note_method_calls(&view)?;
+        if local != 1 {
+            return Err(TestError::Missing("local SetNote method call"));
+        }
+        if namespace != 0 {
+            return Err(TestError::Missing("zero namespace SetNote method calls"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let call = occurrences
+            .next()
+            .ok_or(TestError::Missing("method call"))??;
+        if call.occurrence.kind != ReferenceKind::MethodCall
+            || call.occurrence.target != OccurrenceTarget::Local(EntityId::new(1))
+        {
+            return Err(TestError::Missing("bound method ordinal"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_workout_set_note_stays_local_while_sibling_use_is_namespace_bound_first()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let (bound_method_ordinal, use_main, use_sibling) =
+            push_both_workout_set_note_methods(&mut fix, true)?;
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        assert_cross_file_method_resolution(&view, bound_method_ordinal, use_main, use_sibling)
+    }
+
+    #[test]
+    fn bound_workout_set_note_stays_local_while_sibling_use_is_namespace_sibling_first()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let (bound_method_ordinal, use_main, use_sibling) =
+            push_both_workout_set_note_methods(&mut fix, false)?;
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        assert_cross_file_method_resolution(&view, bound_method_ordinal, use_main, use_sibling)
     }
 
     /// The owned IR carries every widened occurrence with an absolute source
