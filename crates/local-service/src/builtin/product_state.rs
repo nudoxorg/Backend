@@ -595,7 +595,7 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
     locators
         .iter()
         .map(|locator| {
-            let row = view.rows().iter().find(|row| row.label == locator.as_str());
+            let row = view.row_by_label(locator.as_str());
             Ok(DeclarationRecord {
                 label: locator.clone(),
                 stable_id: row.map(|value| match value.id {
@@ -629,7 +629,7 @@ fn owner_page(
     let needle = query.as_str();
     let mut records = Vec::new();
     let mut seen = BTreeSet::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if !matches!(row.id, RowId::Symbol(_)) {
             continue;
         }
@@ -713,13 +713,31 @@ fn explore_page(
     Ok(registry)
 }
 
-fn indexed_project_for_query(view: &ViewRoot, query: &str) -> Option<String> {
-    for row in view.rows() {
-        if matches!(row.id, RowId::Package(_)) && row.label == query {
-            return Some(row.label.clone());
-        }
+fn package_label(view: &ViewRoot, label: &str) -> Option<String> {
+    match view.row_by_label(label) {
+        Some(row) if matches!(row.id, RowId::Package(_)) => Some(row.label.clone()),
+        Some(_) => view.row_refs().find_map(|row| {
+            (matches!(row.id, RowId::Package(_)) && row.label == label).then(|| row.label.clone())
+        }),
+        None => None,
     }
-    view.rows().iter().find_map(|row| {
+}
+
+fn symbol_row<'a>(view: &'a ViewRoot, label: &str) -> Option<&'a Row> {
+    match view.row_by_label(label) {
+        Some(row) if matches!(row.id, RowId::Symbol(_)) => Some(row),
+        Some(_) => view
+            .row_refs()
+            .find(|row| matches!(row.id, RowId::Symbol(_)) && row.label == label),
+        None => None,
+    }
+}
+
+fn indexed_project_for_query(view: &ViewRoot, query: &str) -> Option<String> {
+    if let Some(label) = package_label(view, query) {
+        return Some(label);
+    }
+    view.row_refs().find_map(|row| {
         row.label
             .split_once("::")
             .and_then(|(project, _)| (project == query).then(|| project.to_owned()))
@@ -735,7 +753,7 @@ fn indexed_explore_page(
     let prefix = format!("{project_root}::");
     let filter = query.to_ascii_lowercase();
     let mut records = Vec::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if !matches!(row.id, RowId::Symbol(_)) || !row.label.starts_with(&prefix) {
             continue;
         }
@@ -818,10 +836,7 @@ fn resolve_tree_subject(
     match subject {
         TreeSubject::Declaration(text) => {
             let coordinate = text.as_str();
-            let row = view
-                .rows()
-                .iter()
-                .find(|row| matches!(row.id, RowId::Symbol(_)) && row.label == coordinate)
+            let row = symbol_row(view, coordinate)
                 .ok_or_else(|| format!("declaration {coordinate} is not indexed"))?;
             let (name, path) = declaration_identity(row)?;
             Ok((
@@ -847,7 +862,7 @@ fn index_search_page(
 ) -> Result<Box<[RegistryPackageRecord]>, String> {
     let mut records = catalog_page(catalog, query, limit).into_vec();
     let needle = query.map_or("", ProductText::as_str);
-    for row in view.rows() {
+    for row in view.row_refs() {
         if !matches!(row.id, RowId::Symbol(_)) || !row_matches_index_query(row, needle) {
             continue;
         }
@@ -905,7 +920,7 @@ pub(crate) fn indexed_semantic_versions(
     workspace: Option<&Path>,
 ) -> Result<Box<[SemanticVersionRecord]>, String> {
     let mut versions = Vec::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if !matches!(row.id, RowId::Package(_)) {
             continue;
         }
@@ -959,7 +974,7 @@ fn indexed_package_records(
     workspace: Option<&Path>,
 ) -> Result<Vec<RegistryPackageRecord>, String> {
     let mut records = Vec::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if !matches!(row.id, RowId::Package(_)) {
             continue;
         }
@@ -991,7 +1006,7 @@ fn registry_project_root(
 ) -> Result<PathBuf, String> {
     let expected = PackageReference::parse(project_label).map_err(|error| error.to_string())?;
     let prefix = format!("{project_label}::");
-    for row in view.rows() {
+    for row in view.row_refs() {
         if !matches!(row.id, RowId::Symbol(_)) || !row.label.starts_with(&prefix) {
             continue;
         }
@@ -1328,7 +1343,7 @@ fn package_page(
             package.as_str()
         ));
     };
-    for row in view.rows() {
+    for row in view.row_refs() {
         if !matches!(row.id, RowId::Package(_)) {
             continue;
         }
@@ -1363,7 +1378,7 @@ fn indexed_package_coordinates(
     workspace: &Path,
 ) -> Result<BTreeSet<String>, String> {
     let mut coordinates = BTreeSet::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if !matches!(row.id, RowId::Package(_)) {
             continue;
         }

@@ -1563,7 +1563,7 @@ pub(crate) fn structural_reference_facts(
     target: &str,
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
     let (target_id, target_symbol, package) = {
-        let target_row = view.row_refs().find(|row| row.label == target).ok_or_else(|| {
+        let target_row = view.row_by_label(target).ok_or_else(|| {
             BuiltinModelError("structural references target is absent from the view".to_owned())
         })?;
         let backend_engine::RowId::Symbol(target_symbol) = target_row.id else {

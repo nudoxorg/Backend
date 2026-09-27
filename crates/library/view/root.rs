@@ -43,6 +43,8 @@ pub struct ViewRoot {
     pub(super) rows_cache: Arc<OnceLock<Arc<[Row]>>>,
     /// First and last label in each package, built without cloning row documents.
     pub(super) package_labels: Arc<OnceLock<PackageLabelIndex>>,
+    /// First row identity for each exact label, built without cloning row bodies.
+    pub(super) label_ids: Arc<OnceLock<BTreeMap<String, RowId>>>,
     /// Coverage for each requested lane.
     pub(crate) coverage: Box<[Coverage]>,
     /// Producer-admitted witness for complete source coverage.
@@ -276,6 +278,26 @@ impl ViewRoot {
         self.row_ref(id).cloned()
     }
 
+    /// Borrows the first row with this exact label.
+    ///
+    /// The index is filled from borrowed rows and does not clone row documents
+    /// into the compatibility cache. A repeated label keeps the earliest row.
+    #[must_use]
+    pub fn row_by_label(&self, label: &str) -> Option<&Row> {
+        let id = *self.label_ids().get(label)?;
+        self.row_ref(id)
+    }
+
+    fn label_ids(&self) -> &BTreeMap<String, RowId> {
+        self.label_ids.get_or_init(|| {
+            let mut index = BTreeMap::new();
+            for row in self.row_refs() {
+                index.entry(row.label.clone()).or_insert(row.id);
+            }
+            index
+        })
+    }
+
     /// Borrows one row by stable identity without cloning its retained text
     /// or populating the complete compatibility slice.
     #[must_use]
@@ -448,6 +470,7 @@ impl ViewRoot {
             frontier,
             rows_cache: Arc::new(OnceLock::new()),
             package_labels: Arc::new(OnceLock::new()),
+            label_ids: Arc::new(OnceLock::new()),
             coverage,
             capability: None,
             relation,
@@ -555,6 +578,7 @@ impl ViewRoot {
             frontier,
             rows_cache: Arc::new(OnceLock::new()),
             package_labels: Arc::new(OnceLock::new()),
+            label_ids: Arc::new(OnceLock::new()),
             coverage,
             capability,
             relation,
@@ -968,6 +992,136 @@ mod tests {
         assert!(root.rows_cache.get().is_none());
         assert_eq!(root.rows().len(), 4);
         assert!(root.rows_cache.get().is_some());
+    }
+
+    fn heavy_root(count: usize) -> ViewRoot {
+        let source = view_state_root(&[]);
+        let object = object_version(b"label-index");
+        let basis = Basis::new(source, object);
+        let body = "x".repeat(256);
+        let rows = (0..count)
+            .map(|index| {
+                let label = format!("pkg::item-{index:04}");
+                Row::new(RowId::Symbol(symbol_key(&label)), basis, label)
+                    .with_document(vec![crate::Fragment::Text(body.clone())])
+            })
+            .collect();
+        ViewRoot::new_checked(
+            view_key(b"label-index"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+            rows,
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("label index view")
+    }
+
+    #[test]
+    fn label_index_keeps_the_earliest_row_and_skips_the_owned_cache() {
+        let source = view_state_root(&[]);
+        let object = object_version(b"duplicate-label");
+        let basis = Basis::new(source, object);
+        let first = Row::new(RowId::Symbol(symbol_key("first")), basis, "same");
+        let second = Row::new(RowId::Symbol(symbol_key("second")), basis, "same");
+        let root = ViewRoot::new_checked(
+            view_key(b"duplicate-label"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+            vec![first, second],
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("duplicate labels");
+        let indexed = root.row_by_label("same").expect("label");
+        let scanned = root
+            .rows()
+            .iter()
+            .find(|row| row.label == "same")
+            .expect("scan");
+        assert_eq!(indexed.id, scanned.id);
+        assert!(root.row_by_label("missing").is_none());
+        let borrowed = ViewRoot::new_checked(
+            view_key(b"duplicate-label-borrowed"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 1),
+            vec![
+                Row::new(RowId::Symbol(symbol_key("only")), basis, "only"),
+            ],
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("borrowed label");
+        assert!(borrowed.row_by_label("only").is_some());
+        assert!(borrowed.rows_cache.get().is_none());
+    }
+
+    #[test]
+    #[allow(clippy::print_stdout)]
+    fn label_lookup_skips_cloned_row_bodies() {
+        const ROWS: usize = 4096;
+        const SAMPLES: usize = 16;
+        let needle = format!("pkg::item-{:04}", ROWS - 1);
+        let cold_owned: Vec<_> = (0..SAMPLES).map(|_| heavy_root(ROWS)).collect();
+        let cold_indexed: Vec<_> = (0..SAMPLES).map(|_| heavy_root(ROWS)).collect();
+        let warm_owned = heavy_root(ROWS);
+        let warm_indexed = heavy_root(ROWS);
+        assert_eq!(
+            warm_owned
+                .rows()
+                .iter()
+                .find(|row| row.label == needle)
+                .map(|row| row.id),
+            warm_indexed.row_by_label(&needle).map(|row| row.id)
+        );
+        let mut owned_cold = Vec::with_capacity(SAMPLES);
+        let mut indexed_cold = Vec::with_capacity(SAMPLES);
+        let mut owned_warm = Vec::with_capacity(SAMPLES);
+        let mut indexed_warm = Vec::with_capacity(SAMPLES);
+        for _ in 0..4 {
+            std::hint::black_box(warm_owned.rows().iter().find(|row| row.label == needle));
+            std::hint::black_box(warm_indexed.row_by_label(&needle));
+        }
+        for index in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            std::hint::black_box(
+                cold_owned[index]
+                    .rows()
+                    .iter()
+                    .find(|row| row.label == needle),
+            );
+            owned_cold.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(cold_indexed[index].row_by_label(&needle));
+            indexed_cold.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(warm_owned.rows().iter().find(|row| row.label == needle));
+            owned_warm.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(warm_indexed.row_by_label(&needle));
+            indexed_warm.push(started.elapsed().as_nanos());
+        }
+        owned_cold.sort_unstable();
+        indexed_cold.sort_unstable();
+        owned_warm.sort_unstable();
+        indexed_warm.sort_unstable();
+        let owned_cold_median = owned_cold[SAMPLES / 2];
+        let indexed_cold_median = indexed_cold[SAMPLES / 2];
+        let owned_warm_median = owned_warm[SAMPLES / 2];
+        let indexed_warm_median = indexed_warm[SAMPLES / 2];
+        println!(
+            "view_label_index rows={ROWS} cold_owned_median_ns={owned_cold_median} \
+             cold_index_median_ns={indexed_cold_median} warm_owned_median_ns={owned_warm_median} \
+             warm_index_median_ns={indexed_warm_median}"
+        );
+        assert!(
+            indexed_cold_median < owned_cold_median,
+            "cold index {indexed_cold_median} owned {owned_cold_median}"
+        );
+        assert!(
+            indexed_warm_median < owned_warm_median,
+            "warm index {indexed_warm_median} owned {owned_warm_median}"
+        );
     }
 
     #[test]
