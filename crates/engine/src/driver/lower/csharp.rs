@@ -1011,6 +1011,25 @@ fn member_discriminator(
             {
                 hash.update((reference.spelling.bytes.len() as u64).to_le_bytes());
                 hash.update(reference.spelling.bytes);
+                // The spelling is the implemented member's simple name, the
+                // same for `I1.Changed` and `I2.Changed`. When that member is
+                // declared in this image, its interface's name tells the two
+                // implementations apart.
+                if let Some(target) = reference.target {
+                    let member = image
+                        .declaration(target)
+                        .map_err(ProjectionFault::Image)
+                        .map_err(terminal)?;
+                    if let Some(interface) = member.owner {
+                        let interface = image
+                            .declaration(interface)
+                            .map_err(ProjectionFault::Image)
+                            .map_err(terminal)?;
+                        let name = interface.qualified.unwrap_or(interface.name).bytes;
+                        hash.update((name.len() as u64).to_le_bytes());
+                        hash.update(name);
+                    }
+                }
             }
         }
     }

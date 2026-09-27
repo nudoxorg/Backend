@@ -540,11 +540,10 @@ const ADDITIONS: [PackageFacts; 15] = [
         foreign_pypi: true,
         decorators: &[b"t.overload", b"property"],
         spot: SpotCheck::ParameterKinds {
+            // `_PDataSerializer.dumps(self, obj, /)`: the `self` receiver is
+            // not a parameter fact (d287a7d4d).
             symbol: "dumps",
-            kinds: &[
-                PythonParameterKind::PositionalOnly,
-                PythonParameterKind::PositionalOnly,
-            ],
+            kinds: &[PythonParameterKind::PositionalOnly],
         },
     },
     PackageFacts {
