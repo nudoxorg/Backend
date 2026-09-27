@@ -17,9 +17,10 @@ pub mod source;
 pub mod store;
 pub mod symbol;
 
+pub use backend_library::Obligation;
 pub use common::{
-    ByteSpan, DeclRef, Derivation, Gap, GapReason, KeyError, KindFamily, Known, LineSpan,
-    PackageRef, Provenance, SymbolRef, confidence_name, link_name,
+    ByteSpan, DeclFacts, DeclRef, Deprecation, Derivation, Gap, GapReason, KeyError, KindFamily,
+    Known, LineSpan, PackageRef, Provenance, SymbolRef, confidence_name, link_name,
 };
 pub use health::{FaultProgress, HealthModel, IngestModel, LanguageProgress, MissingCapability};
 pub use key::{PageKey, SearchQuery};
@@ -34,7 +35,8 @@ pub use search::{MatchReason, SearchContinuation, SearchPage, SearchRow};
 pub use source::{IdentifierSpan, SourceOrigin, SourceText, SourceView};
 pub use store::{Capacity, Landing, PageStore, PageValue, ReadFailure, Stamp};
 pub use symbol::{
-    Arrival, DocFragment, Excerpt, FileSpan, Member, Members, MethodGroup, OutlinePosition,
+    Arrival, DocEntry, DocFragment, DocSection, DocSections, Excerpt, FileSpan, Member, Members,
+    MethodGroup, OutlinePosition, SectionKind,
     Receiver, ReferenceScope, ReferenceSite, Relation, RelationKind, Rose, SignatureText,
     SignatureToken, SourceLocation, SourceSite, SymbolLink, SymbolPage, TokenClass,
 };

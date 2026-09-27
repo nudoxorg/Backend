@@ -52,6 +52,8 @@ pub enum PageKey {
     Orbit,
     /// The owner health model (one per window).
     Health,
+    /// A browsing page's resource (your tree).
+    Browse(crate::model::browse::BrowseKey),
 }
 
 impl PageKey {
@@ -65,6 +67,7 @@ impl PageKey {
             Self::Search(_) => "search",
             Self::Orbit => "orbit",
             Self::Health => "health",
+            Self::Browse(_) => "browse",
         }
     }
 }
@@ -78,6 +81,7 @@ impl fmt::Display for PageKey {
             Self::Search(query) => write!(formatter, "search {:?} x{}", query.text, query.limit),
             Self::Orbit => formatter.write_str("orbit"),
             Self::Health => formatter.write_str("health"),
+            Self::Browse(key) => write!(formatter, "browse {key}"),
         }
     }
 }

@@ -370,6 +370,68 @@ impl KindFamily {
     }
 }
 
+/// A deprecation notice in the source's own words.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deprecation {
+    /// The version the source says the deprecation began in.
+    pub since: Option<Arc<str>>,
+    /// The source's words about it (what to use instead).
+    pub note: Option<Arc<str>>,
+}
+
+/// Facts a reader weighs before using a declaration. Each is a producer
+/// statement (`Known(None)` is "the producer looked: not deprecated") or a
+/// typed gap when the producer did not look.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeclFacts {
+    /// Whether and how the declaration is deprecated.
+    pub deprecation: Known<Option<Deprecation>>,
+    /// What an implementor of the enclosing contract owes for it
+    /// (required, optional, or provided); `Known(None)` for a declaration
+    /// that is not part of a contract.
+    pub obligation: Known<Option<backend_library::Obligation>>,
+}
+
+impl DeclFacts {
+    /// Facts for a reference no producer row was read for.
+    #[must_use]
+    pub fn unread() -> Self {
+        let gap = || Gap::new(GapReason::NotCaptured, "no producer row was read for this reference");
+        Self {
+            deprecation: Known::Unknown(gap()),
+            obligation: Known::Unknown(gap()),
+        }
+    }
+
+    /// Lowers what the producer observed.
+    #[must_use]
+    pub fn from_facts(facts: &backend_library::DeclarationFacts) -> Self {
+        fn known<T, U>(fact: &backend_library::Fact<T>, what: &str, map: impl FnOnce(&T) -> U) -> Known<Option<U>> {
+            match fact {
+                backend_library::Fact::Unobserved => Known::unknown(
+                    GapReason::NotCaptured,
+                    format!("the producer does not read {what} for this declaration"),
+                ),
+                backend_library::Fact::Absent => Known::Known(None),
+                backend_library::Fact::Present(value) => Known::Known(Some(map(value))),
+            }
+        }
+        Self {
+            deprecation: known(&facts.deprecation, "deprecation", |notice| Deprecation {
+                since: notice.since().map(Arc::from),
+                note: notice.note().map(Arc::from),
+            }),
+            obligation: known(&facts.obligation, "obligation", |obligation| *obligation),
+        }
+    }
+
+    /// Returns the deprecation, when the producer stated one.
+    #[must_use]
+    pub fn deprecated(&self) -> Option<&Deprecation> {
+        self.deprecation.known().and_then(Option::as_ref)
+    }
+}
+
 /// One declaration reference as every board names it: the exact coordinate
 /// plus the parts a gem, a trail, and a tooltip need.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -393,6 +455,9 @@ pub struct DeclRef {
     /// Whether the coordinate is compiler-addressed (`::semantic::`) rather
     /// than file-addressed.
     pub semantic: bool,
+    /// Deprecation and obligation, as the producer observed them, so every
+    /// board can strike a deprecated name wherever it is referenced.
+    pub facts: DeclFacts,
 }
 
 impl DeclRef {
@@ -420,6 +485,7 @@ impl DeclRef {
             key,
             kind,
             family: KindFamily::of(kind),
+            facts: DeclFacts::unread(),
         })
     }
 
@@ -434,7 +500,10 @@ impl DeclRef {
             .source
             .captured()
             .map(|location| (location.path(), location.start_line()));
-        Self::from_label(&row.label, key, row.kind, captured)
+        Self::from_label(&row.label, key, row.kind, captured).map(|mut decl| {
+            decl.facts = DeclFacts::from_facts(&row.facts);
+            decl
+        })
     }
 
     /// Returns the kind's stable lowercase name, or `unknown`.
