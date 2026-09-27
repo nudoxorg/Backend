@@ -1,4 +1,4 @@
-use super::super::read_indexed_sources;
+use super::super::{empty_indexed_sources, read_package_sources};
 use super::super::view_build;
 use super::super::view_build::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
@@ -177,7 +177,6 @@ pub(super) fn execute_semantic_graph(
         package
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let sources = read_indexed_sources(&snapshot)?;
     let view = library.view();
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -219,6 +218,7 @@ pub(super) fn execute_semantic_graph(
     let Some(binding) = source_binding else {
         return Ok(None);
     };
+    let sources = read_package_sources(&snapshot, package)?;
     let project_paths = project_paths_for_package(&sources, package);
     let mut relations = project_semantic_graph_relations(
         &activations,
@@ -289,7 +289,7 @@ pub(super) fn execute_structural_call_graph(
         package
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let sources = read_indexed_sources(&snapshot)?;
+    let sources = read_package_sources(&snapshot, package)?;
     let relations = view_build::structural_call_graph_relations(
         view,
         &sources,
@@ -967,6 +967,7 @@ pub(super) fn execute_references(
     if !publication_found {
         return execute_structural_references(daemon, target);
     }
+    let sources = read_package_sources(&snapshot, package)?;
     let project_paths = project_paths_for_package(&sources, package);
     let mut opened = Vec::with_capacity(image_slots.len());
     for (activation_index, image_index) in &image_slots {
@@ -1007,7 +1008,15 @@ fn execute_structural_references(
     let library = daemon.engine().daemon().library();
     let view = library.view();
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let sources = read_indexed_sources(&snapshot)?;
+    let package = view
+        .rows()
+        .iter()
+        .find(|row| row.label == target.as_str())
+        .and_then(|row| row.package);
+    let sources = match package {
+        Some(package) => read_package_sources(&snapshot, package)?,
+        None => empty_indexed_sources(),
+    };
     let mut facts = view_build::structural_reference_facts(view, &sources, target.as_str())?;
     facts.sort_by(|left, right| {
         left.evidence
