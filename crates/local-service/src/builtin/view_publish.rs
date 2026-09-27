@@ -205,6 +205,7 @@ pub(super) fn rows_replacing_package<'row>(
     package: PackageKey,
     replacement: Vec<Row>,
 ) -> Result<Vec<Row>, RowSpliceError> {
+    let current: Vec<&Row> = current.into_iter().collect();
     let mut rows = Vec::with_capacity(current.len().saturating_add(replacement.len()));
     for row in current {
         if !row_belongs_to_package(row, package) {
@@ -338,6 +339,7 @@ pub(super) fn rows_replacing_paths<'row>(
     paths: &BTreeSet<String>,
     replacement: Vec<Row>,
 ) -> Result<Vec<Row>, RowSpliceError> {
+    let current: Vec<&Row> = current.into_iter().collect();
     let mut rows = Vec::with_capacity(current.len().saturating_add(replacement.len()));
     for row in current {
         let replaced = row_on_package_path(row, package, paths);
