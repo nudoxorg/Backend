@@ -41,9 +41,9 @@ const DECLARATIONS_PER_FILE: usize = 4;
 /// prepare closure must not run. Image reopen and the structural plan are not
 /// in either timer.
 ///
-/// The checked head inlines this relation into its closure. Eight projects of
-/// eight files admit. Eight projects of ten files are rejected, so the fixture
-/// stays at the shape that still pages.
+/// The checked head retains every relation node. Eight projects of eight files
+/// and eight projects of ten files both admit. The fixture stays at eight by
+/// eight, which is the shape the page measurement uses.
 #[allow(clippy::expect_used, clippy::print_stdout)]
 pub(super) fn measure_search_source_page() {
     const SAMPLES: usize = 32;
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn eight_projects_of_eight_files_page_and_ten_files_do_not_inline() {
+    fn eight_projects_of_eight_and_ten_files_page() {
         let declarations = shared_declarations(4).expect("declarations");
         let stored = snapshot_holding(8, 8, &declarations).expect("8x8");
         let sources = super::super::read_indexed_sources(&stored).expect("page");
@@ -551,10 +551,10 @@ mod tests {
                         .is_some_and(|declaration| declaration.name() == "item0")
             })
         }));
-        let Err(error) = snapshot_holding(8, 10, &declarations) else {
-            panic!("eight projects of ten files must not inline into the checked closure");
-        };
-        assert_eq!(error.to_string(), "Corrupt");
+        let wider = snapshot_holding(8, 10, &declarations).expect("8x10");
+        let wider_sources = super::super::read_indexed_sources(&wider).expect("page 8x10");
+        assert_eq!(wider_sources.projects.len(), 8);
+        assert_eq!(wider_sources.files.len(), 80);
     }
 
     #[test]
