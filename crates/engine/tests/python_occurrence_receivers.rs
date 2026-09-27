@@ -6045,3 +6045,968 @@ def read():
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
+
+#[test]
+fn py_local_annotation_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    obj: Child = Child()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_forward_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+def read():
+    obj: Child = Child()
+    return obj.note()
+
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_value_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    obj: Child = Child()
+    return obj.note
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if !calls.is_empty() {
+        return Err(TestError::Falsified("read owns zero MethodCalls"));
+    }
+    let reads = read_field_accesses(&view, read_owner)?;
+    if reads.len() != 1 {
+        return Err(TestError::Falsified("read owns one FieldAccess"));
+    }
+    assert_local_index(reads[0], child_note, "obj.note resolves to Child.note")?;
+    if matches!(
+        &reads[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_field_targets_child_score_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    score = 9
+
+class Child:
+    score = 1
+
+def read():
+    obj: Child
+    return obj.score
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_score = entity_ordinal_at_index(&view, b"score", EntityKind::Field, 0)?;
+    let child_score = entity_ordinal_at_index(&view, b"score", EntityKind::Field, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if !calls.is_empty() {
+        return Err(TestError::Falsified("read owns zero MethodCalls"));
+    }
+    let reads = read_field_accesses(&view, read_owner)?;
+    if reads.len() != 1 {
+        return Err(TestError::Falsified("read owns one FieldAccess"));
+    }
+    assert_local_index(reads[0], child_score, "obj.score resolves to Child.score")?;
+    if matches!(
+        &reads[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_score
+    ) {
+        return Err(TestError::Falsified("obj.score must not resolve to Decoy.score"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_inherited_call_targets_base_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Base:
+    def note(self):
+        return 1
+
+class Child(Base):
+    pass
+
+def read():
+    obj: Child
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let base_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], base_note, "obj.note() resolves to Base.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_field_wins_over_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    score = 1
+
+    def score(self):
+        return self.score
+
+def read():
+    obj: Child
+    return obj.score
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let score_field = entity_ordinal_at_index(&view, b"score", EntityKind::Field, 0)?;
+    let score_method = entity_ordinal_at_index(&view, b"score", EntityKind::Function, 0)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if !calls.is_empty() {
+        return Err(TestError::Falsified("read owns zero MethodCalls"));
+    }
+    let reads = read_field_accesses(&view, read_owner)?;
+    if reads.len() != 1 {
+        return Err(TestError::Falsified("read owns one FieldAccess"));
+    }
+    assert_local_index(reads[0], score_field, "obj.score resolves to Child.score field")?;
+    if matches!(
+        &reads[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == score_method
+    ) {
+        return Err(TestError::Falsified("obj.score must not resolve to Child.score method"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_call_binds_method_not_field() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    note = 1
+
+    def note(self):
+        return 0
+
+def read():
+    obj: Child
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let note_field = entity_ordinal_at_index(&view, b"note", EntityKind::Field, 0)?;
+    let note_method = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], note_method, "obj.note() resolves to Child.note method")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == note_field
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Child.note field"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_generic_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    obj: Child[int] = Child()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_union_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    obj: Child | None = Child()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_optional_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    obj: Optional[Child] = Child()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_quoted_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    obj: \"Child\" = Child()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_list_call_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    obj: list[Child] = []
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_universe_method(calls[0], "list[Child] local annotation stays a pypi universe key")?;
+    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("list[Child] universe method confidence is Index"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("list[Child] must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_dotted_read_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+import pkg
+
+score = 1
+
+class Child:
+    score = 2
+
+def read():
+    obj: pkg.Child
+    return obj.score
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let module_score = entity_ordinal_at_index(&view, b"score", EntityKind::Static, 0)?;
+    let child_score = entity_ordinal_at_index(&view, b"score", EntityKind::Field, 0)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if !calls.is_empty() {
+        return Err(TestError::Falsified("read owns zero MethodCalls"));
+    }
+    let reads = read_field_accesses(&view, read_owner)?;
+    if reads.len() != 2 {
+        return Err(TestError::Falsified("read owns two FieldAccess rows"));
+    }
+    if !matches!(
+        &reads[0].occurrence.target,
+        OccurrenceTarget::Foreign(key)
+            if key.path == "pkg"
+                && key.display == "Child"
+                && key.kind == Some(EntityKind::Field)
+                && matches!(
+                    key.origin,
+                    ForeignOrigin::Package(lineage)
+                        if lineage.ecosystem == "pypi" && lineage.name == "pkg"
+                )
+    ) {
+        return Err(TestError::Falsified("pkg.Child stays a pypi package field key"));
+    }
+    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("pkg.Child package field confidence is Index"));
+    }
+    if !matches!(
+        &reads[1].occurrence.target,
+        OccurrenceTarget::Foreign(key)
+            if key.path == "score"
+                && key.display == "score"
+                && key.kind == Some(EntityKind::Field)
+                && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
+    ) {
+        return Err(TestError::Falsified("obj.score stays a pypi universe field key"));
+    }
+    if reads[1].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("obj.score universe field confidence is Index"));
+    }
+    if matches!(
+        &reads[1].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == module_score
+    ) {
+        return Err(TestError::Falsified("obj.score must not resolve to module score"));
+    }
+    if matches!(
+        &reads[1].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_score
+    ) {
+        return Err(TestError::Falsified("obj.score must not resolve to Child.score"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_two_annotations_stay_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+class Other:
+    def note(self):
+        return 2
+
+def read():
+    obj: Child = Child()
+    obj: Other = Other()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let other_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_universe_method(calls[0], "two local annotations stay a pypi universe key")?;
+    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("two local annotations universe method confidence is Index"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == other_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Other.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_shadows_parameter() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def read(obj: Decoy):
+    obj: Child = Child()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_closure_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+def outer():
+    obj: Child = Child()
+
+    def inner():
+        return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let inner_owner = entity_ordinal_at_index(&view, b"inner", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let calls = read_method_calls(&view, inner_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("inner owns one MethodCall"));
+    }
+    assert_universe_method(calls[0], "closure use stays a pypi universe key")?;
+    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("closure universe method confidence is Index"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("inner obj.note() must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_global_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+obj: Child = Child()
+
+def read():
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_universe_method(calls[0], "module annotation does not bind read obj.note()")?;
+    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("global universe method confidence is Index"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("read obj.note() must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_use_before_assignment_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    return obj.note()
+    obj: Child = Child()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_universe_method(calls[0], "use before assignment stays a pypi universe key")?;
+    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("use before assignment universe method confidence is Index"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() before assignment must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_missing_member_stays_attribute_key() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    pass
+
+def read():
+    obj: Child
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_universe_method(calls[0], "missing member stays a pypi universe key")?;
+    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("missing member universe method confidence is Index"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_method_body_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+class Box:
+    def read(self):
+        obj: Child = Child()
+        return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_local_index(calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_two_classes_stay_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+def nest():
+    class Child:
+        def note(self):
+            return 2
+
+def read():
+    obj: Child = Child()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let module_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let nested_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_universe_method(calls[0], "two Child classes stay a pypi universe key")?;
+    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("two Child classes universe method confidence is Index"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == module_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind module Child.note"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == nested_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind nested Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_list_read_does_not_take_module_field() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Holder:
+    note = 1
+
+class Child:
+    def note(self):
+        return 2
+
+def read():
+    obj: list[Child] = []
+    return obj.note
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Field, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let reads = read_field_accesses(&view, read_owner)?;
+    if reads.len() != 1 {
+        return Err(TestError::Falsified("read owns one FieldAccess"));
+    }
+    if !matches!(
+        &reads[0].occurrence.target,
+        OccurrenceTarget::Foreign(key)
+            if key.path == "note"
+                && key.display == "note"
+                && key.kind == Some(EntityKind::Field)
+                && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
+    ) {
+        return Err(TestError::Falsified("list[Child] read stays a pypi universe field key"));
+    }
+    if reads[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("list[Child] read universe field confidence is Index"));
+    }
+    if matches!(
+        &reads[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == holder_note
+    ) {
+        return Err(TestError::Falsified("list[Child] read must not take Holder.note"));
+    }
+    if matches!(
+        &reads[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("list[Child] read must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_local_annotation_nested_class_field_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def read():
+    class Holder:
+        obj: Child = Child()
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let read_owner = entity_ordinal_at_index(&view, b"read", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let calls = read_method_calls(&view, read_owner)?;
+    if calls.len() != 1 {
+        return Err(TestError::Falsified("read owns one MethodCall"));
+    }
+    assert_universe_method(calls[0], "nested class field stays a pypi universe key")?;
+    if calls[0].occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified("nested class field universe method confidence is Index"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Decoy.note"));
+    }
+    if matches!(
+        &calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}

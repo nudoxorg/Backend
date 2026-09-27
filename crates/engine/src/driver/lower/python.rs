@@ -2584,15 +2584,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
-    /// Resolves one plain-name receiver through its parameter annotation when
-    /// the import-binding arm did not apply and the site is an attribute read:
-    /// a unique live class yields the unique field or bound method inside that
-    /// class (fields before methods, then inherited members); a unique live
-    /// import alias yields the alias statement's package field key; a union of
-    /// one class name peels to that class; an ambiguous union stays on an
-    /// honest universe field key. Multiply-matched cases stay on an honest
-    /// universe field key; zero annotation candidates fall through to
-    /// `module_field`.
+    /// Resolves one plain-name receiver through a function-local annotation,
+    /// then its parameter annotation, when the import-binding arm did not
+    /// apply and the site is an attribute read. A unique live class yields the
+    /// unique field or bound method inside that class (fields before methods,
+    /// then inherited members); a unique live import alias yields the alias
+    /// statement's package field key; a union of one class name peels to that
+    /// class; an ambiguous union stays on an honest universe field key.
+    /// Multiply-matched cases stay on an honest universe field key. A local
+    /// annotation that names no live class returns that universe field key and
+    /// does not fall through to `module_field`. A parameter annotation with
+    /// zero candidates still falls through to `module_field`.
     fn annotated_receiver_read_target(
         &self,
         occurrence: &OccurrenceFact,
@@ -2609,13 +2611,22 @@ impl<'a, 'source> Emitter<'a, 'source> {
             foreign_field(self.slice(occurrence.span)?, occurrence.span)
                 .map(|target| (target, OccurrenceConfidence::Index))
         };
-        let type_name = match receiver_annotation_name(function, receiver) {
-            ReceiverAnnotationName::Absent => return Ok(None),
-            ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
-            ReceiverAnnotationName::Unique(name) => name,
+        let (type_name, from_local) = match self.local_binding_name(function, receiver, occurrence) {
+            LocalBinding::Foreign => return foreign().map(Some),
+            LocalBinding::Unique(name) => (name, true),
+            LocalBinding::Absent => match receiver_annotation_name(function, receiver) {
+                ReceiverAnnotationName::Absent => return Ok(None),
+                ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
+                ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
+            },
         };
-        let candidates = self.live_class_or_alias_indices(type_name);
+        let candidates = self.live_class_or_alias_indices(type_name.as_str());
         if candidates.is_empty() {
+            // A local annotation named no live class. Do not fall through to
+            // `module_field`; a parameter annotation with no candidate still does.
+            if from_local {
+                return foreign().map(Some);
+            }
             return Ok(None);
         }
         if candidates.len() >= 2 {
@@ -2682,7 +2693,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
             DeclarationKind::Alias => {
                 let module_span = match alias_import_module_span(self.source, declaration.span) {
                     Some(span) => span,
-                    None => return Ok(None),
+                    None => {
+                        if from_local {
+                            return foreign().map(Some);
+                        }
+                        return Ok(None);
+                    }
                 };
                 let module_spelling = self.slice(module_span)?;
                 let binding = self.slice(occurrence.span)?;
@@ -2704,16 +2720,23 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 };
                 Ok(Some((target, confidence)))
             }
-            _ => Ok(None),
+            _ => {
+                if from_local {
+                    return foreign().map(Some);
+                }
+                Ok(None)
+            }
         }
     }
 
-    /// Resolves one plain-name receiver through its parameter annotation when
-    /// the import-binding arm did not apply: a unique live class yields the
-    /// unique method inside that class; a unique live import alias yields the
-    /// alias statement's package key; a union of one class name peels to that
-    /// class; an ambiguous union stays on an honest universe method key. Every
-    /// other unproven case keeps today's universe key by returning `None`.
+    /// Resolves one plain-name receiver through a function-local annotation,
+    /// then its parameter annotation, when the import-binding arm did not
+    /// apply. A unique live class yields the unique method inside that class;
+    /// a unique live import alias yields the alias statement's package key; a
+    /// union of one class name peels to that class; an ambiguous union stays
+    /// on an honest universe method key. A local annotation that must not bind
+    /// returns that universe key. Every other unproven case keeps today's
+    /// universe key by returning `None`.
     fn annotated_receiver_target(
         &self,
         occurrence: &OccurrenceFact,
@@ -2729,12 +2752,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
             foreign_method(self.slice(occurrence.span)?, occurrence.span)
                 .map(|target| (target, OccurrenceConfidence::Index))
         };
-        let type_name = match receiver_annotation_name(function, receiver) {
-            ReceiverAnnotationName::Absent => return Ok(None),
-            ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
-            ReceiverAnnotationName::Unique(name) => name,
+        let type_name = match self.local_binding_name(function, receiver, occurrence) {
+            LocalBinding::Foreign => return foreign().map(Some),
+            LocalBinding::Unique(name) => name,
+            LocalBinding::Absent => match receiver_annotation_name(function, receiver) {
+                ReceiverAnnotationName::Absent => return Ok(None),
+                ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
+                ReceiverAnnotationName::Unique(name) => name.to_owned(),
+            },
         };
-        let candidates = self.live_class_or_alias_indices(type_name);
+        let candidates = self.live_class_or_alias_indices(type_name.as_str());
         if candidates.len() != 1 {
             return Ok(None);
         }
@@ -2795,6 +2822,71 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 Ok(Some((target, confidence)))
             }
             _ => Ok(None),
+        }
+    }
+
+    /// Resolves a function-body local `AnnAssign` annotation for one receiver
+    /// name before parameter annotations are consulted.
+    fn local_binding_name(
+        &self,
+        function: &DeclarationFact,
+        receiver: &str,
+        occurrence: &OccurrenceFact,
+    ) -> LocalBinding {
+        let mut relevant: Vec<&AnnotationFact> = Vec::new();
+        for fact in &self.module.annotations {
+            if fact.position != AnnotationPosition::Local {
+                continue;
+            }
+            if fact.owner != receiver {
+                continue;
+            }
+            if !span_contains(function.span, fact.span) {
+                continue;
+            }
+            if self
+                .module
+                .declarations
+                .iter()
+                .enumerate()
+                .any(|(index, declaration)| {
+                    declaration.kind == DeclarationKind::Function
+                        && self.live[index]
+                        && span_contains(function.span, declaration.span)
+                        && declaration.span != function.span
+                        && span_contains(declaration.span, fact.span)
+                })
+            {
+                continue;
+            }
+            if fact.span.start >= occurrence.span.start {
+                continue;
+            }
+            relevant.push(fact);
+        }
+        if relevant.is_empty() {
+            return LocalBinding::Absent;
+        }
+        let mut unique_name: Option<String> = None;
+        for fact in relevant {
+            match classify_receiver_annotation(&fact.annotation) {
+                ReceiverAnnotationName::Ambiguous | ReceiverAnnotationName::Absent => {
+                    return LocalBinding::Foreign;
+                }
+                ReceiverAnnotationName::Unique(name) => {
+                    if let Some(existing) = &unique_name {
+                        if existing != name {
+                            return LocalBinding::Foreign;
+                        }
+                    } else {
+                        unique_name = Some(name.to_owned());
+                    }
+                }
+            }
+        }
+        match unique_name {
+            Some(name) => LocalBinding::Unique(name),
+            None => LocalBinding::Foreign,
         }
     }
 
@@ -3610,6 +3702,14 @@ fn is_receiver_parameter(receiver: ReceiverKind, name: &str) -> bool {
         ReceiverKind::ClassMethod => name == "cls",
         ReceiverKind::StaticMethod | ReceiverKind::Property => false,
     }
+}
+
+enum LocalBinding {
+    /// No local `AnnAssign` of this name in this function before the use.
+    Absent,
+    /// A local annotation exists but must not bind and must not fall through.
+    Foreign,
+    Unique(String),
 }
 
 /// Classification of one receiver parameter annotation for class-name binding.

@@ -51,6 +51,10 @@ pub enum AnnotationPosition {
     Parameter,
     Return,
     Field,
+    /// A function-body `AnnAssign` whose target is a simple name (`obj: Child =
+    /// ...` and `obj: Child` with no value). Not a class-body field and not a
+    /// module constant.
+    Local,
     /// The value expression of a PEP 695 `type` alias statement.
     AliasValue,
 }
@@ -524,6 +528,7 @@ fn project(
             error: None,
             module_declared: HashSet::new(),
             last_module_function: None,
+            bodies: Vec::new(),
         };
         for statement in &syntax.body {
             projection.visit_stmt(statement);
@@ -919,6 +924,15 @@ struct Projection<'a> {
     /// The most recent module-level function name, so overload runs stay
     /// distinct from later rebindings of the same spelling.
     last_module_function: Option<String>,
+    /// Innermost class or function bodies, so a class nested in a function
+    /// is not treated as that function's local scope.
+    bodies: Vec<BodyKind>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BodyKind {
+    Function,
+    Class,
 }
 impl<'a> Projection<'a> {
     fn add_declaration(&mut self, declaration: DeclarationFact) {
@@ -1232,7 +1246,9 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 self.decorator_owner = Some(old.clone());
                 self.owner = name;
                 self.function_depth += 1;
+                self.bodies.push(BodyKind::Function);
                 visitor::walk_stmt(self, statement);
+                self.bodies.pop();
                 self.function_depth -= 1;
                 self.owner = old;
                 self.decorator_ranges = old_decorator_ranges;
@@ -1277,7 +1293,9 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 self.owner = name;
                 self.enclosing_class = Some(self.owner.clone());
                 self.class_depth += 1;
+                self.bodies.push(BodyKind::Class);
                 visitor::walk_stmt(self, statement);
+                self.bodies.pop();
                 self.class_depth -= 1;
                 self.owner = old;
                 self.enclosing_class = old_enclosing_class;
@@ -1323,6 +1341,18 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     Some(assign.annotation.as_ref()),
                     statement,
                 )
+            }
+            ast::Stmt::AnnAssign(assign)
+                if self.function_depth >= 1 && self.bodies.last() == Some(&BodyKind::Function) =>
+            {
+                if let ast::Expr::Name(name) = assign.target.as_ref() {
+                    self.facts.annotations.push(AnnotationFact {
+                        owner: name.id.as_str().to_owned(),
+                        position: AnnotationPosition::Local,
+                        annotation: annotation(assign.annotation.as_ref()),
+                        span: span(assign.range()),
+                    });
+                }
             }
             _ => {}
         }
@@ -1753,6 +1783,7 @@ mod tests {
             error: None,
             module_declared: HashSet::new(),
             last_module_function: None,
+            bodies: Vec::new(),
         };
         assert!(projection.source_owned(range).is_none());
         match projection.error.take() {
