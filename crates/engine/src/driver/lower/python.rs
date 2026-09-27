@@ -2024,6 +2024,74 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     }
                 }
             }
+            OccurrenceReceiver::InstanceAttribute { class, attribute } => {
+                let method_foreign = || {
+                    foreign_method(self.slice(occurrence.span)?, occurrence.span)
+                        .map(|target| (target, OccurrenceConfidence::Index))
+                };
+                let field_foreign = || {
+                    foreign_field(self.slice(occurrence.span)?, occurrence.span)
+                        .map(|target| (target, OccurrenceConfidence::Index))
+                };
+                let class_name = match self.enclosing_class_index(occurrence, class) {
+                    Some(class_index) => {
+                        let class_span = self.module.declarations[class_index].span;
+                        let own_fields =
+                            self.own_field_indices_named(class_span, attribute.as_str());
+                        match own_fields.len() {
+                            0 => match self
+                                .inherited_field_annotation_class_name(class_index, attribute)
+                            {
+                                InstanceAttributeClassLookup::Unique { class_name, .. } => {
+                                    Some(class_name)
+                                }
+                                InstanceAttributeClassLookup::Absent
+                                | InstanceAttributeClassLookup::Ambiguous
+                                | InstanceAttributeClassLookup::Unannotated => None,
+                            },
+                            1 => match self.field_annotation_class_name_from_index(own_fields[0])
+                            {
+                                InstanceAttributeClassLookup::Unique { class_name, .. } => {
+                                    Some(class_name)
+                                }
+                                InstanceAttributeClassLookup::Absent
+                                | InstanceAttributeClassLookup::Ambiguous
+                                | InstanceAttributeClassLookup::Unannotated => None,
+                            },
+                            _ => None,
+                        }
+                    }
+                    None => None,
+                };
+                let Some(class_name) = class_name else {
+                    return match occurrence.kind {
+                        OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                            method_foreign().map(Some)
+                        }
+                        OccurrenceKind::AttributeRead => field_foreign().map(Some),
+                    };
+                };
+                match occurrence.kind {
+                    OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                        if let Some(resolved) =
+                            self.class_qualified_call_target(occurrence, &class_name, checked)?
+                        {
+                            Ok(Some(resolved))
+                        } else {
+                            method_foreign().map(Some)
+                        }
+                    }
+                    OccurrenceKind::AttributeRead => {
+                        if let Some(resolved) =
+                            self.class_qualified_read_target(occurrence, &class_name, checked)?
+                        {
+                            Ok(Some(resolved))
+                        } else {
+                            field_foreign().map(Some)
+                        }
+                    }
+                }
+            }
             OccurrenceReceiver::Super { class, after } => {
                 let confidence = |checked: Option<&SymbolOutcome>| match checked {
                     Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
@@ -3255,6 +3323,146 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
     }
 
+    /// Live own-field declaration indices with one name inside `class_span`.
+    fn own_field_indices_named(&self, class_span: Span, field_name: &str) -> Vec<usize> {
+        let field_bytes = field_name.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, declaration)| {
+                if declaration.kind == DeclarationKind::Field
+                    && declaration.name.as_bytes() == field_bytes
+                    && self.live[index]
+                    && span_contains(class_span, declaration.span)
+                {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// The class name one own field's annotation names, when unique.
+    fn field_annotation_class_name_from_index(
+        &self,
+        field_index: usize,
+    ) -> InstanceAttributeClassLookup {
+        let declaration = &self.module.declarations[field_index];
+        let Some(fact) = self.field_annotation(declaration) else {
+            return InstanceAttributeClassLookup::Unannotated;
+        };
+        match classify_receiver_annotation(&fact.annotation) {
+            ReceiverAnnotationName::Unique(name) => InstanceAttributeClassLookup::Unique {
+                field_index,
+                class_name: name.to_owned(),
+            },
+            ReceiverAnnotationName::Ambiguous | ReceiverAnnotationName::Absent => {
+                InstanceAttributeClassLookup::Unannotated
+            }
+        }
+    }
+
+    /// Resolves one inherited field's annotation class name by walking simple
+    /// same-file base classes for a field named `attribute`.
+    fn inherited_field_annotation_class_name(
+        &self,
+        class_index: usize,
+        attribute: &str,
+    ) -> InstanceAttributeClassLookup {
+        self.inherited_field_annotation_from_bases(class_index, attribute, 0)
+    }
+
+    fn inherited_field_annotation_from_bases(
+        &self,
+        class_index: usize,
+        attribute: &str,
+        depth: usize,
+    ) -> InstanceAttributeClassLookup {
+        let declaration = &self.module.declarations[class_index];
+        let mut base_results = Vec::new();
+        for base in &declaration.bases {
+            let Some(base_name) = simple_base_name(base) else {
+                continue;
+            };
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            if depth >= MAX_INHERITED_BASE_LINKS {
+                continue;
+            }
+            let mut visited = HashSet::new();
+            visited.insert(class_index);
+            let result = self.inherited_field_annotation_in_class(
+                base_index,
+                attribute,
+                depth + 1,
+                &mut visited,
+            );
+            if result != InstanceAttributeClassLookup::Absent {
+                base_results.push(result);
+            }
+        }
+        merge_instance_attribute_class_results(base_results)
+    }
+
+    fn inherited_field_annotation_in_class(
+        &self,
+        class_index: usize,
+        attribute: &str,
+        depth: usize,
+        visited: &mut HashSet<usize>,
+    ) -> InstanceAttributeClassLookup {
+        if !visited.insert(class_index) {
+            return InstanceAttributeClassLookup::Absent;
+        }
+        let class_span = self.module.declarations[class_index].span;
+        let own_fields = self.own_field_indices_named(class_span, attribute);
+        match own_fields.len() {
+            0 => self.inherited_field_annotation_from_bases_with_visited(
+                class_index,
+                attribute,
+                depth,
+                visited,
+            ),
+            1 => self.field_annotation_class_name_from_index(own_fields[0]),
+            _ => InstanceAttributeClassLookup::Ambiguous,
+        }
+    }
+
+    fn inherited_field_annotation_from_bases_with_visited(
+        &self,
+        class_index: usize,
+        attribute: &str,
+        depth: usize,
+        visited: &mut HashSet<usize>,
+    ) -> InstanceAttributeClassLookup {
+        let declaration = &self.module.declarations[class_index];
+        let mut base_results = Vec::new();
+        for base in &declaration.bases {
+            let Some(base_name) = simple_base_name(base) else {
+                continue;
+            };
+            let Some(base_index) = self.unique_live_class_index(base_name) else {
+                continue;
+            };
+            if depth >= MAX_INHERITED_BASE_LINKS {
+                continue;
+            }
+            let result = self.inherited_field_annotation_in_class(
+                base_index,
+                attribute,
+                depth + 1,
+                visited,
+            );
+            if result != InstanceAttributeClassLookup::Absent {
+                base_results.push(result);
+            }
+        }
+        merge_instance_attribute_class_results(base_results)
+    }
+
     /// Exactly one live class declaration carries `name`, or `None`.
     fn unique_live_class_index(&self, name: &str) -> Option<usize> {
         let name_bytes = name.as_bytes();
@@ -3705,6 +3913,18 @@ enum InheritedMemberLookup {
     Ambiguous,
 }
 
+/// One instance-attribute field-annotation lookup across same-file classes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InstanceAttributeClassLookup {
+    Absent,
+    Unique {
+        field_index: usize,
+        class_name: String,
+    },
+    Ambiguous,
+    Unannotated,
+}
+
 /// The attribute token inside a receiver-qualified callee span (`Child.note`
 /// → `note`). A span that is already the attribute token is unchanged.
 fn attribute_token_span(
@@ -3785,6 +4005,40 @@ fn merge_inherited_base_results(results: Vec<InheritedMemberLookup>) -> Inherite
         }
     }
     unique_ordinal.map_or(InheritedMemberLookup::Absent, InheritedMemberLookup::Unique)
+}
+
+/// Combines inherited field-annotation results from sibling base classes.
+fn merge_instance_attribute_class_results(
+    results: Vec<InstanceAttributeClassLookup>,
+) -> InstanceAttributeClassLookup {
+    let mut unique_field: Option<usize> = None;
+    let mut unique_name: Option<String> = None;
+    for result in results {
+        match result {
+            InstanceAttributeClassLookup::Absent => {}
+            InstanceAttributeClassLookup::Ambiguous | InstanceAttributeClassLookup::Unannotated => {
+                return result;
+            }
+            InstanceAttributeClassLookup::Unique {
+                field_index,
+                class_name,
+            } => match unique_field {
+                None => {
+                    unique_field = Some(field_index);
+                    unique_name = Some(class_name);
+                }
+                Some(existing) if existing == field_index => {}
+                Some(_) => return InstanceAttributeClassLookup::Ambiguous,
+            },
+        }
+    }
+    match (unique_field, unique_name) {
+        (Some(field_index), Some(class_name)) => InstanceAttributeClassLookup::Unique {
+            field_index,
+            class_name,
+        },
+        _ => InstanceAttributeClassLookup::Absent,
+    }
 }
 
 /// Standard C3 merge of base MRO sequences plus the direct-base list.

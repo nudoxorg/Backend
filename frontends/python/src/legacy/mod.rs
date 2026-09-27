@@ -210,6 +210,11 @@ pub enum OccurrenceReceiver {
     /// is one live class. Non-class names (`factory`, `list`) and attribute
     /// callees (`pkg.Child[int]().note()`) keep universe keys.
     Constructed { class: String },
+    /// `self.child.note` / `self.child.note()` and the `cls` form, one attribute
+    /// deep. `class` is the enclosing class. `attribute` is the field name
+    /// (`child`). Deeper chains (`self.child.other.note`) and subscripts
+    /// (`self.child[0].note`) are not this variant.
+    InstanceAttribute { class: String, attribute: String },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -1035,6 +1040,28 @@ impl<'a> Projection<'a> {
         })
     }
 
+    /// `self.child.note` / `self.child.note()` and the `cls` form when `expr`
+    /// is one `self`/`cls` attribute access (`self.child`).
+    fn instance_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        if self.function_depth != 1 {
+            return None;
+        }
+        let ast::Expr::Attribute(inner) = expr else {
+            return None;
+        };
+        let ast::Expr::Name(name) = inner.value.as_ref() else {
+            return None;
+        };
+        if !matches!(name.id.as_str(), "self" | "cls") {
+            return None;
+        }
+        let class = self.enclosing_class.clone()?;
+        Some(OccurrenceReceiver::InstanceAttribute {
+            class,
+            attribute: inner.attr.as_str().to_owned(),
+        })
+    }
+
     /// Copies an AST-selected source range only after a checked bounds proof.
     fn source_owned(&mut self, range: ruff_text_size::TextRange) -> Option<String> {
         if self.error.is_some() {
@@ -1408,6 +1435,8 @@ impl<'a> Projection<'a> {
             receiver
         } else if let Some(receiver) = self.constructed_class_receiver(attribute.value.as_ref()) {
             receiver
+        } else if let Some(receiver) = self.instance_attribute_receiver(attribute.value.as_ref()) {
+            receiver
         } else {
             match attribute.value.as_ref() {
                 ast::Expr::Name(name)
@@ -1775,6 +1804,10 @@ impl<'a> Visitor<'a> for Projection<'a> {
                         receiver
                     } else if let Some(receiver) =
                         self.constructed_class_receiver(attribute.value.as_ref())
+                    {
+                        receiver
+                    } else if let Some(receiver) =
+                        self.instance_attribute_receiver(attribute.value.as_ref())
                     {
                         receiver
                     } else {
