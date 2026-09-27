@@ -843,6 +843,193 @@ fn rebuild_keeps_an_unchanged_rowid_and_records_only_real_mutations() {
     });
 }
 
+#[test]
+fn frontier_republish_keeps_rows_until_a_hot_delta_clears_the_digest() {
+    futures_executor::block_on(async {
+        let path = path();
+        let basis = root(Vec::new()).basis();
+        let kept = Row::new(RowId::Package(package_key("kept")), basis, "kept");
+        let extra = Row::new(RowId::Package(package_key("extra")), basis, "extra");
+        let object = basis.object;
+        let first = root_at(vec![kept.clone()], 0);
+        let moved = root_at(vec![kept.clone()], 1);
+        let mut projection = TursoProjection::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("open: {error}"));
+        projection
+            .synchronize(&first)
+            .await
+            .unwrap_or_else(|error| panic!("seed: {error}"));
+        let kept_key = kept.id.stable_key();
+        let kept_rowid = stored_rowid(&projection, &kept_key).await;
+        projection
+            .synchronize(&moved)
+            .await
+            .unwrap_or_else(|error| panic!("move: {error}"));
+        assert_eq!(stored_rowid(&projection, &kept_key).await, kept_rowid);
+        let prepared = moved
+            .prepare(
+                ViewDelta::Upsert { row: extra.clone() },
+                capability(object),
+            )
+            .unwrap_or_else(|error| panic!("prepare: {error:?}"));
+        let (_next, committed) = moved
+            .clone()
+            .commit(prepared)
+            .unwrap_or_else(|error| panic!("commit: {error:?}"));
+        projection
+            .apply(&committed)
+            .await
+            .unwrap_or_else(|error| panic!("apply: {error}"));
+        let restored = root_at(vec![kept], 2);
+        projection
+            .synchronize(&restored)
+            .await
+            .unwrap_or_else(|error| panic!("restore: {error}"));
+        assert_eq!(stored_rowid(&projection, &kept_key).await, kept_rowid);
+        let extra_rows = projection
+            .search("extra", 10)
+            .await
+            .unwrap_or_else(|error| panic!("search extra: {error}"));
+        assert!(extra_rows.ids.is_empty());
+    });
+}
+
+fn root_at(rows: Vec<Row>, sequence: u64) -> ViewRoot {
+    let source = view_state_root(&[]);
+    let object = object_version(b"projection-test");
+    let basis = Basis::with_context(source, object, branch_key("main"), log_key("library"), 1);
+    ViewRoot::new_checked(
+        view_key(b"projection-test"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, sequence),
+        rows,
+        vec![Coverage::Complete],
+        capability(object),
+    )
+    .unwrap_or_else(|error| panic!("root_at: {error:?}"))
+}
+
+#[test]
+fn projection_row_hash_matches_the_streaming_byte_identity() {
+    futures_executor::block_on(async {
+        let path = path();
+        let basis = root(Vec::new()).basis();
+        let target = backend_library::symbol_key("hash::target");
+        let mut row = Row::in_package(
+            RowId::Symbol(backend_library::symbol_key("hash::item")),
+            basis,
+            package_key("workspace"),
+            "hashed",
+        )
+        .with_signature("fn hashed()")
+        .with_document(vec![
+            Fragment::Text("alpha".to_owned()),
+            Fragment::Code("beta".to_owned()),
+            Fragment::Link {
+                label: "docs".to_owned(),
+                target,
+            },
+            Fragment::Break,
+        ]);
+        row.score = Some(7);
+        let view = root(vec![row.clone()]);
+        let mut projection = TursoProjection::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("open: {error}"));
+        projection
+            .synchronize(&view)
+            .await
+            .unwrap_or_else(|error| panic!("synchronize: {error}"));
+        let key = row.id.stable_key();
+        let mut rows = projection
+            .connection
+            .query(
+                "SELECT content_hash FROM backend_projection_rows WHERE row_id=?1",
+                [key],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("hash query: {error}"));
+        let stored: Vec<u8> = rows
+            .next()
+            .await
+            .unwrap_or_else(|error| panic!("hash next: {error}"))
+            .unwrap_or_else(|| panic!("missing hash"))
+            .get(0)
+            .unwrap_or_else(|error| panic!("hash bytes: {error}"));
+        assert_eq!(stored, streaming_row_hash(&row).as_bytes().as_slice());
+    });
+}
+
+fn streaming_row_hash(row: &Row) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.turso.row.v1\0");
+    stream_field(&mut hasher, row.id.stable_key().as_bytes());
+    stream_field(&mut hasher, row.basis.root.as_bytes());
+    stream_field(&mut hasher, row.basis.object.as_bytes());
+    stream_field(&mut hasher, row.basis.branch.as_bytes());
+    stream_field(&mut hasher, row.basis.log.as_bytes());
+    stream_field(&mut hasher, &row.basis.schema.to_be_bytes());
+    stream_field(
+        &mut hasher,
+        &[match row.state {
+            backend_library::RowState::Ready => 0,
+            backend_library::RowState::Loading => 1,
+            backend_library::RowState::Failed => 2,
+        }],
+    );
+    stream_field(&mut hasher, row.label.as_bytes());
+    let score = row.score.map(u32::to_be_bytes);
+    stream_option(&mut hasher, score.as_ref().map(<[u8; 4]>::as_slice));
+    stream_option(
+        &mut hasher,
+        row.package
+            .as_ref()
+            .map(|value| value.as_bytes().as_slice()),
+    );
+    stream_option(
+        &mut hasher,
+        row.parent.as_ref().map(|value| value.as_bytes().as_slice()),
+    );
+    stream_option(&mut hasher, row.signature.as_deref().map(str::as_bytes));
+    for fragment in &row.document {
+        match fragment {
+            Fragment::Text(value) => {
+                stream_field(&mut hasher, &[0]);
+                stream_field(&mut hasher, value.as_bytes());
+            }
+            Fragment::Code(value) => {
+                stream_field(&mut hasher, &[1]);
+                stream_field(&mut hasher, value.as_bytes());
+            }
+            Fragment::Link { label, target } => {
+                stream_field(&mut hasher, &[2]);
+                stream_field(&mut hasher, label.as_bytes());
+                stream_field(&mut hasher, target.as_bytes());
+            }
+            Fragment::Break => stream_field(&mut hasher, &[3]),
+        }
+    }
+    hasher.finalize()
+}
+
+fn stream_option(hasher: &mut blake3::Hasher, value: Option<&[u8]>) {
+    match value {
+        Some(value) => {
+            hasher.update(&[1]);
+            stream_field(hasher, value);
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
+}
+
+fn stream_field(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
 async fn stored_rowid(projection: &TursoProjection, key: &str) -> i64 {
     let mut rows = projection
         .connection

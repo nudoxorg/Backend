@@ -201,6 +201,21 @@ impl ViewRoot {
         backend_flow::BoundFrontier::new(self.root, self.frontier.flow())
     }
 
+    /// Borrows canonical rows without filling the owned row cache.
+    ///
+    /// Republishing a frontier uses this to compare stored hashes. The owned
+    /// cache remains available through [`Self::rows`] for callers that need a
+    /// slice.
+    #[must_use]
+    pub fn row_refs(&self) -> impl Iterator<Item = &Row> {
+        self.relation
+            .iter()
+            .filter_map(|(key, value)| match (key, value) {
+                (ViewEntryKey::Row(_), ViewEntry::Row(row)) => Some(row),
+                _ => None,
+            })
+    }
+
     /// Returns stable rows in canonical order.
     #[must_use]
     pub fn rows(&self) -> &[Row] {
@@ -834,6 +849,15 @@ mod tests {
             ),
             Err(ViewPageError::CursorMismatch)
         );
+    }
+
+    #[test]
+    fn row_refs_borrow_without_filling_the_owned_cache() {
+        let root = root_with_rows(4);
+        assert_eq!(root.row_refs().count(), 4);
+        assert!(root.rows_cache.get().is_none());
+        assert_eq!(root.rows().len(), 4);
+        assert!(root.rows_cache.get().is_some());
     }
 
     #[test]
