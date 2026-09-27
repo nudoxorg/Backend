@@ -371,6 +371,8 @@ pub(super) enum CompiledImage<'bytes> {
         identity: ContentId<SourceFactDomain>,
         /// Blake3 of `bytes`, the row-cache image identity.
         digest: [u8; 32],
+        /// Snapshot that owns `bytes`, when this open came from one.
+        snapshot: Option<&'bytes backend_library::interface::SemanticImageSnapshot>,
     },
     /// A view validated on this pass. Admission is not confirmed yet.
     Opened {
@@ -393,13 +395,14 @@ pub(super) fn open_compiled_image<'bytes>(
     admission: [u8; 32],
     residence: &mut ImageRowResidence,
 ) -> Result<CompiledImage<'bytes>, super::super::BuiltinModelError> {
-    if let Some(resident) = resident_compiled_image(bytes, admission, residence) {
+    let digest = image_digest(bytes);
+    if let Some(resident) = resident_compiled_image(bytes, digest, admission, residence, None) {
         return Ok(resident);
     }
     let view = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
         super::super::BuiltinModelError(format!("reopen activated semantic image: {error}"))
     })?;
-    remember_opened_image(bytes, view, residence)
+    remember_opened_image(digest, view, residence, true)
 }
 
 /// Like [`open_compiled_image`], but a miss stores the proof on `image`.
@@ -409,21 +412,27 @@ pub(super) fn open_compiled_snapshot<'bytes>(
     residence: &mut ImageRowResidence,
 ) -> Result<CompiledImage<'bytes>, super::super::BuiltinModelError> {
     let bytes = image.as_ref();
-    if let Some(resident) = resident_compiled_image(bytes, admission, residence) {
+    let digest = image.content_digest();
+    if let Some(resident) =
+        resident_compiled_image(bytes, digest, admission, residence, Some(image))
+    {
         return Ok(resident);
     }
+    let before = backend_semantic::ir::semantic_image_validations();
     let view = image.reopen().map_err(|error| {
         super::super::BuiltinModelError(format!("reopen activated semantic image: {error}"))
     })?;
-    remember_opened_image(bytes, view, residence)
+    let validated = backend_semantic::ir::semantic_image_validations() != before;
+    remember_opened_image(digest, view, residence, validated)
 }
 
 fn resident_compiled_image<'bytes>(
     bytes: &'bytes [u8],
+    digest: [u8; 32],
     admission: [u8; 32],
     residence: &mut ImageRowResidence,
+    snapshot: Option<&'bytes backend_library::interface::SemanticImageSnapshot>,
 ) -> Option<CompiledImage<'bytes>> {
-    let digest = image_digest(bytes);
     let facts = residence.facts.get(&digest)?;
     if !facts.admissions.contains(&admission) {
         return None;
@@ -436,17 +445,47 @@ fn resident_compiled_image<'bytes>(
         path,
         identity,
         digest,
+        snapshot,
     })
 }
 
-fn remember_opened_image<'bytes>(
+/// Reopens an admitted image for a row-cache miss.
+///
+/// A snapshot reuses the structural proof stored beside its bytes. Raw bytes
+/// validate, and only that validation counts as a reopen.
+pub(super) fn reopen_resident_image<'bytes>(
     bytes: &'bytes [u8],
+    snapshot: Option<&'bytes backend_library::interface::SemanticImageSnapshot>,
+    residence: &mut ImageRowResidence,
+) -> Result<backend_semantic::ir::SemanticImageView<'bytes>, super::super::BuiltinModelError> {
+    if let Some(image) = snapshot {
+        let before = backend_semantic::ir::semantic_image_validations();
+        let view = image.reopen().map_err(|error| {
+            super::super::BuiltinModelError(format!("reopen activated semantic image: {error}"))
+        })?;
+        if backend_semantic::ir::semantic_image_validations() != before {
+            residence.note_reopen();
+        }
+        return Ok(view);
+    }
+    let view = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
+        super::super::BuiltinModelError(format!("reopen activated semantic image: {error}"))
+    })?;
+    residence.note_reopen();
+    Ok(view)
+}
+
+fn remember_opened_image<'bytes>(
+    digest: [u8; 32],
     view: backend_semantic::ir::SemanticImageView<'bytes>,
     residence: &mut ImageRowResidence,
+    validated: bool,
 ) -> Result<CompiledImage<'bytes>, super::super::BuiltinModelError> {
     let (path, identity) = compiled_source(&view)?;
-    residence.note_reopen();
-    residence.store_facts(image_digest(bytes), path.clone(), identity);
+    if validated {
+        residence.note_reopen();
+    }
+    residence.store_facts(digest, path.clone(), identity);
     Ok(CompiledImage::Opened {
         path,
         identity,
@@ -484,7 +523,10 @@ pub(super) fn confirm_image_admission(
     admission: [u8; 32],
     residence: &mut ImageRowResidence,
 ) {
-    let digest = image_digest(bytes);
+    confirm_digest(image_digest(bytes), admission, residence);
+}
+
+fn confirm_digest(digest: [u8; 32], admission: [u8; 32], residence: &mut ImageRowResidence) {
     if let Some(facts) = residence.facts.get_mut(&digest) {
         facts.admissions.insert(admission);
         residence.touch_facts(digest);
@@ -514,7 +556,12 @@ pub(in crate::builtin) fn admit_activated_images(
         if let CompiledImage::Opened { view, .. } =
             open_compiled_snapshot(image, admission, residence)?
         {
-            bind_opened_image(image.as_ref(), admission, &view, key, residence)?;
+            key.admit_image(&view).map_err(|error| {
+                super::super::BuiltinModelError(format!(
+                    "bind semantic publication to product key: {error}"
+                ))
+            })?;
+            confirm_digest(image.content_digest(), admission, residence);
         }
     }
     Ok(())
@@ -758,12 +805,14 @@ pub(super) fn measure_semantic_admission() {
         .map(|image| admitted_snapshot(image))
         .collect::<Vec<_>>();
     for _ in 0..WARMUPS {
+        clear_snapshot_proofs(&images);
         let mut residence = ImageRowResidence::default();
         admit_activated_images(&images, &key, &mut residence).expect("cold warmup");
     }
     let mut cold = Vec::with_capacity(SAMPLES);
     let mut cold_reopens = 0_u64;
     for _ in 0..SAMPLES {
+        clear_snapshot_proofs(&images);
         let mut residence = ImageRowResidence::default();
         let started = std::time::Instant::now();
         admit_activated_images(&images, &key, &mut residence).expect("cold");
@@ -855,6 +904,116 @@ pub(super) fn measure_semantic_image_proof() {
     println!(
         "semantic_image_proof images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} cold_validations={cold_validations} warm_validations={warm_validations}"
     );
+}
+
+/// Times admission and a row-cache miss against the snapshot's stored digest and proof.
+///
+/// Snapshots and the publication key are built before any timer. `cold` clears
+/// each proof and validates. `warm` finds the admission. `miss` rebuilds the
+/// view through the overlay helper.
+#[allow(clippy::expect_used, clippy::print_stdout)]
+pub(super) fn measure_semantic_snapshot_residence() {
+    const IMAGES: usize = 32;
+    const SAMPLES: usize = 32;
+    const WARMUPS: usize = 4;
+    let snapshots = (0..IMAGES)
+        .map(|index| {
+            let path = format!("src/file{index}.rs");
+            let salt = u8::try_from(index).expect("image index");
+            let bytes = super::image_reopen::fixture_semantic_image_salted(&path, salt)
+                .expect("fixture image");
+            admitted_snapshot(&bytes)
+        })
+        .collect::<Vec<_>>();
+    for image in &snapshots {
+        let hashed = *blake3::hash(image.as_ref()).as_bytes();
+        (hashed == image.content_digest())
+            .then_some(())
+            .expect("snapshot digest drifted from its bytes");
+    }
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2024,
+    );
+    let package = backend_engine::PackageReference::parse("fixture").expect("package");
+    let coordinate =
+        backend_semantic::vocabulary::PackageUrl::parse("pkg:cargo/fixture@1.0.0".to_owned())
+            .expect("coordinate");
+    let key =
+        backend_engine::builtin::ProductSemanticPublicationKey::new(package, coordinate, profile)
+            .expect("publication key");
+    let bytes: usize = snapshots.iter().map(|image| image.as_ref().len()).sum();
+    for _ in 0..WARMUPS {
+        clear_snapshot_proofs(&snapshots);
+        let mut residence = ImageRowResidence::default();
+        admit_activated_images(&snapshots, &key, &mut residence).expect("cold warmup");
+    }
+    let mut cold = Vec::with_capacity(SAMPLES);
+    let mut cold_reopens = 0_u64;
+    for _ in 0..SAMPLES {
+        clear_snapshot_proofs(&snapshots);
+        let mut residence = ImageRowResidence::default();
+        let started = std::time::Instant::now();
+        admit_activated_images(&snapshots, &key, &mut residence).expect("cold");
+        cold.push(started.elapsed().as_nanos());
+        cold_reopens += residence.reopens();
+        std::hint::black_box(residence.reopens());
+    }
+    let mut warm_residence = ImageRowResidence::default();
+    admit_activated_images(&snapshots, &key, &mut warm_residence).expect("warm prime");
+    for _ in 0..WARMUPS {
+        admit_activated_images(&snapshots, &key, &mut warm_residence).expect("warm warmup");
+    }
+    let reopens_before = warm_residence.reopens();
+    let mut warm = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let started = std::time::Instant::now();
+        admit_activated_images(&snapshots, &key, &mut warm_residence).expect("warm");
+        warm.push(started.elapsed().as_nanos());
+        std::hint::black_box(warm_residence.reopens());
+    }
+    let warm_reopens = warm_residence.reopens().saturating_sub(reopens_before);
+    (cold_reopens == (IMAGES * SAMPLES) as u64 && warm_reopens == 0)
+        .then_some(())
+        .expect("snapshot residence hashed or validated a warm image");
+    let mut miss_residence = ImageRowResidence::default();
+    for _ in 0..WARMUPS {
+        reopen_resident_batch(&snapshots, &mut miss_residence);
+    }
+    let mut miss = Vec::with_capacity(SAMPLES);
+    let mut miss_validations = 0_u64;
+    for _ in 0..SAMPLES {
+        backend_semantic::ir::reset_semantic_image_validations();
+        let started = std::time::Instant::now();
+        reopen_resident_batch(&snapshots, &mut miss_residence);
+        miss.push(started.elapsed().as_nanos());
+        miss_validations += backend_semantic::ir::semantic_image_validations();
+    }
+    (miss_validations == 0)
+        .then_some(())
+        .expect("overlay miss validated a proved snapshot");
+    let (cold_median, cold_p95) = percentiles(&cold);
+    let (warm_median, warm_p95) = percentiles(&warm);
+    let (miss_median, miss_p95) = percentiles(&miss);
+    println!(
+        "semantic_snapshot_residence images={IMAGES} bytes={bytes} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} miss_median_ns={miss_median} miss_p95_ns={miss_p95} cold_reopens={cold_reopens} warm_reopens={warm_reopens} miss_validations={miss_validations}"
+    );
+}
+
+fn clear_snapshot_proofs(images: &[backend_library::interface::SemanticImageSnapshot]) {
+    for image in images {
+        image.clear_reopen_proof();
+    }
+}
+
+#[allow(clippy::expect_used)]
+fn reopen_resident_batch(
+    images: &[backend_library::interface::SemanticImageSnapshot],
+    residence: &mut ImageRowResidence,
+) {
+    for image in images {
+        let view = reopen_resident_image(image.as_ref(), Some(image), residence).expect("overlay");
+        std::hint::black_box(view.as_ref().len());
+    }
 }
 
 #[allow(clippy::expect_used)]
@@ -1050,7 +1209,7 @@ mod tests {
         Charge, CompiledImage, DuplicatePolicy, ImageRowResidence, ProjectedImage, ProjectedRow,
         admit_activated_images, append_resident_image_rows, apply_projected_image,
         apply_resident_image, bind_opened_image, confirm_image_admission, open_compiled_image,
-        publication_admission, publish_image_batch,
+        open_compiled_snapshot, publication_admission, publish_image_batch, reopen_resident_image,
     };
     use backend_engine::{Row, RowId};
     use backend_semantic::ir::SemanticImageView;
@@ -2161,6 +2320,104 @@ mod tests {
         let right = second.reopen().expect("second");
         assert_eq!(backend_semantic::ir::semantic_image_validations(), 2);
         assert_eq!(declaration_identities(&left), declaration_identities(&right));
+    }
+
+    #[test]
+    fn a_snapshot_digest_matches_its_bytes_after_authority_changes() {
+        let fixture = fixture();
+        let mut image = super::admitted_snapshot(&fixture.bytes);
+        let digest = *blake3::hash(fixture.bytes.as_slice()).as_bytes();
+        assert_eq!(image.content_digest(), digest);
+        image.authority.byte_len = 0;
+        assert_eq!(image.content_digest(), digest);
+        image.authority.byte_len = u32::try_from(fixture.bytes.len()).expect("length");
+        let view = image.reopen().expect("reopen");
+        assert_eq!(view.as_ref(), fixture.bytes.as_slice());
+    }
+
+    #[test]
+    fn a_stale_overlay_reuses_the_snapshot_proof() {
+        let fixture = fixture();
+        let snapshot = super::admitted_snapshot(&fixture.bytes);
+        let project = project("fixture");
+        let admission = admission("pkg:cargo/fixture@1.0.0");
+        let mut residence = ImageRowResidence::default();
+        let opened = open_compiled_snapshot(&snapshot, admission, &mut residence).expect("open");
+        let CompiledImage::Opened { view, .. } = &opened else {
+            panic!("first snapshot open was resident");
+        };
+        confirm_image_admission(&fixture.bytes, admission, &mut residence);
+        let mut symbols = BTreeSet::new();
+        let fresh = admit(
+            view,
+            &project,
+            &fixture.initial,
+            &mut residence,
+            false,
+            64,
+            usize::MAX,
+            &mut symbols,
+            &[],
+        )
+        .expect("fresh project");
+        drop(opened);
+        let resident = open_compiled_snapshot(&snapshot, admission, &mut residence).expect("hit");
+        let CompiledImage::Resident {
+            bytes,
+            digest,
+            snapshot: Some(image),
+            ..
+        } = resident
+        else {
+            panic!("confirmed snapshot was validated again");
+        };
+        let mut symbols = BTreeSet::new();
+        let mut rows = Vec::new();
+        let mut remaining = usize::MAX;
+        let mut sink = SemanticRowSink {
+            initial: &fixture.initial,
+            symbols: &mut symbols,
+            rows: &mut rows,
+            capacity: 64,
+            remaining_bytes: &mut remaining,
+            stale: true,
+            path: PATH,
+            site_declarations: &[],
+        };
+        let applied = apply_resident_image(
+            digest,
+            &project,
+            LanguageProfile::Rust(RustEdition::Rust2024),
+            &mut sink,
+            &mut residence,
+        )
+        .expect("stale miss");
+        assert!(!applied, "stale overlay reused fresh rows");
+        let reopens = residence.reopens();
+        backend_semantic::ir::reset_semantic_image_validations();
+        let proved = reopen_resident_image(bytes, Some(image), &mut residence).expect("proof");
+        assert_eq!(backend_semantic::ir::semantic_image_validations(), 0);
+        assert_eq!(residence.reopens(), reopens);
+        let mut symbols = BTreeSet::new();
+        let stale = admit(
+            &proved,
+            &project,
+            &fixture.initial,
+            &mut residence,
+            true,
+            64,
+            usize::MAX,
+            &mut symbols,
+            &[],
+        )
+        .expect("stale project");
+        assert_eq!(stale.rows.len(), fresh.rows.len());
+        snapshot.clear_reopen_proof();
+        backend_semantic::ir::reset_semantic_image_validations();
+        let _ = reopen_resident_image(snapshot.as_ref(), Some(&snapshot), &mut residence)
+            .expect("cleared");
+        assert_eq!(backend_semantic::ir::semantic_image_validations(), 1);
+        assert_eq!(residence.reopens(), reopens + 1);
     }
 
     fn declaration_identities(

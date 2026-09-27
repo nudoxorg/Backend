@@ -89,6 +89,8 @@ pub struct SemanticImageSnapshot {
     /// Exact image authority requested from the compiler owner.
     pub authority: SemanticImageAuthority,
     bytes: Box<[u8]>,
+    /// Blake3 of `bytes`, fixed when the snapshot is built.
+    digest: [u8; 32],
     proof: Mutex<Option<backend_semantic::ir::AdmittedSemanticImage>>,
 }
 
@@ -121,11 +123,21 @@ impl SemanticImageSnapshot {
             .try_reserve_exact(bytes.len())
             .map_err(|source| SemanticImageAccessError::Allocation { source })?;
         owned.extend_from_slice(bytes);
+        let digest = *blake3::hash(&owned).as_bytes();
         Ok(Self {
             authority,
             bytes: owned.into_boxed_slice(),
+            digest,
             proof: Mutex::new(None),
         })
+    }
+
+    /// Blake3 of the owned image bytes.
+    ///
+    /// Computed once while the snapshot is built from those bytes.
+    #[must_use]
+    pub fn content_digest(&self) -> [u8; 32] {
+        self.digest
     }
 
     /// Reopens these bytes, validating them only the first time.

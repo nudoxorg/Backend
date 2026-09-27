@@ -86,6 +86,11 @@ pub(super) fn measure_semantic_image_proof() {
     image_rows::measure_semantic_image_proof();
 }
 
+/// Times snapshot admission and an overlay miss against the stored digest and proof.
+pub(super) fn measure_semantic_snapshot_residence() {
+    image_rows::measure_semantic_snapshot_residence();
+}
+
 /// Times one query-image validation against the three the corpus used to pay.
 pub(super) fn measure_semantic_query_walk() {
     query::measure_semantic_query_walk();

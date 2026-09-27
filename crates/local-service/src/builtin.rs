@@ -1289,6 +1289,14 @@ pub fn measure_semantic_image_proof() {
     view_build::measure_semantic_image_proof();
 }
 
+/// Times snapshot admission and an overlay miss.
+///
+/// The snapshots and publication key are built before any timer. The printed
+/// line is the release measurement for a digest and proof already stored.
+pub fn measure_semantic_snapshot_residence() {
+    view_build::measure_semantic_snapshot_residence();
+}
+
 /// Starts the compiled locald profile. It does all startup work before the
 /// listener is bound, so an invalid durable directory cannot look ready.
 #[must_use]

@@ -627,7 +627,12 @@ fn semantic_rows(
                             residence,
                         )?;
                     }
-                    super::image_rows::CompiledImage::Resident { bytes, digest, .. } => {
+                    super::image_rows::CompiledImage::Resident {
+                        bytes,
+                        digest,
+                        snapshot,
+                        ..
+                    } => {
                         if !super::image_rows::apply_resident_image(
                             *digest,
                             project,
@@ -635,12 +640,11 @@ fn semantic_rows(
                             &mut sink,
                             residence,
                         )? {
-                            let view = SemanticImageView::reopen(bytes).map_err(|error| {
-                                BuiltinModelError(format!(
-                                    "reopen activated semantic image: {error}"
-                                ))
-                            })?;
-                            residence.note_reopen();
+                            let view = super::image_rows::reopen_resident_image(
+                                bytes,
+                                *snapshot,
+                                residence,
+                            )?;
                             super::image_rows::append_resident_image_rows(
                                 &view,
                                 project,

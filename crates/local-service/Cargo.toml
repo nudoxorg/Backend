@@ -88,5 +88,10 @@ name = "semantic_image_proof"
 path = "benches/semantic_image_proof.rs"
 harness = false
 
+[[bench]]
+name = "semantic_snapshot_residence"
+path = "benches/semantic_snapshot_residence.rs"
+harness = false
+
 [lints]
 workspace = true
