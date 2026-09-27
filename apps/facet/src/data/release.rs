@@ -682,10 +682,15 @@ pub fn marked(before: &str, after: &str, resolve: &dyn Resolve) -> (Marked, Mark
                     (Some((na, ta)), Some((nb, tb))) => {
                         let (ma, mb) = mark_types(&sa, ta, &sb, tb);
                         // A parameter's name is the callee's business, never
-                        // the caller's: renamed or not, it is never marked
-                        // old or new (only its type can be).
-                        pa.push((na.clone(), ma, Mark::Same));
-                        pb.push((nb.clone(), mb, Mark::Same));
+                        // the caller's — but it is still shown, so a name
+                        // that genuinely reads differently is marked where it
+                        // moved. An underscore-only rename (`v` → `_v`) shows
+                        // the same word on both sides and never marks; the
+                        // binding (`mut`) was already dropped by the parser.
+                        let renamed = na.as_deref().map(|n| n.strip_prefix('_').unwrap_or(n))
+                            != nb.as_deref().map(|n| n.strip_prefix('_').unwrap_or(n));
+                        pa.push((na.clone(), ma, if renamed { Mark::Old } else { Mark::Same }));
+                        pb.push((nb.clone(), mb, if renamed { Mark::New } else { Mark::Same }));
                     }
                     (Some((na, ta)), None) => pa.push((na.clone(), all(sa.pieces(ta), Mark::Old), Mark::Old)),
                     (None, Some((nb, tb))) => pb.push((nb.clone(), all(sb.pieces(tb), Mark::New), Mark::New)),
