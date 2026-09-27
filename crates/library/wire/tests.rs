@@ -241,6 +241,77 @@ fn event_dto_round_trips_a_checked_view_transition() {
 }
 
 #[test]
+fn declaration_facts_cross_the_wire_with_their_text() {
+    let source_root = view_state_root(&[]);
+    let basis = Basis::new(source_root, object_version(b"source"));
+    let view_id = view_key(b"view");
+    let base = ViewRoot::empty_checked(
+        view_id,
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, source_root, 0),
+        capability(basis.object),
+    )
+    .expect("checked view root");
+    let facts = crate::DeclarationFacts {
+        deprecation: crate::Fact::Present(crate::Deprecation::new(
+            Some("1.2.0"),
+            Some("use `fresh`"),
+        )),
+        obligation: crate::Fact::Present(crate::Obligation::Required),
+    };
+    let row = Row::new(RowId::Symbol(symbol_key("pkg::stale")), basis, "stale")
+        .with_facts(facts.clone());
+    let prepared = base
+        .prepare(ViewDelta::Upsert { row }, capability(basis.object))
+        .expect("prepare");
+    let (target, delta) = base.commit(prepared).expect("commit");
+    let dto = EventDto::new(
+        Cursor::for_view(
+            target.recipe,
+            target.version,
+            Frontier::new(
+                target.frontier.branch,
+                target.frontier.log,
+                target.frontier.schema,
+                target.root,
+                target.frontier.sequence,
+            ),
+        ),
+        CursorEvent::View {
+            delta: Box::new(delta),
+        },
+    );
+    let encoded = serde_json::to_string(&dto).expect("encode");
+    assert!(encoded.contains(r#""since":"1.2.0""#), "{encoded}");
+    assert!(encoded.contains(r#""note":"use `fresh`""#), "{encoded}");
+    assert!(encoded.contains(r#""present","data":"required""#), "{encoded}");
+    let decoded = EventDto::decode_against(encoded.as_bytes(), &dto).expect("decode");
+    assert_eq!(decoded, dto);
+    let CursorEvent::View { delta } = &decoded.event else {
+        panic!("a view event");
+    };
+    let ViewDelta::Upsert { row } = delta.delta() else {
+        panic!("an upsert");
+    };
+    let notice = row.facts.deprecation.present().expect("deprecation crossed");
+    assert_eq!(notice.since(), Some("1.2.0"));
+    assert_eq!(notice.note(), Some("use `fresh`"));
+    assert_eq!(
+        row.facts.obligation,
+        crate::Fact::Present(crate::Obligation::Required)
+    );
+
+    // A document carries the same facts in both directions.
+    let wire = super::reply_content::facts_to_wire(&facts);
+    assert_eq!(
+        super::reply_content::facts_from_wire(wire).expect("facts"),
+        facts
+    );
+    // A producer that observed nothing adds nothing to the wire.
+    assert!(super::reply_content::facts_to_wire(&crate::DeclarationFacts::UNOBSERVED).is_none());
+}
+
+#[test]
 fn compact_view_event_is_delta_sized_and_replays_against_the_retained_root() {
     let source_root = view_state_root(&[]);
     let basis = Basis::new(source_root, object_version(b"source"));
