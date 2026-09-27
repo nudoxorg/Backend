@@ -1990,6 +1990,41 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     }
                 }
             }
+            OccurrenceReceiver::Constructed { class } => match occurrence.kind {
+                OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                    if let Some(resolved) =
+                        self.class_qualified_call_target(occurrence, class, checked)?
+                    {
+                        Ok(Some(resolved))
+                    } else {
+                        Ok(Some((
+                            foreign_method(self.slice(occurrence.span)?, occurrence.span)?,
+                            OccurrenceConfidence::Index,
+                        )))
+                    }
+                }
+                OccurrenceKind::AttributeRead => {
+                    if let Some(resolved) =
+                        self.class_qualified_read_target(occurrence, class, checked)?
+                    {
+                        Ok(Some(resolved))
+                    } else if let Some(ordinal) = self.module_field(occurrence) {
+                        let confidence = match checked {
+                            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+                            _ => OccurrenceConfidence::Index,
+                        };
+                        Ok(Some((
+                            OccurrenceTarget::Local(EntityId::new(ordinal)),
+                            confidence,
+                        )))
+                    } else {
+                        Ok(Some((
+                            foreign_field(self.slice(occurrence.span)?, occurrence.span)?,
+                            OccurrenceConfidence::Index,
+                        )))
+                    }
+                }
+            }
             OccurrenceReceiver::Super { class, after } => {
                 let confidence = |checked: Option<&SymbolOutcome>| match checked {
                     Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,

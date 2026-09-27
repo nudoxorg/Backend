@@ -200,6 +200,10 @@ pub enum OccurrenceReceiver {
         /// starts after `Start`.
         after: Option<String>,
     },
+    /// `Child().note` / `Child().note()` where the callee is a simple name.
+    /// The lowerer binds that class's member when the name is one live class.
+    /// `factory().note()` keeps a universe key when `factory` is not a class.
+    Constructed { class: String },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -968,6 +972,20 @@ impl<'a> Projection<'a> {
         Some(OccurrenceReceiver::Super { class, after })
     }
 
+    /// `Child().note` / `Child().note()` when the receiver call's callee is a
+    /// simple name. Attribute callees (`pkg.Child().note()`) stay foreign.
+    fn constructed_class_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let ast::Expr::Call(call) = expr else {
+            return None;
+        };
+        let ast::Expr::Name(name) = call.func.as_ref() else {
+            return None;
+        };
+        Some(OccurrenceReceiver::Constructed {
+            class: name.id.as_str().to_owned(),
+        })
+    }
+
     /// Copies an AST-selected source range only after a checked bounds proof.
     fn source_owned(&mut self, range: ruff_text_size::TextRange) -> Option<String> {
         if self.error.is_some() {
@@ -1324,6 +1342,10 @@ impl<'a> Visitor<'a> for Projection<'a> {
                         self.super_receiver(attribute.value.as_ref())
                     {
                         receiver
+                    } else if let Some(receiver) =
+                        self.constructed_class_receiver(attribute.value.as_ref())
+                    {
+                        receiver
                     } else {
                         match attribute.value.as_ref() {
                             ast::Expr::Name(name)
@@ -1399,6 +1421,10 @@ impl<'a> Visitor<'a> for Projection<'a> {
             if !already_recorded {
                 let receiver = if let Some(receiver) =
                     self.super_receiver(attribute.value.as_ref())
+                {
+                    receiver
+                } else if let Some(receiver) =
+                    self.constructed_class_receiver(attribute.value.as_ref())
                 {
                     receiver
                 } else {
