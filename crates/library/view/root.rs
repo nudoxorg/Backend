@@ -908,7 +908,7 @@ mod tests {
         let source = view_state_root(&[]);
         let object = object_version(b"symbol-commitment-source");
         let basis = Basis::new(source, object);
-        let package = crate::package_key("commitment-package");
+        let package = package_key("commitment-package");
         let body = "d".repeat(4096);
         let mut built = Vec::with_capacity(ROWS + 1);
         built.push(Row::new(
@@ -988,8 +988,8 @@ mod tests {
              borrowed_median_ns={borrowed_median}"
         );
         assert!(
-            borrowed_median.saturating_mul(2) < owned_median,
-            "borrowed seek {borrowed_median} ns was not twice as fast as cloning every row \
+            borrowed_median.saturating_mul(32) < owned_median,
+            "borrowed seek {borrowed_median} ns was not 32× faster than cloning every row \
              {owned_median} ns"
         );
     }
