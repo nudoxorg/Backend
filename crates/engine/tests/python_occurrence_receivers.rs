@@ -23,8 +23,10 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile,
 };
+use backend_frontend_python::legacy::{DeclarationKind, Span, extract};
 use backend_semantic::ir::{
-    EntityKind, ForeignOrigin, FragmentView, OccurrenceTarget, ReferenceKind,
+    EntityId, EntityKind, ForeignOrigin, FragmentView, OccurrenceConfidence, OccurrenceTarget,
+    ReferenceKind,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage};
 use thiserror::Error;
@@ -76,6 +78,8 @@ enum TestError {
     Compile(&'static str),
     #[error("validate failed")]
     Validate,
+    #[error("extract failed")]
+    Extract,
     #[error("lane falsifier: {0}")]
     Falsified(&'static str),
 }
@@ -521,4 +525,498 @@ def paired(service: Pair):
 
     fs::remove_dir_all(&work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
+}
+
+struct PythonFixture {
+    executable: std::path::PathBuf,
+    version_bytes: Vec<u8>,
+    work: std::path::PathBuf,
+    cancelled: AtomicBool,
+}
+
+fn python_fixture() -> Result<PythonFixture, TestError> {
+    let executable = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("python3"))
+                .find(|candidate| candidate.is_file())
+        })
+        .ok_or(TestError::MissingPython)?;
+    let version = Command::new(&executable)
+        .arg("--version")
+        .output()
+        .map_err(TestError::Tool)?;
+    let version_bytes = if version.stdout.is_empty() {
+        version.stderr
+    } else {
+        version.stdout
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(TestError::Clock)?
+        .as_nanos();
+    let work = std::env::temp_dir().join(format!(
+        "nudox-python-annotated-inherited-{nonce}-{}-{}",
+        std::process::id(),
+        fixture_sequence()
+    ));
+    fs::create_dir_all(&work).map_err(|source| TestError::Io("create scratch", source))?;
+    Ok(PythonFixture {
+        executable,
+        version_bytes,
+        work,
+        cancelled: AtomicBool::new(false),
+    })
+}
+
+fn resolved_toolchain(fixture: &PythonFixture) -> Result<ResolvedToolchain<'_>, TestError> {
+    ResolvedToolchain::from_version(
+        NativeTool::Python,
+        &fixture.executable,
+        &fixture.version_bytes,
+    )
+    .map_err(|_| TestError::Resolve)
+}
+
+fn compile_with_module(
+    source: &[u8],
+    work: &std::path::Path,
+    toolchain: &ResolvedToolchain,
+    cancelled: &AtomicBool,
+) -> Result<(Vec<u8>, backend_frontend_python::legacy::ModuleFacts), TestError> {
+    let fragment = compile_python_fragment(source, work, toolchain, cancelled)?;
+    let module = extract(source, PythonVersion::Python314).map_err(|_| TestError::Extract)?;
+    Ok((fragment, module))
+}
+
+fn class_span(
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    class_name: &[u8],
+) -> Result<Span, TestError> {
+    let mut matches: Vec<Span> = Vec::new();
+    for declaration in &module.declarations {
+        if declaration.kind == DeclarationKind::Class && declaration.name.as_bytes() == class_name {
+            matches.push(declaration.span);
+        }
+    }
+    if matches.len() != 1 {
+        return Err(TestError::Falsified("class span not unique"));
+    }
+    Ok(matches[0])
+}
+
+fn methods_in_class(
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    class_name: &[u8],
+    method_name: &[u8],
+) -> Result<usize, TestError> {
+    let class_span = class_span(module, class_name)?;
+    let mut count = 0_usize;
+    for declaration in &module.declarations {
+        if declaration.kind == DeclarationKind::Function
+            && declaration.name.as_bytes() == method_name
+            && declaration.span.start >= class_span.start
+            && declaration.span.end <= class_span.end
+        {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn method_ordinal_in_class(
+    decoded: &FragmentView<'_>,
+    atoms: &[&[u8]],
+    module: &backend_frontend_python::legacy::ModuleFacts,
+    class_name: &[u8],
+    method_name: &[u8],
+) -> Result<EntityId, TestError> {
+    let class_span = class_span(module, class_name)?;
+    let mut class_method_indexes: Vec<usize> = Vec::new();
+    for (index, declaration) in module.declarations.iter().enumerate() {
+        if declaration.kind == DeclarationKind::Function
+            && declaration.name.as_bytes() == method_name
+            && declaration.span.start >= class_span.start
+            && declaration.span.end <= class_span.end
+        {
+            class_method_indexes.push(index);
+        }
+    }
+    if class_method_indexes.len() != 1 {
+        return Err(TestError::Falsified("method declaration in class not unique"));
+    }
+    let mut prior_methods = 0_usize;
+    for (index, declaration) in module.declarations.iter().enumerate() {
+        if index == class_method_indexes[0] {
+            break;
+        }
+        if declaration.kind == DeclarationKind::Function
+            && declaration.name.as_bytes() == method_name
+        {
+            prior_methods += 1;
+        }
+    }
+    let named_methods: Vec<EntityId> = decoded
+        .entities()
+        .filter(|entity| {
+            entity.kind == EntityKind::Function
+                && atoms.get(entity.name.raw as usize).copied() == Some(method_name)
+        })
+        .map(|entity| entity.entity)
+        .collect();
+    if named_methods.is_empty() {
+        return Err(TestError::Falsified("named method entities absent"));
+    }
+    named_methods
+        .get(prior_methods)
+        .copied()
+        .ok_or(TestError::Falsified("method entity ordinal absent"))
+}
+
+fn occurrences<'a>(
+    decoded: &'a FragmentView<'a>,
+) -> Result<Vec<backend_semantic::ir::DecodedOccurrence<'a>>, TestError> {
+    let mut rows: Vec<backend_semantic::ir::DecodedOccurrence<'_>> = Vec::new();
+    if let Some(mut cursor) = decoded.occurrences() {
+        for row in cursor.by_ref() {
+            rows.push(row.map_err(|_| TestError::Falsified("occurrence decode"))?);
+        }
+    }
+    Ok(rows)
+}
+
+fn exactly_one_method_call_in_owner<'a>(
+    rows: &'a [backend_semantic::ir::DecodedOccurrence<'a>],
+    owner: u32,
+) -> Result<&'a backend_semantic::ir::DecodedOccurrence<'a>, TestError> {
+    let calls: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row.owner.raw == owner && row.occurrence.kind == ReferenceKind::MethodCall
+        })
+        .collect();
+    if calls.len() != 1 {
+        return Err(TestError::Falsified(
+            "expected exactly one MethodCall owned by the named function",
+        ));
+    }
+    Ok(calls[0])
+}
+
+fn assert_local_method_call(
+    call: &backend_semantic::ir::DecodedOccurrence<'_>,
+    expected: EntityId,
+    confidence: OccurrenceConfidence,
+) -> Result<(), TestError> {
+    if call.occurrence.confidence != confidence {
+        return Err(TestError::Falsified("local MethodCall confidence mismatch"));
+    }
+    if !matches!(
+        &call.occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == expected.raw
+    ) {
+        return Err(TestError::Falsified(
+            "local MethodCall target does not match the class-scoped method entity",
+        ));
+    }
+    Ok(())
+}
+
+fn assert_universe_method_call(
+    call: &backend_semantic::ir::DecodedOccurrence<'_>,
+    method_name: &[u8],
+) -> Result<(), TestError> {
+    let method_name = core::str::from_utf8(method_name)
+        .map_err(|_| TestError::Falsified("method name is not utf8"))?;
+    if call.occurrence.confidence != OccurrenceConfidence::Index {
+        return Err(TestError::Falsified(
+            "universe MethodCall confidence is not Index",
+        ));
+    }
+    if !matches!(
+        &call.occurrence.target,
+        OccurrenceTarget::Foreign(key)
+            if key.path == method_name
+                && key.display == method_name
+                && key.kind == Some(EntityKind::Function)
+                && matches!(key.origin, ForeignOrigin::Universe { ecosystem: "pypi" })
+    ) {
+        return Err(TestError::Falsified(
+            "MethodCall is not an honest universe foreign method key",
+        ));
+    }
+    Ok(())
+}
+
+fn run_annotated_inherited_fixture(
+    source: &[u8],
+) -> Result<(Vec<u8>, backend_frontend_python::legacy::ModuleFacts), TestError> {
+    let fixture = python_fixture()?;
+    let toolchain = resolved_toolchain(&fixture)?;
+    let (fragment_bytes, module) =
+        compile_with_module(source, &fixture.work, &toolchain, &fixture.cancelled)?;
+    fs::remove_dir_all(&fixture.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok((fragment_bytes, module))
+}
+
+#[test]
+fn annotated_inherited_call_resolves_unique_base_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Base:
+    def note(self):
+        return 1
+
+class Child(Base):
+    pass
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_local_method_call(call, base_note, OccurrenceConfidence::Index)
+}
+
+#[test]
+fn annotated_inherited_call_resolves_two_level_base_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Grand:
+    def note(self):
+        return 1
+
+class Base(Grand):
+    pass
+
+class Child(Base):
+    pass
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let grand_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Grand", b"note")?;
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_local_method_call(call, grand_note, OccurrenceConfidence::Index)
+}
+
+#[test]
+fn annotated_inherited_call_prefers_child_shadowing_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Base:
+    def note(self):
+        return 1
+
+class Child(Base):
+    def note(self):
+        return 2
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let child_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Child", b"note")?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if child_note == base_note {
+        return Err(TestError::Falsified("Child.note and Base.note are one fact"));
+    }
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_local_method_call(call, child_note, OccurrenceConfidence::Index)
+}
+
+#[test]
+fn annotated_inherited_call_stays_universe_for_ambiguous_bases() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Left:
+    def note(self):
+        return 1
+
+class Right:
+    def note(self):
+        return 2
+
+class Child(Left, Right):
+    pass
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let left_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
+    let right_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
+    if left_note == right_note {
+        return Err(TestError::Falsified("Left.note and Right.note are one fact"));
+    }
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_universe_method_call(call, b"note")
+}
+
+#[test]
+fn annotated_inherited_call_resolves_diamond_base_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Base:
+    def note(self):
+        return 1
+
+class Left(Base):
+    pass
+
+class Right(Base):
+    pass
+
+class Child(Left, Right):
+    pass
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_local_method_call(call, base_note, OccurrenceConfidence::Index)
+}
+
+#[test]
+fn annotated_inherited_call_skips_unresolved_base() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Base:
+    def note(self):
+        return 1
+
+class Child(object, Base):
+    pass
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_local_method_call(call, base_note, OccurrenceConfidence::Index)
+}
+
+#[test]
+fn annotated_inherited_call_resolves_generic_base_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Base:
+    def note(self):
+        return 1
+
+class Child(Base[int]):
+    pass
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_local_method_call(call, base_note, OccurrenceConfidence::Index)
+}
+
+#[test]
+fn annotated_inherited_call_stays_universe_for_ambiguous_local_methods() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Base:
+    def note(self):
+        return 1
+
+class Child(Base):
+    def note(self):
+        return 2
+    class Inner:
+        def note(self):
+            return 3
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    if methods_in_class(&module, b"Child", b"note")? != 2 {
+        return Err(TestError::Falsified("Child does not declare two note methods"));
+    }
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    if matches!(
+        &call.occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == base_note.raw
+    ) {
+        return Err(TestError::Falsified("ambiguous Child.note walked to Base.note"));
+    }
+    assert_universe_method_call(call, b"note")
+}
+
+#[test]
+fn annotated_inherited_call_field_does_not_hide_inherited_method() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Base:
+    def note(self):
+        return 1
+
+class Child(Base):
+    note: str
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, module) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let base_note = method_ordinal_in_class(&decoded, &atoms, &module, b"Base", b"note")?;
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_local_method_call(call, base_note, OccurrenceConfidence::Index)
+}
+
+#[test]
+fn annotated_inherited_call_stays_universe_for_imported_only_base() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+from workout.service import WorkoutService
+
+class Child(WorkoutService):
+    pass
+
+def use(child: Child):
+    return child.note()
+";
+    let (fragment_bytes, _) = run_annotated_inherited_fixture(SOURCE)?;
+    let decoded = FragmentView::validate(&fragment_bytes).map_err(|_| TestError::Validate)?;
+    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+    let rows = occurrences(&decoded)?;
+    let use_owner = entity_ordinal_by_name(&decoded, &atoms, b"use", EntityKind::Function)?;
+    let call = exactly_one_method_call_in_owner(&rows, use_owner)?;
+    assert_universe_method_call(call, b"note")
 }
