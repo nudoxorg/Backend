@@ -43,6 +43,8 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator}
 
 pub(crate) use crate::containment::{DefinitionIndex, container_of};
 pub(crate) use crate::syntax_kind::declaration_kind;
+use crate::facts::DeclarationFacts;
+use crate::syntax_facts::declaration_facts;
 
 const MAX_DECLARATIONS: usize = 16_384;
 const MAX_TEXT_BYTES: usize = 4_096;
@@ -405,6 +407,7 @@ pub struct SourceDeclaration {
     documentation: String,
     source_excerpt: SourceExcerpt,
     container: Container,
+    facts: DeclarationFacts,
 }
 
 impl SourceDeclaration {
@@ -473,6 +476,7 @@ impl SourceDeclaration {
             documentation: documentation.into(),
             source_excerpt: SourceExcerpt::NotCaptured,
             container: Container::Module,
+            facts: DeclarationFacts::UNOBSERVED,
         };
         if value.name.is_empty()
             || [
@@ -543,6 +547,19 @@ impl SourceDeclaration {
     #[must_use]
     pub const fn container(&self) -> &Container {
         &self.container
+    }
+
+    /// Attaches the facts the parse observed about this declaration.
+    #[must_use]
+    pub fn with_facts(mut self, facts: DeclarationFacts) -> Self {
+        self.facts = facts;
+        self
+    }
+
+    /// Returns what the producer observed beyond name, kind, and prose.
+    #[must_use]
+    pub const fn facts(&self) -> &DeclarationFacts {
+        &self.facts
     }
 
     /// Returns the compact source signature.
@@ -761,6 +778,7 @@ impl SyntaxFrontend {
             if excerpt_bytes > Self::MAX_EXCERPT_BYTES {
                 return Err(SyntaxError::TooManySourceBytes);
             }
+            let (documentation, facts) = documented(self.language, definition.node, text);
             declarations.push(
                 SourceDeclaration::at_path(
                     path.display().to_string(),
@@ -768,10 +786,11 @@ impl SyntaxFrontend {
                     definition.kind,
                     definition.line.get(),
                     declaration_signature(definition.node, text),
-                    declaration_documentation(definition.node, text),
+                    documentation,
                 )?
                 .with_source_excerpt(SourceExcerpt::capture_bounded(declaration_source))
-                .with_container(definition.container),
+                .with_container(definition.container)
+                .with_facts(facts),
             );
             if declarations.len() > MAX_DECLARATIONS {
                 return Err(SyntaxError::TooManyDeclarations);
@@ -1089,6 +1108,17 @@ fn declaration_signature(node: Node<'_>, source: &str) -> String {
     bounded(text[..end].trim())
 }
 
+/// One declaration's documentation and the facts read from it and its parse.
+fn documented(
+    language: SourceLanguage,
+    node: Node<'_>,
+    source: &str,
+) -> (String, DeclarationFacts) {
+    let documentation = declaration_documentation(node, source);
+    let facts = declaration_facts(language, node, source, &documentation);
+    (documentation, facts)
+}
+
 fn declaration_documentation(mut node: Node<'_>, source: &str) -> String {
     for _ in 0..3 {
         let comments = preceding_comments(node, source);
@@ -1125,7 +1155,13 @@ fn preceding_comments(node: Node<'_>, source: &str) -> Vec<String> {
         if !is_comment(candidate.kind()) {
             break;
         }
-        comments.push(clean_comment(node_text(candidate, source)));
+        let text = node_text(candidate, source);
+        // An inner doc comment (`//!`, `/*!`) documents the enclosing module,
+        // and so does everything written above it.
+        if text.starts_with("//!") || text.starts_with("/*!") {
+            break;
+        }
+        comments.push(clean_comment(text));
     }
     comments.reverse();
     comments
@@ -1161,7 +1197,7 @@ fn enclosed_docstring(node: Node<'_>, source: &str) -> Option<String> {
 /// Grammars disagree about the name: Rust and Java say `line_comment` and
 /// `block_comment`, everyone else says `comment`. Reading only `comment` is
 /// why every Rust and Java declaration arrived undocumented.
-const fn is_comment(kind: &str) -> bool {
+pub(crate) const fn is_comment(kind: &str) -> bool {
     matches!(
         kind.as_bytes(),
         b"comment" | b"line_comment" | b"block_comment" | b"doc_comment"
@@ -1204,17 +1240,29 @@ const fn documentation_parent(kind: &str) -> bool {
     )
 }
 
+/// Strips one comment's markers, and only its markers, from every line.
+///
+/// A `#` opens a comment only in the grammars whose comments start with one
+/// (Python). Inside a `//` or `/* */` comment it is text: the Rust doc line
+/// `/// # Errors` is a Markdown heading, and stripping every leading `#` is
+/// how `# Errors` used to arrive as the bare word `Errors`.
 fn clean_comment(comment: &str) -> String {
+    const MARKERS: [&str; 7] = ["///", "//!", "//", "/**", "/*!", "/*", "*"];
+    let hashed = comment.trim_start().starts_with('#');
     comment
         .lines()
         .map(|line| {
-            line.trim()
-                .trim_start_matches('/')
-                .trim_start_matches('!')
-                .trim_start_matches('*')
-                .trim_start_matches('#')
-                .trim_end_matches("*/")
-                .trim()
+            let line = line.trim();
+            let line = line.strip_suffix("*/").unwrap_or(line);
+            let body = if hashed {
+                line.trim_start_matches('#')
+            } else {
+                MARKERS
+                    .iter()
+                    .find_map(|marker| line.strip_prefix(marker))
+                    .unwrap_or(line)
+            };
+            body.trim()
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1225,27 +1273,103 @@ fn clean_comment(comment: &str) -> String {
 /// `/// <summary>Builds a beacon.</summary>` is the documentation convention
 /// C# tooling reads, and its prose is the element text, not the markup: shown
 /// verbatim, every C# summary rendered as `<summary>Builds a beacon.</summary>`.
-/// The `<summary>` body is the declaration's summary; without one, element
-/// markup is dropped and a reference element (`<see cref="Beacon"/>`,
-/// `<paramref name="level"/>`) keeps the name it points at. Text without an
-/// XML documentation element, such as a Rust comment naming `Vec<T>`, is
-/// returned unchanged.
+/// The `<summary>` body comes first. The elements a reader weighs next follow
+/// it as tag lines in the one convention every documentation reader here
+/// already parses: `<returns>` as `@returns`, `<exception cref="T">` as
+/// `@throws T`, `<param name="x">` as `@param x`, `<example>` as `@example`,
+/// and `<remarks>` as its own paragraph. Dropping them left a C# page with
+/// its summary only. Without a `<summary>`, element markup is dropped and a
+/// reference element (`<see cref="Beacon"/>`, `<paramref name="level"/>`)
+/// keeps the name it points at. Text without an XML documentation element,
+/// such as a Rust comment naming `Vec<T>`, is returned unchanged.
 fn xml_documentation_text(text: &str) -> String {
-    const ELEMENTS: [&str; 6] = [
+    const ELEMENTS: [&str; 8] = [
         "<summary",
         "<param ",
         "<returns",
         "<remarks",
+        "<exception",
+        "<example",
         "<see ",
         "<inheritdoc",
     ];
     if !ELEMENTS.iter().any(|element| text.contains(element)) {
         return text.to_owned();
     }
-    let body = text
-        .split_once("<summary>")
-        .and_then(|(_, rest)| rest.split_once("</summary>"))
-        .map_or(text, |(summary, _)| summary);
+    let Some(summary) = xml_elements(text, "summary").into_iter().next() else {
+        return xml_prose(text);
+    };
+    let mut lines = vec![xml_prose(summary.1)];
+    for (_, body) in xml_elements(text, "remarks") {
+        lines.push(String::new());
+        lines.push(xml_prose(body));
+    }
+    for (attributes, body) in xml_elements(text, "param") {
+        let name = xml_attribute(attributes, "name").unwrap_or_default();
+        lines.push(format!("@param {name} {}", xml_prose(body).replace('\n', " ")));
+    }
+    for (_, body) in xml_elements(text, "returns") {
+        lines.push(format!("@returns {}", xml_prose(body).replace('\n', " ")));
+    }
+    for (attributes, body) in xml_elements(text, "exception") {
+        let cref = xml_attribute(attributes, "cref").unwrap_or_default();
+        let cref = cref.rsplit(':').next().unwrap_or(cref);
+        lines.push(format!("@throws {cref} {}", xml_prose(body).replace('\n', " ")));
+    }
+    for (_, body) in xml_elements(text, "example") {
+        lines.push(format!("@example {}", xml_prose(body)));
+    }
+    lines
+        .iter()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
+
+/// Every `<name …>body</name>` element, as its attribute text and body.
+fn xml_elements<'a>(text: &'a str, name: &str) -> Vec<(&'a str, &'a str)> {
+    let open = format!("<{name}");
+    let close = format!("</{name}>");
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(&open) {
+        let after = &rest[start + open.len()..];
+        // `<param` must not match `<paramref`.
+        if !after.starts_with(['>', ' ', '\n', '\t']) {
+            rest = after;
+            continue;
+        }
+        let Some(head_end) = after.find('>') else {
+            break;
+        };
+        let attributes = &after[..head_end];
+        if attributes.ends_with('/') {
+            rest = &after[head_end + 1..];
+            continue;
+        }
+        let body = &after[head_end + 1..];
+        let Some(end) = body.find(&close) else {
+            break;
+        };
+        found.push((attributes, &body[..end]));
+        rest = &body[end + close.len()..];
+    }
+    found
+}
+
+/// One attribute value from an element head (`name="x"`).
+fn xml_attribute<'a>(attributes: &'a str, name: &str) -> Option<&'a str> {
+    attributes
+        .split_once(&format!("{name}=\""))
+        .and_then(|(_, value)| value.split_once('"'))
+        .map(|(value, _)| value)
+}
+
+/// The prose of an XML documentation fragment: markup dropped, a reference
+/// element kept as the name it points at, blank lines removed.
+fn xml_prose(body: &str) -> String {
     let mut output = String::with_capacity(body.len());
     let mut rest = body;
     while let Some(open) = rest.find('<') {

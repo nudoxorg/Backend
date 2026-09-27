@@ -13,6 +13,7 @@ mod containment;
 mod contract;
 mod embedding;
 mod errors;
+mod facts;
 mod frame;
 mod native;
 mod native_adapter;
@@ -26,6 +27,7 @@ mod session;
 mod session_cache;
 mod supervisor;
 mod syntax;
+mod syntax_facts;
 mod syntax_kind;
 
 pub use backend_version::{
@@ -50,6 +52,10 @@ pub use embedding::{
     EmbeddingExecutableError, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPurpose,
 };
 pub use errors::{FrameError, PoolError, ProcessError, UnsupportedLimit};
+pub use facts::{
+    DeclarationFacts, Deprecation, Fact, FactError, MAX_FACT_TEXT_BYTES, Obligation,
+    deprecation_in_attribute, deprecation_in_documentation, is_abstract_method_decorator,
+};
 pub use frame::{
     FrameKind, MAX_FRAME_BYTES, PROTOCOL_VERSION, SessionFrame, SessionFrameVersion,
     UntrustedSessionFrame,
