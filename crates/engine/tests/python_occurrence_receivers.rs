@@ -1851,7 +1851,7 @@ fn assert_universe_method(
     Ok(())
 }
 
-fn assert_universe_field(
+fn assert_inherited_universe_field(
     row: &backend_semantic::ir::DecodedOccurrence<'_>,
     label: &'static str,
 ) -> Result<(), TestError> {
@@ -2671,7 +2671,7 @@ class Child(Left, Right):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_universe_field(reads[0], "self.note stays a pypi universe field key")?;
+    assert_inherited_universe_field(reads[0], "self.note stays a pypi universe field key")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == left_note
@@ -2774,7 +2774,7 @@ def read(obj):
     if reads.len() != 1 {
         return Err(TestError::Falsified("read owns one FieldAccess"));
     }
-    assert_universe_field(reads[0], "plain receiver stays a universe field key")?;
+    assert_inherited_universe_field(reads[0], "plain receiver stays a universe field key")?;
     if matches!(
         &reads[0].occurrence.target,
         OccurrenceTarget::Local(target) if target.raw == child_note
