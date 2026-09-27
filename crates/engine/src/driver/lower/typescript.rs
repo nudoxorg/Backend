@@ -42,6 +42,8 @@ const MAX_TYPE_DEPTH: u8 = 24;
 const UNSET: u32 = u32::MAX;
 /// The closed foreign ecosystem every unresolved TypeScript name lives in.
 const NPM_ECOSYSTEM: &str = "npm";
+/// Maximum `extends` hops consulted for inherited `this` member resolution.
+const MAX_INHERITANCE_DEPTH: u8 = 8;
 
 /// Exact direct-authority rejection while borrowing OXC declaration facts.
 #[derive(Debug)]
@@ -375,6 +377,13 @@ enum TypeOutcome<'source> {
     Cells(TypeCells<'source>),
 }
 
+/// How many members of one expected kind live on one class owner.
+enum ClassMemberMatch {
+    Unique(u32),
+    Ambiguous,
+    Absent,
+}
+
 /// Applies lowered cells onto one fact under construction.
 fn with_cells<'source>(
     mut fact: SemanticFact<'source>,
@@ -452,6 +461,11 @@ struct Projector<'x, 'report, 'source> {
     /// Claimed embodiment per member fact (`UNSET` when the span-containment
     /// parent stands). Indexed by fact ordinal.
     member_parents: Box<[u32]>,
+    /// Constructor parameter-property field facts whose declaration span sits
+    /// inside the constructor function rather than the class body.
+    parameter_properties: Vec<u32>,
+    /// Function ordinals lowered from class setter method definitions.
+    setters: Vec<u32>,
     /// Source span of every synthetic type-expression fact (`UNSET` otherwise).
     /// Synthetic facts register no declaration span, but span containment still
     /// binds them to the innermost enclosing declaration: identical anonymous
@@ -1112,6 +1126,71 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let ordinal = self.push(fact)?;
         self.register(ordinal, declaration, name, EntityKind::Function)?;
         Ok(ordinal)
+    }
+
+    /// Pushes one class field fact for each constructor parameter property.
+    /// Parameter facts are already registered by [`push_signature`]; each
+    /// parameter property also becomes a [`EntityKind::Field`] on the
+    /// enclosing class so `this.member` resolution can see it.
+    fn push_parameter_properties(
+        &mut self,
+        params_span: Span,
+        _declaration: Span,
+    ) -> Result<(), TypeScriptCollectError> {
+        let Some(params_kind) = self.ast_kind_at_exact_span(params_span.start, params_span.end) else {
+            return Ok(());
+        };
+        let Some(params) = params_kind.as_formal_parameters() else {
+            return Ok(());
+        };
+        for parameter in params.items.iter() {
+            if !parameter.accessibility.is_some() && !parameter.readonly {
+                continue;
+            }
+            let Some(identifier) = parameter.pattern.get_binding_identifier() else {
+                continue;
+            };
+            let name_bytes =
+                self.slice_span(identifier.span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: identifier.span.start,
+                        end: identifier.span.end,
+                    })?;
+            if let Some(existing) = self.fact_at_name_start(identifier.span.start) {
+                let Some(index) = usize::try_from(existing).ok() else {
+                    continue;
+                };
+                if self.fact_kinds.get(index) == Some(&EntityKind::Field) {
+                    continue;
+                }
+            }
+            let Some(class) = self.enclosing_record(identifier.span.start) else {
+                continue;
+            };
+            let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+            let cells = match parameter.type_annotation.as_ref() {
+                Some(annotation) => {
+                    let inner = annotation.type_annotation.span();
+                    self.owner_cells(inner.start, inner.end, 0)?
+                }
+                None => TypeCells::unknown(TypeReason::Unannotated),
+            };
+            let extension = self.extension(type_parameter_start)?;
+            let fact = with_cells(
+                SemanticFact::new(EntityKind::Field, name_bytes, LEAF_PRODUCT)
+                    .with_extension(extension),
+                cells,
+            );
+            let ordinal = self.push(fact)?;
+            self.register(ordinal, parameter.span, identifier.span, EntityKind::Field)?;
+            if let Some(index) = usize::try_from(ordinal).ok() {
+                if let Some(slot) = self.member_parents.get_mut(index) {
+                    *slot = class;
+                }
+            }
+            self.parameter_properties.push(ordinal);
+        }
+        Ok(())
     }
 
     /// Counts already-committed same-kind, same-name, same-owner signatures
@@ -3207,6 +3286,8 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             staged_members: Vec::new(),
             member_parents: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            parameter_properties: Vec::new(),
+            setters: Vec::new(),
             synthetic_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             facts_by_name: HashMap::new(),
@@ -3885,6 +3966,40 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     let value_span = value.span();
                     self.declare_expression_bindings(value_span.start, value_span.end, 0)?;
                 }
+            } else if let Some(definition) = kind.as_accessor_property() {
+                let key_span = definition.key.span();
+                if self.fact_at_name_start(key_span.start).is_some() {
+                    continue;
+                }
+                let name_bytes = self
+                    .slice_span(key_span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: key_span.start,
+                        end: key_span.end,
+                    })?;
+                let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+                let member_base = self.staged_members.len();
+                let cells = match definition.type_annotation.as_ref() {
+                    Some(annotation) => {
+                        let inner = annotation.type_annotation.span();
+                        self.owner_cells(inner.start, inner.end, 0)?
+                    }
+                    None => TypeCells::unknown(TypeReason::Unannotated),
+                };
+                let extension = self.extension(type_parameter_start)?;
+                let mut base = SemanticFact::new(EntityKind::Field, name_bytes, LEAF_PRODUCT)
+                    .with_extension(extension);
+                if definition.r#static {
+                    base = base.static_member();
+                }
+                let fact = with_cells(base, cells);
+                let ordinal = self.push(fact)?;
+                self.register(ordinal, declaration_span, key_span, EntityKind::Field)?;
+                self.claim_staged_members(member_base, ordinal);
+                if let Some(value) = definition.value.as_ref() {
+                    let value_span = value.span();
+                    self.declare_expression_bindings(value_span.start, value_span.end, 0)?;
+                }
             } else if let Some(definition) = kind.as_method_definition() {
                 let key_span = definition.key.span();
                 if self.fact_at_name_start(key_span.start).is_some() {
@@ -3924,7 +4039,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     .return_type
                     .as_ref()
                     .map(|returned| returned.type_annotation.span());
-                self.push_signature(
+                let ordinal = self.push_signature(
                     key_span,
                     declaration_span,
                     &rows,
@@ -3932,6 +4047,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     result,
                     definition.r#static,
                 )?;
+                if definition.kind.is_set() {
+                    self.setters.push(ordinal);
+                }
+                if definition.kind.is_constructor() {
+                    self.push_parameter_properties(value.params.span(), definition.span)?;
+                }
                 if let Some(body) = value.body.as_ref() {
                     for statement in body.statements.iter() {
                         let statement_span = statement.span();
@@ -4599,42 +4720,59 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 continue;
             };
             let object_span = member.object.span();
-            let Some(identifier_span) =
-                self.peel_object_identifier_span(object_span.start, object_span.end)
-            else {
-                continue;
-            };
             let property_bytes = self
                 .slice_span(property_span)
                 .ok_or(TypeScriptCollectError::Span {
                     start: property_span.start,
                     end: property_span.end,
                 })?;
-            if let Some(enum_fact) = self.enum_fact_for_identifier_span(identifier_span) {
-                let Some(variant) = self.variant_in_enum(enum_fact, property_bytes) else {
+            if let Some(identifier_span) =
+                self.peel_object_identifier_span(object_span.start, object_span.end)
+            {
+                if let Some(enum_fact) = self.enum_fact_for_identifier_span(identifier_span) {
+                    let Some(variant) = self.variant_in_enum(enum_fact, property_bytes) else {
+                        continue;
+                    };
+                    self.commit_occurrence(
+                        owner,
+                        property_span,
+                        ReferenceKind::FieldAccess,
+                        OccurrenceTarget::Local(EntityId::new(variant)),
+                        OccurrenceConfidence::Index,
+                    )?;
                     continue;
+                }
+                if let Some(target) = self.cross_file_enum_member_target(
+                    identifier_span,
+                    property_span,
+                    property_bytes,
+                )? {
+                    self.commit_occurrence(
+                        owner,
+                        property_span,
+                        ReferenceKind::FieldAccess,
+                        target,
+                        OccurrenceConfidence::Oracle,
+                    )?;
+                }
+            } else if let Some(container) =
+                self.namespace_qualified_fact(object_span.start, object_span.end, 0)
+            {
+                let container_index = match usize::try_from(container) {
+                    Ok(index) => index,
+                    Err(_) => continue,
                 };
-                self.commit_occurrence(
-                    owner,
-                    property_span,
-                    ReferenceKind::FieldAccess,
-                    OccurrenceTarget::Local(EntityId::new(variant)),
-                    OccurrenceConfidence::Index,
-                )?;
-                continue;
-            }
-            if let Some(target) = self.cross_file_enum_member_target(
-                identifier_span,
-                property_span,
-                property_bytes,
-            )? {
-                self.commit_occurrence(
-                    owner,
-                    property_span,
-                    ReferenceKind::FieldAccess,
-                    target,
-                    OccurrenceConfidence::Oracle,
-                )?;
+                if self.fact_kinds.get(container_index) == Some(&EntityKind::Enum)
+                    && let Some(variant) = self.variant_in_enum(container, property_bytes)
+                {
+                    self.commit_occurrence(
+                        owner,
+                        property_span,
+                        ReferenceKind::FieldAccess,
+                        OccurrenceTarget::Local(EntityId::new(variant)),
+                        OccurrenceConfidence::Index,
+                    )?;
+                }
             }
         }
         Ok(())
@@ -4709,6 +4847,83 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
         }
         false
+    }
+
+    /// Returns whether an exact span names a `TSQualifiedName` node.
+    fn span_is_ts_qualified_name(&self, start: u32, end: u32) -> bool {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= start);
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > start {
+                break;
+            }
+            if known.start == start
+                && known.end == end
+                && self
+                    .semantic
+                    .nodes()
+                    .get_node(*node_id)
+                    .kind()
+                    .as_ts_qualified_name()
+                    .is_some()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns an exact-span `IdentifierReference` when one is indexed at
+    /// `start`/`end`, even if a wrapper node shares the same span.
+    fn identifier_reference_span_at(&self, start: u32, end: u32) -> Option<Span> {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= start);
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > start {
+                break;
+            }
+            if known.start == start
+                && known.end == end
+                && self
+                    .semantic
+                    .nodes()
+                    .get_node(*node_id)
+                    .kind()
+                    .as_identifier_reference()
+                    .is_some()
+            {
+                return Some(Span::new(start, end));
+            }
+        }
+        None
+    }
+
+    /// Returns an exact-span `TSTypeReference` when one is indexed at
+    /// `start`/`end`, even if a wrapper node shares the same span.
+    fn ts_type_reference_at_span(&self, start: u32, end: u32) -> Option<Span> {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= start);
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > start {
+                break;
+            }
+            if known.start == start
+                && known.end == end
+                && self
+                    .semantic
+                    .nodes()
+                    .get_node(*node_id)
+                    .kind()
+                    .as_ts_type_reference()
+                    .is_some()
+            {
+                return Some(Span::new(start, end));
+            }
+        }
+        None
     }
 
     /// Peels one or more parenthesized wrappers and returns the span of the
@@ -4877,8 +5092,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         Ok(None)
     }
 
-    /// Pass seven: static member property tokens OXC never binds. Each site
-    /// names only the property identifier span; checker-resolved sites are
+    /// Pass seven: static and string-literal computed member property tokens
+    /// OXC never binds. Static sites name the property identifier span;
+    /// computed sites name the inner span of a string-literal key whose source
+    /// bytes strictly equal its unescaped value. Checker-resolved sites are
     /// left untouched when [`occurrence_covers`] already owns that span.
     fn pass_property_accesses(&mut self) -> Result<(), TypeScriptCollectError> {
         let nodes = self.semantic.nodes();
@@ -4905,16 +5122,187 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             } else {
                 ReferenceKind::FieldAccess
             };
-            let (target, confidence) = if Self::is_this_receiver(AstKind::from_expression(
-                &member.object,
-            )) {
+            let object_kind = AstKind::from_expression(&member.object);
+            let object_span = member.object.span();
+            let (target, confidence) = if Self::is_this_receiver(object_kind) {
                 self.this_property_target(property_span, kind)?
+            } else if Self::is_super_receiver(object_kind) {
+                self.super_property_target(property_span, kind)?
+            } else {
+                match self.namespace_property_target(object_span, property_span, kind)? {
+                    Some(pair) => pair,
+                    None => match self.class_qualified_property_target(
+                        object_span,
+                        property_span,
+                        kind,
+                    )? {
+                        Some(pair) => pair,
+                        None => match self.namespace_qualified_property_target(
+                            object_span,
+                            property_span,
+                            kind,
+                        )? {
+                            Some(pair) => pair,
+                            None => match self.constructed_property_target(
+                                object_span,
+                                property_span,
+                                kind,
+                            )? {
+                                Some(pair) => pair,
+                                None => match self.asserted_property_target(
+                                    object_span,
+                                    property_span,
+                                    kind,
+                                )? {
+                                    Some(pair) => pair,
+                                    None => self.syntactic_property_target(property_span)?,
+                                },
+                            },
+                        },
+                    },
+                }
+            };
+            self.commit_occurrence(owner, property_span, kind, target, confidence)?;
+        }
+        for node in nodes.iter() {
+            let Some(member) = node.kind().as_computed_member_expression() else {
+                continue;
+            };
+            let key_kind = AstKind::from_expression(&member.expression);
+            let Some(literal) = key_kind.as_string_literal() else {
+                continue;
+            };
+            let Some(property_span) = self.string_literal_inner_property_span(
+                literal.span,
+                literal.value.as_str(),
+                literal.lone_surrogates,
+            ) else {
+                continue;
+            };
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let parent = nodes.get_node(nodes.parent_id(node.id())).kind();
+            let kind = if parent
+                .as_call_expression()
+                .is_some_and(|call| call.callee.span() == member.span)
+            {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::FieldAccess
+            };
+            let object_kind = AstKind::from_expression(&member.object);
+            let object_span = member.object.span();
+            let (target, confidence) = if Self::is_this_receiver(object_kind) {
+                self.this_property_target(property_span, kind)?
+            } else if Self::is_super_receiver(object_kind) {
+                self.super_property_target(property_span, kind)?
+            } else {
+                match self.namespace_property_target(object_span, property_span, kind)? {
+                    Some(pair) => pair,
+                    None => match self.class_qualified_property_target(
+                        object_span,
+                        property_span,
+                        kind,
+                    )? {
+                        Some(pair) => pair,
+                        None => match self.namespace_qualified_property_target(
+                            object_span,
+                            property_span,
+                            kind,
+                        )? {
+                            Some(pair) => pair,
+                            None => match self.constructed_property_target(
+                                object_span,
+                                property_span,
+                                kind,
+                            )? {
+                                Some(pair) => pair,
+                                None => match self.asserted_property_target(
+                                    object_span,
+                                    property_span,
+                                    kind,
+                                )? {
+                                    Some(pair) => pair,
+                                    None => self.syntactic_property_target(property_span)?,
+                                },
+                            },
+                        },
+                    },
+                }
+            };
+            self.commit_occurrence(owner, property_span, kind, target, confidence)?;
+        }
+        for node in nodes.iter() {
+            let Some(member) = node.kind().as_private_field_expression() else {
+                continue;
+            };
+            let property_span = member.field.span;
+            if self.occurrence_covers(Utf8Span {
+                start: property_span.start,
+                end: property_span.end,
+            })? {
+                continue;
+            }
+            let Some(owner) = self.owning_fact(property_span.start) else {
+                continue;
+            };
+            let parent = nodes.get_node(nodes.parent_id(node.id())).kind();
+            let kind = if parent
+                .as_call_expression()
+                .is_some_and(|call| call.callee.span() == member.span)
+            {
+                ReferenceKind::FunctionCall
+            } else {
+                ReferenceKind::FieldAccess
+            };
+            let object_kind = AstKind::from_expression(&member.object);
+            let (target, confidence) = if Self::is_this_receiver(object_kind) {
+                self.this_private_property_target(property_span, kind)?
             } else {
                 self.syntactic_property_target(property_span)?
             };
             self.commit_occurrence(owner, property_span, kind, target, confidence)?;
         }
         Ok(())
+    }
+
+    /// Returns the inner span of one string-literal computed-member key when
+    /// the source bytes strictly inside the quotes equal the unescaped value.
+    fn string_literal_inner_property_span(
+        &self,
+        full: Span,
+        value: &str,
+        lone_surrogates: bool,
+    ) -> Option<Span> {
+        if lone_surrogates {
+            return None;
+        }
+        if value.is_empty() {
+            return None;
+        }
+        let inner_start = full.start.checked_add(1)?;
+        let inner_end = full.end.checked_sub(1)?;
+        if inner_end <= inner_start {
+            return None;
+        }
+        let bytes = self.source.as_bytes();
+        let open = *bytes.get(full.start as usize)?;
+        let close = *bytes.get((full.end - 1) as usize)?;
+        if (open != b'"' && open != b'\'') || open != close {
+            return None;
+        }
+        let inner = bytes.get(inner_start as usize..inner_end as usize)?;
+        if inner != value.as_bytes() {
+            return None;
+        }
+        Some(Span::new(inner_start, inner_end))
     }
 
     /// Reports whether one expression is `this`, peeling one parenthesized
@@ -4927,6 +5315,17 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             .and_then(|wrapped| {
                 AstKind::from_expression(&wrapped.expression).as_this_expression()
             })
+            .is_some()
+    }
+
+    /// Reports whether one expression is `super`, peeling one parenthesized
+    /// wrapper when the source wrote `(super)`.
+    fn is_super_receiver(kind: AstKind<'_>) -> bool {
+        if kind.as_super().is_some() {
+            return true;
+        }
+        kind.as_parenthesized_expression()
+            .and_then(|wrapped| AstKind::from_expression(&wrapped.expression).as_super())
             .is_some()
     }
 
@@ -4955,7 +5354,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     }
 
     /// Resolves one `this.property` site through the enclosing class when
-    /// exactly one same-name member of the expected kind lives there.
+    /// exactly one same-name member of the expected kind lives there, then
+    /// through at most [`MAX_INHERITANCE_DEPTH`] `extends` hops when the
+    /// enclosing class declares no such member. Field reads consult fields
+    /// first and only walk methods when local, inherited, and implemented
+    /// fields are absent; ambiguous fields never fall through to methods.
     fn this_property_target(
         &self,
         property_span: Span,
@@ -4968,17 +5371,937 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             start: property_span.start,
             end: property_span.end,
         })?;
-        let expected_kind = match kind {
-            ReferenceKind::FunctionCall => EntityKind::Function,
-            ReferenceKind::FieldAccess => EntityKind::Field,
-            _ => return self.syntactic_property_target(property_span),
+        match kind {
+            ReferenceKind::FunctionCall => {
+                self.this_member_target(class, name, EntityKind::Function, property_span)
+            }
+            ReferenceKind::FieldAccess => match self.class_member_of_owner(class, name, EntityKind::Field) {
+                ClassMemberMatch::Unique(fact) => Ok((
+                    OccurrenceTarget::Local(EntityId::new(fact)),
+                    OccurrenceConfidence::Index,
+                )),
+                ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                ClassMemberMatch::Absent => match self.inherited_class_member(class, name, EntityKind::Field) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                    ClassMemberMatch::Absent => {
+                        match self.implemented_class_member(class, name, EntityKind::Field) {
+                            ClassMemberMatch::Unique(fact) => Ok((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            )),
+                            ClassMemberMatch::Ambiguous => {
+                                self.syntactic_property_target(property_span)
+                            }
+                            ClassMemberMatch::Absent => {
+                                match self.inherited_implemented_member(
+                                    class,
+                                    name,
+                                    EntityKind::Field,
+                                ) {
+                                    ClassMemberMatch::Unique(fact) => Ok((
+                                        OccurrenceTarget::Local(EntityId::new(fact)),
+                                        OccurrenceConfidence::Index,
+                                    )),
+                                    ClassMemberMatch::Ambiguous => {
+                                        self.syntactic_property_target(property_span)
+                                    }
+                                    ClassMemberMatch::Absent => self.this_member_target(
+                                        class,
+                                        name,
+                                        EntityKind::Function,
+                                        property_span,
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                },
+            },
+            _ => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Resolves one `this.#name` site through the enclosing class only.
+    /// Private names are class-branded and never walk `extends`.
+    fn this_private_property_target(
+        &self,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let Some(class) = self.enclosing_record(property_span.start) else {
+            return self.syntactic_property_target(property_span);
         };
+        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match kind {
+            ReferenceKind::FunctionCall => {
+                match self.class_member_of_owner(class, name, EntityKind::Function) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                        self.syntactic_property_target(property_span)
+                    }
+                }
+            }
+            ReferenceKind::FieldAccess => {
+                match self.class_member_of_owner(class, name, EntityKind::Field) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                    ClassMemberMatch::Absent => {
+                        match self.class_member_of_owner(class, name, EntityKind::Function) {
+                            ClassMemberMatch::Unique(fact) => Ok((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            )),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                self.syntactic_property_target(property_span)
+                            }
+                        }
+                    }
+                }
+            }
+            _ => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Combines member lookups across every merged namespace module. Any
+    /// ambiguous module result or two different unique facts stay ambiguous.
+    fn combine_namespace_member_matches(matches: &[ClassMemberMatch]) -> ClassMemberMatch {
+        let mut unique = None;
+        for matched in matches {
+            match *matched {
+                ClassMemberMatch::Ambiguous => return ClassMemberMatch::Ambiguous,
+                ClassMemberMatch::Absent => {}
+                ClassMemberMatch::Unique(fact) => {
+                    if unique.is_some_and(|known| known != fact) {
+                        return ClassMemberMatch::Ambiguous;
+                    }
+                    unique = Some(fact);
+                }
+            }
+        }
+        match unique {
+            Some(fact) => ClassMemberMatch::Unique(fact),
+            None => ClassMemberMatch::Absent,
+        }
+    }
+
+    /// Returns every published namespace module whose binding name equals
+    /// `name`, including every block of one merged namespace.
+    fn namespace_modules_for_name(&self, name: &[u8]) -> Vec<u32> {
+        self.facts_by_name
+            .get(name)
+            .map(|candidates| {
+                candidates
+                    .iter()
+                    .filter(|ordinal| {
+                        usize::try_from(**ordinal)
+                            .ok()
+                            .and_then(|index| self.fact_kinds.get(index).copied())
+                            == Some(EntityKind::Module)
+                    })
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Resolves one namespace member through every merged module block named
+    /// by the receiver identifier.
+    fn namespace_member_match(
+        &self,
+        modules: &[u32],
+        property_name: &[u8],
+        kind: ReferenceKind,
+    ) -> ClassMemberMatch {
+        match kind {
+            ReferenceKind::FunctionCall => {
+                let function_matches = modules
+                    .iter()
+                    .map(|module| {
+                        self.class_member_of_owner(*module, property_name, EntityKind::Function)
+                    })
+                    .collect::<Vec<_>>();
+                match Self::combine_namespace_member_matches(&function_matches) {
+                    ClassMemberMatch::Unique(fact) => ClassMemberMatch::Unique(fact),
+                    ClassMemberMatch::Ambiguous => ClassMemberMatch::Ambiguous,
+                    ClassMemberMatch::Absent => {
+                        let record_matches = modules
+                            .iter()
+                            .map(|module| {
+                                self.class_member_of_owner(
+                                    *module,
+                                    property_name,
+                                    EntityKind::Record,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        Self::combine_namespace_member_matches(&record_matches)
+                    }
+                }
+            }
+            ReferenceKind::FieldAccess => {
+                let field_matches = modules
+                    .iter()
+                    .map(|module| {
+                        self.class_member_of_owner(*module, property_name, EntityKind::Field)
+                    })
+                    .collect::<Vec<_>>();
+                match Self::combine_namespace_member_matches(&field_matches) {
+                    ClassMemberMatch::Unique(fact) => ClassMemberMatch::Unique(fact),
+                    ClassMemberMatch::Ambiguous => ClassMemberMatch::Ambiguous,
+                    ClassMemberMatch::Absent => {
+                        let mut unique = None;
+                        for expected_kind in [
+                            EntityKind::Constant,
+                            EntityKind::Static,
+                            EntityKind::Function,
+                            EntityKind::Record,
+                            EntityKind::Enum,
+                            EntityKind::Module,
+                        ] {
+                            let matches = modules
+                                .iter()
+                                .map(|module| {
+                                    self.class_member_of_owner(
+                                        *module,
+                                        property_name,
+                                        expected_kind,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            match Self::combine_namespace_member_matches(&matches) {
+                                ClassMemberMatch::Ambiguous => {
+                                    return ClassMemberMatch::Ambiguous;
+                                }
+                                ClassMemberMatch::Unique(fact) => {
+                                    if unique.is_some_and(|known| known != fact) {
+                                        return ClassMemberMatch::Ambiguous;
+                                    }
+                                    unique = Some(fact);
+                                }
+                                ClassMemberMatch::Absent => {}
+                            }
+                        }
+                        match unique {
+                            Some(fact) => ClassMemberMatch::Unique(fact),
+                            None => ClassMemberMatch::Absent,
+                        }
+                    }
+                }
+            }
+            _ => ClassMemberMatch::Absent,
+        }
+    }
+
+    /// Resolves one member on a published class `record` using the same local
+    /// and inherited class-body rules as a class-qualified receiver.
+    fn record_qualified_property_target(
+        &self,
+        record: u32,
+        property_name: &[u8],
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        match kind {
+            ReferenceKind::FunctionCall => {
+                match self.class_member_of_owner(record, property_name, EntityKind::Function) {
+                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    ClassMemberMatch::Ambiguous => Ok(None),
+                    ClassMemberMatch::Absent => {
+                        match self.inherited_class_member(record, property_name, EntityKind::Function)
+                        {
+                            ClassMemberMatch::Unique(fact) => Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            ))),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => Ok(None),
+                        }
+                    }
+                }
+            }
+            ReferenceKind::FieldAccess => {
+                match self.class_member_of_owner(record, property_name, EntityKind::Field) {
+                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    ClassMemberMatch::Ambiguous => Ok(None),
+                    ClassMemberMatch::Absent => {
+                        match self.inherited_class_member(record, property_name, EntityKind::Field) {
+                            ClassMemberMatch::Unique(fact) => Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            ))),
+                            ClassMemberMatch::Ambiguous => Ok(None),
+                            ClassMemberMatch::Absent => {
+                                match self.class_member_of_owner(
+                                    record,
+                                    property_name,
+                                    EntityKind::Function,
+                                ) {
+                                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                                        OccurrenceTarget::Local(EntityId::new(fact)),
+                                        OccurrenceConfidence::Index,
+                                    ))),
+                                    ClassMemberMatch::Ambiguous => Ok(None),
+                                    ClassMemberMatch::Absent => match self.inherited_class_member(
+                                        record,
+                                        property_name,
+                                        EntityKind::Function,
+                                    ) {
+                                        ClassMemberMatch::Unique(fact) => Ok(Some((
+                                            OccurrenceTarget::Local(EntityId::new(fact)),
+                                            OccurrenceConfidence::Index,
+                                        ))),
+                                        ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                            Ok(None)
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Resolves one `Class.member` site when the receiver peels to a
+    /// file-unique class identifier. Returns `None` when the receiver is not
+    /// a class or no unique member binds.
+    fn class_qualified_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(identifier_span) =
+            self.peel_object_identifier_span(object_span.start, object_span.end)
+        else {
+            return Ok(None);
+        };
+        let class_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
+            start: identifier_span.start,
+            end: identifier_span.end,
+        })?;
+        let Some(record) = self.unique_file_record(class_name) else {
+            return Ok(None);
+        };
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        self.record_qualified_property_target(record, property_name, kind)
+    }
+
+    /// Resolves one namespace-qualified receiver such as `Box.Child` or
+    /// `Box.Inner.Deep` to the published fact named by the full prefix.
+    fn namespace_qualified_fact(&self, start: u32, end: u32, depth: u8) -> Option<u32> {
+        if depth >= MAX_INHERITANCE_DEPTH {
+            return None;
+        }
+        let mut span = Span::new(start, end);
+        loop {
+            let Some(kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
+                return None;
+            };
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                span = parenthesized.expression.span();
+                continue;
+            }
+            break;
+        }
+        let kind = self.ast_kind_at_exact_span(span.start, span.end)?;
+        let member = kind.as_static_member_expression()?;
+        let property_name = self.slice_span(member.property.span)?;
+        let object_span = member.object.span();
+        let modules = if let Some(identifier_span) =
+            self.peel_object_identifier_span(object_span.start, object_span.end)
+        {
+            let name = self.slice_span(identifier_span)?;
+            let modules = self.namespace_modules_for_name(name);
+            if modules.is_empty() {
+                return None;
+            }
+            modules
+        } else {
+            let container = self.namespace_qualified_fact(
+                object_span.start,
+                object_span.end,
+                depth.saturating_add(1),
+            )?;
+            let container_index = usize::try_from(container).ok()?;
+            if self.fact_kinds.get(container_index) != Some(&EntityKind::Module) {
+                return None;
+            }
+            vec![container]
+        };
+        match self.namespace_member_match(&modules, property_name, ReferenceKind::FieldAccess) {
+            ClassMemberMatch::Unique(fact) => Some(fact),
+            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => None,
+        }
+    }
+
+    /// Resolves one `new Receiver().member` site when the receiver peels to a
+    /// `new` expression whose callee names a unique file-local class or a
+    /// namespace-qualified record prefix.
+    fn constructed_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let mut span = object_span;
+        loop {
+            let Some(ast_kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
+                return Ok(None);
+            };
+            if let Some(parenthesized) = ast_kind.as_parenthesized_expression() {
+                span = parenthesized.expression.span();
+                continue;
+            }
+            break;
+        }
+        let Some(ast_kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
+            return Ok(None);
+        };
+        let Some(new_expression) = ast_kind.as_new_expression() else {
+            return Ok(None);
+        };
+        let mut callee_span = new_expression.callee.span();
+        loop {
+            let Some(callee_kind) = self.ast_kind_at_exact_span(callee_span.start, callee_span.end)
+            else {
+                return Ok(None);
+            };
+            if let Some(parenthesized) = callee_kind.as_parenthesized_expression() {
+                callee_span = parenthesized.expression.span();
+                continue;
+            }
+            break;
+        }
+        let record = if let Some(identifier_span) =
+            self.peel_object_identifier_span(callee_span.start, callee_span.end)
+        {
+            let class_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
+                start: identifier_span.start,
+                end: identifier_span.end,
+            })?;
+            match self.unique_file_record(class_name) {
+                Some(record) => record,
+                None => return Ok(None),
+            }
+        } else {
+            let Some(container) =
+                self.namespace_qualified_fact(callee_span.start, callee_span.end, 0)
+            else {
+                return Ok(None);
+            };
+            let container_index = usize::try_from(container).map_err(|_| lane_rejection())?;
+            let container_kind = self
+                .fact_kinds
+                .get(container_index)
+                .copied()
+                .ok_or(lane_rejection())?;
+            if container_kind != EntityKind::Record {
+                return Ok(None);
+            }
+            container
+        };
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        self.record_qualified_property_target(record, property_name, kind)
+    }
+
+    /// Resolves one `(value as Type).member` or `(<Type>value).member` site
+    /// when the assertion names a unique file-local class, interface, or
+    /// namespace-qualified record/trait type.
+    fn asserted_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(reference_span) = self.assertion_type_reference_span(object_span) else {
+            return Ok(None);
+        };
+        let Some((owner, owner_kind)) = self.assertion_type_owner(reference_span) else {
+            return Ok(None);
+        };
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match owner_kind {
+            EntityKind::Record => {
+                self.record_qualified_property_target(owner, property_name, kind)
+            }
+            EntityKind::Trait => self.trait_asserted_property_target(owner, property_name, kind),
+            _ => Ok(None),
+        }
+    }
+
+    /// Returns the span of one assertion's `TSTypeReference` annotation when
+    /// `object_span` peels to `as` or angle-bracket type assertion syntax.
+    fn assertion_type_reference_span(&self, object_span: Span) -> Option<Span> {
+        let mut span = object_span;
+        loop {
+            let kind = self.ast_kind_at_exact_span(span.start, span.end)?;
+            if let Some(parenthesized) = kind.as_parenthesized_expression() {
+                span = parenthesized.expression.span();
+                continue;
+            }
+            let annotation_span = if let Some(cast) = kind.as_ts_as_expression() {
+                cast.type_annotation.span()
+            } else if let Some(cast) = kind.as_ts_type_assertion() {
+                cast.type_annotation.span()
+            } else {
+                return None;
+            };
+            if self
+                .ts_type_reference_at_span(annotation_span.start, annotation_span.end)
+                .is_some()
+            {
+                return Some(annotation_span);
+            }
+            return None;
+        }
+    }
+
+    /// Resolves one assertion type reference to the published class or
+    /// interface fact named by its `TSTypeReference` type name.
+    fn assertion_type_owner(&self, reference_span: Span) -> Option<(u32, EntityKind)> {
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= reference_span.start);
+        let mut reference = None;
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > reference_span.start {
+                break;
+            }
+            if known.start == reference_span.start
+                && known.end == reference_span.end
+            {
+                if let Some(found) = self
+                    .semantic
+                    .nodes()
+                    .get_node(*node_id)
+                    .kind()
+                    .as_ts_type_reference()
+                {
+                    reference = Some(found);
+                    break;
+                }
+            }
+        }
+        let reference = reference?;
+        if reference.type_name.is_identifier() {
+            let ident = reference.type_name.get_identifier_reference()?;
+            return self.assertion_identifier_type_owner(ident.span);
+        }
+        if reference.type_name.is_qualified_name() {
+            return self.assertion_qualified_type_owner(reference.type_name.span());
+        }
+        None
+    }
+
+    /// Resolves one identifier type name to a unique file-local record, or to
+    /// a unique trait when no such record is published.
+    fn assertion_identifier_type_owner(&self, ident_span: Span) -> Option<(u32, EntityKind)> {
+        let name = self.slice_span(ident_span)?;
+        let record_count = self
+            .facts_by_name
+            .get(name)
+            .map(|candidates| {
+                candidates
+                    .iter()
+                    .filter(|ordinal| {
+                        usize::try_from(**ordinal)
+                            .ok()
+                            .and_then(|index| self.fact_kinds.get(index).copied())
+                            == Some(EntityKind::Record)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        if record_count > 1 {
+            return None;
+        }
+        if record_count == 1 {
+            let record = self.unique_file_record(name)?;
+            return Some((record, EntityKind::Record));
+        }
+        let trait_ordinal = self.unique_file_trait(name)?;
+        Some((trait_ordinal, EntityKind::Trait))
+    }
+
+    /// Resolves one namespace-qualified type name such as `Box.Child` to the
+    /// published record or trait named by the full prefix.
+    fn assertion_qualified_type_owner(&self, qualified_span: Span) -> Option<(u32, EntityKind)> {
+        let Some(container) =
+            self.assertion_namespace_qualified_type_fact(qualified_span.start, qualified_span.end, 0)
+        else {
+            return None;
+        };
+        let index = usize::try_from(container).ok()?;
+        match self.fact_kinds.get(index).copied() {
+            Some(EntityKind::Record) | Some(EntityKind::Trait) => {
+                Some((container, self.fact_kinds.get(index).copied()?))
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolves one namespace-qualified type prefix such as `Box.Child` or
+    /// `Box.Inner.Deep` to the published fact named by the full prefix.
+    fn assertion_namespace_qualified_type_fact(&self, start: u32, end: u32, depth: u8) -> Option<u32> {
+        if depth >= MAX_INHERITANCE_DEPTH {
+            return None;
+        }
+        let first = self
+            .node_index
+            .partition_point(|(known, _)| known.end <= start);
+        let mut qualified = None;
+        for (known, node_id) in self.node_index.get(first..).unwrap_or(&[]) {
+            if known.start > start {
+                break;
+            }
+            if known.start == start && known.end == end {
+                if let Some(found) = self
+                    .semantic
+                    .nodes()
+                    .get_node(*node_id)
+                    .kind()
+                    .as_ts_qualified_name()
+                {
+                    qualified = Some(found);
+                    break;
+                }
+            }
+        }
+        let qualified = qualified?;
+        let modules = if qualified.left.is_identifier() {
+            let ident = qualified.left.get_identifier_reference()?;
+            let name = self.slice_span(ident.span)?;
+            let modules = self.namespace_modules_for_name(name);
+            if modules.is_empty() {
+                return None;
+            }
+            modules
+        } else if qualified.left.is_qualified_name() {
+            let container = self.assertion_namespace_qualified_type_fact(
+                qualified.left.span().start,
+                qualified.left.span().end,
+                depth.saturating_add(1),
+            )?;
+            let container_index = usize::try_from(container).ok()?;
+            if self.fact_kinds.get(container_index) != Some(&EntityKind::Module) {
+                return None;
+            }
+            vec![container]
+        } else {
+            return None;
+        };
+        let property_name = self.slice_span(qualified.right.span())?;
+        match self.namespace_member_match(&modules, property_name, ReferenceKind::FieldAccess) {
+            ClassMemberMatch::Unique(fact) => Some(fact),
+            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => None,
+        }
+    }
+
+    /// Resolves one asserted interface member through declared and inherited
+    /// interface bodies only.
+    fn trait_asserted_property_target(
+        &self,
+        trait_ordinal: u32,
+        property_name: &[u8],
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        match kind {
+            ReferenceKind::FunctionCall => {
+                let mut visited_ordinals = Vec::new();
+                let mut visited_spans = Vec::new();
+                match self.trait_member_in_hierarchy(
+                    trait_ordinal,
+                    property_name,
+                    EntityKind::Function,
+                    0,
+                    &mut visited_ordinals,
+                    &mut visited_spans,
+                ) {
+                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => Ok(None),
+                }
+            }
+            ReferenceKind::FieldAccess => {
+                let mut visited_ordinals = Vec::new();
+                let mut visited_spans = Vec::new();
+                match self.trait_member_in_hierarchy(
+                    trait_ordinal,
+                    property_name,
+                    EntityKind::Field,
+                    0,
+                    &mut visited_ordinals,
+                    &mut visited_spans,
+                ) {
+                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    ClassMemberMatch::Ambiguous => Ok(None),
+                    ClassMemberMatch::Absent => {
+                        let mut visited_ordinals = Vec::new();
+                        let mut visited_spans = Vec::new();
+                        match self.trait_member_in_hierarchy(
+                            trait_ordinal,
+                            property_name,
+                            EntityKind::Function,
+                            0,
+                            &mut visited_ordinals,
+                            &mut visited_spans,
+                        ) {
+                            ClassMemberMatch::Unique(fact) => Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            ))),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => Ok(None),
+                        }
+                    }
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Resolves one `Namespace.Prefix.member` site when the receiver is a
+    /// namespace-qualified prefix that names a published module, record, or
+    /// enum fact.
+    fn namespace_qualified_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(container) = self.namespace_qualified_fact(object_span.start, object_span.end, 0)
+        else {
+            return Ok(None);
+        };
+        let container_index = usize::try_from(container).map_err(|_| lane_rejection())?;
+        let container_kind = self
+            .fact_kinds
+            .get(container_index)
+            .copied()
+            .ok_or(lane_rejection())?;
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match container_kind {
+            EntityKind::Module => {
+                match self.namespace_member_match(&[container], property_name, kind) {
+                    ClassMemberMatch::Unique(fact) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => Ok(None),
+                }
+            }
+            EntityKind::Record => {
+                self.record_qualified_property_target(container, property_name, kind)
+            }
+            EntityKind::Enum if kind == ReferenceKind::FieldAccess => {
+                match self.variant_in_enum(container, property_name) {
+                    Some(variant) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(variant)),
+                        OccurrenceConfidence::Index,
+                    ))),
+                    None => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Resolves one `Namespace.member` site when the receiver peels to a
+    /// namespace identifier. Returns `None` when the receiver is not a
+    /// namespace or no unique member binds.
+    fn namespace_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(identifier_span) =
+            self.peel_object_identifier_span(object_span.start, object_span.end)
+        else {
+            return Ok(None);
+        };
+        let namespace_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
+            start: identifier_span.start,
+            end: identifier_span.end,
+        })?;
+        let modules = self.namespace_modules_for_name(namespace_name);
+        if modules.is_empty() {
+            return Ok(None);
+        }
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match self.namespace_member_match(&modules, property_name, kind) {
+            ClassMemberMatch::Unique(fact) => Ok(Some((
+                OccurrenceTarget::Local(EntityId::new(fact)),
+                OccurrenceConfidence::Index,
+            ))),
+            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => Ok(None),
+        }
+    }
+
+    /// Resolves one `super.property` site through inherited bases only. The
+    /// enclosing class is skipped, so a child override never wins.
+    fn super_property_target(
+        &self,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        let Some(class) = self.enclosing_record(property_span.start) else {
+            return self.syntactic_property_target(property_span);
+        };
+        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match kind {
+            ReferenceKind::FunctionCall => match self.inherited_class_member(
+                class,
+                name,
+                EntityKind::Function,
+            ) {
+                ClassMemberMatch::Unique(fact) => Ok((
+                    OccurrenceTarget::Local(EntityId::new(fact)),
+                    OccurrenceConfidence::Index,
+                )),
+                ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                    self.syntactic_property_target(property_span)
+                }
+            },
+            ReferenceKind::FieldAccess => {
+                match self.inherited_class_member(class, name, EntityKind::Field) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                    ClassMemberMatch::Absent => {
+                        match self.inherited_class_member(class, name, EntityKind::Function) {
+                            ClassMemberMatch::Unique(fact) => Ok((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            )),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                self.syntactic_property_target(property_span)
+                            }
+                        }
+                    }
+                }
+            }
+            _ => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Resolves one `this.property` member through the enclosing class, then
+    /// through inherited bases, then through `implements` interfaces, then
+    /// through `implements` on inherited bases, using
+    /// [`class_member_of_owner`], [`inherited_class_member`],
+    /// [`implemented_class_member`], and [`inherited_implemented_member`].
+    fn this_member_target(
+        &self,
+        class: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+        property_span: Span,
+    ) -> Result<(OccurrenceTarget<'source>, OccurrenceConfidence), TypeScriptCollectError> {
+        match self.class_member_of_owner(class, name, expected_kind) {
+            ClassMemberMatch::Unique(fact) => Ok((
+                OccurrenceTarget::Local(EntityId::new(fact)),
+                OccurrenceConfidence::Index,
+            )),
+            ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+            ClassMemberMatch::Absent => match self.inherited_class_member(class, name, expected_kind) {
+                ClassMemberMatch::Unique(fact) => Ok((
+                    OccurrenceTarget::Local(EntityId::new(fact)),
+                    OccurrenceConfidence::Index,
+                )),
+                ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                ClassMemberMatch::Absent => match self.implemented_class_member(
+                    class,
+                    name,
+                    expected_kind,
+                ) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
+                    ClassMemberMatch::Absent => {
+                        match self.inherited_implemented_member(class, name, expected_kind) {
+                            ClassMemberMatch::Unique(fact) => Ok((
+                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                OccurrenceConfidence::Index,
+                            )),
+                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                self.syntactic_property_target(property_span)
+                            }
+                        }
+                    }
+                },
+            },
+        }
+    }
+
+    /// Counts members of `expected_kind` named `name` whose enclosing owner
+    /// is exactly `owner`.
+    fn class_member_of_owner(
+        &self,
+        owner: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+    ) -> ClassMemberMatch {
         let candidates = self
             .facts_by_name
             .get(name)
             .cloned()
             .unwrap_or_default();
-        let mut matched = None;
+        let mut primary = None;
+        let mut setter_count: u32 = 0;
+        let mut setter = None;
         for ordinal in candidates {
             let Some(index) = usize::try_from(ordinal).ok() else {
                 continue;
@@ -4987,23 +6310,310 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 continue;
             }
             let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
-            if decl_start == UNSET
-                || self.enclosing_registered_owner(decl_start, Some(ordinal)) != Some(class)
-            {
+            if decl_start == UNSET {
+                continue;
+            }
+            let owner_match =
+                self.enclosing_registered_owner(decl_start, Some(ordinal)) == Some(owner);
+            let parameter_property_match = self.parameter_properties.contains(&ordinal)
+                && self.enclosing_record(decl_start) == Some(owner);
+            if !owner_match && !parameter_property_match {
+                continue;
+            }
+            if expected_kind == EntityKind::Function && self.setters.contains(&ordinal) {
+                setter_count = setter_count.saturating_add(1);
+                setter = Some(ordinal);
+                continue;
+            }
+            if primary.is_some() {
+                return ClassMemberMatch::Ambiguous;
+            }
+            primary = Some(ordinal);
+        }
+        match primary {
+            Some(fact) => ClassMemberMatch::Unique(fact),
+            None if setter_count == 1 => match setter {
+                Some(fact) => ClassMemberMatch::Unique(fact),
+                None => ClassMemberMatch::Absent,
+            },
+            None if setter_count > 1 => ClassMemberMatch::Ambiguous,
+            None => ClassMemberMatch::Absent,
+        }
+    }
+
+    /// Walks `extends` from `start_class`, resolving inherited members with
+    /// the same count rules as the enclosing class.
+    fn inherited_class_member(
+        &self,
+        start_class: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+    ) -> ClassMemberMatch {
+        let mut visited = Vec::new();
+        let mut current = start_class;
+        for _ in 0..MAX_INHERITANCE_DEPTH {
+            if visited.contains(&current) {
+                return ClassMemberMatch::Absent;
+            }
+            visited.push(current);
+            let super_span = match self.record_super_class_name_span(current) {
+                Some(span) => span,
+                None => return ClassMemberMatch::Absent,
+            };
+            let super_name = match self.slice_span(super_span) {
+                Some(name) => name,
+                None => return ClassMemberMatch::Absent,
+            };
+            let base = match self.unique_file_record(super_name) {
+                Some(record) => record,
+                None => return ClassMemberMatch::Absent,
+            };
+            match self.class_member_of_owner(base, name, expected_kind) {
+                ClassMemberMatch::Unique(fact) => return ClassMemberMatch::Unique(fact),
+                ClassMemberMatch::Ambiguous => return ClassMemberMatch::Ambiguous,
+                ClassMemberMatch::Absent => current = base,
+            }
+        }
+        ClassMemberMatch::Absent
+    }
+
+    /// Walks `extends` from `start_class`, resolving members through each
+    /// base's `implements` clauses when the enclosing class and inherited
+    /// class-body members are absent.
+    fn inherited_implemented_member(
+        &self,
+        start_class: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+    ) -> ClassMemberMatch {
+        let mut visited = Vec::new();
+        let mut current = start_class;
+        for _ in 0..MAX_INHERITANCE_DEPTH {
+            if visited.contains(&current) {
+                return ClassMemberMatch::Absent;
+            }
+            visited.push(current);
+            let super_span = match self.record_super_class_name_span(current) {
+                Some(span) => span,
+                None => return ClassMemberMatch::Absent,
+            };
+            let super_name = match self.slice_span(super_span) {
+                Some(name) => name,
+                None => return ClassMemberMatch::Absent,
+            };
+            let base = match self.unique_file_record(super_name) {
+                Some(record) => record,
+                None => return ClassMemberMatch::Absent,
+            };
+            match self.implemented_class_member(base, name, expected_kind) {
+                ClassMemberMatch::Unique(fact) => return ClassMemberMatch::Unique(fact),
+                ClassMemberMatch::Ambiguous => return ClassMemberMatch::Ambiguous,
+                ClassMemberMatch::Absent => current = base,
+            }
+        }
+        ClassMemberMatch::Absent
+    }
+
+    /// Resolves the single file-local `Record` with `name`, or `None` when
+    /// zero or more than one such record is published.
+    fn unique_file_record(&self, name: &[u8]) -> Option<u32> {
+        let candidates = self.facts_by_name.get(name)?;
+        let mut matched = None;
+        for &ordinal in candidates {
+            let index = usize::try_from(ordinal).ok()?;
+            if self.fact_kinds.get(index) != Some(&EntityKind::Record) {
                 continue;
             }
             if matched.is_some() {
-                return self.syntactic_property_target(property_span);
+                return None;
             }
             matched = Some(ordinal);
         }
-        match matched {
-            Some(fact) => Ok((
-                OccurrenceTarget::Local(EntityId::new(fact)),
-                OccurrenceConfidence::Index,
-            )),
-            None => self.syntactic_property_target(property_span),
+        matched
+    }
+
+    /// Resolves the single file-local `Trait` with `name`, or `None` when
+    /// zero or more than one such trait is published.
+    fn unique_file_trait(&self, name: &[u8]) -> Option<u32> {
+        let candidates = self.facts_by_name.get(name)?;
+        let mut matched = None;
+        for &ordinal in candidates {
+            let index = usize::try_from(ordinal).ok()?;
+            if self.fact_kinds.get(index) != Some(&EntityKind::Trait) {
+                continue;
+            }
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(ordinal);
         }
+        matched
+    }
+
+    /// Resolves one `this.property` member through every `implements` clause
+    /// on `class`, walking each interface's `extends` heritages when the
+    /// direct member is absent.
+    fn implemented_class_member(
+        &self,
+        class: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+    ) -> ClassMemberMatch {
+        let index = match usize::try_from(class) {
+            Ok(index) => index,
+            Err(_) => return ClassMemberMatch::Absent,
+        };
+        let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+        let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+        if start == UNSET || end == UNSET {
+            return ClassMemberMatch::Absent;
+        }
+        let kind = match self.ast_kind_at_exact_span(start, end) {
+            Some(kind) => kind,
+            None => return ClassMemberMatch::Absent,
+        };
+        let class_ast = match kind.as_class() {
+            Some(class_ast) => class_ast,
+            None => return ClassMemberMatch::Absent,
+        };
+        let mut matches = Vec::new();
+        for implements_clause in class_ast.implements.iter() {
+            let expression_span = implements_clause.expression.span();
+            if self.span_is_ts_qualified_name(expression_span.start, expression_span.end) {
+                continue;
+            }
+            let identifier_span = match self
+                .identifier_reference_span_at(expression_span.start, expression_span.end)
+            {
+                Some(span) => span,
+                None => continue,
+            };
+            let trait_name = match self.slice_span(identifier_span) {
+                Some(name) => name,
+                None => continue,
+            };
+            let trait_ordinal = match self.unique_file_trait(trait_name) {
+                Some(trait_ordinal) => trait_ordinal,
+                None => continue,
+            };
+            let mut visited_ordinals = Vec::new();
+            let mut visited_spans = Vec::new();
+            matches.push(self.trait_member_in_hierarchy(
+                trait_ordinal,
+                name,
+                expected_kind,
+                0,
+                &mut visited_ordinals,
+                &mut visited_spans,
+            ));
+        }
+        Self::combine_namespace_member_matches(&matches)
+    }
+
+    /// Resolves one member on `trait_ordinal` and, when absent, walks that
+    /// interface's `extends` heritages up to [`MAX_INHERITANCE_DEPTH`].
+    fn trait_member_in_hierarchy(
+        &self,
+        trait_ordinal: u32,
+        name: &[u8],
+        expected_kind: EntityKind,
+        depth: u8,
+        visited_ordinals: &mut Vec<u32>,
+        visited_spans: &mut Vec<u32>,
+    ) -> ClassMemberMatch {
+        if depth >= MAX_INHERITANCE_DEPTH {
+            return ClassMemberMatch::Absent;
+        }
+        if visited_ordinals.contains(&trait_ordinal) {
+            return ClassMemberMatch::Absent;
+        }
+        let index = match usize::try_from(trait_ordinal) {
+            Ok(index) => index,
+            Err(_) => return ClassMemberMatch::Absent,
+        };
+        let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+        if decl_start != UNSET && visited_spans.contains(&decl_start) {
+            return ClassMemberMatch::Absent;
+        }
+        visited_ordinals.push(trait_ordinal);
+        if decl_start != UNSET {
+            visited_spans.push(decl_start);
+        }
+        match self.class_member_of_owner(trait_ordinal, name, expected_kind) {
+            ClassMemberMatch::Unique(fact) => ClassMemberMatch::Unique(fact),
+            ClassMemberMatch::Ambiguous => ClassMemberMatch::Ambiguous,
+            ClassMemberMatch::Absent => {
+                let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+                let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+                if start == UNSET || end == UNSET {
+                    return ClassMemberMatch::Absent;
+                }
+                let kind = match self.ast_kind_at_exact_span(start, end) {
+                    Some(kind) => kind,
+                    None => return ClassMemberMatch::Absent,
+                };
+                let interface = match kind.as_ts_interface_declaration() {
+                    Some(interface) => interface,
+                    None => return ClassMemberMatch::Absent,
+                };
+                let mut combined = ClassMemberMatch::Absent;
+                for heritage in interface.extends.iter() {
+                    let expression_span = heritage.expression.span();
+                    if self.span_is_ts_qualified_name(expression_span.start, expression_span.end) {
+                        continue;
+                    }
+                    let identifier_span = match self
+                        .identifier_reference_span_at(expression_span.start, expression_span.end)
+                        .or_else(|| {
+                            self.peel_object_identifier_span(
+                                expression_span.start,
+                                expression_span.end,
+                            )
+                        })
+                    {
+                        Some(span) => span,
+                        None => continue,
+                    };
+                    let super_name = match self.slice_span(identifier_span) {
+                        Some(name) => name,
+                        None => continue,
+                    };
+                    let super_trait = match self.unique_file_trait(super_name) {
+                        Some(super_trait) => super_trait,
+                        None => continue,
+                    };
+                    let branch = self.trait_member_in_hierarchy(
+                        super_trait,
+                        name,
+                        expected_kind,
+                        depth.saturating_add(1),
+                        visited_ordinals,
+                        visited_spans,
+                    );
+                    combined = Self::combine_namespace_member_matches(&[combined, branch]);
+                    if matches!(combined, ClassMemberMatch::Ambiguous) {
+                        return ClassMemberMatch::Ambiguous;
+                    }
+                }
+                combined
+            }
+        }
+    }
+
+    /// Returns the identifier span of one class record's `extends` clause,
+    /// peeling parenthesized wrappers and requiring an identifier reference.
+    fn record_super_class_name_span(&self, record: u32) -> Option<Span> {
+        let index = usize::try_from(record).ok()?;
+        let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
+        let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
+        if start == UNSET || end == UNSET {
+            return None;
+        }
+        let kind = self.ast_kind_at_exact_span(start, end)?;
+        let class = kind.as_class()?;
+        let super_expr = class.super_class.as_ref()?;
+        let span = super_expr.span();
+        self.peel_object_identifier_span(span.start, span.end)
     }
 
     /// Builds the honest npm-universe foreign key for one unresolved property
