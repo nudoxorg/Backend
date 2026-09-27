@@ -663,6 +663,90 @@ fn package_graph_reuses_root_and_answers_forward_and_reverse_edges() {
     });
 }
 
+#[test]
+fn package_graph_root_move_keeps_an_unchanged_edge_and_replaces_one() {
+    futures_executor::block_on(async {
+        let path = path();
+        let source = PackageReference::parse("pkg:cargo/app@1.0.0").expect("source");
+        let kept = dependency_edge(&source, "serde", "^1");
+        let old = dependency_edge(&source, "tokio", "^1");
+        let facts = graph_facts(&source, &[kept.clone(), old.clone()]);
+        let mut projection = TursoProjection::open(&path).await.expect("open");
+        let root_a = view_state_root(&[("graph".to_owned(), "keep-a".to_owned())]);
+        projection
+            .synchronize_package_graph(root_a, &facts)
+            .await
+            .expect("seed");
+        let (kept_row, kept_root) = stored_edge(&projection, &kept.facts_version).await;
+        let root_b = view_state_root(&[("graph".to_owned(), "keep-b".to_owned())]);
+        projection
+            .synchronize_package_graph(root_b, &facts)
+            .await
+            .expect("move");
+        let (kept_after, root_after) = stored_edge(&projection, &kept.facts_version).await;
+        assert_eq!(kept_after, kept_row);
+        assert_eq!(root_after, kept_root);
+        let replacement = dependency_edge(&source, "tokio", "^2");
+        let replaced = graph_facts(&source, &[kept.clone(), replacement.clone()]);
+        let root_c = view_state_root(&[("graph".to_owned(), "keep-c".to_owned())]);
+        projection
+            .synchronize_package_graph(root_c, &replaced)
+            .await
+            .expect("replace");
+        let (kept_final, _) = stored_edge(&projection, &kept.facts_version).await;
+        assert_eq!(kept_final, kept_row);
+        let _ = stored_edge(&projection, &replacement.facts_version).await;
+        let mut rows = projection
+            .connection
+            .query(
+                "SELECT COUNT(*) FROM backend_projection_package_edges WHERE edge_id = ?1",
+                turso::params![old.facts_version.as_slice()],
+            )
+            .await
+            .expect("old edge count");
+        let count: i64 = rows
+            .next()
+            .await
+            .expect("old edge row")
+            .expect("old edge")
+            .get(0)
+            .expect("count");
+        assert_eq!(count, 0);
+    });
+}
+
+fn dependency_edge(
+    source: &PackageReference,
+    name: &str,
+    requirement: &str,
+) -> PackageDependencyRecord {
+    PackageDependencyRecord::new(
+        source.clone(),
+        PackageDependencyTarget::new(RegistryEcosystem::Cargo, name, requirement, None)
+            .expect("target"),
+        DependencyScope::Runtime,
+        false,
+        DependencyEvidence {
+            authority: DependencyAuthority::RegistryMetadata,
+            frontier: [1; 32],
+            provenance: [2; 32],
+        },
+    )
+}
+
+fn graph_facts(
+    source: &PackageReference,
+    edges: &[PackageDependencyRecord],
+) -> Vec<(
+    PackageReference,
+    DependencyFacts<Box<[PackageDependencyRecord]>>,
+)> {
+    vec![(
+        source.clone(),
+        DependencyFacts::Known(edges.to_vec().into_boxed_slice()),
+    )]
+}
+
 async fn stored_edge(projection: &TursoProjection, edge_id: &[u8; 32]) -> (i64, Vec<u8>) {
     let mut rows = projection
         .connection
