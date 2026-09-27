@@ -3328,6 +3328,18 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     && declaration.name.as_bytes() == field_bytes
                     && self.live[index]
                     && span_contains(class_span, declaration.span)
+                    && !self
+                        .module
+                        .declarations
+                        .iter()
+                        .enumerate()
+                        .any(|(inner_index, inner)| {
+                            inner.kind == DeclarationKind::Class
+                                && self.live[inner_index]
+                                && span_contains(class_span, inner.span)
+                                && inner.span != class_span
+                                && span_contains(inner.span, declaration.span)
+                        })
                 {
                     Some(index)
                 } else {
@@ -3390,12 +3402,27 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let class_span = self.module.declarations[class_index].span;
         let own_fields = self.own_field_indices_named(class_span, attribute);
         match own_fields.len() {
-            0 => match self.inherited_field_annotation_class_name(class_index, attribute) {
-                InstanceAttributeClassLookup::Unique { class_name, .. } => Some(class_name),
-                InstanceAttributeClassLookup::Absent
-                | InstanceAttributeClassLookup::Ambiguous
-                | InstanceAttributeClassLookup::Unannotated => None,
-            },
+            0 => {
+                if let Some(result) =
+                    self.instance_field_annotation_class_name(class_index, attribute)
+                {
+                    match result {
+                        InstanceAttributeClassLookup::Unique { class_name, .. } => {
+                            Some(class_name)
+                        }
+                        InstanceAttributeClassLookup::Absent
+                        | InstanceAttributeClassLookup::Ambiguous
+                        | InstanceAttributeClassLookup::Unannotated => None,
+                    }
+                } else {
+                    match self.inherited_field_annotation_class_name(class_index, attribute) {
+                        InstanceAttributeClassLookup::Unique { class_name, .. } => Some(class_name),
+                        InstanceAttributeClassLookup::Absent
+                        | InstanceAttributeClassLookup::Ambiguous
+                        | InstanceAttributeClassLookup::Unannotated => None,
+                    }
+                }
+            }
             1 => match self.field_annotation_class_name_from_index(own_fields[0]) {
                 InstanceAttributeClassLookup::Unique { class_name, .. } => Some(class_name),
                 InstanceAttributeClassLookup::Absent
@@ -3404,6 +3431,62 @@ impl<'a, 'source> Emitter<'a, 'source> {
             },
             _ => None,
         }
+    }
+
+    /// Resolves one instance-attribute annotation written on `self.name` or
+    /// `cls.name` inside class-body methods. Returns `None` when no matching
+    /// facts exist so callers can fall through to inherited lookup.
+    fn instance_field_annotation_class_name(
+        &self,
+        class_index: usize,
+        attribute: &str,
+    ) -> Option<InstanceAttributeClassLookup> {
+        let class_span = self.module.declarations[class_index].span;
+        let attribute_bytes = attribute.as_bytes();
+        let mut saw_fact = false;
+        let mut unique_name: Option<String> = None;
+        for fact in &self.module.annotations {
+            if fact.position != AnnotationPosition::Instance {
+                continue;
+            }
+            if fact.owner.as_bytes() != attribute_bytes {
+                continue;
+            }
+            if !span_contains(class_span, fact.span) {
+                continue;
+            }
+            if self.module.declarations.iter().enumerate().any(|(index, declaration)| {
+                declaration.kind == DeclarationKind::Class
+                    && self.live[index]
+                    && span_contains(class_span, declaration.span)
+                    && declaration.span != class_span
+                    && span_contains(declaration.span, fact.span)
+            }) {
+                continue;
+            }
+            saw_fact = true;
+            match classify_receiver_annotation(&fact.annotation) {
+                ReceiverAnnotationName::Unique(name) => {
+                    if let Some(existing) = &unique_name {
+                        if existing.as_str() != name {
+                            return Some(InstanceAttributeClassLookup::Ambiguous);
+                        }
+                    } else {
+                        unique_name = Some(name.to_owned());
+                    }
+                }
+                ReceiverAnnotationName::Ambiguous | ReceiverAnnotationName::Absent => {
+                    return Some(InstanceAttributeClassLookup::Absent);
+                }
+            }
+        }
+        if !saw_fact {
+            return None;
+        }
+        unique_name.map(|class_name| InstanceAttributeClassLookup::Unique {
+            field_index: class_index,
+            class_name,
+        })
     }
 
     /// Resolves one plain-name receiver to a live class index for a named

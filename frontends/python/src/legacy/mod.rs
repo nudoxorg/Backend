@@ -55,6 +55,9 @@ pub enum AnnotationPosition {
     /// ...` and `obj: Child` with no value). Not a class-body field and not a
     /// module constant.
     Local,
+    /// A function-body `AnnAssign` on `self.name` or `cls.name` inside a
+    /// class-body method at `function_depth` 1. Not a class-body field.
+    Instance,
     /// The value expression of a PEP 695 `type` alias statement.
     AliasValue,
 }
@@ -1737,6 +1740,19 @@ impl<'a> Visitor<'a> for Projection<'a> {
                         annotation: annotation(assign.annotation.as_ref()),
                         span: span(assign.range()),
                     });
+                } else if self.function_depth == 1 && self.enclosing_class.is_some() {
+                    if let ast::Expr::Attribute(attribute) = assign.target.as_ref() {
+                        if let ast::Expr::Name(receiver) = attribute.value.as_ref() {
+                            if matches!(receiver.id.as_str(), "self" | "cls") {
+                                self.facts.annotations.push(AnnotationFact {
+                                    owner: attribute.attr.as_str().to_owned(),
+                                    position: AnnotationPosition::Instance,
+                                    annotation: annotation(assign.annotation.as_ref()),
+                                    span: span(assign.range()),
+                                });
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
