@@ -44,6 +44,5 @@
   };
   entrypoints = [
     "crates/compile/src/native_protocol_codec.rs"
-    "tests/fuzz/targets/native-protocol/oracle.rs"
   ];
 }

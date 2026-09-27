@@ -40,6 +40,5 @@
   entrypoints = [
     "crates/flow/src/operators/support.rs"
     "crates/flow/src/operators/stateless.rs"
-    "tests/fuzz/targets/flow-evaluator/oracle.rs"
   ];
 }

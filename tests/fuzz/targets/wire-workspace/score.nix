@@ -38,6 +38,5 @@
     "crates/version/src/workspace/manifest.rs"
     "crates/version/src/workspace/delta.rs"
     "crates/version/src/workspace/commit.rs"
-    "tests/fuzz/targets/wire-workspace/oracle.rs"
   ];
 }

@@ -45,6 +45,5 @@
   };
   entrypoints = [
     "crates/store/src/view/validate/frame.rs"
-    "tests/fuzz/targets/store-raw-property/oracle.rs"
   ];
 }
