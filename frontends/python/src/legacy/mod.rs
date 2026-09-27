@@ -215,6 +215,10 @@ pub enum OccurrenceReceiver {
     /// (`child`). Deeper chains (`self.child.other.note`) and subscripts
     /// (`self.child[0].note`) are not this variant.
     InstanceAttribute { class: String, attribute: String },
+    /// `obj.child.note` / `obj.child.note()` when `obj` is a plain name other than
+    /// the enclosing `self`/`cls` form. `name` is `obj`. `attribute` is `child`.
+    /// Deeper chains (`obj.child.other.note`) and subscripts stay foreign.
+    NamedAttribute { name: String, attribute: String },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -1062,6 +1066,50 @@ impl<'a> Projection<'a> {
         })
     }
 
+    /// `obj.child.note` / `obj.child.note()` when `expr` is one plain-name
+    /// attribute access (`obj.child`).
+    fn named_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let ast::Expr::Attribute(inner) = expr else {
+            return None;
+        };
+        let ast::Expr::Name(name) = inner.value.as_ref() else {
+            return None;
+        };
+        Some(OccurrenceReceiver::NamedAttribute {
+            name: name.id.as_str().to_owned(),
+            attribute: inner.attr.as_str().to_owned(),
+        })
+    }
+
+    /// Receiver classification shared by attribute reads and method calls.
+    fn attribute_occurrence_receiver(&self, value: &ast::Expr) -> OccurrenceReceiver {
+        if let Some(receiver) = self.super_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.constructed_class_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.instance_attribute_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.named_attribute_receiver(value) {
+            return receiver;
+        }
+        match value {
+            ast::Expr::Name(name) => {
+                if matches!(name.id.as_str(), "self" | "cls") {
+                    if let Some(class) = self.enclosing_class.clone() {
+                        return OccurrenceReceiver::EnclosingClass { class };
+                    }
+                }
+                OccurrenceReceiver::Foreign {
+                    receiver: Some(name.id.as_str().to_owned()),
+                }
+            }
+            _ => OccurrenceReceiver::Foreign { receiver: None },
+        }
+    }
+
     /// Copies an AST-selected source range only after a checked bounds proof.
     fn source_owned(&mut self, range: ruff_text_size::TextRange) -> Option<String> {
         if self.error.is_some() {
@@ -1431,31 +1479,7 @@ impl<'a> Projection<'a> {
         if already_recorded {
             return;
         }
-        let receiver = if let Some(receiver) = self.super_receiver(attribute.value.as_ref()) {
-            receiver
-        } else if let Some(receiver) = self.constructed_class_receiver(attribute.value.as_ref()) {
-            receiver
-        } else if let Some(receiver) = self.instance_attribute_receiver(attribute.value.as_ref()) {
-            receiver
-        } else {
-            match attribute.value.as_ref() {
-                ast::Expr::Name(name)
-                    if matches!(name.id.as_str(), "self" | "cls")
-                        && self.enclosing_class.is_some() =>
-                {
-                    OccurrenceReceiver::EnclosingClass {
-                        class: match self.enclosing_class.clone() {
-                            Some(class) => class,
-                            None => return,
-                        },
-                    }
-                }
-                ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                    receiver: Some(name.id.as_str().to_owned()),
-                },
-                _ => OccurrenceReceiver::Foreign { receiver: None },
-            }
-        };
+        let receiver = self.attribute_occurrence_receiver(attribute.value.as_ref());
         self.facts.occurrences.push(OccurrenceFact {
             owner: owner.to_owned(),
             target: target.to_owned(),
@@ -1798,37 +1822,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 }
                 ast::Expr::Attribute(attribute) => {
                     let target = attribute.attr.as_str();
-                    let receiver = if let Some(receiver) =
-                        self.super_receiver(attribute.value.as_ref())
-                    {
-                        receiver
-                    } else if let Some(receiver) =
-                        self.constructed_class_receiver(attribute.value.as_ref())
-                    {
-                        receiver
-                    } else if let Some(receiver) =
-                        self.instance_attribute_receiver(attribute.value.as_ref())
-                    {
-                        receiver
-                    } else {
-                        match attribute.value.as_ref() {
-                            ast::Expr::Name(name)
-                                if matches!(name.id.as_str(), "self" | "cls")
-                                    && self.enclosing_class.is_some() =>
-                            {
-                                OccurrenceReceiver::EnclosingClass {
-                                    class: self
-                                        .enclosing_class
-                                        .clone()
-                                        .expect("enclosing class proven above"),
-                                }
-                            }
-                            ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                                receiver: Some(name.id.as_str().to_owned()),
-                            },
-                            _ => OccurrenceReceiver::Foreign { receiver: None },
-                        }
-                    };
+                    let receiver =
+                        self.attribute_occurrence_receiver(attribute.value.as_ref());
                     let receiver_is_module_name = matches!(
                         attribute.value.as_ref(),
                         ast::Expr::Name(name)

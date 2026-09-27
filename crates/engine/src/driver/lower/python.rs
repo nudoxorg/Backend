@@ -2025,72 +2025,26 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
             }
             OccurrenceReceiver::InstanceAttribute { class, attribute } => {
-                let method_foreign = || {
-                    foreign_method(self.slice(occurrence.span)?, occurrence.span)
-                        .map(|target| (target, OccurrenceConfidence::Index))
-                };
-                let field_foreign = || {
-                    foreign_field(self.slice(occurrence.span)?, occurrence.span)
-                        .map(|target| (target, OccurrenceConfidence::Index))
-                };
-                let class_name = match self.enclosing_class_index(occurrence, class) {
-                    Some(class_index) => {
-                        let class_span = self.module.declarations[class_index].span;
-                        let own_fields =
-                            self.own_field_indices_named(class_span, attribute.as_str());
-                        match own_fields.len() {
-                            0 => match self
-                                .inherited_field_annotation_class_name(class_index, attribute)
-                            {
-                                InstanceAttributeClassLookup::Unique { class_name, .. } => {
-                                    Some(class_name)
-                                }
-                                InstanceAttributeClassLookup::Absent
-                                | InstanceAttributeClassLookup::Ambiguous
-                                | InstanceAttributeClassLookup::Unannotated => None,
-                            },
-                            1 => match self.field_annotation_class_name_from_index(own_fields[0])
-                            {
-                                InstanceAttributeClassLookup::Unique { class_name, .. } => {
-                                    Some(class_name)
-                                }
-                                InstanceAttributeClassLookup::Absent
-                                | InstanceAttributeClassLookup::Ambiguous
-                                | InstanceAttributeClassLookup::Unannotated => None,
-                            },
-                            _ => None,
-                        }
-                    }
-                    None => None,
-                };
-                let Some(class_name) = class_name else {
-                    return match occurrence.kind {
-                        OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
-                            method_foreign().map(Some)
-                        }
-                        OccurrenceKind::AttributeRead => field_foreign().map(Some),
-                    };
-                };
-                match occurrence.kind {
-                    OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
-                        if let Some(resolved) =
-                            self.class_qualified_call_target(occurrence, &class_name, checked)?
-                        {
-                            Ok(Some(resolved))
-                        } else {
-                            method_foreign().map(Some)
-                        }
-                    }
-                    OccurrenceKind::AttributeRead => {
-                        if let Some(resolved) =
-                            self.class_qualified_read_target(occurrence, &class_name, checked)?
-                        {
-                            Ok(Some(resolved))
-                        } else {
-                            field_foreign().map(Some)
-                        }
-                    }
-                }
+                self.instance_or_named_attribute_target(
+                    occurrence,
+                    checked,
+                    match self.enclosing_class_index(occurrence, class) {
+                        Some(class_index) => self
+                            .field_annotation_class_name_for_class(class_index, attribute),
+                        None => None,
+                    },
+                )
+            }
+            OccurrenceReceiver::NamedAttribute { name, attribute } => {
+                self.instance_or_named_attribute_target(
+                    occurrence,
+                    checked,
+                    match self.named_attribute_class_index(occurrence, name) {
+                        Some(class_index) => self
+                            .field_annotation_class_name_for_class(class_index, attribute),
+                        None => None,
+                    },
+                )
             }
             OccurrenceReceiver::Super { class, after } => {
                 let confidence = |checked: Option<&SymbolOutcome>| match checked {
@@ -3342,6 +3296,110 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
             })
             .collect()
+    }
+
+    fn instance_or_named_attribute_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        checked: Option<&SymbolOutcome>,
+        class_name: Option<String>,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        let method_foreign = || {
+            foreign_method(self.slice(occurrence.span)?, occurrence.span)
+                .map(|target| (target, OccurrenceConfidence::Index))
+        };
+        let field_foreign = || {
+            foreign_field(self.slice(occurrence.span)?, occurrence.span)
+                .map(|target| (target, OccurrenceConfidence::Index))
+        };
+        let Some(class_name) = class_name else {
+            return match occurrence.kind {
+                OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                    method_foreign().map(Some)
+                }
+                OccurrenceKind::AttributeRead => field_foreign().map(Some),
+            };
+        };
+        match occurrence.kind {
+            OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                if let Some(resolved) =
+                    self.class_qualified_call_target(occurrence, &class_name, checked)?
+                {
+                    Ok(Some(resolved))
+                } else {
+                    method_foreign().map(Some)
+                }
+            }
+            OccurrenceKind::AttributeRead => {
+                if let Some(resolved) =
+                    self.class_qualified_read_target(occurrence, &class_name, checked)?
+                {
+                    Ok(Some(resolved))
+                } else {
+                    field_foreign().map(Some)
+                }
+            }
+        }
+    }
+
+    /// The annotated class name one field on a class names, when unique.
+    fn field_annotation_class_name_for_class(
+        &self,
+        class_index: usize,
+        attribute: &str,
+    ) -> Option<String> {
+        let class_span = self.module.declarations[class_index].span;
+        let own_fields = self.own_field_indices_named(class_span, attribute);
+        match own_fields.len() {
+            0 => match self.inherited_field_annotation_class_name(class_index, attribute) {
+                InstanceAttributeClassLookup::Unique { class_name, .. } => Some(class_name),
+                InstanceAttributeClassLookup::Absent
+                | InstanceAttributeClassLookup::Ambiguous
+                | InstanceAttributeClassLookup::Unannotated => None,
+            },
+            1 => match self.field_annotation_class_name_from_index(own_fields[0]) {
+                InstanceAttributeClassLookup::Unique { class_name, .. } => Some(class_name),
+                InstanceAttributeClassLookup::Absent
+                | InstanceAttributeClassLookup::Ambiguous
+                | InstanceAttributeClassLookup::Unannotated => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Resolves one plain-name receiver to a live class index for a named
+    /// attribute chain.
+    fn named_attribute_class_index(
+        &self,
+        occurrence: &OccurrenceFact,
+        name: &str,
+    ) -> Option<usize> {
+        let function_index = self.enclosing_function_index(occurrence)?;
+        let function = &self.module.declarations[function_index];
+        match self.local_binding_name(function, name, occurrence) {
+            LocalBinding::Foreign => return None,
+            LocalBinding::Unique(type_name) => return self.unique_live_class_index(&type_name),
+            LocalBinding::Absent => {}
+        }
+        match receiver_annotation_name(function, name) {
+            ReceiverAnnotationName::Ambiguous => return None,
+            ReceiverAnnotationName::Unique(type_name) => {
+                return self.unique_live_class_index(type_name);
+            }
+            ReceiverAnnotationName::Absent => {}
+        }
+        match self.module_annotation_name(function, name, occurrence) {
+            LocalBinding::Foreign => None,
+            LocalBinding::Unique(type_name) => self.unique_live_class_index(&type_name),
+            LocalBinding::Absent => {
+                let candidates = self.live_plain_class_indices(name);
+                if candidates.len() == 1 {
+                    Some(candidates[0])
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// The class name one own field's annotation names, when unique.
