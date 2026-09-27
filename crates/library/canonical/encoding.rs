@@ -167,6 +167,42 @@ pub(super) fn encode_row(value: &Row, out: &mut Vec<u8>) {
         out.push(1);
         append_bytes(out, preimage.as_str().as_bytes());
     }
+    // Declaration facts are the second append-only suffix, tagged `2` so it
+    // can never be read as a preimage. A row whose producer observed
+    // nothing omits it and keeps its historical bytes exactly.
+    if !value.facts.is_unobserved() {
+        out.push(2);
+        append_facts(out, &value.facts);
+    }
+}
+
+/// Encodes declaration facts: each fact is `0` unobserved, `1` absent, or
+/// `2` followed by its value; optional text is `0`, or `1` and its bytes.
+fn append_facts(out: &mut Vec<u8>, facts: &crate::DeclarationFacts) {
+    match &facts.deprecation {
+        crate::Fact::Unobserved => out.push(0),
+        crate::Fact::Absent => out.push(1),
+        crate::Fact::Present(notice) => {
+            out.push(2);
+            for part in [notice.since(), notice.note()] {
+                match part {
+                    Some(text) => {
+                        out.push(1);
+                        append_bytes(out, text.as_bytes());
+                    }
+                    None => out.push(0),
+                }
+            }
+        }
+    }
+    match &facts.obligation {
+        crate::Fact::Unobserved => out.push(0),
+        crate::Fact::Absent => out.push(1),
+        crate::Fact::Present(obligation) => {
+            out.push(2);
+            out.push(obligation.wire_tag());
+        }
+    }
 }
 
 fn append_fragments(out: &mut Vec<u8>, fragments: &[Fragment]) {
