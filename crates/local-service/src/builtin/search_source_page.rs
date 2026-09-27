@@ -236,6 +236,25 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
         "package_source_lookup projects={PROJECTS} files={} target_files={FILES_PER_PROJECT} declarations={DECLARATIONS_PER_FILE} page_median_ns={page_median} page_p95_ns={page_p95} lookup_median_ns={lookup_median} lookup_p95_ns={lookup_p95}",
         PROJECTS * FILES_PER_PROJECT
     );
+    let admitted = snapshot_holding(8, 8, &declarations).expect("admitted snapshot");
+    let admitted_package = backend_engine::package_key("pkg-7");
+    let admitted_page = sample(WARMUPS, SAMPLES, || {
+        super::read_indexed_sources(&admitted)
+            .expect("page")
+            .files
+            .len()
+    });
+    let admitted_lookup = sample(WARMUPS, SAMPLES, || {
+        super::read_package_sources(&admitted, admitted_package)
+            .expect("lookup")
+            .files
+            .len()
+    });
+    let (admitted_page_median, admitted_page_p95) = percentiles(&admitted_page);
+    let (admitted_lookup_median, admitted_lookup_p95) = percentiles(&admitted_lookup);
+    println!(
+        "package_source_lookup_admitted projects=8 files=64 target_files=8 declarations={DECLARATIONS_PER_FILE} page_median_ns={admitted_page_median} page_p95_ns={admitted_page_p95} lookup_median_ns={admitted_lookup_median} lookup_p95_ns={admitted_lookup_p95}"
+    );
     drop(store);
     let _ = std::fs::remove_dir_all(&directory);
     (page_median, lookup_median)
