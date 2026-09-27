@@ -1571,6 +1571,262 @@ fn accessor_public_keyword_read_targets_same_class_score() {
 }
 
 #[test]
+fn getter_setter_read_targets_getter_not_setter() {
+    const SOURCE: &[u8] = b"export class Child { get score(): number { return 1; } set score(value: number) {} read(): number { return this.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_functions = entities_named(&v, b"score", EntityKind::Function);
+    assert_eq!(score_functions.len(), 2);
+    let getter = score_functions[0];
+    let setter = score_functions[1];
+    assert_ne!(getter, setter);
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(getter))
+    );
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(setter))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    let calls: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect();
+    assert_eq!(calls.len(), 0);
+}
+
+#[test]
+fn getter_only_read_targets_getter() {
+    const SOURCE: &[u8] =
+        b"export class Child { get score(): number { return 1; } read(): number { return this.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_functions = entities_named(&v, b"score", EntityKind::Function);
+    assert_eq!(score_functions.len(), 1);
+    let getter = score_functions[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(getter))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    let calls: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect();
+    assert_eq!(calls.len(), 0);
+}
+
+#[test]
+fn setter_only_read_targets_setter() {
+    const SOURCE: &[u8] =
+        b"export class Child { set score(value: number) {} read(): number { return this.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_functions = entities_named(&v, b"score", EntityKind::Function);
+    assert_eq!(score_functions.len(), 1);
+    let setter = score_functions[0];
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(setter))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    let calls: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect();
+    assert_eq!(calls.len(), 0);
+}
+
+#[test]
+fn getter_setter_call_targets_getter_not_setter() {
+    const SOURCE: &[u8] = b"export class Child { get score(): number { return 1; } set score(value: number) {} read(): number { return this.score(); } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_functions = entities_named(&v, b"score", EntityKind::Function);
+    assert_eq!(score_functions.len(), 2);
+    let getter = score_functions[0];
+    let setter = score_functions[1];
+    assert_ne!(getter, setter);
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let calls: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect();
+    assert_eq!(calls.len(), 1);
+    let site = &calls[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(getter))
+    );
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(setter))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 0);
+}
+
+#[test]
+fn getter_setter_child_read_targets_child_getter() {
+    const SOURCE: &[u8] = b"export class Other { get score(): number { return 9; } set score(value: number) {} } export class Base { get score(): number { return 1; } set score(value: number) {} } export class Child extends Base { get score(): number { return 2; } set score(value: number) {} read(): number { return this.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_functions = entities_named(&v, b"score", EntityKind::Function);
+    assert_eq!(score_functions.len(), 6);
+    let other_getter = score_functions[0];
+    let other_setter = score_functions[1];
+    let base_getter = score_functions[2];
+    let base_setter = score_functions[3];
+    let child_getter = score_functions[4];
+    let child_setter = score_functions[5];
+    assert_ne!(other_getter, other_setter);
+    assert_ne!(base_getter, base_setter);
+    assert_ne!(child_getter, child_setter);
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_getter))
+    );
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(child_setter))
+    );
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_getter))
+    );
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_getter))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+}
+
+#[test]
+fn getter_setter_child_read_targets_base_getter_not_setter() {
+    const SOURCE: &[u8] = b"export class Other { get score(): number { return 9; } set score(value: number) {} } export class Base { get score(): number { return 1; } set score(value: number) {} } export class Child extends Base { read(): number { return this.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_functions = entities_named(&v, b"score", EntityKind::Function);
+    assert_eq!(score_functions.len(), 4);
+    let other_getter = score_functions[0];
+    let other_setter = score_functions[1];
+    let base_getter = score_functions[2];
+    let base_setter = score_functions[3];
+    assert_ne!(other_getter, other_setter);
+    assert_ne!(base_getter, base_setter);
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let field_reads: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(field_reads.len(), 1);
+    let site = &field_reads[0];
+    assert_eq!(site.owner.raw, read_owner);
+    assert_eq!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_getter))
+    );
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(base_setter))
+    );
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_getter))
+    );
+    assert_eq!(site.occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, site, b"score", score_token_start);
+    assert_ne!(
+        site.occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_setter))
+    );
+}
+
+#[test]
+fn getter_setter_read_targets_getter_when_setter_is_declared_first() {
+    const SOURCE: &[u8] = b"export class Child { set score(value: number) {} get score(): number { return 1; } read(): number { return this.score; } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_functions = entities_named(&v, b"score", EntityKind::Function);
+    assert_eq!(score_functions.len(), 2);
+    let setter = score_functions[0];
+    let getter = score_functions[1];
+    assert_ne!(setter, getter);
+    let (read_owner, _) = named(&v, b"read");
+    let score_token_start = property_token(SOURCE, b"this.", b"score");
+    let sites: Vec<_> = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect();
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].owner.raw, read_owner);
+    assert_eq!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(getter))
+    );
+    assert_ne!(
+        sites[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(setter))
+    );
+    assert_eq!(sites[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &sites[0], b"score", score_token_start);
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    assert_eq!(calls, 0);
+}
+
+#[test]
 fn parameter_property_object_literal_inside_constructor_is_not_the_field() {
     const SOURCE: &[u8] = b"export class Child { constructor() { const box = { score: 1 }; } read(): number { return this.score; } }";
     let stack = StackLowered::compile(SOURCE);

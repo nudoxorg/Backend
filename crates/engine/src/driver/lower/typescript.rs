@@ -464,6 +464,8 @@ struct Projector<'x, 'report, 'source> {
     /// Constructor parameter-property field facts whose declaration span sits
     /// inside the constructor function rather than the class body.
     parameter_properties: Vec<u32>,
+    /// Function ordinals lowered from class setter method definitions.
+    setters: Vec<u32>,
     /// Source span of every synthetic type-expression fact (`UNSET` otherwise).
     /// Synthetic facts register no declaration span, but span containment still
     /// binds them to the innermost enclosing declaration: identical anonymous
@@ -3285,6 +3287,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             staged_members: Vec::new(),
             member_parents: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             parameter_properties: Vec::new(),
+            setters: Vec::new(),
             synthetic_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             facts_by_name: HashMap::new(),
@@ -4036,7 +4039,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     .return_type
                     .as_ref()
                     .map(|returned| returned.type_annotation.span());
-                self.push_signature(
+                let ordinal = self.push_signature(
                     key_span,
                     declaration_span,
                     &rows,
@@ -4044,6 +4047,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     result,
                     definition.r#static,
                 )?;
+                if definition.kind.is_set() {
+                    self.setters.push(ordinal);
+                }
                 if definition.kind.is_constructor() {
                     self.push_parameter_properties(value.params.span(), definition.span)?;
                 }
@@ -5378,7 +5384,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             .get(name)
             .cloned()
             .unwrap_or_default();
-        let mut matched = None;
+        let mut primary = None;
+        let mut setter_count: u32 = 0;
+        let mut setter = None;
         for ordinal in candidates {
             let Some(index) = usize::try_from(ordinal).ok() else {
                 continue;
@@ -5397,13 +5405,23 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if !owner_match && !parameter_property_match {
                 continue;
             }
-            if matched.is_some() {
+            if expected_kind == EntityKind::Function && self.setters.contains(&ordinal) {
+                setter_count = setter_count.saturating_add(1);
+                setter = Some(ordinal);
+                continue;
+            }
+            if primary.is_some() {
                 return ClassMemberMatch::Ambiguous;
             }
-            matched = Some(ordinal);
+            primary = Some(ordinal);
         }
-        match matched {
+        match primary {
             Some(fact) => ClassMemberMatch::Unique(fact),
+            None if setter_count == 1 => match setter {
+                Some(fact) => ClassMemberMatch::Unique(fact),
+                None => ClassMemberMatch::Absent,
+            },
+            None if setter_count > 1 => ClassMemberMatch::Ambiguous,
             None => ClassMemberMatch::Absent,
         }
     }
