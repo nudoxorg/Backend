@@ -650,18 +650,22 @@ mod tests {
         let Err(error) = residence.refresh([member.as_path()]) else {
             panic!("missing workspace field");
         };
-        assert!(
-            error.contains("[workspace.package].version"),
-            "{error}"
-        );
+        assert!(error.contains("[workspace.package].version"), "{error}");
         let reads = residence.disk_reads();
-        assert!(reads >= 1);
+        assert!(
+            reads > 1,
+            "the field walk probes ancestors that are not part of the digest"
+        );
         let Err(again) = residence.refresh([member.as_path()]) else {
             panic!("cached failure");
         };
         assert_eq!(again, error);
         assert_eq!(residence.parses(), 1);
-        assert_eq!(residence.disk_reads(), reads);
+        assert_eq!(
+            residence.disk_reads(),
+            1,
+            "a cached failure only rehashes the member"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }
