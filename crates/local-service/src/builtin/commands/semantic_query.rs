@@ -106,12 +106,15 @@ pub(super) fn execute_semantic_graph(
         BuiltinModelError("semantic graph source is absent from the selected view".to_owned())
     })?;
     let source_id = backend_engine::RowId::Symbol(source_symbol);
-    let source = library.view().row(source_id).ok_or_else(|| {
-        BuiltinModelError("semantic graph source is absent from the selected view".to_owned())
-    })?;
     let semantic_query = query.with_resolved_symbol(source_symbol);
-    let Some(package) = source.package else {
-        return Ok(None);
+    let package = {
+        let source = library.view().row_ref(source_id).ok_or_else(|| {
+            BuiltinModelError("semantic graph source is absent from the selected view".to_owned())
+        })?;
+        let Some(package) = source.package else {
+            return Ok(None);
+        };
+        package
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_indexed_sources(&snapshot)?;
@@ -229,13 +232,16 @@ pub(super) fn execute_structural_call_graph(
         )
     })?;
     let source_id = backend_engine::RowId::Symbol(source_symbol);
-    let source = view.row(source_id).ok_or_else(|| {
-        BuiltinModelError(
-            "structural call graph source is absent from the selected view".to_owned(),
-        )
-    })?;
-    let Some(package) = source.package else {
-        return Ok(None);
+    let package = {
+        let source = view.row_ref(source_id).ok_or_else(|| {
+            BuiltinModelError(
+                "structural call graph source is absent from the selected view".to_owned(),
+            )
+        })?;
+        let Some(package) = source.package else {
+            return Ok(None);
+        };
+        package
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_indexed_sources(&snapshot)?;
@@ -343,13 +349,10 @@ fn semantic_link_row_id(
                     foreign_namespace_call_retarget(image, external, callable_index)?
                 };
                 if let Some(identity) = identity {
-                    return Ok(view
-                        .row(backend_engine::RowId::Symbol(
-                            super::super::view_build::semantic_symbol(package, identity),
-                        ))
-                        .map(|_| backend_engine::RowId::Symbol(
-                            super::super::view_build::semantic_symbol(package, identity),
-                        )));
+                    let row_id = backend_engine::RowId::Symbol(
+                        super::super::view_build::semantic_symbol(package, identity),
+                    );
+                    return Ok(view.row_ref(row_id).map(|_| row_id));
                 }
             } else if matches!(link_kind, LinkKind::TypeReference | LinkKind::Imports)
                 && let Some(identity) = join_project_mention(
@@ -362,13 +365,10 @@ fn semantic_link_row_id(
                     published,
                 )?
             {
-                return Ok(view
-                    .row(backend_engine::RowId::Symbol(
-                        super::super::view_build::semantic_symbol(package, identity),
-                    ))
-                    .map(|_| backend_engine::RowId::Symbol(
-                        super::super::view_build::semantic_symbol(package, identity),
-                    )));
+                let row_id = backend_engine::RowId::Symbol(
+                    super::super::view_build::semantic_symbol(package, identity),
+                );
+                return Ok(view.row_ref(row_id).map(|_| row_id));
             } else if matches!(link_kind, LinkKind::Reads) {
                 let identity = if let Some(identity) = join_project_field(
                     image,
@@ -392,13 +392,10 @@ fn semantic_link_row_id(
                     )?
                 };
                 if let Some(identity) = identity {
-                    return Ok(view
-                        .row(backend_engine::RowId::Symbol(
-                            super::super::view_build::semantic_symbol(package, identity),
-                        ))
-                        .map(|_| backend_engine::RowId::Symbol(
-                            super::super::view_build::semantic_symbol(package, identity),
-                        )));
+                    let row_id = backend_engine::RowId::Symbol(
+                        super::super::view_build::semantic_symbol(package, identity),
+                    );
+                    return Ok(view.row_ref(row_id).map(|_| row_id));
                 }
             }
             let identity = backend_semantic::ir::ExternalTargetIdentity::capture(image, external)
@@ -412,7 +409,7 @@ fn semantic_link_row_id(
             ))
         }
     };
-    if view.row(row_id).is_some() {
+    if view.row_ref(row_id).is_some() {
         Ok(Some(row_id))
     } else {
         Ok(None)
@@ -520,7 +517,7 @@ fn project_opened_semantic_graph(
                             source.entity.version.identity(),
                         ),
                     );
-                    if view.row(from).is_none() {
+                    if view.row_ref(from).is_none() {
                         continue;
                     }
                     relations.insert(backend_engine::GraphRelation::new(
@@ -651,7 +648,7 @@ fn project_opened_reference_facts(
                 source.entity.version.identity(),
             );
             if view
-                .row(backend_engine::RowId::Symbol(caller_symbol))
+                .row_ref(backend_engine::RowId::Symbol(caller_symbol))
                 .is_none()
             {
                 continue;
@@ -716,7 +713,7 @@ fn project_opened_reference_facts(
                     continue;
                 }
                 if view
-                    .row(backend_engine::RowId::Symbol(retargeted_symbol))
+                    .row_ref(backend_engine::RowId::Symbol(retargeted_symbol))
                     .is_none()
                 {
                     continue;
@@ -741,17 +738,20 @@ fn project_opened_reference_facts(
             }
         }
     }
-    let target_row = view.row(target_row_id).ok_or_else(|| {
-        BuiltinModelError("references target is absent from the selected view".to_owned())
-    })?;
-    let target_name = target_row
-        .label
-        .rsplit("::")
-        .next()
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| {
-            BuiltinModelError("references target has no declaration name".to_owned())
+    let target_name = {
+        let target_row = view.row_ref(target_row_id).ok_or_else(|| {
+            BuiltinModelError("references target is absent from the selected view".to_owned())
         })?;
+        target_row
+            .label
+            .rsplit("::")
+            .next()
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                BuiltinModelError("references target has no declaration name".to_owned())
+            })?
+    };
     let target_identity = view_build::structural_symbol_identity(target_symbol);
     for (caller_coordinate, callee_coordinate) in structural_pairs {
         let Some(callee_id) =
@@ -767,7 +767,7 @@ fn project_opened_reference_facts(
         else {
             continue;
         };
-        let caller_row = view.row(caller_id).ok_or_else(|| {
+        let caller_row = view.row_ref(caller_id).ok_or_else(|| {
             BuiltinModelError("structural references site is absent from the view".to_owned())
         })?;
         let backend_engine::RowId::Symbol(caller_symbol) = caller_row.id else {
@@ -785,7 +785,7 @@ fn project_opened_reference_facts(
         let (start, end) = caller_row
             .excerpt
             .text()
-            .and_then(|excerpt| view_build::structural_call_span(excerpt, target_name))
+            .and_then(|excerpt| view_build::structural_call_span(excerpt, &target_name))
             .map(|(start, end)| {
                 (
                     u32::try_from(start).unwrap_or(u32::MAX),
@@ -861,25 +861,29 @@ pub(super) fn execute_references(
 ) -> Result<backend_engine::SurfaceReply, BuiltinModelError> {
     let library = daemon.engine().daemon().library();
     let view = library.view();
-    let target_row = view
-        .rows()
-        .iter()
-        .find(|row| row.label == target.as_str())
-        .ok_or_else(|| {
-            BuiltinModelError("references target is absent from the selected view".to_owned())
-        })?;
-    let target_symbol = match target_row.id {
-        backend_engine::RowId::Symbol(symbol) => symbol,
-        _ => {
+    let (target_symbol, package) = {
+        let target_row = view
+            .row_refs()
+            .find(|row| row.label == target.as_str())
+            .ok_or_else(|| {
+                BuiltinModelError(
+                    "references target is absent from the selected view".to_owned(),
+                )
+            })?;
+        let target_symbol = match target_row.id {
+            backend_engine::RowId::Symbol(symbol) => symbol,
+            _ => {
+                return Err(BuiltinModelError(
+                    "references target is not a declaration row".to_owned(),
+                ));
+            }
+        };
+        let Some(package) = target_row.package else {
             return Err(BuiltinModelError(
-                "references target is not a declaration row".to_owned(),
+                "references target is not attributed to a package".to_owned(),
             ));
-        }
-    };
-    let Some(package) = target_row.package else {
-        return Err(BuiltinModelError(
-            "references target is not attributed to a package".to_owned(),
-        ));
+        };
+        (target_symbol, package)
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = snapshot
@@ -10757,6 +10761,152 @@ mod references_tests {
             .map_err(|error| error.to_string())?;
         if !facts.is_empty() {
             return Err(format!("absent target produced {} facts", facts.len()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_reference_target_matches_the_first_cloned_row() -> Result<(), String> {
+        const ROWS: usize = 4096;
+        const SAMPLES: usize = 9;
+        let (initial, _) =
+            super::super::super::initial_view().map_err(|error| error.to_string())?;
+        let capability = super::super::super::test_builtin_view_capability()
+            .map_err(|error| error.to_string())?;
+        let package = backend_engine::package_key("fixture");
+        let body = "d".repeat(4096);
+        let mut built = Vec::with_capacity(ROWS);
+        for index in 0..ROWS {
+            let label = if index == 7 || index == 4000 {
+                "pkg::shared".to_owned()
+            } else {
+                format!("pkg::decl-{index}")
+            };
+            let symbol = backend_engine::symbol_key(&format!("reference-symbol-{index}"));
+            built.push(
+                backend_engine::Row::in_package(
+                    backend_engine::RowId::Symbol(symbol),
+                    initial.basis(),
+                    package,
+                    label,
+                )
+                .with_document(vec![backend_engine::Fragment::Text(body.clone())]),
+            );
+        }
+        let view = backend_engine::ViewRoot::new_checked(
+            initial.recipe(),
+            initial.basis(),
+            initial.frontier(),
+            built,
+            vec![backend_engine::ViewCoverage::Complete],
+            capability,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let owned_first = view
+            .row_refs()
+            .cloned()
+            .find(|row| row.label == "pkg::shared")
+            .map(|row| row.id);
+        let borrowed_first = view
+            .row_refs()
+            .find(|row| row.label == "pkg::shared")
+            .map(|row| row.id);
+        if owned_first != borrowed_first {
+            return Err(format!(
+                "borrowed target {borrowed_first:?} differs from cloned target {owned_first:?}"
+            ));
+        }
+        let duplicate_ids: Vec<_> = view
+            .row_refs()
+            .filter(|row| row.label == "pkg::shared")
+            .map(|row| row.id)
+            .collect();
+        if duplicate_ids.len() != 2 {
+            return Err(format!(
+                "expected two shared labels, got {}",
+                duplicate_ids.len()
+            ));
+        }
+        let earliest = duplicate_ids.iter().copied().min();
+        if borrowed_first != earliest {
+            return Err(format!(
+                "first label match {borrowed_first:?} is not the earliest row {earliest:?}"
+            ));
+        }
+        let absent = backend_engine::RowId::Symbol(backend_engine::symbol_key("missing-symbol"));
+        if view.row(absent).is_none() != view.row_ref(absent).is_none() {
+            return Err("absent presence check diverged".to_owned());
+        }
+        let present = borrowed_first.ok_or("shared label is absent")?;
+        if view.row(present).is_none() || view.row_ref(present).is_none() {
+            return Err("present target was reported absent".to_owned());
+        }
+        let ids: Vec<_> = view.row_refs().map(|row| row.id).collect();
+        let mut owned_find = [0_u128; SAMPLES];
+        let mut borrowed_find = [0_u128; SAMPLES];
+        let mut owned_presence = [0_u128; SAMPLES];
+        let mut borrowed_presence = [0_u128; SAMPLES];
+        for sample in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            let owned: Vec<_> = view.row_refs().cloned().collect();
+            let hit = owned
+                .iter()
+                .find(|row| row.label == "pkg::shared")
+                .map(|row| row.document.len());
+            owned_find[sample] = started.elapsed().as_nanos();
+            std::hint::black_box(hit);
+            let started = std::time::Instant::now();
+            let hit = view
+                .row_refs()
+                .find(|row| row.label == "pkg::shared")
+                .map(|row| row.id);
+            borrowed_find[sample] = started.elapsed().as_nanos();
+            std::hint::black_box(hit);
+            let started = std::time::Instant::now();
+            let mut bytes = 0_usize;
+            for id in &ids {
+                if let Some(row) = view.row(*id) {
+                    bytes += row.document.len();
+                }
+            }
+            owned_presence[sample] = started.elapsed().as_nanos();
+            std::hint::black_box(bytes);
+            let started = std::time::Instant::now();
+            let mut absent_count = 0_usize;
+            for id in &ids {
+                if view.row_ref(*id).is_none() {
+                    absent_count += 1;
+                }
+            }
+            borrowed_presence[sample] = started.elapsed().as_nanos();
+            std::hint::black_box(absent_count);
+        }
+        owned_find.sort_unstable();
+        borrowed_find.sort_unstable();
+        owned_presence.sort_unstable();
+        borrowed_presence.sort_unstable();
+        let owned_find_median = owned_find[SAMPLES / 2];
+        let borrowed_find_median = borrowed_find[SAMPLES / 2];
+        let owned_presence_median = owned_presence[SAMPLES / 2];
+        let borrowed_presence_median = borrowed_presence[SAMPLES / 2];
+        eprintln!(
+            "borrowed_reference_target rows={ROWS} \
+             find_owned_median_ns={owned_find_median} \
+             find_borrowed_median_ns={borrowed_find_median} \
+             presence_owned_median_ns={owned_presence_median} \
+             presence_borrowed_median_ns={borrowed_presence_median}"
+        );
+        if borrowed_find_median.saturating_mul(2) >= owned_find_median {
+            return Err(format!(
+                "borrowed label find {borrowed_find_median} ns was not twice as fast as cloning \
+                 every row {owned_find_median} ns"
+            ));
+        }
+        if borrowed_presence_median.saturating_mul(2) >= owned_presence_median {
+            return Err(format!(
+                "borrowed presence {borrowed_presence_median} ns was not twice as fast as cloning \
+                 every row {owned_presence_median} ns"
+            ));
         }
         Ok(())
     }
