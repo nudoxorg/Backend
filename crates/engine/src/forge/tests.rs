@@ -734,6 +734,10 @@ fn partial_clone_skips_historical_blobs() {
         ],
     );
     git_quiet(Some(&bare), &["config", "uploadpack.allowFilter", "true"]);
+    git_quiet(
+        Some(&bare),
+        &["config", "uploadpack.allowReachableSHA1InWant", "true"],
+    );
     let expected = String::from_utf8(Command::new("git")
         .args(["-C", work.to_str().expect("work"), "rev-parse", "HEAD"])
         .output()
