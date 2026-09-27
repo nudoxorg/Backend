@@ -3254,11 +3254,19 @@ const fn combined_tier(any_checked: bool, any_resolved: bool) -> Confidence {
 const INHERITED_MEMBER_DEPTH_LIMIT: u8 = 8;
 
 /// Peels a same-file base class name from one written base annotation.
+///
+/// A quoted base (`class Child("Base")`) is parsed as a name with no source
+/// span, because the coordinates belong to the string value rather than the
+/// enclosing module. That is not a live same-file class reference.
 fn same_file_base_name(annotation: &Annotation) -> Option<&str> {
     match annotation {
-        Annotation::Name { name, .. } => Some(name.as_str()),
+        Annotation::Name { name, span } if span.is_some() && !name.contains('.') => {
+            Some(name.as_str())
+        }
         Annotation::Generic { base, .. } => match base.as_ref() {
-            Annotation::Name { name, .. } => Some(name.as_str()),
+            Annotation::Name { name, span } if span.is_some() && !name.contains('.') => {
+                Some(name.as_str())
+            }
             _ => None,
         },
         _ => None,
