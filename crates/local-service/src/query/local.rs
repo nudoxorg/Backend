@@ -513,6 +513,7 @@ impl QueryCoordinator {
     pub fn search_local(&self, query: LocalQuery) -> Result<LocalAnswer, QueryError> {
         let mut hits = Vec::new();
         let mut cursor = None;
+        let mut reported_total = None;
         loop {
             let request = lexical::QueryRequest {
                 binding: self.corpus.lexical_binding,
@@ -525,11 +526,18 @@ impl QueryCoordinator {
                 .lexical
                 .query(&request)
                 .map_err(|_| QueryError::LexicalProvider)?;
+            if reported_total.is_some_and(|total| total != page.total) {
+                return Err(QueryError::LexicalProvider);
+            }
+            reported_total = Some(page.total);
             hits.extend(page.hits);
             cursor = page.next;
             if cursor.is_none() {
                 break;
             }
+        }
+        if reported_total != Some(hits.len()) {
+            return Err(QueryError::LexicalProvider);
         }
         let mut matches = hits
             .into_iter()
@@ -538,16 +546,13 @@ impl QueryCoordinator {
         if !query.qualified_clauses().is_empty() {
             let presentations = presentation_index(&self.corpus.semantic_evidence);
             matches.retain(|(entity, _)| {
-                self.corpus
-                    .entities
-                    .get(entity)
-                    .is_some_and(|row_id| {
-                        qualified_row_matches(
-                            row_id.stable_key().as_str(),
-                            query.qualified_clauses(),
-                            &presentations,
-                        )
-                    })
+                self.corpus.entities.get(entity).is_some_and(|row_id| {
+                    qualified_row_matches(
+                        row_id.stable_key().as_str(),
+                        query.qualified_clauses(),
+                        &presentations,
+                    )
+                })
             });
         }
         let total_matches = matches.len();
@@ -682,9 +687,9 @@ fn qualified_row_matches(
     clauses: &[QualifiedClause],
     presentations: &BTreeMap<&str, &SemanticQueryPresentation>,
 ) -> bool {
-    clauses.iter().all(|clause| {
-        qualified_clause_matches(row_id, clause, presentations)
-    })
+    clauses
+        .iter()
+        .all(|clause| qualified_clause_matches(row_id, clause, presentations))
 }
 
 fn qualified_clause_matches(
