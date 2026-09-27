@@ -16,7 +16,7 @@
 use super::layout::Box2;
 use super::model::NodeId;
 use crate::motion::flight::Pacing;
-pub use crate::motion::flight::Travel;
+pub use crate::motion::flight::{FlightRoom, FocusKind, FocusRoute, Travel};
 use crate::motion::{self, Camera, Flights};
 use crate::probe::{self, TrackKind, TrackSample};
 use gpui::{App, Window};
@@ -43,6 +43,27 @@ impl View {
     #[must_use]
     pub fn k(&self, cam: &Camera) -> f64 {
         f64::from(self.w) / cam.w
+    }
+
+    /// Normalizes a measured reading room using the same isotropic scale as
+    /// world projection: both axes use full viewport width, about its centre.
+    #[must_use]
+    pub fn flight_room(&self, room: &Self, anchor: (f32, f32)) -> FlightRoom {
+        let width = f64::from(self.w.max(1.0));
+        let centre = (
+            f64::from(self.x) + f64::from(self.w) / 2.0,
+            f64::from(self.y) + f64::from(self.h) / 2.0,
+        );
+        FlightRoom {
+            left: (f64::from(room.x) - centre.0) / width,
+            right: (f64::from(room.x) + f64::from(room.w.max(1.0)) - centre.0) / width,
+            top: (f64::from(room.y) - centre.1) / width,
+            bottom: (f64::from(room.y) + f64::from(room.h.max(1.0)) - centre.1) / width,
+            anchor: (
+                (f64::from(anchor.0) - centre.0) / width,
+                (f64::from(anchor.1) - centre.1) / width,
+            ),
+        }
     }
 
     /// World → window.
@@ -407,8 +428,12 @@ pub struct Rig {
     segment: Segment,
     velocity: Velocity,
     stopped: Option<Camera>,
+    // Held manipulation intent is separate from the actual pose, so the
+    // probe can detect corruption rather than manufacture a trajectory.
+    pending_input: Option<Camera>,
     last: Option<Instant>,
     view_width: f64,
+    sampled_at: Option<Instant>,
     flights: Flights,
 }
 
@@ -430,8 +455,10 @@ impl Rig {
             segment: Segment::Still,
             velocity: (0.0, 0.0, 0.0),
             stopped: None,
+            pending_input: None,
             last: None,
             view_width: 1440.0,
+            sampled_at: None,
             flights,
         }
     }
@@ -469,8 +496,16 @@ impl Rig {
         self.segment = Segment::Still;
         self.velocity = (0.0, 0.0, 0.0);
         self.stopped = None;
+        self.pending_input = None;
         self.last = None;
         self.flights.jump(KEY, cam);
+    }
+
+    /// Sets a measured camera immediately and publishes its terminal pose.
+    /// Used for reduced-motion layout correction without another camera step.
+    pub fn snap_to(&mut self, cam: Camera, cx: &mut App) {
+        self.set(cam);
+        self.flights.snap(KEY, cam, cx);
     }
 
     /// Flies to `to`, retaining velocity when navigation interrupts motion.
@@ -525,6 +560,23 @@ impl Rig {
         self.fly_with(to, landing, travel);
     }
 
+    /// Reframes within the newly measured room without losing route provenance.
+    pub fn reframe_in(&mut self, to: Camera, room: FlightRoom) {
+        let (travel, landing) = match self.segment {
+            Segment::Flight {
+                travel, landing, ..
+            } => (travel.in_room(room), landing),
+            _ => (Travel::Reframe, None),
+        };
+        self.fly_with(to, landing, travel);
+    }
+
+    /// Phase at the last drawn camera's timestamp, with no extra sampling.
+    #[must_use]
+    pub fn phase(&self) -> Option<f64> {
+        self.sampled_at.and_then(|at| self.flights.phase(KEY, at))
+    }
+
     /// Stops flight, inertia or ease at the drawn camera.
     pub fn hold(&mut self) {
         if !matches!(self.segment, Segment::Still) {
@@ -538,6 +590,7 @@ impl Rig {
     /// A drag moved the camera; direct input positions are not animation.
     pub fn drag_to(&mut self, cam: Camera) {
         self.set(cam);
+        self.pending_input = Some(cam);
     }
 
     /// A released drag keeps `(vx, vy)` world units/ms.
@@ -684,7 +737,11 @@ impl Rig {
         cx: &mut App,
     ) -> (bool, Option<Landing>) {
         let now = motion::now(cx);
+        self.sampled_at = Some(now);
         self.view_width = f64::from(view.w);
+        if let Some(requested) = self.pending_input.take() {
+            self.publish_input(now, requested, cx);
+        }
         if let Some(held) = self.stopped.take() {
             self.flights.snap(KEY, held, cx);
         }
@@ -736,6 +793,40 @@ impl Rig {
             motion::request_frame(window, cx);
         }
         (sample.live, None)
+    }
+
+    /// Observe a held pose once, before any autonomous release sample. The
+    /// requested pose came from raw pointer intent; value reads actual state.
+    /// This measurement never asks for a frame or changes camera dynamics.
+    #[allow(clippy::cast_possible_truncation)]
+    fn publish_input(&self, now: Instant, requested: Camera, cx: &mut App) {
+        if !probe::enabled(cx) {
+            return;
+        }
+        let at_ms = now
+            .saturating_duration_since(motion::epoch(cx))
+            .as_secs_f64()
+            * 1000.0;
+        for (axis, value, intent) in [
+            ("x", self.cam.x, requested.x),
+            ("y", self.cam.y, requested.y),
+            ("w", self.cam.w, requested.w),
+        ] {
+            probe::record_track(cx, || TrackSample {
+                key: format!("{KEY}.{axis}"),
+                kind: TrackKind::Input,
+                value: value as f32,
+                target: intent as f32,
+                velocity: 0.0,
+                started_ms: at_ms,
+                budget_ms: 0.0,
+                at_ms,
+                live: false,
+                overshoot_ratio: 0.0,
+                overshoot_absolute: 0.0,
+                group: None,
+            });
+        }
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -856,6 +947,103 @@ mod tests {
             window.refresh();
             window.draw(cx).clear(cx);
         });
+    }
+
+    #[gpui::test]
+    fn held_input_is_measured_once_and_final_move_precedes_same_frame_coast(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::probe::enable);
+        let (rig, _, cx) = stepper(cx, Camera::new(10.0, 20.0, 144.0));
+        frame(cx);
+        cx.update(|_, cx| {
+            crate::probe::take(cx);
+        });
+        let requested_frames = cx.update(|_, cx| motion::frames_requested(cx));
+        // Raw320px right /132px up in1440px viewport at width144:
+        // the held input intent is32world units left /13.2world units down.
+        rig.borrow_mut().drag_to(Camera::new(-6.0, 26.6, 144.0));
+        frame(cx);
+        let held = cx.update(|_, cx| crate::probe::take(cx));
+        assert_eq!(held.tracks.len(), 3, "one input observation per axis");
+        assert!(
+            held.tracks
+                .iter()
+                .all(|sample| sample.kind == crate::probe::TrackKind::Input
+                    && sample.value == sample.target
+                    && !sample.live
+                    && sample.velocity == 0.0
+                    && sample.budget_ms == 0.0)
+        );
+        assert_eq!(
+            cx.update(|_, cx| motion::frames_requested(cx)),
+            requested_frames,
+            "observing held input cannot request an animation frame"
+        );
+        frame(cx);
+        assert!(
+            cx.update(|_, cx| crate::probe::take(cx)).tracks.is_empty(),
+            "a held pose does not publish forever"
+        );
+        // Delivery coalesces the final move and release into the next draw.
+        rig.borrow_mut().drag_to(Camera::new(-20.0, 32.5, 144.0));
+        rig.borrow_mut().drag_to(Camera::new(-22.0, 33.2, 144.0));
+        rig.borrow_mut().fling(-0.032, 0.0132);
+        frame(cx);
+        let released = cx.update(|_, cx| crate::probe::take(cx));
+        for (axis, expected) in [("x", -22.0), ("y", 33.2), ("w", 144.0)] {
+            let key = format!("graph-camera.{axis}");
+            let samples: Vec<_> = released
+                .tracks
+                .iter()
+                .filter(|sample| sample.key == key)
+                .collect();
+            let input = samples
+                .iter()
+                .position(|sample| sample.kind == crate::probe::TrackKind::Input)
+                .expect("final held pose is retained before release");
+            let coast = samples
+                .iter()
+                .enumerate()
+                .skip(input + 1)
+                .find(|(_, sample)| sample.kind == crate::probe::TrackKind::Tween)
+                .map(|(_, sample)| *sample)
+                .expect("release publishes an autonomous sample");
+            assert_eq!(samples[input].target, expected);
+            assert_eq!(samples[input].value, expected);
+            assert_eq!(
+                coast.at_ms, samples[input].at_ms,
+                "same-frame boundary remains visible"
+            );
+            assert_eq!(
+                coast.value, expected,
+                "coast begins at the actual final input pose"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn input_measurement_keeps_requested_pose_independent_of_corrupted_actual_state(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::probe::enable);
+        let (rig, _, cx) = stepper(cx, Camera::new(0.0, 0.0, 144.0));
+        frame(cx);
+        cx.update(|_, cx| {
+            crate::probe::take(cx);
+        });
+        rig.borrow_mut().drag_to(Camera::new(10.0, -20.0, 144.0));
+        // A canary corrupts actual state after the raw intent is accepted.
+        // The probe must not derive its requested target from this state.
+        rig.borrow_mut().cam.x += 0.25;
+        frame(cx);
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        let sample = ledger
+            .track("graph-camera.x")
+            .expect("held x input observation");
+        assert_eq!(sample.kind, crate::probe::TrackKind::Input);
+        assert_eq!(sample.target, 10.0);
+        assert_eq!(sample.value, 10.25);
     }
 
     #[gpui::test]
