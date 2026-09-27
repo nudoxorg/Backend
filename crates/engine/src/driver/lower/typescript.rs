@@ -461,6 +461,9 @@ struct Projector<'x, 'report, 'source> {
     /// Claimed embodiment per member fact (`UNSET` when the span-containment
     /// parent stands). Indexed by fact ordinal.
     member_parents: Box<[u32]>,
+    /// Constructor parameter-property field facts whose declaration span sits
+    /// inside the constructor function rather than the class body.
+    parameter_properties: Vec<u32>,
     /// Source span of every synthetic type-expression fact (`UNSET` otherwise).
     /// Synthetic facts register no declaration span, but span containment still
     /// binds them to the innermost enclosing declaration: identical anonymous
@@ -1121,6 +1124,71 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let ordinal = self.push(fact)?;
         self.register(ordinal, declaration, name, EntityKind::Function)?;
         Ok(ordinal)
+    }
+
+    /// Pushes one class field fact for each constructor parameter property.
+    /// Parameter facts are already registered by [`push_signature`]; each
+    /// parameter property also becomes a [`EntityKind::Field`] on the
+    /// enclosing class so `this.member` resolution can see it.
+    fn push_parameter_properties(
+        &mut self,
+        params_span: Span,
+        _declaration: Span,
+    ) -> Result<(), TypeScriptCollectError> {
+        let Some(params_kind) = self.ast_kind_at_exact_span(params_span.start, params_span.end) else {
+            return Ok(());
+        };
+        let Some(params) = params_kind.as_formal_parameters() else {
+            return Ok(());
+        };
+        for parameter in params.items.iter() {
+            if !parameter.accessibility.is_some() && !parameter.readonly {
+                continue;
+            }
+            let Some(identifier) = parameter.pattern.get_binding_identifier() else {
+                continue;
+            };
+            let name_bytes =
+                self.slice_span(identifier.span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: identifier.span.start,
+                        end: identifier.span.end,
+                    })?;
+            if let Some(existing) = self.fact_at_name_start(identifier.span.start) {
+                let Some(index) = usize::try_from(existing).ok() else {
+                    continue;
+                };
+                if self.fact_kinds.get(index) == Some(&EntityKind::Field) {
+                    continue;
+                }
+            }
+            let Some(class) = self.enclosing_record(identifier.span.start) else {
+                continue;
+            };
+            let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+            let cells = match parameter.type_annotation.as_ref() {
+                Some(annotation) => {
+                    let inner = annotation.type_annotation.span();
+                    self.owner_cells(inner.start, inner.end, 0)?
+                }
+                None => TypeCells::unknown(TypeReason::Unannotated),
+            };
+            let extension = self.extension(type_parameter_start)?;
+            let fact = with_cells(
+                SemanticFact::new(EntityKind::Field, name_bytes, LEAF_PRODUCT)
+                    .with_extension(extension),
+                cells,
+            );
+            let ordinal = self.push(fact)?;
+            self.register(ordinal, parameter.span, identifier.span, EntityKind::Field)?;
+            if let Some(index) = usize::try_from(ordinal).ok() {
+                if let Some(slot) = self.member_parents.get_mut(index) {
+                    *slot = class;
+                }
+            }
+            self.parameter_properties.push(ordinal);
+        }
+        Ok(())
     }
 
     /// Counts already-committed same-kind, same-name, same-owner signatures
@@ -3216,6 +3284,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             extension_type_parameters: vec![0; MAX_EMISSION_FACTS].into_boxed_slice(),
             staged_members: Vec::new(),
             member_parents: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
+            parameter_properties: Vec::new(),
             synthetic_starts: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             synthetic_ends: vec![UNSET; MAX_EMISSION_FACTS].into_boxed_slice(),
             facts_by_name: HashMap::new(),
@@ -3941,6 +4010,9 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     result,
                     definition.r#static,
                 )?;
+                if definition.kind.is_constructor() {
+                    self.push_parameter_properties(value.params.span(), definition.span)?;
+                }
                 if let Some(body) = value.body.as_ref() {
                     for statement in body.statements.iter() {
                         let statement_span = statement.span();
@@ -5281,9 +5353,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 continue;
             }
             let decl_start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
-            if decl_start == UNSET
-                || self.enclosing_registered_owner(decl_start, Some(ordinal)) != Some(owner)
-            {
+            if decl_start == UNSET {
+                continue;
+            }
+            let owner_match =
+                self.enclosing_registered_owner(decl_start, Some(ordinal)) == Some(owner);
+            let parameter_property_match = self.parameter_properties.contains(&ordinal)
+                && self.enclosing_record(decl_start) == Some(owner);
+            if !owner_match && !parameter_property_match {
                 continue;
             }
             if matched.is_some() {
