@@ -1277,6 +1277,8 @@ struct MemberKey<'source> {
     /// True only on version-6 images when the owning named type declares in
     /// a sibling source file (`name_span` present and not digest-bound).
     cross_file: bool,
+    embedded: bool,
+    type_root: Option<u32>,
 }
 
 /// The two-pass Go projector over one validated authority image.
@@ -1486,6 +1488,121 @@ impl<'x, 'source> Projector<'x, 'source> {
                 key.package == package && key.type_name == type_name && key.member == member
             })
             .map(|key| (key.ordinal, key.is_field))
+    }
+
+    /// The in-package named type behind one field's type-root coordinate,
+    /// peeling one pointer when the field is spelled as `*T`.
+    fn named_type_from_root(
+        &self,
+        type_root: Option<u32>,
+    ) -> Option<(&'source [u8], &'source [u8])> {
+        let mut row_index = type_root?;
+        let row = self.image.type_row(index_of(row_index)).ok()?;
+        row_index = if row.kind == TypeRowKind::Pointer {
+            let children = self.row_children(&row).ok()?;
+            *children.first()?
+        } else {
+            row_index
+        };
+        let row = self.image.type_row(index_of(row_index)).ok()?;
+        if row.kind == TypeRowKind::Named {
+            Some((row.package, row.name))
+        } else {
+            None
+        }
+    }
+
+    /// Resolves one receiver-qualified field selector through embedded
+    /// struct fields when the name is absent on the receiver itself.
+    /// Exactly one distinct promoted field ordinal wins; zero or more than
+    /// one stay unresolved.
+    fn lookup_promoted_field(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        member: &[u8],
+    ) -> Option<u32> {
+        const MAX_DEPTH: usize = 8;
+        let mut stack: Vec<(&[u8], &[u8], usize)> = vec![(package, recv_type, 0)];
+        let mut visited: Vec<(&[u8], &[u8])> = Vec::new();
+        let mut found: Option<u32> = None;
+        while let Some((pkg, type_name, depth)) = stack.pop() {
+            if depth > MAX_DEPTH {
+                continue;
+            }
+            if visited
+                .iter()
+                .any(|&(seen_pkg, seen_type)| seen_pkg == pkg && seen_type == type_name)
+            {
+                continue;
+            }
+            visited.push((pkg, type_name));
+            for key in &self.members {
+                if key.package != pkg
+                    || key.type_name != type_name
+                    || !key.is_field
+                    || !key.embedded
+                {
+                    continue;
+                }
+                let Some((emb_pkg, emb_name)) = self.named_type_from_root(key.type_root) else {
+                    continue;
+                };
+                if let Some((ordinal, true)) = self.lookup_member(emb_pkg, emb_name, member) {
+                    let cross_file = self
+                        .members
+                        .iter()
+                        .find(|candidate| candidate.ordinal == ordinal)
+                        .is_some_and(|candidate| candidate.cross_file);
+                    // A sibling-file field is not a local ordinal. It also
+                    // blocks promotion: ignoring it would make an ambiguous
+                    // selector look unique.
+                    if cross_file {
+                        return None;
+                    }
+                    match found {
+                        None => found = Some(ordinal),
+                        Some(existing) if existing != ordinal => return None,
+                        Some(_) => {}
+                    }
+                }
+                stack.push((emb_pkg, emb_name, depth + 1));
+            }
+        }
+        found
+    }
+
+    /// A field the receiver does not declare itself. A direct member,
+    /// including one whose type declares in a sibling file, stays the
+    /// package key. Otherwise exactly one promoted field ordinal is local,
+    /// and zero or several stay the package key.
+    fn promoted_or_foreign_field(
+        &self,
+        reference_index: u32,
+        package: &'source [u8],
+        recv_type: &'source [u8],
+        target: &'source [u8],
+        class: ReferenceTargetClass,
+    ) -> Result<OccurrenceTarget<'source>, GoCollectError> {
+        if class == ReferenceTargetClass::Field && !recv_type.is_empty() {
+            if self.lookup_member(package, recv_type, target).is_some() {
+                return foreign_target(
+                    reference_index,
+                    package,
+                    target,
+                    foreign_entity_kind(class),
+                );
+            }
+            if let Some(ordinal) = self.lookup_promoted_field(package, recv_type, target) {
+                return Ok(OccurrenceTarget::Local(EntityId::new(ordinal)));
+            }
+        }
+        foreign_target(
+            reference_index,
+            package,
+            target,
+            foreign_entity_kind(class),
+        )
     }
 
     /// Resolves one receiver-qualified member to a local fact. Fields whose
@@ -1728,6 +1845,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 ordinal,
                 is_field: false,
                 cross_file: false,
+                embedded: false,
+                type_root: None,
             });
             methods.push(ordinal);
             method_names.push(method.name);
@@ -1763,6 +1882,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 ordinal,
                 is_field: false,
                 cross_file: false,
+                embedded: false,
+                type_root: None,
             });
             methods.push(ordinal);
             method_names.push(method_set.name);
@@ -1873,6 +1994,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 ordinal,
                 is_field: true,
                 cross_file,
+                embedded: member.embedded,
+                type_root: member.type_root,
             });
             fields.push(ordinal);
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1916,6 +2039,8 @@ impl<'x, 'source> Projector<'x, 'source> {
                 ordinal,
                 is_field: false,
                 cross_file: false,
+                embedded: false,
+                type_root: None,
             });
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
@@ -2146,9 +2271,11 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// class, and the receiver type name for method and field targets.
     /// Resolution keeps the call-graph law: a same-package target resolves
     /// to its local fact when the lane carries one (package scope by name,
-    /// members by receiver type and name); everything else — every foreign
-    /// package, every promoted or otherwise unlocalizable member — stays a
-    /// typed foreign `go` lineage key. Owners lift relative spans over the
+    /// members by receiver type and name). A field the receiver does not
+    /// declare resolves locally when exactly one embedded struct declares
+    /// it. Everything else — every foreign package, every ambiguous
+    /// promotion, every otherwise unlocalizable member — stays a typed
+    /// foreign `go` lineage key. Owners lift relative spans over the
     /// authority-bound source spans attached in passes one and two, so the
     /// shared containment law places every site in the exact source bytes
     /// of the used identifier.
@@ -2221,18 +2348,13 @@ impl<'x, 'source> Projector<'x, 'source> {
                 });
                 match local {
                     Some(target) => target,
-                    None => {
-                        // Same-package target with no local fact: promoted
-                        // members, blank-keyed fields, or build-excluded
-                        // declarations. The key keeps the exact spelling
-                        // under the declaring package's lineage.
-                        foreign_target(
-                            reference_index,
-                            owner_package,
-                            row.target,
-                            foreign_entity_kind(row.target_class),
-                        )?
-                    }
+                    None => self.promoted_or_foreign_field(
+                        reference_index,
+                        owner_package,
+                        row.recv_type,
+                        row.target,
+                        row.target_class,
+                    )?,
                 }
             } else {
                 let local = self
@@ -2244,11 +2366,12 @@ impl<'x, 'source> Projector<'x, 'source> {
                     });
                 match local {
                     Some(target) => target,
-                    None => foreign_target(
+                    None => self.promoted_or_foreign_field(
                         reference_index,
                         row.target_package,
+                        row.recv_type,
                         row.target,
-                        foreign_entity_kind(row.target_class),
+                        row.target_class,
                     )?,
                 }
             };
@@ -3683,6 +3806,7 @@ mod tests {
         kind: u8,
         name: Cell,
         type_root: Option<u32>,
+        embedded: bool,
     }
 
     #[derive(Clone)]
@@ -3893,6 +4017,21 @@ mod tests {
                     kind: 0,
                     name: spelled,
                     type_root,
+                    embedded: false,
+                },
+            );
+        }
+
+        fn embedded_field(&mut self, owner: u32, name: &[u8], type_root: Option<u32>) {
+            let spelled = self.atom(name);
+            self.add_member(
+                owner,
+                MemberF {
+                    owner,
+                    kind: 0,
+                    name: spelled,
+                    type_root,
+                    embedded: true,
                 },
             );
         }
@@ -3906,6 +4045,7 @@ mod tests {
                     kind: 1,
                     name: spelled,
                     type_root,
+                    embedded: false,
                 },
             );
         }
@@ -4186,7 +4326,7 @@ mod tests {
             for row in &self.members {
                 let (name, name_len) = cell(row.name);
                 members.extend_from_slice(&row.owner.to_le_bytes());
-                members.extend_from_slice(&[row.kind, 0, 1, 0]);
+                members.extend_from_slice(&[row.kind, u8::from(row.embedded), 1, 0]);
                 members.extend_from_slice(&name);
                 members.extend_from_slice(&name_len);
                 members.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
@@ -5942,6 +6082,565 @@ mod tests {
         }
         if occurrences.next().is_some() {
             return Err(TestError::Missing("exact occurrences"));
+        }
+        Ok(())
+    }
+
+    /// The single `Field` named `field_name` on the Go field list of the
+    /// type named `owner_name`. Zero or several fields of that spelling
+    /// fail the test instead of picking the first entity of the name.
+    fn field_on_type(
+        view: &FragmentView<'_>,
+        owner_name: &[u8],
+        field_name: &[u8],
+    ) -> Result<EntityId, TestError> {
+        let owner = entity_of(view, owner_name)?;
+        let facts = go_extension(
+            view,
+            usize::try_from(owner.raw).map_err(TestError::from)?,
+        )?;
+        if facts.fields.raw == 0 {
+            return Err(TestError::Missing("type field list"));
+        }
+        let listed = pooled_list(
+            view,
+            backend_semantic::ir::ExtensionPoolListLane::Entities,
+            facts.fields.raw,
+        )?;
+        let mut found = None;
+        for raw in listed {
+            let id = EntityId::new(raw);
+            let entity = view
+                .entities()
+                .find(|entity| entity.entity == id)
+                .ok_or(TestError::Missing("listed field entity"))?;
+            let atom = view
+                .atoms()
+                .nth(usize::try_from(entity.name.raw).map_err(TestError::from)?)
+                .ok_or(TestError::Missing("entity atom"))?;
+            if atom.bytes != field_name || entity.kind != EntityKind::Field {
+                continue;
+            }
+            if found.is_some() {
+                return Err(TestError::Missing("one field of that name on the type"));
+            }
+            found = Some(id);
+        }
+        found.ok_or(TestError::Missing("field on type"))
+    }
+
+    /// `owner_name` has a Go field list and none of those fields is a
+    /// `Field` named `field_name`.
+    fn type_does_not_declare_field(
+        view: &FragmentView<'_>,
+        owner_name: &[u8],
+        field_name: &[u8],
+    ) -> Result<(), TestError> {
+        match field_on_type(view, owner_name, field_name) {
+            Err(TestError::Missing("field on type")) => Ok(()),
+            Ok(_) => Err(TestError::Missing("type declares the field")),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[test]
+    fn promoted_field_unique_embed_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("unique promoted field is Inner.Value"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_two_embeds_stay_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let side = fix.declaration(KIND_TYPE, b"Side", None);
+        let side_row = fix.start_row(ROW_STRUCT);
+        fix.field(side_row, b"Value", Some(int));
+        fix.declarations[side].type_root = Some(side_row);
+        let side_named = fix.named(PACKAGE, b"Side", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.embedded_field(outer_row, b"Side", Some(side_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        let side_value = field_on_type(&view, b"Side", b"Value")?;
+        if inner_value == side_value {
+            return Err(TestError::Missing("distinct embedded Value fields"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("ambiguous promoted field read"))??;
+        if access.owner != use_entity {
+            return Err(TestError::Missing("ambiguous promoted field owner"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("ambiguous promoted field stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign promoted field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact ambiguous promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_direct_field_wins() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.field(outer_row, b"Value", Some(int));
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let outer_value = field_on_type(&view, b"Outer", b"Value")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        if outer_value == inner_value {
+            return Err(TestError::Missing("distinct direct and embedded Value fields"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("direct field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(outer_value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("outer Value field wins over the embed"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact direct-field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_pointer_embed_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let pointer_inner = fix.unary(ROW_POINTER, inner_named);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(pointer_inner));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("pointer promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("pointer embed promotes Inner.Value"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact pointer promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_two_levels_are_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let mid = fix.declaration(KIND_TYPE, b"Mid", None);
+        let mid_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(mid_row, b"Inner", Some(inner_named));
+        fix.declarations[mid].type_root = Some(mid_row);
+        let mid_named = fix.named(PACKAGE, b"Mid", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Mid", Some(mid_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        type_does_not_declare_field(&view, b"Mid", b"Value")?;
+        type_does_not_declare_field(&view, b"Outer", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("two-level promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("two-level promotion resolves to Inner.Value"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact two-level promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_cross_file_direct_stays_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.field(outer_row, b"Value", Some(int));
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        fix.declarations[outer].name_span = Some((0, 5));
+        fix.declarations[outer].bound = false;
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("cross-file direct field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target == OccurrenceTarget::Local(inner_value)
+        {
+            return Err(TestError::Missing("cross-file direct field is not the embed"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("cross-file direct field stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign cross-file direct field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact cross-file direct field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_diamond_embed_stays_the_same_field() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let mid = fix.declaration(KIND_TYPE, b"Mid", None);
+        let mid_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(mid_row, b"Inner", Some(inner_named));
+        fix.declarations[mid].type_root = Some(mid_row);
+        let mid_named = fix.named(PACKAGE, b"Mid", &[]);
+        let side = fix.declaration(KIND_TYPE, b"Side", None);
+        let side_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(side_row, b"Inner", Some(inner_named));
+        fix.declarations[side].type_root = Some(side_row);
+        let side_named = fix.named(PACKAGE, b"Side", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Mid", Some(mid_named));
+        fix.embedded_field(outer_row, b"Side", Some(side_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        type_does_not_declare_field(&view, b"Mid", b"Value")?;
+        type_does_not_declare_field(&view, b"Side", b"Value")?;
+        type_does_not_declare_field(&view, b"Outer", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("diamond promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("diamond promotion resolves to Inner.Value"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact diamond promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_method_shaped_read_stays_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 1, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("method-shaped promoted read"))??;
+        if access.owner != use_entity || access.occurrence.target == OccurrenceTarget::Local(value)
+        {
+            return Err(TestError::Missing("method-shaped read is not the promoted field"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("method-shaped read stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Function)
+            || access.occurrence.kind != ReferenceKind::MethodCall
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign method key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact method-shaped promoted occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_cross_file_embed_stays_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        fix.declarations[inner].name_span = Some((0, 5));
+        fix.declarations[inner].bound = false;
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("cross-file promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target == OccurrenceTarget::Local(inner_value)
+        {
+            return Err(TestError::Missing("cross-file embed is not a local field"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("cross-file embed stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign cross-file promoted field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact cross-file promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_cross_file_sibling_blocks_local_embed() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let side = fix.declaration(KIND_TYPE, b"Side", None);
+        let side_row = fix.start_row(ROW_STRUCT);
+        fix.field(side_row, b"Value", Some(int));
+        fix.declarations[side].type_root = Some(side_row);
+        fix.declarations[side].name_span = Some((0, 4));
+        fix.declarations[side].bound = false;
+        let side_named = fix.named(PACKAGE, b"Side", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.embedded_field(outer_row, b"Side", Some(side_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        let side_value = field_on_type(&view, b"Side", b"Value")?;
+        if inner_value == side_value {
+            return Err(TestError::Missing("distinct local and sibling Value fields"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("blocked promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target == OccurrenceTarget::Local(inner_value)
+            || access.occurrence.target == OccurrenceTarget::Local(side_value)
+        {
+            return Err(TestError::Missing("sibling field blocks the local embed"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("blocked promotion stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign blocked promoted field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact blocked promoted field occurrences"));
         }
         Ok(())
     }
