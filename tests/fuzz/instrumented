@@ -5,6 +5,7 @@
 
 backend_fuzz
 fuzz_target
+backend_flow
 backend_replication
 backend_version
 backend_store

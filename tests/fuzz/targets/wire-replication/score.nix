@@ -3,6 +3,7 @@
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {
   name = "replication RPL2";
+  ilo_priority = 4;
   complexity = {
     score = 1431;
     loc = 1380;

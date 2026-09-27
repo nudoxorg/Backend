@@ -1,6 +1,6 @@
-# Exports one continuous-fuzz attrset for Ember: bins, corpora, engines, metadata.
-# Target directories under tests/fuzz/targets are the only per-harness edit.
-# These packages are supervised runners. They are intentionally not flake checks.
+# Exports one continuous-fuzz attrset plus packages.${system}.fuzz-<id> aliases.
+# ilo builds those aliases. argv[1] is the durable corpus directory to mount.
+# These packages are libFuzzer runners. They are intentionally not flake checks.
 {
   pkgs,
   workspaceRoot,
@@ -83,7 +83,7 @@ let
     complexity.score * gap.score * blast.score;
   targetMeta = name:
     let
-      score = import (targetRoot + "/${name}/score.nix");
+      score = requirePriority name (import (targetRoot + "/${name}/score.nix"));
       rank = rankOf name score;
     in
     {
@@ -102,6 +102,7 @@ let
       schedule = true;
       inherit rank;
       inherit (score)
+        ilo_priority
         complexity
         gap
         blast
@@ -109,6 +110,11 @@ let
         entrypoints
         ;
     };
+  # `|| abort` so a missing or non-integer ilo_priority fails closed at eval.
+  requirePriority = name: score:
+    assert (builtins.isInt score.ilo_priority && score.ilo_priority >= 1 && score.ilo_priority <= 9)
+      || abort "${name}: ilo_priority must be an integer from 1 through 9";
+    score;
   closed = spec:
     let
       rank = rankOf spec.id spec;
@@ -170,6 +176,14 @@ let
           metadata = "packages.\${system}.continuous-fuzz.metadata";
           short = ".#continuous-fuzz";
           optional_alias = "packages.\${system}.fuzz-<id>";
+          fuzz_packages = [
+            ".#fuzz-store-raw-property"
+            ".#fuzz-flow-evaluator"
+            ".#fuzz-wire-workspace"
+            ".#fuzz-wire-replication"
+          ];
+          corpus_mount = "/durable/fuzz/<id>/corpus";
+          committed_corpus = "tests/fuzz/targets/<id>/corpus";
           systems = [
             "aarch64-darwin"
             "aarch64-linux"
@@ -182,13 +196,20 @@ let
           gap = "Ordinal classification, not a coverage percentage. 0 = raw bytes already have bolero or an exhaustive scan. 2 = fixed hostile examples only. 3 = decoder is not callable outside its crate. 1 is unused. llvm_cov_percent stays null until it is measured.";
           blast = "Trust boundary. 5 = untrusted remote or durable bytes. 4 = session frame from a peer. 3 = local process facade.";
           churn = "Measured git log --oneline counts. ranking_factor is false. Do not multiply churn into the rank; history includes an import and commit counts are not comparable.";
+          ilo_priority = "Ascending systemd start order for packages.\${system}.fuzz-<id>. Independent of rank. Rank 0 with schedule true still runs; gap 0 makes the product zero.";
+        };
+        ilo = {
+          packages = "nix build .#fuzz-<id>. The derivation is the supervised runner.";
+          order = "Start fuzz-<id> by metadata.targets[].ilo_priority ascending. Do not sort the units by rank.";
+          mount = "Create /durable/fuzz/<id>/corpus and pass it as argv[1]. The wrapper also passes corpora.<id> as a read-only second corpus. New coverage is written only to the mount.";
+          engine = "bolero-libfuzzer. Ziggy should select its libFuzzer engine, or exec the script with the corpus mount. AFL++ forkserver and honggfuzz persistent mode are not linked into this binary.";
         };
         ember = {
           warm_vault = "On first start, copy corpora.<id> into metadata.targets[].durable_corpus (/durable/fuzz/<id>/corpus). That directory is the incremental corpus. It must survive process restarts and replacement of the nix store paths.";
-          diff_wake = "Rank metadata.targets by rank, which is complexity.score * gap.score * blast.score. Recompute it; do not trust list order. Skip every row whose rank is null or whose schedule is false. Do not multiply by churn.";
-          fabric = "Build packages.\${system}.continuous-fuzz or .bins.<id>. Do not add these packages to nix flake check. The rust build is one shared engine; corpora.<id> does not depend on it.";
+          diff_wake = "Rank metadata.targets by rank, which is complexity.score * gap.score * blast.score. Recompute it; do not trust list order. Skip every row whose rank is null or whose schedule is false. Do not multiply by churn. ilo_priority is not an input.";
+          fabric = "Build packages.\${system}.fuzz-<id> or .#continuous-fuzz. Do not add these packages to nix flake check. The rust build is one shared engine; corpora.<id> does not depend on it.";
           triage_plane = "Alert when bins.<id> exits non-zero and the artifacts/ directory beside the durable corpus contains a file. Wrapper exit 2, an empty artifacts directory, and a missing BOLERO_LIBFUZZER_ARGS are supervision failures.";
-          nudox_fuzz = "nix build .#continuous-fuzz && ./result/bin/fuzz-<id> /durable/fuzz/<id>/corpus";
+          nudox_fuzz = "nix build .#fuzz-<id> && ./result/bin/fuzz-<id> /durable/fuzz/<id>/corpus";
         };
         reentry = {
           add_target = "Add tests/fuzz/targets/<id>/{oracle.rs,max_len,dictionary.txt,score.nix,corpus/{canonical,empty,bad_magic}}. Do not add a Cargo bin and do not edit default.nix. build.rs and this module discover the directory. Add a line to tests/fuzz/instrumented only when a new decoder crate joins the link closure.";
@@ -212,6 +233,7 @@ let
         laws_regressions = "tests/laws/proptest-regressions/lib.txt";
         linked_crates = [
           "tests/fuzz"
+          "crates/flow"
           "crates/replication"
           "crates/store"
           "crates/version"
@@ -223,7 +245,7 @@ let
           (closed {
             id = "native-envelope";
             name = "native envelope";
-            reason = "NativeEnvelope::decode is public, but backend-compile pulls semantic, tree-sitter, and turso. It is outside this slice's link closure.";
+            reason = "Compile/engine decode, the fourth ilo choice, was not exported. NativeEnvelope::decode is public, but backend-compile pulls semantic, tree-sitter, and turso. It is outside this slice's link closure.";
             complexity = {
               score = 893;
               loc = 867;
@@ -387,37 +409,6 @@ let
             };
             entrypoints = [ "crates/store/src/pack.rs" ];
           })
-          (deferred {
-            id = "store-raw-property";
-            name = "store raw property";
-            reason = "crates/store/src/view/validate/raw_property.rs already runs bolero on raw bytes and scans every u8. Gap is 0, so this contract does not emit a second bin.";
-            complexity = {
-              score = null;
-              loc = 35;
-              error_variants = null;
-              discriminants = null;
-              method = "measured-loc-only";
-              loc_paths = [ "crates/store/src/view/validate/raw_property.rs" ];
-            };
-            gap = {
-              score = 0;
-              method = "classified";
-              label = "bolero-already";
-              llvm_cov_percent = null;
-            };
-            blast = {
-              score = 3;
-              method = "classified";
-              boundary = "local-canonical-frame";
-            };
-            churn = {
-              commits = 1;
-              method = "measured";
-              ranking_factor = false;
-              paths = [ "crates/store/src/view/validate/raw_property.rs" ];
-            };
-            entrypoints = [ "crates/store/src/view/validate/raw_property.rs" ];
-          })
         ];
       };
   metadataFile =
@@ -456,6 +447,7 @@ let
               raise SystemExit("workspace members block not found")
           members = """members = [
               "tests/fuzz",
+              "crates/flow",
               "crates/replication",
               "crates/store",
               "crates/version",

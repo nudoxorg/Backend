@@ -8,10 +8,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Discovered bolero harnesses for untrusted wire decoders"
+description = "Discovered bolero harnesses for untrusted bytes and structured evaluators"
 
 [dependencies]
+backend-flow = { path = "../../crates/flow" }
 backend-replication = { path = "../../crates/replication" }
+backend-store = { path = "../../crates/store" }
 backend-version = { path = "../../crates/version" }
 bolero.workspace = true
 
