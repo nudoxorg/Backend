@@ -2771,25 +2771,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .collect()
     }
 
-    /// Exactly one live class declaration index for a bare same-file name.
-    fn unique_live_class_index(&self, name: &str) -> Option<usize> {
-        let name_bytes = name.as_bytes();
-        let mut matches = Vec::new();
-        for (index, declaration) in self.module.declarations.iter().enumerate() {
-            if declaration.kind == DeclarationKind::Class
-                && self.live[index]
-                && declaration.name.as_bytes() == name_bytes
-            {
-                matches.push(index);
-            }
-        }
-        if matches.len() == 1 {
-            Some(matches[0])
-        } else {
-            None
-        }
-    }
-
     /// One inherited field or method ordinal when same-file bases contribute
     /// exactly one live row of either kind with the attribute spelling.
     fn inherited_attribute_ordinal(
