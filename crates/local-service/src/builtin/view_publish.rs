@@ -679,16 +679,25 @@ pub(super) fn measure_package_publication() {
     let owned_admit = time_samples(PATCH_SAMPLES, PATCH_WARMUPS, || {
         let merged =
             rows_replacing_package(&base_rows, package, replacement.clone()).expect("splice");
+        let target = backend_engine::ViewRoot::new_checked(
+            patch_initial.recipe(),
+            patch_initial.basis(),
+            patch_initial.frontier(),
+            merged,
+            patch_initial.coverage().to_vec(),
+            patch_capability.clone(),
+        )
+        .expect("owned admit");
+        let changes = super::changed_rows(&resident, &target);
         std::hint::black_box(
-            backend_engine::ViewRoot::new_checked(
-                patch_initial.recipe(),
-                patch_initial.basis(),
-                patch_initial.frontier(),
-                merged,
-                patch_initial.coverage().to_vec(),
-                patch_capability.clone(),
-            )
-            .expect("owned admit"),
+            resident
+                .prepare(
+                    backend_engine::ViewDelta::Patch {
+                        changes: Arc::from(changes),
+                    },
+                    patch_capability.clone(),
+                )
+                .expect("owned patch"),
         );
     });
     let direct_patch = time_samples(PATCH_SAMPLES, PATCH_WARMUPS, || {
@@ -1337,16 +1346,25 @@ mod tests {
         let owned = time_samples(8, 2, || {
             let merged =
                 rows_replacing_package(&base_rows, package, replacement.clone()).expect("splice");
+            let target = ViewRoot::new_checked(
+                resident.recipe(),
+                resident.basis(),
+                resident.frontier(),
+                merged,
+                resident.coverage().to_vec(),
+                capability.clone(),
+            )
+            .expect("owned admit");
+            let changes = super::super::changed_rows(&resident, &target);
             std::hint::black_box(
-                ViewRoot::new_checked(
-                    resident.recipe(),
-                    resident.basis(),
-                    resident.frontier(),
-                    merged,
-                    resident.coverage().to_vec(),
-                    capability.clone(),
-                )
-                .expect("owned admit"),
+                resident
+                    .prepare(
+                        ViewDelta::Patch {
+                            changes: Arc::from(changes),
+                        },
+                        capability.clone(),
+                    )
+                    .expect("owned patch"),
             );
         });
         let direct = time_samples(8, 2, || {
