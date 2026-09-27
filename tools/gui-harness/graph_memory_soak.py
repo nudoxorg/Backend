@@ -129,7 +129,7 @@ def compare_states(phases, provenance, reference):
             failures.append(f"state comparison provenance differs: {key}")
     def states(items):
         return {phase["phase"]: {key: value for key, value in phase.get("source", {}).items()
-                                 if key != "frame_requests_total"}
+                                 if key not in {"frame_requests_total", "discovery_prepare_ms"}}
                 for phase in items if phase["phase"] != "cold"}
     actual, wanted = states(phases), states(previous.get("phases", []))
     if actual.keys() != wanted.keys():
@@ -139,7 +139,7 @@ def compare_states(phases, provenance, reference):
             if actual[label].get(key) != wanted[label].get(key):
                 failures.append(f"state comparison {label}: {key} differs")
     return {"reference": str(reference.resolve()), "passed": not failures,
-            "excluded": ["cold bootstrap state", "frame_requests_total",
+            "excluded": ["cold bootstrap state", "frame_requests_total", "discovery_prepare_ms",
                          "PID", "wall time", "RSS", "physical footprint", "CPU"],
             "violations": failures}
 
