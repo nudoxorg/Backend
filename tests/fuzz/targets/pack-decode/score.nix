@@ -45,6 +45,5 @@
   };
   entrypoints = [
     "crates/engine/src/index_publish/pack/view.rs"
-    "tests/fuzz/targets/pack-decode/oracle.rs"
   ];
 }

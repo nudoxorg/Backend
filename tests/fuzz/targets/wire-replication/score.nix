@@ -34,6 +34,5 @@
   entrypoints = [
     "crates/replication/src/codec/messages.rs"
     "crates/replication/src/transport/message.rs"
-    "tests/fuzz/targets/wire-replication/oracle.rs"
   ];
 }

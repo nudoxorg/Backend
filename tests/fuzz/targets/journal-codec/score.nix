@@ -45,6 +45,5 @@
   entrypoints = [
     "crates/engine/src/effects/journal_codec/record.rs"
     "crates/engine/src/dispatch/journal/codec.rs"
-    "tests/fuzz/targets/journal-codec/oracle.rs"
   ];
 }

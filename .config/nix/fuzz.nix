@@ -561,6 +561,10 @@ let
               raise SystemExit("release profile was not patched")
           PY
         '';
+        # RUSTC_WRAPPER below replaces the nix rustc wrapper, which is what
+        # normally injects -rpath. The installed binary NEEDs libstdc++ with
+        # an empty RUNPATH. `linkedEngine` repairs that without a second
+        # cargo build.
         preConfigure = ''
           # `fuzzing_libfuzzer` selects the engine. `fuzzing` keeps bolero from
           # naming the uncompiled test module. The sancov flags are what make
@@ -585,6 +589,23 @@ let
           runHook postInstall
         '';
       };
+  # The cargo derivation's RUNPATH is empty (see the comment on RUSTFLAGS).
+  # Copy the cached binary and point it at the same gcc lib the toolchain
+  # linked. Bins exec this path. The unpatched libexec is not a runner.
+  linkedEngine =
+    if engineBinary == null then
+      null
+    else
+      pkgs.runCommand "backend-fuzz-engine-linked"
+        {
+          nativeBuildInputs = [ pkgs.patchelf ];
+        }
+        ''
+          mkdir -p "$out/libexec"
+          cp ${engineBinary}/libexec/fuzz-target "$out/libexec/fuzz-target"
+          chmod u+w "$out/libexec/fuzz-target"
+          patchelf --set-rpath ${lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ]} "$out/libexec/fuzz-target"
+        '';
   corpora =
     if discovered == null then
       null
@@ -628,7 +649,7 @@ let
                 exit 2
               fi
               export FUZZ_TARGET=${name}
-              exec ${engineBinary}/libexec/fuzz-target
+              exec ${linkedEngine}/libexec/fuzz-target
             '';
           in
           {
