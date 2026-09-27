@@ -25,6 +25,7 @@ type AdmittedReply = (CommandReply, Option<WireCertificate>);
 const ADD_TARGET_REQUIRED: &str =
     "add target must be an admitted local directory or version-pinned package URL";
 
+#[derive(Debug)]
 enum AddTarget {
     LocalDirectory,
     PackageUrl,
