@@ -1,0 +1,9 @@
+[package]
+name = "facts-standalone-fixture"
+version = "0.1.0"
+edition = "2021"
+
+# A standalone package, closed as its own single-package workspace (see
+# `frontends/rust/fixtures/rich_project/Cargo.toml`), so the owner compiles
+# it and the page is answered by the compiler-backed lane.
+[workspace]
