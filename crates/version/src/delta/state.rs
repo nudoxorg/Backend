@@ -162,6 +162,21 @@ impl<R: Relation> RelationState<R> {
         self.tree.get(key)
     }
 
+    /// Binary-searches visible entries by a key-order predicate.
+    ///
+    /// `ord` returns [`core::cmp::Ordering::Less`] when the stored key is
+    /// before the target, [`core::cmp::Ordering::Equal`] for the one match,
+    /// and [`core::cmp::Ordering::Greater`] when the stored key is after the
+    /// target. The predicate must follow canonical key order. The result
+    /// borrows the stored key and value.
+    #[must_use]
+    pub fn find_by<F>(&self, ord: F) -> Option<(&R::Key, &R::Value)>
+    where
+        F: FnMut(&R::Key) -> core::cmp::Ordering,
+    {
+        self.tree.find_by(ord)
+    }
+
     /// Iterates visible relation entries in canonical key order.
     pub fn iter(&self) -> impl Iterator<Item = (&R::Key, &R::Value)> {
         self.tree.iter()

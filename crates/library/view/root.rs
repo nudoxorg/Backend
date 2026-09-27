@@ -271,22 +271,25 @@ impl ViewRoot {
 
     /// Resolves an opaque symbol selector by membership in this exact view.
     ///
-    /// The claimed digest is never promoted directly. The canonical row
-    /// slice is ordered by [`RowId`], so the lookup borrows the already typed
-    /// key from a matching row in logarithmic time.
+    /// The claimed digest is never promoted directly. Symbol rows sit in
+    /// [`RowId`] order inside the relation, so the lookup seeks one
+    /// root-to-leaf path and borrows the typed key from the stored row. The
+    /// compatibility row slice stays untouched.
     #[must_use]
     pub fn resolve_symbol_commitment(&self, claimed: [u8; 32]) -> Option<crate::SymbolKey> {
-        self.rows()
-            .binary_search_by(|row| match row.id {
-                RowId::Package(_) => Ordering::Less,
-                RowId::Symbol(symbol) => symbol.as_bytes().cmp(&claimed),
-                RowId::Object(_) => Ordering::Greater,
-            })
-            .ok()
-            .and_then(|index| match self.rows()[index].id {
-                RowId::Symbol(symbol) => Some(symbol),
-                RowId::Package(_) | RowId::Object(_) => None,
-            })
+        let (_key, value) = self.relation.find_by(|key| match key {
+            ViewEntryKey::Metadata => Ordering::Less,
+            ViewEntryKey::Row(RowId::Package(_)) => Ordering::Less,
+            ViewEntryKey::Row(RowId::Symbol(symbol)) => symbol.as_bytes().cmp(&claimed),
+            ViewEntryKey::Row(RowId::Object(_)) => Ordering::Greater,
+        })?;
+        match value {
+            ViewEntry::Row(row) => match row.id {
+                RowId::Symbol(symbol) if symbol.as_bytes() == &claimed => Some(symbol),
+                RowId::Package(_) | RowId::Symbol(_) | RowId::Object(_) => None,
+            },
+            ViewEntry::Metadata(_) => None,
+        }
     }
 
     /// Looks up only the canonical display label for one row.
@@ -907,5 +910,111 @@ mod tests {
         assert_eq!(descriptor.admit_rows(rows), Err(ViewError::WrongTarget));
         page = root.page(ViewPageCursor::first(&root), 8).expect("page");
         assert!(page.next().is_none());
+    }
+
+    fn slice_symbol_commitment(rows: &[Row], claimed: [u8; 32]) -> Option<crate::SymbolKey> {
+        rows.binary_search_by(|row| match row.id {
+            RowId::Package(_) => Ordering::Less,
+            RowId::Symbol(symbol) => symbol.as_bytes().cmp(&claimed),
+            RowId::Object(_) => Ordering::Greater,
+        })
+        .ok()
+        .and_then(|index| match rows[index].id {
+            RowId::Symbol(symbol) => Some(symbol),
+            RowId::Package(_) | RowId::Object(_) => None,
+        })
+    }
+
+    #[test]
+    fn symbol_commitment_seek_matches_a_cloned_row_scan() {
+        const ROWS: usize = 4096;
+        const SAMPLES: usize = 9;
+        let source = view_state_root(&[]);
+        let object = object_version(b"symbol-commitment-source");
+        let basis = Basis::new(source, object);
+        let package = package_key("commitment-package");
+        let body = "d".repeat(4096);
+        let mut built = Vec::with_capacity(ROWS + 1);
+        built.push(Row::new(
+            RowId::Package(package),
+            basis,
+            "commitment-package",
+        ));
+        for index in 0..ROWS {
+            let id = symbol_key(&format!("pkg::{index:08}"));
+            built.push(
+                Row::new(RowId::Symbol(id), basis, format!("s{index}"))
+                    .with_document(vec![crate::Fragment::Text(body.clone())]),
+            );
+        }
+        let root = ViewRoot::new_checked(
+            view_key(b"symbol-commitment"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+            built,
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("symbol commitment view");
+        assert!(!root.compatibility_rows_are_materialized());
+        let mut symbols: Vec<_> = root
+            .iter_rows()
+            .filter_map(|row| match row.id {
+                RowId::Symbol(symbol) => Some(symbol),
+                RowId::Package(_) | RowId::Object(_) => None,
+            })
+            .collect();
+        symbols.sort_unstable();
+        let claimed = symbols[symbols.len() / 2].to_bytes();
+        let mut borrowed = [0_u128; SAMPLES];
+        let mut owned = [0_u128; SAMPLES];
+        for sample in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            let hit = root.resolve_symbol_commitment(claimed);
+            borrowed[sample] = started.elapsed().as_nanos();
+            std::hint::black_box(hit);
+            let started = std::time::Instant::now();
+            let cloned: Vec<_> = root.iter_rows().cloned().collect();
+            let hit = slice_symbol_commitment(&cloned, claimed);
+            owned[sample] = started.elapsed().as_nanos();
+            std::hint::black_box(hit);
+        }
+        assert!(!root.compatibility_rows_are_materialized());
+        let cloned: Vec<_> = root.iter_rows().cloned().collect();
+        for symbol in &symbols {
+            let bytes = symbol.to_bytes();
+            assert_eq!(
+                root.resolve_symbol_commitment(bytes),
+                slice_symbol_commitment(&cloned, bytes)
+            );
+            assert_eq!(root.resolve_symbol_commitment(bytes), Some(*symbol));
+        }
+        let mut missing = claimed;
+        missing[31] ^= 0xff;
+        assert_eq!(
+            root.resolve_symbol_commitment(missing),
+            slice_symbol_commitment(&cloned, missing)
+        );
+        assert_eq!(
+            root.resolve_symbol_commitment(package.to_bytes()),
+            slice_symbol_commitment(&cloned, package.to_bytes())
+        );
+        assert_eq!(
+            root.resolve_symbol_commitment(claimed),
+            slice_symbol_commitment(root.rows(), claimed)
+        );
+        borrowed.sort_unstable();
+        owned.sort_unstable();
+        let borrowed_median = borrowed[SAMPLES / 2];
+        let owned_median = owned[SAMPLES / 2];
+        eprintln!(
+            "symbol_commitment_seek rows={ROWS} owned_median_ns={owned_median} \
+             borrowed_median_ns={borrowed_median}"
+        );
+        assert!(
+            borrowed_median.saturating_mul(32) < owned_median,
+            "borrowed seek {borrowed_median} ns was not 32× faster than cloning every row \
+             {owned_median} ns"
+        );
     }
 }
