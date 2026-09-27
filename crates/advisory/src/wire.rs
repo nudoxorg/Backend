@@ -46,6 +46,9 @@ pub struct AdvisorySurfaceDto {
     pub yanked: bool,
     /// Registry publisher hides the selected release from ordinary listings.
     pub unlisted: bool,
+    /// The advisory's one-line title, when its source states one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// Product-level policy projection paired with advisory facts.
@@ -106,6 +109,7 @@ impl AdvisorySurfaceDto {
             withdrawn: advisory.withdrawn.clone(),
             yanked: false,
             unlisted: false,
+            summary: advisory.summary.clone(),
         }
     }
 
