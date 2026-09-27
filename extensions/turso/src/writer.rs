@@ -15,10 +15,11 @@ impl TursoProjection {
     /// Aligns the database with a complete immutable root.
     ///
     /// The exact-root fast path performs one metadata read and no writes.
-    /// A different root keeps every stored row whose content hash still
-    /// matches and writes only the identities that appeared, changed, or
-    /// disappeared. Rebuild is reserved for first boot, recovery, or a
-    /// missed transition.
+    /// A different frontier with the same row-set digest updates the fence
+    /// and does not read row hashes. A hot delta clears that digest, so the
+    /// next synchronize compares borrowed rows and writes only the identities
+    /// that appeared, changed, or disappeared. Rebuild is reserved for first
+    /// boot, recovery, or a missed transition.
     ///
     /// # Errors
     ///
@@ -40,6 +41,10 @@ impl TursoProjection {
 
         let row_count =
             i64::try_from(view.row_count()).map_err(|_| ProjectionError::RowCountOverflow)?;
+        let row_digest = row_set_digest(view.row_refs());
+        let digest_matches = expected
+            .as_ref()
+            .is_some_and(|metadata| metadata.row_digest.as_deref() == Some(row_digest.as_slice()));
         // Acquire the one Turso writer lane before touching rows. The
         // metadata check is repeated inside this transaction so a writer that
         // waited behind another publisher returns a typed stale transition and
@@ -64,37 +69,41 @@ impl TursoProjection {
             tx.rollback().await?;
             return Err(ProjectionError::StaleTransition);
         }
-        let changed_rows = if view.rows().is_empty() {
+        let changed_rows = if digest_matches {
+            0
+        } else if view.row_count() == 0 {
             tx.execute("DELETE FROM backend_projection_rows", ())
                 .await?
         } else {
             let stored = stored_row_hashes(&tx).await?;
-            let (desired, due, changed_rows) = projection_mutations(&stored, view.rows());
+            let (desired, due, changed_rows) = projection_mutations(&stored, view.row_refs());
             for rows in due.chunks(REBUILD_BATCH_ROWS) {
                 upsert_rows(&tx, rows).await?;
             }
-            delete_absent_rows(&tx, &desired).await?;
+            delete_absent_rows(&tx, &stored, &desired).await?;
             changed_rows
         };
         // Each writing statement can create one immutable FTS segment. Compact
         // a large rebuild once before publishing the root fence. Unchanged
         // hashes never enter that write, and hot one-row deltas stay append-only.
-        if view.row_count() > REBUILD_BATCH_ROWS as u64 {
+        if changed_rows > 0 && view.row_count() > REBUILD_BATCH_ROWS as u64 {
             tx.execute("OPTIMIZE INDEX backend_projection_rows_fts", ())
                 .await?;
         }
         tx.execute(
             "INSERT INTO backend_projection_meta \
-             (singleton, schema_version, root, view_version, row_count) \
-             VALUES (1, ?1, ?2, ?3, ?4) \
+             (singleton, schema_version, root, view_version, row_count, row_digest) \
+             VALUES (1, ?1, ?2, ?3, ?4, ?5) \
              ON CONFLICT(singleton) DO UPDATE SET \
              schema_version=excluded.schema_version, root=excluded.root, \
-             view_version=excluded.view_version, row_count=excluded.row_count",
+             view_version=excluded.view_version, row_count=excluded.row_count, \
+             row_digest=excluded.row_digest",
             turso::params![
                 SCHEMA_VERSION,
                 view.root().as_bytes().as_slice(),
                 view.version().as_bytes().as_slice(),
-                row_count
+                row_count,
+                row_digest.as_slice()
             ],
         )
         .await?;
@@ -207,7 +216,8 @@ impl TursoProjection {
         }
         let fenced = tx
             .execute(
-                "UPDATE backend_projection_meta SET root=?1, view_version=?2, row_count=?3 \
+                "UPDATE backend_projection_meta SET root=?1, view_version=?2, row_count=?3, \
+                 row_digest=NULL \
                  WHERE singleton=1 AND schema_version=?4 AND root=?5 AND view_version=?6",
                 turso::params![
                     target.root().as_bytes().as_slice(),
@@ -301,23 +311,20 @@ async fn stored_row_hashes(
 
 fn projection_mutations<'row>(
     stored: &BTreeMap<String, [u8; 32]>,
-    rows: &'row [Row],
+    rows: impl IntoIterator<Item = &'row Row>,
 ) -> (BTreeSet<String>, Vec<&'row Row>, u64) {
-    let mut last_index = BTreeMap::<String, usize>::new();
-    for (index, row) in rows.iter().enumerate() {
-        last_index.insert(row.id.stable_key(), index);
-    }
     let mut desired = BTreeSet::new();
     let mut due = Vec::new();
     let mut changed = 0_u64;
-    for (id, index) in &last_index {
-        let row = &rows[*index];
-        let hash = *row_hash(row).as_bytes();
-        desired.insert(id.clone());
-        if stored.get(id) != Some(&hash) {
+    let mut scratch = Vec::new();
+    for row in rows {
+        let id = row.id.stable_key();
+        let hash = *row_hash_into(row, &mut scratch).as_bytes();
+        if stored.get(&id) != Some(&hash) {
             changed = changed.saturating_add(1);
             due.push(row);
         }
+        desired.insert(id);
     }
     for id in stored.keys() {
         if !desired.contains(id) {
@@ -329,26 +336,24 @@ fn projection_mutations<'row>(
 
 async fn delete_absent_rows(
     connection: &turso::Connection,
+    stored: &BTreeMap<String, [u8; 32]>,
     desired: &BTreeSet<String>,
 ) -> Result<(), ProjectionError> {
-    let mut rows = connection
-        .query("SELECT row_id FROM backend_projection_rows", ())
-        .await?;
-    let mut stale = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let id: String = row.get(0)?;
-        if !desired.contains(&id) {
-            stale.push(id);
+    let stale = stored
+        .keys()
+        .filter(|id| !desired.contains(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    for batch in stale.chunks(REBUILD_BATCH_ROWS) {
+        let mut sql = String::from("DELETE FROM backend_projection_rows WHERE row_id IN (");
+        for index in 0..batch.len() {
+            if index != 0 {
+                sql.push(',');
+            }
+            sql.push('?');
         }
-    }
-    drop(rows);
-    for id in stale {
-        connection
-            .execute(
-                "DELETE FROM backend_projection_rows WHERE row_id = ?1",
-                [id],
-            )
-            .await?;
+        sql.push(')');
+        connection.execute(&sql, batch.to_vec()).await?;
     }
     Ok(())
 }
@@ -458,73 +463,85 @@ fn row_identity(id: RowId) -> (i64, String) {
     (kind, id.stable_key())
 }
 
-fn row_hash(row: &Row) -> blake3::Hash {
+fn row_set_digest<'row>(rows: impl IntoIterator<Item = &'row Row>) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.turso.row.v1\0");
-    hash_field(&mut hasher, row.id.stable_key().as_bytes());
-    hash_field(&mut hasher, row.basis.root.as_bytes());
-    hash_field(&mut hasher, row.basis.object.as_bytes());
-    hash_field(&mut hasher, row.basis.branch.as_bytes());
-    hash_field(&mut hasher, row.basis.log.as_bytes());
-    hash_field(&mut hasher, &row.basis.schema.to_be_bytes());
-    hash_field(
-        &mut hasher,
+    let mut scratch = Vec::new();
+    hasher.update(b"backend.turso.row-set.v1\0");
+    for row in rows {
+        hasher.update(row_hash_into(row, &mut scratch).as_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn row_hash(row: &Row) -> blake3::Hash {
+    row_hash_into(row, &mut Vec::new())
+}
+
+fn row_hash_into(row: &Row, bytes: &mut Vec<u8>) -> blake3::Hash {
+    bytes.clear();
+    bytes.extend_from_slice(b"backend.turso.row.v1\0");
+    write_field(bytes, row.id.stable_key().as_bytes());
+    write_field(bytes, row.basis.root.as_bytes());
+    write_field(bytes, row.basis.object.as_bytes());
+    write_field(bytes, row.basis.branch.as_bytes());
+    write_field(bytes, row.basis.log.as_bytes());
+    write_field(bytes, &row.basis.schema.to_be_bytes());
+    write_field(
+        bytes,
         &[match row.state {
             RowState::Ready => 0,
             RowState::Loading => 1,
             RowState::Failed => 2,
         }],
     );
-    hash_field(&mut hasher, row.label.as_bytes());
+    write_field(bytes, row.label.as_bytes());
     let score = row.score.map(u32::to_be_bytes);
-    hash_option(&mut hasher, score.as_ref().map(<[u8; 4]>::as_slice));
-    hash_option(
-        &mut hasher,
+    write_option(bytes, score.as_ref().map(<[u8; 4]>::as_slice));
+    write_option(
+        bytes,
         row.package
             .as_ref()
             .map(|value| value.as_bytes().as_slice()),
     );
-    hash_option(
-        &mut hasher,
+    write_option(
+        bytes,
         row.parent.as_ref().map(|value| value.as_bytes().as_slice()),
     );
-    hash_option(&mut hasher, row.signature.as_deref().map(str::as_bytes));
+    write_option(bytes, row.signature.as_deref().map(str::as_bytes));
     for fragment in &row.document {
         match fragment {
             Fragment::Text(value) => {
-                hash_field(&mut hasher, &[0]);
-                hash_field(&mut hasher, value.as_bytes());
+                write_field(bytes, &[0]);
+                write_field(bytes, value.as_bytes());
             }
             Fragment::Code(value) => {
-                hash_field(&mut hasher, &[1]);
-                hash_field(&mut hasher, value.as_bytes());
+                write_field(bytes, &[1]);
+                write_field(bytes, value.as_bytes());
             }
             Fragment::Link { label, target } => {
-                hash_field(&mut hasher, &[2]);
-                hash_field(&mut hasher, label.as_bytes());
-                hash_field(&mut hasher, target.as_bytes());
+                write_field(bytes, &[2]);
+                write_field(bytes, label.as_bytes());
+                write_field(bytes, target.as_bytes());
             }
-            Fragment::Break => hash_field(&mut hasher, &[3]),
+            Fragment::Break => write_field(bytes, &[3]),
         }
     }
-    hasher.finalize()
+    blake3::hash(bytes)
 }
 
-fn hash_option(hasher: &mut blake3::Hasher, value: Option<&[u8]>) {
+fn write_option(bytes: &mut Vec<u8>, value: Option<&[u8]>) {
     match value {
         Some(value) => {
-            hasher.update(&[1]);
-            hash_field(hasher, value);
+            bytes.push(1);
+            write_field(bytes, value);
         }
-        None => {
-            hasher.update(&[0]);
-        }
+        None => bytes.push(0),
     }
 }
 
-fn hash_field(hasher: &mut blake3::Hasher, value: &[u8]) {
-    hasher.update(&(value.len() as u64).to_be_bytes());
-    hasher.update(value);
+fn write_field(bytes: &mut Vec<u8>, value: &[u8]) {
+    bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    bytes.extend_from_slice(value);
 }
 
 fn render_document(fragments: &[Fragment]) -> String {

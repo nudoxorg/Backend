@@ -1,6 +1,6 @@
 //! SQL schema and stable statement text for the projection.
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 pub(crate) const MAX_AUDIT_ROOTS: i64 = 128;
 /// Rows per multi-row rebuild statement. Each statement becomes one immutable
 /// FTS segment, so batching bounds both statement size and segment count.
@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS backend_projection_meta (
     schema_version INTEGER NOT NULL,
     root BLOB NOT NULL,
     view_version BLOB NOT NULL,
-    row_count INTEGER NOT NULL
+    row_count INTEGER NOT NULL,
+    row_digest BLOB
 );
 CREATE TABLE IF NOT EXISTS backend_projection_rows (
     row_id TEXT PRIMARY KEY,
@@ -114,6 +115,9 @@ pub(crate) struct Metadata {
     pub(crate) root: Vec<u8>,
     pub(crate) view_version: Vec<u8>,
     pub(crate) row_count: i64,
+    /// Digest of the projected row set. Absent after a hot delta until the
+    /// next full synchronize refreshes it.
+    pub(crate) row_digest: Option<Vec<u8>>,
 }
 
 pub(crate) struct PackageGraphMetadata {

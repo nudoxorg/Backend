@@ -37,6 +37,14 @@ impl TursoProjection {
         let connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         connection.execute_batch(schema::SCHEMA).await?;
+        // CREATE TABLE IF NOT EXISTS does not add columns to a projection
+        // written by an older binary. Read the version from the columns that
+        // already existed so an older file is discarded instead of failing as
+        // a missing-column query.
+        if !meta_has_row_digest(&connection).await? {
+            let found = legacy_schema_version(&connection).await?;
+            return Err(ProjectionError::Schema { found });
+        }
         let projection = Self {
             _database: database,
             connection,
@@ -72,6 +80,32 @@ impl TursoProjection {
             opened => opened,
         }
     }
+}
+
+async fn meta_has_row_digest(connection: &turso::Connection) -> Result<bool, ProjectionError> {
+    let mut rows = connection
+        .query("PRAGMA table_info(backend_projection_meta)", ())
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let name: String = row.get(1)?;
+        if name == "row_digest" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn legacy_schema_version(connection: &turso::Connection) -> Result<i64, ProjectionError> {
+    let mut rows = connection
+        .query(
+            "SELECT schema_version FROM backend_projection_meta WHERE singleton=1",
+            (),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(0);
+    };
+    row.get(0).map_err(ProjectionError::from)
 }
 
 /// Removes a projection database and the sidecars Turso keeps beside it.
