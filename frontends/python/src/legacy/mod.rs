@@ -188,11 +188,18 @@ pub enum OccurrenceReceiver {
     /// `self.method()` / `cls.method()`: keyed by the attribute name and
     /// the enclosing class, proven by the declaration walk.
     EnclosingClass { class: String },
-    /// Zero-argument `super()` written directly in a class body function
-    /// (`super().note`, `super().note()`). The search starts after `class`.
-    /// `super(Base, self)`, a nested function, and the bare name `super` are
-    /// not this variant.
-    Super { class: String },
+    /// `super()` or `super(Start, self)` / `super(Start, cls)` written
+    /// directly in a class-body function (`super().note`, `super(Child,
+    /// self).note()`). The search starts after `class` when `after` is
+    /// `None`, or after `Start` when `after` is `Some`. Nested functions and
+    /// the bare name `super` are not this variant.
+    Super {
+        class: String,
+        /// `None` for zero-argument `super()`: search starts after `class`.
+        /// `Some` for `super(Start, self)` or `super(Start, cls)`: search
+        /// starts after `Start`.
+        after: Option<String>,
+    },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -921,9 +928,11 @@ impl<'a> Projection<'a> {
         }
     }
 
-    /// Zero-argument `super()` inside a class-body method at `function_depth`
-    /// 1. Two-argument `super`, nested functions, and bare `super` stay foreign.
-    fn zero_arg_super_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+    /// `super()` or `super(Start, self)` / `super(Start, cls)` inside a
+    /// class-body method at `function_depth` 1. One-argument `super`, dotted
+    /// start classes, other second arguments, keywords, nested functions, and
+    /// bare `super` stay foreign.
+    fn super_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
         let ast::Expr::Call(call) = expr else {
             return None;
         };
@@ -933,14 +942,30 @@ impl<'a> Projection<'a> {
         if name.id.as_str() != "super" {
             return None;
         }
-        if !call.arguments.args.is_empty() || !call.arguments.keywords.is_empty() {
+        if !call.arguments.keywords.is_empty() {
             return None;
         }
         if self.function_depth != 1 {
             return None;
         }
         let class = self.enclosing_class.clone()?;
-        Some(OccurrenceReceiver::Super { class })
+        let after = match call.arguments.args.len() {
+            0 => None,
+            2 => {
+                let ast::Expr::Name(start) = &call.arguments.args[0] else {
+                    return None;
+                };
+                let ast::Expr::Name(second) = &call.arguments.args[1] else {
+                    return None;
+                };
+                if !matches!(second.id.as_str(), "self" | "cls") {
+                    return None;
+                }
+                Some(start.id.as_str().to_owned())
+            }
+            _ => return None,
+        };
+        Some(OccurrenceReceiver::Super { class, after })
     }
 
     /// Copies an AST-selected source range only after a checked bounds proof.
@@ -1296,7 +1321,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 ast::Expr::Attribute(attribute) => {
                     let target = attribute.attr.as_str();
                     let receiver = if let Some(receiver) =
-                        self.zero_arg_super_receiver(attribute.value.as_ref())
+                        self.super_receiver(attribute.value.as_ref())
                     {
                         receiver
                     } else {
@@ -1373,7 +1398,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
             });
             if !already_recorded {
                 let receiver = if let Some(receiver) =
-                    self.zero_arg_super_receiver(attribute.value.as_ref())
+                    self.super_receiver(attribute.value.as_ref())
                 {
                     receiver
                 } else {

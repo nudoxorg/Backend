@@ -1983,7 +1983,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     }
                 }
             }
-            OccurrenceReceiver::Super { class } => {
+            OccurrenceReceiver::Super { class, after } => {
                 let confidence = |checked: Option<&SymbolOutcome>| match checked {
                     Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
                     _ => OccurrenceConfidence::Index,
@@ -2001,11 +2001,32 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         OccurrenceConfidence::Index,
                     )));
                 };
+                let start_after = match after {
+                    None => 0,
+                    Some(start) => {
+                        let Some(start_index) = self.unique_live_class_index(start) else {
+                            return Ok(Some((
+                                self.super_foreign_target(occurrence)?,
+                                OccurrenceConfidence::Index,
+                            )));
+                        };
+                        match mro.iter().position(|&index| index == start_index) {
+                            Some(index) => index,
+                            None => {
+                                return Ok(Some((
+                                    self.super_foreign_target(occurrence)?,
+                                    OccurrenceConfidence::Index,
+                                )));
+                            }
+                        }
+                    }
+                };
                 match occurrence.kind {
                     OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
                         match self.super_member_in_mro(
                             occurrence,
                             &mro,
+                            start_after,
                             DeclarationKind::Function,
                         ) {
                             InheritedMemberLookup::Unique(ordinal) => Ok(Some((
@@ -2024,7 +2045,12 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         }
                     }
                     OccurrenceKind::AttributeRead => {
-                        match self.super_member_in_mro(occurrence, &mro, DeclarationKind::Field) {
+                        match self.super_member_in_mro(
+                            occurrence,
+                            &mro,
+                            start_after,
+                            DeclarationKind::Field,
+                        ) {
                             InheritedMemberLookup::Unique(ordinal) => Ok(Some((
                                 OccurrenceTarget::Local(EntityId::new(ordinal)),
                                 confidence(checked),
@@ -2037,6 +2063,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                                 match self.super_member_in_mro(
                                     occurrence,
                                     &mro,
+                                    start_after,
                                     DeclarationKind::Function,
                                 ) {
                                     InheritedMemberLookup::Unique(ordinal) => Ok(Some((
@@ -2831,15 +2858,21 @@ impl<'a, 'source> Emitter<'a, 'source> {
         Some(mro)
     }
 
-    /// Resolves one `super()` member by walking the C3 MRO after the
-    /// enclosing class. Only indexes `1..=MAX_INHERITED_BASE_LINKS` are searched.
+    /// Resolves one `super()` member by walking the C3 MRO after
+    /// `start_after`. Only indexes `1..=MAX_INHERITED_BASE_LINKS` are searched.
     fn super_member_in_mro(
         &self,
         occurrence: &OccurrenceFact,
         mro: &[usize],
+        start_after: usize,
         member_kind: DeclarationKind,
     ) -> InheritedMemberLookup {
-        for &class_index in mro.iter().skip(1).take(MAX_INHERITED_BASE_LINKS) {
+        let first = start_after + 1;
+        if first > MAX_INHERITED_BASE_LINKS {
+            return InheritedMemberLookup::Absent;
+        }
+        let take = MAX_INHERITED_BASE_LINKS - first + 1;
+        for &class_index in mro.iter().skip(first).take(take) {
             let class_span = self.module.declarations[class_index].span;
             match self.member_lookup_in_class(occurrence, class_span, member_kind) {
                 InheritedMemberLookup::Unique(ordinal) => {
