@@ -246,6 +246,12 @@ pub struct QdrantHttpClient {
 pub struct QdrantHttpSource {
     client: QdrantHttpClient,
     binding: Binding,
+    /// Hex binding admitted once, compared against every hit.
+    bound: BindingText,
+    /// Physical-id prefix for binding-scoped points.
+    candidate_prefix: blake3::Hasher,
+    /// Physical-id prefix for residence-scoped points.
+    residence_prefix: blake3::Hasher,
     coverage: CoverageWitness,
 }
 
@@ -736,6 +742,9 @@ impl QdrantHttpClient {
         Ok(QdrantHttpSource {
             client: self,
             binding,
+            bound: BindingText::from_binding(binding),
+            candidate_prefix: PhysicalPointId::candidate_prefix(binding),
+            residence_prefix: PhysicalPointId::residence_prefix(binding.workspace, binding.recipe),
             coverage,
         })
     }
@@ -757,7 +766,7 @@ impl AnnSource for QdrantHttpSource {
         let offset = request.cursor.map_or(0, AnnCursor::offset);
         let body = QueryRequest {
             query: request.query.values(),
-            filter: BindingFilter::new(self.binding),
+            filter: BindingFilter::from_text(&self.bound),
             params: SearchParams { exact: true },
             limit: request.limit,
             offset,
@@ -785,8 +794,13 @@ impl AnnSource for QdrantHttpSource {
             let Some(candidate) = point.payload.candidate() else {
                 return Err(HttpProviderError::BindingMismatch);
             };
-            if !point.payload.matches_binding(self.binding)
-                || point.id != point.payload.physical_id(self.binding, candidate)
+            if !point.payload.matches_text(&self.bound)
+                || point.id
+                    != point.payload.physical_id_with(
+                        &self.candidate_prefix,
+                        &self.residence_prefix,
+                        candidate,
+                    )
             {
                 return Err(HttpProviderError::BindingMismatch);
             }
@@ -1138,6 +1152,7 @@ struct PointPayload {
     residence: String,
 }
 
+#[derive(Clone)]
 struct BindingText {
     workspace: String,
     root: String,
@@ -1223,11 +1238,22 @@ impl PointPayload {
     }
 
     fn physical_id(&self, binding: Binding, candidate: CandidateId) -> PhysicalPointId {
+        self.physical_id_with(
+            &PhysicalPointId::candidate_prefix(binding),
+            &PhysicalPointId::residence_prefix(binding.workspace, binding.recipe),
+            candidate,
+        )
+    }
+
+    fn physical_id_with(
+        &self,
+        candidate_prefix: &blake3::Hasher,
+        residence_prefix: &blake3::Hasher,
+        candidate: CandidateId,
+    ) -> PhysicalPointId {
         match PointResidence::parse(&self.residence) {
-            Some(residence) => {
-                PhysicalPointId::for_residence(binding.workspace, binding.recipe, residence)
-            }
-            None => PhysicalPointId::for_candidate(binding, candidate),
+            Some(residence) => PhysicalPointId::from_residence_prefix(residence_prefix, residence),
+            None => PhysicalPointId::from_candidate_prefix(candidate_prefix, candidate),
         }
     }
 
@@ -1274,15 +1300,18 @@ struct FilterMatch {
 
 impl BindingFilter {
     fn new(binding: Binding) -> Self {
-        let bound = BindingText::from_binding(binding);
+        Self::from_text(&BindingText::from_binding(binding))
+    }
+
+    fn from_text(bound: &BindingText) -> Self {
         Self {
             must: vec![
-                condition("workspace", bound.workspace),
-                condition("root", bound.root),
-                condition("recipe", bound.recipe),
-                condition("authority", bound.authority),
-                condition("read_manifest", bound.read_manifest),
-                condition("frontier", bound.frontier),
+                condition("workspace", bound.workspace.clone()),
+                condition("root", bound.root.clone()),
+                condition("recipe", bound.recipe.clone()),
+                condition("authority", bound.authority.clone()),
+                condition("read_manifest", bound.read_manifest.clone()),
+                condition("frontier", bound.frontier.clone()),
             ],
         }
     }
