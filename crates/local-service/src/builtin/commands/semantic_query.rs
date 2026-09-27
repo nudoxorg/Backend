@@ -119,43 +119,22 @@ pub(super) fn execute_semantic_graph(
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic graph relation: {error}")))?;
+    let package_ref = indexed_package_reference(&sources, package);
     let mut activations = Vec::new();
     let mut publication_bindings = Vec::new();
     let mut image_slots = Vec::<(usize, usize)>::new();
-    let mut after = None;
-    loop {
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| BuiltinModelError(format!("page semantic graph relation: {error}")))?;
-        for (key, record) in page.entries() {
-            if !key.is_selected() {
-                continue;
-            }
-            let ProductSemanticPublicationRecord::Published {
-                coverage: SemanticPublicationCoverage::Complete,
-                claim,
-            } = record
-            else {
-                continue;
-            };
-            if key.package_key() != package {
-                continue;
-            }
-            let binding = claim.binding();
-            let activated =
-                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
-            let activation_index = activations.len();
-            activations.push(activated);
-            publication_bindings.push(binding);
-            for image_index in 0..activations[activation_index].images().len() {
-                image_slots.push((activation_index, image_index));
-            }
+    visit_complete_publications(&relation, package, package_ref.as_ref(), |key, claim| {
+        let binding = claim.binding();
+        let activated =
+            activate_semantic_publication(compiler, key, claim, generations, image_rows)?;
+        let activation_index = activations.len();
+        activations.push(activated);
+        publication_bindings.push(binding);
+        for image_index in 0..activations[activation_index].images().len() {
+            image_slots.push((activation_index, image_index));
         }
-        let Some(next) = page.next().cloned() else {
-            break;
-        };
-        after = Some(next);
-    }
+        Ok(())
+    })?;
     let mut source_binding = None;
     for (activation_index, image_index) in &image_slots {
         let image = activations[*activation_index].images()[*image_index]
@@ -253,6 +232,89 @@ pub(super) fn execute_structural_call_graph(
         .graph_from_semantic_relations(query, &relations)
         .map(Some)
         .map_err(|error| BuiltinModelError(error.to_string()))
+}
+
+fn indexed_package_reference(
+    sources: &super::super::IndexedSources,
+    package: backend_engine::PackageKey,
+) -> Option<backend_engine::PackageReference> {
+    let label = &sources
+        .projects
+        .values()
+        .find(|project| project.package == package)?
+        .label;
+    let reference = backend_engine::PackageReference::parse(label.clone()).ok()?;
+    (reference.as_str() == label).then_some(reference)
+}
+
+fn frontier_package_reference(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    package: backend_engine::PackageKey,
+) -> Result<Option<backend_engine::PackageReference>, BuiltinModelError> {
+    let relation = snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(format!("open package frontier: {error}")))?;
+    let Some(record) = relation
+        .lookup(&package.to_bytes())
+        .map_err(|error| BuiltinModelError(format!("read package frontier: {error}")))?
+    else {
+        return Ok(None);
+    };
+    let Some(fields) = record.project_fields() else {
+        return Ok(None);
+    };
+    let reference = backend_engine::PackageReference::parse(fields.label.to_owned()).ok();
+    Ok(reference.filter(|reference| reference.as_str() == fields.label))
+}
+
+/// Visits selected complete publications for one package.
+///
+/// `package_ref` seeks to that package's key range and stops at the next
+/// package. Without it, the walk pages the whole relation and keeps rows whose
+/// package key matches.
+fn visit_complete_publications(
+    relation: &backend_engine::WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    package: backend_engine::PackageKey,
+    package_ref: Option<&backend_engine::PackageReference>,
+    mut visit: impl FnMut(
+        &backend_engine::builtin::ProductSemanticPublicationKey,
+        backend_engine::builtin::SemanticPublicationClaim,
+    ) -> Result<(), BuiltinModelError>,
+) -> Result<(), BuiltinModelError> {
+    let mut after = None;
+    let mut from = package_ref.cloned().map(|package| {
+        backend_engine::builtin::ProductSemanticPublicationKey::package_lower_bound(package)
+    });
+    loop {
+        let page = if let Some(start) = from.take() {
+            relation.page_from(&start, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        } else {
+            relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        }
+        .map_err(|error| {
+            BuiltinModelError(format!("page semantic publication relation: {error}"))
+        })?;
+        for (key, record) in page.entries() {
+            if package_ref.is_some_and(|package| key.package() != package) {
+                return Ok(());
+            }
+            if !key.is_selected() || key.package_key() != package {
+                continue;
+            }
+            let ProductSemanticPublicationRecord::Published {
+                coverage: SemanticPublicationCoverage::Complete,
+                claim,
+            } = record
+            else {
+                continue;
+            };
+            visit(key, *claim)?;
+        }
+        let Some(next) = page.next().cloned() else {
+            return Ok(());
+        };
+        after = Some(next);
+    }
 }
 
 fn package_indexed_in_sources(
@@ -887,41 +949,21 @@ pub(super) fn execute_references(
         .map_err(|error| {
             BuiltinModelError(format!("open semantic references relation: {error}"))
         })?;
+    let package_ref = frontier_package_reference(&snapshot, package)?;
     let mut activations = Vec::new();
     let mut image_slots = Vec::<(usize, usize)>::new();
     let mut publication_found = false;
-    let mut after = None;
-    loop {
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| {
-                BuiltinModelError(format!("page semantic references relation: {error}"))
-            })?;
-        for (key, record) in page.entries() {
-            if !key.is_selected() || key.package_key() != package {
-                continue;
-            }
-            let ProductSemanticPublicationRecord::Published {
-                coverage: SemanticPublicationCoverage::Complete,
-                claim,
-            } = record
-            else {
-                continue;
-            };
-            publication_found = true;
-            let activated =
-                activate_semantic_publication(compiler, key, *claim, generations, image_rows)?;
-            let activation_index = activations.len();
-            activations.push(activated);
-            for image_index in 0..activations[activation_index].images().len() {
-                image_slots.push((activation_index, image_index));
-            }
+    visit_complete_publications(&relation, package, package_ref.as_ref(), |key, claim| {
+        publication_found = true;
+        let activated =
+            activate_semantic_publication(compiler, key, claim, generations, image_rows)?;
+        let activation_index = activations.len();
+        activations.push(activated);
+        for image_index in 0..activations[activation_index].images().len() {
+            image_slots.push((activation_index, image_index));
         }
-        let Some(next) = page.next().cloned() else {
-            break;
-        };
-        after = Some(next);
-    }
+        Ok(())
+    })?;
     if !publication_found {
         return execute_structural_references(daemon, target);
     }

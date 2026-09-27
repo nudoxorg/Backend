@@ -1758,6 +1758,158 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::expect_used, clippy::print_stdout, clippy::too_many_lines)]
+    fn one_package_publication_page_skips_the_packages_before_it() {
+        const PACKAGES: usize = 256;
+        let value =
+            ProductSemanticPublicationRecord::Unavailable(SemanticUnavailableReason::Toolchain);
+        let mut entries = Vec::with_capacity(PACKAGES);
+        for index in 0..PACKAGES {
+            let name = format!("pkg:cargo/p{index:04}@1.0.0");
+            let key = ProductSemanticPublicationKey::new(
+                PackageReference::parse(name.clone()).expect("package"),
+                PackageUrl::parse(name).expect("coordinate"),
+                LanguageProfile::Rust(RustEdition::Rust2015),
+            )
+            .expect("key");
+            entries.push((key, value.clone()));
+        }
+        let target = entries[PACKAGES - 1].0.clone();
+        let relation = RelationState::<ProductSemanticPublicationRelation>::from_entries(
+            entries,
+            complete_coverage(AuthorityVersion::from_value(b"package publication page"))
+                .expect("coverage"),
+        )
+        .expect("relation");
+        let directory = std::env::temp_dir().join(format!(
+            "backend-semantic-package-page-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let registry = backend_store::RelationAdmissionRegistry::default()
+            .with_relation::<ProductSemanticPublicationRelation>()
+            .expect("register");
+        let store = Arc::new(
+            backend_store::FileStore::open_with_registry(&directory, 32 * 1024 * 1024, registry)
+                .expect("store"),
+        );
+        store.write_relation_state(&relation).expect("write");
+        let handle = WorkspaceRelationHandle::<ProductSemanticPublicationRelation>::open(
+            Arc::clone(&store),
+            relation.root().to_bytes(),
+        )
+        .expect("open");
+        let bound = ProductSemanticPublicationKey::package_lower_bound(target.package().clone());
+        let mut paged = Vec::new();
+        let mut after = None;
+        loop {
+            let page = handle
+                .page(after.as_ref(), crate::MAX_SNAPSHOT_PAGE_ROWS)
+                .expect("page");
+            paged.extend(page.entries().iter().map(|(key, _)| key.clone()));
+            let Some(next) = page.next().cloned() else {
+                break;
+            };
+            after = Some(next);
+        }
+        let mut ranged = Vec::new();
+        let mut from = Some(bound);
+        let mut after = None;
+        loop {
+            let page = if let Some(start) = from.take() {
+                handle
+                    .page_from(&start, crate::MAX_SNAPSHOT_PAGE_ROWS)
+                    .expect("page_from")
+            } else {
+                handle
+                    .page(after.as_ref(), crate::MAX_SNAPSHOT_PAGE_ROWS)
+                    .expect("page")
+            };
+            let mut finished = false;
+            for (key, _) in page.entries() {
+                if key.package() != target.package() {
+                    finished = true;
+                    break;
+                }
+                ranged.push(key.clone());
+            }
+            if finished {
+                break;
+            }
+            let Some(next) = page.next().cloned() else {
+                break;
+            };
+            after = Some(next);
+        }
+        assert_eq!(paged.len(), PACKAGES);
+        assert_eq!(ranged, vec![target.clone()]);
+        let sample = |body: &mut dyn FnMut() -> usize| {
+            for _ in 0..2 {
+                let _ = body();
+            }
+            let mut samples = Vec::new();
+            for _ in 0..8 {
+                let started = std::time::Instant::now();
+                let _ = body();
+                samples.push(started.elapsed().as_nanos());
+            }
+            samples.sort_unstable();
+            samples[samples.len() / 2]
+        };
+        let page_median = sample(&mut || {
+            let mut count = 0usize;
+            let mut after = None;
+            loop {
+                let page = handle
+                    .page(after.as_ref(), crate::MAX_SNAPSHOT_PAGE_ROWS)
+                    .expect("page");
+                count += page.entries().len();
+                let Some(next) = page.next().cloned() else {
+                    return count;
+                };
+                after = Some(next);
+            }
+        });
+        let range_median = sample(&mut || {
+            let mut count = 0usize;
+            let mut from = Some(ProductSemanticPublicationKey::package_lower_bound(
+                target.package().clone(),
+            ));
+            let mut after = None;
+            loop {
+                let page = if let Some(start) = from.take() {
+                    handle
+                        .page_from(&start, crate::MAX_SNAPSHOT_PAGE_ROWS)
+                        .expect("page_from")
+                } else {
+                    handle
+                        .page(after.as_ref(), crate::MAX_SNAPSHOT_PAGE_ROWS)
+                        .expect("page")
+                };
+                for (key, _) in page.entries() {
+                    if key.package() != target.package() {
+                        return count;
+                    }
+                    count += 1;
+                }
+                let Some(next) = page.next().cloned() else {
+                    return count;
+                };
+                after = Some(next);
+            }
+        });
+        println!(
+            "semantic_package_page packages={PACKAGES} page_median_ns={page_median} range_median_ns={range_median}"
+        );
+        assert!(
+            range_median < page_median,
+            "package range {range_median} ns was not cheaper than a full publication page {page_median} ns"
+        );
+        drop(store);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
     fn unavailable_authority_causes_are_closed_and_trailing_bytes_rejected() {
         for reason in [
             SemanticUnavailableReason::Toolchain,
