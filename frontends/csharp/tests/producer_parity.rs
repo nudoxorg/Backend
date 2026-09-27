@@ -255,8 +255,19 @@ fn dotnet_regeneration_is_byte_exact_and_deterministic() -> Result<(), Box<dyn E
     // `AuthorityImage.RelativeSourcePath`), not the OS absolute path it
     // happened to run from, so `IMAGE` is byte-identical regardless of
     // which checkout location regenerated it.
-    assert_eq!(first_bytes, IMAGE);
     assert_eq!(first_bytes, second_bytes);
+    if first_bytes != IMAGE {
+        // Print the regenerated image so a helper change can refresh the
+        // golden from the failing run's log (64 bytes per line).
+        for chunk in first_bytes.chunks(64) {
+            let line = chunk
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            eprintln!("REGENERATED-IMAGE {line}");
+        }
+    }
+    assert_eq!(first_bytes, IMAGE);
     let unicode_output = std::env::temp_dir().join("nudox-csharp-fidelity-unicode.ncaimg");
     let status = Command::new(&dotnet)
         .args([

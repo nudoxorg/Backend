@@ -183,7 +183,8 @@ fn legacy_yield_fails_release21_then_java8_alternate_succeeds_with_exact_image()
     let error = harness.image(&jdk, request, &mut output).unwrap_err();
     assert_eq!(
         error.unavailable_cause(),
-        Some(UnavailableCause::Compilation)
+        Some(UnavailableCause::Compilation),
+        "{error}"
     );
     let HarnessError::Command { stderr, .. } = &error else {
         panic!("unexpected error: {error}")
@@ -260,11 +261,16 @@ public final class App {
         .image(&jdk, request, &mut output)
         .expect_err("a missing guava import must not seal");
     let _ = fs::remove_dir_all(&root);
-    let HarnessError::UnresolvedDependencies {
-        packages, stderr, ..
-    } = error
-    else {
-        panic!("missing dependency packages must be UnresolvedDependencies, not a weakened compile");
+    let (packages, stderr) = match error {
+        HarnessError::UnresolvedDependencies {
+            packages, stderr, ..
+        } => (packages, stderr),
+        HarnessError::Command { status, stderr, .. } => panic!(
+            "missing dependency packages must be UnresolvedDependencies, not a weakened compile; javac exited {status}:\n{stderr}"
+        ),
+        other => panic!(
+            "missing dependency packages must be UnresolvedDependencies, not a weakened compile: {other}"
+        ),
     };
     assert!(
         packages.contains("com.google.common.base"),
@@ -360,7 +366,8 @@ fn sibling_resolution_uses_discovered_maven_roots() {
         .unwrap_err();
     assert_eq!(
         error.unavailable_cause(),
-        Some(UnavailableCause::Compilation)
+        Some(UnavailableCause::Compilation),
+        "{error}"
     );
     let HarnessError::Command { stderr, .. } = &error else {
         panic!("unexpected error: {error}")
@@ -394,7 +401,8 @@ fn newer_record_fails_java8_explicitly_without_upgrade() {
         .unwrap_err();
     assert_eq!(
         error.unavailable_cause(),
-        Some(UnavailableCause::Compilation)
+        Some(UnavailableCause::Compilation),
+        "{error}"
     );
     let HarnessError::Command { stderr, .. } = &error else {
         panic!("unexpected error: {error}")
@@ -467,7 +475,8 @@ fn malformed_encoding_retains_diagnostic_without_rewrite() {
         .unwrap_err();
     assert_eq!(
         error.unavailable_cause(),
-        Some(UnavailableCause::Compilation)
+        Some(UnavailableCause::Compilation),
+        "{error}"
     );
     let HarnessError::Command { stderr, .. } = &error else {
         panic!("unexpected error: {error}")
@@ -614,7 +623,8 @@ fn module_root_is_excluded_and_its_absence_stays_a_typed_compilation_refusal() {
         .unwrap_err();
     assert_eq!(
         error.unavailable_cause(),
-        Some(UnavailableCause::Compilation)
+        Some(UnavailableCause::Compilation),
+        "{error}"
     );
     let HarnessError::Command { stderr, .. } = &error else {
         panic!("unexpected error: {error}")
@@ -825,7 +835,8 @@ fn missing_module_requirement_stays_typed_naming_the_module() {
         .unwrap_err();
     assert_eq!(
         error.unavailable_cause(),
-        Some(UnavailableCause::Compilation)
+        Some(UnavailableCause::Compilation),
+        "{error}"
     );
     let HarnessError::Command { stderr, .. } = &error else {
         panic!("unexpected error: {error}")

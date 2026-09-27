@@ -164,6 +164,9 @@ fn generic_box_flow() {
                 "the compiler must stay at full strictness: {stderr}"
             );
         }
+        HarnessError::Command { status, stderr, .. } => panic!(
+            "missing dependency must be UnresolvedDependencies; javac exited {status}:\n{stderr}"
+        ),
         other => panic!("missing dependency must be UnresolvedDependencies, not {other:?}"),
     }
     assert!(output.is_empty(), "no authority image on unresolved imports");
