@@ -5428,13 +5428,29 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     ) -> ClassMemberMatch {
         match kind {
             ReferenceKind::FunctionCall => {
-                let matches = modules
+                let function_matches = modules
                     .iter()
                     .map(|module| {
                         self.class_member_of_owner(*module, property_name, EntityKind::Function)
                     })
                     .collect::<Vec<_>>();
-                Self::combine_namespace_member_matches(&matches)
+                match Self::combine_namespace_member_matches(&function_matches) {
+                    ClassMemberMatch::Unique(fact) => ClassMemberMatch::Unique(fact),
+                    ClassMemberMatch::Ambiguous => ClassMemberMatch::Ambiguous,
+                    ClassMemberMatch::Absent => {
+                        let record_matches = modules
+                            .iter()
+                            .map(|module| {
+                                self.class_member_of_owner(
+                                    *module,
+                                    property_name,
+                                    EntityKind::Record,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        Self::combine_namespace_member_matches(&record_matches)
+                    }
+                }
             }
             ReferenceKind::FieldAccess => {
                 let field_matches = modules
@@ -5452,6 +5468,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                             EntityKind::Constant,
                             EntityKind::Static,
                             EntityKind::Function,
+                            EntityKind::Record,
+                            EntityKind::Enum,
                         ] {
                             let matches = modules
                                 .iter()

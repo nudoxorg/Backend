@@ -4696,6 +4696,229 @@ fn namespace_other_receiver_stays_syntactic() {
 }
 
 #[test]
+fn namespace_class_value_targets_box_child_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export class Child {} } namespace Box { export class Child {} } export function read(): Box.Child { return Box.Child; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let child_records = entities_named(&v, b"Child", EntityKind::Record);
+    assert_eq!(child_records.len(), 2);
+    let other_child = child_records[0];
+    let box_child = child_records[1];
+    assert_eq!(entities_named(&v, b"Child", EntityKind::Function).len(), 0);
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let child_token_start = property_token_nth(SOURCE, b"Box.", b"Child", 1);
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_child))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_child))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+    let function_calls = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    assert_eq!(function_calls, 0);
+}
+
+#[test]
+fn namespace_enum_value_targets_box_color_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export enum Color { Red } } namespace Box { export enum Color { Red } } export function read(): Box.Color { return Box.Color; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let color_enums = entities_named(&v, b"Color", EntityKind::Enum);
+    assert_eq!(color_enums.len(), 2);
+    let other_color = color_enums[0];
+    let box_color = color_enums[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let color_token_start = property_token_nth(SOURCE, b"Box.", b"Color", 1);
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_color))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_color))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Color", color_token_start);
+}
+
+#[test]
+fn namespace_parenthesized_class_value_targets_box_child() {
+    const SOURCE: &[u8] = b"namespace Other { export class Child {} } namespace Box { export class Child {} } export function read(): Box.Child { return (Box).Child; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let child_records = entities_named(&v, b"Child", EntityKind::Record);
+    assert_eq!(child_records.len(), 2);
+    let other_child = child_records[0];
+    let box_child = child_records[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let child_token_start = property_token(SOURCE, b"(Box).", b"Child");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_child))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_child))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+}
+
+#[test]
+fn namespace_class_call_targets_box_child_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export class Child {} } namespace Box { export class Child {} } export function read(): Box.Child { return Box.Child(); }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let child_records = entities_named(&v, b"Child", EntityKind::Record);
+    assert_eq!(child_records.len(), 2);
+    let other_child = child_records[0];
+    let box_child = child_records[1];
+    assert_eq!(entities_named(&v, b"Child", EntityKind::Function).len(), 0);
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let child_token_start = property_token_nth(SOURCE, b"Box.", b"Child", 1);
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_child))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_child))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"Child", child_token_start);
+}
+
+#[test]
+fn namespace_class_other_receiver_stays_syntactic() {
+    const SOURCE: &[u8] = b"namespace Box { export class Child {} } export function read(obj: { Child: number }): number { return obj.Child; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let child_records = entities_named(&v, b"Child", EntityKind::Record);
+    assert_eq!(child_records.len(), 1);
+    let box_child = child_records[0];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let child_token_start = property_token(SOURCE, b"obj.", b"Child");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    match &field_reads[0].occurrence.target {
+        OccurrenceTarget::Foreign(key) => {
+            assert_eq!(key.path, "Child");
+            assert_eq!(key.display, "Child");
+            assert!(key.kind.is_none());
+            assert!(matches!(
+                key.origin,
+                ForeignOrigin::Universe { ecosystem: "npm" }
+            ));
+        }
+        OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
+            panic!("other-receiver class member access must stay syntactic")
+        }
+    }
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_child))
+    );
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+}
+
+#[test]
+fn namespace_computed_class_targets_box_child_not_score() {
+    const SOURCE: &[u8] = b"namespace Box { export class Child {} export class Score {} } export function read(): Box.Child { return Box[\"Child\"]; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let child_records = entities_named(&v, b"Child", EntityKind::Record);
+    assert_eq!(child_records.len(), 1);
+    let box_child = child_records[0];
+    let score_records = entities_named(&v, b"Score", EntityKind::Record);
+    assert_eq!(score_records.len(), 1);
+    let box_score = score_records[0];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let child_token_start = property_token(SOURCE, b"Box[\"", b"Child");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_child))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_score))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"Child", child_token_start);
+}
+
+#[test]
+fn namespace_computed_class_escape_does_not_bind_child() {
+    const SOURCE: &[u8] = b"namespace Box { export class Child {} } export function read(): Box.Child { return Box[\"C\\u0068ild\"]; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let child_records = entities_named(&v, b"Child", EntityKind::Record);
+    assert_eq!(child_records.len(), 1);
+    let function_calls = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    let field_accesses = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .count();
+    assert_eq!(function_calls, 0);
+    assert_eq!(field_accesses, 0);
+}
+
+#[test]
 fn implements_call_targets_interface_note_not_other() {
     const SOURCE: &[u8] = b"export interface Other { note(): number; } export interface Note { note(): number; } export class Child implements Note { read(): number { return this.note(); } }";
     let stack = StackLowered::compile(SOURCE);
