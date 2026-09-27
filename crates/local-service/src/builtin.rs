@@ -787,7 +787,6 @@ fn publish_package_view(
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
     let current = daemon.engine().daemon().library().view().clone();
     if let Some(edit) = edit
-        && prior.activated.iter().all(|(key, _)| *key != package)
         && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
         && let Some(resident) = view_publish::resident_symbols(current.rows(), package)
     {
@@ -798,7 +797,12 @@ fn publish_package_view(
             &resident,
         )?;
         let paths = view_publish::paths_for_files(&sources, &changed)?;
-        match view_publish::rows_replacing_paths(current.rows(), package, &paths, replacement) {
+        match view_publish::rows_splicing_changed_files(
+            current.rows(),
+            package,
+            &paths,
+            replacement,
+        ) {
             Ok(merged) => {
                 return admit_spliced_package(
                     daemon,
@@ -815,6 +819,7 @@ fn publish_package_view(
                 .map(Some);
             }
             Err(view_publish::RowSpliceError::Collision) => return Ok(None),
+            Err(view_publish::RowSpliceError::UnscopedSemantic) => {}
         }
     }
     let files = sources.files.len();
@@ -834,7 +839,10 @@ fn publish_package_view(
     let merged = match view_publish::rows_replacing_package(current.rows(), package, projected.rows)
     {
         Ok(rows) => rows,
-        Err(view_publish::RowSpliceError::Collision) => return Ok(None),
+        Err(
+            view_publish::RowSpliceError::Collision
+            | view_publish::RowSpliceError::UnscopedSemantic,
+        ) => return Ok(None),
     };
     admit_spliced_package(
         daemon,

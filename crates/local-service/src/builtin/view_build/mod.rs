@@ -123,7 +123,7 @@ const MAX_SEMANTIC_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_SEMANTIC_QUERY_ROWS: usize = 65_536;
 
 /// Document note appended to every row projected from a stale semantic image.
-const STALE_NOTE: &str =
+pub(super) const STALE_NOTE: &str =
     "stale semantic image: compiled from an earlier source snapshot; re-index to refresh";
 
 type DeclarationOccurrenceKey = (String, String, String);
