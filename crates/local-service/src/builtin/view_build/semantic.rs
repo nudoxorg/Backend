@@ -1326,23 +1326,6 @@ mod tests {
             super::super::super::admitted_coverage().expect("coverage"),
         )
         .expect("relation");
-        let directory = std::env::temp_dir().join(format!(
-            "nudox-semantic-rebuild-seek-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&directory);
-        let registry = backend_store::RelationAdmissionRegistry::default()
-            .with_relation::<super::super::super::BuiltinSemanticRelation>()
-            .expect("register");
-        let store = Arc::new(
-            backend_store::FileStore::open_with_registry(&directory, 32 * 1024 * 1024, registry)
-                .expect("store"),
-        );
-        store.write_relation_state(&relation).expect("write");
-        let handle = backend_engine::workspace::WorkspaceRelationHandle::<
-            super::super::super::BuiltinSemanticRelation,
-        >::open(Arc::clone(&store), relation.root().to_bytes())
-        .expect("open");
         let mut projects = BTreeMap::new();
         projects.insert(
             target.package_key().to_bytes(),
@@ -1355,67 +1338,29 @@ mod tests {
         let bounds = publication_seek_bounds(&projects).expect("seek bounds");
         assert_eq!(bounds.len(), 1);
         assert_eq!(&bounds[0].0, target.package());
+        let start = &bounds[0].1;
+        let ranged = relation
+            .range(start..)
+            .take_while(|(key, _)| key.package() == target.package())
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(ranged, vec![target.clone()]);
 
-        let collect = |start: &backend_engine::ProductSemanticPublicationKey| {
-            let reference = start.package().clone();
-            let mut found = Vec::new();
-            let mut from = Some(start.clone());
-            let mut after = None;
-            loop {
-                let page = if let Some(cursor) = from.take() {
-                    handle
-                        .page_from(&cursor, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-                        .expect("page_from")
-                } else {
-                    handle
-                        .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-                        .expect("page")
-                };
-                let mut ended = false;
-                for (key, _) in page.entries() {
-                    if key.package() != &reference {
-                        ended = true;
-                        break;
-                    }
-                    found.push(key.clone());
-                }
-                if ended {
-                    break;
-                }
-                let Some(next) = page.next().cloned() else {
-                    break;
-                };
-                after = Some(next);
-            }
-            found
-        };
-        assert_eq!(collect(&bounds[0].1), vec![target]);
-
-        let page_median = median(|| {
-            let mut count = 0usize;
-            let mut after = None;
-            loop {
-                let page = handle
-                    .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-                    .expect("page");
-                count += page.entries().len();
-                let Some(next) = page.next().cloned() else {
-                    return count;
-                };
-                after = Some(next);
-            }
+        let page_median = median(|| relation.iter().count());
+        let range_median = median(|| {
+            relation
+                .range(start..)
+                .take_while(|(key, _)| key.package() == target.package())
+                .count()
         });
-        let range_median = median(|| collect(&bounds[0].1).len());
         eprintln!(
             "semantic_rebuild_seek packages={PACKAGES} page_median_ns={page_median} \
              range_median_ns={range_median}"
         );
         assert!(
             range_median.saturating_mul(8) < page_median,
-            "package seek {range_median} ns was not 8× cheaper than a full publication page \
+            "package seek {range_median} ns was not 8× cheaper than a full publication walk \
              {page_median} ns"
         );
-        drop(store);
-        let _ = std::fs::remove_dir_all(&directory);
     }
 }
