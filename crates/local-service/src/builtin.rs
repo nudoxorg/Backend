@@ -790,12 +790,22 @@ fn publish_package_view(
         && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
         && let Some(resident) = view_publish::resident_symbols(current.rows(), package)
     {
-        let replacement = view_build::rows_for_structural_files(
-            &initial,
+        let structural_keys = view_publish::structural_splice_keys(
+            &prior.activated,
+            package,
             &sources,
             &changed,
-            &resident,
         )?;
+        let replacement = if structural_keys.is_empty() {
+            Vec::new()
+        } else {
+            view_build::rows_for_structural_files(
+                &initial,
+                &sources,
+                &structural_keys,
+                &resident,
+            )?
+        };
         let paths = view_publish::paths_for_files(&sources, &changed)?;
         match view_publish::rows_splicing_changed_files(
             current.rows(),

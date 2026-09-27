@@ -405,6 +405,51 @@ pub(super) fn rows_splicing_changed_files(
     rows_replacing_paths(current, package, paths, structural)
 }
 
+/// Changed files that still need structural rows.
+///
+/// A file whose language lane is already activated is owned by the semantic
+/// image. The splice restamps that image's rows and does not emit a second
+/// structural answer for the same file.
+pub(super) fn structural_splice_keys(
+    activated: &super::coverage::ActivatedProfiles,
+    package: PackageKey,
+    sources: &IndexedSources,
+    changed: &BTreeSet<[u8; 32]>,
+) -> Result<BTreeSet<[u8; 32]>, BuiltinModelError> {
+    let mut keys = BTreeSet::new();
+    for (key, record) in &sources.files {
+        if !changed.contains(key) {
+            continue;
+        }
+        let path = record
+            .file_fields()
+            .ok_or_else(|| {
+                BuiltinModelError("structural file splice received a non-file record".to_owned())
+            })?
+            .path;
+        if !semantic_lane_owns_file(activated, package, path)? {
+            keys.insert(*key);
+        }
+    }
+    Ok(keys)
+}
+
+fn semantic_lane_owns_file(
+    activated: &super::coverage::ActivatedProfiles,
+    package: PackageKey,
+    path: &str,
+) -> Result<bool, BuiltinModelError> {
+    let Some(profile) = super::ingest::source_profile(std::path::Path::new(path))
+        .map_err(BuiltinModelError)?
+    else {
+        return Ok(false);
+    };
+    let lane = super::ingest::lane_profile(profile);
+    Ok(activated.iter().any(|(active_package, active_profile)| {
+        *active_package == package && super::ingest::lane_profile(*active_profile) == lane
+    }))
+}
+
 fn row_is_projected_semantic(row: &Row) -> bool {
     row.label.contains("::semantic::")
 }
@@ -494,19 +539,11 @@ pub(super) fn measure_package_publication() {
     let head = super::genesis().expect("genesis");
     let (initial, _) = super::initial_view_for_workspace(&head.snapshot()).expect("basis");
     let all_keys = BTreeSet::from_iter(activated_sources.files.iter().map(|(key, _)| *key));
-    let structural = super::view_build::rows_for_structural_files(
-        &initial,
-        &activated_sources,
-        &all_keys,
-        &BTreeMap::new(),
-    )
-    .expect("structural rows");
-    let resident = resident_symbols(&structural, package).expect("labels");
-    let mut activated_rows = structural;
+    let mut semantic_rows = Vec::with_capacity(activated_sources.files.len());
     for (_, record) in &activated_sources.files {
         let path = record.file_fields().expect("file").path;
         let location = backend_compile::SourceLocation::new(path, 1).expect("location");
-        activated_rows.push(
+        semantic_rows.push(
             Row::in_package(
                 RowId::Symbol(backend_engine::symbol_key(&format!("semantic-{path}"))),
                 initial.basis(),
@@ -517,39 +554,26 @@ pub(super) fn measure_package_publication() {
             .with_document(vec![backend_engine::Fragment::Text("typed".to_owned())]),
         );
     }
-    let only = BTreeSet::from([changed_key]);
-    let changed_paths = paths_for_files(&activated_sources, &only).expect("paths");
-    let semantic_rows = activated_sources.files.len();
-    let full_activated = time_samples(ACTIVATED_SAMPLES, ACTIVATED_WARMUPS, || {
-        let rebuilt = super::view_build::rows_for_structural_files(
-            &initial,
-            &activated_sources,
-            &all_keys,
-            &BTreeMap::new(),
-        )
-        .expect("full rows");
+    let all_paths = paths_for_files(&activated_sources, &all_keys).expect("all paths");
+    let one_paths =
+        paths_for_files(&activated_sources, &BTreeSet::from([changed_key])).expect("one path");
+    let all_files = time_samples(ACTIVATED_SAMPLES, ACTIVATED_WARMUPS, || {
         std::hint::black_box(
-            rows_replacing_package(&activated_rows, package, rebuilt).expect("replace"),
+            rows_splicing_changed_files(&semantic_rows, package, &all_paths, Vec::new())
+                .expect("all files"),
         );
     });
-    let spliced_activated = time_samples(ACTIVATED_SAMPLES, ACTIVATED_WARMUPS, || {
-        let one = super::view_build::rows_for_structural_files(
-            &initial,
-            &activated_sources,
-            &only,
-            &resident,
-        )
-        .expect("one file");
+    let one_file = time_samples(ACTIVATED_SAMPLES, ACTIVATED_WARMUPS, || {
         std::hint::black_box(
-            rows_splicing_changed_files(&activated_rows, package, &changed_paths, one)
-                .expect("activated splice"),
+            rows_splicing_changed_files(&semantic_rows, package, &one_paths, Vec::new())
+                .expect("one file"),
         );
     });
-    let (activated_full_median, activated_full_p95) = percentiles(&full_activated);
-    let (activated_splice_median, activated_splice_p95) = percentiles(&spliced_activated);
+    let (all_median, all_p95) = percentiles(&all_files);
+    let (one_median, one_p95) = percentiles(&one_file);
     println!(
-        "activated_file_splice files={ACTIVATED_FILES} declarations={} semantic={semantic_rows} full_median_ns={activated_full_median} full_p95_ns={activated_full_p95} splice_median_ns={activated_splice_median} splice_p95_ns={activated_splice_p95}",
-        ACTIVATED_FILES * ACTIVATED_DECLARATIONS
+        "activated_file_splice files={ACTIVATED_FILES} semantic={} all_median_ns={all_median} all_p95_ns={all_p95} one_median_ns={one_median} one_p95_ns={one_p95}",
+        semantic_rows.len()
     );
 }
 
@@ -1198,6 +1222,63 @@ mod tests {
         )
         .with_source(location)
         .with_document(vec![backend_engine::Fragment::Text("typed".to_owned())])
+    }
+
+    #[test]
+    fn a_semantic_owned_file_is_not_given_a_second_structural_answer() {
+        let draw = declaration(
+            "src/impl.rs",
+            "draw",
+            backend_compile::DeclarationKind::Method,
+            4,
+            "fn draw(&self)",
+            backend_compile::Container::attached("Widget"),
+        );
+        let (sources, package, _widget_key, impl_key) = two_file_sources(draw);
+        let (initial, _) = super::super::initial_view().expect("initial");
+        let widget = semantic_row(&initial, package, "src/widget.rs", "Widget");
+        let draw_semantic = semantic_row(&initial, package, "src/impl.rs", "draw");
+        let current = vec![widget.clone(), draw_semantic];
+        let changed = BTreeSet::from([impl_key]);
+        let mut activated = BTreeSet::new();
+        activated.insert((
+            package,
+            backend_semantic::vocabulary::LanguageProfile::Rust(
+                backend_semantic::vocabulary::RustEdition::Rust2021,
+            ),
+        ));
+        let structural_keys =
+            structural_splice_keys(&activated, package, &sources, &changed).expect("owned");
+        assert!(structural_keys.is_empty());
+        let paths = paths_for_files(&sources, &changed).expect("paths");
+        let merged =
+            rows_splicing_changed_files(&current, package, &paths, Vec::new()).expect("restamp");
+        assert!(merged.iter().all(|row| row_is_projected_semantic(row)));
+        assert_eq!(
+            merged.iter().find(|row| row.label == widget.label),
+            Some(&widget)
+        );
+        let stale = merged
+            .iter()
+            .find(|row| row.label.ends_with("::draw"))
+            .expect("stale draw");
+        assert!(stale.document.iter().any(|fragment| {
+            matches!(fragment, backend_engine::Fragment::Text(text) if text == super::super::view_build::STALE_NOTE)
+        }));
+        assert!(stale.source.captured().is_none());
+        let structural =
+            structural_splice_keys(&BTreeSet::new(), package, &sources, &changed).expect("structural");
+        assert_eq!(structural, changed);
+        activated.clear();
+        activated.insert((
+            package,
+            backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+            ),
+        ));
+        let structural =
+            structural_splice_keys(&activated, package, &sources, &changed).expect("other lane");
+        assert_eq!(structural, changed);
     }
 
     #[test]
