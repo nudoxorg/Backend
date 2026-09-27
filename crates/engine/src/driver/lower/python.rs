@@ -2702,7 +2702,19 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
             },
         };
-        let candidates = self.live_class_or_alias_indices(type_name.as_str());
+        if self.assigned_name_hides_annotation(occurrence, receiver) {
+            return Ok(None);
+        }
+        let local_confidence = || match checked {
+            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+            _ => OccurrenceConfidence::Index,
+        };
+        let mut candidates = self.live_class_or_alias_indices(type_name.as_str());
+        if candidates.is_empty() {
+            if let Some(class_index) = self.unique_live_class_index(type_name.as_str()) {
+                candidates.push(class_index);
+            }
+        }
         if candidates.is_empty() {
             // A local annotation named no live class. Do not fall through to
             // `module_field`; a parameter annotation with no candidate still does.
@@ -2716,10 +2728,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
         let index = candidates[0];
         let declaration = &self.module.declarations[index];
-        let local_confidence = || match checked {
-            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
-            _ => OccurrenceConfidence::Index,
-        };
         match declaration.kind {
             DeclarationKind::Class => {
                 let class_span = declaration.span;
@@ -2849,7 +2857,15 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
             },
         };
-        let candidates = self.live_class_or_alias_indices(type_name.as_str());
+        if self.assigned_name_hides_annotation(occurrence, receiver) {
+            return Ok(None);
+        }
+        let mut candidates = self.live_class_or_alias_indices(type_name.as_str());
+        if candidates.is_empty() {
+            if let Some(class_index) = self.unique_live_class_index(type_name.as_str()) {
+                candidates.push(class_index);
+            }
+        }
         if candidates.len() != 1 {
             if from_local {
                 return foreign().map(Some);
@@ -3121,11 +3137,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .enumerate()
             .filter(|(index, declaration)| {
                 self.live[*index]
-                    && matches!(
-                        declaration.kind,
-                        DeclarationKind::Class | DeclarationKind::Alias
-                    )
                     && declaration.name.as_bytes() == name_bytes
+                    && (declaration.kind == DeclarationKind::Class
+                        || (declaration.kind == DeclarationKind::Alias
+                            && declaration.value_span.is_some()))
             })
             .map(|(index, _)| index)
             .collect()
@@ -3664,6 +3679,25 @@ impl<'a, 'source> Emitter<'a, 'source> {
         })
     }
 
+    /// An assigned parameter hides its annotation, including from a nested
+    /// function. A function-local `AnnAssign` does not: that store is the
+    /// annotation. A `global` name keeps the module annotation.
+    fn assigned_name_hides_annotation(&self, occurrence: &OccurrenceFact, name: &str) -> bool {
+        if matches!(
+            self.raw_name_receiver_annotation(occurrence, name),
+            RawReceiverAnnotation::Local(_)
+        ) {
+            return false;
+        }
+        if self.module.binding_scopes.iter().any(|scope| {
+            span_contains(scope.span, occurrence.span)
+                && scope.globals.iter().any(|global| global == name)
+        }) {
+            return false;
+        }
+        self.receiver_assigned_in_scope(occurrence, name)
+    }
+
     fn return_annotation_class_name_from_index(&self, fn_index: usize) -> Option<String> {
         let declaration = &self.module.declarations[fn_index];
         let Some(fact) = self.return_annotation(declaration) else {
@@ -3689,6 +3723,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
             foreign_field(self.slice(occurrence.span)?, occurrence.span)
                 .map(|target| (target, OccurrenceConfidence::Index))
         };
+        let class_name = class_name.and_then(|name| {
+            self.unique_live_class_index(&name)
+                .map(|index| self.module.declarations[index].name.clone())
+        });
         let Some(class_name) = class_name else {
             return match occurrence.kind {
                 OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
@@ -3991,7 +4029,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// Class named by `annotation` after `count` one-argument index peels.
     /// A failed peel is `None` and does not fall back to a same-named class.
     fn peeled_index_class(&self, annotation: &Annotation, count: usize) -> Option<usize> {
-        let peeled = peel_indexes(annotation, count)?;
+        let expanded = self.expand_type_alias(annotation)?;
+        let peeled = peel_indexes(&expanded, count)?;
         match classify_receiver_annotation(&peeled) {
             ReceiverAnnotationName::Unique(class_name) => self.unique_live_class_index(class_name),
             ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => None,
@@ -4060,7 +4099,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 class_index = self.unique_live_class_index(&class_name)?;
             } else {
                 let raw = self.raw_field_annotation_for_class(class_index, &field)?;
-                let peeled = peel_indexes(raw, index_count)?;
+                let expanded = self.expand_type_alias(raw)?;
+                let peeled = peel_indexes(&expanded, index_count)?;
                 match classify_receiver_annotation(&peeled) {
                     ReceiverAnnotationName::Unique(class_name) => {
                         class_index = self.unique_live_class_index(class_name)?;
@@ -4103,7 +4143,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 class_index = self.unique_live_class_index(&class_name)?;
             } else {
                 let raw = self.raw_field_annotation_for_class(class_index, &field)?;
-                let peeled = peel_indexes(raw, index_count)?;
+                let expanded = self.expand_type_alias(raw)?;
+                let peeled = peel_indexes(&expanded, index_count)?;
                 match classify_receiver_annotation(&peeled) {
                     ReceiverAnnotationName::Unique(class_name) => {
                         class_index = self.unique_live_class_index(class_name)?;
@@ -4465,6 +4506,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
 
     /// Exactly one live class declaration carries `name`, or `None`.
     fn unique_live_class_index(&self, name: &str) -> Option<usize> {
+        self.unique_live_class_index_seen(name, &mut HashSet::new())
+    }
+
+    /// Class index for `name`, following module-level PEP 695 type aliases when
+    /// no live class carries the spelling.
+    fn unique_live_class_index_seen(
+        &self,
+        name: &str,
+        seen_aliases: &mut HashSet<String>,
+    ) -> Option<usize> {
         let name_bytes = name.as_bytes();
         let mut matches = Vec::new();
         for (index, declaration) in self.module.declarations.iter().enumerate() {
@@ -4475,10 +4526,136 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 matches.push(index);
             }
         }
+        if matches.len() > 1 {
+            return None;
+        }
         if matches.len() == 1 {
-            Some(matches[0])
-        } else {
-            None
+            return Some(matches[0]);
+        }
+        if !seen_aliases.insert(name.to_owned()) {
+            return None;
+        }
+        match self.unique_type_alias_value(name) {
+            AliasValueLookup::Absent | AliasValueLookup::Ambiguous => None,
+            AliasValueLookup::Unique(value) => {
+                let expanded = self.expand_type_alias(value)?;
+                match classify_receiver_annotation(&expanded) {
+                    ReceiverAnnotationName::Unique(class_name) => {
+                        self.unique_live_class_index_seen(class_name, seen_aliases)
+                    }
+                    ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => None,
+                }
+            }
+        }
+    }
+
+    /// Live classes of `name`. A class spelling is not expanded as an alias.
+    fn live_class_count(&self, name: &str) -> usize {
+        let name_bytes = name.as_bytes();
+        self.module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter(|(index, declaration)| {
+                declaration.kind == DeclarationKind::Class
+                    && declaration.name.as_bytes() == name_bytes
+                    && self.live[*index]
+            })
+            .count()
+    }
+
+    /// Whether one live module-level PEP 695 `type` alias names `name`.
+    fn unique_type_alias_value(&self, name: &str) -> AliasValueLookup<'a> {
+        let name_bytes = name.as_bytes();
+        let mut matches = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind == DeclarationKind::Alias
+                && declaration.name.as_bytes() == name_bytes
+                && declaration.value_span.is_none()
+                && self.live[index]
+            {
+                matches.push(index);
+            }
+        }
+        if matches.is_empty() {
+            return AliasValueLookup::Absent;
+        }
+        if matches.len() > 1 {
+            return AliasValueLookup::Ambiguous;
+        }
+        let module_alias_values: Vec<&AnnotationFact> = self
+            .module
+            .annotations
+            .iter()
+            .filter(|fact| {
+                fact.position == AnnotationPosition::AliasValue && fact.owner == name
+            })
+            .collect();
+        if module_alias_values.len() != 1 {
+            return AliasValueLookup::Ambiguous;
+        }
+        let declaration = &self.module.declarations[matches[0]];
+        if !span_contains(declaration.span, module_alias_values[0].span) {
+            return AliasValueLookup::Ambiguous;
+        }
+        AliasValueLookup::Unique(&module_alias_values[0].annotation)
+    }
+
+    /// Expands module-level PEP 695 type aliases inside one annotation.
+    fn expand_type_alias(&self, annotation: &Annotation) -> Option<Annotation> {
+        self.expand_type_alias_seen(annotation, &mut HashSet::new())
+    }
+
+    fn expand_type_alias_seen(
+        &self,
+        annotation: &Annotation,
+        seen: &mut HashSet<String>,
+    ) -> Option<Annotation> {
+        match annotation {
+            Annotation::Name { name, .. } => {
+                if name.contains('.') || self.live_class_count(name) > 0 {
+                    return Some(annotation.clone());
+                }
+                match self.unique_type_alias_value(name) {
+                    AliasValueLookup::Absent => Some(annotation.clone()),
+                    AliasValueLookup::Ambiguous => None,
+                    AliasValueLookup::Unique(value) => {
+                        if !seen.insert(name.clone()) {
+                            return None;
+                        }
+                        self.expand_type_alias_seen(value, seen)
+                    }
+                }
+            }
+            Annotation::Generic { base, args } => {
+                let expanded_base = self.expand_type_alias_seen(base, seen)?;
+                let expanded_args = args
+                    .iter()
+                    .map(|arg| self.expand_type_alias_seen(arg, seen))
+                    .collect::<Option<Vec<Annotation>>>()?;
+                Some(Annotation::Generic {
+                    base: Box::new(expanded_base),
+                    args: expanded_args,
+                })
+            }
+            Annotation::Union(members) => {
+                let expanded = members
+                    .iter()
+                    .map(|member| self.expand_type_alias_seen(member, seen))
+                    .collect::<Option<Vec<Annotation>>>()?;
+                Some(Annotation::Union(expanded))
+            }
+            Annotation::List(items) => {
+                let expanded = items
+                    .iter()
+                    .map(|item| self.expand_type_alias_seen(item, seen))
+                    .collect::<Option<Vec<Annotation>>>()?;
+                Some(Annotation::List(expanded))
+            }
+            Annotation::None
+            | Annotation::StringLiteral(_)
+            | Annotation::Literal(_)
+            | Annotation::Unknown(_) => Some(annotation.clone()),
         }
     }
 
@@ -5124,6 +5301,13 @@ enum RawReceiverAnnotation<'a> {
     /// A binding exists, but it must not be subscripted and must not fall through.
     Blocked,
     /// No binding. A bare class name may still be `Child[int]`.
+    Absent,
+}
+
+/// Whether one live module-level PEP 695 `type` alias names a spelling.
+enum AliasValueLookup<'a> {
+    Unique(&'a Annotation),
+    Ambiguous,
     Absent,
 }
 
