@@ -371,7 +371,8 @@ fn structural_fixtures(
 }
 
 fn row_fixtures(packages: usize, symbols_per: usize) -> (Vec<Row>, Vec<Row>, PackageKey) {
-    let (basis_view, _) = super::initial_view().expect("basis");
+    let head = super::genesis().expect("genesis");
+    let (basis_view, _) = super::initial_view_for_workspace(&head.snapshot()).expect("basis");
     let basis = basis_view.basis();
     let mut rows = Vec::new();
     let mut edited = None;
