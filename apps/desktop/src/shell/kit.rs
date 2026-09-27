@@ -78,6 +78,12 @@ impl SaidChild for gpui::InteractiveText {
 }
 
 impl Said {
+    /// Publishes the words under `key` instead of `text:{words}`.
+    pub(crate) fn keyed(mut self, key: impl Into<gpui::ElementId>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
     /// Adds a child; strings are also recorded as the box's words.
     pub(crate) fn child(mut self, child: impl SaidChild) -> Self {
         if let Some(words) = child.words() {
@@ -339,4 +345,24 @@ pub(crate) fn kind_mark(kind: Kind, base: facet::icons::KindSize, measure: &Meas
         KindSize::Lg
     };
     facet::icons::kind_mark(kind, size, palette)
+}
+
+/// A world node's kind as the mark it wears.
+pub(crate) const fn world_kind(kind: facet::graph::Kind) -> Kind {
+    use facet::graph::Kind as World;
+    use Kind as Mark;
+    match kind {
+        World::Struct => Mark::Struct,
+        World::Enum => Mark::Enum,
+        World::Union => Mark::Union,
+        World::Trait => Mark::Trait,
+        World::Type => Mark::Type,
+        World::Function => Mark::Function,
+        World::Method => Mark::Method,
+        World::Macro => Mark::Macro,
+        World::Constant => Mark::Constant,
+        World::Field => Mark::Field,
+        World::Variant => Mark::Variant,
+        World::Other => Mark::Unknown,
+    }
 }
