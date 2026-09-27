@@ -28,11 +28,10 @@
 use std::collections::{HashMap, HashSet};
 
 use backend_frontend_python::legacy::{
-    Annotation, AnnotationFact, AnnotationPosition, CheckerError, CheckerReport, ClassForm,
-    DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue, ModuleFacts,
-    OccurrenceFact, OccurrenceKind, OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span,
-    SymbolOutcome,
-    TypeReason as ExtractedReason, extract,
+    Annotation, AnnotationFact, AnnotationPosition, BindingScopeFact, CheckerError, CheckerReport,
+    ClassForm, DeclarationFact, DeclarationKind, ExtractionError, InferredType, LiteralValue,
+    ModuleFacts, OccurrenceFact, OccurrenceKind, OccurrenceReceiver, ParameterKind, Pyrefly,
+    ReceiverKind, Span, SymbolOutcome, TypeReason as ExtractedReason, extract,
 };
 use backend_semantic::ir::{
     AnonRecordForm, Confidence, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
@@ -2585,16 +2584,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// Resolves one plain-name receiver through a function-local annotation,
-    /// then its parameter annotation, when the import-binding arm did not
-    /// apply and the site is an attribute read. A unique live class yields the
-    /// unique field or bound method inside that class (fields before methods,
-    /// then inherited members); a unique live import alias yields the alias
-    /// statement's package field key; a union of one class name peels to that
-    /// class; an ambiguous union stays on an honest universe field key.
-    /// Multiply-matched cases stay on an honest universe field key. A local
-    /// annotation that names no live class returns that universe field key and
-    /// does not fall through to `module_field`. A parameter annotation with
-    /// zero candidates still falls through to `module_field`.
+    /// then its parameter annotation, then a live module-constant annotation,
+    /// when the import-binding arm did not apply and the site is an attribute
+    /// read. A unique live class yields the unique field or bound method inside
+    /// that class (fields before methods, then inherited members); a unique
+    /// live import alias yields the alias statement's package field key; a union
+    /// of one class name peels to that class; an ambiguous union stays on an
+    /// honest universe field key. Multiply-matched cases stay on an honest
+    /// universe field key. A local or module annotation that names no live class
+    /// returns that universe field key and does not fall through to
+    /// `module_field`. A parameter annotation with zero candidates still falls
+    /// through to `module_field`.
     fn annotated_receiver_read_target(
         &self,
         occurrence: &OccurrenceFact,
@@ -2615,7 +2615,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
             LocalBinding::Foreign => return foreign().map(Some),
             LocalBinding::Unique(name) => (name, true),
             LocalBinding::Absent => match receiver_annotation_name(function, receiver) {
-                ReceiverAnnotationName::Absent => return Ok(None),
+                ReceiverAnnotationName::Absent => {
+                    match self.module_annotation_name(function, receiver, occurrence) {
+                        LocalBinding::Foreign => return foreign().map(Some),
+                        LocalBinding::Unique(name) => (name, true),
+                        LocalBinding::Absent => return Ok(None),
+                    }
+                }
                 ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
                 ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
             },
@@ -2730,13 +2736,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// Resolves one plain-name receiver through a function-local annotation,
-    /// then its parameter annotation, when the import-binding arm did not
-    /// apply. A unique live class yields the unique method inside that class;
-    /// a unique live import alias yields the alias statement's package key; a
-    /// union of one class name peels to that class; an ambiguous union stays
-    /// on an honest universe method key. A local annotation that must not bind
-    /// returns that universe key. Every other unproven case keeps today's
-    /// universe key by returning `None`.
+    /// then its parameter annotation, then a live module-constant annotation,
+    /// when the import-binding arm did not apply. A unique live class yields the
+    /// unique method inside that class; a unique live import alias yields the
+    /// alias statement's package key; a union of one class name peels to that
+    /// class; an ambiguous union stays on an honest universe method key. A local
+    /// or module annotation that must not bind returns that universe key. Every
+    /// other unproven case keeps today's universe key by returning `None`.
     fn annotated_receiver_target(
         &self,
         occurrence: &OccurrenceFact,
@@ -2752,17 +2758,26 @@ impl<'a, 'source> Emitter<'a, 'source> {
             foreign_method(self.slice(occurrence.span)?, occurrence.span)
                 .map(|target| (target, OccurrenceConfidence::Index))
         };
-        let type_name = match self.local_binding_name(function, receiver, occurrence) {
+        let (type_name, from_local) = match self.local_binding_name(function, receiver, occurrence) {
             LocalBinding::Foreign => return foreign().map(Some),
-            LocalBinding::Unique(name) => name,
+            LocalBinding::Unique(name) => (name, true),
             LocalBinding::Absent => match receiver_annotation_name(function, receiver) {
-                ReceiverAnnotationName::Absent => return Ok(None),
+                ReceiverAnnotationName::Absent => {
+                    match self.module_annotation_name(function, receiver, occurrence) {
+                        LocalBinding::Foreign => return foreign().map(Some),
+                        LocalBinding::Unique(name) => (name, true),
+                        LocalBinding::Absent => return Ok(None),
+                    }
+                }
                 ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
-                ReceiverAnnotationName::Unique(name) => name.to_owned(),
+                ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
             },
         };
         let candidates = self.live_class_or_alias_indices(type_name.as_str());
         if candidates.len() != 1 {
+            if from_local {
+                return foreign().map(Some);
+            }
             return Ok(None);
         }
         let index = candidates[0];
@@ -2869,6 +2884,82 @@ impl<'a, 'source> Emitter<'a, 'source> {
         }
         let mut unique_name: Option<String> = None;
         for fact in relevant {
+            match classify_receiver_annotation(&fact.annotation) {
+                ReceiverAnnotationName::Ambiguous | ReceiverAnnotationName::Absent => {
+                    return LocalBinding::Foreign;
+                }
+                ReceiverAnnotationName::Unique(name) => {
+                    if let Some(existing) = &unique_name {
+                        if existing != name {
+                            return LocalBinding::Foreign;
+                        }
+                    } else {
+                        unique_name = Some(name.to_owned());
+                    }
+                }
+            }
+        }
+        match unique_name {
+            Some(name) => LocalBinding::Unique(name),
+            None => LocalBinding::Foreign,
+        }
+    }
+
+    /// Resolves one receiver through live module-constant annotations when
+    /// binding scopes show the name is not a function-local assignment.
+    fn module_annotation_name(
+        &self,
+        function: &DeclarationFact,
+        receiver: &str,
+        occurrence: &OccurrenceFact,
+    ) -> LocalBinding {
+        let mut scopes: Vec<&BindingScopeFact> = self
+            .module
+            .binding_scopes
+            .iter()
+            .filter(|scope| {
+                span_contains(scope.span, occurrence.span)
+                    && (span_contains(function.span, scope.span)
+                        || span_contains(scope.span, function.span))
+            })
+            .collect();
+        scopes.sort_by_key(|scope| scope.span.end - scope.span.start);
+        for scope in scopes {
+            if scope.nonlocals.iter().any(|name| name == receiver) {
+                continue;
+            }
+            if scope.globals.iter().any(|name| name == receiver) {
+                return self.module_constant_annotation(receiver);
+            }
+            if scope.locals.iter().any(|name| name == receiver) {
+                return LocalBinding::Foreign;
+            }
+        }
+        self.module_constant_annotation(receiver)
+    }
+
+    fn module_constant_annotation(&self, receiver: &str) -> LocalBinding {
+        let mut annotated: Vec<&AnnotationFact> = Vec::new();
+        for (index, declaration) in self.module.declarations.iter().enumerate() {
+            if declaration.kind != DeclarationKind::Constant
+                || declaration.name != receiver
+                || !self.live[index]
+            {
+                continue;
+            }
+            if let Some(fact) = self.module.annotations.iter().find(|fact| {
+                fact.position == AnnotationPosition::Field
+                    && fact.owner == receiver
+                    && span_contains(declaration.span, fact.span)
+            }) {
+                annotated.push(fact);
+            }
+        }
+        if annotated.is_empty() {
+            return LocalBinding::Absent;
+        }
+        let mut unique_name: Option<String> = None;
+        for fact in annotated {
             match classify_receiver_annotation(&fact.annotation) {
                 ReceiverAnnotationName::Ambiguous | ReceiverAnnotationName::Absent => {
                     return LocalBinding::Foreign;

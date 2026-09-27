@@ -286,6 +286,14 @@ pub enum Confidence {
     Index,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingScopeFact {
+    /// Span of the function, lambda, or comprehension.
+    pub span: Span,
+    pub locals: Vec<String>,
+    pub globals: Vec<String>,
+    pub nonlocals: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleFacts {
     pub identity: String,
     pub span: Span,
@@ -293,6 +301,7 @@ pub struct ModuleFacts {
     pub occurrences: Vec<OccurrenceFact>,
     pub docstring: Option<DocstringFact>,
     pub annotations: Vec<AnnotationFact>,
+    pub binding_scopes: Vec<BindingScopeFact>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnnotationFact {
@@ -501,6 +510,7 @@ fn module_facts(
         occurrences: Vec::new(),
         docstring: module_doc,
         annotations: Vec::new(),
+        binding_scopes: Vec::new(),
     })
 }
 
@@ -926,13 +936,23 @@ struct Projection<'a> {
     last_module_function: Option<String>,
     /// Innermost class or function bodies, so a class nested in a function
     /// is not treated as that function's local scope.
-    bodies: Vec<BodyKind>,
+    bodies: Vec<BodyFrame>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BodyKind {
     Function,
     Class,
+    Comprehension,
+    Lambda,
+}
+
+struct BodyFrame {
+    kind: BodyKind,
+    span: Span,
+    locals: HashSet<String>,
+    globals: HashSet<String>,
+    nonlocals: HashSet<String>,
 }
 impl<'a> Projection<'a> {
     fn add_declaration(&mut self, declaration: DeclarationFact) {
@@ -1181,6 +1201,242 @@ impl<'a> Projection<'a> {
         }
         (bases, form, total)
     }
+
+    fn push_binding_frame(&mut self, kind: BodyKind, range: ruff_text_size::TextRange) {
+        self.bodies.push(BodyFrame {
+            kind,
+            span: span(range),
+            locals: HashSet::new(),
+            globals: HashSet::new(),
+            nonlocals: HashSet::new(),
+        });
+    }
+
+    fn pop_binding_frame(&mut self) {
+        if let Some(frame) = self.bodies.pop() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
+                    let mut locals: Vec<String> = frame.locals.into_iter().collect();
+                    locals.sort();
+                    let mut globals: Vec<String> = frame.globals.into_iter().collect();
+                    globals.sort();
+                    let mut nonlocals: Vec<String> = frame.nonlocals.into_iter().collect();
+                    nonlocals.sort();
+                    self.facts.binding_scopes.push(BindingScopeFact {
+                        span: frame.span,
+                        locals,
+                        globals,
+                        nonlocals,
+                    });
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_local(&mut self, name: &str) {
+        if let Some(frame) = self.bodies.last_mut() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
+                    frame.locals.insert(name.to_owned());
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_walrus(&mut self, name: &str) {
+        for frame in self.bodies.iter_mut().rev() {
+            match frame.kind {
+                BodyKind::Comprehension => continue,
+                BodyKind::Function | BodyKind::Lambda => {
+                    frame.locals.insert(name.to_owned());
+                    return;
+                }
+                BodyKind::Class => return,
+            }
+        }
+    }
+
+    fn note_global(&mut self, name: &str) {
+        if let Some(frame) = self.bodies.last_mut() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
+                    frame.globals.insert(name.to_owned());
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_nonlocal(&mut self, name: &str) {
+        if let Some(frame) = self.bodies.last_mut() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
+                    frame.nonlocals.insert(name.to_owned());
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_nested_binding(&mut self, name: &str) {
+        self.note_local(name);
+    }
+
+    fn note_import_alias(&mut self, alias: &ast::Alias) {
+        if let Some(frame) = self.bodies.last() {
+            if matches!(frame.kind, BodyKind::Function | BodyKind::Lambda) {
+                self.note_local(&alias_binding(alias));
+            }
+        }
+    }
+
+    /// Default expressions are evaluated in the enclosing scope, so they are
+    /// walked before the function or lambda frame exists.
+    fn walk_parameter_defaults(&mut self, parameters: &'a ast::Parameters) {
+        for item in &parameters.posonlyargs {
+            if let Some(default) = item.default.as_deref() {
+                self.visit_expr(default);
+            }
+        }
+        for item in &parameters.args {
+            if let Some(default) = item.default.as_deref() {
+                self.visit_expr(default);
+            }
+        }
+        for item in &parameters.kwonlyargs {
+            if let Some(default) = item.default.as_deref() {
+                self.visit_expr(default);
+            }
+        }
+    }
+
+    fn note_parameters(&mut self, parameters: &ast::Parameters) {
+        for item in &parameters.posonlyargs {
+            self.note_local(item.parameter.name.as_str());
+        }
+        for item in &parameters.args {
+            self.note_local(item.parameter.name.as_str());
+        }
+        if let Some(item) = parameters.vararg.as_ref() {
+            self.note_local(item.name.as_str());
+        }
+        for item in &parameters.kwonlyargs {
+            self.note_local(item.parameter.name.as_str());
+        }
+        if let Some(item) = parameters.kwarg.as_ref() {
+            self.note_local(item.name.as_str());
+        }
+    }
+
+    fn visit_comprehension_target(&mut self, target: &'a ast::Expr) {
+        match target {
+            ast::Expr::Name(name) if name.ctx.is_store() => self.note_local(name.id.as_str()),
+            ast::Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    self.visit_comprehension_target(element);
+                }
+            }
+            ast::Expr::List(list) => {
+                for element in &list.elts {
+                    self.visit_comprehension_target(element);
+                }
+            }
+            ast::Expr::Starred(starred) => self.visit_comprehension_target(starred.value.as_ref()),
+            _ => visitor::walk_expr(self, target),
+        }
+    }
+
+    fn visit_comprehension_generators(
+        &mut self,
+        generators: &'a [ast::Comprehension],
+        comp_range: ruff_text_size::TextRange,
+        element: &'a ast::Expr,
+        key: Option<&'a ast::Expr>,
+    ) {
+        if let Some(first) = generators.first() {
+            self.visit_expr(&first.iter);
+        }
+        self.push_binding_frame(BodyKind::Comprehension, comp_range);
+        if let Some(first) = generators.first() {
+            self.visit_comprehension_target(&first.target);
+            for condition in &first.ifs {
+                self.visit_expr(condition);
+            }
+        }
+        for generator in generators.iter().skip(1) {
+            self.visit_expr(&generator.iter);
+            self.visit_comprehension_target(&generator.target);
+            for condition in &generator.ifs {
+                self.visit_expr(condition);
+            }
+        }
+        if let Some(key) = key {
+            self.visit_expr(key);
+        }
+        self.visit_expr(element);
+        self.pop_binding_frame();
+    }
+
+    fn occurrence_owner(&self, expr: &ast::Expr) -> &str {
+        if self.decorator_ranges.iter().any(|range| {
+            range.start() <= expr.range().start() && range.end() >= expr.range().end()
+        }) {
+            match self.decorator_owner.as_deref() {
+                Some(owner) => owner,
+                None => &self.owner,
+            }
+        } else {
+            &self.owner
+        }
+    }
+
+    fn record_attribute_occurrence(&mut self, owner: &str, attribute: &ast::ExprAttribute) {
+        let target = attribute.attr.as_str();
+        let attr_span = span(attribute.attr.range());
+        let already_recorded = self.facts.occurrences.iter().any(|occurrence| {
+            occurrence.owner == owner
+                && occurrence.target == target
+                && occurrence.span.start <= attr_span.start
+                && occurrence.span.end >= attr_span.end
+        });
+        if already_recorded {
+            return;
+        }
+        let receiver = if let Some(receiver) = self.super_receiver(attribute.value.as_ref()) {
+            receiver
+        } else if let Some(receiver) = self.constructed_class_receiver(attribute.value.as_ref()) {
+            receiver
+        } else {
+            match attribute.value.as_ref() {
+                ast::Expr::Name(name)
+                    if matches!(name.id.as_str(), "self" | "cls")
+                        && self.enclosing_class.is_some() =>
+                {
+                    OccurrenceReceiver::EnclosingClass {
+                        class: match self.enclosing_class.clone() {
+                            Some(class) => class,
+                            None => return,
+                        },
+                    }
+                }
+                ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
+                    receiver: Some(name.id.as_str().to_owned()),
+                },
+                _ => OccurrenceReceiver::Foreign { receiver: None },
+            }
+        };
+        self.facts.occurrences.push(OccurrenceFact {
+            owner: owner.to_owned(),
+            target: target.to_owned(),
+            kind: OccurrenceKind::AttributeRead,
+            confidence: Confidence::Index,
+            span: attr_span,
+            receiver,
+        });
+    }
+
 }
 impl<'a> Visitor<'a> for Projection<'a> {
     fn visit_stmt(&mut self, statement: &'a ast::Stmt) {
@@ -1244,11 +1500,13 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 });
                 self.decorator_ranges = function.decorator_list.iter().map(|d| d.range).collect();
                 self.decorator_owner = Some(old.clone());
+                self.note_nested_binding(&name);
                 self.owner = name;
                 self.function_depth += 1;
-                self.bodies.push(BodyKind::Function);
+                self.push_binding_frame(BodyKind::Function, function.range);
+                self.note_parameters(&function.parameters);
                 visitor::walk_stmt(self, statement);
-                self.bodies.pop();
+                self.pop_binding_frame();
                 self.function_depth -= 1;
                 self.owner = old;
                 self.decorator_ranges = old_decorator_ranges;
@@ -1290,12 +1548,13 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 });
                 self.decorator_ranges = class.decorator_list.iter().map(|d| d.range).collect();
                 self.decorator_owner = Some(old.clone());
+                self.note_nested_binding(&name);
                 self.owner = name;
                 self.enclosing_class = Some(self.owner.clone());
                 self.class_depth += 1;
-                self.bodies.push(BodyKind::Class);
+                self.push_binding_frame(BodyKind::Class, class.range);
                 visitor::walk_stmt(self, statement);
-                self.bodies.pop();
+                self.pop_binding_frame();
                 self.class_depth -= 1;
                 self.owner = old;
                 self.enclosing_class = old_enclosing_class;
@@ -1308,13 +1567,38 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     self.add_alias(alias, statement);
                 }
             }
+            ast::Stmt::Import(import) if self.function_depth > 0 => {
+                for alias in &import.names {
+                    self.note_import_alias(alias);
+                }
+            }
             ast::Stmt::ImportFrom(import) if self.function_depth == 0 && self.class_depth == 0 => {
                 for alias in &import.names {
                     self.add_from_alias(import, alias, statement);
                 }
             }
+            ast::Stmt::ImportFrom(import) if self.function_depth > 0 => {
+                for alias in &import.names {
+                    self.note_import_alias(alias);
+                }
+            }
+            ast::Stmt::Global(global) => {
+                for name in &global.names {
+                    self.note_global(name.as_str());
+                }
+            }
+            ast::Stmt::Nonlocal(nonlocal) => {
+                for name in &nonlocal.names {
+                    self.note_nonlocal(name.as_str());
+                }
+            }
             ast::Stmt::TypeAlias(alias) if self.function_depth == 0 && self.class_depth == 0 => {
                 self.add_type_alias(alias, statement);
+            }
+            ast::Stmt::TypeAlias(alias) if self.function_depth > 0 || self.class_depth > 0 => {
+                if let ast::Expr::Name(name) = alias.name.as_ref() {
+                    self.note_nested_binding(name.id.as_str());
+                }
             }
             ast::Stmt::Assign(assign) if self.class_depth > 0 && self.function_depth == 0 => {
                 if let Some(target) = assign.targets.first() {
@@ -1343,7 +1627,8 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 )
             }
             ast::Stmt::AnnAssign(assign)
-                if self.function_depth >= 1 && self.bodies.last() == Some(&BodyKind::Function) =>
+                if self.function_depth >= 1
+                    && self.bodies.last().map(|frame| frame.kind) == Some(BodyKind::Function) =>
             {
                 if let ast::Expr::Name(name) = assign.target.as_ref() {
                     self.facts.annotations.push(AnnotationFact {
@@ -1358,7 +1643,108 @@ impl<'a> Visitor<'a> for Projection<'a> {
         }
         visitor::walk_stmt(self, statement);
     }
+    fn visit_except_handler(&mut self, handler: &'a ast::ExceptHandler) {
+        let ast::ExceptHandler::ExceptHandler(inner) = handler;
+        if let Some(name) = &inner.name {
+            self.note_local(name.as_str());
+        }
+        visitor::walk_except_handler(self, handler);
+    }
+
+    fn visit_pattern(&mut self, pattern: &'a ast::Pattern) {
+        match pattern {
+            ast::Pattern::MatchAs(match_as) => {
+                if let Some(name) = &match_as.name {
+                    self.note_local(name.as_str());
+                }
+                if let Some(inner) = &match_as.pattern {
+                    self.visit_pattern(inner);
+                }
+            }
+            ast::Pattern::MatchStar(match_star) => {
+                if let Some(name) = &match_star.name {
+                    self.note_local(name.as_str());
+                }
+            }
+            ast::Pattern::MatchMapping(mapping) => {
+                if let Some(rest) = &mapping.rest {
+                    self.note_local(rest.as_str());
+                }
+                for pattern in &mapping.patterns {
+                    self.visit_pattern(pattern);
+                }
+            }
+            _ => visitor::walk_pattern(self, pattern),
+        }
+    }
+
     fn visit_expr(&mut self, expr: &'a ast::Expr) {
+        if let ast::Expr::Named(named) = expr {
+            self.visit_expr(&named.value);
+            if let ast::Expr::Name(name) = named.target.as_ref() {
+                if name.ctx.is_store() {
+                    self.note_walrus(name.id.as_str());
+                }
+            }
+            self.visit_expr(&named.target);
+            return;
+        }
+        if let ast::Expr::Lambda(lambda) = expr {
+            if let Some(parameters) = lambda.parameters.as_ref() {
+                self.walk_parameter_defaults(parameters);
+            }
+            // The binding span is the body. Defaults stay in the enclosing
+            // scope, so `lambda obj=obj.note(): obj` still sees the module name.
+            self.push_binding_frame(BodyKind::Lambda, lambda.body.range());
+            if let Some(parameters) = lambda.parameters.as_ref() {
+                self.note_parameters(parameters);
+            }
+            self.visit_expr(&lambda.body);
+            self.pop_binding_frame();
+            return;
+        }
+        if let ast::Expr::ListComp(list_comp) = expr {
+            self.visit_comprehension_generators(
+                &list_comp.generators,
+                list_comp.range,
+                &list_comp.elt,
+                None,
+            );
+            return;
+        }
+        if let ast::Expr::SetComp(set_comp) = expr {
+            self.visit_comprehension_generators(
+                &set_comp.generators,
+                set_comp.range,
+                &set_comp.elt,
+                None,
+            );
+            return;
+        }
+        if let ast::Expr::DictComp(dict_comp) = expr {
+            self.visit_comprehension_generators(
+                &dict_comp.generators,
+                dict_comp.range,
+                &dict_comp.value,
+                dict_comp.key.as_deref(),
+            );
+            return;
+        }
+        if let ast::Expr::Generator(generator) = expr {
+            self.visit_comprehension_generators(
+                &generator.generators,
+                generator.range,
+                &generator.elt,
+                None,
+            );
+            return;
+        }
+        if let ast::Expr::Name(name) = expr {
+            if name.ctx.is_store() {
+                self.note_local(name.id.as_str());
+            }
+            return;
+        }
         if let ast::Expr::Call(call) = expr {
             // One call becomes at most one occurrence row. A callee whose
             // spelling is a declared module name keeps the original
@@ -1456,60 +1842,10 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
         }
         if let ast::Expr::Attribute(attribute) = expr {
-            let target = attribute.attr.as_str();
-            let attr_span = span(attribute.attr.range());
-            let already_recorded = self.facts.occurrences.iter().any(|occurrence| {
-                occurrence.target == target
-                    && occurrence.span.start <= attr_span.start
-                    && occurrence.span.end >= attr_span.end
-            });
-            if !already_recorded {
-                let receiver = if let Some(receiver) =
-                    self.super_receiver(attribute.value.as_ref())
-                {
-                    receiver
-                } else if let Some(receiver) =
-                    self.constructed_class_receiver(attribute.value.as_ref())
-                {
-                    receiver
-                } else {
-                    match attribute.value.as_ref() {
-                        ast::Expr::Name(name)
-                            if matches!(name.id.as_str(), "self" | "cls")
-                                && self.enclosing_class.is_some() =>
-                        {
-                            OccurrenceReceiver::EnclosingClass {
-                                class: self
-                                    .enclosing_class
-                                    .clone()
-                                    .expect("enclosing class proven above"),
-                            }
-                        }
-                        ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                            receiver: Some(name.id.as_str().to_owned()),
-                        },
-                        _ => OccurrenceReceiver::Foreign { receiver: None },
-                    }
-                };
-                let owner = if self.decorator_ranges.iter().any(|range| {
-                    range.start() <= expr.range().start() && range.end() >= expr.range().end()
-                }) {
-                    match self.decorator_owner.as_deref() {
-                        Some(owner) => owner,
-                        None => &self.owner,
-                    }
-                } else {
-                    &self.owner
-                };
-                self.facts.occurrences.push(OccurrenceFact {
-                    owner: owner.to_owned(),
-                    target: target.to_owned(),
-                    kind: OccurrenceKind::AttributeRead,
-                    confidence: Confidence::Index,
-                    span: attr_span,
-                    receiver,
-                });
-            }
+            self.visit_expr(attribute.value.as_ref());
+            let owner = self.occurrence_owner(expr).to_owned();
+            self.record_attribute_occurrence(&owner, attribute);
+            return;
         }
         visitor::walk_expr(self, expr);
     }
@@ -1769,6 +2105,7 @@ mod tests {
             occurrences: Vec::new(),
             docstring: None,
             annotations: Vec::new(),
+            binding_scopes: Vec::new(),
         };
         let mut projection = Projection {
             text: "x",
