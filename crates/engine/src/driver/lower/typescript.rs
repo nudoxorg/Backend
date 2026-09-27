@@ -5029,12 +5029,16 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 ReferenceKind::FieldAccess
             };
             let object_kind = AstKind::from_expression(&member.object);
+            let object_span = member.object.span();
             let (target, confidence) = if Self::is_this_receiver(object_kind) {
                 self.this_property_target(property_span, kind)?
             } else if Self::is_super_receiver(object_kind) {
                 self.super_property_target(property_span, kind)?
             } else {
-                self.syntactic_property_target(property_span)?
+                match self.namespace_property_target(object_span, property_span, kind)? {
+                    Some(pair) => pair,
+                    None => self.syntactic_property_target(property_span)?,
+                }
             };
             self.commit_occurrence(owner, property_span, kind, target, confidence)?;
         }
@@ -5072,12 +5076,16 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 ReferenceKind::FieldAccess
             };
             let object_kind = AstKind::from_expression(&member.object);
+            let object_span = member.object.span();
             let (target, confidence) = if Self::is_this_receiver(object_kind) {
                 self.this_property_target(property_span, kind)?
             } else if Self::is_super_receiver(object_kind) {
                 self.super_property_target(property_span, kind)?
             } else {
-                self.syntactic_property_target(property_span)?
+                match self.namespace_property_target(object_span, property_span, kind)? {
+                    Some(pair) => pair,
+                    None => self.syntactic_property_target(property_span)?,
+                }
             };
             self.commit_occurrence(owner, property_span, kind, target, confidence)?;
         }
@@ -5288,6 +5296,153 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 }
             }
             _ => self.syntactic_property_target(property_span),
+        }
+    }
+
+    /// Combines member lookups across every merged namespace module. Any
+    /// ambiguous module result or two different unique facts stay ambiguous.
+    fn combine_namespace_member_matches(matches: &[ClassMemberMatch]) -> ClassMemberMatch {
+        let mut unique = None;
+        for matched in matches {
+            match *matched {
+                ClassMemberMatch::Ambiguous => return ClassMemberMatch::Ambiguous,
+                ClassMemberMatch::Absent => {}
+                ClassMemberMatch::Unique(fact) => {
+                    if unique.is_some_and(|known| known != fact) {
+                        return ClassMemberMatch::Ambiguous;
+                    }
+                    unique = Some(fact);
+                }
+            }
+        }
+        match unique {
+            Some(fact) => ClassMemberMatch::Unique(fact),
+            None => ClassMemberMatch::Absent,
+        }
+    }
+
+    /// Returns every published namespace module whose binding name equals
+    /// `name`, including every block of one merged namespace.
+    fn namespace_modules_for_name(&self, name: &[u8]) -> Vec<u32> {
+        self.facts_by_name
+            .get(name)
+            .map(|candidates| {
+                candidates
+                    .iter()
+                    .filter(|ordinal| {
+                        usize::try_from(**ordinal)
+                            .ok()
+                            .and_then(|index| self.fact_kinds.get(index).copied())
+                            == Some(EntityKind::Module)
+                    })
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Resolves one namespace member through every merged module block named
+    /// by the receiver identifier.
+    fn namespace_member_match(
+        &self,
+        modules: &[u32],
+        property_name: &[u8],
+        kind: ReferenceKind,
+    ) -> ClassMemberMatch {
+        match kind {
+            ReferenceKind::FunctionCall => {
+                let matches = modules
+                    .iter()
+                    .map(|module| {
+                        self.class_member_of_owner(*module, property_name, EntityKind::Function)
+                    })
+                    .collect::<Vec<_>>();
+                Self::combine_namespace_member_matches(&matches)
+            }
+            ReferenceKind::FieldAccess => {
+                let field_matches = modules
+                    .iter()
+                    .map(|module| {
+                        self.class_member_of_owner(*module, property_name, EntityKind::Field)
+                    })
+                    .collect::<Vec<_>>();
+                match Self::combine_namespace_member_matches(&field_matches) {
+                    ClassMemberMatch::Unique(fact) => ClassMemberMatch::Unique(fact),
+                    ClassMemberMatch::Ambiguous => ClassMemberMatch::Ambiguous,
+                    ClassMemberMatch::Absent => {
+                        let mut unique = None;
+                        for expected_kind in [
+                            EntityKind::Constant,
+                            EntityKind::Static,
+                            EntityKind::Function,
+                        ] {
+                            let matches = modules
+                                .iter()
+                                .map(|module| {
+                                    self.class_member_of_owner(
+                                        *module,
+                                        property_name,
+                                        expected_kind,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            match Self::combine_namespace_member_matches(&matches) {
+                                ClassMemberMatch::Ambiguous => {
+                                    return ClassMemberMatch::Ambiguous;
+                                }
+                                ClassMemberMatch::Unique(fact) => {
+                                    if unique.is_some_and(|known| known != fact) {
+                                        return ClassMemberMatch::Ambiguous;
+                                    }
+                                    unique = Some(fact);
+                                }
+                                ClassMemberMatch::Absent => {}
+                            }
+                        }
+                        match unique {
+                            Some(fact) => ClassMemberMatch::Unique(fact),
+                            None => ClassMemberMatch::Absent,
+                        }
+                    }
+                }
+            }
+            _ => ClassMemberMatch::Absent,
+        }
+    }
+
+    /// Resolves one `Namespace.member` site when the receiver peels to a
+    /// namespace identifier. Returns `None` when the receiver is not a
+    /// namespace or no unique member binds.
+    fn namespace_property_target(
+        &self,
+        object_span: Span,
+        property_span: Span,
+        kind: ReferenceKind,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, TypeScriptCollectError>
+    {
+        let Some(identifier_span) =
+            self.peel_object_identifier_span(object_span.start, object_span.end)
+        else {
+            return Ok(None);
+        };
+        let namespace_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
+            start: identifier_span.start,
+            end: identifier_span.end,
+        })?;
+        let modules = self.namespace_modules_for_name(namespace_name);
+        if modules.is_empty() {
+            return Ok(None);
+        }
+        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
+            start: property_span.start,
+            end: property_span.end,
+        })?;
+        match self.namespace_member_match(&modules, property_name, kind) {
+            ClassMemberMatch::Unique(fact) => Ok(Some((
+                OccurrenceTarget::Local(EntityId::new(fact)),
+                OccurrenceConfidence::Index,
+            ))),
+            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => Ok(None),
         }
     }
 

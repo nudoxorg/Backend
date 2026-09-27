@@ -4411,3 +4411,286 @@ export function viaBang(items: number[]): number[] { return items.map(bang); }
         bang_call[0].occurrence.span.start + u32::try_from(b"bang".len()).expect("bang len")
     );
 }
+
+#[test]
+fn namespace_call_targets_box_note_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export function note(): number { return 9; } } namespace Box { export function note(): number { return 1; } } export function read(): number { return Box.note(); }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 2);
+    let other_note = note_functions[0];
+    let box_note = note_functions[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let note_token_start = property_token(SOURCE, b"Box.", b"note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
+fn namespace_function_value_targets_box_note_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export function note(): number { return 9; } } namespace Box { export function note(): number { return 1; } } export function read(): number { return Box.note; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 2);
+    let other_note = note_functions[0];
+    let box_note = note_functions[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let note_token_start = property_token(SOURCE, b"Box.", b"note");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_note))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_note))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"note", note_token_start);
+    let function_calls = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    assert_eq!(function_calls, 0);
+}
+
+#[test]
+fn namespace_const_read_targets_box_score_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export const score = 9; } namespace Box { export const score = 1; } export function read(): number { return Box.score; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_constants = entities_named(&v, b"score", EntityKind::Constant);
+    assert_eq!(score_constants.len(), 2);
+    let other_score = score_constants[0];
+    let box_score = score_constants[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let score_token_start = property_token(SOURCE, b"Box.", b"score");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_score))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_score))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+}
+
+#[test]
+fn namespace_let_read_targets_box_score_not_other() {
+    const SOURCE: &[u8] = b"namespace Other { export let score = 9; } namespace Box { export let score = 1; } export function read(): number { return Box.score; }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let score_statics = entities_named(&v, b"score", EntityKind::Static);
+    assert_eq!(score_statics.len(), 2);
+    let other_score = score_statics[0];
+    let box_score = score_statics[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let score_token_start = property_token(SOURCE, b"Box.", b"score");
+    let field_reads = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .collect::<Vec<_>>();
+    assert_eq!(field_reads.len(), 1);
+    assert_eq!(field_reads[0].owner.raw, read_owner);
+    assert_eq!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_score))
+    );
+    assert_ne!(
+        field_reads[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_score))
+    );
+    assert_eq!(field_reads[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &field_reads[0], b"score", score_token_start);
+}
+
+#[test]
+fn namespace_merged_blocks_call_targets_note() {
+    const SOURCE: &[u8] = b"namespace Box { export function note(): number { return 1; } } namespace Box { export function read(): number { return Box.note(); } }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 1);
+    let box_note = note_functions[0];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let note_token_start = property_token(SOURCE, b"Box.", b"note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
+fn namespace_parenthesized_call_targets_box_note() {
+    const SOURCE: &[u8] = b"namespace Other { export function note(): number { return 9; } } namespace Box { export function note(): number { return 1; } } export function read(): number { return (Box).note(); }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 2);
+    let other_note = note_functions[0];
+    let box_note = note_functions[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let note_token_start = property_token(SOURCE, b"(Box).", b"note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(other_note))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
+fn namespace_computed_call_targets_box_note_not_score() {
+    const SOURCE: &[u8] = b"namespace Box { export function note(): number { return 1; } export function score(): number { return 2; } } export function read(): number { return Box[\"note\"](); }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 1);
+    let box_note = note_functions[0];
+    let score_functions = entities_named(&v, b"score", EntityKind::Function);
+    assert_eq!(score_functions.len(), 1);
+    let box_score = score_functions[0];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let note_token_start = property_token(SOURCE, b"Box[\"", b"note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    assert_eq!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_score))
+    );
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Index);
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
+
+#[test]
+fn namespace_computed_escape_does_not_bind_note() {
+    const SOURCE: &[u8] = b"namespace Box { export function note(): number { return 1; } } export function read(): number { return Box[\"n\\u006fte\"](); }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 1);
+    let function_calls = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .count();
+    let field_accesses = occurrences(&v)
+        .iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FieldAccess)
+        .count();
+    assert_eq!(function_calls, 0);
+    assert_eq!(field_accesses, 0);
+}
+
+#[test]
+fn namespace_other_receiver_stays_syntactic() {
+    const SOURCE: &[u8] = b"namespace Box { export function note(): number { return 1; } } export function read(obj: { note(): number }): number { return obj.note(); }";
+    let stack = StackLowered::compile(SOURCE);
+    let v = stack.view();
+    let note_functions = entities_named(&v, b"note", EntityKind::Function);
+    assert_eq!(note_functions.len(), 2);
+    let box_note = note_functions[0];
+    let type_literal_note = note_functions[1];
+    let read_owners = entities_named(&v, b"read", EntityKind::Function);
+    assert_eq!(read_owners.len(), 1);
+    let read_owner = read_owners[0];
+    let note_token_start = property_token(SOURCE, b"obj.", b"note");
+    let calls = occurrences(&v)
+        .into_iter()
+        .filter(|o| o.occurrence.kind == ReferenceKind::FunctionCall)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].owner.raw, read_owner);
+    match &calls[0].occurrence.target {
+        OccurrenceTarget::Foreign(key) => {
+            assert_eq!(key.path, "note");
+            assert_eq!(key.display, "note");
+            assert!(key.kind.is_none());
+            assert!(matches!(
+                key.origin,
+                ForeignOrigin::Universe { ecosystem: "npm" }
+            ));
+        }
+        OccurrenceTarget::Local(_) | OccurrenceTarget::Stable(_) => {
+            panic!("other-receiver namespace member access must stay syntactic")
+        }
+    }
+    assert_eq!(calls[0].occurrence.confidence, OccurrenceConfidence::Syntactic);
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(box_note))
+    );
+    assert_ne!(
+        calls[0].occurrence.target,
+        OccurrenceTarget::Local(EntityId::new(type_literal_note))
+    );
+    assert_property_token_site(SOURCE, None, &calls[0], b"note", note_token_start);
+}
