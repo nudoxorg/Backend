@@ -21,6 +21,14 @@ impl ForgeAuthToken {
         }
         Ok(Self(Arc::from(value)))
     }
+
+    /// Bearer header value for one process-local request.
+    ///
+    /// The token stays out of coordinate identity, journal records, and git
+    /// config files. Callers pass it through the child environment.
+    pub(super) fn authorization_header(&self) -> String {
+        format!("Bearer {}", self.0)
+    }
 }
 
 impl fmt::Debug for ForgeAuthToken {
