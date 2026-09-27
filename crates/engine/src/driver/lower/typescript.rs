@@ -4938,6 +4938,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 span = parenthesized.expression.span();
                 continue;
             }
+            if let Some(non_null) = kind.as_ts_non_null_expression() {
+                span = non_null.expression.span();
+                continue;
+            }
             if kind.as_identifier_reference().is_some() {
                 return Some(span);
             }
@@ -5726,6 +5730,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 span = parenthesized.expression.span();
                 continue;
             }
+            if let Some(non_null) = kind.as_ts_non_null_expression() {
+                span = non_null.expression.span();
+                continue;
+            }
             break;
         }
         let kind = self.ast_kind_at_exact_span(span.start, span.end)?;
@@ -5778,6 +5786,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 span = parenthesized.expression.span();
                 continue;
             }
+            if let Some(non_null) = ast_kind.as_ts_non_null_expression() {
+                span = non_null.expression.span();
+                continue;
+            }
             break;
         }
         let Some(ast_kind) = self.ast_kind_at_exact_span(span.start, span.end) else {
@@ -5794,6 +5806,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             };
             if let Some(parenthesized) = callee_kind.as_parenthesized_expression() {
                 callee_span = parenthesized.expression.span();
+                continue;
+            }
+            if let Some(non_null) = callee_kind.as_ts_non_null_expression() {
+                callee_span = non_null.expression.span();
                 continue;
             }
             break;
@@ -5870,6 +5886,10 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let kind = self.ast_kind_at_exact_span(span.start, span.end)?;
             if let Some(parenthesized) = kind.as_parenthesized_expression() {
                 span = parenthesized.expression.span();
+                continue;
+            }
+            if let Some(non_null) = kind.as_ts_non_null_expression() {
+                span = non_null.expression.span();
                 continue;
             }
             let annotation_span = if let Some(cast) = kind.as_ts_as_expression() {
