@@ -2524,8 +2524,18 @@ impl<'x, 'source> Projector<'x, 'source> {
                 };
                 match local {
                     Some(target) => target,
+                    // A receiver-qualified method that exists but is not a
+                    // same-file fact is a namespace key. A method-shaped use
+                    // of a name this package never declared as a method stays
+                    // the package key, including a promoted field.
                     None if row.target_class == ReferenceTargetClass::Method
-                        && !row.recv_type.is_empty() =>
+                        && !row.recv_type.is_empty()
+                        && self.members.iter().any(|key| {
+                            !key.is_field
+                                && key.package == owner_package
+                                && key.type_name == row.recv_type
+                                && key.member == row.target
+                        }) =>
                     {
                         namespace_method_target(reference_index, row.recv_type, row.target)?
                     }
