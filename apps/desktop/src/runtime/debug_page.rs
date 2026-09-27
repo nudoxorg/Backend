@@ -447,6 +447,15 @@ pub fn render_text(store: &DataStore) -> String {
             PageKey::Search(query) => section(&store.search(query), search_text),
             PageKey::Orbit => section(&store.orbit(), orbit_text),
             PageKey::Health => section(&store.health(), health_text),
+            PageKey::Browse(browse) => section(&store.pages().browse(browse), |value| {
+                value.tree().map_or_else(String::new, |tree| {
+                    let mut out = format!("{}\n", tree.reading.lede);
+                    for role in tree.reading.roles.iter() {
+                        let _ = writeln!(out, "  {} · {} direct", role.label, role.rows.len());
+                    }
+                    out
+                })
+            }),
         };
         out.push_str(&text);
     }
