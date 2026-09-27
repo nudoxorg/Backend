@@ -3,7 +3,7 @@ use backend_library::{RegistryForgeAssociationState, RegistryForgeBlobKind};
 
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::Path,
     sync::{
@@ -520,5 +520,305 @@ fn gated_real_github_smoke_uses_exact_resolved_commit() {
         HttpForgeTransport::new(ForgeAcquisitionLimits::default(), None).expect("transport");
     let result = service.acquire(&coordinate, &mut transport);
     assert!(matches!(result, ForgeAcquisitionOutcome::Hit(_)));
+    let _ = fs::remove_dir_all(root);
+}
+
+fn directory_bytes(path: &Path) -> u64 {
+    let mut total = 0_u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() {
+                pending.push(child);
+                continue;
+            }
+            if let Ok(metadata) = entry.metadata() {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    total
+}
+
+fn git_quiet(directory: Option<&Path>, args: &[&str]) {
+    let mut command = Command::new("git");
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    let output = command.args(args).output().expect("git process");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn serve_smart_git(mut stream: TcpStream, project_root: &Path, backend: &Path) {
+    if stream.set_nonblocking(false).is_err() {
+        return;
+    }
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(30)));
+    let mut header = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    while !header.windows(4).any(|window| window == b"\r\n\r\n") {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => header.extend_from_slice(&buffer[..read]),
+        }
+        if header.len() > 1024 * 1024 {
+            return;
+        }
+    }
+    let Some(split) = header.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return;
+    };
+    let head = String::from_utf8_lossy(&header[..split]).into_owned();
+    let mut body = header[split + 4..].to_vec();
+    let mut lines = head.lines();
+    let Some(request) = lines.next() else {
+        return;
+    };
+    let mut parts = request.split_whitespace();
+    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
+        return;
+    };
+    let mut content_length = 0_usize;
+    let mut content_type = String::new();
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value.trim().parse().unwrap_or(0);
+        } else if name.eq_ignore_ascii_case("content-type") {
+            content_type = value.trim().to_owned();
+        }
+    }
+    while body.len() < content_length {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => body.extend_from_slice(&buffer[..read]),
+        }
+        if body.len() > 2 * 1024 * 1024 {
+            return;
+        }
+    }
+    body.truncate(content_length);
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let Ok(mut child) = Command::new(backend)
+        .env("GIT_PROJECT_ROOT", project_root)
+        .env("GIT_HTTP_EXPORT_ALL", "1")
+        .env("REQUEST_METHOD", method)
+        .env("QUERY_STRING", query)
+        .env("PATH_INFO", path)
+        .env("CONTENT_TYPE", &content_type)
+        .env("CONTENT_LENGTH", content_length.to_string())
+        .env("REMOTE_ADDR", "127.0.0.1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&body);
+    }
+    let Ok(output) = child.wait_with_output() else {
+        return;
+    };
+    let bytes = output.stdout;
+    let Some(split) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return;
+    };
+    let raw_headers = String::from_utf8_lossy(&bytes[..split]);
+    let payload = &bytes[split + 4..];
+    let mut status = "200 OK".to_owned();
+    let mut headers = String::new();
+    for line in raw_headers.lines() {
+        if let Some(value) = line.strip_prefix("Status:") {
+            status = value.trim().to_owned();
+        } else if !line.is_empty() && !line.to_ascii_lowercase().starts_with("content-length:") {
+            headers.push_str(line);
+            headers.push_str("\r\n");
+        }
+    }
+    let response = format!(
+        "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.write_all(payload);
+}
+
+fn start_smart_git_http(
+    project_root: &Path,
+) -> (
+    std::net::SocketAddr,
+    Arc<AtomicBool>,
+    thread::JoinHandle<()>,
+) {
+    let exec_path = Command::new("git")
+        .args(["--exec-path"])
+        .output()
+        .expect("git exec-path");
+    let backend = PathBuf::from(String::from_utf8(exec_path.stdout).expect("exec-path").trim())
+        .join("git-http-backend");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let address = listener.local_addr().expect("address");
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stopped_for_thread = Arc::clone(&stopped);
+    let project_root = project_root.to_path_buf();
+    let thread = thread::spawn(move || {
+        while !stopped_for_thread.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let project_root = project_root.clone();
+                    let backend = backend.clone();
+                    thread::spawn(move || serve_smart_git(stream, &project_root, &backend));
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        || error.kind() == std::io::ErrorKind::Interrupted =>
+                {
+                    thread::yield_now();
+                }
+                Err(_) => thread::yield_now(),
+            }
+        }
+    });
+    (address, stopped, thread)
+}
+
+#[test]
+fn partial_clone_skips_historical_blobs() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-forge-partial-{}-{}",
+        std::process::id(),
+        now_millis()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let work = root.join("work");
+    fs::create_dir_all(&work).expect("work directory");
+    git_quiet(None, &["init", "--quiet", work.to_str().expect("work")]);
+    git_quiet(Some(&work), &["config", "user.email", "forge@example.test"]);
+    git_quiet(Some(&work), &["config", "user.name", "Forge Fixture"]);
+    let mut bytes = vec![0_u8; 256 * 1024];
+    for generation in 1_u64..=12 {
+        let mut state = generation;
+        for byte in &mut bytes {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            *byte = (state >> 33) as u8;
+        }
+        fs::write(work.join("blob.bin"), &bytes).expect("blob");
+        git_quiet(Some(&work), &["add", "blob.bin"]);
+        git_quiet(Some(&work), &["commit", "--quiet", "-m", "generation"]);
+    }
+    git_quiet(Some(&work), &["branch", "-M", "main"]);
+    let bare = root.join("server/acme/mono.git");
+    fs::create_dir_all(bare.parent().expect("server parent")).expect("server");
+    git_quiet(
+        None,
+        &[
+            "clone",
+            "--bare",
+            "--quiet",
+            work.to_str().expect("work"),
+            bare.to_str().expect("bare"),
+        ],
+    );
+    git_quiet(Some(&bare), &["config", "uploadpack.allowFilter", "true"]);
+    git_quiet(
+        Some(&bare),
+        &["config", "uploadpack.allowReachableSHA1InWant", "true"],
+    );
+    let expected = String::from_utf8(Command::new("git")
+        .args(["-C", work.to_str().expect("work"), "rev-parse", "HEAD"])
+        .output()
+        .expect("rev-parse")
+        .stdout)
+    .expect("commit text");
+    let expected = expected.trim();
+    let (address, stopped, server) = start_smart_git_http(&root.join("server"));
+    let url = format!("http://{address}/acme/mono.git");
+    let full = root.join("full");
+    git_quiet(None, &["init", "--quiet", full.to_str().expect("full")]);
+    let started = std::time::Instant::now();
+    git_quiet(
+        None,
+        &[
+            "-C",
+            full.to_str().expect("full"),
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            &url,
+            "main",
+        ],
+    );
+    let full_ns = started.elapsed().as_nanos();
+    let full_bytes = directory_bytes(&full.join(".git"));
+    let coordinate = ForgeCoordinate::new(
+        url.clone(),
+        ForgeRevision::Branch(ForgeRefName::new("main").expect("branch")),
+        None::<String>,
+    )
+    .expect("coordinate");
+    let mut transport = GitCommandTransport::new(root.join("transport"))
+        .expect("transport")
+        .with_token(ForgeAuthToken::new("super-secret-token").expect("token"));
+    let started = std::time::Instant::now();
+    let resolution = transport.resolve(&coordinate).expect("partial resolve");
+    let partial_ns = started.elapsed().as_nanos();
+    let partial_bytes = directory_bytes(&root.join("transport/repo/.git"));
+    assert_eq!(resolution.commit.as_hex(), expected);
+    let config = fs::read_to_string(root.join("transport/repo/.git/config")).expect("git config");
+    assert!(
+        !config.contains("super-secret-token"),
+        "bearer token was written into git config"
+    );
+    eprintln!(
+        "forge_partial_clone full_bytes={full_bytes} partial_bytes={partial_bytes} \
+         full_ns={full_ns} partial_ns={partial_ns}"
+    );
+    assert!(
+        partial_bytes.saturating_mul(8) < full_bytes,
+        "partial clone kept {partial_bytes} bytes against a full fetch of {full_bytes}"
+    );
+    assert!(
+        partial_ns.saturating_mul(4) < full_ns,
+        "partial clone took {partial_ns} ns against a full fetch of {full_ns} ns"
+    );
+    let archive = transport
+        .fetch_archive(&coordinate, &resolution)
+        .expect("archive");
+    let mut tar = Vec::new();
+    archive
+        .into_reader()
+        .read_to_end(&mut tar)
+        .expect("read archive");
+    assert!(
+        tar.windows(8).any(|window| window == b"blob.bin"),
+        "partial archive omitted the tip blob"
+    );
+    let missing = ForgeCoordinate::new(
+        url,
+        ForgeRevision::Branch(ForgeRefName::new("no-such-ref").expect("branch")),
+        None::<String>,
+    )
+    .expect("missing coordinate");
+    assert_eq!(
+        transport.resolve(&missing).expect_err("missing ref"),
+        ForgeTransportError::NotFound
+    );
+    stopped.store(true, Ordering::Relaxed);
+    let _ = TcpStream::connect(address);
+    server.join().expect("server");
     let _ = fs::remove_dir_all(root);
 }
