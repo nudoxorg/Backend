@@ -167,6 +167,8 @@ pub enum AdvisoryCategory {
     Unmaintained,
     /// Unsound API or implementation.
     Unsound,
+    /// An informational notice that is neither a vulnerability nor a package state.
+    Notice,
 }
 
 /// Normalized severity level.
@@ -268,6 +270,8 @@ pub enum AdvisoryStatus {
     Unmaintained,
     /// Source marks the package unsound.
     Unsound,
+    /// Source publishes an informational notice about the package.
+    Notice,
     /// Advisory was withdrawn by its issuing authority.
     Withdrawn,
     /// No source fully covers this package or ecosystem.
@@ -301,6 +305,11 @@ pub struct Advisory {
     pub withdrawn: Option<String>,
     /// Human/source references.
     pub references: Box<[Reference]>,
+    /// The source's one-line title (`# Bincode is unmaintained`, OSV `summary`).
+    /// Absent from objects admitted before titles were kept, so an older
+    /// authority file reopens and re-digests byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// Explicit malware coverage.
     pub malware: MalwareCoverage,
     /// Freshness and verification evidence.
@@ -327,6 +336,7 @@ impl Advisory {
                 AdvisoryCategory::Malicious => AdvisoryStatus::Malicious,
                 AdvisoryCategory::Unmaintained => AdvisoryStatus::Unmaintained,
                 AdvisoryCategory::Unsound => AdvisoryStatus::Unsound,
+                AdvisoryCategory::Notice => AdvisoryStatus::Notice,
             });
         }
         out.into_iter().collect()

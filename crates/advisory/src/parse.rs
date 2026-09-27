@@ -113,6 +113,7 @@ pub(crate) fn parse_osv_value(root: &Value, observed_at: u64) -> Result<Advisory
         modified: optional_text(object, "modified"),
         withdrawn: optional_withdrawn(object),
         references: references(object),
+        summary: optional_text(object, "summary").and_then(one_line),
         malware: MalwareCoverage::NotCovered,
         evidence: Evidence {
             snapshot: None,
@@ -132,10 +133,12 @@ pub fn parse_rustsec(bytes: &[u8], observed_at: u64) -> Result<Advisory, RustSec
     if bytes.len() > MAX_ADVISORY_DOCUMENT_BYTES {
         return Err(RustSecParseError::BoundExceeded("document-bytes"));
     }
-    let root: toml::Value = std::str::from_utf8(bytes)
-        .map_err(|_| RustSecParseError::InvalidToml)?
-        .parse()
-        .map_err(|_| RustSecParseError::InvalidToml)?;
+    let document = std::str::from_utf8(bytes).map_err(|_| RustSecParseError::InvalidToml)?;
+    // advisory-db stores each advisory as Markdown whose front matter is a
+    // fenced TOML block and whose `# ` heading is the title; older copies are
+    // bare TOML with a `title` key. Both are the same advisory.
+    let (front, prose) = rustsec_front_matter(document);
+    let root: toml::Value = front.parse().map_err(|_| RustSecParseError::InvalidToml)?;
     let advisory = root
         .get("advisory")
         .and_then(toml::Value::as_table)
@@ -183,8 +186,19 @@ pub fn parse_rustsec(bytes: &[u8], observed_at: u64) -> Result<Advisory, RustSec
         .into_iter()
         .map(|value| category(&value))
         .collect::<Vec<_>>();
+    let informational = advisory
+        .get("informational")
+        .and_then(toml::Value::as_str)
+        .map(informational_category);
+    categories.extend(informational);
     categories.sort();
     categories.dedup();
+    let summary = advisory
+        .get("title")
+        .and_then(toml::Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| markdown_title(prose))
+        .and_then(one_line);
     let published = advisory
         .get("date")
         .and_then(toml::Value::as_str)
@@ -206,6 +220,8 @@ pub fn parse_rustsec(bytes: &[u8], observed_at: u64) -> Result<Advisory, RustSec
             source: None,
             score_hundredths: None,
         },
+        // An informational advisory carries its category above; only a bare
+        // advisory with no category at all is read as a vulnerability.
         categories: if categories.is_empty() {
             Box::new([AdvisoryCategory::Vulnerability])
         } else {
@@ -214,6 +230,7 @@ pub fn parse_rustsec(bytes: &[u8], observed_at: u64) -> Result<Advisory, RustSec
         published,
         modified: None,
         withdrawn,
+        summary,
         references: advisory
             .get("url")
             .and_then(toml::Value::as_str)
@@ -318,6 +335,7 @@ pub(crate) fn parse_ghsa_value(root: &Value, observed_at: u64) -> Result<Advisor
         modified: optional_text(object, "updated_at"),
         withdrawn: optional_text(object, "withdrawn_at"),
         references: ghsa_references(object),
+        summary: optional_text(object, "summary").and_then(one_line),
         malware: if malware {
             MalwareCoverage::Covered
         } else {
@@ -582,7 +600,7 @@ fn parse_github_token(
 
 fn syntax_for(ecosystem: &str) -> VersionSyntax {
     match ecosystem.to_ascii_lowercase().as_str() {
-        "cargo" | "npm" | "nuget" => VersionSyntax::Semver,
+        "cargo" | "crates.io" | "npm" | "nuget" => VersionSyntax::Semver,
         "pypi" | "python" => VersionSyntax::Pep440,
         "maven" => VersionSyntax::Maven,
         "golang" | "go" => VersionSyntax::Go,
@@ -657,23 +675,98 @@ fn package_object_purl(
 }
 
 fn categories(object: &Map<String, Value>) -> Box<[AdvisoryCategory]> {
-    let mut categories = object
+    // RustSec's OSV export states categories and `informational` per affected
+    // package (`affected[].database_specific`); other producers state them once
+    // at the top. Read both, so an unmaintained notice is never mistaken for a
+    // vulnerability.
+    let specifics = object
         .get("database_specific")
         .and_then(Value::as_object)
-        .and_then(|v| v.get("categories"))
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
+        .into_iter()
+        .chain(
+            object
+                .get("affected")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|row| row.get("database_specific").and_then(Value::as_object)),
+        )
+        .collect::<Vec<_>>();
+    let mut categories = specifics
+        .iter()
+        .flat_map(|specific| {
+            specific
+                .get("categories")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
                 .filter_map(Value::as_str)
                 .map(category)
-                .collect::<Vec<_>>()
+                .chain(
+                    specific
+                        .get("informational")
+                        .and_then(Value::as_str)
+                        .map(informational_category),
+                )
         })
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| vec![AdvisoryCategory::Vulnerability]);
+        .collect::<Vec<_>>();
+    if categories.is_empty() {
+        categories.push(AdvisoryCategory::Vulnerability);
+    }
     categories.sort();
     categories.dedup();
     categories.into_boxed_slice()
+}
+
+/// `informational = "unmaintained" | "unsound" | "notice"` (RustSec's
+/// vocabulary). An unknown word is still informational, so it reads as a
+/// notice rather than a vulnerability.
+fn informational_category(value: &str) -> AdvisoryCategory {
+    if value.eq_ignore_ascii_case("unmaintained") {
+        AdvisoryCategory::Unmaintained
+    } else if value.eq_ignore_ascii_case("unsound") {
+        AdvisoryCategory::Unsound
+    } else {
+        AdvisoryCategory::Notice
+    }
+}
+
+/// Splits an advisory-db document into its TOML front matter and the prose
+/// after it. A document with no ```` ```toml ```` fence is all front matter.
+fn rustsec_front_matter(document: &str) -> (&str, &str) {
+    let trimmed = document.trim_start_matches('\u{feff}').trim_start();
+    let Some(rest) = trimmed.strip_prefix("```toml") else {
+        return (document, "");
+    };
+    let Some(rest) = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n')) else {
+        return (document, "");
+    };
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        if line.trim_end() == "```" {
+            return (&rest[..offset], &rest[offset + line.len()..]);
+        }
+        offset += line.len();
+    }
+    (document, "")
+}
+
+/// The first `# ` heading of the prose after the front matter.
+fn markdown_title(prose: &str) -> Option<String> {
+    prose
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("# "))
+        .map(|title| title.trim().to_owned())
+}
+
+/// A title kept to one bounded line; empty titles are absent.
+fn one_line(text: String) -> Option<String> {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.chars().take(240).collect())
 }
 
 fn category(value: &str) -> AdvisoryCategory {
