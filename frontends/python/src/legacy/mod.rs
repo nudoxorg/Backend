@@ -1067,15 +1067,16 @@ impl<'a> Projection<'a> {
             let allow_overload = declaration.kind == DeclarationKind::Function
                 && self.last_module_function.as_deref() == Some(declaration.name.as_str());
             if self.module_declared.contains(&declaration.name) && !allow_overload {
-                // A later module constant is the binding pyrefly sees at the
-                // end of the module. Keep that span instead of the first store.
+                // A later module constant is dropped, but its name is where
+                // pyrefly's end-of-module type is probed. The first statement
+                // span stays, so a written annotation and the first alias
+                // value remain contained there. Later alias values are still
+                // recorded and keep two aliases ambiguous.
                 if declaration.kind == DeclarationKind::Constant {
                     if let Some(existing) = self.facts.declarations.iter_mut().rev().find(|row| {
                         row.kind == DeclarationKind::Constant && row.name == declaration.name
                     }) {
                         existing.name_span = declaration.name_span;
-                        existing.span = declaration.span;
-                        existing.value_source = declaration.value_source;
                     }
                 }
                 return;
