@@ -109,6 +109,45 @@ pub fn range_rect(layout: &TextLayout, range: &Range<usize>) -> Option<Bounds<Pi
     Some(Bounds::from_corners(start, point(end.x, start.y + line)))
 }
 
+/// The rects of `range` in a laid-out text, one per visual line it spans.
+/// [`range_rect`] assumes a single line and, for a range that wraps, falls
+/// back to stretching from `range.start` to the *first* line's right edge —
+/// right for a hit-test box (approximately where the word begins), wrong
+/// for a decoration: a wrapped link's hairline would run under the tail of
+/// its first line and nothing under the lines it actually wraps onto. This
+/// walks every char boundary in `range` and starts a fresh rect each time
+/// the line changes, so a decoration can be painted once per rect instead.
+#[must_use]
+pub fn range_rects(layout: &TextLayout, range: &Range<usize>) -> Vec<Bounds<Pixels>> {
+    let Some(mut seg_start) = layout.position_for_index(range.start) else {
+        return Vec::new();
+    };
+    if range.start >= range.end {
+        return vec![Bounds::from_corners(seg_start, point(seg_start.x, seg_start.y + layout.line_height()))];
+    }
+    let line = layout.line_height();
+    let text = layout.text();
+    let mut rects = Vec::new();
+    let mut last = seg_start;
+    let boundaries = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(text.len()))
+        .filter(|index| *index > range.start && *index <= range.end);
+    for at in boundaries {
+        let Some(pos) = layout.position_for_index(at) else {
+            continue;
+        };
+        if (pos.y - seg_start.y).abs() >= px(0.5) {
+            rects.push(Bounds::from_corners(seg_start, point(layout.bounds().right(), seg_start.y + line)));
+            seg_start = pos;
+        }
+        last = pos;
+    }
+    rects.push(Bounds::from_corners(seg_start, point(last.x, seg_start.y + line)));
+    rects
+}
+
 impl IntoElement for Words {
     type Element = Self;
 
@@ -186,24 +225,26 @@ impl Element for Words {
         let layout = self.text.layout().clone();
         let line3 = self.hairline;
         for (range, decor) in &self.decor {
-            let Some(rect) = range_rect(&layout, range) else {
-                continue;
-            };
-            match decor {
-                Decor::Hairline => {
-                    let underline = Bounds::new(
-                        point(rect.origin.x, rect.bottom() - px(1.0)),
-                        size(rect.size.width, px(1.0)),
-                    );
-                    window.paint_quad(fill(underline, line3));
-                }
-                Decor::Chip => {
-                    let inset = rect.size.height * 0.12;
-                    let chip = Bounds::from_corners(
-                        point(rect.origin.x, rect.origin.y + inset),
-                        point(rect.right(), rect.bottom() - inset),
-                    );
-                    window.paint_quad(outline(chip, line3, BorderStyle::Dashed));
+            // One rect per visual line `range` occupies: a wrapped link's
+            // hairline (or chip) must run under every line it wraps onto,
+            // not just a single rect stretched to the first line's edge.
+            for rect in range_rects(&layout, range) {
+                match decor {
+                    Decor::Hairline => {
+                        let underline = Bounds::new(
+                            point(rect.origin.x, rect.bottom() - px(1.0)),
+                            size(rect.size.width, px(1.0)),
+                        );
+                        window.paint_quad(fill(underline, line3));
+                    }
+                    Decor::Chip => {
+                        let inset = rect.size.height * 0.12;
+                        let chip = Bounds::from_corners(
+                            point(rect.origin.x, rect.origin.y + inset),
+                            point(rect.right(), rect.bottom() - inset),
+                        );
+                        window.paint_quad(outline(chip, line3, BorderStyle::Dashed));
+                    }
                 }
             }
         }
