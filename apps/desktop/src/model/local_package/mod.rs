@@ -206,14 +206,15 @@ impl LocalPackageLoader {
     #[must_use]
     #[allow(clippy::unused_self)]
     pub fn readme(&self, project: &LocalProjectId) -> Option<LocalPackage> {
-        let readme = readme::project_readme(project.path());
+        let root = project.path();
+        let readme = readme::project_readme(&root);
         if readme.is_empty() {
             return None;
         }
         Some(LocalPackage {
             project: project.clone(),
             source: LocalPackageSource::Readme,
-            name: Arc::from(folder_name(project.path())),
+            name: Arc::from(folder_name(&root)),
             version: None,
             description: None,
             license: None,
