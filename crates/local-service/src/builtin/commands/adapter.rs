@@ -22,6 +22,29 @@ use std::path::Path;
 type ProductDaemon = crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>;
 type AdmittedReply = (CommandReply, Option<WireCertificate>);
 
+const ADD_TARGET_REQUIRED: &str =
+    "add target must be an admitted local directory or version-pinned package URL";
+
+enum AddTarget {
+    LocalDirectory,
+    PackageUrl,
+}
+
+/// Classifies an add label before any project record is built.
+///
+/// A directory is indexed in place. A version-pinned package URL goes through
+/// registry acquisition. A file, a symlink to a file, or a missing path is
+/// refused here so it cannot become an empty project record.
+fn classify_add_target(label: &str) -> Result<AddTarget, BuiltinModelError> {
+    if Path::new(label).is_dir() {
+        Ok(AddTarget::LocalDirectory)
+    } else if label.starts_with("pkg:") || label.starts_with("PKG:") {
+        Ok(AddTarget::PackageUrl)
+    } else {
+        Err(BuiltinModelError(ADD_TARGET_REQUIRED.to_owned()))
+    }
+}
+
 pub(in crate::builtin) struct CommandAdapter {
     sql_projection: backend_extension_turso::TursoProjection,
     registry: Option<RegistryGateway>,
@@ -109,12 +132,11 @@ impl CommandAdapter {
         let label = certified_package_label(certificate, package)?;
         let requested_package = package;
         let (package, label) = canonical_local_package(package, label)?;
-        let intent = if Path::new(&label).is_dir() {
-            index_project_intent(daemon, package, &label, request_id, &self.compiler)?
-        } else if label.starts_with("pkg:") || label.starts_with("PKG:") {
-            self.registry_intent(daemon, package, &label, request_id)?
-        } else {
-            Some(BuiltinIntent::add(package, label.clone())?)
+        let intent = match classify_add_target(&label)? {
+            AddTarget::LocalDirectory => {
+                index_project_intent(daemon, package, &label, request_id, &self.compiler)?
+            }
+            AddTarget::PackageUrl => self.registry_intent(daemon, package, &label, request_id)?,
         };
         if let Some(intent) = intent {
             commit_builtin_intent(daemon, request_id, &intent).map_err(|error| {
@@ -139,12 +161,8 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
         let coordinate =
-            backend_engine::registry::PackageCoordinate::parse(label).map_err(|_| {
-                BuiltinModelError(
-                    "add target must be an admitted local directory or version-pinned package URL"
-                        .to_owned(),
-                )
-            })?;
+            backend_engine::registry::PackageCoordinate::parse(label)
+                .map_err(|_| BuiltinModelError(ADD_TARGET_REQUIRED.to_owned()))?;
         if coordinate.as_str() != label {
             return Err(BuiltinModelError(
                 "package URL is not in canonical form".to_owned(),
@@ -758,5 +776,110 @@ fn commit_builtin_intent(
         _ => Err(BuiltinModelError(
             "builtin intent was sent to the wrong owner lane".to_owned(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ADD_TARGET_REQUIRED, AddTarget, classify_add_target};
+    use crate::builtin::BuiltinIntent;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TempTree(PathBuf);
+
+    impl TempTree {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "nudox-add-guard-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("temp tree");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn label(path: &std::path::Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_directory_is_indexed_in_place() {
+        let tree = TempTree::new();
+        let project = tree.0.join("project");
+        fs::create_dir(&project).expect("project dir");
+        assert!(matches!(
+            classify_add_target(&label(&project)),
+            Ok(AddTarget::LocalDirectory)
+        ));
+    }
+
+    #[test]
+    fn a_symlink_to_a_directory_is_indexed_in_place() {
+        let tree = TempTree::new();
+        let project = tree.0.join("project");
+        let link = tree.0.join("link");
+        fs::create_dir(&project).expect("project dir");
+        std::os::unix::fs::symlink(&project, &link).expect("directory symlink");
+        assert!(matches!(
+            classify_add_target(&label(&link)),
+            Ok(AddTarget::LocalDirectory)
+        ));
+    }
+
+    #[test]
+    fn a_file_add_is_refused_instead_of_an_empty_project() {
+        let tree = TempTree::new();
+        let file = tree.0.join("lib.rs");
+        fs::write(&file, "fn main() {}\n").expect("file");
+        let name = label(&file);
+        let package = backend_engine::package_key(&name);
+        assert!(
+            BuiltinIntent::add(package, name.clone()).is_ok(),
+            "the empty-project constructor still accepts a file label"
+        );
+        let error = classify_add_target(&name).expect_err("file add");
+        assert_eq!(error.0, ADD_TARGET_REQUIRED);
+    }
+
+    #[test]
+    fn a_symlink_to_a_file_is_refused() {
+        let tree = TempTree::new();
+        let file = tree.0.join("lib.rs");
+        let link = tree.0.join("link.rs");
+        fs::write(&file, "fn main() {}\n").expect("file");
+        std::os::unix::fs::symlink(&file, &link).expect("file symlink");
+        let error = classify_add_target(&label(&link)).expect_err("symlink add");
+        assert_eq!(error.0, ADD_TARGET_REQUIRED);
+    }
+
+    #[test]
+    fn a_missing_path_is_refused() {
+        let tree = TempTree::new();
+        let missing = tree.0.join("missing");
+        let error = classify_add_target(&label(&missing)).expect_err("missing add");
+        assert_eq!(error.0, ADD_TARGET_REQUIRED);
+    }
+
+    #[test]
+    fn a_version_pinned_package_url_stays_a_registry_add() {
+        assert!(matches!(
+            classify_add_target("pkg:cargo/serde@1.0.0"),
+            Ok(AddTarget::PackageUrl)
+        ));
+        assert!(matches!(
+            classify_add_target("PKG:cargo/serde@1.0.0"),
+            Ok(AddTarget::PackageUrl)
+        ));
     }
 }
