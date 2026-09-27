@@ -172,13 +172,20 @@ impl ProductState {
                 SurfaceReply::Explored(explore_page(
                     view,
                     catalog,
+                    catalog_index,
                     query.as_ref(),
                     limit,
                 )?),
                 false,
             ),
             SurfaceCommand::IndexSearch { query, limit } => (
-                SurfaceReply::IndexSearch(index_search_page(view, catalog, Some(&query), limit)?),
+                SurfaceReply::IndexSearch(index_search_page(
+                    view,
+                    catalog,
+                    catalog_index,
+                    Some(&query),
+                    limit,
+                )?),
                 false,
             ),
             SurfaceCommand::Package { package } => (
@@ -693,6 +700,7 @@ fn owner_page(
 fn explore_page(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     query: Option<&ProductText>,
     limit: u16,
 ) -> Result<Box<[RegistryPackageRecord]>, String> {
@@ -701,7 +709,7 @@ fn explore_page(
     {
         return indexed_explore_page(view, &project_root, query_text.as_str(), limit);
     }
-    let registry = catalog_page(catalog, query, limit);
+    let registry = catalog_page(catalog, catalog_index, query, limit)?;
     if !registry.is_empty() {
         return Ok(registry);
     }
@@ -857,10 +865,11 @@ fn resolve_tree_subject(
 fn index_search_page(
     view: &ViewRoot,
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     query: Option<&ProductText>,
     limit: u16,
 ) -> Result<Box<[RegistryPackageRecord]>, String> {
-    let mut records = catalog_page(catalog, query, limit).into_vec();
+    let mut records = catalog_page(catalog, catalog_index, query, limit)?.into_vec();
     let needle = query.map_or("", ProductText::as_str);
     for row in view.row_refs() {
         if !matches!(row.id, RowId::Symbol(_)) || !row_matches_index_query(row, needle) {
@@ -1106,24 +1115,11 @@ fn stub_registry_record(coordinate: PackageReference) -> RegistryPackageRecord {
 
 fn catalog_page(
     catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
     query: Option<&ProductText>,
     limit: u16,
-) -> Box<[RegistryPackageRecord]> {
-    let needle = query.map_or("", ProductText::as_str).to_ascii_lowercase();
-    catalog
-        .iter()
-        .filter(|row| {
-            needle.is_empty()
-                || row
-                    .coordinate
-                    .as_str()
-                    .to_ascii_lowercase()
-                    .contains(&needle)
-        })
-        .take(usize::from(limit))
-        .cloned()
-        .collect::<Vec<_>>()
-        .into_boxed_slice()
+) -> Result<Box<[RegistryPackageRecord]>, String> {
+    catalog_index.page(catalog, query, limit)
 }
 fn package_matches(package: &PackageReference, row: &RegistryPackageRecord) -> bool {
     &row.coordinate == package || row.name.as_str() == package.as_str()
@@ -1185,19 +1181,26 @@ fn member_manifest_name(
         }
     }
 }
-/// Catalog positions grouped by coordinate and by registry name.
+const CATALOG_GRAM_BYTES: usize = 3;
+
+/// Catalog positions grouped by coordinate, registry name, and coordinate trigram.
 ///
 /// Built once for a resident catalog. Package, version, release, owner, and
-/// advisory lookups read these positions instead of scanning every row.
+/// advisory lookups read exact positions. A substring page reads the rarest
+/// trigram of the folded query, then checks those coordinates.
 pub(super) struct CatalogLookupIndex {
     by_coordinate: BTreeMap<PackageReference, Vec<usize>>,
     by_name: BTreeMap<String, Vec<usize>>,
+    lowered: Vec<String>,
+    grams: BTreeMap<[u8; CATALOG_GRAM_BYTES], Vec<usize>>,
 }
 
 impl CatalogLookupIndex {
     pub(super) fn from_catalog(catalog: &[RegistryPackageRecord]) -> Self {
         let mut by_coordinate: BTreeMap<PackageReference, Vec<usize>> = BTreeMap::new();
         let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        let mut lowered = Vec::with_capacity(catalog.len());
+        let mut grams: BTreeMap<[u8; CATALOG_GRAM_BYTES], Vec<usize>> = BTreeMap::new();
         for (index, record) in catalog.iter().enumerate() {
             by_coordinate
                 .entry(record.coordinate.clone())
@@ -1207,11 +1210,100 @@ impl CatalogLookupIndex {
                 .entry(record.name.as_str().to_owned())
                 .or_default()
                 .push(index);
+            let folded = record.coordinate.as_str().to_ascii_lowercase();
+            remember_catalog_grams(&mut grams, index, folded.as_bytes());
+            lowered.push(folded);
         }
         Self {
             by_coordinate,
             by_name,
+            lowered,
+            grams,
         }
+    }
+
+    fn page(
+        &self,
+        catalog: &[RegistryPackageRecord],
+        query: Option<&ProductText>,
+        limit: u16,
+    ) -> Result<Box<[RegistryPackageRecord]>, String> {
+        if self.lowered.len() != catalog.len() {
+            return Err("catalog lookup index does not match the catalog".to_owned());
+        }
+        let limit = usize::from(limit);
+        if limit == 0 {
+            return Ok(Box::new([]));
+        }
+        let needle = query.map_or("", ProductText::as_str).to_ascii_lowercase();
+        if needle.is_empty() {
+            return Ok(catalog
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_boxed_slice());
+        }
+        let mut rows = Vec::new();
+        match self.gram_candidates(needle.as_bytes()) {
+            GramCandidates::Scan => {
+                self.collect_matches(catalog, &needle, 0..self.lowered.len(), limit, &mut rows)?;
+            }
+            GramCandidates::None => {}
+            GramCandidates::Postings(positions) => {
+                self.collect_matches(
+                    catalog,
+                    &needle,
+                    positions.iter().copied(),
+                    limit,
+                    &mut rows,
+                )?;
+            }
+        }
+        Ok(rows.into_boxed_slice())
+    }
+
+    fn gram_candidates(&self, needle: &[u8]) -> GramCandidates<'_> {
+        if needle.len() < CATALOG_GRAM_BYTES {
+            return GramCandidates::Scan;
+        }
+        let mut best: Option<&[usize]> = None;
+        for window in needle.windows(CATALOG_GRAM_BYTES) {
+            let key = [window[0], window[1], window[2]];
+            let Some(list) = self.grams.get(&key) else {
+                return GramCandidates::None;
+            };
+            if best.is_none_or(|current| list.len() < current.len()) {
+                best = Some(list.as_slice());
+            }
+        }
+        best.map_or(GramCandidates::None, GramCandidates::Postings)
+    }
+
+    fn collect_matches(
+        &self,
+        catalog: &[RegistryPackageRecord],
+        needle: &str,
+        positions: impl IntoIterator<Item = usize>,
+        limit: usize,
+        rows: &mut Vec<RegistryPackageRecord>,
+    ) -> Result<(), String> {
+        for index in positions {
+            let folded = self.lowered.get(index).ok_or_else(|| {
+                "catalog lookup index does not match the catalog".to_owned()
+            })?;
+            if !folded.contains(needle) {
+                continue;
+            }
+            let record = catalog.get(index).ok_or_else(|| {
+                "catalog lookup index does not match the catalog".to_owned()
+            })?;
+            rows.push(record.clone());
+            if rows.len() == limit {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn first_coordinate<'a>(
@@ -1303,6 +1395,29 @@ impl CatalogLookupIndex {
             records.push(record);
         }
         Ok(records)
+    }
+}
+
+enum GramCandidates<'a> {
+    Scan,
+    None,
+    Postings(&'a [usize]),
+}
+
+fn remember_catalog_grams(
+    grams: &mut BTreeMap<[u8; CATALOG_GRAM_BYTES], Vec<usize>>,
+    index: usize,
+    folded: &[u8],
+) {
+    if folded.len() < CATALOG_GRAM_BYTES {
+        return;
+    }
+    for window in folded.windows(CATALOG_GRAM_BYTES) {
+        let key = [window[0], window[1], window[2]];
+        let list = grams.entry(key).or_default();
+        if list.last().copied() != Some(index) {
+            list.push(index);
+        }
     }
 }
 
@@ -1868,6 +1983,117 @@ mod tests {
         assert!(
             lookup_median.saturating_mul(4) < scan_median,
             "lookup {lookup_median} ns was not 4× faster than scanning every row \
+             {scan_median} ns"
+        );
+    }
+
+    fn scanned_catalog_page(
+        catalog: &[RegistryPackageRecord],
+        query: Option<&ProductText>,
+        limit: u16,
+    ) -> Vec<RegistryPackageRecord> {
+        let needle = query.map_or("", ProductText::as_str).to_ascii_lowercase();
+        catalog
+            .iter()
+            .filter(|row| {
+                needle.is_empty()
+                    || row
+                        .coordinate
+                        .as_str()
+                        .to_ascii_lowercase()
+                        .contains(&needle)
+            })
+            .take(usize::from(limit))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn catalog_substring_page_matches_the_linear_scan() {
+        let catalog = [
+            registry_row("pkg:cargo/SeRde@1.0.0", "SeRde"),
+            registry_row("pkg:cargo/aaa-aaa@1.0.0", "aaa"),
+            registry_row("pkg:cargo/other@1.0.0", "other"),
+            registry_row("pkg:cargo/serde@2.0.0", "serde"),
+        ];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let queries = [
+            None,
+            Some("pkg"),
+            Some("se"),
+            Some("serde"),
+            Some("SERDE"),
+            Some("aaa"),
+            Some("a"),
+            Some("missing-token"),
+        ];
+        for query in queries {
+            let text = query.map(|value| ProductText::new(value).expect("query"));
+            for limit in [0_u16, 1, 2, 8] {
+                let indexed =
+                    catalog_page(&catalog, &index, text.as_ref(), limit).expect("indexed page");
+                let scanned = scanned_catalog_page(&catalog, text.as_ref(), limit);
+                assert_eq!(indexed.as_ref(), scanned.as_slice(), "{query:?} limit={limit}");
+            }
+        }
+        let stale = CatalogLookupIndex::from_catalog(&catalog);
+        assert!(
+            stale
+                .page(&catalog[..1], None, 1)
+                .expect_err("stale catalog")
+                .contains("does not match the catalog")
+        );
+    }
+
+    #[test]
+    fn catalog_substring_page_skips_unrelated_coordinates() {
+        const ROWS: usize = 8_192;
+        const SAMPLES: usize = 9;
+        let catalog: Vec<_> = (0..ROWS)
+            .map(|index| {
+                if index + 1 == ROWS {
+                    registry_row("pkg:cargo/zzq9needle@1.0.0", "zzq9needle")
+                } else {
+                    registry_row(&format!("pkg:cargo/pkg-{index:04}@1.0.0"), "pkg")
+                }
+            })
+            .collect();
+        let query = ProductText::new("zzq9needle").expect("query");
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let scan = || scanned_catalog_page(&catalog, Some(&query), 4);
+        let lookup = || {
+            catalog_page(&catalog, &index, Some(&query), 4)
+                .expect("page")
+                .into_vec()
+        };
+        assert_eq!(scan(), lookup());
+        assert_eq!(lookup().len(), 1);
+        assert_eq!(lookup()[0].coordinate.as_str(), "pkg:cargo/zzq9needle@1.0.0");
+        for _ in 0..2 {
+            std::hint::black_box(scan());
+            std::hint::black_box(lookup());
+        }
+        let mut scan_samples = Vec::with_capacity(SAMPLES);
+        let mut lookup_samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            std::hint::black_box(scan());
+            scan_samples.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(lookup());
+            lookup_samples.push(started.elapsed().as_nanos());
+        }
+        scan_samples.sort_unstable();
+        lookup_samples.sort_unstable();
+        let scan_median = scan_samples[SAMPLES / 2];
+        let lookup_median = lookup_samples[SAMPLES / 2];
+        eprintln!(
+            "catalog_substring_page rows={ROWS} scan_median_ns={scan_median} \
+             lookup_median_ns={lookup_median}"
+        );
+        assert!(
+            lookup_median.saturating_mul(8) < scan_median,
+            "lookup {lookup_median} ns was not 8× faster than scanning every coordinate \
              {scan_median} ns"
         );
     }
