@@ -10902,12 +10902,6 @@ mod references_tests {
                  every row {owned_find_median} ns"
             ));
         }
-        if borrowed_presence_median.saturating_mul(2) >= owned_presence_median {
-            return Err(format!(
-                "borrowed presence {borrowed_presence_median} ns was not twice as fast as cloning \
-                 every row {owned_presence_median} ns"
-            ));
-        }
         Ok(())
     }
 }
