@@ -8047,11 +8047,20 @@ mod project_call_tests {
             &[],
         )
         .map_err(|error| error.to_string())?;
+        // Reading a value is a reference, never a call: a Reads link may
+        // join the declaration it names, but only with the Reads relation.
         let sync_symbol = semantic_symbol(package, sync_identity);
-        let sync_site_facts = facts.iter().filter(|fact| fact.site == sync_symbol).count();
-        if sync_site_facts != 0 {
+        let sync_site_relations = facts
+            .iter()
+            .filter(|fact| fact.site == sync_symbol)
+            .map(|fact| fact.relation)
+            .collect::<Vec<_>>();
+        if sync_site_relations
+            .iter()
+            .any(|relation| *relation != backend_engine::SemanticLinkKind::Reads)
+        {
             return Err(format!(
-                "Reads foreign link produced {sync_site_facts} sync-site facts"
+                "Reads foreign link produced non-read sync-site facts: {sync_site_relations:?}"
             ));
         }
         Ok(())

@@ -348,7 +348,7 @@ impl ProductState {
         let mut result = Vec::new();
         for subscription in &mut self.state.subscriptions {
             let indexed =
-                indexed_package_records(view, &subscription.package, workspace)?;
+                indexed_package_records(view, &subscription.package, workspace, package_matches)?;
             let mut matches = if indexed.is_empty() {
                 catalog
                     .iter()
@@ -584,7 +584,7 @@ fn owner_page(
     let mut records = Vec::new();
     let mut seen = BTreeSet::new();
     for row in view.rows() {
-        if !matches!(row.id, RowId::Symbol(_)) {
+        if !matches!(row.id, RowId::Symbol(_)) || is_external_target(row) {
             continue;
         }
         let (name, path) = declaration_identity(row)?;
@@ -711,6 +711,12 @@ fn indexed_explore_page(
     Ok(records.into_boxed_slice())
 }
 
+/// A row standing for a declaration outside every indexed project has no
+/// project file, so path-keyed surfaces skip it.
+fn is_external_target(row: &Row) -> bool {
+    row.label == super::view_build::EXTERNAL_SEMANTIC_TARGET_LABEL
+}
+
 fn declaration_identity(row: &Row) -> Result<(String, String), String> {
     let name = row
         .label
@@ -802,7 +808,10 @@ fn index_search_page(
     let mut records = catalog_page(catalog, query, limit).into_vec();
     let needle = query.map_or("", ProductText::as_str);
     for row in view.rows() {
-        if !matches!(row.id, RowId::Symbol(_)) || !row_matches_index_query(row, needle) {
+        if !matches!(row.id, RowId::Symbol(_))
+            || is_external_target(row)
+            || !row_matches_index_query(row, needle)
+        {
             continue;
         }
         records.push(declaration_explore_record(row)?);
@@ -907,10 +916,12 @@ pub(crate) fn indexed_semantic_versions(
     Ok(versions.into_boxed_slice())
 }
 
+/// Returns the indexed package records that `matches` admits for `package`.
 fn indexed_package_records(
     view: &ViewRoot,
     package: &PackageReference,
     workspace: Option<&Path>,
+    matches: fn(&PackageReference, &RegistryPackageRecord) -> bool,
 ) -> Result<Vec<RegistryPackageRecord>, String> {
     let mut records = Vec::new();
     for row in view.rows() {
@@ -920,7 +931,7 @@ fn indexed_package_records(
         if Path::new(&row.label).is_dir() {
             let project_root = Path::new(&row.label);
             let manifest = super::local_manifest::require_local_manifest(project_root)?;
-            if package_matches(package, &manifest.record) {
+            if matches(package, &manifest.record) {
                 records.push(manifest.record);
             }
             continue;
@@ -929,7 +940,7 @@ fn indexed_package_records(
             continue;
         }
         let source = PackageReference::parse(&row.label).map_err(|error| error.to_string())?;
-        if !package_matches(package, &stub_registry_record(source)) {
+        if !matches(package, &stub_registry_record(source)) {
             continue;
         }
         let root = registry_project_root(view, &row.label, workspace)?;
@@ -949,15 +960,24 @@ fn registry_project_root(
         if !matches!(row.id, RowId::Symbol(_)) || !row.label.starts_with(&prefix) {
             continue;
         }
-        if let Some(location) = row.source.captured() {
-            let mut dir = Path::new(location.path());
-            while let Some(parent) = dir.parent() {
-                if let Some(manifest) = super::local_manifest::read_local_manifest(dir)? {
-                    if package_matches(&expected, &manifest.record) {
-                        return Ok(dir.to_path_buf());
-                    }
-                }
-                dir = parent;
+        let Some(location) = row.source.captured() else {
+            continue;
+        };
+        // Registry rows capture package-relative paths; only an absolute
+        // capture names directories on this host, and the file itself is
+        // never a project root.
+        let path = Path::new(location.path());
+        if !path.is_absolute() {
+            continue;
+        }
+        for dir in path.ancestors().skip(1) {
+            if !dir.is_dir() {
+                continue;
+            }
+            if let Some(manifest) = super::local_manifest::read_local_manifest(dir)?
+                && package_matches(&expected, &manifest.record)
+            {
+                return Ok(dir.to_path_buf());
             }
         }
     }
@@ -1116,7 +1136,7 @@ fn member_manifest_name(
             Ok(manifest.record.name)
         }
         PackageReference::Purl(_) => {
-            let records = indexed_package_records(view, member, workspace)?;
+            let records = indexed_package_records(view, member, workspace, package_matches)?;
             let record = records
                 .first()
                 .ok_or_else(|| format!("project member {} is not indexed", member.as_str()))?;
@@ -1240,7 +1260,7 @@ fn package_versions(
     package: &PackageReference,
     workspace: Option<&Path>,
 ) -> Result<Box<[RegistryPackageRecord]>, String> {
-    let indexed = indexed_package_records(view, package, workspace)?;
+    let indexed = indexed_package_records(view, package, workspace, version_matches)?;
     let mut rows = if !indexed.is_empty() {
         indexed
     } else if let Some(workspace) = workspace {

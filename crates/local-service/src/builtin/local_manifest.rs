@@ -139,6 +139,17 @@ pub(crate) fn indexed_package_source_root(
         }
         return Ok(root.to_path_buf());
     }
+    staged_package_source_root(label, workspace)?
+        .ok_or_else(|| format!("indexed package {} has no staged source manifest", label))
+}
+
+/// Returns the staged directory whose manifest proves one registry label.
+///
+/// A registry archive need not carry a manifest this service reads (a Conan
+/// recipe, a bare source tarball, or a manifest naming another coordinate);
+/// that is `None`, not an error. Malformed manifests and unreadable staging
+/// still fail.
+fn staged_package_source_root(label: &str, workspace: &Path) -> Result<Option<PathBuf>, String> {
     let package = PackageReference::parse(label).map_err(|error| error.to_string())?;
     let PackageReference::Purl(coordinate) = package else {
         return Err(format!(
@@ -167,23 +178,30 @@ pub(crate) fn indexed_package_source_root(
             continue;
         }
         if let Some(root) = staged_manifest_root(&path, coordinate.version(), label)? {
-            return Ok(root);
+            return Ok(Some(root));
         }
     }
-    Err(format!(
-        "indexed package {} has no staged source manifest",
-        label
-    ))
+    Ok(None)
 }
 
 /// Reads the manifest package name for one indexed project label.
+///
+/// A registry label whose staged archive carries no matching manifest has no
+/// manifest name.
 pub(crate) fn indexed_package_manifest_name(
     label: &str,
     workspace: &Path,
-) -> Result<String, String> {
-    let source_root = indexed_package_source_root(label, workspace)?;
+) -> Result<Option<String>, String> {
+    let source_root = if label.starts_with("pkg:") {
+        match staged_package_source_root(label, workspace)? {
+            Some(root) => root,
+            None => return Ok(None),
+        }
+    } else {
+        indexed_package_source_root(label, workspace)?
+    };
     let manifest = require_local_manifest(&source_root)?;
-    Ok(manifest.record.name.as_str().to_owned())
+    Ok(Some(manifest.record.name.as_str().to_owned()))
 }
 
 /// Reads the canonical package identity declared by one indexed Cargo manifest.

@@ -1457,16 +1457,16 @@ pub(crate) fn structural_call_graph_relations(
     let mut relations = BTreeSet::new();
     for (caller_coordinate, callee_coordinate) in structural_call_coordinate_pairs(sources, package)?
     {
-        let caller_id = coordinate_ids.get(&caller_coordinate).ok_or_else(|| {
-            BuiltinModelError(
-                "structural call graph caller is absent from the published view".to_owned(),
-            )
-        })?;
-        let callee_id = coordinate_ids.get(&callee_coordinate).ok_or_else(|| {
-            BuiltinModelError(
-                "structural call graph callee is absent from the published view".to_owned(),
-            )
-        })?;
+        // A file with a complete semantic image publishes its declarations
+        // under semantic labels, so a structural coordinate there has no row
+        // of its own. Such a pair cannot be drawn and never touches the
+        // requested source row; it is not a view inconsistency.
+        let (Some(caller_id), Some(callee_id)) = (
+            coordinate_ids.get(&caller_coordinate),
+            coordinate_ids.get(&callee_coordinate),
+        ) else {
+            continue;
+        };
         relations.insert(backend_engine::GraphRelation::new(
             *caller_id,
             *callee_id,

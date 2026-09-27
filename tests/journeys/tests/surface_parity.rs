@@ -647,6 +647,21 @@ fn every_surface_renders_identity_equal_content_for_the_same_revision() {
 /// not prose about the schema — it is a list of queries, and this lifts each one
 /// out of the rendered resource exactly as an agent would read it and runs it
 /// against the live index.
+/// Names every `"$variable"` a Trustfall query binds.
+fn query_variables(query: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for piece in query.split("\"$").skip(1) {
+        let name = piece
+            .chars()
+            .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+            .collect::<String>();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 fn assert_the_query_card_runs(surfaces: &Surfaces, card: &Value) {
     let text = card["result"]["contents"][0]["text"]
         .as_str()
@@ -662,12 +677,18 @@ fn assert_the_query_card_runs(surfaces: &Surfaces, card: &Value) {
         .iter()
         .enumerate()
         .map(|(index, query)| {
+            // A worked example may bind `$name`-style variables; the card
+            // leaves their values to the caller, so supply one for each.
+            let variables = query_variables(query)
+                .into_iter()
+                .map(|name| (name, json!("value")))
+                .collect::<serde_json::Map<_, _>>();
             (
                 worked_query_id(index),
                 "tools/call",
                 json!({
                     "name": "backend.query",
-                    "arguments": { "query": query, "limit": 20 }
+                    "arguments": { "query": query, "variables": variables, "limit": 20 }
                 }),
             )
         })

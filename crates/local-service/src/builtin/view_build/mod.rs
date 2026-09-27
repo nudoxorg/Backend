@@ -28,7 +28,7 @@ pub(super) use identity::{external_semantic_symbol, package_token, semantic_symb
 pub(crate) use identity::semantic_coordinate;
 pub(super) use query::semantic_query_corpus;
 pub(super) use semantic::{ProjectedRows, StructuralSites, rows_for_indexed_sources};
-pub(crate) use semantic::compiled_source_path;
+pub(crate) use semantic::{EXTERNAL_SEMANTIC_TARGET_LABEL, compiled_source_path};
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
     structural_call_graph_relations_mapped, structural_call_span, structural_reference_facts,

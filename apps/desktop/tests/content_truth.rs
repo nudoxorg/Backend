@@ -300,7 +300,10 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         trait_page.rose.up.gap().map(|gap| gap.reason),
         Some(GapReason::NoSemanticPublication)
     );
-    let references = trait_page.references.gap().expect("references gap");
+    let references = trait_page
+        .references
+        .gap()
+        .unwrap_or_else(|| panic!("references gap: {:?}", trait_page.references));
     assert_eq!(references.reason, GapReason::NoSemanticPublication);
     assert!(references.detail.contains("complete semantic publication"), "{}", references.detail);
     let down = trait_page.rose.down.known().expect("containment");

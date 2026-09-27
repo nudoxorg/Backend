@@ -29,7 +29,14 @@ use backend_semantic::ir::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
-fn package_manifest_name(label: &str, workspace: &std::path::Path) -> Result<String, String> {
+/// Label of a row that stands for a declaration outside every indexed
+/// project. It names no project file, so path-keyed surfaces skip it.
+pub(crate) const EXTERNAL_SEMANTIC_TARGET_LABEL: &str = "external semantic target";
+
+fn package_manifest_name(
+    label: &str,
+    workspace: &std::path::Path,
+) -> Result<Option<String>, String> {
     super::super::local_manifest::indexed_package_manifest_name(label, workspace)
 }
 
@@ -138,7 +145,8 @@ impl<'a> SourceRowProjection<'a> {
                 &project.label,
             );
             rows.push(match package_manifest_name(&project.label, workspace) {
-                Ok(name) => row.with_signature(name),
+                Ok(Some(name)) => row.with_signature(name),
+                Ok(None) => row,
                 Err(error) => {
                     if project.label.starts_with("pkg:")
                         || std::path::Path::new(&project.label)
@@ -879,7 +887,7 @@ pub(super) fn append_image_rows(
                     "workspace semantic declarations exceed the rebuild row bound".to_owned(),
                 ));
             }
-            let label = "external semantic target";
+            let label = EXTERNAL_SEMANTIC_TARGET_LABEL;
             *sink.remaining_bytes =
                 sink.remaining_bytes
                     .checked_sub(label.len())

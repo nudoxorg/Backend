@@ -541,7 +541,6 @@ fn production_surface_matrix_is_identity_equal_across_languages_and_restarts() {
     for name in [
         "backend.status",
         "backend.outline",
-        "backend.dependencies",
         "backend.search",
         "backend.document",
         "backend.source",

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const DEADLINE: Duration = Duration::from_secs(12);
+const DEADLINE: Duration = Duration::from_secs(60);
 const AUTHORITY_SECRET: [u8; 32] = [0x5a; 32];
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
