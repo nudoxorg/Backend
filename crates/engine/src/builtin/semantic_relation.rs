@@ -22,7 +22,7 @@ use backend_library::{PackageKey, PackageReference, package_key};
 use backend_semantic::ir::{
     ImageProvenance, PackageLineage, SemanticCoreReader, SemanticImageAuthority,
 };
-use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, Stage};
+use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, RustEdition, Stage};
 use backend_store::hydration::VerifiedGenerationFacts;
 use backend_version::{
     CanonicalRelation, Relation, RelationDecodeError, RelationState, StateRoot, WorkspaceRoot,
@@ -206,6 +206,21 @@ impl ProductSemanticPublicationKey {
     #[must_use]
     pub const fn package(&self) -> &PackageReference {
         &self.package
+    }
+
+    /// The least key that can name `package`.
+    ///
+    /// Every stored key for `package` sorts at or after this probe, and every
+    /// key for an earlier package sorts before it. The probe is not a stored
+    /// publication key.
+    #[must_use]
+    pub fn package_lower_bound(package: PackageReference) -> Self {
+        Self {
+            package,
+            coordinate: PackageUrl::ordering_floor(),
+            profile: LanguageProfile::Rust(RustEdition::Rust2015),
+            selection: SemanticPublicationSelection::Selected,
+        }
     }
 
     /// Returns the exact version-pinned compiler coordinate.
@@ -1008,6 +1023,29 @@ mod tests {
         std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
     }
 
+    #[test]
+    fn package_lower_bound_opens_that_package_and_skips_earlier_ones() {
+        let earlier = ProductSemanticPublicationKey::new(
+            PackageReference::parse("pkg:cargo/alpha@1.0.0".to_owned()).expect("package"),
+            PackageUrl::parse("pkg:cargo/alpha@1.0.0".to_owned()).expect("coordinate"),
+            LanguageProfile::Rust(RustEdition::Rust2024),
+        )
+        .expect("earlier");
+        let sample = key().expect("sample");
+        let later = ProductSemanticPublicationKey::new(
+            PackageReference::parse("pkg:cargo/zeta@1.0.0".to_owned()).expect("package"),
+            PackageUrl::parse("pkg:cargo/zeta@1.0.0".to_owned()).expect("coordinate"),
+            LanguageProfile::Rust(RustEdition::Rust2015),
+        )
+        .expect("later");
+        let bound = ProductSemanticPublicationKey::package_lower_bound(sample.package().clone());
+        assert!(earlier < bound);
+        assert!(bound <= sample);
+        assert!(sample < later);
+        assert_eq!(bound.package(), sample.package());
+        assert!(PackageUrl::ordering_floor() < *sample.coordinate());
+    }
+
     fn key() -> Result<ProductSemanticPublicationKey, &'static str> {
         ProductSemanticPublicationKey::new(
             PackageReference::parse("pkg:cargo/sample@1.0.0".to_owned())
@@ -1718,6 +1756,158 @@ mod tests {
         drop(reopened);
         fs::remove_dir_all(directory).map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    #[test]
+    fn one_package_publication_page_skips_the_packages_before_it() {
+        const PACKAGES: usize = 4_096;
+        let value =
+            ProductSemanticPublicationRecord::Unavailable(SemanticUnavailableReason::Toolchain);
+        let mut entries = Vec::with_capacity(PACKAGES);
+        for index in 0..PACKAGES {
+            let name = format!("pkg:cargo/p{index:04}@1.0.0");
+            let key = ProductSemanticPublicationKey::new(
+                PackageReference::parse(name.clone()).expect("package"),
+                PackageUrl::parse(name).expect("coordinate"),
+                LanguageProfile::Rust(RustEdition::Rust2015),
+            )
+            .expect("key");
+            entries.push((key, value.clone()));
+        }
+        let target = entries[PACKAGES - 1].0.clone();
+        let middle = entries[PACKAGES / 2].0.clone();
+        let relation = RelationState::<ProductSemanticPublicationRelation>::from_entries(
+            entries,
+            complete_coverage(AuthorityVersion::from_value(b"package publication page"))
+                .expect("coverage"),
+        )
+        .expect("relation");
+        let directory = std::env::temp_dir().join(format!(
+            "backend-semantic-package-page-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let registry = backend_store::RelationAdmissionRegistry::default()
+            .with_relation::<ProductSemanticPublicationRelation>()
+            .expect("register");
+        let store = Arc::new(
+            backend_store::FileStore::open_with_registry(&directory, 32 * 1024 * 1024, registry)
+                .expect("store"),
+        );
+        store.write_relation_state(&relation).expect("write");
+        let handle = WorkspaceRelationHandle::<ProductSemanticPublicationRelation>::open(
+            Arc::clone(&store),
+            relation.root().to_bytes(),
+        )
+        .expect("open");
+        let collect = |start: &ProductSemanticPublicationKey| {
+            let mut ranged = Vec::new();
+            let mut from = Some(start.clone());
+            let mut after = None;
+            loop {
+                let page = if let Some(cursor) = from.take() {
+                    handle
+                        .page_from(&cursor, crate::MAX_SNAPSHOT_PAGE_ROWS)
+                        .expect("page_from")
+                } else {
+                    handle
+                        .page(after.as_ref(), crate::MAX_SNAPSHOT_PAGE_ROWS)
+                        .expect("page")
+                };
+                let mut finished = false;
+                for (key, _) in page.entries() {
+                    if key.package() != start.package() {
+                        finished = true;
+                        break;
+                    }
+                    ranged.push(key.clone());
+                }
+                if finished {
+                    break;
+                }
+                let Some(next) = page.next().cloned() else {
+                    break;
+                };
+                after = Some(next);
+            }
+            ranged
+        };
+        let target_bound =
+            ProductSemanticPublicationKey::package_lower_bound(target.package().clone());
+        let middle_bound =
+            ProductSemanticPublicationKey::package_lower_bound(middle.package().clone());
+        assert_eq!(collect(&target_bound), vec![target.clone()]);
+        assert_eq!(collect(&middle_bound), vec![middle.clone()]);
+        let absent = ProductSemanticPublicationKey::package_lower_bound(
+            PackageReference::parse("pkg:cargo/p0000a@1.0.0".to_owned()).expect("gap package"),
+        );
+        assert!(collect(&absent).is_empty());
+        let sample = |body: &mut dyn FnMut() -> usize| {
+            for _ in 0..2 {
+                let _ = body();
+            }
+            let mut samples = Vec::new();
+            for _ in 0..9 {
+                let started = std::time::Instant::now();
+                let _ = body();
+                samples.push(started.elapsed().as_nanos());
+            }
+            samples.sort_unstable();
+            samples[samples.len() / 2]
+        };
+        let page_median = sample(&mut || {
+            let mut count = 0usize;
+            let mut after = None;
+            loop {
+                let page = handle
+                    .page(after.as_ref(), crate::MAX_SNAPSHOT_PAGE_ROWS)
+                    .expect("page");
+                count += page.entries().len();
+                let Some(next) = page.next().cloned() else {
+                    return count;
+                };
+                after = Some(next);
+            }
+        });
+        let range_median = sample(&mut || {
+            let mut count = 0usize;
+            let mut from = Some(ProductSemanticPublicationKey::package_lower_bound(
+                target.package().clone(),
+            ));
+            let mut after = None;
+            loop {
+                let page = if let Some(cursor) = from.take() {
+                    handle
+                        .page_from(&cursor, crate::MAX_SNAPSHOT_PAGE_ROWS)
+                        .expect("page_from")
+                } else {
+                    handle
+                        .page(after.as_ref(), crate::MAX_SNAPSHOT_PAGE_ROWS)
+                        .expect("page")
+                };
+                for (key, _) in page.entries() {
+                    if key.package() != target.package() {
+                        return count;
+                    }
+                    count += 1;
+                }
+                let Some(next) = page.next().cloned() else {
+                    return count;
+                };
+                after = Some(next);
+            }
+        });
+        eprintln!(
+            "semantic_package_page packages={PACKAGES} page_median_ns={page_median} \
+             range_median_ns={range_median}"
+        );
+        assert!(
+            range_median * 8 < page_median,
+            "package range {range_median} ns was not 8× cheaper than a full publication page \
+             {page_median} ns"
+        );
+        drop(store);
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]
