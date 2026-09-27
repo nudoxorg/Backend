@@ -260,42 +260,35 @@ struct ParamRow {
 /// Bounded staging for one signature's parameters. One slot beyond the fact
 /// lane's child bound lets an over-wide signature reach the lane's own typed
 /// child-capacity rejection instead of a staging one.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// The rows live on the heap. An inline `[ParamRow; MAX_FACT_CHILDREN + 1]`
+/// is about 12 KiB, and signature lowering keeps one of those arrays in every
+/// recursive object-literal frame, which overflowed the 2 MiB owner stack at
+/// twelve levels.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ParamRows {
-    rows: [ParamRow; MAX_FACT_CHILDREN + 1],
-    len: usize,
+    rows: Vec<ParamRow>,
 }
 
 impl ParamRows {
-    const fn new() -> Self {
-        Self {
-            rows: [ParamRow {
-                name: Span::new(0, 0),
-                annotation: None,
-                default: None,
-                flags: 0,
-            }; MAX_FACT_CHILDREN + 1],
-            len: 0,
-        }
+    fn new() -> Self {
+        Self { rows: Vec::new() }
     }
 
     fn push(&mut self, row: ParamRow) -> Result<(), TypeScriptCollectError> {
-        match self.rows.get_mut(self.len) {
-            Some(slot) => {
-                *slot = row;
-                self.len += 1;
-                Ok(())
-            }
-            None => Err(fault(FactFault::ChildCapacity)),
+        if self.rows.len() > MAX_FACT_CHILDREN {
+            return Err(fault(FactFault::ChildCapacity));
         }
+        self.rows.push(row);
+        Ok(())
     }
 
     fn count(&self) -> usize {
-        self.len
+        self.rows.len()
     }
 
     fn iter(&self) -> impl Iterator<Item = &ParamRow> {
-        self.rows.iter().take(self.len)
+        self.rows.iter()
     }
 }
 
@@ -313,23 +306,21 @@ type MemberLink<'source> = (u32, &'source [u8], u8);
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TypeCells<'source> {
     record: SemanticTypeRecord<'source>,
-    children: Box<[FactTypeChild<'source>; MAX_TYPE_CHILDREN]>,
+    children: Vec<FactTypeChild<'source>>,
     len: usize,
     truncated: bool,
 }
 
 impl<'source> TypeCells<'source> {
     /// A leaf record with no children and no cells.
+    ///
+    /// The child array is filled on the heap. `Box::new([T; N])` builds that
+    /// array on the stack first, and this function runs once per nested type
+    /// frame, so twelve object-literal levels overflowed a 2 MiB stack.
     fn leaf(tag: SemanticTypeTag) -> Self {
         Self {
             record: SemanticTypeRecord::leaf(tag),
-            children: Box::new(
-                [FactTypeChild {
-                    target: 0,
-                    name: None,
-                    flags: 0,
-                }; MAX_TYPE_CHILDREN],
-            ),
+            children: Vec::new(),
             len: 0,
             truncated: false,
         }
@@ -350,21 +341,17 @@ impl<'source> TypeCells<'source> {
         name: Option<&'source [u8]>,
         flags: u8,
     ) -> Result<(), TypeScriptCollectError> {
-        match self.children.get_mut(self.len) {
-            Some(slot) => {
-                *slot = FactTypeChild {
-                    target,
-                    name,
-                    flags,
-                };
-                self.len += 1;
-                Ok(())
-            }
-            None => {
-                self.truncated = true;
-                Err(fault(FactFault::TypeChildCapacity))
-            }
+        if self.len >= MAX_TYPE_CHILDREN {
+            self.truncated = true;
+            return Err(fault(FactFault::TypeChildCapacity));
         }
+        self.children.push(FactTypeChild {
+            target,
+            name,
+            flags,
+        });
+        self.len += 1;
+        Ok(())
     }
 }
 
@@ -1137,7 +1124,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         params_span: Span,
         _declaration: Span,
     ) -> Result<(), TypeScriptCollectError> {
-        let Some(params_kind) = self.ast_kind_at_exact_span(params_span.start, params_span.end) else {
+        let Some(params_kind) = self.ast_kind_at_exact_span(params_span.start, params_span.end)
+        else {
             return Ok(());
         };
         let Some(params) = params_kind.as_formal_parameters() else {
@@ -2178,22 +2166,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if let Some(union) = kind.as_ts_union_type() {
                 for member in union.types.iter() {
                     let member_span = member.span();
-                    self.declare_bindings_in_span(
-                        member_span.start,
-                        member_span.end,
-                        next_depth,
-                    )?;
+                    self.declare_bindings_in_span(member_span.start, member_span.end, next_depth)?;
                 }
                 return Ok(());
             }
             if let Some(intersection) = kind.as_ts_intersection_type() {
                 for member in intersection.types.iter() {
                     let member_span = member.span();
-                    self.declare_bindings_in_span(
-                        member_span.start,
-                        member_span.end,
-                        next_depth,
-                    )?;
+                    self.declare_bindings_in_span(member_span.start, member_span.end, next_depth)?;
                 }
                 return Ok(());
             }
@@ -2211,11 +2191,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if let Some(literal) = kind.as_ts_type_literal() {
                 for member in literal.members.iter() {
                     let member_span = member.span();
-                    self.declare_bindings_in_span(
-                        member_span.start,
-                        member_span.end,
-                        next_depth,
-                    )?;
+                    self.declare_bindings_in_span(member_span.start, member_span.end, next_depth)?;
                 }
                 return Ok(());
             }
@@ -2448,6 +2424,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Because every visited OXC syntax node owns a distinct span, the probe
     /// dispatch never misattributes a wrapper's span to an inner expression,
     /// and an unmatched node simply falls through to the next candidate.
+    ///
+    /// Each syntax arm is its own function. At opt-level 0 every
+    /// local in a function is reserved at once, and this walk
+    /// recurses once per nested object-literal level. One combined
+    /// frame overflowed a 2 MiB stack at twelve levels.
     fn lower_type(
         &mut self,
         start: u32,
@@ -2475,401 +2456,850 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let kind = node.kind();
 
             // Transparent wrappers descend into their inner expression span.
-            if let Some(parenthesized) = kind.as_ts_parenthesized_type() {
-                let inner = parenthesized.type_annotation.span();
-                return self.lower_type(inner.start, inner.end, next_depth);
+            if kind.as_ts_parenthesized_type().is_some() {
+                return self.lower_ts_parenthesized_type(kind, span, next_depth);
             }
-            if let Some(named) = kind.as_ts_named_tuple_member() {
-                let inner = named.element_type.span();
-                return self.lower_type(inner.start, inner.end, next_depth);
+            if kind.as_ts_named_tuple_member().is_some() {
+                return self.lower_ts_named_tuple_member(kind, span, next_depth);
             }
-            if let Some(optional) = kind.as_ts_optional_type() {
-                let inner = optional.type_annotation.span();
-                return self.lower_type(inner.start, inner.end, next_depth);
+            if kind.as_ts_optional_type().is_some() {
+                return self.lower_ts_optional_type(kind, span, next_depth);
             }
-            if let Some(rest) = kind.as_ts_rest_type() {
-                let inner = rest.type_annotation.span();
-                return self.lower_type(inner.start, inner.end, next_depth);
+            if kind.as_ts_rest_type().is_some() {
+                return self.lower_ts_rest_type(kind, span, next_depth);
             }
-
-            if let Some(union) = kind.as_ts_union_type() {
-                if union.types.len() > MAX_TYPE_CHILDREN {
-                    let spans: Vec<_> = union.types.iter().map(GetSpan::span).collect();
-                    return self.associative_cells(&spans, next_depth, SemanticTypeTag::Union);
-                }
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Union);
-                for member in union.types.iter() {
-                    let member_span = member.span();
-                    let target =
-                        self.child_target(member_span.start, member_span.end, next_depth)?;
-                    cells.push_child(target, None, 0)?;
-                }
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_union_type().is_some() {
+                return self.lower_ts_union_type(kind, span, next_depth);
             }
-            if let Some(template) = kind.as_ts_template_literal_type() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::TemplateLiteral);
-                // OXC preserves one quasi before, between, and after every
-                // substitution. Keep that ordered alternating sequence in the
-                // canonical child lane; `record.text` cannot represent it.
-                for (position, quasi) in template.quasis.iter().enumerate() {
-                    let text = self
-                        .slice_span(quasi.span)
-                        .ok_or(TypeScriptCollectError::Span {
-                            start: quasi.span.start,
-                            end: quasi.span.end,
-                        })?;
-                    cells.push_child(u32::MAX, Some(text), 0)?;
-                    if let Some(substitution) = template.types.get(position) {
-                        let substitution_span = substitution.span();
-                        let target = self.child_target(
-                            substitution_span.start,
-                            substitution_span.end,
-                            next_depth,
-                        )?;
-                        cells.push_child(target, None, 0)?;
-                    }
-                }
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_template_literal_type().is_some() {
+                return self.lower_ts_template_literal_type(kind, span, next_depth);
             }
-            if let Some(intersection) = kind.as_ts_intersection_type() {
-                if intersection.types.len() > MAX_TYPE_CHILDREN {
-                    let spans: Vec<_> = intersection.types.iter().map(GetSpan::span).collect();
-                    return self.associative_cells(
-                        &spans,
-                        next_depth,
-                        SemanticTypeTag::Intersection,
-                    );
-                }
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Intersection);
-                for member in intersection.types.iter() {
-                    let member_span = member.span();
-                    let target =
-                        self.child_target(member_span.start, member_span.end, next_depth)?;
-                    cells.push_child(target, None, 0)?;
-                }
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_intersection_type().is_some() {
+                return self.lower_ts_intersection_type(kind, span, next_depth);
             }
-            if let Some(tuple) = kind.as_ts_tuple_type() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Tuple);
-                for element in tuple.element_types.iter() {
-                    let element_span = element.span();
-                    let mut label: Option<Span> = None;
-                    let mut inner = element_span;
-                    let mut flags = 0_u8;
-                    if let Some(position) = self
-                        .node_index
-                        .binary_search_by_key(
-                            &(element_span.start, element_span.end),
-                            |(known, _)| (known.start, known.end),
-                        )
-                        .ok()
-                    {
-                        let Some((_, node_id)) = self.node_index.get(position) else {
-                            continue;
-                        };
-                        let wrapped = self.semantic.nodes().get_node(*node_id);
-                        let wrapped_kind = wrapped.kind();
-                        if let Some(named) = wrapped_kind.as_ts_named_tuple_member() {
-                            label = Some(named.label.span);
-                            inner = named.element_type.span();
-                            if named.optional {
-                                flags |= SemanticTypeChild::FLAG_OPTIONAL;
-                            }
-                        } else if let Some(optional) = wrapped_kind.as_ts_optional_type() {
-                            inner = optional.type_annotation.span();
-                            flags |= SemanticTypeChild::FLAG_OPTIONAL;
-                        } else if let Some(rest) = wrapped_kind.as_ts_rest_type() {
-                            inner = rest.type_annotation.span();
-                            flags |= SemanticTypeChild::FLAG_REST;
-                        }
-                    }
-                    let target = self.child_target(inner.start, inner.end, next_depth)?;
-                    let name = match label {
-                        Some(label_span) => Some(self.slice_span(label_span).ok_or(
-                            TypeScriptCollectError::Span {
-                                start: label_span.start,
-                                end: label_span.end,
-                            },
-                        )?),
-                        None => None,
-                    };
-                    cells.push_child(target, name, flags)?;
-                }
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_tuple_type().is_some() {
+                return self.lower_ts_tuple_type(kind, span, next_depth);
             }
-            if let Some(literal) = kind.as_ts_type_literal() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::AnonymousRecord);
-                cells.record.payload0 = u32::from(AnonRecordForm::Interface);
-                for member in literal.members.iter() {
-                    let member_span = member.span();
-                    let member_fact = self.push_type_literal_member(member_span, next_depth)?;
-                    if let Some((member_fact, name, flags)) = member_fact {
-                        cells.push_child(member_fact, Some(name), flags)?;
-                    }
-                }
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_type_literal().is_some() {
+                return self.lower_ts_type_literal(kind, span, next_depth);
             }
-            if let Some(function_type) = kind.as_ts_function_type() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::FunctionPointer);
-                for parameter in function_type.params.items.iter() {
-                    let target = match parameter.type_annotation.as_ref() {
-                        Some(annotation) => {
-                            let inner = annotation.type_annotation.span();
-                            self.child_target(inner.start, inner.end, next_depth)?
-                        }
-                        None => self.unannotated_fact(parameter.span())?,
-                    };
-                    let flags = if parameter.optional {
-                        SemanticTypeChild::FLAG_OPTIONAL
-                    } else {
-                        0
-                    };
-                    // A standalone function type mints no `Parameter` fact
-                    // for its parameters, so the written pattern is the only
-                    // source of a name; pass it explicitly rather than
-                    // leaving the child unnamed.
-                    let name = self.slice_span(parameter.pattern.span());
-                    cells.push_child(target, name, flags)?;
-                }
-                if let Some(rest) = function_type.params.rest.as_ref() {
-                    let target = match rest.type_annotation.as_ref() {
-                        Some(annotation) => {
-                            let inner = annotation.type_annotation.span();
-                            self.child_target(inner.start, inner.end, next_depth)?
-                        }
-                        None => self.unannotated_fact(rest.span())?,
-                    };
-                    let name = self.slice_span(rest.rest.argument.span());
-                    cells.push_child(target, name, SemanticTypeChild::FLAG_REST)?;
-                }
-                let returned = function_type.return_type.type_annotation.span();
-                let target = self.child_target(returned.start, returned.end, next_depth)?;
-                cells.record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
-                cells.push_child(target, None, 0)?;
-                // The rest element is pushed after every fixed parameter, so
-                // it is the final parameter exactly when present, and the
-                // record must declare the typed-last variadic form for it.
-                if function_type.params.rest.is_some() {
-                    cells.record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
-                }
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_function_type().is_some() {
+                return self.lower_ts_function_type(kind, span, next_depth);
             }
-            if let Some(reference) = kind.as_ts_type_reference() {
-                let name_span = reference.type_name.span();
-                let mut base = self.local_fact_at(name_span.start);
-                if base.is_none() {
-                    // OXC missed the binding; the checker may still have
-                    // resolved it, either to a same-file declaration or to a
-                    // foreign module origin.
-                    base = self.checker_local_target(name_span);
-                }
-                if let Some(fact) = base {
-                    // A use of a generic parameter names its declared
-                    // parameter fact. Owner positions inline it as a `TypeVar`
-                    // in [`Projector::owner_cells`]; child positions link at
-                    // the fact itself, so one argument site never mints a
-                    // redundant per-use embodiment that collides with the next
-                    // spelled use.
-                    if self
-                        .fact_kinds
-                        .get(usize::try_from(fact).map_err(|_| lane_rejection())?)
-                        == Some(&EntityKind::Parameter)
-                    {
-                        return Ok(TypeOutcome::Existing(fact));
-                    }
-                    if reference.type_arguments.is_some() {
-                        let mut cells = TypeCells::leaf(SemanticTypeTag::Apply);
-                        cells.push_child(fact, None, 0)?;
-                        if let Some(arguments) = reference.type_arguments.as_ref() {
-                            for argument in arguments.params.iter() {
-                                let argument_span = argument.span();
-                                let target = self.child_target(
-                                    argument_span.start,
-                                    argument_span.end,
-                                    next_depth,
-                                )?;
-                                cells.push_child(target, None, 0)?;
-                            }
-                        }
-                        return Ok(TypeOutcome::Cells(cells));
-                    }
-                    return Ok(TypeOutcome::Existing(fact));
-                }
-                if let Some(module) = self.checker_foreign_module(name_span) {
-                    let fragment = ExternalFragmentId::from_canonical_bytes(module.as_bytes());
-                    let mut constructor = TypeCells::leaf(SemanticTypeTag::Nominal);
-                    constructor.record.nominal =
-                        Some(NominalRef::External(ExternalEntityRef::bind(fragment, 0)));
-                    constructor.record.text = self.slice_span(name_span);
-                    if reference.type_arguments.is_some() {
-                        let constructor = self.synthetic_cells_fact(name_span, constructor)?;
-                        let mut cells = TypeCells::leaf(SemanticTypeTag::Apply);
-                        cells.push_child(constructor, None, 0)?;
-                        if let Some(arguments) = reference.type_arguments.as_ref() {
-                            for argument in arguments.params.iter() {
-                                let argument_span = argument.span();
-                                let target = self.child_target(
-                                    argument_span.start,
-                                    argument_span.end,
-                                    next_depth,
-                                )?;
-                                cells.push_child(target, None, 0)?;
-                            }
-                        }
-                        return Ok(TypeOutcome::Cells(cells));
-                    }
-                    return Ok(TypeOutcome::Cells(constructor));
-                }
-                // Genuinely unresolvable names stay honestly external; a
-                // checker-resolved foreign module type is known and named
-                // but has no foreign-nominal row form in the closed lattice,
-                // so its exact spelling backs the `TypeReason` instead.
-                let reason = if self.checker_foreign_resolved(name_span) {
-                    TypeReason::NoIrRepresentation
-                } else {
-                    TypeReason::UnresolvedExternal
-                };
-                let mut cells = TypeCells::unknown(reason);
-                cells.record.text = self.slice_span(name_span);
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_type_reference().is_some() {
+                return self.lower_ts_type_reference(kind, span, next_depth);
             }
-            if let Some(query) = kind.as_ts_type_query() {
-                let inner = query.expr_name.span();
-                if let Some(fact) = self.local_fact_at(inner.start) {
-                    return Ok(TypeOutcome::Existing(fact));
-                }
-                let mut cells = TypeCells::unknown(TypeReason::UnresolvedExternal);
-                cells.record.text = self.slice_span(span);
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_type_query().is_some() {
+                return self.lower_ts_type_query(kind, span);
             }
-            if let Some(mapped) = kind.as_ts_mapped_type() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Mapped);
-                cells.record.payload0 =
-                    syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.readonly));
-                cells.record.payload1 =
-                    syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.optional));
-                cells.record.text = self.slice_span(mapped.key.span);
-                let constraint = mapped.constraint.span();
-                let constraint_target =
-                    self.child_target(constraint.start, constraint.end, next_depth)?;
-                let name_as_target = mapped
-                    .name_type
-                    .as_ref()
-                    .map(|name_type| {
-                        let span = name_type.span();
-                        self.child_target(span.start, span.end, next_depth)
-                    })
-                    .transpose()?;
-                let value_target = match mapped.type_annotation.as_ref() {
-                    Some(value) => {
-                        let value_span = value.span();
-                        self.child_target(value_span.start, value_span.end, next_depth)?
-                    }
-                    None => self.unannotated_fact(span)?,
-                };
-                cells.push_child(constraint_target, None, 0)?;
-                if let Some(name_as_target) = name_as_target {
-                    cells.push_child(name_as_target, None, 0)?;
-                }
-                cells.push_child(value_target, None, 0)?;
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_mapped_type().is_some() {
+                return self.lower_ts_mapped_type(kind, span, next_depth);
             }
-            if let Some(conditional) = kind.as_ts_conditional_type() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Conditional);
-                let check = conditional.check_type.span();
-                let extends = conditional.extends_type.span();
-                let true_branch = conditional.true_type.span();
-                let false_branch = conditional.false_type.span();
-                let check_target = self.child_target(check.start, check.end, next_depth)?;
-                let extends_target = self.child_target(extends.start, extends.end, next_depth)?;
-                let true_target =
-                    self.child_target(true_branch.start, true_branch.end, next_depth)?;
-                let false_target =
-                    self.child_target(false_branch.start, false_branch.end, next_depth)?;
-                cells.push_child(check_target, None, 0)?;
-                cells.push_child(extends_target, None, 0)?;
-                cells.push_child(true_target, None, 0)?;
-                cells.push_child(false_target, None, 0)?;
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_conditional_type().is_some() {
+                return self.lower_ts_conditional_type(kind, span, next_depth);
             }
-            if let Some(array) = kind.as_ts_array_type() {
-                let element = array.element_type.span();
-                let element_target = self.child_target(element.start, element.end, next_depth)?;
-                let mut cells = TypeCells::leaf(SemanticTypeTag::ArraySequence);
-                cells.push_child(element_target, None, 0)?;
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_array_type().is_some() {
+                return self.lower_ts_array_type(kind, span, next_depth);
             }
-            if let Some(operator) = kind.as_ts_type_operator() {
-                let full = self.slice_span(span).unwrap_or(&[]);
-                if full.starts_with(b"readonly") {
-                    let inner = operator.type_annotation.span();
-                    let inner_target = self.child_target(inner.start, inner.end, next_depth)?;
-                    let mut cells = TypeCells::leaf(SemanticTypeTag::Annotated);
-                    cells.record.payload0 = AnnotationKind::Readonly as u32;
-                    cells.push_child(inner_target, None, 0)?;
-                    return Ok(TypeOutcome::Cells(cells));
-                }
-                return Ok(TypeOutcome::Cells(self.unrepresented(span)));
+            if kind.as_ts_type_operator().is_some() {
+                return self.lower_ts_type_operator(kind, span, next_depth);
             }
             if kind.as_ts_this_type().is_some() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::SelfType);
-                cells.record.text = Some(&b"this"[..]);
-                return Ok(TypeOutcome::Cells(cells));
+                return self.lower_ts_this_type(kind);
             }
-            if let Some(number) = kind.as_ts_number_keyword() {
-                let _ = number;
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
-                cells.record.payload0 = u32::from(PrimitiveShape::Float);
-                cells.record.payload1 = TypeWidth::Fixed(64).to_cell();
-                return Ok(TypeOutcome::Cells(cells));
+            if kind.as_ts_number_keyword().is_some() {
+                return self.lower_ts_number_keyword(kind);
             }
             if kind.as_ts_string_keyword().is_some() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
-                cells.record.payload0 = u32::from(PrimitiveShape::Str);
-                return Ok(TypeOutcome::Cells(cells));
+                return self.lower_ts_string_keyword(kind);
             }
             if kind.as_ts_boolean_keyword().is_some() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
-                cells.record.payload0 = u32::from(PrimitiveShape::Bool);
-                return Ok(TypeOutcome::Cells(cells));
+                return self.lower_ts_boolean_keyword(kind);
             }
             if kind.as_ts_big_int_keyword().is_some() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
-                cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
-                cells.record.text = Some(&b"bigint"[..]);
-                return Ok(TypeOutcome::Cells(cells));
+                return self.lower_ts_big_int_keyword(kind);
             }
             if kind.as_ts_void_keyword().is_some() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
-                cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
-                cells.record.text = Some(&b"void"[..]);
-                return Ok(TypeOutcome::Cells(cells));
+                return self.lower_ts_void_keyword(kind);
             }
             if kind.as_ts_null_keyword().is_some() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
-                cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
-                cells.record.text = Some(&b"null"[..]);
-                return Ok(TypeOutcome::Cells(cells));
+                return self.lower_ts_null_keyword(kind);
             }
             if kind.as_ts_undefined_keyword().is_some() {
-                let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
-                cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
-                cells.record.text = Some(&b"undefined"[..]);
-                return Ok(TypeOutcome::Cells(cells));
+                return self.lower_ts_undefined_keyword(kind);
             }
             if kind.as_ts_any_keyword().is_some() {
-                return Ok(TypeOutcome::Cells(TypeCells::unknown(
-                    TypeReason::DynamicallyTyped,
-                )));
+                return self.lower_ts_any_keyword(kind);
             }
             if kind.as_ts_unknown_keyword().is_some() {
-                return Ok(TypeOutcome::Cells(TypeCells::leaf(SemanticTypeTag::Any)));
+                return self.lower_ts_unknown_keyword(kind);
             }
             if kind.as_ts_never_keyword().is_some() {
-                return Ok(TypeOutcome::Cells(TypeCells::leaf(SemanticTypeTag::Never)));
+                return self.lower_ts_never_keyword(kind);
             }
         }
         Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_parenthesized_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(parenthesized) = kind.as_ts_parenthesized_type() {
+            let inner = parenthesized.type_annotation.span();
+            return self.lower_type(inner.start, inner.end, next_depth);
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_named_tuple_member(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(named) = kind.as_ts_named_tuple_member() {
+            let inner = named.element_type.span();
+            return self.lower_type(inner.start, inner.end, next_depth);
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_optional_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(optional) = kind.as_ts_optional_type() {
+            let inner = optional.type_annotation.span();
+            return self.lower_type(inner.start, inner.end, next_depth);
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_rest_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(rest) = kind.as_ts_rest_type() {
+            let inner = rest.type_annotation.span();
+            return self.lower_type(inner.start, inner.end, next_depth);
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_union_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(union) = kind.as_ts_union_type() {
+            if union.types.len() > MAX_TYPE_CHILDREN {
+                let spans: Vec<_> = union.types.iter().map(GetSpan::span).collect();
+                return self.associative_cells(&spans, next_depth, SemanticTypeTag::Union);
+            }
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Union);
+            for member in union.types.iter() {
+                let member_span = member.span();
+                let target = self.child_target(member_span.start, member_span.end, next_depth)?;
+                cells.push_child(target, None, 0)?;
+            }
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_template_literal_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(template) = kind.as_ts_template_literal_type() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::TemplateLiteral);
+            // OXC preserves one quasi before, between, and after every
+            // substitution. Keep that ordered alternating sequence in the
+            // canonical child lane; `record.text` cannot represent it.
+            for (position, quasi) in template.quasis.iter().enumerate() {
+                let text = self
+                    .slice_span(quasi.span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: quasi.span.start,
+                        end: quasi.span.end,
+                    })?;
+                cells.push_child(u32::MAX, Some(text), 0)?;
+                if let Some(substitution) = template.types.get(position) {
+                    let substitution_span = substitution.span();
+                    let target = self.child_target(
+                        substitution_span.start,
+                        substitution_span.end,
+                        next_depth,
+                    )?;
+                    cells.push_child(target, None, 0)?;
+                }
+            }
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_intersection_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(intersection) = kind.as_ts_intersection_type() {
+            if intersection.types.len() > MAX_TYPE_CHILDREN {
+                let spans: Vec<_> = intersection.types.iter().map(GetSpan::span).collect();
+                return self.associative_cells(&spans, next_depth, SemanticTypeTag::Intersection);
+            }
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Intersection);
+            for member in intersection.types.iter() {
+                let member_span = member.span();
+                let target = self.child_target(member_span.start, member_span.end, next_depth)?;
+                cells.push_child(target, None, 0)?;
+            }
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_tuple_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(tuple) = kind.as_ts_tuple_type() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Tuple);
+            for element in tuple.element_types.iter() {
+                let element_span = element.span();
+                let mut label: Option<Span> = None;
+                let mut inner = element_span;
+                let mut flags = 0_u8;
+                if let Some(position) = self
+                    .node_index
+                    .binary_search_by_key(&(element_span.start, element_span.end), |(known, _)| {
+                        (known.start, known.end)
+                    })
+                    .ok()
+                {
+                    let Some((_, node_id)) = self.node_index.get(position) else {
+                        continue;
+                    };
+                    let wrapped = self.semantic.nodes().get_node(*node_id);
+                    let wrapped_kind = wrapped.kind();
+                    if let Some(named) = wrapped_kind.as_ts_named_tuple_member() {
+                        label = Some(named.label.span);
+                        inner = named.element_type.span();
+                        if named.optional {
+                            flags |= SemanticTypeChild::FLAG_OPTIONAL;
+                        }
+                    } else if let Some(optional) = wrapped_kind.as_ts_optional_type() {
+                        inner = optional.type_annotation.span();
+                        flags |= SemanticTypeChild::FLAG_OPTIONAL;
+                    } else if let Some(rest) = wrapped_kind.as_ts_rest_type() {
+                        inner = rest.type_annotation.span();
+                        flags |= SemanticTypeChild::FLAG_REST;
+                    }
+                }
+                let target = self.child_target(inner.start, inner.end, next_depth)?;
+                let name = match label {
+                    Some(label_span) => Some(self.slice_span(label_span).ok_or(
+                        TypeScriptCollectError::Span {
+                            start: label_span.start,
+                            end: label_span.end,
+                        },
+                    )?),
+                    None => None,
+                };
+                cells.push_child(target, name, flags)?;
+            }
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_type_literal(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(literal) = kind.as_ts_type_literal() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::AnonymousRecord);
+            cells.record.payload0 = u32::from(AnonRecordForm::Interface);
+            for member in literal.members.iter() {
+                let member_span = member.span();
+                let member_fact = self.push_type_literal_member(member_span, next_depth)?;
+                if let Some((member_fact, name, flags)) = member_fact {
+                    cells.push_child(member_fact, Some(name), flags)?;
+                }
+            }
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_function_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(function_type) = kind.as_ts_function_type() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::FunctionPointer);
+            for parameter in function_type.params.items.iter() {
+                let target = match parameter.type_annotation.as_ref() {
+                    Some(annotation) => {
+                        let inner = annotation.type_annotation.span();
+                        self.child_target(inner.start, inner.end, next_depth)?
+                    }
+                    None => self.unannotated_fact(parameter.span())?,
+                };
+                let flags = if parameter.optional {
+                    SemanticTypeChild::FLAG_OPTIONAL
+                } else {
+                    0
+                };
+                // A standalone function type mints no `Parameter` fact
+                // for its parameters, so the written pattern is the only
+                // source of a name; pass it explicitly rather than
+                // leaving the child unnamed.
+                let name = self.slice_span(parameter.pattern.span());
+                cells.push_child(target, name, flags)?;
+            }
+            if let Some(rest) = function_type.params.rest.as_ref() {
+                let target = match rest.type_annotation.as_ref() {
+                    Some(annotation) => {
+                        let inner = annotation.type_annotation.span();
+                        self.child_target(inner.start, inner.end, next_depth)?
+                    }
+                    None => self.unannotated_fact(rest.span())?,
+                };
+                let name = self.slice_span(rest.rest.argument.span());
+                cells.push_child(target, name, SemanticTypeChild::FLAG_REST)?;
+            }
+            let returned = function_type.return_type.type_annotation.span();
+            let target = self.child_target(returned.start, returned.end, next_depth)?;
+            cells.record.payload1 = SemanticTypeRecord::FUNCTION_RESULT_COUNT_ONE;
+            cells.push_child(target, None, 0)?;
+            // The rest element is pushed after every fixed parameter, so
+            // it is the final parameter exactly when present, and the
+            // record must declare the typed-last variadic form for it.
+            if function_type.params.rest.is_some() {
+                cells.record.payload0 = SemanticTypeRecord::FUNCTION_TYPED_VARIADIC_FLAG;
+            }
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_type_reference(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(reference) = kind.as_ts_type_reference() {
+            let name_span = reference.type_name.span();
+            let mut base = self.local_fact_at(name_span.start);
+            if base.is_none() {
+                // OXC missed the binding; the checker may still have
+                // resolved it, either to a same-file declaration or to a
+                // foreign module origin.
+                base = self.checker_local_target(name_span);
+            }
+            if let Some(fact) = base {
+                // A use of a generic parameter names its declared
+                // parameter fact. Owner positions inline it as a `TypeVar`
+                // in [`Projector::owner_cells`]; child positions link at
+                // the fact itself, so one argument site never mints a
+                // redundant per-use embodiment that collides with the next
+                // spelled use.
+                if self
+                    .fact_kinds
+                    .get(usize::try_from(fact).map_err(|_| lane_rejection())?)
+                    == Some(&EntityKind::Parameter)
+                {
+                    return Ok(TypeOutcome::Existing(fact));
+                }
+                if reference.type_arguments.is_some() {
+                    let mut cells = TypeCells::leaf(SemanticTypeTag::Apply);
+                    cells.push_child(fact, None, 0)?;
+                    if let Some(arguments) = reference.type_arguments.as_ref() {
+                        for argument in arguments.params.iter() {
+                            let argument_span = argument.span();
+                            let target = self.child_target(
+                                argument_span.start,
+                                argument_span.end,
+                                next_depth,
+                            )?;
+                            cells.push_child(target, None, 0)?;
+                        }
+                    }
+                    return Ok(TypeOutcome::Cells(cells));
+                }
+                return Ok(TypeOutcome::Existing(fact));
+            }
+            if let Some(module) = self.checker_foreign_module(name_span) {
+                let fragment = ExternalFragmentId::from_canonical_bytes(module.as_bytes());
+                let mut constructor = TypeCells::leaf(SemanticTypeTag::Nominal);
+                constructor.record.nominal =
+                    Some(NominalRef::External(ExternalEntityRef::bind(fragment, 0)));
+                constructor.record.text = self.slice_span(name_span);
+                if reference.type_arguments.is_some() {
+                    let constructor = self.synthetic_cells_fact(name_span, constructor)?;
+                    let mut cells = TypeCells::leaf(SemanticTypeTag::Apply);
+                    cells.push_child(constructor, None, 0)?;
+                    if let Some(arguments) = reference.type_arguments.as_ref() {
+                        for argument in arguments.params.iter() {
+                            let argument_span = argument.span();
+                            let target = self.child_target(
+                                argument_span.start,
+                                argument_span.end,
+                                next_depth,
+                            )?;
+                            cells.push_child(target, None, 0)?;
+                        }
+                    }
+                    return Ok(TypeOutcome::Cells(cells));
+                }
+                return Ok(TypeOutcome::Cells(constructor));
+            }
+            // Genuinely unresolvable names stay honestly external; a
+            // checker-resolved foreign module type is known and named
+            // but has no foreign-nominal row form in the closed lattice,
+            // so its exact spelling backs the `TypeReason` instead.
+            let reason = if self.checker_foreign_resolved(name_span) {
+                TypeReason::NoIrRepresentation
+            } else {
+                TypeReason::UnresolvedExternal
+            };
+            let mut cells = TypeCells::unknown(reason);
+            cells.record.text = self.slice_span(name_span);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_type_query(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(query) = kind.as_ts_type_query() {
+            let inner = query.expr_name.span();
+            if let Some(fact) = self.local_fact_at(inner.start) {
+                return Ok(TypeOutcome::Existing(fact));
+            }
+            let mut cells = TypeCells::unknown(TypeReason::UnresolvedExternal);
+            cells.record.text = self.slice_span(span);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_mapped_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(mapped) = kind.as_ts_mapped_type() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Mapped);
+            cells.record.payload0 =
+                syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.readonly));
+            cells.record.payload1 =
+                syntax_mapped_modifier_cell(syntax_mapped_modifier(mapped.optional));
+            cells.record.text = self.slice_span(mapped.key.span);
+            let constraint = mapped.constraint.span();
+            let constraint_target =
+                self.child_target(constraint.start, constraint.end, next_depth)?;
+            let name_as_target = mapped
+                .name_type
+                .as_ref()
+                .map(|name_type| {
+                    let span = name_type.span();
+                    self.child_target(span.start, span.end, next_depth)
+                })
+                .transpose()?;
+            let value_target = match mapped.type_annotation.as_ref() {
+                Some(value) => {
+                    let value_span = value.span();
+                    self.child_target(value_span.start, value_span.end, next_depth)?
+                }
+                None => self.unannotated_fact(span)?,
+            };
+            cells.push_child(constraint_target, None, 0)?;
+            if let Some(name_as_target) = name_as_target {
+                cells.push_child(name_as_target, None, 0)?;
+            }
+            cells.push_child(value_target, None, 0)?;
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_conditional_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(conditional) = kind.as_ts_conditional_type() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Conditional);
+            let check = conditional.check_type.span();
+            let extends = conditional.extends_type.span();
+            let true_branch = conditional.true_type.span();
+            let false_branch = conditional.false_type.span();
+            let check_target = self.child_target(check.start, check.end, next_depth)?;
+            let extends_target = self.child_target(extends.start, extends.end, next_depth)?;
+            let true_target = self.child_target(true_branch.start, true_branch.end, next_depth)?;
+            let false_target =
+                self.child_target(false_branch.start, false_branch.end, next_depth)?;
+            cells.push_child(check_target, None, 0)?;
+            cells.push_child(extends_target, None, 0)?;
+            cells.push_child(true_target, None, 0)?;
+            cells.push_child(false_target, None, 0)?;
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_array_type(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(array) = kind.as_ts_array_type() {
+            let element = array.element_type.span();
+            let element_target = self.child_target(element.start, element.end, next_depth)?;
+            let mut cells = TypeCells::leaf(SemanticTypeTag::ArraySequence);
+            cells.push_child(element_target, None, 0)?;
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_type_operator(
+        &mut self,
+        kind: AstKind<'x>,
+        span: Span,
+        next_depth: u8,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(operator) = kind.as_ts_type_operator() {
+            let full = self.slice_span(span).unwrap_or(&[]);
+            if full.starts_with(b"readonly") {
+                let inner = operator.type_annotation.span();
+                let inner_target = self.child_target(inner.start, inner.end, next_depth)?;
+                let mut cells = TypeCells::leaf(SemanticTypeTag::Annotated);
+                cells.record.payload0 = AnnotationKind::Readonly as u32;
+                cells.push_child(inner_target, None, 0)?;
+                return Ok(TypeOutcome::Cells(cells));
+            }
+            return Ok(TypeOutcome::Cells(self.unrepresented(span)));
+        }
+        Ok(TypeOutcome::Cells(self.unrepresented(span)))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_this_type(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_this_type().is_some() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::SelfType);
+            cells.record.text = Some(&b"this"[..]);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_number_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if let Some(number) = kind.as_ts_number_keyword() {
+            let _ = number;
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+            cells.record.payload0 = u32::from(PrimitiveShape::Float);
+            cells.record.payload1 = TypeWidth::Fixed(64).to_cell();
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_string_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_string_keyword().is_some() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+            cells.record.payload0 = u32::from(PrimitiveShape::Str);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_boolean_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_boolean_keyword().is_some() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+            cells.record.payload0 = u32::from(PrimitiveShape::Bool);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_big_int_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_big_int_keyword().is_some() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+            cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
+            cells.record.text = Some(&b"bigint"[..]);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_void_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_void_keyword().is_some() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+            cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
+            cells.record.text = Some(&b"void"[..]);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_null_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_null_keyword().is_some() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+            cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
+            cells.record.text = Some(&b"null"[..]);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_undefined_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_undefined_keyword().is_some() {
+            let mut cells = TypeCells::leaf(SemanticTypeTag::Primitive);
+            cells.record.payload0 = u32::from(PrimitiveShape::Builtin);
+            cells.record.text = Some(&b"undefined"[..]);
+            return Ok(TypeOutcome::Cells(cells));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_any_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_any_keyword().is_some() {
+            return Ok(TypeOutcome::Cells(TypeCells::unknown(
+                TypeReason::DynamicallyTyped,
+            )));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_unknown_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_unknown_keyword().is_some() {
+            return Ok(TypeOutcome::Cells(TypeCells::leaf(SemanticTypeTag::Any)));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
+    }
+
+    /// One syntax arm of [`Self::lower_type`].
+    ///
+    /// Split out so opt-level 0 does not reserve every other arm's
+    /// locals on this recursive frame.
+    #[inline(never)]
+    fn lower_ts_never_keyword(
+        &mut self,
+        kind: AstKind<'x>,
+    ) -> Result<TypeOutcome<'source>, TypeScriptCollectError> {
+        if kind.as_ts_never_keyword().is_some() {
+            return Ok(TypeOutcome::Cells(TypeCells::leaf(SemanticTypeTag::Never)));
+        }
+        Ok(TypeOutcome::Cells(TypeCells::unknown(
+            TypeReason::NoIrRepresentation,
+        )))
     }
 
     /// Recognizes the closed literal spellings on the source plane. The
@@ -2985,239 +3415,340 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let probed = self.semantic.nodes().get_node(*node_id);
         {
             let member_kind = probed.kind();
-            if let Some(property) = member_kind.as_ts_property_signature() {
-                let key_span = property.key.span();
-                let name = self
-                    .slice_span(key_span)
-                    .ok_or(TypeScriptCollectError::Span {
-                        start: key_span.start,
-                        end: key_span.end,
-                    })?;
-                let mut flags = 0_u8;
-                if property.optional {
-                    flags |= SemanticTypeChild::FLAG_OPTIONAL;
-                }
-                if property.readonly {
-                    flags |= SemanticTypeChild::FLAG_READONLY;
-                }
-                let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
-                let cells = match property.type_annotation.as_ref() {
-                    Some(annotation) => {
-                        let inner = annotation.type_annotation.span();
-                        self.owner_cells(inner.start, inner.end, depth)?
-                    }
-                    None => TypeCells::unknown(TypeReason::Unannotated),
-                };
-                let extension = self.extension(type_parameter_start)?;
-                let fact = with_cells(
-                    SemanticFact::new(EntityKind::Field, name, LEAF_PRODUCT)
-                        .with_extension(extension),
-                    cells,
-                );
-                if self.staged_members.len() == member_base
-                    && let Some(existing) = self.merged_fact(member_span, &fact)
-                {
-                    return Ok(Some((existing, name, flags)));
-                }
-                let ordinal = self.push(fact)?;
-                self.register(ordinal, member_span, key_span, EntityKind::Field)?;
-                self.staged_members.push(ordinal);
-                self.claim_staged_members(member_base, ordinal);
-                return Ok(Some((ordinal, name, flags)));
-            }
-            if let Some(signature) = member_kind.as_ts_index_signature() {
-                let inner = signature.type_annotation.type_annotation.span();
-                let name_span = Span::new(member_span.start, inner.start);
-                let name = self
-                    .slice_span(name_span)
-                    .ok_or(TypeScriptCollectError::Span {
-                        start: name_span.start,
-                        end: name_span.end,
-                    })?;
-                let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
-                let cells = self.owner_cells(inner.start, inner.end, depth)?;
-                let extension = self.extension(type_parameter_start)?;
-                let fact = with_cells(
-                    SemanticFact::new(EntityKind::Field, name, LEAF_PRODUCT)
-                        .with_extension(extension),
-                    cells,
-                );
-                let ordinal = self.push(fact)?;
-                self.register(ordinal, member_span, name_span, EntityKind::Field)?;
-                self.staged_members.push(ordinal);
-                self.claim_staged_members(member_base, ordinal);
-                let flags = if signature.readonly {
-                    SemanticTypeChild::FLAG_READONLY
-                } else {
-                    0
-                };
-                return Ok(Some((ordinal, name, flags)));
-            }
-            if let Some(method) = member_kind.as_ts_method_signature() {
-                let key_span = method.key.span();
-                let name = self
-                    .slice_span(key_span)
-                    .ok_or(TypeScriptCollectError::Span {
-                        start: key_span.start,
-                        end: key_span.end,
-                    })?;
-                let mut params = ParamRows::new();
-                for parameter in method.params.items.iter() {
-                    params.push(ParamRow {
-                        name: parameter.pattern.span(),
-                        annotation: parameter
-                            .type_annotation
-                            .as_ref()
-                            .map(|annotation| annotation.type_annotation.span()),
-                        default: parameter.initializer.as_ref().map(|init| init.span()),
-                        flags: if parameter.optional {
-                            SemanticTypeChild::FLAG_OPTIONAL
-                        } else {
-                            0
-                        },
-                    })?;
-                }
-                let result = method
-                    .return_type
-                    .as_ref()
-                    .map(|returned| returned.type_annotation.span());
-                let ordinal = self.push_signature(
-                    key_span,
+            if member_kind.as_ts_property_signature().is_some() {
+                return self.push_ts_property_signature(
+                    member_kind,
                     member_span,
-                    &TypeParamRows::new(),
-                    &params,
-                    result,
-                    false,
-                )?;
-                let flags = if method.optional {
-                    SemanticTypeChild::FLAG_OPTIONAL
-                } else {
-                    0
-                };
-                self.staged_members.push(ordinal);
-                self.claim_staged_members(member_base, ordinal);
-                return Ok(Some((ordinal, name, flags)));
+                    member_base,
+                    depth,
+                );
             }
-            if let Some(signature) = member_kind.as_ts_call_signature_declaration() {
-                // An anonymous call member embodies exactly as an interface
-                // call signature does, named by its full source spelling so
-                // the anonymous-record child keeps its required name. The
-                // staged ordinal lets the enclosing literal claim it.
-                let mut rows = TypeParamRows::new();
-                if let Some(declared) = signature.type_parameters.as_ref() {
-                    for parameter in declared.params.iter() {
-                        Self::stage_row(
-                            &mut rows,
-                            TypeParamRow {
-                                name: parameter.name.span,
-                                constraint: parameter.constraint.as_ref().map(|t| t.span()),
-                                default: parameter.default.as_ref().map(|t| t.span()),
-                            },
-                        )?;
-                    }
+            if member_kind.as_ts_index_signature().is_some() {
+                return self.push_ts_index_signature(member_kind, member_span, member_base, depth);
+            }
+            if member_kind.as_ts_method_signature().is_some() {
+                return self.push_ts_method_signature(member_kind, member_span, member_base);
+            }
+            if member_kind.as_ts_call_signature_declaration().is_some() {
+                return self.push_ts_call_signature_declaration(
+                    member_kind,
+                    member_span,
+                    member_base,
+                );
+            }
+            if member_kind
+                .as_ts_construct_signature_declaration()
+                .is_some()
+            {
+                return self.push_ts_construct_signature_declaration(
+                    member_kind,
+                    member_span,
+                    member_base,
+                );
+            }
+        }
+        Ok(None)
+    }
+
+    /// One member arm of [`Self::push_type_literal_member`].
+    ///
+    /// Split out so a nested object literal does not keep every
+    /// other member arm's locals on the 2 MiB owner stack.
+    #[inline(never)]
+    fn push_ts_property_signature(
+        &mut self,
+        member_kind: AstKind<'x>,
+        member_span: Span,
+        member_base: usize,
+        depth: u8,
+    ) -> Result<Option<MemberLink<'source>>, TypeScriptCollectError> {
+        if let Some(property) = member_kind.as_ts_property_signature() {
+            let key_span = property.key.span();
+            let name = self
+                .slice_span(key_span)
+                .ok_or(TypeScriptCollectError::Span {
+                    start: key_span.start,
+                    end: key_span.end,
+                })?;
+            let mut flags = 0_u8;
+            if property.optional {
+                flags |= SemanticTypeChild::FLAG_OPTIONAL;
+            }
+            if property.readonly {
+                flags |= SemanticTypeChild::FLAG_READONLY;
+            }
+            let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+            let cells = match property.type_annotation.as_ref() {
+                Some(annotation) => {
+                    let inner = annotation.type_annotation.span();
+                    self.owner_cells(inner.start, inner.end, depth)?
                 }
-                let mut params = ParamRows::new();
-                for parameter in signature.params.items.iter() {
-                    params.push(ParamRow {
-                        name: parameter.pattern.span(),
-                        annotation: parameter
-                            .type_annotation
-                            .as_ref()
-                            .map(|annotation| annotation.type_annotation.span()),
-                        default: parameter.initializer.as_ref().map(|init| init.span()),
-                        flags: if parameter.optional {
-                            SemanticTypeChild::FLAG_OPTIONAL
-                        } else {
-                            0
+                None => TypeCells::unknown(TypeReason::Unannotated),
+            };
+            let extension = self.extension(type_parameter_start)?;
+            let fact = with_cells(
+                SemanticFact::new(EntityKind::Field, name, LEAF_PRODUCT).with_extension(extension),
+                cells,
+            );
+            if self.staged_members.len() == member_base
+                && let Some(existing) = self.merged_fact(member_span, &fact)
+            {
+                return Ok(Some((existing, name, flags)));
+            }
+            let ordinal = self.push(fact)?;
+            self.register(ordinal, member_span, key_span, EntityKind::Field)?;
+            self.staged_members.push(ordinal);
+            self.claim_staged_members(member_base, ordinal);
+            return Ok(Some((ordinal, name, flags)));
+        }
+        Ok(None)
+    }
+
+    /// One member arm of [`Self::push_type_literal_member`].
+    ///
+    /// Split out so a nested object literal does not keep every
+    /// other member arm's locals on the 2 MiB owner stack.
+    #[inline(never)]
+    fn push_ts_index_signature(
+        &mut self,
+        member_kind: AstKind<'x>,
+        member_span: Span,
+        member_base: usize,
+        depth: u8,
+    ) -> Result<Option<MemberLink<'source>>, TypeScriptCollectError> {
+        if let Some(signature) = member_kind.as_ts_index_signature() {
+            let inner = signature.type_annotation.type_annotation.span();
+            let name_span = Span::new(member_span.start, inner.start);
+            let name = self
+                .slice_span(name_span)
+                .ok_or(TypeScriptCollectError::Span {
+                    start: name_span.start,
+                    end: name_span.end,
+                })?;
+            let type_parameter_start = coordinate(self.facts.type_parameter_len)?;
+            let cells = self.owner_cells(inner.start, inner.end, depth)?;
+            let extension = self.extension(type_parameter_start)?;
+            let fact = with_cells(
+                SemanticFact::new(EntityKind::Field, name, LEAF_PRODUCT).with_extension(extension),
+                cells,
+            );
+            let ordinal = self.push(fact)?;
+            self.register(ordinal, member_span, name_span, EntityKind::Field)?;
+            self.staged_members.push(ordinal);
+            self.claim_staged_members(member_base, ordinal);
+            let flags = if signature.readonly {
+                SemanticTypeChild::FLAG_READONLY
+            } else {
+                0
+            };
+            return Ok(Some((ordinal, name, flags)));
+        }
+        Ok(None)
+    }
+
+    /// One member arm of [`Self::push_type_literal_member`].
+    ///
+    /// Split out so a nested object literal does not keep every
+    /// other member arm's locals on the 2 MiB owner stack.
+    #[inline(never)]
+    fn push_ts_method_signature(
+        &mut self,
+        member_kind: AstKind<'x>,
+        member_span: Span,
+        member_base: usize,
+    ) -> Result<Option<MemberLink<'source>>, TypeScriptCollectError> {
+        if let Some(method) = member_kind.as_ts_method_signature() {
+            let key_span = method.key.span();
+            let name = self
+                .slice_span(key_span)
+                .ok_or(TypeScriptCollectError::Span {
+                    start: key_span.start,
+                    end: key_span.end,
+                })?;
+            let mut params = ParamRows::new();
+            for parameter in method.params.items.iter() {
+                params.push(ParamRow {
+                    name: parameter.pattern.span(),
+                    annotation: parameter
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: parameter.initializer.as_ref().map(|init| init.span()),
+                    flags: if parameter.optional {
+                        SemanticTypeChild::FLAG_OPTIONAL
+                    } else {
+                        0
+                    },
+                })?;
+            }
+            let result = method
+                .return_type
+                .as_ref()
+                .map(|returned| returned.type_annotation.span());
+            let ordinal = self.push_signature(
+                key_span,
+                member_span,
+                &TypeParamRows::new(),
+                &params,
+                result,
+                false,
+            )?;
+            let flags = if method.optional {
+                SemanticTypeChild::FLAG_OPTIONAL
+            } else {
+                0
+            };
+            self.staged_members.push(ordinal);
+            self.claim_staged_members(member_base, ordinal);
+            return Ok(Some((ordinal, name, flags)));
+        }
+        Ok(None)
+    }
+
+    /// One member arm of [`Self::push_type_literal_member`].
+    ///
+    /// Split out so a nested object literal does not keep every
+    /// other member arm's locals on the 2 MiB owner stack.
+    #[inline(never)]
+    fn push_ts_call_signature_declaration(
+        &mut self,
+        member_kind: AstKind<'x>,
+        member_span: Span,
+        member_base: usize,
+    ) -> Result<Option<MemberLink<'source>>, TypeScriptCollectError> {
+        if let Some(signature) = member_kind.as_ts_call_signature_declaration() {
+            // An anonymous call member embodies exactly as an interface
+            // call signature does, named by its full source spelling so
+            // the anonymous-record child keeps its required name. The
+            // staged ordinal lets the enclosing literal claim it.
+            let mut rows = TypeParamRows::new();
+            if let Some(declared) = signature.type_parameters.as_ref() {
+                for parameter in declared.params.iter() {
+                    Self::stage_row(
+                        &mut rows,
+                        TypeParamRow {
+                            name: parameter.name.span,
+                            constraint: parameter.constraint.as_ref().map(|t| t.span()),
+                            default: parameter.default.as_ref().map(|t| t.span()),
                         },
-                    })?;
+                    )?;
                 }
-                if let Some(rest) = signature.params.rest.as_ref() {
-                    params.push(ParamRow {
-                        name: rest.rest.span(),
-                        annotation: rest
-                            .type_annotation
-                            .as_ref()
-                            .map(|annotation| annotation.type_annotation.span()),
-                        default: None,
-                        flags: SemanticTypeChild::FLAG_REST,
-                    })?;
-                }
-                let result = signature
-                    .return_type
-                    .as_ref()
-                    .map(|returned| returned.type_annotation.span());
-                let ordinal =
-                    self.push_signature(member_span, member_span, &rows, &params, result, false)?;
-                let name = self
-                    .slice_span(member_span)
-                    .ok_or(TypeScriptCollectError::Span {
-                        start: member_span.start,
-                        end: member_span.end,
-                    })?;
-                self.staged_members.push(ordinal);
-                self.claim_staged_members(member_base, ordinal);
-                return Ok(Some((ordinal, name, 0)));
             }
-            if let Some(signature) = member_kind.as_ts_construct_signature_declaration() {
-                // An anonymous construct member embodies exactly as a call
-                // member does; only the signature node differs.
-                let mut rows = TypeParamRows::new();
-                if let Some(declared) = signature.type_parameters.as_ref() {
-                    for parameter in declared.params.iter() {
-                        Self::stage_row(
-                            &mut rows,
-                            TypeParamRow {
-                                name: parameter.name.span,
-                                constraint: parameter.constraint.as_ref().map(|t| t.span()),
-                                default: parameter.default.as_ref().map(|t| t.span()),
-                            },
-                        )?;
-                    }
-                }
-                let mut params = ParamRows::new();
-                for parameter in signature.params.items.iter() {
-                    params.push(ParamRow {
-                        name: parameter.pattern.span(),
-                        annotation: parameter
-                            .type_annotation
-                            .as_ref()
-                            .map(|annotation| annotation.type_annotation.span()),
-                        default: parameter.initializer.as_ref().map(|init| init.span()),
-                        flags: if parameter.optional {
-                            SemanticTypeChild::FLAG_OPTIONAL
-                        } else {
-                            0
+            let mut params = ParamRows::new();
+            for parameter in signature.params.items.iter() {
+                params.push(ParamRow {
+                    name: parameter.pattern.span(),
+                    annotation: parameter
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: parameter.initializer.as_ref().map(|init| init.span()),
+                    flags: if parameter.optional {
+                        SemanticTypeChild::FLAG_OPTIONAL
+                    } else {
+                        0
+                    },
+                })?;
+            }
+            if let Some(rest) = signature.params.rest.as_ref() {
+                params.push(ParamRow {
+                    name: rest.rest.span(),
+                    annotation: rest
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: None,
+                    flags: SemanticTypeChild::FLAG_REST,
+                })?;
+            }
+            let result = signature
+                .return_type
+                .as_ref()
+                .map(|returned| returned.type_annotation.span());
+            let ordinal =
+                self.push_signature(member_span, member_span, &rows, &params, result, false)?;
+            let name = self
+                .slice_span(member_span)
+                .ok_or(TypeScriptCollectError::Span {
+                    start: member_span.start,
+                    end: member_span.end,
+                })?;
+            self.staged_members.push(ordinal);
+            self.claim_staged_members(member_base, ordinal);
+            return Ok(Some((ordinal, name, 0)));
+        }
+        Ok(None)
+    }
+
+    /// One member arm of [`Self::push_type_literal_member`].
+    ///
+    /// Split out so a nested object literal does not keep every
+    /// other member arm's locals on the 2 MiB owner stack.
+    #[inline(never)]
+    fn push_ts_construct_signature_declaration(
+        &mut self,
+        member_kind: AstKind<'x>,
+        member_span: Span,
+        member_base: usize,
+    ) -> Result<Option<MemberLink<'source>>, TypeScriptCollectError> {
+        if let Some(signature) = member_kind.as_ts_construct_signature_declaration() {
+            // An anonymous construct member embodies exactly as a call
+            // member does; only the signature node differs.
+            let mut rows = TypeParamRows::new();
+            if let Some(declared) = signature.type_parameters.as_ref() {
+                for parameter in declared.params.iter() {
+                    Self::stage_row(
+                        &mut rows,
+                        TypeParamRow {
+                            name: parameter.name.span,
+                            constraint: parameter.constraint.as_ref().map(|t| t.span()),
+                            default: parameter.default.as_ref().map(|t| t.span()),
                         },
-                    })?;
+                    )?;
                 }
-                if let Some(rest) = signature.params.rest.as_ref() {
-                    params.push(ParamRow {
-                        name: rest.rest.span(),
-                        annotation: rest
-                            .type_annotation
-                            .as_ref()
-                            .map(|annotation| annotation.type_annotation.span()),
-                        default: None,
-                        flags: SemanticTypeChild::FLAG_REST,
-                    })?;
-                }
-                let result = signature
-                    .return_type
-                    .as_ref()
-                    .map(|returned| returned.type_annotation.span());
-                let ordinal =
-                    self.push_signature(member_span, member_span, &rows, &params, result, false)?;
-                let name = self
-                    .slice_span(member_span)
-                    .ok_or(TypeScriptCollectError::Span {
-                        start: member_span.start,
-                        end: member_span.end,
-                    })?;
-                self.staged_members.push(ordinal);
-                self.claim_staged_members(member_base, ordinal);
-                return Ok(Some((ordinal, name, 0)));
             }
+            let mut params = ParamRows::new();
+            for parameter in signature.params.items.iter() {
+                params.push(ParamRow {
+                    name: parameter.pattern.span(),
+                    annotation: parameter
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: parameter.initializer.as_ref().map(|init| init.span()),
+                    flags: if parameter.optional {
+                        SemanticTypeChild::FLAG_OPTIONAL
+                    } else {
+                        0
+                    },
+                })?;
+            }
+            if let Some(rest) = signature.params.rest.as_ref() {
+                params.push(ParamRow {
+                    name: rest.rest.span(),
+                    annotation: rest
+                        .type_annotation
+                        .as_ref()
+                        .map(|annotation| annotation.type_annotation.span()),
+                    default: None,
+                    flags: SemanticTypeChild::FLAG_REST,
+                })?;
+            }
+            let result = signature
+                .return_type
+                .as_ref()
+                .map(|returned| returned.type_annotation.span());
+            let ordinal =
+                self.push_signature(member_span, member_span, &rows, &params, result, false)?;
+            let name = self
+                .slice_span(member_span)
+                .ok_or(TypeScriptCollectError::Span {
+                    start: member_span.start,
+                    end: member_span.end,
+                })?;
+            self.staged_members.push(ordinal);
+            self.claim_staged_members(member_base, ordinal);
+            return Ok(Some((ordinal, name, 0)));
         }
         Ok(None)
     }
@@ -4739,12 +5270,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 continue;
             };
             let object_span = member.object.span();
-            let property_bytes = self
-                .slice_span(property_span)
-                .ok_or(TypeScriptCollectError::Span {
-                    start: property_span.start,
-                    end: property_span.end,
-                })?;
+            let property_bytes =
+                self.slice_span(property_span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: property_span.start,
+                        end: property_span.end,
+                    })?;
             if let Some(identifier_span) =
                 self.peel_object_identifier_span(object_span.start, object_span.end)
             {
@@ -4837,13 +5368,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         if !object_resolved.is_some_and(|object| object.module == Some(module)) {
             return Ok(None);
         }
-        self.checker_foreign_key(
-            property_span,
-            module,
-            Some(name),
-            Some(EntityKind::Variant),
-        )
-        .map(|key| key.map(OccurrenceTarget::Foreign))
+        self.checker_foreign_key(property_span, module, Some(name), Some(EntityKind::Variant))
+            .map(|key| key.map(OccurrenceTarget::Foreign))
     }
 
     /// Reports whether one identifier use resolves to an import binding.
@@ -5403,28 +5929,25 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(class) = self.enclosing_record(property_span.start) else {
             return self.syntactic_property_target(property_span);
         };
-        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
+        let name = self
+            .slice_span(property_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: property_span.start,
+                end: property_span.end,
+            })?;
         match kind {
             ReferenceKind::FunctionCall => {
                 self.this_member_target(class, name, EntityKind::Function, property_span)
             }
-            ReferenceKind::FieldAccess => match self.class_member_of_owner(class, name, EntityKind::Field) {
-                ClassMemberMatch::Unique(fact) => Ok((
-                    OccurrenceTarget::Local(EntityId::new(fact)),
-                    OccurrenceConfidence::Index,
-                )),
-                ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
-                ClassMemberMatch::Absent => match self.inherited_class_member(class, name, EntityKind::Field) {
+            ReferenceKind::FieldAccess => {
+                match self.class_member_of_owner(class, name, EntityKind::Field) {
                     ClassMemberMatch::Unique(fact) => Ok((
                         OccurrenceTarget::Local(EntityId::new(fact)),
                         OccurrenceConfidence::Index,
                     )),
                     ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
                     ClassMemberMatch::Absent => {
-                        match self.implemented_class_member(class, name, EntityKind::Field) {
+                        match self.inherited_class_member(class, name, EntityKind::Field) {
                             ClassMemberMatch::Unique(fact) => Ok((
                                 OccurrenceTarget::Local(EntityId::new(fact)),
                                 OccurrenceConfidence::Index,
@@ -5433,11 +5956,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                                 self.syntactic_property_target(property_span)
                             }
                             ClassMemberMatch::Absent => {
-                                match self.inherited_implemented_member(
-                                    class,
-                                    name,
-                                    EntityKind::Field,
-                                ) {
+                                match self.implemented_class_member(class, name, EntityKind::Field)
+                                {
                                     ClassMemberMatch::Unique(fact) => Ok((
                                         OccurrenceTarget::Local(EntityId::new(fact)),
                                         OccurrenceConfidence::Index,
@@ -5445,18 +5965,33 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                                     ClassMemberMatch::Ambiguous => {
                                         self.syntactic_property_target(property_span)
                                     }
-                                    ClassMemberMatch::Absent => self.this_member_target(
-                                        class,
-                                        name,
-                                        EntityKind::Function,
-                                        property_span,
-                                    ),
+                                    ClassMemberMatch::Absent => {
+                                        match self.inherited_implemented_member(
+                                            class,
+                                            name,
+                                            EntityKind::Field,
+                                        ) {
+                                            ClassMemberMatch::Unique(fact) => Ok((
+                                                OccurrenceTarget::Local(EntityId::new(fact)),
+                                                OccurrenceConfidence::Index,
+                                            )),
+                                            ClassMemberMatch::Ambiguous => {
+                                                self.syntactic_property_target(property_span)
+                                            }
+                                            ClassMemberMatch::Absent => self.this_member_target(
+                                                class,
+                                                name,
+                                                EntityKind::Function,
+                                                property_span,
+                                            ),
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                },
-            },
+                }
+            }
             _ => self.syntactic_property_target(property_span),
         }
     }
@@ -5471,10 +6006,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(class) = self.enclosing_record(property_span.start) else {
             return self.syntactic_property_target(property_span);
         };
-        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
+        let name = self
+            .slice_span(property_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: property_span.start,
+                end: property_span.end,
+            })?;
         match kind {
             ReferenceKind::FunctionCall => {
                 match self.class_member_of_owner(class, name, EntityKind::Function) {
@@ -5659,8 +6196,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     ))),
                     ClassMemberMatch::Ambiguous => Ok(None),
                     ClassMemberMatch::Absent => {
-                        match self.inherited_class_member(record, property_name, EntityKind::Function)
-                        {
+                        match self.inherited_class_member(
+                            record,
+                            property_name,
+                            EntityKind::Function,
+                        ) {
                             ClassMemberMatch::Unique(fact) => Ok(Some((
                                 OccurrenceTarget::Local(EntityId::new(fact)),
                                 OccurrenceConfidence::Index,
@@ -5678,7 +6218,8 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                     ))),
                     ClassMemberMatch::Ambiguous => Ok(None),
                     ClassMemberMatch::Absent => {
-                        match self.inherited_class_member(record, property_name, EntityKind::Field) {
+                        match self.inherited_class_member(record, property_name, EntityKind::Field)
+                        {
                             ClassMemberMatch::Unique(fact) => Ok(Some((
                                 OccurrenceTarget::Local(EntityId::new(fact)),
                                 OccurrenceConfidence::Index,
@@ -5733,17 +6274,21 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         else {
             return Ok(None);
         };
-        let class_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
-            start: identifier_span.start,
-            end: identifier_span.end,
-        })?;
+        let class_name = self
+            .slice_span(identifier_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: identifier_span.start,
+                end: identifier_span.end,
+            })?;
         let Some(record) = self.unique_file_record(class_name) else {
             return Ok(None);
         };
-        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
+        let property_name = self
+            .slice_span(property_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: property_span.start,
+                end: property_span.end,
+            })?;
         self.record_qualified_property_target(record, property_name, kind)
     }
 
@@ -5849,10 +6394,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let record = if let Some(identifier_span) =
             self.peel_object_identifier_span(callee_span.start, callee_span.end)
         {
-            let class_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
-                start: identifier_span.start,
-                end: identifier_span.end,
-            })?;
+            let class_name =
+                self.slice_span(identifier_span)
+                    .ok_or(TypeScriptCollectError::Span {
+                        start: identifier_span.start,
+                        end: identifier_span.end,
+                    })?;
             match self.unique_file_record(class_name) {
                 Some(record) => record,
                 None => return Ok(None),
@@ -5874,10 +6421,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             }
             container
         };
-        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
+        let property_name = self
+            .slice_span(property_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: property_span.start,
+                end: property_span.end,
+            })?;
         self.record_qualified_property_target(record, property_name, kind)
     }
 
@@ -5897,14 +6446,14 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some((owner, owner_kind)) = self.assertion_type_owner(reference_span) else {
             return Ok(None);
         };
-        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
+        let property_name = self
+            .slice_span(property_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: property_span.start,
+                end: property_span.end,
+            })?;
         match owner_kind {
-            EntityKind::Record => {
-                self.record_qualified_property_target(owner, property_name, kind)
-            }
+            EntityKind::Record => self.record_qualified_property_target(owner, property_name, kind),
             EntityKind::Trait => self.trait_asserted_property_target(owner, property_name, kind),
             _ => Ok(None),
         }
@@ -5952,9 +6501,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             if known.start > reference_span.start {
                 break;
             }
-            if known.start == reference_span.start
-                && known.end == reference_span.end
-            {
+            if known.start == reference_span.start && known.end == reference_span.end {
                 if let Some(found) = self
                     .semantic
                     .nodes()
@@ -6011,9 +6558,11 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Resolves one namespace-qualified type name such as `Box.Child` to the
     /// published record or trait named by the full prefix.
     fn assertion_qualified_type_owner(&self, qualified_span: Span) -> Option<(u32, EntityKind)> {
-        let Some(container) =
-            self.assertion_namespace_qualified_type_fact(qualified_span.start, qualified_span.end, 0)
-        else {
+        let Some(container) = self.assertion_namespace_qualified_type_fact(
+            qualified_span.start,
+            qualified_span.end,
+            0,
+        ) else {
             return None;
         };
         let index = usize::try_from(container).ok()?;
@@ -6027,7 +6576,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
 
     /// Resolves one namespace-qualified type prefix such as `Box.Child` or
     /// `Box.Inner.Deep` to the published fact named by the full prefix.
-    fn assertion_namespace_qualified_type_fact(&self, start: u32, end: u32, depth: u8) -> Option<u32> {
+    fn assertion_namespace_qualified_type_fact(
+        &self,
+        start: u32,
+        end: u32,
+        depth: u8,
+    ) -> Option<u32> {
         if depth >= MAX_INHERITANCE_DEPTH {
             return None;
         }
@@ -6170,10 +6724,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             .get(container_index)
             .copied()
             .ok_or(lane_rejection())?;
-        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
+        let property_name = self
+            .slice_span(property_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: property_span.start,
+                end: property_span.end,
+            })?;
         match container_kind {
             EntityKind::Module => {
                 match self.namespace_member_match(&[container], property_name, kind) {
@@ -6215,18 +6771,22 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         else {
             return Ok(None);
         };
-        let namespace_name = self.slice_span(identifier_span).ok_or(TypeScriptCollectError::Span {
-            start: identifier_span.start,
-            end: identifier_span.end,
-        })?;
+        let namespace_name =
+            self.slice_span(identifier_span)
+                .ok_or(TypeScriptCollectError::Span {
+                    start: identifier_span.start,
+                    end: identifier_span.end,
+                })?;
         let modules = self.namespace_modules_for_name(namespace_name);
         if modules.is_empty() {
             return Ok(None);
         }
-        let property_name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
+        let property_name = self
+            .slice_span(property_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: property_span.start,
+                end: property_span.end,
+            })?;
         match self.namespace_member_match(&modules, property_name, kind) {
             ClassMemberMatch::Unique(fact) => Ok(Some((
                 OccurrenceTarget::Local(EntityId::new(fact)),
@@ -6246,24 +6806,24 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         let Some(class) = self.enclosing_record(property_span.start) else {
             return self.syntactic_property_target(property_span);
         };
-        let name = self.slice_span(property_span).ok_or(TypeScriptCollectError::Span {
-            start: property_span.start,
-            end: property_span.end,
-        })?;
+        let name = self
+            .slice_span(property_span)
+            .ok_or(TypeScriptCollectError::Span {
+                start: property_span.start,
+                end: property_span.end,
+            })?;
         match kind {
-            ReferenceKind::FunctionCall => match self.inherited_class_member(
-                class,
-                name,
-                EntityKind::Function,
-            ) {
-                ClassMemberMatch::Unique(fact) => Ok((
-                    OccurrenceTarget::Local(EntityId::new(fact)),
-                    OccurrenceConfidence::Index,
-                )),
-                ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
-                    self.syntactic_property_target(property_span)
+            ReferenceKind::FunctionCall => {
+                match self.inherited_class_member(class, name, EntityKind::Function) {
+                    ClassMemberMatch::Unique(fact) => Ok((
+                        OccurrenceTarget::Local(EntityId::new(fact)),
+                        OccurrenceConfidence::Index,
+                    )),
+                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                        self.syntactic_property_target(property_span)
+                    }
                 }
-            },
+            }
             ReferenceKind::FieldAccess => {
                 match self.inherited_class_member(class, name, EntityKind::Field) {
                     ClassMemberMatch::Unique(fact) => Ok((
@@ -6306,35 +6866,38 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                 OccurrenceConfidence::Index,
             )),
             ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
-            ClassMemberMatch::Absent => match self.inherited_class_member(class, name, expected_kind) {
-                ClassMemberMatch::Unique(fact) => Ok((
-                    OccurrenceTarget::Local(EntityId::new(fact)),
-                    OccurrenceConfidence::Index,
-                )),
-                ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
-                ClassMemberMatch::Absent => match self.implemented_class_member(
-                    class,
-                    name,
-                    expected_kind,
-                ) {
+            ClassMemberMatch::Absent => {
+                match self.inherited_class_member(class, name, expected_kind) {
                     ClassMemberMatch::Unique(fact) => Ok((
                         OccurrenceTarget::Local(EntityId::new(fact)),
                         OccurrenceConfidence::Index,
                     )),
                     ClassMemberMatch::Ambiguous => self.syntactic_property_target(property_span),
                     ClassMemberMatch::Absent => {
-                        match self.inherited_implemented_member(class, name, expected_kind) {
+                        match self.implemented_class_member(class, name, expected_kind) {
                             ClassMemberMatch::Unique(fact) => Ok((
                                 OccurrenceTarget::Local(EntityId::new(fact)),
                                 OccurrenceConfidence::Index,
                             )),
-                            ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                            ClassMemberMatch::Ambiguous => {
                                 self.syntactic_property_target(property_span)
+                            }
+                            ClassMemberMatch::Absent => {
+                                match self.inherited_implemented_member(class, name, expected_kind)
+                                {
+                                    ClassMemberMatch::Unique(fact) => Ok((
+                                        OccurrenceTarget::Local(EntityId::new(fact)),
+                                        OccurrenceConfidence::Index,
+                                    )),
+                                    ClassMemberMatch::Ambiguous | ClassMemberMatch::Absent => {
+                                        self.syntactic_property_target(property_span)
+                                    }
+                                }
                             }
                         }
                     }
-                },
-            },
+                }
+            }
         }
     }
 
@@ -6346,11 +6909,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
         name: &[u8],
         expected_kind: EntityKind,
     ) -> ClassMemberMatch {
-        let candidates = self
-            .facts_by_name
-            .get(name)
-            .cloned()
-            .unwrap_or_default();
+        let candidates = self.facts_by_name.get(name).cloned().unwrap_or_default();
         let mut primary = None;
         let mut setter_count: u32 = 0;
         let mut setter = None;
@@ -6621,8 +7180,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
                                 expression_span.start,
                                 expression_span.end,
                             )
-                        })
-                    {
+                        }) {
                         Some(span) => span,
                         None => continue,
                     };
