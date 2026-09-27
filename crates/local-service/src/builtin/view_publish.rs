@@ -1416,6 +1416,113 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn package_row_changes_match_a_full_splice_and_skip_sibling_bodies() {
+        let (base, _) = super::super::initial_view().expect("initial");
+        let basis = base.basis();
+        let edited = backend_engine::package_key("pkg:edited");
+        let sibling = backend_engine::package_key("pkg:sibling");
+        let body = "x".repeat(1024);
+        let mut rows = vec![
+            Row::new(RowId::Package(edited), basis, "pkg:edited"),
+            Row::in_package(
+                RowId::Symbol(backend_engine::symbol_key("pkg:edited::old")),
+                basis,
+                edited,
+                "pkg:edited::old",
+            ),
+        ];
+        for index in 0..4096 {
+            let label = format!("pkg:sibling::item-{index:04}");
+            rows.push(
+                Row::in_package(
+                    RowId::Symbol(backend_engine::symbol_key(&label)),
+                    basis,
+                    sibling,
+                    label,
+                )
+                .with_document(vec![backend_engine::Fragment::Text(body.clone())]),
+            );
+        }
+        rows.push(Row::new(RowId::Package(sibling), basis, "pkg:sibling"));
+        let replacement = vec![
+            Row::new(RowId::Package(edited), basis, "pkg:edited"),
+            Row::in_package(
+                RowId::Symbol(backend_engine::symbol_key("pkg:edited::new")),
+                basis,
+                edited,
+                "pkg:edited::new",
+            )
+            .with_signature("fn new()"),
+        ];
+        let merged =
+            rows_replacing_package(&rows, edited, replacement.clone()).expect("full splice");
+        let changes =
+            row_changes_replacing_package(&rows, edited, &replacement).expect("row changes");
+        let mut applied = BTreeMap::from_iter(rows.iter().cloned().map(|row| (row.id, row)));
+        for change in &changes {
+            match change {
+                RowChange::Remove(id) => {
+                    applied.remove(id);
+                }
+                RowChange::Upsert(row) => {
+                    applied.insert(row.id, row.as_ref().clone());
+                }
+            }
+        }
+        let mut applied = applied.into_values().collect::<Vec<_>>();
+        applied.sort_by_key(|row| row.id);
+        assert_eq!(applied, merged);
+        assert!(changes.iter().any(|change| matches!(
+            change,
+            RowChange::Remove(RowId::Symbol(id))
+                if *id == backend_engine::symbol_key("pkg:edited::old")
+        )));
+        assert!(changes.iter().all(|change| match change {
+            RowChange::Remove(RowId::Symbol(id)) => {
+                *id != backend_engine::symbol_key("pkg:sibling::item-0000")
+            }
+            RowChange::Upsert(row) => row.package != Some(sibling),
+            RowChange::Remove(_) => true,
+        }));
+        let stolen = vec![rows
+            .iter()
+            .find(|row| row.package == Some(sibling))
+            .expect("sibling row")
+            .clone()];
+        assert_eq!(
+            row_changes_replacing_package(&rows, edited, &stolen).expect_err("collision"),
+            RowSpliceError::Collision
+        );
+
+        let mut splice_samples = Vec::with_capacity(9);
+        let mut change_samples = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            std::hint::black_box(
+                rows_replacing_package(&rows, edited, replacement.clone()).expect("splice"),
+            );
+            splice_samples.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(
+                row_changes_replacing_package(&rows, edited, &replacement).expect("changes"),
+            );
+            change_samples.push(started.elapsed().as_nanos());
+        }
+        splice_samples.sort_unstable();
+        change_samples.sort_unstable();
+        let splice_median = splice_samples[splice_samples.len() / 2];
+        let change_median = change_samples[change_samples.len() / 2];
+        eprintln!(
+            "package_splice_changes rows=4096 splice_median_ns={splice_median} \
+             change_median_ns={change_median}"
+        );
+        assert!(
+            change_median * 2 < splice_median,
+            "changes {change_median} ns, splice {splice_median} ns"
+        );
+    }
+
     fn declaration(
         path: &str,
         name: &str,
