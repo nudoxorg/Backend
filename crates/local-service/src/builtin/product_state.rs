@@ -273,6 +273,10 @@ impl ProductState {
                 SurfaceReply::TreeClosed(self.close_tree(node, branch)?),
                 true,
             ),
+            // The command adapter answers these before product state is asked.
+            SurfaceCommand::ProjectTree { .. } | SurfaceCommand::AdvisoryRefresh => {
+                return Err("the command adapter owns project-tree and advisory-refresh".to_owned());
+            }
         };
         Ok((reply, changed))
     }

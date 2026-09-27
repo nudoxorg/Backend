@@ -41,7 +41,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const AUTHORITY_VALUE: &[u8] = backend_engine::PRODUCT_AUTHORITY_BYTES;
-const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v2";
+/// Names the projection the published view is built with. The view journal
+/// keys its cached view by the workspace head and a capability derived from
+/// this value, so a projection that now reads more from the same workspace
+/// (declaration facts on every row; no invented documentation on undocumented
+/// ones) must name itself anew: otherwise a reopened workspace serves the
+/// old projection until its sources change, and replays journal events
+/// written under an older wire version it can no longer decode.
+const VIEW_SOURCE_VALUE: &[u8] = b"product-source-relation-v3";
 const MAX_REBUILD_PACKAGES: usize = 1_000_000;
 pub(super) const MAX_REBUILD_BYTES: usize = 64 * 1024 * 1024;
 // One compact event is fsynced before publication. Keep short edit suffixes
@@ -80,6 +87,8 @@ mod commands;
 #[path = "builtin/registry.rs"]
 mod registry;
 use registry::RegistryGateway;
+
+mod browse;
 #[path = "builtin/product_state.rs"]
 mod product_state;
 use product_state::ProductState;

@@ -37,6 +37,8 @@ pub(super) struct RegistryGateway {
     source_root: PathBuf,
     shared_objects: PathBuf,
     advisory: Arc<backend_engine::advisory::AdvisoryAuthority>,
+    advisory_path: PathBuf,
+    advisory_config: AdvisoryConfig,
     last_receipt: Option<Arc<backend_engine::acquisition::AcquisitionReceipt>>,
     last_snapshot: Option<Arc<backend_engine::acquisition::SourceSnapshot>>,
 }
@@ -96,6 +98,44 @@ impl RegistryGateway {
     /// Returns the daemon workspace root that owns registry staging.
     pub(super) fn workspace_root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    /// The advisory authority every read observes.
+    pub(super) fn advisory(&self) -> &backend_engine::advisory::AdvisoryAuthority {
+        &self.advisory
+    }
+
+    /// Refreshes every configured advisory source, persists the result, and
+    /// makes it the authority for every later read and acquisition.
+    ///
+    /// A source that fails keeps its last good body and is marked
+    /// unavailable, so coverage says "unavailable" rather than "clean".
+    pub(super) fn refresh_advisories(&mut self) -> Result<Vec<backend_library::browse::AdvisorySourceState>, String> {
+        let mut authority = (*self.advisory).clone();
+        let mut states = Vec::new();
+        for source in &self.advisory_config.sources {
+            let error = match refresh_authority_source(&authority, source, self.advisory_config.max_feed_bytes) {
+                Ok(feed) => authority.apply(feed).err().map(|error| error.to_string()),
+                Err(error) => Some(error),
+            };
+            if error.is_some() {
+                authority.mark_unavailable(source.source, advisory_now());
+            }
+            let frontier = authority.frontier(source.source);
+            states.push(backend_library::browse::AdvisorySourceState {
+                source: format!("{:?}", source.source).to_ascii_lowercase(),
+                complete: frontier.is_some_and(|frontier| frontier.complete),
+                advisories: frontier.map_or(0, |frontier| frontier.entries),
+                observed_at: frontier.map_or(0, |frontier| frontier.observed_at),
+                error,
+            });
+        }
+        authority.persist(&self.advisory_path).map_err(|error| error.to_string())?;
+        self.advisory = Arc::new(authority);
+        // Open owners hold the previous authority as their resolver; they
+        // reopen lazily with the new one.
+        self.slots.clear();
+        Ok(states)
     }
 
     /// Projects the complete recovered local catalog without network I/O.
@@ -231,6 +271,8 @@ impl RegistryGateway {
             source_root,
             shared_objects,
             advisory,
+            advisory_path,
+            advisory_config: advisory_config.clone(),
             last_receipt: None,
             last_snapshot: None,
         }))
@@ -615,9 +657,18 @@ fn read_rustsec_tree(
         for entry in entries {
             let entry = entry.map_err(|error| error.to_string())?;
             let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
             if path.is_dir() {
-                visit(&path, maximum, observed_at, total, output)?;
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("toml") {
+                // `.git` and other dot directories hold no advisories.
+                if !name.starts_with('.') {
+                    visit(&path, maximum, observed_at, total, output)?;
+                }
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("toml")
+                // advisory-db keeps each advisory as `RUSTSEC-*.md`: fenced TOML
+                // front matter, then prose. README/CONTRIBUTING are not advisories.
+                || (name.starts_with("RUSTSEC-") && name.ends_with(".md"))
+            {
                 let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
                 *total = total.saturating_add(bytes.len());
                 if *total > maximum {
