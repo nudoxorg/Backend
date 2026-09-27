@@ -326,7 +326,7 @@ pub fn admit_dependency_rows(
 #[derive(Clone, Debug, Default)]
 pub struct PackageGraphIndex {
     by_source: BTreeMap<String, usize>,
-    reverse: BTreeMap<(RegistryEcosystem, String), Vec<ReverseEdge>>,
+    reverse: BTreeMap<RegistryEcosystem, BTreeMap<String, Vec<ReverseEdge>>>,
     first_gap: Option<ProductText>,
 }
 
@@ -378,7 +378,9 @@ impl PackageGraphIndex {
                         }
                         index
                             .reverse
-                            .entry((row.target.ecosystem, row.target.name.as_str().to_owned()))
+                            .entry(row.target.ecosystem)
+                            .or_default()
+                            .entry(row.target.name.as_str().to_owned())
                             .or_default()
                             .push(ReverseEdge {
                                 source_index,
@@ -432,7 +434,8 @@ impl PackageGraphIndex {
         let mut sources = BTreeSet::new();
         if let Some(edges) = self
             .reverse
-            .get(&(ecosystem, target.lineage_name().to_owned()))
+            .get(&ecosystem)
+            .and_then(|names| names.get(target.lineage_name()))
         {
             for edge in edges {
                 let matches_version = edge
@@ -775,7 +778,8 @@ mod tests {
         );
         facts.retain(|(_, state)| !matches!(state, DependencyFacts::Known(_)));
         let gaps = PackageGraphIndex::from_facts(&facts);
-        let DependentSources::Matched { sources, gap } = gaps.dependent_sources(&facts, &target_v1)
+        let DependentSources::Matched { sources, gap } =
+            gaps.dependent_sources(&facts, &target_v1)
         else {
             panic!("gaps");
         };
@@ -929,5 +933,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn warm_reverse_lookup_beats_a_full_fact_scan() {
+        const SOURCES: usize = 4_096;
+        const EDGES: usize = 8;
+        let mut facts = Vec::with_capacity(SOURCES);
+        for source_index in 0..SOURCES {
+            let source = PackageReference::parse(format!("pkg:cargo/source-{source_index}@1.0.0"))
+                .expect("source");
+            let mut rows = Vec::with_capacity(EDGES);
+            for edge in 0..EDGES {
+                let (name, resolved, scope) = if source_index < 4 && edge == 0 {
+                    (
+                        "target-lib",
+                        Some(
+                            PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target"),
+                        ),
+                        DependencyScope::Runtime,
+                    )
+                } else if source_index == 5 && edge == 0 {
+                    ("target-lib", None, DependencyScope::Development)
+                } else if source_index == 6 && edge == 0 {
+                    ("target-lib", None, DependencyScope::Optional)
+                } else {
+                    ("other-lib", None, DependencyScope::Runtime)
+                };
+                rows.push(PackageDependencyRecord::new(
+                    source.clone(),
+                    PackageDependencyTarget::new(RegistryEcosystem::Cargo, name, "^1", resolved)
+                        .expect("target"),
+                    scope,
+                    false,
+                    DependencyEvidence {
+                        authority: DependencyAuthority::RegistryMetadata,
+                        frontier: [u8::try_from(edge).unwrap_or(0); 32],
+                        provenance: [u8::try_from(source_index).unwrap_or(0); 32],
+                    },
+                ));
+            }
+            facts.push((source, DependencyFacts::Known(rows.into_boxed_slice())));
+        }
+        let target = PackageReference::parse("pkg:cargo/target-lib@1.0.0").expect("target");
+        let index = PackageGraphIndex::from_facts(&facts);
+        assert_eq!(
+            index.dependent_sources(&facts, &target),
+            linear_dependent_sources(&facts, &target)
+        );
+        let mut lookup_samples = Vec::with_capacity(9);
+        let mut scan_samples = Vec::with_capacity(9);
+        let mut cold_samples = Vec::with_capacity(9);
+        for sample in 0..11 {
+            let cold_started = std::time::Instant::now();
+            let cold = PackageGraphIndex::from_facts(&facts).dependent_sources(&facts, &target);
+            let cold_elapsed = cold_started.elapsed().as_nanos();
+            let lookup_started = std::time::Instant::now();
+            let looked = index.dependent_sources(&facts, &target);
+            let lookup_elapsed = lookup_started.elapsed().as_nanos();
+            let scan_started = std::time::Instant::now();
+            let scanned = linear_dependent_sources(&facts, &target);
+            let scan_elapsed = scan_started.elapsed().as_nanos();
+            std::hint::black_box((cold, looked, scanned));
+            if sample >= 2 {
+                cold_samples.push(cold_elapsed);
+                lookup_samples.push(lookup_elapsed);
+                scan_samples.push(scan_elapsed);
+            }
+        }
+        cold_samples.sort_unstable();
+        lookup_samples.sort_unstable();
+        scan_samples.sort_unstable();
+        let cold_median = cold_samples[cold_samples.len() / 2];
+        let lookup_median = lookup_samples[lookup_samples.len() / 2];
+        let scan_median = scan_samples[scan_samples.len() / 2];
+        eprintln!(
+            "reverse_index cold_median_ns={cold_median} lookup_median_ns={lookup_median} \
+             scan_median_ns={scan_median} sources={SOURCES}"
+        );
+        assert!(
+            lookup_median.saturating_mul(32) < scan_median,
+            "lookup {lookup_median} ns vs scan {scan_median} ns"
+        );
     }
 }

@@ -148,6 +148,18 @@ impl AcquisitionService {
             .facts_frontier()
     }
 
+    /// Catalog generation of the durable owner.
+    ///
+    /// This is a counter, not a clone of the catalog. Callers reuse a
+    /// dependency index while the value is unchanged.
+    #[must_use]
+    pub fn catalog_generation(&self) -> u64 {
+        self.owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog_generation()
+    }
+
     /// Stable source identity for request construction.
     #[must_use]
     pub fn source_id(&self) -> [u8; ID_BYTES] {

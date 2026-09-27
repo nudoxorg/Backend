@@ -805,8 +805,11 @@ impl RegistryOwner {
 
     /// Monotonic count of catalog commits and forge-link updates.
     ///
-    /// A projection cache compares this value instead of cloning the catalog.
-    /// Replay counts every applied record, and each later commit advances it.
+    /// A projection cache and a resident dependency index compare this value
+    /// instead of cloning the catalog or every published edge. Replay counts
+    /// every applied record, and each later commit advances it. Dependency
+    /// edges are not part of the facts root, so that root cannot invalidate
+    /// the index.
     #[must_use]
     pub fn catalog_generation(&self) -> u64 {
         self.catalog_generation
