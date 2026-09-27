@@ -143,9 +143,11 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         }
     }
 
-    /// Reads at most `limit` rows after an optional canonical key.  Branches
-    /// and leaves are fetched only until the requested page is full, so a
-    /// status cursor performs O(tree height + page size) authenticated work.
+    /// Reads at most `limit` rows after an optional canonical key.
+    ///
+    /// The cursor seeks to the first leaf that can hold a later key, then
+    /// reads forward. Untouched left siblings stay unloaded, so one page is
+    /// O(tree height + page size) authenticated work.
     ///
     /// # Errors
     /// Returns a loader or canonical-node error if an affected path node
@@ -161,32 +163,65 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
                 next: None,
             });
         }
-        let mut stack = vec![self.root.clone()];
-        let mut entries: Vec<(R::Key, R::Value)> = Vec::with_capacity(limit.min(256));
-        while let Some(node) = stack.pop() {
-            if node.node().level() == 0 {
-                let leaf = node.leaf_entries().map_err(LazyTreeError::Node)?;
-                for (key, value) in leaf {
-                    if after.is_some_and(|after| key <= *after) {
-                        continue;
-                    }
-                    if entries.len() == limit {
-                        let next = entries.last().map(|(key, _)| key.clone());
-                        return Ok(LazyTreePage { entries, next });
-                    }
-                    entries.push((key.clone(), value.clone()));
-                }
-                continue;
-            }
-            let children = node.child_summaries().map_err(LazyTreeError::Node)?;
-            for child in children.into_iter().rev() {
-                stack.push(self.load(child_claim(&child).map_err(LazyTreeError::Node)?)?);
-            }
+        let mut entries = Vec::with_capacity(limit.min(256));
+        let mut pending = Vec::new();
+        self.take_page(&self.root, after, limit, &mut entries, &mut pending)?;
+        while entries.len() < limit {
+            let Some(claim) = pending.pop() else {
+                break;
+            };
+            let node = self.load(claim)?;
+            self.take_page(&node, None, limit, &mut entries, &mut pending)?;
         }
-        Ok(LazyTreePage {
-            entries,
-            next: None,
-        })
+        let next = (entries.len() == limit)
+            .then(|| entries.last().map(|(key, _)| key.clone()))
+            .flatten();
+        Ok(LazyTreePage { entries, next })
+    }
+
+    /// Collects rows from `node`, queueing later siblings without loading them.
+    ///
+    /// `after` skips keys in this subtree. Right siblings are entirely past
+    /// that cursor, so the caller resumes them from their first key.
+    fn take_page(
+        &self,
+        node: &CheckedCanonicalRoot<R>,
+        after: Option<&R::Key>,
+        limit: usize,
+        entries: &mut Vec<(R::Key, R::Value)>,
+        pending: &mut Vec<UntrustedId<R>>,
+    ) -> Result<(), LazyTreeError<L::Error>> {
+        if entries.len() == limit {
+            return Ok(());
+        }
+        if node.node().level() == 0 {
+            let leaf = node.leaf_entries().map_err(LazyTreeError::Node)?;
+            for (key, value) in leaf {
+                if after.is_some_and(|after| key <= *after) {
+                    continue;
+                }
+                if entries.len() == limit {
+                    return Ok(());
+                }
+                entries.push((key.clone(), value.clone()));
+            }
+            return Ok(());
+        }
+        let children = node.child_summaries().map_err(LazyTreeError::Node)?;
+        if children.is_empty() {
+            return Ok(());
+        }
+        let start = match after {
+            None => 0,
+            Some(after) => children
+                .partition_point(|child| child.first_key.borrow() <= after)
+                .saturating_sub(1),
+        };
+        for child in children[start + 1..].iter().rev() {
+            pending.push(child_claim(child).map_err(LazyTreeError::Node)?);
+        }
+        let child = self.load(child_claim(&children[start]).map_err(LazyTreeError::Node)?)?;
+        self.take_page(&child, after, limit, entries, pending)
     }
 
     /// Replaces an existing value by loading its root-to-leaf path.

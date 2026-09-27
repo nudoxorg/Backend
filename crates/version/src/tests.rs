@@ -493,6 +493,92 @@ fn lazy_first_ingest_bulk_builds_each_canonical_node_once() -> Result<(), Box<dy
 }
 
 #[test]
+fn lazy_page_seeks_to_the_cursor_without_rereading_the_left_tree()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ROWS: u64 = 8_192;
+    const PAGE: usize = 64;
+    let items: Vec<_> = (0..ROWS).map(|key| (key, key * 3)).collect();
+    let tree = PersistentTree::<RelationFixture>::from_sorted_items(&items)?;
+    let nodes: BTreeMap<_, _> = tree
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect();
+    let node_count = nodes.len();
+    let loader = CountingLoader {
+        nodes,
+        calls: Cell::new(0),
+    };
+    let root = admit_canonical_root::<RelationFixture>(tree.root().as_bytes())?;
+    let lazy = LazyTree::from_admitted(&loader, PersistedTreeRoot::from_checked(root));
+
+    let mut seen = Vec::new();
+    let mut after = None;
+    let started = std::time::Instant::now();
+    loop {
+        let page = lazy.page(after.as_ref(), PAGE)?;
+        if page.entries().is_empty() {
+            break;
+        }
+        seen.extend(page.entries().iter().cloned());
+        match page.next() {
+            Some(next) => after = Some(*next),
+            None => break,
+        }
+    }
+    let full_ns = started.elapsed().as_nanos();
+    let full_calls = loader.calls.get();
+    assert_eq!(seen, items);
+
+    loader.calls.set(0);
+    let cursor = 8_000_u64;
+    let mut late_samples = Vec::with_capacity(16);
+    for _ in 0..4 {
+        let _ = lazy.page(Some(&cursor), 32)?;
+    }
+    for _ in 0..16 {
+        loader.calls.set(0);
+        let started = std::time::Instant::now();
+        let page = lazy.page(Some(&cursor), 32)?;
+        late_samples.push(started.elapsed().as_nanos());
+        assert_eq!(page.entries(), &items[8_001..8_033]);
+        assert_eq!(loader.calls.get() < node_count / 8, true);
+    }
+    late_samples.sort_unstable();
+    let late_median = late_samples[late_samples.len() / 2];
+    let late_calls = {
+        loader.calls.set(0);
+        let page = lazy.page(Some(&cursor), 32)?;
+        assert_eq!(page.entries().len(), 32);
+        loader.calls.get()
+    };
+    eprintln!(
+        "lazy_page_seek rows={ROWS} nodes={node_count} full_calls={full_calls} full_ns={full_ns} late_calls={late_calls} late_median_ns={late_median}"
+    );
+    assert!(late_calls * 8 < full_calls);
+    assert!(late_calls < node_count / 8);
+
+    let gap: Vec<_> = (0..ROWS).filter(|key| key % 2 == 0).map(|key| (key, key)).collect();
+    let gap_tree = PersistentTree::<RelationFixture>::from_sorted_items(&gap)?;
+    let gap_nodes: BTreeMap<_, _> = gap_tree
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect();
+    let gap_loader = CountingLoader {
+        nodes: gap_nodes,
+        calls: Cell::new(0),
+    };
+    let gap_root = admit_canonical_root::<RelationFixture>(gap_tree.root().as_bytes())?;
+    let gap_lazy =
+        LazyTree::from_admitted(&gap_loader, PersistedTreeRoot::from_checked(gap_root));
+    let missing = gap_lazy.page(Some(&5), 2)?;
+    assert_eq!(missing.entries(), &[(6, 6), (8, 8)]);
+    let tail = lazy.page(Some(&(ROWS - 1)), 4)?;
+    assert!(tail.entries().is_empty());
+    assert!(tail.next().is_none());
+    Ok(())
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "the scenario covers the complete lazy update matrix"
