@@ -2906,9 +2906,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// Resolves one receiver through enclosing function-local `AnnAssign`
-    /// annotations and live module-constant annotations. A local binding with
-    /// an annotation binds that annotation; a local binding without one stays
-    /// foreign.
+    /// annotations, enclosing parameter annotations when no closer local
+    /// assignment exists, and live module-constant annotations. A local
+    /// binding with an annotation binds that annotation; a local binding
+    /// without one stays foreign.
     fn module_annotation_name(
         &self,
         function: &DeclarationFact,
@@ -2952,7 +2953,16 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         occurrence,
                     ) {
                         LocalBinding::Unique(name) => LocalBinding::Unique(name),
-                        LocalBinding::Absent | LocalBinding::Foreign => LocalBinding::Foreign,
+                        LocalBinding::Foreign => LocalBinding::Foreign,
+                        LocalBinding::Absent => {
+                            match receiver_annotation_name(scope_function, receiver) {
+                                ReceiverAnnotationName::Unique(name) => {
+                                    LocalBinding::Unique(name.to_owned())
+                                }
+                                ReceiverAnnotationName::Ambiguous
+                                | ReceiverAnnotationName::Absent => LocalBinding::Foreign,
+                            }
+                        }
                     },
                     None => LocalBinding::Foreign,
                 };
