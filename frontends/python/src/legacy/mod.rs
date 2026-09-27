@@ -237,14 +237,15 @@ pub enum OccurrenceReceiver {
         attributes: Vec<String>,
     },
     /// `self.note().extra` / `obj.note().extra()` / `note().extra()` and one
-    /// hop through an attribute or constructed receiver before the call
-    /// (`self.child.note().extra()` / `Child().note().extra()`).
-    /// `method` is the called name (`note`). `receiver` is `EnclosingClass`
-    /// for `self`/`cls`, `Foreign { receiver: Some(name) }` for another plain
-    /// name, or `None` for a bare call. The inner receiver may be
-    /// `InstanceAttribute`, `NamedAttribute`, `ChainedAttribute`, or
-    /// `Constructed` for one hop before the call. Still not a nested
-    /// `CallReturn`, not `Super`, not `Module`, and not a subscript.
+    /// or more hops through an attribute or constructed receiver before the
+    /// call (`self.child.note().extra()` / `Child().note().extra()` /
+    /// `self.note().extra().more()`). `method` is the called name (`note`).
+    /// `receiver` is `EnclosingClass` for `self`/`cls`,
+    /// `Foreign { receiver: Some(name) }` for another plain name, or `None`
+    /// for a bare call. The inner receiver may be `InstanceAttribute`,
+    /// `NamedAttribute`, `ChainedAttribute`, `Constructed`, or a nested
+    /// `CallReturn` for successive calls. Still not `Super`, not `Module`,
+    /// and not a subscript.
     CallReturn {
         method: String,
         receiver: Box<OccurrenceReceiver>,
@@ -1145,8 +1146,9 @@ impl<'a> Projection<'a> {
     }
 
     /// `self.note().extra` / `obj.note().extra()` / `note().extra()` when `expr`
-    /// is the call before the member, including one hop through an attribute or
-    /// constructed receiver (`self.child.note().extra()` / `Child().note().extra()`).
+    /// is the call before the member, including one or more hops through an
+    /// attribute, constructed, or call-return receiver (`self.child.note().extra()`
+    /// / `Child().note().extra()` / `self.note().extra().more()`).
     fn call_return_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
         let ast::Expr::Call(call) = expr else {
             return None;
@@ -1179,6 +1181,7 @@ impl<'a> Projection<'a> {
                             .instance_attribute_receiver(value)
                             .or_else(|| self.named_attribute_receiver(value))
                             .or_else(|| self.chained_attribute_receiver(value))
+                            .or_else(|| self.call_return_receiver(value))
                             .or_else(|| self.constructed_class_receiver(value));
                         let inner = match inner {
                             Some(OccurrenceReceiver::NamedAttribute { ref name, .. })

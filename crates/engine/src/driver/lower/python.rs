@@ -3352,14 +3352,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .collect()
     }
 
-    fn call_return_target(
+    fn call_return_returned_class(
         &self,
         occurrence: &OccurrenceFact,
-        checked: Option<&SymbolOutcome>,
         method: &str,
         receiver: &OccurrenceReceiver,
-    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
-        let class_name = match receiver {
+    ) -> Option<String> {
+        match receiver {
             OccurrenceReceiver::EnclosingClass { class } => self
                 .enclosing_class_index(occurrence, class)
                 .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
@@ -3418,37 +3417,44 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         let Some(class_name) =
                             self.field_annotation_class_name_for_class(class_index, attribute)
                         else {
-                            return self.instance_or_named_attribute_target(
-                                occurrence,
-                                checked,
-                                None,
-                            );
+                            return None;
                         };
                         let Some(next_index) = self.unique_live_class_index(&class_name) else {
-                            return self.instance_or_named_attribute_target(
-                                occurrence,
-                                checked,
-                                None,
-                            );
+                            return None;
                         };
                         class_index = next_index;
                     }
-                    return self.instance_or_named_attribute_target(
-                        occurrence,
-                        checked,
-                        self.call_return_method_return_class(class_index, method),
-                    );
+                    self.call_return_method_return_class(class_index, method)
+                } else {
+                    None
                 }
-                None
             }
             OccurrenceReceiver::Constructed { class } => self
                 .unique_live_class_index(class)
                 .and_then(|class_index| self.call_return_method_return_class(class_index, method)),
+            OccurrenceReceiver::CallReturn {
+                method: inner_method,
+                receiver: inner_receiver,
+            } => {
+                let inner_class =
+                    self.call_return_returned_class(occurrence, inner_method, inner_receiver.as_ref())?;
+                let class_index = self.unique_live_class_index(&inner_class)?;
+                self.call_return_method_return_class(class_index, method)
+            }
             OccurrenceReceiver::Foreign { receiver: None }
             | OccurrenceReceiver::Module
-            | OccurrenceReceiver::Super { .. }
-            | OccurrenceReceiver::CallReturn { .. } => None,
-        };
+            | OccurrenceReceiver::Super { .. } => None,
+        }
+    }
+
+    fn call_return_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        checked: Option<&SymbolOutcome>,
+        method: &str,
+        receiver: &OccurrenceReceiver,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError> {
+        let class_name = self.call_return_returned_class(occurrence, method, receiver);
         self.instance_or_named_attribute_target(occurrence, checked, class_name)
     }
 
