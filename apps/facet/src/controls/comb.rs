@@ -944,6 +944,7 @@ impl RenderOnce for VersionComb {
                             let_go(&left, false, window, cx);
                         }
                     });
+                    let up_positions = positions.clone();
                     let moved = state.clone();
                     let rel = releases.clone();
                     let select = on_select.clone();
@@ -1003,13 +1004,28 @@ impl RenderOnce for VersionComb {
                             }
                         }
                     });
+                    // A drag ends where the button comes up: the release
+                    // under it is the choice, whatever path led there.
                     let released = state.clone();
-                    window.on_mouse_event(move |_event: &MouseUpEvent, phase, _window, cx| {
-                        if phase == DispatchPhase::Bubble && released.read(cx).dragging {
-                            released.update(cx, |st, cx| {
-                                st.dragging = false;
-                                cx.notify();
-                            });
+                    let up_releases = releases.clone();
+                    let up_select = on_select.clone();
+                    let up_layout = frame.layout.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Bubble || !released.read(cx).dragging {
+                            return;
+                        }
+                        let x = f32::from(event.position.x) - x0;
+                        let lens = up_layout.needs_lens().then(|| up_layout.follow(released.read(cx).lens, x));
+                        let at = match lens {
+                            Some(lens) => nearest(&up_layout.positions(Some(&lens), 1.0), x),
+                            None => nearest(&up_positions, x),
+                        };
+                        released.update(cx, |st, cx| {
+                            st.dragging = false;
+                            cx.notify();
+                        });
+                        if let (Some(i), Some(select)) = (at, &up_select) {
+                            select(&VersionSelected(up_releases[i].id.clone()), window, cx);
                         }
                     });
                 }
@@ -1212,7 +1228,7 @@ pub(crate) fn unreachable(layout: &Layout) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, Lens, Release, ReleaseId, ReleaseStep, Step, nearest, step_key, step_release};
+    use super::{Layout, Release, ReleaseId, ReleaseStep, Step, nearest, step_key, step_release};
 
     fn releases(n: usize) -> Vec<Release> {
         (0..n)
@@ -1255,7 +1271,7 @@ mod tests {
         let lens = layout.follow(None, 118.0);
         let positions = layout.positions(Some(&lens), 1.0);
         assert!(positions.windows(2).all(|w| w[1] >= w[0] - 1e-3), "not monotonic");
-        let at = nearest(&positions, 118.0).unwrap();
+        let at = nearest(&positions, 118.0).expect("lens plateau has a nearest position");
         let gap = positions[at + 1] - positions[at];
         assert!(gap >= 5.0, "plateau pitch {gap}");
         assert!(positions[0].abs() < 1e-3 && (positions[399] - 236.0).abs() < 1e-3, "ends moved");

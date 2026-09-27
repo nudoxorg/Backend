@@ -68,6 +68,7 @@ pub struct Field {
     fault: Option<SharedString>,
     disabled: bool,
     quiet: bool,
+    opaque: bool,
     look: Look,
     measure: Measure,
 }
@@ -82,6 +83,7 @@ pub fn field(id: impl Into<ElementId>, state: &Entity<InputState>, measure: &Mea
         fault: None,
         disabled: false,
         quiet: false,
+        opaque: false,
         look: Look::LIVE,
         measure: *measure,
     }
@@ -93,6 +95,14 @@ impl Field {
     #[must_use]
     pub const fn quiet(mut self) -> Self {
         self.quiet = true;
+        self
+    }
+
+    /// Covers a busy backdrop with the palette's solid plate. Quiet fields
+    /// retain their height, typography and hairline treatment.
+    #[must_use]
+    pub const fn opaque(mut self) -> Self {
+        self.opaque = true;
         self
     }
 
@@ -136,8 +146,28 @@ impl RenderOnce for Field {
         let motion = touch.motion.clone();
         let id = self.id.clone();
         // A field shows focus however it arrived: the caret is in it.
-        let focused = active
-            && (self.look.focus || self.state.read(cx).focus_handle(cx).is_focused(window));
+        let caret = active && self.state.read(cx).focus_handle(cx).is_focused(window);
+        let focused = caret || (active && self.look.focus);
+        if caret {
+            // The caret blinks (the text engine's own 2 Hz clock): ambient
+            // motion, declared as such so the probe tells it from a leak.
+            let epoch = crate::motion::epoch(cx);
+            let at_ms = crate::motion::now(cx).saturating_duration_since(epoch).as_secs_f64() * 1000.0;
+            crate::probe::record_track(cx, || crate::probe::TrackSample {
+                key: format!("{id}-caret"),
+                kind: crate::probe::TrackKind::Pulse,
+                value: 0.0,
+                target: 0.0,
+                velocity: 0.0,
+                started_ms: 0.0,
+                budget_ms: 0.0,
+                at_ms,
+                live: false,
+                overshoot_ratio: 0.0,
+                overshoot_absolute: 0.0,
+                group: None,
+            });
+        }
         let height = if self.quiet {
             measure.control(Control::Small) * (28.0 / 24.0)
         } else {
@@ -174,7 +204,9 @@ impl RenderOnce for Field {
         let edge = rest
             .mix(Edge::of(Bevel::Focus, palette), focus)
             .mix(Edge::of(Bevel::Coral, palette), fault);
-        let fill = if self.quiet {
+        let fill = if self.opaque {
+            mix(with_alpha(palette.plate.into(), 1.0), with_alpha(palette.plate2.into(), 1.0), hover)
+        } else if self.quiet {
             let tint: Hsla = palette.tint.into();
             mix(with_alpha(tint, 0.3 * tint.alpha), tint, hover)
         } else {

@@ -440,12 +440,19 @@ impl RenderOnce for Splitter {
                     });
                     let released = id.clone();
                     let change = on_change.clone();
-                    window.on_mouse_event(move |_event: &MouseUpEvent, phase, window, cx| {
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
                         if phase != DispatchPhase::Bubble {
                             return;
                         }
                         let Some(drag) = split(&released, cx).drag else {
                             return;
+                        };
+                        // The seam ends where the button comes up, whatever
+                        // path the pointer took (and whether or not a last
+                        // move arrived first).
+                        let drag = Dragging {
+                            now: f32::from(event.position.x),
+                            ..drag
                         };
                         update(&released, cx, |state| {
                             state.drag = None;
