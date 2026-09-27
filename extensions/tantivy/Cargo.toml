@@ -47,3 +47,8 @@ harness = false
 name = "lexical_rank"
 path = "benches/lexical_rank.rs"
 harness = false
+
+[[bench]]
+name = "nested_collect"
+path = "benches/nested_collect.rs"
+harness = false

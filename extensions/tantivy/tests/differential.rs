@@ -300,3 +300,28 @@ fn hostile_corpus_and_query_bounds_precede_backend_work() {
     ));
     assert_eq!(output, before);
 }
+
+#[test]
+fn a_later_document_is_not_reported_as_ordinal_zero() {
+    let rows = [
+        LexicalRow::new(b"alpha", document(1), LexicalScore::from(9)),
+        LexicalRow::new(b"zephyr", document(8), LexicalScore::from(1)),
+    ];
+    let segment = LexicalSegment::new(&rows).expect("ordered segment");
+    let selected = [segment.id];
+    let snapshot = IndexSnapshot::new(generation(), &[], &selected).expect("snapshot");
+    let segments = [segment];
+    let manifest = LexicalManifest::new(snapshot, &segments, &[]).expect("manifest");
+    let adapter = TantivyLexical::build(manifest).expect("projection");
+    let mut output = [None];
+    let terminal = adapter
+        .search(snapshot.id, "zephyr", 1, &mut output)
+        .expect("later document");
+    assert_eq!(terminal.written, 1);
+    assert_eq!(
+        output,
+        [Some(TantivyHit {
+            document: document(8)
+        })]
+    );
+}
