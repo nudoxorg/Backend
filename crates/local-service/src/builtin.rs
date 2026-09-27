@@ -1221,6 +1221,14 @@ pub fn measure_manifest_residence() {
     local_manifest::measure_manifest_residence();
 }
 
+/// Times a workspace refresh whose members share one ancestor manifest.
+///
+/// Fixture construction happens before the timer. The printed line is the
+/// release measurement for reading that ancestor once per refresh.
+pub fn measure_manifest_ancestor() {
+    local_manifest::measure_manifest_ancestor();
+}
+
 /// Times admitting a typed search corpus against reusing the resident one.
 ///
 /// Fixture rows are built before the timer. The printed line is the release

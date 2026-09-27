@@ -49,6 +49,11 @@ path = "benches/manifest_residence.rs"
 harness = false
 
 [[bench]]
+name = "manifest_ancestor"
+path = "benches/manifest_ancestor.rs"
+harness = false
+
+[[bench]]
 name = "search_corpus"
 path = "benches/search_corpus.rs"
 harness = false

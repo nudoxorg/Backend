@@ -11,13 +11,15 @@ use backend_semantic::vocabulary::{
     CSharpVersion, GoVersion, JavaRelease, LanguageProfile, PythonVersion, RustEdition,
     TypeScriptSource,
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 fn read_cargo_package_table(project_root: &Path) -> Result<(Vec<u8>, toml::Value), String> {
     let manifest = project_root.join("Cargo.toml");
-    let bytes = std::fs::read(&manifest)
-        .map_err(|error| format!("read local manifest {}: {error}", manifest.display()))?;
+    let bytes = read_manifest_bytes(&manifest)?;
     let root = toml::from_str::<toml::Value>(
         std::str::from_utf8(&bytes).map_err(|_| "local manifest is not UTF-8".to_owned())?,
     )
@@ -33,7 +35,7 @@ fn workspace_package_field(project_root: &Path, field: &str) -> Option<String> {
     let mut dir = Some(project_root);
     while let Some(current) = dir {
         let candidate = current.join("Cargo.toml");
-        if let Ok(bytes) = std::fs::read(&candidate) {
+        if let Ok(bytes) = read_manifest_bytes(&candidate) {
             if let Ok(text) = std::str::from_utf8(&bytes) {
                 if let Ok(root) = toml::from_str::<toml::Value>(text) {
                     if let Some(value) = root
@@ -428,8 +430,83 @@ fn coordinate_for(
         .map_err(|error| format!("local manifest identity {purl} is invalid: {error}"))
 }
 
-fn read_manifest_bytes(path: &Path) -> Result<Vec<u8>, String> {
+thread_local! {
+    static MANIFEST_FILES: RefCell<Option<ManifestFileCache>> = const { RefCell::new(None) };
+}
+
+struct ManifestFileCache {
+    files: HashMap<PathBuf, Result<Arc<[u8]>, String>>,
+    disk_reads: u64,
+}
+
+impl Default for ManifestFileCache {
+    fn default() -> Self {
+        Self {
+            files: HashMap::new(),
+            disk_reads: 0,
+        }
+    }
+}
+
+/// Clears the per-refresh manifest cache when dropped, restoring any cache
+/// that was already installed.
+#[must_use = "the manifest file cache clears when the guard drops"]
+struct ManifestFileCacheGuard {
+    previous: Option<ManifestFileCache>,
+}
+
+impl ManifestFileCacheGuard {
+    fn disk_reads(&self) -> u64 {
+        MANIFEST_FILES.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(|cache| cache.disk_reads)
+                .unwrap_or(0)
+        })
+    }
+}
+
+impl Drop for ManifestFileCacheGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        MANIFEST_FILES.with(|slot| {
+            *slot.borrow_mut() = previous;
+        });
+    }
+}
+
+fn install_manifest_file_cache() -> ManifestFileCacheGuard {
+    let previous =
+        MANIFEST_FILES.with(|slot| slot.borrow_mut().replace(ManifestFileCache::default()));
+    ManifestFileCacheGuard { previous }
+}
+
+fn read_manifest_from_disk(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|error| format!("read local manifest {}: {error}", path.display()))
+}
+
+fn read_cached_manifest(cache: &mut ManifestFileCache, path: &Path) -> Result<Vec<u8>, String> {
+    if let Some(cached) = cache.files.get(path) {
+        return match cached {
+            Ok(bytes) => Ok(bytes.to_vec()),
+            Err(error) => Err(error.clone()),
+        };
+    }
+    cache.disk_reads = cache.disk_reads.saturating_add(1);
+    let read = read_manifest_from_disk(path).map(Arc::<[u8]>::from);
+    let returned = match &read {
+        Ok(bytes) => Ok(bytes.to_vec()),
+        Err(error) => Err(error.clone()),
+    };
+    cache.files.insert(path.to_path_buf(), read);
+    returned
+}
+
+fn read_manifest_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    MANIFEST_FILES.with(|slot| match slot.borrow_mut().as_mut() {
+        Some(cache) => read_cached_manifest(cache, path),
+        None => read_manifest_from_disk(path),
+    })
 }
 
 fn read_npm_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>, String> {
@@ -891,6 +968,11 @@ pub(crate) use residence::LocalManifestResidence;
 /// Times local manifest parsing against a byte-identical refresh.
 pub(super) fn measure_manifest_residence() {
     residence::measure_manifest_residence();
+}
+
+/// Times a workspace refresh that inherits one shared ancestor manifest.
+pub(super) fn measure_manifest_ancestor() {
+    residence::measure_manifest_ancestor();
 }
 
 /// Reads outgoing dependency facts from one indexed local manifest.

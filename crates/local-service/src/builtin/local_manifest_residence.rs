@@ -1,8 +1,9 @@
 //! Parsed local dependency facts reused while manifest bytes are unchanged.
 //!
 //! The residence hashes the same files the parser would read, including
-//! ancestor `Cargo.toml` files that can supply workspace inheritance. A
-//! matching digest moves the previous fact forward. A changed digest parses
+//! ancestor `Cargo.toml` files that can supply workspace inheritance. One
+//! refresh reads each manifest path from disk once, then drops that cache.
+//! A matching digest moves the previous fact forward. A changed digest parses
 //! that root again. Removal drops the fact. Parse failures stay with the
 //! digest so the same bytes fail again without a second parse.
 
@@ -25,6 +26,7 @@ pub(crate) struct LocalManifestResidence {
     entries: BTreeMap<PathBuf, Entry>,
     witness: [u8; 32],
     parses: u64,
+    disk_reads: u64,
 }
 
 impl LocalManifestResidence {
@@ -38,6 +40,15 @@ impl LocalManifestResidence {
     #[must_use]
     pub(super) const fn parses(&self) -> u64 {
         self.parses
+    }
+
+    /// Manifest files read from disk during the latest refresh.
+    ///
+    /// A later refresh reads again, so a byte change is visible. Within one
+    /// refresh a path is read once.
+    #[must_use]
+    pub(super) const fn disk_reads(&self) -> u64 {
+        self.disk_reads
     }
 
     /// Facts from roots whose manifests parsed.
@@ -66,6 +77,16 @@ impl LocalManifestResidence {
     /// previous residence intact. A parse error is stored and returned, so a
     /// later refresh of the same bytes does not parse again.
     pub(crate) fn refresh<'a>(
+        &mut self,
+        roots: impl IntoIterator<Item = &'a Path>,
+    ) -> Result<(), String> {
+        let guard = super::install_manifest_file_cache();
+        let result = self.refresh_cached(roots);
+        self.disk_reads = guard.disk_reads();
+        result
+    }
+
+    fn refresh_cached<'a>(
         &mut self,
         roots: impl IntoIterator<Item = &'a Path>,
     ) -> Result<(), String> {
@@ -175,8 +196,7 @@ fn input_digest(root: &Path) -> Result<[u8; 32], String> {
 }
 
 fn hash_path(hasher: &mut blake3::Hasher, path: &Path) -> Result<(), String> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("read local manifest {}: {error}", path.display()))?;
+    let bytes = super::read_manifest_bytes(path)?;
     hasher.update(path.as_os_str().as_encoded_bytes());
     hasher.update(&[0]);
     let len =
@@ -258,6 +278,67 @@ pub(super) fn measure_manifest_residence() {
         "manifest_residence projects={PROJECTS} deps={DEPS} cold_median_ns={cold_median} cold_p95_ns={cold_p95} cold_parses_per_call={} warm_median_ns={warm_median} warm_p95_ns={warm_p95} warm_parses={warm_parses} delta_median_ns={delta_median} delta_p95_ns={delta_p95} delta_parses_per_call={}",
         cold_parses / calls,
         delta_parses / calls
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Times a cargo workspace whose members inherit one shared root manifest.
+#[allow(clippy::expect_used, clippy::indexing_slicing, clippy::print_stdout)]
+pub(super) fn measure_manifest_ancestor() {
+    const MEMBERS: usize = 128;
+    const SAMPLES: usize = 32;
+    const WARMUPS: usize = 4;
+    let root = std::env::temp_dir().join(format!("nudox-manifest-ancestor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("bench directory");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace.package]\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+    )
+    .expect("workspace manifest");
+    let mut roots = Vec::with_capacity(MEMBERS);
+    for index in 0..MEMBERS {
+        let member = root.join(format!("member-{index}"));
+        std::fs::create_dir_all(&member).expect("member");
+        std::fs::write(
+            member.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"member-{index}\"\nversion.workspace = true\nedition.workspace = true\n\n[dependencies]\ndep-{index} = \"1\"\n"
+            ),
+        )
+        .expect("member manifest");
+        roots.push(member);
+    }
+    let mut cold_reads = 0u64;
+    let cold = time(WARMUPS, SAMPLES, || {
+        let mut residence = LocalManifestResidence::default();
+        residence
+            .refresh(roots.iter().map(PathBuf::as_path))
+            .expect("cold");
+        cold_reads = cold_reads.saturating_add(residence.disk_reads());
+        std::hint::black_box(residence.parses());
+    });
+    let mut warm_residence = LocalManifestResidence::default();
+    warm_residence
+        .refresh(roots.iter().map(PathBuf::as_path))
+        .expect("prime");
+    let warm_before = warm_residence.parses();
+    let mut warm_reads = 0u64;
+    let warm = time(WARMUPS, SAMPLES, || {
+        warm_residence
+            .refresh(roots.iter().map(PathBuf::as_path))
+            .expect("warm");
+        warm_reads = warm_reads.saturating_add(warm_residence.disk_reads());
+        std::hint::black_box(warm_residence.witness());
+    });
+    let warm_parses = warm_residence.parses() - warm_before;
+    let (cold_median, cold_p95) = percentiles(&cold);
+    let (warm_median, warm_p95) = percentiles(&warm);
+    let calls = u64::try_from(WARMUPS + SAMPLES).expect("calls");
+    println!(
+        "manifest_ancestor members={MEMBERS} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} cold_disk_reads={} warm_disk_reads={} warm_parses={warm_parses}",
+        cold_reads / calls,
+        warm_reads / calls
     );
     let _ = std::fs::remove_dir_all(root);
 }
@@ -470,6 +551,117 @@ mod tests {
         residence.refresh([npm.as_path()]).expect("drop cargo");
         assert!(!named(&residence, "pkg:cargo/kept@1.0.0"));
         assert_eq!(residence.facts().count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_shared_ancestor_is_read_once_per_refresh() {
+        let root = fixture("ancestor");
+        let first = root.join("first");
+        let second = root.join("second");
+        write(
+            &root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        );
+        write(
+            &first.join("Cargo.toml"),
+            "[package]\nname = \"first\"\nversion.workspace = true\nedition.workspace = true\n\n[dependencies]\nserde = \"1\"\n",
+        );
+        write(
+            &second.join("Cargo.toml"),
+            "[package]\nname = \"second\"\nversion.workspace = true\nedition.workspace = true\n\n[dependencies]\nlibc = \"0.2\"\n",
+        );
+        let roots = [first.as_path(), second.as_path()];
+        let mut residence = LocalManifestResidence::default();
+        residence.refresh(roots).expect("cold");
+        assert_eq!(residence.parses(), 2);
+        assert_eq!(residence.disk_reads(), 3, "root plus two members");
+        assert!(named(&residence, "pkg:cargo/first@1.0.0"));
+        assert!(named(&residence, "pkg:cargo/second@1.0.0"));
+        let parses = residence.parses();
+        residence.refresh(roots).expect("warm");
+        assert_eq!(residence.parses(), parses);
+        assert_eq!(residence.disk_reads(), 3, "warm refresh still sees bytes");
+        write(
+            &root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"2.0.0\"\nedition = \"2024\"\n",
+        );
+        residence.refresh(roots).expect("root edit");
+        assert_eq!(residence.parses(), parses + 2);
+        assert_eq!(residence.disk_reads(), 3);
+        assert!(named(&residence, "pkg:cargo/first@2.0.0"));
+        assert!(named(&residence, "pkg:cargo/second@2.0.0"));
+        let outside = super::super::install_manifest_file_cache();
+        super::super::read_manifest_bytes(&root.join("Cargo.toml")).expect("reread");
+        assert_eq!(outside.disk_reads(), 1, "refresh cache does not survive");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_nested_refresh_keeps_the_outer_manifest_cache() {
+        let root = fixture("nested");
+        let member = root.join("member");
+        write(
+            &root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        );
+        write(
+            &member.join("Cargo.toml"),
+            "[package]\nname = \"nested\"\nversion.workspace = true\nedition.workspace = true\n",
+        );
+        let outer = super::super::install_manifest_file_cache();
+        super::super::read_manifest_bytes(&root.join("Cargo.toml")).expect("outer");
+        assert_eq!(outer.disk_reads(), 1);
+        let mut residence = LocalManifestResidence::default();
+        residence.refresh([member.as_path()]).expect("inner");
+        assert_eq!(residence.disk_reads(), 2, "member and root");
+        super::super::read_manifest_bytes(&root.join("Cargo.toml")).expect("still cached");
+        assert_eq!(outer.disk_reads(), 1, "inner refresh restored the outer cache");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn two_spellings_of_one_manifest_are_separate_reads() {
+        let root = fixture("spelling");
+        let member = root.join("member");
+        write(&root.join("Cargo.toml"), "[workspace]\nmembers = []\n");
+        fs::create_dir_all(&member).expect("member");
+        let guard = super::super::install_manifest_file_cache();
+        let direct = root.join("Cargo.toml");
+        let indirect = member.join("../Cargo.toml");
+        assert_ne!(direct, indirect);
+        super::super::read_manifest_bytes(&direct).expect("direct");
+        super::super::read_manifest_bytes(&indirect).expect("indirect");
+        assert_eq!(guard.disk_reads(), 2);
+        super::super::read_manifest_bytes(&direct).expect("direct hit");
+        assert_eq!(guard.disk_reads(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_missing_inherited_field_is_still_named_after_the_ancestor_walk() {
+        let root = fixture("missing-field");
+        let member = root.join("member");
+        write(
+            &member.join("Cargo.toml"),
+            "[package]\nname = \"orphan\"\nversion.workspace = true\n",
+        );
+        let mut residence = LocalManifestResidence::default();
+        let Err(error) = residence.refresh([member.as_path()]) else {
+            panic!("missing workspace field");
+        };
+        assert!(
+            error.contains("[workspace.package].version"),
+            "{error}"
+        );
+        let reads = residence.disk_reads();
+        assert!(reads >= 1);
+        let Err(again) = residence.refresh([member.as_path()]) else {
+            panic!("cached failure");
+        };
+        assert_eq!(again, error);
+        assert_eq!(residence.parses(), 1);
+        assert_eq!(residence.disk_reads(), reads);
         let _ = fs::remove_dir_all(root);
     }
 }
