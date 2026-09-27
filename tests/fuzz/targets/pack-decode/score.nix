@@ -1,4 +1,4 @@
-# DiffWake inputs for untrusted index-pack bytes.
+# Score inputs for untrusted index-pack bytes.
 # Counts were measured with wc and enum reads on 2026-09-27. Gap is classified.
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {

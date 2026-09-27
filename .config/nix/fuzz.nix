@@ -61,6 +61,15 @@ let
       "-Cllvm-args=-sanitizer-coverage-stack-depth"
     ]
   );
+  # One fail-closed gate. `rules` is `{ cond, message }`. The first false
+  # cond aborts with `context` and that message. The value is returned only
+  # when every cond holds.
+  demand =
+    context: rules: value:
+    let
+      failed = lib.findFirst (rule: !rule.cond) null rules;
+    in
+    if failed == null then value else abort "${context}: ${failed.message}";
   rankOf =
     name: score:
     let
@@ -69,19 +78,48 @@ let
       blast = score.blast;
       expect = complexity.loc + complexity.error_variants + complexity.discriminants;
     in
-    assert (complexity.method == "measured") || abort "${name}: complexity.method must be measured";
-    assert (complexity.score == expect)
-      || abort "${name}: complexity.score ${toString complexity.score} != ${toString expect}";
-    assert (gap.method == "classified") || abort "${name}: gap.method must be classified";
-    assert (gap.llvm_cov_percent == null)
-      || abort "${name}: llvm-cov percent was not measured; leave llvm_cov_percent null";
-    assert (builtins.elem gap.score [ 0 2 3 ]) || abort "${name}: gap.score must be 0, 2, or 3";
-    assert (blast.method == "classified") || abort "${name}: blast.method must be classified";
-    assert (builtins.elem blast.score [ 3 4 5 ]) || abort "${name}: blast.score must be 3, 4, or 5";
-    assert (score.churn.ranking_factor == false) || abort "${name}: churn is not a ranking factor";
-    assert (score.churn.method == "measured") || abort "${name}: churn.method must be measured";
-    assert (score.entrypoints != [ ]) || abort "${name}: entrypoints must name decoder sources";
-    complexity.score * gap.score * blast.score;
+    demand name [
+      {
+        cond = complexity.method == "measured";
+        message = "complexity.method must be measured";
+      }
+      {
+        cond = complexity.score == expect;
+        message = "complexity.score ${toString complexity.score} != ${toString expect}";
+      }
+      {
+        cond = gap.method == "classified";
+        message = "gap.method must be classified";
+      }
+      {
+        cond = gap.llvm_cov_percent == null;
+        message = "llvm-cov percent was not measured; leave llvm_cov_percent null";
+      }
+      {
+        cond = builtins.elem gap.score [ 0 2 3 ];
+        message = "gap.score must be 0, 2, or 3";
+      }
+      {
+        cond = blast.method == "classified";
+        message = "blast.method must be classified";
+      }
+      {
+        cond = builtins.elem blast.score [ 3 4 5 ];
+        message = "blast.score must be 3, 4, or 5";
+      }
+      {
+        cond = score.churn.ranking_factor == false;
+        message = "churn is not a ranking factor";
+      }
+      {
+        cond = score.churn.method == "measured";
+        message = "churn.method must be measured";
+      }
+      {
+        cond = score.entrypoints != [ ];
+        message = "entrypoints must name decoder sources";
+      }
+    ] (complexity.score * gap.score * blast.score);
   # Every target row uses these keys. Null means that kind has no such
   # artifact. start_order is the supervised start sequence. It is not rank.
   absentArtifacts = {
@@ -121,9 +159,12 @@ let
         ;
     };
   requirePriority = name: score:
-    assert (builtins.isInt score.start_order && score.start_order >= 1 && score.start_order <= 9)
-      || abort "${name}: start_order must be an integer from 1 through 9";
-    score;
+    demand name [
+      {
+        cond = builtins.isInt score.start_order && score.start_order >= 1 && score.start_order <= 9;
+        message = "start_order must be an integer from 1 through 9";
+      }
+    ] score;
   closed = spec:
     let
       rank = rankOf spec.id spec;
@@ -220,27 +261,37 @@ let
     if !available then
       null
     else
-      assert (directoryNames != [ ]) || abort "tests/fuzz/targets has no harness directories";
-      assert (lib.all isTargetId directoryNames)
-        || abort "harness ids must match [a-z][a-z0-9-]*";
-      assert (lib.all complete directoryNames)
-        || abort "a harness directory is missing oracle.rs, max_len, dictionary.txt, score.nix, or corpus/{canonical,empty,bad_magic}";
-      assert (
-        lib.length (
-          lib.unique (
-            map (name: (import (targetRoot + "/${name}/score.nix")).start_order) directoryNames
-          )
-        ) == lib.length directoryNames
-      ) || abort "fuzz start_order values must be unique across harness directories";
-      directoryNames;
+      demand "tests/fuzz/targets" [
+        {
+          cond = directoryNames != [ ];
+          message = "no harness directories";
+        }
+        {
+          cond = lib.all isTargetId directoryNames;
+          message = "harness ids must match [a-z][a-z0-9-]*";
+        }
+        {
+          cond = lib.all complete directoryNames;
+          message = "a harness directory is missing oracle.rs, max_len, dictionary.txt, score.nix, or corpus/{canonical,empty,bad_magic}";
+        }
+        {
+          cond =
+            lib.length (
+              lib.unique (
+                map (name: (import (targetRoot + "/${name}/score.nix")).start_order) directoryNames
+              )
+            ) == lib.length directoryNames;
+          message = "start_order values must be unique across harness directories";
+        }
+      ] directoryNames;
   metadata =
     if discovered == null then
       null
     else
       {
         schema = "nudox.continuous-fuzz.v1";
-        # Document id above is metadata only. Lattice authors write
-        # check.continuousFuzz. This repo does not define that module.
+        # Document fields only. Nix Test DSL owns check.continuousFuzz.
+        # This repository does not define that function.
         latticeKind = "continuous-fuzz";
         attrs = {
           contract = "packages.\${system}.continuous-fuzz";
@@ -292,7 +343,7 @@ let
         formula = "complexity.score * gap.score * blast.score";
         scales = {
           complexity = "loc + error_variants + discriminants. method=measured counts source lines and enum variants. Not premultiplied by gap or blast.";
-          gap = "Ordinal classification, not a coverage percentage. 0 = raw bytes already have an in-process engine or an exhaustive scan. 2 = fixed hostile examples only. 3 = decoder is not callable outside its package. 1 is unused. llvm_cov_percent stays null until it is measured.";
+          gap = "Ordinal classification, method=classified, not a coverage percentage and not a measured DiffWake input. 0 = raw bytes already have an in-process engine or an exhaustive scan. 2 = fixed hostile examples only. 3 = decoder is not callable outside its package. 1 is unused. llvm_cov_percent stays null until it is measured. Rank multiplies measured complexity by this classified ordinal and by classified blast.";
           blast = "Trust boundary. 5 = untrusted remote or durable bytes. 4 = session frame from a peer. 3 = local process facade.";
           churn = "Measured commit counts. ranking_factor is false. Do not multiply churn into the rank.";
           start_order = "Ascending start sequence for scheduled fuzz targets. Independent of rank. Rank 0 with schedule true still runs; gap 0 makes the product zero. Property rows leave it null.";
