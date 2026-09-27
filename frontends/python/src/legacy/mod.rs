@@ -691,6 +691,25 @@ fn annotation(expr: &ast::Expr) -> Annotation {
     annotation_at_depth(expr, 0)
 }
 
+/// A module assignment is a type alias only when its value is a type expression.
+///
+/// Names, attributes, subscripts, `|` unions, quoted annotations, and `None`
+/// match the shapes `annotation` already projects. Calls, numbers, lists, and
+/// other runtime values stay ordinary constants and record no `AliasValue`.
+fn type_shaped_alias_value(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Name(_)
+        | ast::Expr::Attribute(_)
+        | ast::Expr::Subscript(_)
+        | ast::Expr::StringLiteral(_)
+        | ast::Expr::NoneLiteral(_) => true,
+        ast::Expr::BinOp(binary) if binary.op == ast::Operator::BitOr => {
+            type_shaped_alias_value(&binary.left) && type_shaped_alias_value(&binary.right)
+        }
+        _ => false,
+    }
+}
+
 /// Quoted annotations may quote further annotations; the guard keeps the
 /// projection total without trusting unbounded recursion.
 const MAX_STRING_ANNOTATION_DEPTH: usize = 8;
@@ -2486,6 +2505,18 @@ impl Projection<'_> {
                     position: AnnotationPosition::Field,
                     annotation: annotation(annotation_expr),
                     span: span(annotation_expr.range()),
+                });
+            }
+            // Pushed after `add_declaration`, including when a later rebinding
+            // of the same name was dropped, so two alias values stay ambiguous.
+            if let Some(value) = value
+                && type_shaped_alias_value(value)
+            {
+                self.facts.annotations.push(AnnotationFact {
+                    owner: name.id.as_str().to_owned(),
+                    position: AnnotationPosition::AliasValue,
+                    annotation: annotation(value),
+                    span: span(value.range()),
                 });
             }
         }

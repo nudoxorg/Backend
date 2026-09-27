@@ -5065,16 +5065,37 @@ impl<'a, 'source> Emitter<'a, 'source> {
             .count()
     }
 
-    /// Whether one live module-level PEP 695 `type` alias names `name`.
+    /// Whether one live module-level type alias names `name`.
+    ///
+    /// A PEP 695 `type` statement is an `Alias` with no value span. An
+    /// assignment `Item = Child` is a `Constant` with no value span that
+    /// contains one `AliasValue`. A runtime value (`Item = 1`, `Item = Child()`)
+    /// records no `AliasValue` and is not an alias. Two alias-like declarations,
+    /// or not exactly one `AliasValue` for the name, stay ambiguous.
     fn unique_type_alias_value(&self, name: &str) -> AliasValueLookup<'a> {
         let name_bytes = name.as_bytes();
+        let module_alias_values: Vec<&AnnotationFact> = self
+            .module
+            .annotations
+            .iter()
+            .filter(|fact| fact.position == AnnotationPosition::AliasValue && fact.owner == name)
+            .collect();
         let mut matches = Vec::new();
         for (index, declaration) in self.module.declarations.iter().enumerate() {
-            if declaration.kind == DeclarationKind::Alias
-                && declaration.name.as_bytes() == name_bytes
-                && declaration.value_span.is_none()
-                && self.live[index]
+            if declaration.name.as_bytes() != name_bytes
+                || declaration.value_span.is_some()
+                || !self.live[index]
             {
+                continue;
+            }
+            let alias_like = match declaration.kind {
+                DeclarationKind::Alias => true,
+                DeclarationKind::Constant => module_alias_values
+                    .iter()
+                    .any(|fact| span_contains(declaration.span, fact.span)),
+                _ => false,
+            };
+            if alias_like {
                 matches.push(index);
             }
         }
@@ -5084,14 +5105,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
         if matches.len() > 1 {
             return AliasValueLookup::Ambiguous;
         }
-        let module_alias_values: Vec<&AnnotationFact> = self
-            .module
-            .annotations
-            .iter()
-            .filter(|fact| {
-                fact.position == AnnotationPosition::AliasValue && fact.owner == name
-            })
-            .collect();
         if module_alias_values.len() != 1 {
             return AliasValueLookup::Ambiguous;
         }
@@ -5826,7 +5839,7 @@ enum RawReceiverAnnotation<'a> {
     Absent,
 }
 
-/// Whether one live module-level PEP 695 `type` alias names a spelling.
+/// Whether one live module-level type alias names a spelling.
 enum AliasValueLookup<'a> {
     Unique(&'a Annotation),
     Ambiguous,

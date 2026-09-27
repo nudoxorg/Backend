@@ -23554,3 +23554,1297 @@ def run(obj: Item):
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
+
+#[test]
+fn py_assign_alias_parameter_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_list_parameter_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Items = list[Child]
+
+def run(items: Items):
+    return items[0].note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_list_index_parameter_call_targets_child_note_not_decoy() -> Result<(), TestError>
+{
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Items = list[Child]
+
+def run(items: Items, index: int):
+    return items[index].note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "items[index].note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("items[index].note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_field_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child
+
+class Holder:
+    child: Item
+    def run(self):
+        return self.child.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "self.child.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("self.child.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_list_field_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Items = list[Child]
+
+class Holder:
+    child: Items
+    def run(self):
+        return self.child[0].note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "self.child[0].note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("self.child[0].note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_return_call_targets_child_extra_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def extra(self):
+        return 0
+
+class Child:
+    def extra(self):
+        return 1
+
+Item = Child
+
+class Holder:
+    def note(self) -> Item:
+        return Child()
+    def run(self):
+        return self.note().extra()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
+    let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
+    let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
+    if extra_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
+    }
+    assert_local_index(extra_calls[0], child_extra, "self.note().extra() resolves to Child.extra")?;
+    if matches!(
+        &extra_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_extra
+    ) {
+        return Err(TestError::Falsified("self.note().extra() must not resolve to Decoy.extra"));
+    }
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_list_return_call_targets_child_extra_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def extra(self):
+        return 0
+
+class Child:
+    def extra(self):
+        return 1
+
+Items = list[Child]
+
+class Holder:
+    def note(self) -> Items:
+        return []
+    def run(self):
+        return self.note()[0].extra()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 0)?;
+    let child_extra = entity_ordinal_at_index(&view, b"extra", EntityKind::Function, 1)?;
+    let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let extra_calls = method_calls_with_path(&view, run_owner, b"extra")?;
+    if extra_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path extra"));
+    }
+    assert_local_index(
+        extra_calls[0],
+        child_extra,
+        "self.note()[0].extra() resolves to Child.extra",
+    )?;
+    if matches!(
+        &extra_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_extra
+    ) {
+        return Err(TestError::Falsified("self.note()[0].extra() must not resolve to Decoy.extra"));
+    }
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], holder_note, "self.note() resolves to Holder.note")?;
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_method_body_closure_call_targets_child_note_not_decoy() -> Result<(), TestError>
+{
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child
+
+class Holder:
+    def run(self):
+        obj: Item = Child()
+        def inner():
+            return obj.note()
+        return inner()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let inner_owner = entity_ordinal_at_index(&view, b"inner", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_chain_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Mid = Child
+Item = Mid
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_union_none_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child | None
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_union_none_list_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Items = list[Child] | None
+
+def run(items: Items):
+    return items[0].note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_optional_list_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Items = list[Optional[Child]]
+
+def run(items: Items):
+    return items[0].note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "items[0].note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("items[0].note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_forward_reference_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+Item = Child
+
+class Child:
+    def note(self):
+        return 1
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_quoted_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = \"Child\"
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_typing_alias_call_targets_child_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item: TypeAlias = Child
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_base_inheritance_call_targets_left_note_not_decoy() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Left:
+    def note(self):
+        return 1
+
+Base = Left
+
+class Holder(Base):
+    def run(self):
+        return self.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let left_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], left_note, "self.note() resolves to Left.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("self.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_equality_does_not_shadow_parameter_call_targets_child_note_not_decoy()
+-> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child
+
+def run(obj: Item):
+    obj == 1
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_dict_call_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+Items = dict[str, Child]
+
+class Holder:
+    def note(self):
+        return 2
+
+def run(items: Items, key: str):
+    return items[key].note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let holder_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "dict[str, Child] receiver stays a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("items[key].note() must not bind Child.note"));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == holder_note
+    ) {
+        return Err(TestError::Falsified("items[key].note() must not bind Holder.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_union_classes_stay_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child | Decoy
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "Child | Decoy alias stays a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_dotted_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+Item = pkg.Child
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "pkg.Child alias stays a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_two_assignments_stay_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child
+Item = Decoy
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "two Item assignments stay a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_mixed_with_type_statement_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+type Item = Child
+Item = Decoy
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "type and assignment aliases stay a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_cycle_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+A = B
+B = A
+
+def run(obj: A):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "cyclic aliases stay a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_class_wins_over_assignment_call_targets_child_note_not_decoy()
+-> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Child = Decoy
+
+def run(obj: Child):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_local_index(note_calls[0], child_note, "obj.note() resolves to Child.note")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not resolve to Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_class_subscript_does_not_follow_alias() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Child = list[Decoy]
+
+def run(items: Child):
+    return items[0].note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(
+        note_calls[0],
+        "a class spelling is not peeled through a same-named assignment",
+    )?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified(
+            "items[0].note() must not resolve to Decoy.note",
+        ));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified(
+            "items[0].note() must not resolve to Child.note",
+        ));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_call_value_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child()
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "Item = Child() stays a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_number_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    def note(self):
+        return 1
+
+Item = 1
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "Item = 1 stays a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_assignment_shadow_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child
+
+def run(obj: Item):
+    obj = 1
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "assignment shadow stays a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_nested_assignment_shadow_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+Item = Child
+
+def run(obj: Item):
+    obj = 1
+    def inner():
+        return obj.note()
+    return inner()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let inner_owner = entity_ordinal_at_index(&view, b"inner", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
+    }
+    assert_universe_method(
+        note_calls[0],
+        "an outer assignment of a parameter stays a pypi universe key",
+    )?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified(
+            "inner obj.note() must not bind Child.note",
+        ));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified(
+            "inner obj.note() must not bind Decoy.note",
+        ));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_function_local_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Decoy:
+    def note(self):
+        return 0
+
+class Child:
+    def note(self):
+        return 1
+
+def outer():
+    Item = Child
+    def inner(obj: Item):
+        return obj.note()
+    return inner
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let inner_owner = entity_ordinal_at_index(&view, b"inner", EntityKind::Function, 0)?;
+    let decoy_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 0)?;
+    let child_note = entity_ordinal_at_index(&view, b"note", EntityKind::Function, 1)?;
+    let note_calls = method_calls_with_path(&view, inner_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("inner owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "a function-local assignment stays a pypi universe key")?;
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == child_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Child.note"));
+    }
+    if matches!(
+        &note_calls[0].occurrence.target,
+        OccurrenceTarget::Local(target) if target.raw == decoy_note
+    ) {
+        return Err(TestError::Falsified("obj.note() must not bind Decoy.note"));
+    }
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
+
+#[test]
+fn py_assign_alias_missing_member_stays_universe() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Child:
+    pass
+
+Item = Child
+
+def run(obj: Item):
+    return obj.note()
+";
+    let env = inherited_fixture_env()?;
+    let toolchain = env.toolchain()?;
+    let cancelled = AtomicBool::new(false);
+    let fragment = compile_inherited_fragment(SOURCE, &env.work, &toolchain, &cancelled)?;
+    let view = fragment.view()?;
+    let run_owner = entity_ordinal_at_index(&view, b"run", EntityKind::Function, 0)?;
+    let note_calls = method_calls_with_path(&view, run_owner, b"note")?;
+    if note_calls.len() != 1 {
+        return Err(TestError::Falsified("run owns one MethodCall with path note"));
+    }
+    assert_universe_method(note_calls[0], "missing note member stays a pypi universe key")?;
+    fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
+    Ok(())
+}
