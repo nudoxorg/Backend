@@ -1948,6 +1948,12 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
     /// Declares one formal parameter as a `Parameter` fact when the binding
     /// site is not already registered, then walks its annotation for nested
     /// function bindings.
+    ///
+    /// The annotation is not lowered onto this fact. These parameters belong
+    /// to a function type, and the type-literal walk already owns every
+    /// member of that annotation. Lowering it here would claim a second
+    /// index-signature field to the parameter, and a same-named parameter of
+    /// the enclosing signature would then share that field's identity.
     fn declare_formal_parameter_binding(
         &mut self,
         name_span: Span,
@@ -1962,7 +1968,7 @@ impl<'x, 'report, 'source> Projector<'x, 'report, 'source> {
             let mut params = ParamRows::new();
             params.push(ParamRow {
                 name: name_span,
-                annotation,
+                annotation: None,
                 default: None,
                 flags,
             })?;
