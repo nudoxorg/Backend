@@ -3557,10 +3557,17 @@ impl<'a, 'source> Emitter<'a, 'source> {
     }
 
     /// The class name one call-return callee's return annotation names, when
-    /// unique and usable.
+    /// unique and usable. A `Self` return is the receiver class, including
+    /// when the method is inherited (PEP 673), not a class literally named `Self`.
     fn call_return_method_return_class(&self, class_index: usize, method: &str) -> Option<String> {
         match self.call_return_method_index(class_index, method) {
             CallReturnMethodLookup::Unique(index) => {
+                let declaration = &self.module.declarations[index];
+                if let Some(fact) = self.return_annotation(declaration) {
+                    if annotation_is_self_type(&fact.annotation) {
+                        return Some(self.module.declarations[class_index].name.clone());
+                    }
+                }
                 self.return_annotation_class_name_from_index(index)
             }
             CallReturnMethodLookup::Absent | CallReturnMethodLookup::Ambiguous => None,
@@ -5342,6 +5349,25 @@ fn optional_or_union_base(name: &str) -> Option<&'static str> {
         Some("Union")
     } else {
         None
+    }
+}
+
+fn self_type_name(name: &str) -> bool {
+    matches!(name, "Self" | "typing.Self" | "typing_extensions.Self")
+}
+
+/// `Self`, `typing.Self`, or `typing_extensions.Self`, including `Self | None`
+/// and `Optional[Self]`. A union with another class is not a self type.
+fn annotation_is_self_type(annotation: &Annotation) -> bool {
+    match strip_optional_layers(annotation) {
+        Annotation::Name { name, .. } => self_type_name(name),
+        Annotation::Generic { .. }
+        | Annotation::Union(_)
+        | Annotation::List(_)
+        | Annotation::StringLiteral(_)
+        | Annotation::Literal(_)
+        | Annotation::None
+        | Annotation::Unknown(_) => false,
     }
 }
 
