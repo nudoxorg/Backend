@@ -647,6 +647,22 @@ impl<R: CanonicalRelation> WorkspaceRelationHandle<R> {
             .map_err(|error| map_tree_error::<R>(error, None))
     }
 
+    /// Reads one bounded page beginning at `start`, including that key when present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, persistence, or admission of the
+    /// supplied value fails.
+    pub fn page_from(
+        &self,
+        start: &R::Key,
+        limit: usize,
+    ) -> Result<LazyTreePage<R>, WorkspaceRelationError> {
+        self.tree()
+            .page_from(start, limit)
+            .map_err(|error| map_tree_error::<R>(error, None))
+    }
+
     /// Prepares one exact replacement/removal by path-copying affected nodes.
     /// # Errors
     ///

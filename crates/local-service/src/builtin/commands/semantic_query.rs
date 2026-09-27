@@ -87,6 +87,66 @@ fn execute_semantic_query_job(job: SemanticQueryJob) {
     });
 }
 
+fn package_reference_label(
+    sources: &super::super::IndexedSources,
+    package: backend_engine::PackageKey,
+) -> Option<backend_engine::PackageReference> {
+    let project = sources.projects.get(&package.to_bytes())?;
+    let reference = backend_engine::PackageReference::parse(project.label.clone()).ok()?;
+    if backend_engine::package_key(reference.as_str()) != package {
+        return None;
+    }
+    Some(reference)
+}
+
+/// Visits the selected publications of `package`.
+///
+/// When the indexed project label is that package reference, the read opens
+/// at the package's ordering lower bound and stops at the next package.
+/// A label that is not a package reference still pages the whole relation.
+fn for_package_publications(
+    relation: &backend_engine::workspace::WorkspaceRelationHandle<BuiltinSemanticRelation>,
+    package: backend_engine::PackageKey,
+    sources: &super::super::IndexedSources,
+    context: &str,
+    mut visit: impl FnMut(
+        &backend_engine::ProductSemanticPublicationKey,
+        &ProductSemanticPublicationRecord,
+    ) -> Result<(), BuiltinModelError>,
+) -> Result<(), BuiltinModelError> {
+    let reference = package_reference_label(sources, package);
+    let mut from = reference
+        .clone()
+        .map(backend_engine::ProductSemanticPublicationKey::package_lower_bound);
+    let mut after = None;
+    loop {
+        let page = if let Some(start) = from.take() {
+            relation.page_from(&start, backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        } else {
+            relation.page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+        }
+        .map_err(|error| BuiltinModelError(format!("page semantic {context} relation: {error}")))?;
+        for (key, record) in page.entries() {
+            if let Some(reference) = &reference {
+                if key.package() != reference {
+                    return Ok(());
+                }
+            } else if key.package_key() != package {
+                continue;
+            }
+            if !key.is_selected() {
+                continue;
+            }
+            visit(key, record)?;
+        }
+        let Some(next) = page.next().cloned() else {
+            break;
+        };
+        after = Some(next);
+    }
+    Ok(())
+}
+
 pub(super) fn execute_semantic_graph(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
@@ -120,39 +180,24 @@ pub(super) fn execute_semantic_graph(
     let mut activations = Vec::new();
     let mut publication_bindings = Vec::new();
     let mut image_slots = Vec::<(usize, usize)>::new();
-    let mut after = None;
-    loop {
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| BuiltinModelError(format!("page semantic graph relation: {error}")))?;
-        for (key, record) in page.entries() {
-            if !key.is_selected() {
-                continue;
-            }
-            let ProductSemanticPublicationRecord::Published {
-                coverage: SemanticPublicationCoverage::Complete,
-                claim,
-            } = record
-            else {
-                continue;
-            };
-            if key.package_key() != package {
-                continue;
-            }
-            let binding = claim.binding();
-            let activated = activate_semantic_publication(compiler, key, *claim)?;
-            let activation_index = activations.len();
-            activations.push(activated);
-            publication_bindings.push(binding);
-            for image_index in 0..activations[activation_index].images().len() {
-                image_slots.push((activation_index, image_index));
-            }
-        }
-        let Some(next) = page.next().cloned() else {
-            break;
+    for_package_publications(&relation, package, &sources, "graph", |key, record| {
+        let ProductSemanticPublicationRecord::Published {
+            coverage: SemanticPublicationCoverage::Complete,
+            claim,
+        } = record
+        else {
+            return Ok(());
         };
-        after = Some(next);
-    }
+        let binding = claim.binding();
+        let activated = activate_semantic_publication(compiler, key, *claim)?;
+        let activation_index = activations.len();
+        activations.push(activated);
+        publication_bindings.push(binding);
+        for image_index in 0..activations[activation_index].images().len() {
+            image_slots.push((activation_index, image_index));
+        }
+        Ok(())
+    })?;
     let mut source_binding = None;
     for (activation_index, image_index) in &image_slots {
         let bytes = activations[*activation_index].images()[*image_index].as_ref();
@@ -835,6 +880,7 @@ pub(super) fn execute_references(
         ));
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
+    let sources = read_indexed_sources(&snapshot)?;
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
@@ -843,23 +889,18 @@ pub(super) fn execute_references(
     let mut activations = Vec::new();
     let mut image_slots = Vec::<(usize, usize)>::new();
     let mut publication_found = false;
-    let mut after = None;
-    loop {
-        let page = relation
-            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
-            .map_err(|error| {
-                BuiltinModelError(format!("page semantic references relation: {error}"))
-            })?;
-        for (key, record) in page.entries() {
-            if !key.is_selected() || key.package_key() != package {
-                continue;
-            }
+    for_package_publications(
+        &relation,
+        package,
+        &sources,
+        "references",
+        |key, record| {
             let ProductSemanticPublicationRecord::Published {
                 coverage: SemanticPublicationCoverage::Complete,
                 claim,
             } = record
             else {
-                continue;
+                return Ok(());
             };
             publication_found = true;
             let activated = activate_semantic_publication(compiler, key, *claim)?;
@@ -868,16 +909,12 @@ pub(super) fn execute_references(
             for image_index in 0..activations[activation_index].images().len() {
                 image_slots.push((activation_index, image_index));
             }
-        }
-        let Some(next) = page.next().cloned() else {
-            break;
-        };
-        after = Some(next);
-    }
+            Ok(())
+        },
+    )?;
     if !publication_found {
         return execute_structural_references(daemon, target);
     }
-    let sources = read_indexed_sources(&snapshot)?;
     let project_paths = project_paths_for_package(&sources, package);
     let bytes = image_slots
         .iter()
