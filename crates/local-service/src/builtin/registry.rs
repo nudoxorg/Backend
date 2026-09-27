@@ -39,6 +39,17 @@ pub(super) struct RegistryGateway {
     advisory: Arc<backend_engine::advisory::AdvisoryAuthority>,
     last_receipt: Option<Arc<backend_engine::acquisition::AcquisitionReceipt>>,
     last_snapshot: Option<Arc<backend_engine::acquisition::SourceSnapshot>>,
+    projection: Option<(Vec<([u8; 32], [u8; 32])>, Arc<CatalogProjection>)>,
+}
+
+/// Resident catalog rows, name index, and registry dependency facts.
+///
+/// Rebuilt only when a source facts root changes. Surface commands borrow
+/// this projection instead of re-admitting every published package.
+pub(super) struct CatalogProjection {
+    pub(super) records: Vec<backend_engine::RegistryPackageRecord>,
+    pub(super) index: super::product_state::CatalogLookupIndex,
+    pub(super) dependency_facts: Vec<backend_engine::PackageDependencySourceFacts>,
 }
 
 struct RegistrySlot {
@@ -100,6 +111,12 @@ impl RegistryGateway {
 
     /// Projects the complete recovered local catalog without network I/O.
     pub(super) fn catalog(&mut self) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
+        Ok(self.catalog_projection()?.records.clone())
+    }
+
+    fn project_catalog_records(
+        &mut self,
+    ) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
         let mut records = Vec::new();
         let mut seen = BTreeSet::new();
         for source in self.sources.sources().cloned().collect::<Vec<_>>() {
@@ -233,7 +250,41 @@ impl RegistryGateway {
             advisory,
             last_receipt: None,
             last_snapshot: None,
+            projection: None,
         }))
+    }
+
+    /// Returns the resident catalog projection, rebuilding it when a source
+    /// facts root changes.
+    pub(super) fn catalog_projection(&mut self) -> Result<Arc<CatalogProjection>, String> {
+        let key = self.projection_key()?;
+        if let Some((cached_key, projection)) = &self.projection
+            && cached_key == &key
+        {
+            return Ok(Arc::clone(projection));
+        }
+        let records = self.project_catalog_records()?;
+        let dependency_facts = self.dependency_facts();
+        let index = super::product_state::CatalogLookupIndex::from_catalog(&records);
+        let projection = Arc::new(CatalogProjection {
+            records,
+            index,
+            dependency_facts,
+        });
+        self.projection = Some((key, Arc::clone(&projection)));
+        Ok(projection)
+    }
+
+    fn projection_key(&mut self) -> Result<Vec<([u8; 32], [u8; 32])>, String> {
+        let sources = self.sources.sources().cloned().collect::<Vec<_>>();
+        let mut key = Vec::with_capacity(sources.len());
+        for source in &sources {
+            let service = self
+                .service_for(source)
+                .map_err(|error| format!("open registry source: {error}"))?;
+            key.push((service.source_id(), service.facts_frontier()));
+        }
+        Ok(key)
     }
 
     /// Fetches, verifies, and durably publishes one exact remote coordinate.

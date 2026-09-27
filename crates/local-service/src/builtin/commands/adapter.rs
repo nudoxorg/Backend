@@ -428,15 +428,15 @@ impl CommandAdapter {
                     },
                 ),
             surface => {
-                let catalog = self
-                    .registry
-                    .as_mut()
-                    .map_or(Ok(Vec::new()), RegistryGateway::catalog)
-                    .map_err(BuiltinModelError)?;
-                let mut dependency_facts = self
-                    .registry
-                    .as_mut()
-                    .map_or_else(Vec::new, RegistryGateway::dependency_facts);
+                let projection = match self.registry.as_mut() {
+                    Some(registry) => registry.catalog_projection().map_err(BuiltinModelError)?,
+                    None => std::sync::Arc::new(super::super::registry::CatalogProjection {
+                        records: Vec::new(),
+                        index: super::super::product_state::CatalogLookupIndex::from_catalog(&[]),
+                        dependency_facts: Vec::new(),
+                    }),
+                };
+                let mut dependency_facts = projection.dependency_facts.clone();
                 let indexed = super::super::read_indexed_sources(
                     &daemon.engine().daemon().owner().snapshot(),
                 )?;
@@ -469,7 +469,8 @@ impl CommandAdapter {
                     .execute(
                         surface,
                         daemon.engine().daemon().library().view(),
-                        &catalog,
+                        &projection.records,
+                        &projection.index,
                         &dependency_facts,
                         workspace,
                     )
