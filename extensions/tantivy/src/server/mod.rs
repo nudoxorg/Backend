@@ -21,12 +21,13 @@ use backend_semantic::index_core::{
     ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, EntityDocumentIdError, IndexSnapshotId,
     LexicalManifest, LexicalOrderKey, LexicalSegmentId,
 };
+use tantivy::collector::{Collector, SegmentCollector};
+use tantivy::columnar::Column;
 use tantivy::{
-    Index, IndexReader, TantivyDocument,
-    collector::TopDocs,
+    DocId, Index, IndexReader, Score, TantivyDocument,
     doc,
     query::{QueryParser, QueryParserError},
-    schema::{Field, STORED, Schema, TEXT, Value},
+    schema::{FAST, Field, STORED, Schema, TEXT, Value},
 };
 
 /// Tantivy's minimum writer heap in bytes for this bounded nested build.
@@ -143,6 +144,16 @@ pub enum TantivyAdapterError {
         #[source]
         source: QueryParserError,
     },
+    /// A fast ordinal did not name the stored document identity.
+    #[error(
+        "Tantivy result at segment {segment} document {document} disagreed with its ordinal identity"
+    )]
+    OrdinalIdentity {
+        /// Tantivy segment ordinal.
+        segment: u32,
+        /// Tantivy document ordinal.
+        document: u32,
+    },
     /// A stored document lacked or malformed its complete immutable identity field.
     #[error("Tantivy result at segment {segment} document {document} had an invalid identity")]
     StoredIdentity {
@@ -203,7 +214,8 @@ pub struct TantivyLexical {
     index: Index,
     reader: IndexReader,
     body_field: Field,
-    document_field: Field,
+    ordinal_field: Field,
+    identities: Vec<EntityDocumentId>,
 }
 
 impl TantivyLexical {
@@ -255,6 +267,7 @@ impl TantivyLexical {
         let mut schema = Schema::builder();
         let body_field = schema.add_text_field("body", TEXT);
         let document_field = schema.add_bytes_field("document", STORED);
+        let ordinal_field = schema.add_u64_field("ordinal", FAST);
         let index = Index::create_in_ram(schema.build());
         let mut writer =
             index
@@ -263,6 +276,7 @@ impl TantivyLexical {
                     phase: TantivyPhase::Writer,
                     source,
                 })?;
+        let mut identities = Vec::new();
         for (segment_position, segment) in manifest.segments.iter().enumerate() {
             for (row_index, row) in segment.rows.iter().copied().enumerate() {
                 let key = LexicalOrderKey::from(row);
@@ -289,15 +303,23 @@ impl TantivyLexical {
                     }
                 })?;
                 let document: [u8; ENTITY_DOCUMENT_ID_BYTES] = row.document.into();
+                let ordinal = u64::try_from(identities.len()).map_err(|source| {
+                    TantivyAdapterError::DocumentCountOverflow {
+                        observed: u64::MAX,
+                        source,
+                    }
+                })?;
                 writer
                     .add_document(doc!(
                         body_field => text,
                         document_field => document.to_vec(),
+                        ordinal_field => ordinal,
                     ))
                     .map_err(|source| TantivyAdapterError::Tantivy {
                         phase: TantivyPhase::AddDocument,
                         source,
                     })?;
+                identities.push(row.document);
             }
         }
         writer
@@ -312,12 +334,14 @@ impl TantivyLexical {
                 phase: TantivyPhase::Reader,
                 source,
             })?;
+        validate_ordinals(&reader, document_field, ordinal_field, &identities)?;
         Ok(Self {
             snapshot: manifest.snapshot,
             index,
             reader,
             body_field,
-            document_field,
+            ordinal_field,
+            identities,
         })
     }
 
@@ -373,41 +397,46 @@ impl TantivyLexical {
                 written: 0,
             });
         }
-        let matches = searcher
+        let field = searcher.schema().get_field_name(self.ordinal_field);
+        let collected = searcher
             .search(
                 &query,
-                &TopDocs::with_limit(available_documents).order_by_score(),
+                &OrdinalCollector {
+                    limit: available_documents,
+                    field,
+                },
             )
             .map_err(|source| TantivyAdapterError::Tantivy {
                 phase: TantivyPhase::Search,
                 source,
             })?;
+        if let Some((segment, document)) = collected.missing {
+            return Err(TantivyAdapterError::StoredIdentity {
+                segment,
+                document,
+                source: StoredIdentityError::Missing,
+            });
+        }
+        if collected.ordinals.len() > available_documents {
+            return Err(TantivyAdapterError::DocumentLimit {
+                limit: available_documents,
+                observed: collected.ordinals.len(),
+            });
+        }
         let mut written = 0;
-        for (_, address) in matches {
-            let document: TantivyDocument =
-                searcher
-                    .doc(address)
-                    .map_err(|source| TantivyAdapterError::Tantivy {
-                        phase: TantivyPhase::ReadDocument,
-                        source,
-                    })?;
-            let identity = document
-                .get_first(self.document_field)
-                .and_then(|value| value.as_bytes())
-                .ok_or(TantivyAdapterError::StoredIdentity {
-                    segment: address.segment_ord,
-                    document: address.doc_id,
-                    source: StoredIdentityError::Missing,
-                })
-                .and_then(|bytes| {
-                    EntityDocumentId::try_from(bytes).map_err(|source| {
-                        TantivyAdapterError::StoredIdentity {
-                            segment: address.segment_ord,
-                            document: address.doc_id,
-                            source: StoredIdentityError::Malformed { source },
-                        }
-                    })
-                })?;
+        for ordinal in collected.ordinals {
+            let ordinal = usize::try_from(ordinal).map_err(|source| {
+                TantivyAdapterError::DocumentCountOverflow {
+                    observed: ordinal,
+                    source,
+                }
+            })?;
+            let identity = self.identities.get(ordinal).copied().ok_or(
+                TantivyAdapterError::OrdinalIdentity {
+                    segment: 0,
+                    document: u32::try_from(ordinal).unwrap_or(u32::MAX),
+                },
+            )?;
             insert_document(&mut output[..requested_limit], &mut written, identity);
         }
         Ok(TantivyTerminal {
@@ -450,4 +479,180 @@ fn insert_document(
     }
     output[position] = Some(candidate);
     *written = new_written;
+}
+
+fn validate_ordinals(
+    reader: &IndexReader,
+    document_field: Field,
+    ordinal_field: Field,
+    identities: &[EntityDocumentId],
+) -> Result<(), TantivyAdapterError> {
+    let searcher = reader.searcher();
+    let mut seen = vec![false; identities.len()];
+    let mut live = 0_usize;
+    for (segment_ord, segment_reader) in searcher.segment_readers().iter().enumerate() {
+        let segment_ord = u32::try_from(segment_ord).map_err(|source| {
+            TantivyAdapterError::DocumentCountOverflow {
+                observed: searcher.num_docs(),
+                source,
+            }
+        })?;
+        let field = searcher.schema().get_field_name(ordinal_field);
+        let ordinals = segment_reader.fast_fields().u64(field).map_err(|source| {
+            TantivyAdapterError::Tantivy {
+                phase: TantivyPhase::ReadDocument,
+                source,
+            }
+        })?;
+        for doc in 0..segment_reader.max_doc() {
+            if segment_reader.is_deleted(doc) {
+                continue;
+            }
+            live = live.checked_add(1).ok_or(TantivyAdapterError::DocumentLimit {
+                limit: identities.len(),
+                observed: identities.len(),
+            })?;
+            let ordinal = ordinals.first(doc).ok_or(TantivyAdapterError::StoredIdentity {
+                segment: segment_ord,
+                document: doc,
+                source: StoredIdentityError::Missing,
+            })?;
+            let index = usize::try_from(ordinal).map_err(|source| {
+                TantivyAdapterError::DocumentCountOverflow {
+                    observed: ordinal,
+                    source,
+                }
+            })?;
+            let expected = identities.get(index).copied().ok_or(
+                TantivyAdapterError::OrdinalIdentity {
+                    segment: segment_ord,
+                    document: doc,
+                },
+            )?;
+            let slot = seen.get_mut(index).ok_or(TantivyAdapterError::OrdinalIdentity {
+                segment: segment_ord,
+                document: doc,
+            })?;
+            if *slot {
+                return Err(TantivyAdapterError::OrdinalIdentity {
+                    segment: segment_ord,
+                    document: doc,
+                });
+            }
+            *slot = true;
+            let stored: TantivyDocument = searcher
+                .doc(tantivy::DocAddress {
+                    segment_ord,
+                    doc_id: doc,
+                })
+                .map_err(|source| TantivyAdapterError::Tantivy {
+                    phase: TantivyPhase::ReadDocument,
+                    source,
+                })?;
+            let identity = stored
+                .get_first(document_field)
+                .and_then(|value| value.as_bytes())
+                .ok_or(TantivyAdapterError::StoredIdentity {
+                    segment: segment_ord,
+                    document: doc,
+                    source: StoredIdentityError::Missing,
+                })
+                .and_then(|bytes| {
+                    EntityDocumentId::try_from(bytes).map_err(|source| {
+                        TantivyAdapterError::StoredIdentity {
+                            segment: segment_ord,
+                            document: doc,
+                            source: StoredIdentityError::Malformed { source },
+                        }
+                    })
+                })?;
+            if identity != expected {
+                return Err(TantivyAdapterError::OrdinalIdentity {
+                    segment: segment_ord,
+                    document: doc,
+                });
+            }
+        }
+    }
+    if live != identities.len() || seen.iter().any(|present| !present) {
+        return Err(TantivyAdapterError::DocumentLimit {
+            limit: identities.len(),
+            observed: live,
+        });
+    }
+    Ok(())
+}
+
+struct OrdinalFruit {
+    ordinals: Vec<u64>,
+    missing: Option<(u32, u32)>,
+}
+
+struct OrdinalCollector<'segment> {
+    limit: usize,
+    field: &'segment str,
+}
+
+struct OrdinalSegment {
+    segment_ord: u32,
+    ordinals: Column<u64>,
+    found: Vec<u64>,
+    missing: Option<(u32, u32)>,
+}
+
+impl SegmentCollector for OrdinalSegment {
+    type Fruit = OrdinalFruit;
+
+    fn collect(&mut self, doc: DocId, _score: Score) {
+        if self.missing.is_some() {
+            return;
+        }
+        match self.ordinals.first(doc) {
+            Some(ordinal) => self.found.push(ordinal),
+            None => self.missing = Some((self.segment_ord, doc)),
+        }
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        OrdinalFruit {
+            ordinals: self.found,
+            missing: self.missing,
+        }
+    }
+}
+
+impl Collector for OrdinalCollector<'_> {
+    type Fruit = OrdinalFruit;
+    type Child = OrdinalSegment;
+
+    fn for_segment(
+        &self,
+        segment_local_id: tantivy::SegmentOrdinal,
+        segment: &tantivy::SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        let mut found = Vec::new();
+        found.reserve(self.limit);
+        Ok(OrdinalSegment {
+            segment_ord: segment_local_id,
+            ordinals: segment.fast_fields().u64(self.field)?,
+            found,
+            missing: None,
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(&self, segment_fruits: Vec<OrdinalFruit>) -> tantivy::Result<OrdinalFruit> {
+        let mut ordinals = Vec::new();
+        let mut missing = None;
+        for fruit in segment_fruits {
+            if missing.is_none() {
+                missing = fruit.missing;
+            }
+            ordinals.extend(fruit.ordinals);
+        }
+        Ok(OrdinalFruit { ordinals, missing })
+    }
 }
