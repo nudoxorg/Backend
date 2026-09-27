@@ -2,15 +2,20 @@
 
 use crate::{
     Binding, Cursor, DocumentState, Error, FieldSelection, LexicalPage, LexicalSource, Limits,
-    MatchMode, OverlayLimits, Query, QueryRequest, RankedHit, Relevance, SchemaVersion,
+    MatchMode, OverlayLimits, Query, QueryRequest, QueryVersion, RankedHit, Relevance,
+    SchemaVersion,
 };
 use backend_semantic::EntityId;
 use backend_version::CoverageWitness;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::{collections::BTreeMap, path::Path};
+use tantivy::collector::{Collector, SegmentCollector};
+use tantivy::columnar::ColumnValues;
 use tantivy::{
-    DocAddress, Index, IndexReader, Searcher, TantivyDocument, Term, doc,
+    DocId, Index, IndexReader, Score, Term, doc,
     query::{BooleanQuery, FuzzyTermQuery, Occur, Query as TantivyQuery, TermQuery},
-    schema::{Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, Value},
+    schema::{FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema},
 };
 
 const WRITER_MEMORY_BYTES: usize = 15_000_000;
@@ -70,8 +75,18 @@ pub struct TantivySource {
     ranking_token: Field,
     field_name: Field,
     ordinal: Field,
+    rank_weight: Field,
+    rank_bytes: Field,
     documents: Vec<Option<LiveDocument>>,
     poisoned: bool,
+    rank_cache: Mutex<Option<CachedRank>>,
+    rank_evaluations: AtomicU64,
+}
+
+struct CachedRank {
+    binding: Binding,
+    query: QueryVersion,
+    hits: Arc<[RankedHit]>,
 }
 
 /// Fully admitted local query adapter backed by a concrete Tantivy index.
@@ -144,19 +159,9 @@ impl TantivySource {
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
-        let (schema, raw_token, folded_token, ranking_token, field_name, ordinal) =
-            projection_schema();
-        let index = Index::create_in_ram(schema);
-        Self::populate(
-            state,
-            limits,
-            index,
-            raw_token,
-            folded_token,
-            ranking_token,
-            field_name,
-            ordinal,
-        )
+        let projected = projection_schema();
+        let index = Index::create_in_ram(projected.schema);
+        Self::populate(state, limits, index, projected.fields)
     }
 
     /// Reopens a committed directory only when its schema and complete state
@@ -179,9 +184,8 @@ impl TantivySource {
             return Err(Error::StaleRoot.into());
         }
         let index = Index::open_in_dir(directory)?;
-        let (schema, raw_token, folded_token, ranking_token, field_name, ordinal) =
-            projection_schema();
-        if index.schema() != schema {
+        let projected = projection_schema();
+        if index.schema() != projected.schema {
             return Err(Error::SchemaDrift.into());
         }
         let reader = index.reader()?;
@@ -205,19 +209,24 @@ impl TantivySource {
                 postings: posting_count(fields)?,
             }));
         }
+        let fields = projected.fields;
         Ok(Self {
             binding: state.binding(),
             coverage: state.coverage(),
             limits,
             _index: index,
             reader,
-            raw_token,
-            folded_token,
-            ranking_token,
-            field_name,
-            ordinal,
+            raw_token: fields.raw_token,
+            folded_token: fields.folded_token,
+            ranking_token: fields.ranking_token,
+            field_name: fields.field_name,
+            ordinal: fields.ordinal,
+            rank_weight: fields.rank_weight,
+            rank_bytes: fields.rank_bytes,
             documents,
             poisoned: false,
+            rank_cache: Mutex::new(None),
+            rank_evaluations: AtomicU64::new(0),
         })
     }
 
@@ -242,19 +251,9 @@ impl TantivySource {
         if !matches!(state.coverage(), CoverageWitness::Complete(_)) {
             return Err(Error::IncompleteCoverage.into());
         }
-        let (schema, raw_token, folded_token, ranking_token, field_name, ordinal) =
-            projection_schema();
-        let index = Index::create_in_dir(directory.as_ref(), schema)?;
-        let source = Self::populate(
-            state,
-            limits,
-            index,
-            raw_token,
-            folded_token,
-            ranking_token,
-            field_name,
-            ordinal,
-        )?;
+        let projected = projection_schema();
+        let index = Index::create_in_dir(directory.as_ref(), projected.schema)?;
+        let source = Self::populate(state, limits, index, projected.fields)?;
         std::fs::write(
             directory.as_ref().join(BINDING_FILE),
             projection_fingerprint(state.binding()),
@@ -266,29 +265,16 @@ impl TantivySource {
         state: &DocumentState,
         limits: Limits,
         index: Index,
-        raw_token: Field,
-        folded_token: Field,
-        ranking_token: Field,
-        field_name: Field,
-        ordinal: Field,
+        fields: ProjectionFields,
     ) -> Result<Self, TantivySourceError> {
         let mut writer = index.writer(WRITER_MEMORY_BYTES)?;
         let mut documents = Vec::new();
-        for (document, fields) in state.iter() {
+        for (document, document_fields) in state.iter() {
             let document_ordinal = u64::try_from(documents.len()).map_err(|_| Error::SizeLimit)?;
-            let postings = write_fields(
-                &writer,
-                raw_token,
-                folded_token,
-                ranking_token,
-                field_name,
-                ordinal,
-                document_ordinal,
-                fields,
-            )?;
+            let postings = write_fields(&writer, &fields, document_ordinal, document_fields)?;
             documents.push(Some(LiveDocument {
                 id: document,
-                fields_digest: document_fields_digest(fields),
+                fields_digest: document_fields_digest(document_fields),
                 postings,
             }));
         }
@@ -303,13 +289,17 @@ impl TantivySource {
             limits,
             _index: index,
             reader,
-            raw_token,
-            folded_token,
-            ranking_token,
-            field_name,
-            ordinal,
+            raw_token: fields.raw_token,
+            folded_token: fields.folded_token,
+            ranking_token: fields.ranking_token,
+            field_name: fields.field_name,
+            ordinal: fields.ordinal,
+            rank_weight: fields.rank_weight,
+            rank_bytes: fields.rank_bytes,
             documents,
             poisoned: false,
+            rank_cache: Mutex::new(None),
+            rank_evaluations: AtomicU64::new(0),
         })
     }
 
@@ -317,6 +307,14 @@ impl TantivySource {
     #[must_use]
     pub fn indexed_postings(&self) -> u64 {
         self.reader.searcher().num_docs()
+    }
+
+    /// Counts full ranking passes caused by a page miss.
+    ///
+    /// A later page of the same binding and query reuses the retained rank.
+    #[must_use]
+    pub fn rank_evaluations(&self) -> u64 {
+        self.rank_evaluations.load(Ordering::Relaxed)
     }
 
     fn ensure_live(&self) -> Result<(), TantivySourceError> {
@@ -346,6 +344,10 @@ impl TantivySource {
         budget: OverlayLimits,
     ) -> Result<MaintainOutcome, TantivySourceError> {
         self.ensure_live()?;
+        self.rank_cache
+            .lock()
+            .map_err(|_| Self::corrupt("rank cache lock poisoned"))?
+            .take();
         let Some(plan) = self.plan_revision(next, budget)? else {
             return Ok(MaintainOutcome::RebuildRequired);
         };
@@ -501,17 +503,17 @@ impl TantivySource {
             let _opstamp = writer.delete_term(Term::from_field_u64(self.ordinal, *ordinal));
         }
         let mut added_postings = 0u64;
+        let fields = ProjectionFields {
+            raw_token: self.raw_token,
+            folded_token: self.folded_token,
+            ranking_token: self.ranking_token,
+            field_name: self.field_name,
+            ordinal: self.ordinal,
+            rank_weight: self.rank_weight,
+            rank_bytes: self.rank_bytes,
+        };
         for write in plan.writes {
-            let postings = write_fields(
-                &writer,
-                self.raw_token,
-                self.folded_token,
-                self.ranking_token,
-                self.field_name,
-                self.ordinal,
-                write.ordinal,
-                &write.fields,
-            )?;
+            let postings = write_fields(&writer, &fields, write.ordinal, &write.fields)?;
             added_postings = added_postings
                 .checked_add(u64::from(postings))
                 .ok_or(Error::SizeLimit)?;
@@ -598,17 +600,24 @@ impl TantivySource {
     ) -> Result<BTreeMap<EntityId, Relevance>, TantivySourceError> {
         let engine_query = self.compile_clause(term, query);
         let searcher = self.reader.searcher();
-        let count = usize::try_from(searcher.num_docs()).map_err(|_| Error::SizeLimit)?;
-        if count == 0 {
+        if usize::try_from(searcher.num_docs()).is_err() {
+            return Err(Error::SizeLimit.into());
+        }
+        if searcher.num_docs() == 0 {
             return Ok(BTreeMap::new());
         }
-        let matches = searcher.search(
-            engine_query.as_ref(),
-            &tantivy::collector::TopDocs::with_limit(count).order_by_score(),
-        )?;
+        let collector = ClauseRankCollector {
+            term_bytes: term.len(),
+        };
+        let ranked_ordinals = searcher.search(engine_query.as_ref(), &collector)??;
         let mut ranked = BTreeMap::new();
-        for (_, address) in matches {
-            let (document, relevance) = self.admit_engine_match(&searcher, address, term)?;
+        for (ordinal, relevance) in ranked_ordinals {
+            let ordinal = usize::try_from(ordinal).map_err(|_| Error::SizeLimit)?;
+            let document = self
+                .documents
+                .get(ordinal)
+                .and_then(|document| document.map(|document| document.id))
+                .ok_or_else(|| Self::corrupt("document ordinal is outside the binding"))?;
             ranked
                 .entry(document)
                 .and_modify(|current: &mut Relevance| *current = (*current).max(relevance))
@@ -642,37 +651,45 @@ impl TantivySource {
         }
     }
 
-    fn admit_engine_match(
+    fn ranked_hits(&self, query: &Query) -> Result<Arc<[RankedHit]>, TantivySourceError> {
+        if let Some(hits) = self.cached_rank(query.version)? {
+            return Ok(hits);
+        }
+        let hits = Arc::<[RankedHit]>::from(self.search(query)?);
+        self.remember_rank(query.version, Arc::clone(&hits))?;
+        self.rank_evaluations.fetch_add(1, Ordering::Relaxed);
+        Ok(hits)
+    }
+
+    fn cached_rank(
         &self,
-        searcher: &Searcher,
-        address: DocAddress,
-        term: &str,
-    ) -> Result<(EntityId, Relevance), TantivySourceError> {
-        let stored: TantivyDocument = searcher.doc(address)?;
-        let ordinal = stored
-            .get_first(self.ordinal)
-            .and_then(|value| value.as_u64())
-            .and_then(|value| usize::try_from(value).ok())
-            .ok_or(TantivySourceError::Corrupt("document ordinal is missing"))?;
-        let document = self
-            .documents
-            .get(ordinal)
-            .and_then(|document| document.map(|document| document.id))
-            .ok_or(TantivySourceError::Corrupt(
-                "document ordinal is outside the binding",
-            ))?;
-        let matched = stored
-            .get_first(self.ranking_token)
-            .and_then(|value| value.as_str())
-            .ok_or(TantivySourceError::Corrupt("matched token is missing"))?;
-        let field = stored
-            .get_first(self.field_name)
-            .and_then(|value| value.as_str())
-            .ok_or(TantivySourceError::Corrupt("field name is missing"))?;
-        Ok((
-            document,
-            Relevance::new(term.len(), matched.len(), field_weight(field), 1)?,
-        ))
+        query: QueryVersion,
+    ) -> Result<Option<Arc<[RankedHit]>>, TantivySourceError> {
+        let guard = self
+            .rank_cache
+            .lock()
+            .map_err(|_| Self::corrupt("rank cache lock poisoned"))?;
+        Ok(guard.as_ref().and_then(|cached| {
+            (cached.binding == self.binding && cached.query == query)
+                .then(|| Arc::clone(&cached.hits))
+        }))
+    }
+
+    fn remember_rank(
+        &self,
+        query: QueryVersion,
+        hits: Arc<[RankedHit]>,
+    ) -> Result<(), TantivySourceError> {
+        let mut guard = self
+            .rank_cache
+            .lock()
+            .map_err(|_| Self::corrupt("rank cache lock poisoned"))?;
+        *guard = Some(CachedRank {
+            binding: self.binding,
+            query,
+            hits,
+        });
+        Ok(())
     }
 }
 
@@ -741,23 +758,45 @@ fn identifier_words(identifier: &str) -> impl Iterator<Item = &str> {
     words.into_iter()
 }
 
-fn projection_schema() -> (Schema, Field, Field, Field, Field, Field) {
+struct ProjectedSchema {
+    schema: Schema,
+    fields: ProjectionFields,
+}
+
+struct ProjectionFields {
+    raw_token: Field,
+    folded_token: Field,
+    ranking_token: Field,
+    field_name: Field,
+    ordinal: Field,
+    rank_weight: Field,
+    rank_bytes: Field,
+}
+
+fn projection_schema() -> ProjectedSchema {
     let mut schema = Schema::builder();
     let raw_token = schema.add_text_field("raw_token", STRING | STORED);
     let folded_token = schema.add_text_field("folded_token", STRING);
     let ranking_token = schema.add_text_field("ranking_token", STORED);
     let field_name = schema.add_text_field("field_name", STRING | STORED);
-    // Indexed so a revision can delete one document's postings by ordinal
-    // without rewriting every other document in the segment.
-    let ordinal = schema.add_u64_field("document_ordinal", INDEXED | STORED);
-    (
-        schema.build(),
-        raw_token,
-        folded_token,
-        ranking_token,
-        field_name,
-        ordinal,
-    )
+    // Indexed so a revision can delete one document's postings by ordinal.
+    // Fast columns carry the ordinal, field weight, and ranking length so a
+    // query can rank without loading stored fields.
+    let ordinal = schema.add_u64_field("document_ordinal", INDEXED | STORED | FAST);
+    let rank_weight = schema.add_u64_field("rank_weight", FAST);
+    let rank_bytes = schema.add_u64_field("rank_bytes", FAST);
+    ProjectedSchema {
+        schema: schema.build(),
+        fields: ProjectionFields {
+            raw_token,
+            folded_token,
+            ranking_token,
+            field_name,
+            ordinal,
+            rank_weight,
+            rank_bytes,
+        },
+    }
 }
 
 fn projection_fingerprint(binding: Binding) -> [u8; 32] {
@@ -788,7 +827,7 @@ impl LexicalSource for TantivySource {
         {
             return Err(Error::StaleCursor.into());
         }
-        let hits = self.search(&request.query)?;
+        let hits = self.ranked_hits(&request.query)?;
         let offset = request.cursor.map_or(0, Cursor::offset);
         if offset > hits.len() {
             return Err(Error::InvalidCursor.into());
@@ -803,6 +842,7 @@ impl LexicalSource for TantivySource {
             query: request.query.version,
             hits: hits[offset..end].to_vec(),
             next: (end < hits.len()).then(|| Cursor::new(self.binding, request.query.version, end)),
+            total: hits.len(),
             coverage: self.coverage,
         })
     }
@@ -858,28 +898,143 @@ fn posting_count(fields: &[(String, String)]) -> Result<u32, Error> {
 
 fn write_fields(
     writer: &tantivy::IndexWriter,
-    raw_token: Field,
-    folded_token: Field,
-    ranking_token: Field,
-    field_name: Field,
-    ordinal: Field,
+    fields: &ProjectionFields,
     document_ordinal: u64,
-    fields: &[(String, String)],
+    document_fields: &[(String, String)],
 ) -> Result<u32, TantivySourceError> {
     let mut postings = 0u32;
-    for (field, text) in fields {
+    for (field, text) in document_fields {
+        let weight = u64::from(field_weight(field));
         for token in searchable_tokens(text) {
             postings = postings.checked_add(1).ok_or(Error::SizeLimit)?;
+            let ranking_bytes = u64::try_from(token.ranking.len()).map_err(|_| Error::SizeLimit)?;
             writer.add_document(doc!(
-                raw_token => token.searchable.as_str(),
-                folded_token => token.searchable.to_ascii_lowercase(),
-                ranking_token => token.ranking.as_str(),
-                field_name => field.as_str(),
-                ordinal => document_ordinal,
+                fields.raw_token => token.searchable.as_str(),
+                fields.folded_token => token.searchable.to_ascii_lowercase(),
+                fields.ranking_token => token.ranking.as_str(),
+                fields.field_name => field.as_str(),
+                fields.ordinal => document_ordinal,
+                fields.rank_weight => weight,
+                fields.rank_bytes => ranking_bytes,
             ))?;
         }
     }
     Ok(postings)
+}
+
+const ORDINAL_FIELD: &str = "document_ordinal";
+const WEIGHT_FIELD: &str = "rank_weight";
+const RANK_BYTES_FIELD: &str = "rank_bytes";
+
+struct ClauseRankCollector {
+    term_bytes: usize,
+}
+
+struct ClauseRankSegment {
+    term_bytes: usize,
+    ordinals: Arc<dyn ColumnValues<u64>>,
+    weights: Arc<dyn ColumnValues<u64>>,
+    ranking_bytes: Arc<dyn ColumnValues<u64>>,
+    best: BTreeMap<u64, Relevance>,
+    error: Option<Error>,
+}
+
+impl SegmentCollector for ClauseRankSegment {
+    type Fruit = Result<BTreeMap<u64, Relevance>, Error>;
+
+    fn collect(&mut self, doc: DocId, _score: Score) {
+        if self.error.is_some() {
+            return;
+        }
+        let ordinal = self.ordinals.get_val(doc);
+        let weight = self.weights.get_val(doc);
+        let ranking_bytes = self.ranking_bytes.get_val(doc);
+        if weight == 0 || ranking_bytes == 0 {
+            self.error = Some(Error::MalformedInput);
+            return;
+        }
+        let Ok(weight) = u16::try_from(weight) else {
+            self.error = Some(Error::SizeLimit);
+            return;
+        };
+        let Ok(ranking_bytes) = usize::try_from(ranking_bytes) else {
+            self.error = Some(Error::SizeLimit);
+            return;
+        };
+        let relevance = match Relevance::new(self.term_bytes, ranking_bytes, weight, 1) {
+            Ok(relevance) => relevance,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        self.best
+            .entry(ordinal)
+            .and_modify(|current| *current = (*current).max(relevance))
+            .or_insert(relevance);
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        match self.error {
+            Some(error) => Err(error),
+            None => Ok(self.best),
+        }
+    }
+}
+
+impl Collector for ClauseRankCollector {
+    type Fruit = Result<BTreeMap<u64, Relevance>, Error>;
+    type Child = ClauseRankSegment;
+
+    fn for_segment(
+        &self,
+        _segment_local_id: tantivy::SegmentOrdinal,
+        segment: &tantivy::SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        Ok(ClauseRankSegment {
+            term_bytes: self.term_bytes,
+            ordinals: fast_column(segment, ORDINAL_FIELD)?,
+            weights: fast_column(segment, WEIGHT_FIELD)?,
+            ranking_bytes: fast_column(segment, RANK_BYTES_FIELD)?,
+            best: BTreeMap::new(),
+            error: None,
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(
+        &self,
+        segment_fruits: Vec<<Self::Child as SegmentCollector>::Fruit>,
+    ) -> tantivy::Result<Self::Fruit> {
+        let mut merged: BTreeMap<u64, Relevance> = BTreeMap::new();
+        for fruit in segment_fruits {
+            let segment = match fruit {
+                Ok(segment) => segment,
+                Err(error) => return Ok(Err(error)),
+            };
+            for (ordinal, relevance) in segment {
+                merged
+                    .entry(ordinal)
+                    .and_modify(|current: &mut Relevance| *current = (*current).max(relevance))
+                    .or_insert(relevance);
+            }
+        }
+        Ok(Ok(merged))
+    }
+}
+
+fn fast_column(
+    segment: &tantivy::SegmentReader,
+    name: &str,
+) -> tantivy::Result<Arc<dyn ColumnValues<u64>>> {
+    let column = segment
+        .fast_fields()
+        .u64_lenient(name)?
+        .ok_or_else(|| tantivy::TantivyError::FieldNotFound(name.to_owned()))?;
+    Ok(column.0.first_or_default_col(0))
 }
 
 impl crate::Adapter<TantivySource> {
@@ -901,6 +1056,12 @@ impl crate::Adapter<TantivySource> {
     #[must_use]
     pub fn indexed_postings(&self) -> u64 {
         self.source().indexed_postings()
+    }
+
+    /// Counts full ranking passes caused by a page miss on this adapter.
+    #[must_use]
+    pub fn rank_evaluations(&self) -> u64 {
+        self.source().rank_evaluations()
     }
 }
 
