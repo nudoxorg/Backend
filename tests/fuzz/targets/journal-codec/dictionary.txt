@@ -1,0 +1,5 @@
+# LibFuzzer dictionary for effect and dispatch journal records.
+# Effect tag 1 is Prepared. Dispatch version is 2 and tag 5 is PublicationPending.
+
+effect_prepared="\x01"
+dispatch_pending="\x02\x05"

@@ -1,0 +1,5 @@
+# LibFuzzer dictionary for the structured flow evaluator.
+# FLW1 is the harness grammar, not a production envelope.
+# Entries contain no keys, tokens, or customer data.
+
+magic="FLW1"

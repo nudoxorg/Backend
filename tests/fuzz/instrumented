@@ -1,0 +1,15 @@
+# Crate names that keep cargo-bolero's sancov flags.
+# One Rust crate name per line. Build scripts and proc-macros are never listed.
+# A new targets/<id>/ harness does not add a crate. Add a line only when a
+# new decoder crate joins the link closure.
+
+backend_fuzz
+fuzz_target
+backend_flow
+backend_replication
+backend_version
+backend_store
+backend_platform
+backend_engine
+backend_compile
+backend_semantic

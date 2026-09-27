@@ -1,0 +1,31 @@
+# Continuous fuzz harnesses for untrusted byte boundaries.
+# One binary dispatches every directory under targets/; cargo test stays bounded.
+# Always-on runs are the continuous-fuzz flake attrset, not this test profile.
+[package]
+name = "backend-fuzz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Discovered bolero harnesses for untrusted bytes and structured evaluators"
+
+[dependencies]
+backend-compile = { path = "../../crates/compile" }
+backend-engine = { path = "../../crates/engine" }
+backend-flow = { path = "../../crates/flow" }
+backend-replication = { path = "../../crates/replication" }
+backend-semantic = { path = "../../crates/semantic" }
+backend-store = { path = "../../crates/store" }
+backend-version = { path = "../../crates/version" }
+bolero.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "fuzz-target"
+path = "main.rs"
+
+[lints]
+workspace = true

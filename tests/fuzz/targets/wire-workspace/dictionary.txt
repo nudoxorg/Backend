@@ -1,0 +1,9 @@
+# LibFuzzer dictionary for the workspace envelopes.
+# Magic strings are the private wire markers from crates/version wire.rs.
+# Entries contain no keys, tokens, or customer data.
+
+manifest="WMF2"
+delta="WDL2"
+commit="WCM2"
+transition="WTR2"
+provenance="WPR2"

@@ -1,0 +1,6 @@
+# LibFuzzer dictionary for the NDX1 store frame.
+# The marker is FRAME_MAGIC from crates/version schema vocabulary.
+# Entries contain no keys, tokens, or customer data.
+
+magic="NDX1"
+version="\x01\x00"
