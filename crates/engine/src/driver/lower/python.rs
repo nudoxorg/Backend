@@ -3296,11 +3296,24 @@ fn is_receiver_parameter(receiver: ReceiverKind, name: &str) -> bool {
 }
 
 /// The non-receiver parameter whose name equals `receiver`, when its
-/// annotation is a plain undotted name.
+/// annotation is a plain undotted name or peels to one through generics.
 fn receiver_annotation_name<'a>(
     declaration: &'a DeclarationFact,
     receiver: &str,
 ) -> Option<&'a str> {
+    fn undotted_name<'a>(annotation: &'a Annotation) -> Option<&'a str> {
+        match annotation {
+            Annotation::Name { name, .. } if !name.contains('.') => Some(name.as_str()),
+            Annotation::Generic { base, .. } => undotted_name(base),
+            Annotation::Name { .. }
+            | Annotation::List(_)
+            | Annotation::StringLiteral(_)
+            | Annotation::Union(_)
+            | Annotation::Literal(_)
+            | Annotation::None
+            | Annotation::Unknown(_) => None,
+        }
+    }
     for parameter in &declaration.parameters {
         if is_receiver_parameter(declaration.receiver, &parameter.name) {
             continue;
@@ -3308,10 +3321,7 @@ fn receiver_annotation_name<'a>(
         if parameter.name != receiver {
             continue;
         }
-        return match &parameter.annotation {
-            Annotation::Name { name, .. } if !name.contains('.') => Some(name.as_str()),
-            _ => None,
-        };
+        return undotted_name(&parameter.annotation);
     }
     None
 }
