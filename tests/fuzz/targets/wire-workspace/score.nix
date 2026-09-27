@@ -1,4 +1,4 @@
-# DiffWake inputs for the workspace wire harness.
+# Score inputs for the workspace wire harness.
 # Counts were measured with wc and enum reads on 2026-09-27. Gap is classified.
 # complexity.score is loc + error_variants + discriminants, before blast and gap.
 {

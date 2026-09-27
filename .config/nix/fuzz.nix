@@ -61,6 +61,15 @@ let
       "-Cllvm-args=-sanitizer-coverage-stack-depth"
     ]
   );
+  # One fail-closed gate. `rules` is `{ cond, message }`. The first false
+  # cond aborts with `context` and that message. The value is returned only
+  # when every cond holds.
+  demand =
+    context: rules: value:
+    let
+      failed = lib.findFirst (rule: !rule.cond) null rules;
+    in
+    if failed == null then value else abort "${context}: ${failed.message}";
   rankOf =
     name: score:
     let
@@ -69,26 +78,63 @@ let
       blast = score.blast;
       expect = complexity.loc + complexity.error_variants + complexity.discriminants;
     in
-    assert (complexity.method == "measured") || abort "${name}: complexity.method must be measured";
-    assert (complexity.score == expect)
-      || abort "${name}: complexity.score ${toString complexity.score} != ${toString expect}";
-    assert (gap.method == "classified") || abort "${name}: gap.method must be classified";
-    assert (gap.llvm_cov_percent == null)
-      || abort "${name}: llvm-cov percent was not measured; leave llvm_cov_percent null";
-    assert (builtins.elem gap.score [ 0 2 3 ]) || abort "${name}: gap.score must be 0, 2, or 3";
-    assert (blast.method == "classified") || abort "${name}: blast.method must be classified";
-    assert (builtins.elem blast.score [ 3 4 5 ]) || abort "${name}: blast.score must be 3, 4, or 5";
-    assert (score.churn.ranking_factor == false) || abort "${name}: churn is not a ranking factor";
-    assert (score.churn.method == "measured") || abort "${name}: churn.method must be measured";
-    assert (score.entrypoints != [ ]) || abort "${name}: entrypoints must name decoder sources";
-    complexity.score * gap.score * blast.score;
+    demand name [
+      {
+        cond = complexity.method == "measured";
+        message = "complexity.method must be measured";
+      }
+      {
+        cond = complexity.score == expect;
+        message = "complexity.score ${toString complexity.score} != ${toString expect}";
+      }
+      {
+        cond = gap.method == "classified";
+        message = "gap.method must be classified";
+      }
+      {
+        cond = gap.llvm_cov_percent == null;
+        message = "llvm-cov percent was not measured; leave llvm_cov_percent null";
+      }
+      {
+        cond = builtins.elem gap.score [ 0 2 3 ];
+        message = "gap.score must be 0, 2, or 3";
+      }
+      {
+        cond = blast.method == "classified";
+        message = "blast.method must be classified";
+      }
+      {
+        cond = builtins.elem blast.score [ 3 4 5 ];
+        message = "blast.score must be 3, 4, or 5";
+      }
+      {
+        cond = score.churn.ranking_factor == false;
+        message = "churn is not a ranking factor";
+      }
+      {
+        cond = score.churn.method == "measured";
+        message = "churn.method must be measured";
+      }
+      {
+        cond = score.entrypoints != [ ];
+        message = "entrypoints must name decoder sources";
+      }
+    ] (complexity.score * gap.score * blast.score);
   # Every target row uses these keys. Null means that kind has no such
   # artifact. start_order is the supervised start sequence. It is not rank.
+  # warmVault is { name, corporaAttr }. durableMount is the argv[1] string.
+  # bins.<id> accepts only that path.
+  durableMountOf = id: "/durable/fuzz/${id}/corpus";
+  corpusVault = id: {
+    name = id;
+    corporaAttr = "packages.\${system}.continuous-fuzz.corpora.${id}";
+  };
   absentArtifacts = {
     bin = null;
     corpus = null;
     committed_corpus = null;
-    durable_corpus = null;
+    warmVault = null;
+    durableMount = null;
     dictionary = null;
     max_input_bytes = null;
   };
@@ -105,7 +151,8 @@ let
       bin = "packages.\${system}.continuous-fuzz.bins.${name}";
       corpus = "packages.\${system}.continuous-fuzz.corpora.${name}";
       committed_corpus = "tests/fuzz/targets/${name}/corpus";
-      durable_corpus = "/durable/fuzz/${name}/corpus";
+      warmVault = corpusVault name;
+      durableMount = durableMountOf name;
       dictionary = "tests/fuzz/targets/${name}/dictionary.txt";
       max_input_bytes = maxLenOf name;
       schedule = true;
@@ -121,9 +168,12 @@ let
         ;
     };
   requirePriority = name: score:
-    assert (builtins.isInt score.start_order && score.start_order >= 1 && score.start_order <= 9)
-      || abort "${name}: start_order must be an integer from 1 through 9";
-    score;
+    demand name [
+      {
+        cond = builtins.isInt score.start_order && score.start_order >= 1 && score.start_order <= 9;
+        message = "start_order must be an integer from 1 through 9";
+      }
+    ] score;
   closed = spec:
     let
       rank = rankOf spec.id spec;
@@ -220,28 +270,43 @@ let
     if !available then
       null
     else
-      assert (directoryNames != [ ]) || abort "tests/fuzz/targets has no harness directories";
-      assert (lib.all isTargetId directoryNames)
-        || abort "harness ids must match [a-z][a-z0-9-]*";
-      assert (lib.all complete directoryNames)
-        || abort "a harness directory is missing oracle.rs, max_len, dictionary.txt, score.nix, or corpus/{canonical,empty,bad_magic}";
-      assert (
-        lib.length (
-          lib.unique (
-            map (name: (import (targetRoot + "/${name}/score.nix")).start_order) directoryNames
-          )
-        ) == lib.length directoryNames
-      ) || abort "fuzz start_order values must be unique across harness directories";
-      directoryNames;
+      demand "tests/fuzz/targets" [
+        {
+          cond = directoryNames != [ ];
+          message = "no harness directories";
+        }
+        {
+          cond = lib.all isTargetId directoryNames;
+          message = "harness ids must match [a-z][a-z0-9-]*";
+        }
+        {
+          cond = lib.all complete directoryNames;
+          message = "a harness directory is missing oracle.rs, max_len, dictionary.txt, score.nix, or corpus/{canonical,empty,bad_magic}";
+        }
+        {
+          cond =
+            lib.length (
+              lib.unique (
+                map (name: (import (targetRoot + "/${name}/score.nix")).start_order) directoryNames
+              )
+            ) == lib.length directoryNames;
+          message = "start_order values must be unique across harness directories";
+        }
+      ] directoryNames;
   metadata =
     if discovered == null then
       null
     else
       {
         schema = "nudox.continuous-fuzz.v1";
-        # Document id above is metadata only. Lattice authors write
-        # check.continuousFuzz. This repo does not define that module.
+        # Document fields only. Nix Test DSL owns check.continuousFuzz.
+        # This repository does not define that function.
         latticeKind = "continuous-fuzz";
+        # Package WarmVault. Per-corpus records live on corpora.<id>.warmVault.
+        warmVault = {
+          name = "backend";
+          corporaAttr = "packages.\${system}.continuous-fuzz.corpora";
+        };
         attrs = {
           contract = "packages.\${system}.continuous-fuzz";
           bins = "packages.\${system}.continuous-fuzz.bins.<id>";
@@ -292,7 +357,7 @@ let
         formula = "complexity.score * gap.score * blast.score";
         scales = {
           complexity = "loc + error_variants + discriminants. method=measured counts source lines and enum variants. Not premultiplied by gap or blast.";
-          gap = "Ordinal classification, not a coverage percentage. 0 = raw bytes already have an in-process engine or an exhaustive scan. 2 = fixed hostile examples only. 3 = decoder is not callable outside its package. 1 is unused. llvm_cov_percent stays null until it is measured.";
+          gap = "Ordinal classification, method=classified, not a coverage percentage and not a measured DiffWake input. 0 = raw bytes already have an in-process engine or an exhaustive scan. 2 = fixed hostile examples only. 3 = decoder is not callable outside its package. 1 is unused. llvm_cov_percent stays null until it is measured. Rank multiplies measured complexity by this classified ordinal and by classified blast.";
           blast = "Trust boundary. 5 = untrusted remote or durable bytes. 4 = session frame from a peer. 3 = local process facade.";
           churn = "Measured commit counts. ranking_factor is false. Do not multiply churn into the rank.";
           start_order = "Ascending start sequence for scheduled fuzz targets. Independent of rank. Rank 0 with schedule true still runs; gap 0 makes the product zero. Property rows leave it null.";
@@ -305,7 +370,8 @@ let
           "bin"
           "corpus"
           "committed_corpus"
-          "durable_corpus"
+          "warmVault"
+          "durableMount"
           "dictionary"
           "max_input_bytes"
           "schedule"
@@ -320,14 +386,18 @@ let
         ];
         consumers = {
           rank = "Recompute complexity.score * gap.score * blast.score. Skip rank null and schedule false. Do not multiply by churn. start_order is not an input. Do not trust list order.";
-          corpus = "For kind=fuzz, durable_corpus is the writable mount and argv[1] of bins.<id>. corpora.<id> is the committed seed derivation, passed read-only. New coverage is written only to the mount. Property rows have no corpus.";
+          corpus = "metadata.warmVault is the package record { name, corporaAttr } with name = backend. corpora.<id>.warmVault is the same shape with corporaAttr = packages.\${system}.continuous-fuzz.corpora.<id>. corpora.<id>.durableMount and the scheduled row's durableMount are the string /durable/fuzz/<id>/corpus. bins.<id> requires argv[1] to equal that durableMount and exits 2 otherwise. It does not fall back to TMPDIR, /tmp, or XDG state. Property and backlog rows set warmVault and durableMount null.";
           engines = "engines.<id>.adapter is the plug record (id, family, linked, adapter). This repo links libfuzzer. aflpp, honggfuzz, and go-native stay linked false. Do not point an unlinked engine at bins.<id>.";
           aliases = "packages.\${system}.fuzz-<id> aliases bins.<id>. The contract package is continuous-fuzz. Do not add either to nix flake check.";
         };
         supervision = {
           per_input_timeout_seconds = 10;
           rss_limit_mb = 4096;
-          refuse = [ "-max_total_time" ];
+          refuse = [
+            "-max_total_time"
+            "omitted-argv1"
+            "corpus-path-other-than-/durable/fuzz/<name>/corpus"
+          ];
           artifact_directory = "sibling artifacts/ of the durable corpus, never inside it";
         };
         throughput_note = "exec/s and time-to-useful-coverage are not flake attributes. Confirmed campaign numbers live in docs/operations/continuous-fuzzing.md.";
@@ -613,7 +683,12 @@ let
       lib.listToAttrs (
         map (name: {
           inherit name;
-          value = pkgs.runCommand "fuzz-corpus-${name}" { } ''
+          value = pkgs.runCommand "fuzz-corpus-${name}" {
+            passthru = {
+              warmVault = corpusVault name;
+              durableMount = durableMountOf name;
+            };
+          } ''
             mkdir -p "$out"
             find ${targetRoot + "/${name}/corpus"} -type f ! -name '.*' -exec cp -a {} "$out/" \;
             test -f "$out/canonical"
@@ -685,20 +760,13 @@ let
               set -eu
               seeds=${corpora.${name}}
               dict=${dicts.${name}}
-              writable=""
-              if [ "$#" -ge 1 ] && [ "''${1#-}" = "$1" ]; then
-                writable=$1
-                shift
-              else
-                if [ -n "''${XDG_STATE_HOME:-}" ]; then
-                  base=$XDG_STATE_HOME
-                elif [ -n "''${HOME:-}" ]; then
-                  base=$HOME/.local/state
-                else
-                  base=''${TMPDIR:-/tmp}
-                fi
-                writable=$base/backend-fuzz/${name}/corpus
+              mount=${durableMountOf name}
+              if [ "$#" -lt 1 ] || [ "$1" != "$mount" ]; then
+                echo "refusing to start: argv[1] must be $mount. bins.${name} does not create a corpus under TMPDIR, /tmp, or XDG state." >&2
+                exit 2
               fi
+              writable=$1
+              shift
               artifacts=$(dirname "$writable")/artifacts
               case "$writable$seeds$dict$artifacts" in
                 *" "*)
