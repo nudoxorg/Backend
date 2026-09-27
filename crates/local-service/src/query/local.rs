@@ -1098,7 +1098,8 @@ pub(super) fn measure_search_corpus() {
     let (cold_median, cold_p95) = corpus_percentiles(&cold);
     let (warm_median, warm_p95) = corpus_percentiles(&warm);
     println!(
-        "search_corpus facts={FACTS} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} warm_builds={}",
+        "search_corpus facts={FACTS} cold_median_ns={cold_median} cold_p95_ns={cold_p95} \
+         warm_median_ns={warm_median} warm_p95_ns={warm_p95} warm_builds={}",
         owner.corpus_builds() - before
     );
 }
