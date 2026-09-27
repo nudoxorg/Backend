@@ -2030,6 +2030,13 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             return Ok(Some((target, confidence)));
                         }
                     }
+                    if let Some(receiver) = receiver {
+                        if let Some(resolved) =
+                            self.annotated_receiver_read_target(occurrence, receiver, checked)?
+                        {
+                            return Ok(Some(resolved));
+                        }
+                    }
                     if let Some(ordinal) = self.module_field(occurrence) {
                         let confidence = match checked {
                             Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
@@ -2243,6 +2250,127 @@ impl<'a, 'source> Emitter<'a, 'source> {
             Some(matches[0])
         } else {
             None
+        }
+    }
+
+    /// Resolves one plain-name receiver through its parameter annotation when
+    /// the import-binding arm did not apply and the site is an attribute read:
+    /// a unique live class yields the unique field or bound method inside that
+    /// class (fields before methods, then inherited members); a unique live
+    /// import alias yields the alias statement's package field key. Ambiguous
+    /// or multiply-matched cases stay on an honest universe field key; zero
+    /// annotation candidates fall through to `module_field`.
+    fn annotated_receiver_read_target(
+        &self,
+        occurrence: &OccurrenceFact,
+        receiver: &str,
+        checked: Option<&SymbolOutcome>,
+    ) -> Result<Option<(OccurrenceTarget<'source>, OccurrenceConfidence)>, PythonCollectError>
+    {
+        let function_index = match self.enclosing_function_index(occurrence) {
+            Some(index) => index,
+            None => return Ok(None),
+        };
+        let function = &self.module.declarations[function_index];
+        let type_name = match receiver_annotation_name(function, receiver) {
+            Some(name) => name,
+            None => return Ok(None),
+        };
+        let candidates = self.live_class_or_alias_indices(type_name);
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let foreign = || {
+            foreign_field(self.slice(occurrence.span)?, occurrence.span)
+                .map(|target| (target, OccurrenceConfidence::Index))
+        };
+        if candidates.len() >= 2 {
+            return foreign().map(Some);
+        }
+        let index = candidates[0];
+        let declaration = &self.module.declarations[index];
+        let local_confidence = || match checked {
+            Some(SymbolOutcome::Local) => OccurrenceConfidence::Oracle,
+            _ => OccurrenceConfidence::Index,
+        };
+        match declaration.kind {
+            DeclarationKind::Class => {
+                let class_span = declaration.span;
+                let field_count = self.field_count_in_class(occurrence, class_span);
+                if field_count > 1 {
+                    return foreign().map(Some);
+                }
+                if field_count == 1 {
+                    if let InheritedMemberLookup::Unique(ordinal) =
+                        self.member_lookup_in_class(occurrence, class_span, DeclarationKind::Field)
+                    {
+                        return Ok(Some((
+                            OccurrenceTarget::Local(EntityId::new(ordinal)),
+                            local_confidence(),
+                        )));
+                    }
+                    return foreign().map(Some);
+                }
+                match self.inherited_member(index, occurrence, DeclarationKind::Field) {
+                    InheritedMemberLookup::Unique(ordinal) => Ok(Some((
+                        OccurrenceTarget::Local(EntityId::new(ordinal)),
+                        local_confidence(),
+                    ))),
+                    InheritedMemberLookup::Ambiguous => foreign().map(Some),
+                    InheritedMemberLookup::Absent => {
+                        let method_count = self.method_count_in_class(occurrence, class_span);
+                        if method_count > 1 {
+                            return foreign().map(Some);
+                        }
+                        if method_count == 1 {
+                            if let Some(ordinal) =
+                                self.method_in_class(occurrence, class_span)
+                            {
+                                return Ok(Some((
+                                    OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                    local_confidence(),
+                                )));
+                            }
+                            return foreign().map(Some);
+                        }
+                        if let InheritedMemberLookup::Unique(ordinal) =
+                            self.inherited_member(index, occurrence, DeclarationKind::Function)
+                        {
+                            return Ok(Some((
+                                OccurrenceTarget::Local(EntityId::new(ordinal)),
+                                local_confidence(),
+                            )));
+                        }
+                        foreign().map(Some)
+                    }
+                }
+            }
+            DeclarationKind::Alias => {
+                let module_span = match alias_import_module_span(self.source, declaration.span) {
+                    Some(span) => span,
+                    None => return Ok(None),
+                };
+                let module_spelling = self.slice(module_span)?;
+                let binding = self.slice(occurrence.span)?;
+                let binding = core::str::from_utf8(binding).map_err(|_| {
+                    PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+                        start: occurrence.span.start,
+                        end: occurrence.span.end,
+                    })
+                })?;
+                let target = foreign_package(
+                    module_spelling,
+                    binding,
+                    module_span,
+                    Some(EntityKind::Field),
+                )?;
+                let confidence = match checked {
+                    Some(SymbolOutcome::Foreign { .. }) => OccurrenceConfidence::Import,
+                    _ => OccurrenceConfidence::Index,
+                };
+                Ok(Some((target, confidence)))
+            }
+            _ => Ok(None),
         }
     }
 
