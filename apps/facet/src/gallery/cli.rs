@@ -1264,6 +1264,8 @@ fn storm(options: &Options) -> Result<()> {
 }
 
 fn window(options: &Options) -> Result<()> {
+    let diagnostics = std::env::var_os("NUDOX_REVIEW_DIAGNOSTICS").is_some();
+    if diagnostics { eprintln!("[w-pages-review] window command entered"); }
     let trace_path=options.get("native-trace").map(PathBuf::from);
     let scene = scene(options.require("scene")?)?;
     let shot = options.shot(&scene)?;
@@ -1273,15 +1275,19 @@ fn window(options: &Options) -> Result<()> {
     let window_size = size(px(width as f32), px(height as f32));
     let failure=std::rc::Rc::new(std::cell::RefCell::new(None));
     let boot_failure=std::rc::Rc::clone(&failure);
+    if diagnostics { eprintln!("[w-pages-review] before Application::run"); }
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(crate::icons::Assets)
         .run(move |cx| {
+        if diagnostics { eprintln!("[w-pages-review] Application::run callback entered"); }
+        if diagnostics { eprintln!("[w-pages-review] gallery bootstrap starting"); }
         if let Err(error) = gallery::bootstrap(facet, false, cx) {
             eprintln!("facet-gallery: {error}");
             *boot_failure.borrow_mut()=Some(error);
             cx.quit();
             return;
         }
+        if diagnostics { eprintln!("[w-pages-review] gallery bootstrap complete"); }
         if let Some(path)=&trace_path {
             if let Err(error)=super::native_trace::start(path,cx) {
                 eprintln!("facet-gallery: native trace: {error}");
@@ -1299,6 +1305,7 @@ fn window(options: &Options) -> Result<()> {
             }),
             ..WindowOptions::default()
         };
+        if diagnostics { eprintln!("[w-pages-review] open_window starting"); }
         if let Err(error) = cx.open_window(options, move |window, cx| {
             gallery::mount(&scene, window, cx)
         }) {
@@ -1307,9 +1314,15 @@ fn window(options: &Options) -> Result<()> {
             cx.quit();
             return;
         }
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
+        if diagnostics { eprintln!("[w-pages-review] open_window returned; windows={}", cx.windows().len()); }
+        cx.on_window_closed(move |cx, window| {
+            if diagnostics { eprintln!("[w-pages-review] window closed {window:?}; remaining={}", cx.windows().len()); }
+            cx.quit();
+        }).detach();
         cx.activate(true);
+        if diagnostics { eprintln!("[w-pages-review] application activated"); }
     });
+    if diagnostics { eprintln!("[w-pages-review] Application::run returned"); }
     if let Some(error)=failure.borrow_mut().take() { return Err(error); }
     Ok(())
 }

@@ -111,7 +111,7 @@ impl LocalProjectId {
     }
 
     fn from_native_with_coordinate(native: NativePath, coordinate: Arc<str>) -> Self {
-        let key = backend_library::object_version(&native.key().as_bytes());
+        let key = backend_library::object_version(native.key().as_bytes());
         Self {
             key,
             native,
@@ -212,7 +212,7 @@ impl PartialOrd for LocalProjectId {
 
 impl Ord for LocalProjectId {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.native.key().cmp(&other.native.key())
+        self.native.key().cmp(other.native.key())
     }
 }
 

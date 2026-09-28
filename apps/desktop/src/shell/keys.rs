@@ -240,15 +240,23 @@ pub(crate) fn cap(command: Command) -> &'static str {
         .map_or("", |key| key.cap)
 }
 
-fn binding(key: &Key) -> KeyBinding {
+fn binding_context(key: &Key) -> &'static str {
+    // Compare owns row traversal while its page has focus. Shell traversal
+    // otherwise consumes the arrow before the page's key handler sees it.
+    let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
     let graph_owns = matches!(key.command,
         Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape);
-    let context = Some(match (key.scope, graph_owns) {
-        (Scope::Shell, true) => "NudoxShell && !Graph",
-        (Scope::Plain, true) => "NudoxShell && !Input && !Graph",
-        (Scope::Shell, false) => "NudoxShell",
-        (Scope::Plain, false) => "NudoxShell && !Input",
-    });
+    match (key.scope, graph_owns, compare_owns) {
+        (Scope::Plain, true, true) => "NudoxShell && !Input && !Graph && !BrowseCompare",
+        (Scope::Shell, true, _) => "NudoxShell && !Graph",
+        (Scope::Plain, true, _) => "NudoxShell && !Input && !Graph",
+        (Scope::Shell, false, _) => "NudoxShell",
+        (Scope::Plain, false, _) => "NudoxShell && !Input",
+    }
+}
+
+fn binding(key: &Key) -> KeyBinding {
+    let context = Some(binding_context(key));
     let chord = key.chord;
     match key.command {
         Command::FocusNext => KeyBinding::new(chord, FocusNext, context),
@@ -297,6 +305,16 @@ pub fn bindings() -> Vec<KeyBinding> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn compare_keeps_its_own_row_keys_without_losing_shell_shortcuts() {
+        for chord in ["j", "k", "down", "up"] {
+            let key = TABLE.iter().find(|key| key.chord == chord).expect("row key is bound");
+            assert!(binding_context(key).contains("!BrowseCompare"), "{chord} must reach the focused Compare page");
+        }
+        let ask = TABLE.iter().find(|key| key.command == Command::Ask).expect("Ask is bound");
+        assert!(!binding_context(ask).contains("BrowseCompare"), "Ask stays available over Compare");
+    }
 
     #[test]
     fn no_chord_is_bound_twice_and_every_command_has_a_cap() {

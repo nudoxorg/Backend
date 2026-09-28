@@ -447,18 +447,17 @@ fn a_page_renders_its_real_content_through_the_shell(cx: &mut TestAppContext) {
     for expected in [
         "RelationLabel",
         "The readable label of RelationLabel.",
-        "pub enum RelationLabel {\n    Typed(SemanticLinkKind),\n    Related,\n}",
-        "Made of",
-        "Typed(SemanticLinkKind)",
+        "One of",
+        "Typed · SemanticLinkKind",
         "A relation whose kind is known.",
-        "Does",
-        "reads",
-        "as_str(self) -> &'static str",
+        "What it does",
+        "as_str",
         "Display",
         "Relations need a compiler publication; this package has none.",
     ] {
         assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
     }
+    assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "source lives in Code: {said:#?}");
     // The route and the store agree, and the thread has Orbit behind.
     assert_eq!(rig.route(), page_route("RelationLabel"));
 }
@@ -638,9 +637,13 @@ fn every_setting_applies_live(cx: &mut TestAppContext) {
 fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     // Stand on a member row and peek it.
-    rig.keys("j j j j j j");
-    rig.keys("space");
-    let (_, peek, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let mut peek = false;
+    for _ in 0..32 {
+        rig.keys("space");
+        peek = rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1;
+        if peek { break; }
+        rig.keys("j");
+    }
     assert!(peek, "space opened a peek");
     rig.keys("f");
     let (_, peek, hints) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());

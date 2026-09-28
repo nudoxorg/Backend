@@ -205,6 +205,7 @@ pub(crate) fn cargo_language_profile(project_root: &Path) -> Result<LanguageProf
         .ok_or_else(|| format!("local manifest {} has no [package] table", manifest.display()))?;
     let edition = package_string_field(package, project_root, &manifest, "edition")?;
     match edition.as_str() {
+        "2018" => Ok(LanguageProfile::Rust(RustEdition::Rust2018)),
         "2021" => Ok(LanguageProfile::Rust(RustEdition::Rust2021)),
         "2024" => Ok(LanguageProfile::Rust(RustEdition::Rust2024)),
         other => Err(format!(
@@ -1251,6 +1252,14 @@ mod tests {
             manifest.profile,
             LanguageProfile::Rust(RustEdition::Rust2021)
         );
+        write(
+            &root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2018\"\n",
+        );
+        let legacy = read_local_manifest(&root)
+            .expect("2018 cargo manifest")
+            .expect("identity");
+        assert_eq!(legacy.profile, LanguageProfile::Rust(RustEdition::Rust2018));
         let _ = fs::remove_dir_all(root);
     }
 

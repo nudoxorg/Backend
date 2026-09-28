@@ -264,7 +264,16 @@ impl Session {
         V: Render + 'static,
         F: FnOnce(&mut Window, &mut App) -> Entity<V>,
     {
-        let platform = gpui_platform::current_platform(true);
+        // `current_platform` builds a fresh `MacPlatform`, reading the
+        // current keyboard layout through Apple's HIToolbox. That read is
+        // not safe to race against another thread doing the same thing —
+        // see `platform_init_guard`'s doc comment — so this crate's other
+        // real-platform constructor (`gpui_driver::capture_gpui_state`)
+        // takes the same lock before doing it.
+        let platform = {
+            let _guard = crate::platform_init_guard();
+            gpui_platform::current_platform(true)
+        };
         let text_system: Arc<dyn PlatformTextSystem> = platform.text_system();
         if gpui_platform::current_headless_renderer().is_none() {
             return Err(CaptureError::NoRenderer);

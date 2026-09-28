@@ -86,3 +86,17 @@ fn cmd_shift_c_copies_the_address(cx: &mut TestAppContext) {
     rig.keys("cmd-shift-c");
     assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("nudox://orbit"));
 }
+
+/// Depth moved to ⌃1–⌃4 when the hand took ⌘1–⌘5.
+#[gpui::test]
+fn ctrl_1_to_4_move_through_the_depths(cx: &mut TestAppContext) {
+    let mut rig = open(cx, "RelationLabel");
+    rig.keys("ctrl-4");
+    assert!(matches!(rig.route(), Route::Symbol(ref symbol) if symbol.view == crate::navigation::View::Code), "⌃4: the code: {:?}", rig.route());
+    rig.keys("ctrl-3");
+    assert_eq!(rig.route(), page_route("RelationLabel"), "⌃3: the page");
+    rig.keys("ctrl-2");
+    assert!(matches!(rig.route(), Route::Package(_)), "⌃2: the package: {:?}", rig.route());
+    rig.keys("ctrl-1");
+    assert!(matches!(rig.route(), Route::Orbit(_)), "⌃1: Orbit: {:?}", rig.route());
+}

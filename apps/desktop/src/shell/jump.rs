@@ -120,7 +120,7 @@ pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
             let tree = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned());
             let mut level: Option<&[OutlineNode]> = tree.as_ref().map(|tree| &tree.roots[..]);
             for name in crumbs(&identity).into_iter().skip(usize::from(identity.project().is_some())) {
-                let node = level.and_then(|nodes| nodes.iter().find(|node| node.decl.name.as_ref() == name));
+                let node = level.and_then(|nodes| nodes.iter().find(|node| super::shelf::shelf_name(node) == name));
                 out.push(Segment {
                     name: name.into(),
                     route: node.and_then(|node| super::kit::symbol_route(package.as_str(), &node.decl.coordinate)),
@@ -151,7 +151,7 @@ pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Vec<Se
     let path: Vec<String> = crumbs(&identity).into_iter().skip(usize::from(identity.project().is_some())).collect();
     let mut level: &[OutlineNode] = &tree.roots;
     for name in path.iter().take(index - 1) {
-        match level.iter().find(|node| node.decl.name.as_ref() == name.as_str()) {
+        match level.iter().find(|node| super::shelf::shelf_name(node) == name.as_str()) {
             Some(node) => level = &node.children,
             None => return Vec::new(),
         }
@@ -159,7 +159,7 @@ pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Vec<Se
     level
         .iter()
         .map(|node| Segment {
-            name: node.decl.name.to_string().into(),
+            name: super::shelf::shelf_name(node).into(),
             route: super::kit::symbol_route(package.as_str(), &node.decl.coordinate),
         })
         .collect()

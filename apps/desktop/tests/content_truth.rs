@@ -8,9 +8,13 @@
 //! Two crates, because the builtin owner answers them differently:
 //! `crates/present` is a workspace member, so the owner publishes its
 //! structural projection (docs, signatures, members, source) but refuses a
-//! compiler publication; `frontends/rust/fixtures/rich_project` is a
-//! standalone crate, so the owner compiles it and serves typed relations and
-//! source-verified references.
+//! compiler publication; typed relations (the rose) gap for it, but
+//! references still answer, from the structural lane — same-file and
+//! import-resolved calls, tagged `SemanticConfidence::Syntactic` so a reader
+//! can tell a path match from a compiler-verified one apart.
+//! `frontends/rust/fixtures/rich_project` is a standalone crate, so the
+//! owner compiles it and serves typed relations and source-verified
+//! (`SemanticConfidence::Compiler`) references.
 
 #![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines, missing_docs)]
 
@@ -295,14 +299,54 @@ fn every_board_reads_real_content_through_the_desktop_runtime(cx: &mut TestAppCo
         ["drive.rs"]
     );
     // The workspace-member crate has no compiler publication: typed
-    // relations and references are unknown, and say why.
+    // relations are unknown, and say why. References still answer, from the
+    // structural lane, because same-file and import-resolved call text
+    // needs no compiler image to read.
     assert_eq!(
         trait_page.rose.up.gap().map(|gap| gap.reason),
         Some(GapReason::NoSemanticPublication)
     );
-    let references = trait_page.references.gap().expect("references gap");
-    assert_eq!(references.reason, GapReason::NoSemanticPublication);
-    assert!(references.detail.contains("complete semantic publication"), "{}", references.detail);
+    // `Engine` is a trait: nothing "calls" it, so the structural lane finds
+    // no incoming `Calls` edge. The reply is still `Ok` — empty, not a gap.
+    let engine_references = trait_page.references.known().expect("references from the structural lane");
+    assert!(
+        engine_references.is_empty(),
+        "a trait has no structural call site: {engine_references:?}"
+    );
+    // `intent` is a free function `drive.rs` calls twice in the same file
+    // (`Request::Index` and `Request::Remove`); the structural lane finds
+    // the same-file call and tags it `Syntactic`, never `Compiler`.
+    let intent_symbol = plane.find(cx, "intent", DeclarationKind::Function, "present");
+    let intent_page = plane.symbol(cx, &intent_symbol);
+    let intent_references = intent_page.references.known().expect("intent references");
+    assert_eq!(intent_references.len(), 1, "{intent_references:?}");
+    let intent_site = &intent_references[0];
+    assert_eq!(intent_site.site.name.as_ref(), "answer");
+    assert_eq!(intent_site.relation, SemanticLinkKind::Calls);
+    assert_eq!(intent_site.confidence, backend_library::SemanticConfidence::Syntactic);
+    let intent_span = intent_site.span.known().expect("intent call span");
+    assert_eq!(intent_span.file.as_ref(), "drive.rs");
+    // The structural lane finds a real match (a non-zero start, not the
+    // degenerate `(0, name.len())` it falls back to when the call text
+    // cannot be located): its length still covers exactly `intent`.
+    //
+    // NB: unlike the semantic lane's spans (see `Marker`'s reference span
+    // below), this byte range is relative to the *caller's own* captured
+    // excerpt (`answer`'s declaration text), not to `drive.rs` as a whole —
+    // `structural_call_span` in
+    // crates/local-service/src/builtin/view_build/structural.rs searches
+    // `site_row.excerpt.text()`, a per-declaration excerpt, and reports the
+    // offset it finds there unchanged. A `FileSpan` naming the real file
+    // therefore means two different things depending on which lane produced
+    // it; slicing `drive.rs` itself at these bytes lands inside the file's
+    // header doc comment, not the call. That inconsistency is real and is
+    // reported separately, not asserted here as if it were correct.
+    assert!(intent_span.bytes.start > 0, "{intent_span:?}");
+    assert_eq!(
+        intent_span.bytes.end - intent_span.bytes.start,
+        "intent".len() as u32,
+        "{intent_span:?}"
+    );
     let down = trait_page.rose.down.known().expect("containment");
     assert!(down.iter().any(|relation| relation.decl.name.as_ref() == "probe"));
 

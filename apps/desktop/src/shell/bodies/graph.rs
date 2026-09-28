@@ -854,7 +854,7 @@ impl Map {
 
 /// A last-good value cannot settle the latest root's open. Activity is
 /// checked first because an active retry retains its previous terminal too.
-fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Result<Option<&T>, String> {
+pub(crate) fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Result<Option<&T>, String> {
     if matches!(
         resource.activity(),
         Activity::Waiting | Activity::Working | Activity::NotYet

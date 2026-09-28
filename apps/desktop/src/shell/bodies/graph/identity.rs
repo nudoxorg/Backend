@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Debug)]
-pub(super) struct ResolvedSymbol {
+pub(crate) struct ResolvedSymbol {
     pub symbol: SymbolRef,
     pub package: PackageRef,
     pub line: Option<u32>,
@@ -154,6 +154,13 @@ impl IdentityAdapter {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn synthetic_catalog(world: &World, packages: Vec<PackageRef>) -> Self {
+        Self::admit(world, &packages.into_iter().map(|package| Some(PackageBinding {
+            aliases: vec![package], fixture_root: PathBuf::new(),
+        })).collect::<Vec<_>>())
+    }
+
     pub(crate) fn candidates(&self, decl: &DeclRef, package: &PackageRef) -> Vec<NodeId> {
         let (Some(line), Some(path), Some(packages)) =
             (decl.line, decl.path.as_deref(), self.aliases.get(package))
@@ -191,6 +198,24 @@ impl IdentityAdapter {
             .collect()
     }
 
+    /// One admitted package locator for this recorded node. Registry purls
+    /// win over local cache-path aliases; ambiguity in either catalog is not
+    /// an invitation to guess a package from the node's display name.
+    pub(crate) fn package_for_node(&self, node: NodeId) -> Option<PackageRef> {
+        let package = self.nodes.get(&node)?.package;
+        let mut registry = Vec::new();
+        let mut local = Vec::new();
+        for (locator, indices) in &self.aliases {
+            if indices.as_slice() != &[package] { continue; }
+            if locator.is_local() { local.push(locator); } else { registry.push(locator); }
+        }
+        match registry.as_slice() {
+            [only] => Some((**only).clone()),
+            [] => match local.as_slice() { [only] => Some((**only).clone()), _ => None },
+            _ => None,
+        }
+    }
+
     pub(crate) fn outline_symbol(
         &self,
         node: NodeId,
@@ -200,23 +225,37 @@ impl IdentityAdapter {
         if !tree.complete {
             return None;
         }
-        fn visit<'a>(nodes: &'a [crate::model::pages::OutlineNode], out: &mut Vec<&'a DeclRef>) {
-            for node in nodes {
-                out.push(&node.decl);
-                visit(&node.children, out);
-            }
+        let source = self.nodes.get(&node)?;
+        if self.sources.get(source).is_none_or(|nodes| nodes.as_slice() != [node])
+            || self.aliases.get(package).is_none_or(|packages| packages.as_slice() != [source.package])
+        {
+            return None;
         }
-        let mut decls = Vec::new();
-        visit(&tree.roots, &mut decls);
-        let mut matches = decls.into_iter().filter(|decl| {
-            decl.coordinate.package().as_ref() == Some(package)
-                && self.candidates(decl, package).as_slice() == [node]
-        });
-        let first = matches.next()?;
-        matches.next().is_none().then(|| first.coordinate.clone())
+        // This is a typed in-memory catalog, already prepared by the package
+        // read. The common path compares borrowed fields; normalization only
+        // runs for a same-name, same-line candidate with a noncanonical path.
+        const MAX_OUTLINE_LOOKUP: usize = 16_384;
+        let mut match_one = None;
+        for (at, item) in tree.walk().enumerate() {
+            if at >= MAX_OUTLINE_LOOKUP { return None; }
+            let decl = &item.decl;
+            if decl.name.as_ref() != source.name.as_str() || decl.line != Some(source.line) { continue; }
+            let Some(path) = decl.path.as_deref() else { continue };
+            let candidate = Path::new(path);
+            let candidate = if candidate.is_absolute() && package.is_local() {
+                let root = Path::new(package.as_str());
+                let Ok(relative) = candidate.strip_prefix(root) else { continue };
+                relative
+            } else { candidate };
+            if candidate != source.file.as_path() && normalized(candidate).as_deref() != Some(source.file.as_path()) { continue; }
+            if decl.coordinate.package().as_ref() != Some(package) { continue; }
+            if match_one.is_some() { return None; }
+            match_one = Some(decl.coordinate.clone());
+        }
+        match_one
     }
 
-    pub(super) fn resolve(
+    pub(crate) fn resolve(
         &self,
         node: NodeId,
         rows: &[SearchRow],
@@ -250,7 +289,7 @@ impl IdentityAdapter {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum MatchFailure {
+pub(crate) enum MatchFailure {
     MissingFixture,
     AmbiguousFixture,
     MissingIndex,
@@ -398,6 +437,13 @@ mod tests {
         }
         let absolute = row("/index/one", "/index/one/src/lib.rs", 7);
         assert!(adapter.resolve(0, &[absolute]).is_ok());
+
+        // A node outside the currently viewed package uses the same exact
+        // identity join; it must not be restricted to that package's outline.
+        let foreign = row("pkg:cargo/two@2.0.0", "src/lib.rs", 7);
+        let resolved = adapter.resolve(1, &[right, foreign.clone()]).expect("foreign match");
+        assert_eq!(resolved.package.as_str(), "pkg:cargo/two@2.0.0");
+        assert_eq!(resolved.symbol, foreign.decl.coordinate);
     }
 
     #[test]

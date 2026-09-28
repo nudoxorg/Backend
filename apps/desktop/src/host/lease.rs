@@ -296,7 +296,7 @@ mod tests {
             .index(project.to_str().expect("fixture path is UTF-8"))
             .expect("index through embedded owner");
         let revision = session.revision().expect("read embedded revision");
-        let revision_root = revision.root.clone();
+        let revision_root = revision.root;
         assert_ne!(
             revision.root,
             backend_library::view_state_root(&[]),

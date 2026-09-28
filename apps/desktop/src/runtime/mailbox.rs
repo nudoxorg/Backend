@@ -139,16 +139,15 @@ impl<T> CoalescingMailbox<T> {
         if state.closed {
             return PushResult::Closed(value);
         }
-        if let Some(key) = key.as_ref() {
-            if let Some(position) = state
+        if let Some(key) = key.as_ref()
+            && let Some(position) = state
                 .queue
                 .iter()
                 .position(|(existing, _)| existing.as_ref() == Some(key))
-            {
-                let old = std::mem::replace(&mut state.queue[position].1, value);
-                wake.notify_one();
-                return PushResult::Coalesced(old);
-            }
+        {
+            let old = std::mem::replace(&mut state.queue[position].1, value);
+            wake.notify_one();
+            return PushResult::Coalesced(old);
         }
         if state.queue.len() >= self.capacity {
             return PushResult::Full(value);
@@ -170,17 +169,16 @@ impl<T> CoalescingMailbox<T> {
             if state.closed {
                 return false;
             }
-            if let Some(key) = key.as_ref() {
-                if let Some(position) = state
+            if let Some(key) = key.as_ref()
+                && let Some(position) = state
                     .queue
                     .iter()
                     .position(|(existing, _)| existing.as_ref() == Some(key))
-                {
-                    let old = std::mem::replace(&mut state.queue[position].1, value);
-                    drop(old);
-                    wake.notify_one();
-                    return true;
-                }
+            {
+                let old = std::mem::replace(&mut state.queue[position].1, value);
+                drop(old);
+                wake.notify_one();
+                return true;
             }
             if state.queue.len() < self.capacity {
                 state.queue.push_back((key, value));

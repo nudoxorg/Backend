@@ -36,6 +36,7 @@ pub mod names;
 pub mod page;
 pub mod recipes;
 pub mod relations;
+pub mod recorded;
 pub mod tour;
 
 pub use bounds::Generic;

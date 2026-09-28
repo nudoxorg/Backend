@@ -29,7 +29,7 @@ pub(super) fn body(
     let measure = ctx.measure;
     let palette = ctx.palette;
     let mut leaves = Vec::new();
-    if let Some(leaf) = resume(snapshot, ctx) {
+    if let Some(leaf) = resume(snapshot, ctx, cx) {
         leaves.push(leaf);
     }
     let workspace = snapshot.workspace();
@@ -133,45 +133,64 @@ pub(super) fn body(
     leaves
 }
 
-/// "Resume …": the most recent page behind you.
-fn resume(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>) -> Option<Leaf> {
-    let route = snapshot
-        .session()
-        .back
-        .to_vec()
-        .into_iter()
-        .find(|route| matches!(route, Route::Symbol(_)))?;
-    let Route::Symbol(symbol) = &route else {
-        return None;
-    };
-    let name = backend_present::Identity::parse(symbol.id.as_str()).name().to_owned();
+/// "Continue …": the hand one rung up — its road, the road's sentence, and
+/// where you left (the card touched last, and how long ago). With an empty
+/// hand, the most recent page behind you ("Continue at RelationLabel").
+fn resume(snapshot: &AppSnapshot, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Option<Leaf> {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let name = ctx.say(name);
+    let hand = snapshot.session().hand.clone();
+    let (words, route) = if hand.is_empty() {
+        let route = snapshot.session().back.to_vec().into_iter().find(|route| matches!(route, Route::Symbol(_)))?;
+        let Route::Symbol(symbol) = &route else {
+            return None;
+        };
+        let name = backend_present::Identity::parse(symbol.id.as_str()).name().to_owned();
+        (vec![("Continue at".to_owned(), false), (name, true)], route)
+    } else {
+        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let last = view.cards.iter().max_by_key(|card| card.held.touched_at)?;
+        let route = crate::shell::root::held_route(&last.held)?;
+        let ago = ago(crate::shell::root::now_ms().saturating_sub(last.held.touched_at));
+        let mut words = vec![("Continue".to_owned(), false)];
+        match view.roads.first() {
+            Some(road) => {
+                let names: Vec<String> = road.cards.iter().map(|&n| view.cards[n].name.to_string()).collect();
+                words.push((names.join(" → "), true));
+                words.push((format!("· {} · you left at", road.sentence), false));
+            }
+            None => words.push(("· you left at".to_owned(), false)),
+        }
+        words.push((last.name.to_string(), true));
+        words.push((ago, false));
+        (words, route)
+    };
+    let label = ctx.say(words.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>().join(" "));
     let links = ctx.links.clone();
     let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::Navigate(route.clone()), cx));
-    ctx.targets.push(Target {
-        id: "resume".into(),
-        label: name.clone(),
-        act: Rc::clone(&act),
-        peek: None,
-        source: None,
-    });
+    ctx.targets.push(Target { id: "resume".into(), label, act: Rc::clone(&act), peek: None, source: None });
+    let mut line = div().id("resume").flex().flex_wrap().items_baseline().gap(measure.space(Space::Snug)).cursor_pointer();
+    for (word, name) in words {
+        line = line.child(if name {
+            text(ty::MONO_ROW, &measure, palette.ink0).child(word)
+        } else {
+            text(ty::SMALL, &measure, palette.ink3).child(word)
+        });
+    }
     Some(Leaf::new(
-        div().flex().justify_end().child(
-            ctx.targets.track(
-                "resume",
-                div()
-                    .id("resume")
-                    .flex()
-                    .items_baseline()
-                    .gap(measure.space(Space::Snug))
-                    .child(text(ty::SMALL, &measure, palette.ink3).child("Resume"))
-                    .child(text(ty::MONO_ROW, &measure, palette.ink0).child(name))
-                    .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
-            ),
-        ),
+        div().flex().justify_end().child(ctx.targets.track("resume", line.on_click(move |_: &ClickEvent, window, cx| act(window, cx)))),
     ))
+}
+
+/// "just now", "4 min ago", "2 h ago", "3 d ago".
+fn ago(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    match minutes {
+        0 => "just now".to_owned(),
+        1..=59 => format!("{minutes} min ago"),
+        60..=1439 => format!("{} h ago", minutes / 60),
+        _ => format!("{} d ago", minutes / 1440),
+    }
 }
 
 fn package_name(package: &IndexedPackage, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> AnyElement {

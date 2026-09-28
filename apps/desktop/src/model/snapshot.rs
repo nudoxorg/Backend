@@ -193,6 +193,11 @@ pub struct SessionState {
     pub selected: Option<Selection>,
     /// What you hold (D-Hand): persisted; its order is recomputed.
     pub hand: crate::model::hand::Hand,
+    /// The first card ever held has been whispered ("Value *in hand*"):
+    /// once per install, persisted.
+    pub whispered: bool,
+    /// The hold to whisper about now (the first ever), until it fades.
+    pub whisper: Option<crate::model::hand::Held>,
 }
 
 impl Default for SessionState {
@@ -204,6 +209,8 @@ impl Default for SessionState {
             forward: RouteHistory::new(),
             selected: None,
             hand: crate::model::hand::Hand::default(),
+            whispered: false,
+            whisper: None,
         }
     }
 }

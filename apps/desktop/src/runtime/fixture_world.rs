@@ -273,7 +273,7 @@ impl Tables {
             .recipes
             .getting_one(world, node)
             .or_else(|| self.recipes.calling_it(world, node))
-            .map(|section| section.view(world));
+            .map(|section| section.view(world, node));
         let sources = &self.sources;
         let uses = page::in_use(world, node, &mut |package, file| sources.read(package, file))
             .into_iter()
@@ -303,6 +303,12 @@ enum Service {
 }
 
 impl Global for Service {}
+
+/// Whether the optional pinned semantic world is still being prepared.
+/// Failed or not-yet-requested worlds are settled states for the shell.
+pub(crate) fn is_loading(cx: &App) -> bool {
+    matches!(cx.try_global::<Service>(), Some(Service::Loading))
+}
 
 /// The anatomy of `decl` (in `package`) when the fixture world knows it:
 /// exactly one node at its file, line and name.
@@ -391,6 +397,19 @@ pub(crate) fn hand_view(hand: &crate::model::hand::Hand, cx: &mut App) -> Rc<Han
 pub(crate) fn symbol_of(node: NodeId, package: &PackageRef, tree: &OutlineTree, cx: &App) -> Option<SymbolRef> {
     match cx.try_global::<Service>() {
         Some(Service::Ready(tables)) => tables.borrow().identities.outline_symbol(node, package, tree),
+        _ => None,
+    }
+}
+
+/// Exact, immutable identity inputs for a page link. A caller pins these
+/// Arcs for the lifetime of its index lookup and rejects a changed world.
+/// This never builds page anatomy or rereads source on the UI thread.
+pub(crate) fn link_world(cx: &App) -> Option<(Arc<World>, Arc<IdentityAdapter>)> {
+    match cx.try_global::<Service>() {
+        Some(Service::Ready(tables)) => {
+            let tables = tables.borrow();
+            Some((Arc::clone(&tables.world), Arc::clone(&tables.identities)))
+        }
         _ => None,
     }
 }

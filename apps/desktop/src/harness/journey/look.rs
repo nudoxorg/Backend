@@ -80,7 +80,27 @@ impl Seen {
         self.ledger
             .texts
             .iter()
-            .filter(|text| self.within(&text.bounds, area))
+            // Exact text assertions may only name a string that is completely
+            // visible. A partially clipped sample proves only that some glyphs
+            // painted, not that the whole semantic string was readable.
+            .filter(|text| {
+                let viewport = self.viewport();
+                if !facet::gallery::lint::fully_visible(
+                    text,
+                    viewport.width as f32,
+                    viewport.height as f32,
+                ) {
+                    return false;
+                }
+                let Some(visible) = facet::gallery::lint::visible_bounds(
+                    text,
+                    viewport.width as f32,
+                    viewport.height as f32,
+                ) else {
+                    return false;
+                };
+                self.within(&visible, area)
+            })
             .collect()
     }
 
@@ -394,6 +414,11 @@ pub(super) fn describe(route: &Route) -> String {
         Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))) => {
             format!("tree {}", project.display_lossy())
         }
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome)) => "find".into(),
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query))) => format!("find {}", query.text),
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Compare(selection))) => format!(
+            "compare {}", selection.packages().iter().map(|package| package.as_str()).collect::<Vec<_>>().join(" "),
+        ),
         Route::World => "world".to_owned(),
         Route::Package(package) => format!(
             "package {}{}{}",

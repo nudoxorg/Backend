@@ -618,7 +618,7 @@ impl Shelf {
         let indent = measure.space(Space::Roomy) + measure.space(Space::Gutter) * f32::from(row.depth);
         let ink: Hsla = if row.current { palette.ink0.into() } else { palette.ink1.into() };
         let mark = match row.mark {
-            RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, &measure, palette),
+            RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, measure, palette),
             RowMark::Icon(icon) => icons::ui(icon, IconSize::S14, palette.ink2)
                 .size(measure.icon(14.0))
                 .into_any_element(),
@@ -684,7 +684,7 @@ impl Shelf {
             .overflow_hidden();
         for row in self.rows.iter().filter(|row| row.depth == 0 || row.current).take(24) {
             let mark = match row.mark {
-                RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, &measure, palette),
+                RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, measure, palette),
                 RowMark::Icon(icon) => icons::ui(icon, IconSize::S14, palette.ink2).into_any_element(),
             };
             let act = row.act.clone();
@@ -712,7 +712,7 @@ impl Shelf {
 }
 
 /// A module row reads as its module (`glyph`), not its file (`glyph.rs`).
-fn shelf_name(node: &OutlineNode) -> String {
+pub(crate) fn shelf_name(node: &OutlineNode) -> String {
     let name = node.decl.name.as_ref();
     if node.decl.kind == Some(backend_library::DeclarationKind::Module)
         && let Some((stem, extension)) = name.rsplit_once('.')

@@ -1,6 +1,8 @@
 //! Deterministic, parallel, content-versioned filesystem ingestion.
 
-use backend_compile::{InputContentSchema, SourceLanguage, SyntaxFrontend, typed_of};
+use backend_compile::{
+    DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxFrontend, typed_of,
+};
 use backend_engine::{
     ProductSourceRecord, ProductSourceRelation, Relation, SourceUnavailableReason,
     product_source_file_key,
@@ -480,6 +482,58 @@ fn frontends() -> Result<&'static FrontendSet, String> {
     FRONTENDS
         .get()
         .ok_or_else(|| "frontend registry failed to initialize".to_owned())
+}
+
+/// Recovers one declaration excerpt from its already indexed source file.
+///
+/// This only serves bytes that still match the indexed source identity. It
+/// reads through the confined project-root capability and reruns the admitted
+/// baseline parser, retaining its declaration matching and excerpt bounds.
+pub(super) fn recover_indexed_excerpt(
+    root: &Path,
+    path: &str,
+    expected_source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    language: SourceLanguage,
+    label: &str,
+    line: u32,
+    kind: Option<DeclarationKind>,
+) -> Option<SourceExcerpt> {
+    if path.is_empty() || path.contains('\\') {
+        return None;
+    }
+    let relative = Path::new(path);
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let bytes = ProjectRoot::open(root).ok()?.read(relative).ok()?;
+    if backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+        &bytes,
+    ) != expected_source
+    {
+        return None;
+    }
+    let frontend = frontends().ok()?.for_language(language)?;
+    let analysis = frontend.baseline.analyze(relative, &bytes).ok()?;
+    let name = label.rsplit("::").next()?;
+    let mut matches = analysis.declarations().iter().filter(|declaration| {
+        declaration.location().path() == path
+            && declaration.location().start_line() == line
+            && declaration.name() == name
+            && kind.is_none_or(|kind| declaration.kind() == kind)
+    });
+    let declaration = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    match declaration.source_excerpt() {
+        SourceExcerpt::Captured { .. } => Some(declaration.source_excerpt().clone()),
+        SourceExcerpt::NotCaptured | SourceExcerpt::NotHydrated | SourceExcerpt::Unconfigured => {
+            None
+        }
+    }
 }
 
 /// Reads supported sources and reuses prior analyses behind exact content and
@@ -1626,6 +1680,65 @@ mod tests {
             return Err("one path was admitted as both fresh and reused".to_owned());
         };
         assert!(error.contains("a.rs") && error.contains("admitted twice"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn indexed_source_excerpt_recovers_only_exact_confined_bytes() -> Result<(), String> {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let unique = format!(
+            "backend-indexed-source-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
+        let scratch = Scratch(std::env::temp_dir().join(unique));
+        let root = scratch.0.join("pkg");
+        fs::create_dir_all(root.join("src")).map_err(|error| error.to_string())?;
+        let source = b"pub fn recovered() { 7 }\n";
+        fs::write(root.join("src/value.rs"), source).map_err(|error| error.to_string())?;
+        let identity =
+            backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                source,
+            );
+        let label = "pkg:cargo/example@1.0.0::recovered";
+        let recover = |path: &str, line, kind| {
+            recover_indexed_excerpt(&root, path, identity, SourceLanguage::Rust, label, line, kind)
+        };
+        assert!(matches!(
+            recover("src/value.rs", 1, Some(DeclarationKind::Function)),
+            Some(SourceExcerpt::Captured {
+                ref text,
+                extent: backend_compile::SourceExcerptExtent::Complete,
+            })
+                if text.as_ref() == "pub fn recovered() { 7 }"
+        ));
+        assert!(recover("src/value.rs", 2, Some(DeclarationKind::Function)).is_none());
+        assert!(recover("src/value.rs", 1, Some(DeclarationKind::Struct)).is_none());
+        assert!(recover("../outside.rs", 1, Some(DeclarationKind::Function)).is_none());
+
+        fs::write(root.join("src/value.rs"), b"pub fn recovered() { 8 }\n")
+            .map_err(|error| error.to_string())?;
+        assert!(recover("src/value.rs", 1, Some(DeclarationKind::Function)).is_none());
+        fs::remove_file(root.join("src/value.rs")).map_err(|error| error.to_string())?;
+        assert!(recover("src/value.rs", 1, Some(DeclarationKind::Function)).is_none());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = scratch.0.join("outside.rs");
+            fs::write(&outside, source).map_err(|error| error.to_string())?;
+            symlink(&outside, root.join("src/escape.rs")).map_err(|error| error.to_string())?;
+            assert!(recover("src/escape.rs", 1, Some(DeclarationKind::Function)).is_none());
+        }
         Ok(())
     }
 

@@ -643,7 +643,34 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                 .health()
                 .map(|report| PageValue::Health(page_mapping::health_model(&report)))
                 .map_err(|error| failure(&error)),
-            ReadRequest::Browse(key) => super::browse_reads::compose(&mut self.engine, key),
+            ReadRequest::Browse(key) => match key {
+                crate::model::browse::BrowseKey::Tree(_) => super::browse_reads::compose(&mut self.engine, key),
+                crate::model::browse::BrowseKey::FindHome => compose_find(&mut self.engine, None, context)
+                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
+                crate::model::browse::BrowseKey::Find(query) => compose_find(&mut self.engine, Some(query), context)
+                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
+                crate::model::browse::BrowseKey::Compare(selection) => {
+                    let mut packages = Vec::with_capacity(selection.packages().len());
+                    let mut apis = Vec::with_capacity(selection.packages().len());
+                    for package in selection.packages() {
+                        check(context.cancel)?;
+                        let PageValue::Package(dossier) = compose_package(&mut self.engine, &self.loader, package, context)? else {
+                            return Err(shape("compare package"));
+                        };
+                        let api = match outline(&mut self.engine, package, context) {
+                            Ok(index) => crate::model::pages::Known::Known(index.comparison_api(package)),
+                            Err(gap) => crate::model::pages::Known::Unknown(gap),
+                        };
+                        check(context.cancel)?;
+                        packages.push(dossier);
+                        apis.push(api);
+                    }
+                    let prepared = Arc::new(super::browse_views::prepare_compare(&packages, &apis));
+                    Ok(PageValue::Browse(crate::model::browse::BrowseValue::Compare(Arc::new(
+                        crate::model::browse::CompareModel { packages: packages.into(), apis: apis.into(), prepared },
+                    ))))
+                }
+            },
         }
     }
 }
@@ -998,6 +1025,50 @@ fn compose_search(
         )),
         _ => Err(shape("search")),
     }
+}
+
+fn compose_find(
+    engine: &mut dyn Engine,
+    query: Option<&SearchQuery>,
+    context: &ReadContext<'_>,
+) -> Result<crate::model::browse::FindModel, ReadFailure> {
+    use crate::model::browse::FindModel;
+    use crate::model::pages::Known;
+    let answers = match query {
+        Some(query) => match compose_search(engine, query, None, context) {
+            Ok(page) => Known::Known(page),
+            Err(ReadFailure::Cancelled) => return Err(ReadFailure::Cancelled),
+            Err(error) => Known::Unknown(Gap::new(GapReason::ReadFailed, format!("{error:?}"))),
+        },
+        None => Known::unknown(GapReason::NotCaptured, "Enter a name to find indexed declarations."),
+    };
+    check(context.cancel)?;
+    let indexed = engine.probe(Probe::Packages);
+    check(context.cancel)?;
+    let query_text = query.map(|query| backend_library::ProductText::new(query.text.to_string())).transpose().map_err(|_| shape("find query"))?;
+    let catalog = engine.surface(SurfaceCommand::Explore { query: query_text, limit: EXPLORE_LIMIT });
+    check(context.cancel)?;
+    let indexed_rows = match &indexed {
+        Ok(reply) => match &reply.reply { CommandReply::Packages(rows) => Some(rows.root.rows().iter().collect::<Vec<_>>()), _ => None },
+        Err(_) => None,
+    };
+    let catalog_rows = match &catalog {
+        Ok(SurfaceReply::Explored(records)) => Some(records.as_ref()),
+        _ => None,
+    };
+    let packages = super::browse_reads::find_packages(query.map_or("", |query| query.text.as_ref()), indexed_rows.as_deref().unwrap_or_default(), catalog_rows.unwrap_or_default());
+    let package_coverage = if indexed_rows.is_some() && catalog_rows.is_some() {
+        Known::Known(())
+    } else {
+        Known::Unknown(Gap::new(GapReason::Unavailable, "Some package sources could not answer; these are the matches available locally."))
+    };
+    let prepared = Arc::new(super::browse_views::prepare_find(
+        query.map_or("", |query| query.text.as_ref()),
+        &answers,
+        &packages,
+        &package_coverage,
+    ));
+    Ok(FindModel { answers, packages: packages.into(), package_coverage, prepared })
 }
 
 fn compose_orbit(engine: &mut dyn Engine, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {

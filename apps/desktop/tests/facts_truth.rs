@@ -18,8 +18,7 @@ use backend_client::{LocalSubscriptionTransport, Session};
 use backend_desktop::core::{LocalProjectId, VersionedRoot};
 use backend_desktop::model::AppSnapshot;
 use backend_desktop::model::pages::{
-    DocFragment, Member, Obligation, PackageDossier, PackageRef, PageKey, SearchQuery,
-    SectionKind, SymbolPage, SymbolRef,
+    DocFragment, Member, Obligation, PageKey, SearchQuery, SectionKind, SymbolPage, SymbolRef,
 };
 use backend_desktop::runtime::reads::{ReadPool, SessionReader};
 use backend_desktop::runtime::store::DataStore;
@@ -31,13 +30,6 @@ use std::time::{Duration, Instant};
 
 const INDEX_DEADLINE: Duration = Duration::from_mins(15);
 const READ_DEADLINE: Duration = Duration::from_mins(2);
-
-fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repository root")
-}
 
 fn utf8(path: &Path) -> &str {
     path.to_str().expect("fixture paths are UTF-8")
@@ -154,16 +146,6 @@ impl Plane {
                 },
                 |row| row.decl.coordinate.clone(),
             )
-    }
-
-    fn dossier(&self, cx: &mut TestAppContext, root: &Path) -> PackageDossier {
-        let package = PackageRef::parse(utf8(root)).expect("package ref");
-        self.ensure(cx, PageKey::Package(package.clone()));
-        self.until(cx, "dossier", |store| {
-            let resource = store.package(&package);
-            fault(&resource, "dossier");
-            resource.loaded_value().cloned()
-        })
     }
 
     fn symbol(&self, cx: &mut TestAppContext, symbol: &SymbolRef) -> SymbolPage {

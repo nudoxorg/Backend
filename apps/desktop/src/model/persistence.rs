@@ -265,6 +265,9 @@ pub struct PersistedDesktopState {
     /// What you hold (at most five).
     #[serde(default)]
     pub hand: Vec<PersistedHeld>,
+    /// The first-card whisper has been shown (once per install).
+    #[serde(default)]
+    pub hand_whispered: bool,
 }
 
 fn default_true() -> bool {
@@ -298,6 +301,7 @@ impl Default for PersistedDesktopState {
             cache_enabled: true,
             cache_days: 14,
             hand: Vec::new(),
+            hand_whispered: false,
         }
     }
 }
@@ -745,6 +749,7 @@ impl PersistentState {
                     touched_at: held.touched_at,
                 })
                 .collect(),
+            hand_whispered: snapshot.session().whispered,
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
@@ -885,6 +890,7 @@ impl PersistentState {
             route,
             overlay,
             hand,
+            whispered: state.hand_whispered,
             ..SessionState::default()
         }
     }
@@ -1036,8 +1042,9 @@ impl PersistentState {
                 label: item.label.clone().into(),
             });
         }
-        if let Some(host) = host_project {
-            if let Ok(project) = LocalProjectId::from_path(host) {
+        if let Some(host) = host_project
+            && let Ok(project) = LocalProjectId::from_path(host)
+        {
                 if !shelf.iter().any(|item| {
                     item.identity == crate::core::ResourceIdentity::Local(project.clone())
                 }) {
@@ -1088,7 +1095,6 @@ impl PersistentState {
                 if workspace.active.is_none() {
                     workspace.active = Some(project.clone());
                 }
-            }
         }
         let selected = workspace
             .active

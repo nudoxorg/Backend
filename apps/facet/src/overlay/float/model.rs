@@ -150,6 +150,9 @@ pub struct Presence {
     to: f32,
     since: Instant,
     duration: Duration,
+    /// Runs on a straight line: an unfurl card eases each of its bands
+    /// itself (underline, edge, body), so the presence must not ease too.
+    linear: bool,
 }
 
 impl Presence {
@@ -161,11 +164,27 @@ impl Presence {
             to: 1.0,
             since: now,
             duration,
+            linear: false,
+        }
+    }
+
+    /// Entering from 0 at `now` on a straight line (see [`Card::unfurl`]).
+    #[must_use]
+    pub fn entering_linear(now: Instant, duration: Duration) -> Self {
+        Self {
+            linear: true,
+            ..Self::entering(now, duration)
         }
     }
 
     fn curve(&self) -> Bezier {
-        if self.to >= self.from { GLIDE } else { DROP }
+        if self.linear {
+            crate::motion::LINEAR
+        } else if self.to >= self.from {
+            GLIDE
+        } else {
+            DROP
+        }
     }
 
     /// The value at `now`.
@@ -240,6 +259,7 @@ impl Presence {
             to,
             since: now,
             duration: full.mul_f32((to - value).abs().clamp(0.0, 1.0)),
+            linear: self.linear,
         };
     }
 }
@@ -287,6 +307,12 @@ pub struct Card {
     pub shown: Instant,
     /// The pointer rested on it again: it shows its deeper sections.
     pub deep: bool,
+    /// Enters by unfurling from its anchor instead of growing and fading
+    /// ([`FloatRequest::unfurl`]).
+    pub unfurl: bool,
+    /// The content a warm swap replaced (an unfurl card wipes it out while
+    /// the new content wipes in).
+    pub previous: Option<Content>,
 }
 
 impl Card {
@@ -959,6 +985,7 @@ impl Model {
                 to: target,
                 since: now,
                 duration: Duration::ZERO,
+                linear: card.presence.linear,
             };
         }
         for pin in &mut self.pins {
@@ -968,6 +995,7 @@ impl Model {
                 to: target,
                 since: now,
                 duration: Duration::ZERO,
+                linear: pin.presence.linear,
             };
         }
         self.tick(now);
@@ -1193,15 +1221,20 @@ impl Model {
         if level.is_none() {
             self.tip_pending = None;
         }
-        let enter = self.duration(request.kind.enter());
+        let enter = self.duration(if request.unfurl { super::UNFURL_ENTER } else { request.kind.enter() });
         let id = match reuse {
             Some(index) => {
                 let card = &mut self.cards[index];
                 let swapped = card.key != request.key;
+                if swapped {
+                    // An unfurl card wipes from this to the new content.
+                    card.previous = Some(card.content.clone());
+                }
                 card.key = request.key;
                 card.anchor = request.anchor;
                 card.content = request.content;
                 card.side = request.side;
+                card.unfurl = request.unfurl;
                 card.sticky = sticky;
                 card.trigger_hover = !sticky;
                 card.leave_at = None;
@@ -1232,7 +1265,11 @@ impl Model {
                     content: request.content,
                     level,
                     sticky,
-                    presence: Presence::entering(now, enter),
+                    presence: if request.unfurl {
+                        Presence::entering_linear(now, enter)
+                    } else {
+                        Presence::entering(now, enter)
+                    },
                     closing: false,
                     trigger_hover: !sticky,
                     card_hover: false,
@@ -1244,6 +1281,8 @@ impl Model {
                     title: None,
                     shown: now,
                     deep: false,
+                    unfurl: request.unfurl,
+                    previous: None,
                 });
                 id
             }
@@ -1260,7 +1299,11 @@ impl Model {
     }
 
     fn close_index(&mut self, index: usize, now: Instant) {
-        let exit = self.duration(self.cards[index].kind.exit());
+        let exit = self.duration(if self.cards[index].unfurl {
+            super::UNFURL_EXIT
+        } else {
+            self.cards[index].kind.exit()
+        });
         let (id, kind, level) = {
             let card = &mut self.cards[index];
             if card.closing {

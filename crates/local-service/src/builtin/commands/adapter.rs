@@ -240,9 +240,11 @@ impl CommandAdapter {
     /// exact label after checking the request root instead of returning a
     /// false not-found for a published semantic declaration.
     fn canonical_claim_document(
+        &self,
         daemon: &ProductDaemon,
         query: &backend_library::DocumentQuery,
         certificate: Option<&WireCertificate>,
+        recover_excerpt: bool,
     ) -> Option<backend_library::Document> {
         let label = certificate.and_then(|certificate| {
             certificate.claims.iter().find_map(|claim| match claim {
@@ -273,13 +275,61 @@ impl CommandAdapter {
             root,
             ..library.view().basis()
         };
+        let excerpt = if recover_excerpt
+            && row.excerpt == backend_library::SourceExcerpt::NotHydrated
+        {
+            self.recover_indexed_excerpt(daemon, row, label)
+                .unwrap_or_else(|| row.excerpt.clone())
+        } else {
+            row.excerpt.clone()
+        };
         let mut document = backend_library::Document::new(symbol, root, row.document.clone())
             .with_source_basis(source_basis)
             .with_location(row.source.clone())
-            .with_excerpt(row.excerpt.clone())
+            .with_excerpt(excerpt)
             .with_facts(row.facts.clone());
         document.signature.clone_from(&row.signature);
         Some(document)
+    }
+
+    /// Rehydrates a shed declaration excerpt from the exact package source
+    /// file admitted by the current source relation. The indexed source
+    /// identity must still match before the baseline parser can produce text.
+    fn recover_indexed_excerpt(
+        &self,
+        daemon: &ProductDaemon,
+        row: &backend_library::Row,
+        label: &str,
+    ) -> Option<backend_compile::SourceExcerpt> {
+        let location = row.source.captured()?;
+        let package = row.package?;
+        let workspace = self.product_state.workspace_path().ok()?;
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        let sources = super::super::read_package_sources(&snapshot, package).ok()?;
+        let project = sources.projects.get(&package.to_bytes())?;
+        let (claimed_project, _) = label.split_once("::")?;
+        if project.package != package
+            || claimed_project != project.label
+            || backend_engine::PackageKey::from_value(&project.label) != package
+        {
+            return None;
+        }
+        let source_root = admitted_project_source_root(package, &project.label, workspace)?;
+        let fields = sources.files.iter().find_map(|(_, record)| {
+            let fields = record.file_fields()?;
+            (fields.project == package.to_bytes() && fields.path == location.path())
+                .then_some(fields)
+        })?;
+        let source_identity = fields.source_identity?;
+        super::super::ingest::recover_indexed_excerpt(
+            &source_root,
+            fields.path,
+            source_identity,
+            fields.language,
+            label,
+            location.start_line(),
+            row.kind,
+        )
     }
 
     fn remove(
@@ -757,7 +807,12 @@ impl CommandAdapter {
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match command {
             Command::Document(query) | Command::Source(query) => {
-                Self::canonical_claim_document(daemon, query, certificate.as_ref())
+                self.canonical_claim_document(
+                    daemon,
+                    query,
+                    certificate.as_ref(),
+                    matches!(command, Command::Source(_)),
+                )
                     .map_or_else(
                         || daemon.engine().daemon().library().execute(command.clone()),
                         |document| Ok(CommandReply::Document(document)),
@@ -948,6 +1003,26 @@ fn symbol_row_by_label<'a>(
     }
 }
 
+/// Resolves the source root named by the package's admitted project record.
+/// Local projects are stored under their canonical directory label; staged
+/// packages retain their canonical pinned package URL.
+fn admitted_project_source_root(
+    package: backend_engine::PackageKey,
+    project_label: &str,
+    workspace: &Path,
+) -> Option<std::path::PathBuf> {
+    if backend_engine::PackageKey::from_value(project_label) != package {
+        return None;
+    }
+    let root = super::super::local_manifest::indexed_package_source_root(project_label, workspace)
+        .ok()?;
+    let canonical = root.canonicalize().ok()?;
+    if !project_label.starts_with("pkg:") && Path::new(project_label) != canonical {
+        return None;
+    }
+    Some(canonical)
+}
+
 fn local_project_roots(daemon: &ProductDaemon) -> Result<Vec<std::path::PathBuf>, BuiltinModelError> {
     let indexed =
         super::super::read_indexed_sources(&daemon.engine().daemon().owner().snapshot())?;
@@ -966,7 +1041,9 @@ fn local_project_roots(daemon: &ProductDaemon) -> Result<Vec<std::path::PathBuf>
 
 #[cfg(test)]
 mod tests {
-    use super::{ADD_TARGET_REQUIRED, AddTarget, classify_add_target};
+    use super::{
+        ADD_TARGET_REQUIRED, AddTarget, admitted_project_source_root, classify_add_target,
+    };
     use crate::builtin::BuiltinIntent;
     use std::fs;
     use std::path::PathBuf;
@@ -1066,5 +1143,25 @@ mod tests {
             classify_add_target("PKG:cargo/serde@1.0.0"),
             Ok(AddTarget::PackageUrl)
         ));
+    }
+
+    #[test]
+    fn admitted_local_project_label_resolves_its_canonical_source_root() {
+        let tree = TempTree::new();
+        let project = tree.0.join("project");
+        fs::create_dir(&project).expect("project dir");
+        let label = label(&project.canonicalize().expect("canonical project"));
+        let package = backend_engine::PackageKey::from_value(&label);
+
+        assert_eq!(
+            admitted_project_source_root(package, &label, &tree.0),
+            Some(project.canonicalize().expect("canonical project"))
+        );
+        assert!(admitted_project_source_root(
+            backend_engine::PackageKey::from_value("/outside/project"),
+            &label,
+            &tree.0,
+        )
+        .is_none());
     }
 }

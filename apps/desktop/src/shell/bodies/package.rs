@@ -1,6 +1,6 @@
-//! The package page: hero, one facts line, Start here (the package's
-//! reading path, when the world knows the package), its modules as mark +
-//! name rows, dependencies, and the README's first blocks.
+//! The package page: recorded identity, a bounded outline, dependencies and
+//! authored README blocks. A future tour needs live typed use evidence;
+//! prototype fixture-world rankings never recommend a starting declaration.
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf};
@@ -10,7 +10,7 @@ use crate::navigation::{Intent, Route};
 use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{HoverIntent, gap_words, kind_of, quiet, symbol_route, text};
 use crate::shell::reader::Reader;
-use facet::icons::{Kind, KindSize};
+use facet::icons::{Icon, IconSize, Kind, KindSize, ui};
 use facet::tokens::ty;
 use facet::{Measure, Palette, Space};
 use gpui::{
@@ -35,22 +35,7 @@ pub(super) fn body(
         other => return not_ready(&other, &PageKey::Package(package.clone()), package.display_name(), ctx, cx),
     };
     let mut leaves = vec![hero(&dossier, ctx)];
-    let decls = dossier.outline.known().map(|tree| {
-        fn visit<'a>(nodes: &'a [OutlineNode], out: &mut Vec<&'a crate::model::pages::DeclRef>) {
-            for node in nodes {
-                out.push(&node.decl);
-                visit(&node.children, out);
-            }
-        }
-        let mut out = Vec::new();
-        visit(&tree.roots, &mut out);
-        out
-    });
-    let reading = decls.and_then(|decls| crate::runtime::fixture_world::reading(&package, decls, cx));
-    if let Some(reading) = &reading {
-        leaves.push(start_here(reading, ctx));
-    }
-    leaves.push(start_with(&dossier, reading.is_some(), ctx, cx));
+    leaves.push(outline(&dossier, ctx, cx));
     if let Some(leaf) = dependencies(&dossier, ctx) {
         leaves.push(leaf);
     }
@@ -75,18 +60,23 @@ fn hero(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Leaf {
     }
     let mut facts = Vec::new();
     if let Some(version) = record.and_then(|record| record.version.known()) {
-        facts.push(version.to_string());
+        facts.push(("VERSION", version.to_string()));
     }
     if let Some(ecosystem) = record.and_then(|record| record.ecosystem.known()) {
-        facts.push(ecosystem.to_string());
+        facts.push(("ECOSYSTEM", ecosystem.to_string()));
     }
     if let Some(license) = record.and_then(|record| record.license.known()) {
-        facts.push(license.to_string());
+        facts.push(("DECLARED LICENSE", license.to_string()));
     }
     if let Some(tree) = dossier.outline.known() {
-        facts.push(format!("{} declarations", tree.count()));
+        facts.push(("OUTLINE READ", format!("{} declarations", tree.count())));
     }
-    let line = ctx.say(facts.join("  ·  "));
+    let mut marks = div().flex().flex_wrap().gap(measure.space(Space::Wide));
+    for (label, value) in facts {
+        marks = marks.child(div().flex().flex_col().gap(measure.space(Space::Hair))
+            .child(text(ty::CAPTION, &measure, palette.ink2).child(ctx.say(label)))
+            .child(text(ty::SMALL, &measure, palette.ink1).child(ctx.say(value))));
+    }
     Leaf::new(
         div()
             .flex()
@@ -100,73 +90,43 @@ fn hero(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Leaf {
                     .child(facet::paint::gem(Kind::Package).size(f32::from(measure.fluid(48.0, 64.0))))
                     .child(words),
             )
-            .child(text(ty::SMALL, &measure, palette.ink3).child(line)),
+            .child(marks),
     )
 }
 
-/// Start here: the package's reading path as a strip — each stop's gem,
-/// its name (the first underlined: that is where you begin) and its role
-/// beneath, joined by periwinkle legs. Below 760 effective px, rows that
-/// also say why. Every stop opens its page.
-fn start_here(reading: &crate::runtime::fixture_world::Reading, ctx: &mut Ctx<'_>) -> Leaf {
+fn outline(dossier: &PackageDossier, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    let world = &reading.world;
-    let scale = measure.scale();
-    let narrow = measure.effective() < 760.0;
-    let label = ctx.say("Start here");
-    let mut strip = if narrow {
-        div().flex().flex_col().gap(measure.space(Space::Base))
-    } else {
-        div().flex().items_start().gap(measure.space(Space::Roomy))
-    };
-    strip = strip.child(text(ty::SMALL, &measure, palette.ink3).pt(px(2.0 * scale)).child(label));
-    for (index, stop) in reading.tour.stops.iter().enumerate() {
-        let node = stop.node;
-        let name = ctx.say(world.name_of(node).to_string());
-        let role = ctx.say(stop.role.text());
-        let id: SharedString = format!("tour-{index}").into();
-        let act: Act = Rc::new(move |window, cx| {
-            window.dispatch_action(Box::new(facet::anatomy::Open { target: facet::semantics::Target::Node(node) }), cx);
-        });
-        ctx.targets.push(Target { id: id.clone(), label: name.clone(), act: Rc::clone(&act), peek: None, source: None });
-        let mut title = text(ty::MONO_ROW, &measure, palette.ink0).child(name);
-        if index == 0 {
-            title = title.underline().text_decoration_color(palette.peri.base.hsla());
-        }
-        let gem = facet::paint::gem(crate::shell::kit::world_kind(world.node(node).kind)).size(18.0 * scale);
-        let mut words = div().flex().flex_col().child(title).child(text(ty::CAPTION, &measure, palette.ink3).child(role));
-        if narrow {
-            let why = ctx.say(stop.why.text(world));
-            words = words.child(text(ty::SMALL, &measure, palette.ink3).child(why));
-        } else if index > 0 {
-            strip = strip.child(div().w(px(34.0 * scale)).h(px(1.0)).mt(px(10.0 * scale)).bg(palette.peri.base.alpha(0.6)));
-        }
-        let stop = div()
-            .id(id.clone())
-            .flex()
-            .items_start()
-            .gap(measure.space(Space::Base))
-            .cursor_pointer()
-            .child(div().pt(px(1.0 * scale)).child(gem))
-            .child(words)
-            .on_click(move |_: &ClickEvent, window, cx| act(window, cx));
-        strip = strip.child(ctx.targets.track(id, stop));
-    }
-    Leaf::new(strip)
-}
-
-fn start_with(dossier: &PackageDossier, touring: bool, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
-    let measure = ctx.measure;
-    let palette = ctx.palette;
-    // With a reading path above, this is the package's modules; without
-    // one, it is still where to start.
-    let heading = ctx.say(if touring { "Modules" } else { "Start with" });
-    let mut column = div().flex().flex_col().child(head(heading, &measure, palette));
+    let heading = ctx.say("Recorded outline");
+    let note = ctx.say("Choose a row to inspect the declarations recorded beneath it.");
+    let mut column = div().flex().flex_col()
+        .child(head(heading, &measure, palette))
+        .child(text(ty::SMALL, &measure, palette.ink2).child(note));
     match dossier.outline.known() {
         Some(tree) => {
-            for node in tree.roots.iter().take(60) {
+            let expanded = ctx.package_outline_expanded;
+            let shown = tree.roots.len().min(if expanded { 48 } else { 8 });
+            for node in tree.roots.iter().take(shown) {
                 column = column.child(node_row(node, &dossier.package, ctx, cx));
+            }
+            if tree.roots.len() > 8 {
+                let id: SharedString = "pkg-outline-toggle".into();
+                let label = ctx.say(if expanded { "Show fewer entries" } else { "Show more entries" });
+                let weak = cx.weak_entity();
+                let act: Act = Rc::new(move |_, cx| { let _ = weak.update(cx, |reader, cx| reader.toggle_package_outline(cx)); });
+                if ctx.active { ctx.targets.push(Target { id: id.clone(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None }); }
+                let mut toggle = div().id(id.clone()).flex().items_center().gap(measure.space(Space::Base))
+                    .py(measure.space(Space::Base)).px(measure.space(Space::Base)).cursor_pointer()
+                    .hover(|style| style.bg(palette.tint))
+                    .child(ui(Icon::Layers, IconSize::S16, palette.peri.base))
+                    .child(text(ty::SMALL, &measure, palette.ink0).child(label));
+                if !expanded {
+                    toggle = toggle.child(text(ty::CAPTION, &measure, palette.ink2).child(ctx.say(format!("{} further top-level entries", tree.roots.len() - shown))));
+                }
+                column = column.child(ctx.targets.track(id.clone(), toggle.on_click(move |_: &ClickEvent, window, cx| act(window, cx))));
+            }
+            if tree.roots.len() > shown && expanded {
+                column = column.child(quiet(ctx.say(format!("{} further top-level entries are in the library sidebar", tree.roots.len() - shown)), &measure, palette));
             }
             if !tree.complete {
                 let more = ctx.say("The outline is still being read.");
@@ -215,7 +175,7 @@ fn node_row(node: &OutlineNode, package: &PackageRef, ctx: &mut Ctx<'_>, cx: &mu
         .hover(|style| style.bg(palette.tint))
         .child(crate::shell::kit::kind_mark(kind_of(node.decl.kind), KindSize::Sm, &measure, palette))
         .child(text(ty::MONO_ROW, &measure, palette.ink1).child(name))
-        .children((count > 0).then(|| text(ty::SMALL, &measure, palette.ink3).child(count.to_string())))
+        .children((count > 0).then(|| text(ty::SMALL, &measure, palette.ink2).child(format!("{count} nested"))))
         .on_click(move |_: &ClickEvent, window, cx| act(window, cx))
         .on_hover(cx.listener(move |reader, hovered: &bool, _, cx| reader.hover_link(warm.clone(), *hovered, cx)));
     ctx.targets.track(id, row).into_any_element()

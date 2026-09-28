@@ -102,7 +102,12 @@ fn intersection(a: &crate::probe::BoundsSample, b: &crate::probe::BoundsSample) 
 }
 
 /// Native visibility affects pixel/overlap checks, never intrinsic layout metrics.
-fn visible_bounds(text: &crate::probe::TextSample, width: f32, height: f32) -> Option<crate::probe::BoundsSample> {
+/// Returns the part of a text sample actually inside its paint clip and viewport.
+///
+/// Intrinsic layout bounds remain available on [`crate::probe::TextSample`]; this
+/// helper is for screen-visibility checks only.
+#[must_use]
+pub fn visible_bounds(text: &crate::probe::TextSample, width: f32, height: f32) -> Option<crate::probe::BoundsSample> {
     let bounds = &text.bounds;
     let clip = text.paint_clip.as_ref();
     let x = bounds.x.max(clip.map_or(0.0, |b| b.x)).max(0.0);
@@ -111,6 +116,27 @@ fn visible_bounds(text: &crate::probe::TextSample, width: f32, height: f32) -> O
     let bottom = (bounds.y + bounds.height).min(clip.map_or(height, |b| b.y + b.height)).min(height);
     (right > x && bottom > y).then(|| crate::probe::BoundsSample {
         key: bounds.key.clone(), x, y, width: right - x, height: bottom - y,
+    })
+}
+
+/// Whether every point in a text sample's intrinsic box is inside its paint
+/// clip and the viewport. Use this before making an exact-string visibility
+/// assertion; [`visible_bounds`] alone also reports partially clipped text.
+#[must_use]
+pub fn fully_visible(text: &crate::probe::TextSample, width: f32, height: f32) -> bool {
+    let bounds = &text.bounds;
+    if bounds.x < 0.0
+        || bounds.y < 0.0
+        || bounds.x + bounds.width > width
+        || bounds.y + bounds.height > height
+    {
+        return false;
+    }
+    text.paint_clip.as_ref().is_none_or(|clip| {
+        bounds.x >= clip.x
+            && bounds.y >= clip.y
+            && bounds.x + bounds.width <= clip.x + clip.width
+            && bounds.y + bounds.height <= clip.y + clip.height
     })
 }
 
@@ -321,7 +347,7 @@ pub fn json(linted: &Linted) -> Json {
 
 #[cfg(test)]
 mod tests {
-    use super::{ink_contrast, lint};
+    use super::{fully_visible, ink_contrast, lint};
     use crate::probe::{BoundsSample, Ledger, ScrollSample, Target, TargetSample};
     use backend_gui_harness::Viewport;
     use image::{Rgba, RgbaImage};
@@ -363,6 +389,24 @@ mod tests {
         crate::probe::TextSample { key: key.to_owned(), bounds: rect, paint_clip: clip,
             natural_width: 20.0, overflow: crate::probe::TextOverflow::Clip, content: "label".to_owned(),
             min_width: 20.0, line_height: 10.0, size: 12.0, weight: 400.0, region: Some("graph".to_owned()) }
+    }
+
+    #[test]
+    fn exact_text_visibility_handles_fractional_edges_and_clips() {
+        let intrinsic = bounds(10.1, 5.2, 30.2, 12.3);
+        let fully_contained = text_at(
+            "fractional",
+            intrinsic.clone(),
+            Some(bounds(0.1, 0.2, 40.3, 20.0)),
+        );
+        assert!(fully_visible(&fully_contained, 100.0, 100.0));
+
+        let clipped = text_at(
+            "clipped",
+            intrinsic,
+            Some(bounds(0.1, 0.2, 40.0, 20.0)),
+        );
+        assert!(!fully_visible(&clipped, 100.0, 100.0));
     }
 
     #[test]
