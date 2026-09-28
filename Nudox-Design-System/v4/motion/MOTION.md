@@ -51,7 +51,7 @@ Durations stay short. Most are 90–240 ms. Across takes 320 ms. The scrub head 
 | SNAPPY | .28, .86 | FLIP rows, cards following an anchor, leading edges |
 | GENTLE | .45, 1 | shelf width, text-size reflow |
 | BOUNCY | .42, .6 | play only: add's room, the hand's landing |
-| **CARRY** (new) | .34, 1 | one driver for a whole place change (deeper / back) |
+| **CARRY** (new) | .28, 1 | one driver for a whole place change (deeper / back). Ruled 0.28 s, not 0.34 (2026-09-28): the critically damped step is 97 % settled at 240 ms, the top of the 120–240 ms budget. At 0.34 s it is only 93 % settled there, and its tail runs past the budget. |
 | **REEL** (new) | .24, .92 | reels, odometer wheels, tick glyphs |
 | **TRACK** (new) | .20, 1 | caret, matched-letters underline |
 | **TRAIL** (new) | .50, 1 | wakes (the tail of a moved row) |
@@ -120,7 +120,7 @@ Film: `deeper.png`, `deeper-int.png`, `deeper-reduced.png`
 
 The clicked row is the origin, so you always know where you came from.
 
-- **Driver.** One track `p` from 0 to 1 on CARRY (about 360 ms, no overshoot). Every pose is a band of `p`, and bands stay linear because the driver is already a spring.
+- **Driver.** One track `p` from 0 to 1 on CARRY (97 % by 240 ms, no overshoot). Every pose is a band of `p`, and bands stay linear because the driver is already a spring.
 - **Become** (`p` 0–.6):
   - The row's mark grows into the hero stone. Its facets light from .1 to .55: at mark size it is only its glyph.
   - The name grows into the title.
