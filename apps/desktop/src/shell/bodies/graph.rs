@@ -394,7 +394,7 @@ impl Map {
             graph.update(cx, |graph, cx| graph.show_world(cx));
             self.painted_focus = None;
         }
-        // T asked for a tour (a package page's Start here): fly it once,
+        // T explicitly asked for the package tour: fly it once,
         // from the first stop, when the world shows.
         if matches!(route, Route::World)
             && let Some((package, ask)) = self.links.store.read(cx).tour_ask().cloned()

@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn an_untouched_workspace_is_served_from_the_cache_and_a_changed_manifest_invalidates_it() {
+    fn an_untouched_workspace_is_cached_but_lockfile_and_manifest_changes_each_invalidate_it() {
         struct Scratch(PathBuf);
         impl Drop for Scratch {
             fn drop(&mut self) {
@@ -382,7 +382,7 @@ mod tests {
             other_platforms: 0,
         };
         let mut cache = BrowseCache::default();
-        cache.entry = Some(CacheEntry { workspace: root.clone(), witness: witness(&watched), watched, input: sentinel });
+        cache.entry = Some(CacheEntry { workspace: root.clone(), witness: witness(&watched), watched: watched.clone(), input: sentinel.clone() });
 
         let untouched = cache.project_tree(&root, None).expect("untouched read");
         assert_eq!(
@@ -390,16 +390,22 @@ mod tests {
             "an untouched workspace must be served from the cache, not recomputed: {untouched:?}"
         );
 
-        // Now really touch the manifest and the lockfile, and prove the
-        // *next* read recomputes: the cache must never again hand back the
-        // sentinel. This is the half of the seam mutant `browse.rs:82`
-        // (`witness(&entry.watched) == entry.witness` replaced by `true`)
-        // cannot pass: it would keep returning the sentinel forever.
-        write_project("0.2.0");
-        let touched = cache.project_tree(&root, None).expect("touched read");
+        // A lockfile-only edit invalidates the cached Cargo resolution. Its
+        // manifest stays byte-for-byte identical, so watching only manifests
+        // cannot pass this assertion.
+        let initial_lock = std::fs::read_to_string(&lockfile).expect("initial lockfile");
+        std::fs::write(&lockfile, format!("{initial_lock}\n# lockfile changed alone\n")).expect("changed lockfile");
+        let touched = cache.project_tree(&root, None).expect("lockfile-only read");
         assert_ne!(
             touched.root, "sentinel-root",
-            "a changed manifest must invalidate the cache and force a real read"
+            "a changed lockfile alone must invalidate the cache and force a real read"
         );
+
+        // Replant the sentinel against the new lockfile, then change only
+        // Cargo.toml. Both inputs to Cargo's answer have independent guards.
+        cache.entry = Some(CacheEntry { workspace: root.clone(), witness: witness(&watched), watched, input: sentinel });
+        std::fs::write(&manifest, "[package]\nname = \"gapfix\"\nversion = \"0.2.0\"\nedition = \"2021\"\n").expect("changed manifest");
+        let touched = cache.project_tree(&root, None).expect("manifest-only read");
+        assert_ne!(touched.root, "sentinel-root", "a changed manifest alone must force a real read");
     }
 }

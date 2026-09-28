@@ -203,17 +203,17 @@ fn t_on_the_package_page_flies_its_tour_from_the_first_stop(cx: &mut TestAppCont
     assert_eq!(tour_stop(&mut rig).as_deref(), Some("relation_label"), "asked again, flown again");
 }
 
-/// The strip says so: "T fly it" at its right, and choosing it is T.
+/// The package outline does not pretend a fixture-ranked tour is evidence;
+/// the explicit T command still opens the graph tour when requested.
 #[gpui::test]
-fn fly_it_on_the_start_here_strip_tours_the_package(cx: &mut TestAppContext) {
+fn the_recorded_outline_keeps_the_graph_tour_explicit(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, anatomy_tests::package_route());
     let ledger = painted(&mut rig);
     let said = rig.said();
-    let from = said.iter().position(|line| line == "Start here").expect("the strip");
-    assert_eq!(said[from + 9], "fly it", "after the four stops: {:#?}", &said[from..]);
-    let fly = ledger.targets.iter().find(|target| target.key == "tour-fly").expect("fly it is a target").bounds.clone();
-    rig.cx.simulate_click(gpui::point(gpui::px(fly.x + fly.width / 2.0), gpui::px(fly.y + fly.height / 2.0)), gpui::Modifiers::default());
-    rig.settle();
+    assert!(said.iter().any(|line| line == "Recorded outline"));
+    assert!(!ledger.targets.iter().any(|target| target.key == "tour-fly"));
+    assert_eq!(rig.route(), anatomy_tests::package_route());
+    rig.keys("t");
     assert_eq!(rig.route(), Route::World);
     assert_eq!(tour_stop(&mut rig).as_deref(), Some("relation_label"));
 }
