@@ -15,7 +15,7 @@ use crate::{
     admit_reply_with_capability, admit_request, encode_id,
 };
 
-fn capability(object: SemanticObject) -> CoverageCapability {
+pub(super) fn capability(object: SemanticObject) -> CoverageCapability {
     let declared = AuthorityScopeClaim::from_object_version(object);
     let scope = ScopeRoot::from_bytes(object.to_bytes());
     let observation = crate::admit_producer_observation(
@@ -103,7 +103,7 @@ impl crate::ProducerObservationVerifier for TestCoverageVerifier {
     }
 }
 
-fn certificate(root: &ViewRoot) -> WireCertificate {
+pub(super) fn certificate(root: &ViewRoot) -> WireCertificate {
     let cursor = Cursor::for_view_root(root);
     let mut certificate = WireCertificate::new().with_claim(WireClaim::KeyBytes {
         schema: WireSchema::ViewRecipe,
@@ -758,9 +758,7 @@ fn graph_query_continuation_decodes_only_against_its_owner_cursor() {
         43,
         Command::GraphQuery(request.with_continuation(continuation)),
     )
-    .with_certificate(WireCertificate {
-        claims: claims.into_boxed_slice(),
-    });
+    .with_certificate(WireCertificate::from_claims(claims.into_boxed_slice()));
     let encoded = crate::encode_command_body(&expected).expect("encode opaque continuation");
 
     assert!(
