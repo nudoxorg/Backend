@@ -648,6 +648,9 @@ pub mod rhythm {
     pub const ROW: f32 = 32.0;
     /// A verb row, a policy row.
     pub const ROW_TIGHT: f32 = 28.0;
+    /// A member row's pitch: one row per member, Mono 13/20 (the wave-6
+    /// compactness law).
+    pub const ROW_PITCH: f32 = 24.0;
     /// From a section's heading to its content.
     pub const HEAD_GAP: f32 = 20.0;
     /// The reading column.
