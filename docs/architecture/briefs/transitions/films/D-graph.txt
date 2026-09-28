@@ -1,0 +1,9 @@
+wheel-zoom 900,450 1.25 @600            # graph zoom in
+wheel-zoom 900,450 0.8 @1200            # graph zoom out
+drag 700,450 -> 900,500 over 300 @1800  # graph pan (drag)
+key escape @2600                        # graph back out (escape)
+key escape @3400                        # graph to world (escape)
+key t @4200                             # graph tour (t)
+key space @5400                         # tour step (space)
+key space @6400                         # tour step (space)
+key escape @7400                        # tour end (escape)

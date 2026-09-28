@@ -1,0 +1,16 @@
+key tab @300        # zone (tab)
+key j @600          # focus-glow (j)
+key j @800          # focus-glow (j)
+key space @1100     # peek-open (space)
+key space @1700     # peek-pin (space)
+key escape @2300    # escape
+key escape @2500    # escape
+key j @2800         # focus (j)
+key cmd-d @3100     # hand-take (⌘D)
+key h @3600         # hand-row (h)
+key escape @4200    # hand close (escape)
+move 560,335 @4600  # hover link
+move 562,336 +500   # hover rest
+move 520,498 +500   # hover row
+move 700,650 +500   # hover page
+leave +400          # leave

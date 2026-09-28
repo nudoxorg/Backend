@@ -1,0 +1,11 @@
+route package present @300                                  # route-down orbit→package
+route symbol present::glyph::RelationLabel @1100            # route-down package→symbol
+key cmd-[ @1900                                             # back symbol→package (⌘[)
+key cmd-] @2700                                             # forward package→symbol (⌘])
+key cmd-. @3500                                             # view page→code (⌘.)
+key cmd-. @4300                                             # view code→page (⌘.)
+key g @5100                                                 # graph-enter (G)
+route symbol present::glyph::RelationLabel view=page @6400  # graph-exit (route view=page)
+key cmd-up @7400                                            # route-up (⌘↑)
+route world @8200                                           # route world
+route package present @9400                                 # world→package

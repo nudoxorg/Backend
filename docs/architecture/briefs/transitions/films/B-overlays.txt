@@ -1,0 +1,28 @@
+key j @300           # focus-glow (j)
+key j @450           # focus-glow (j)
+key space @700       # peek-open (space)
+key space @1300      # peek-pin (space)
+key escape @1900     # escape
+key escape @2100     # peek close (escape)
+key cmd-k @2600      # ask-open (⌘K)
+key escape @3300     # ask-close (escape)
+key cmd-, @3800      # settings-open (⌘,)
+key cmd-[ @4600      # back from settings (⌘[)
+hold cmd @5300       # ⌘ held: key caps
+release cmd @5900    # ⌘ released
+key cmd-d @6300      # hand-take (⌘D)
+key h @6900          # hand-row-open (h)
+key escape @7500     # hand close (escape)
+key f @8000          # hint-mode (f)
+key escape @8500     # hint close (escape)
+key cmd-\ @9000      # shelf-collapse (⌘\)
+key cmd-\ @9800      # shelf-expand (⌘\)
+move 120,160 @10600  # hover shelf row
+move 120,200 +300    # hover shelf row
+move 120,240 +300    # hover shelf row
+move 520,200 +300    # hover page
+move 620,260 +300    # hover page
+move 720,320 +300    # hover page
+move 820,380 +300    # hover page
+move 900,440 +300    # hover page
+leave +300           # leave

@@ -1,0 +1,47 @@
+# The transition catalog (../CATALOG.md) as a test: every film, the scene it plays on,
+# and (in each script) a `# name` for every act's window.
+#
+#   <binary> legibility --catalog docs/architecture/briefs/transitions/films/catalog.txt \
+#       --scale 2 [--only A-routes,float-pin] [--dump] [--frames] --out DIR
+#
+# One film per line: `<scene> [<script>] [from=MS] [to=MS]`, the script relative to this file. A film without a
+# script plays the scene's own and is one transition. Each binary films the scenes it serves
+# (the desktop harness the desktop films, facet-gallery the gallery films) and names the rest
+# as skipped. A.1 (A1-down.txt) is A's first two acts, kept for strips; it is not listed.
+
+# The desktop: the real shell on the fixture index (backend-desktop-gui-harness).
+desktop-orbit       A-routes.txt
+desktop-symbol      B-overlays.txt
+desktop-symbol      B2-focus.txt
+desktop-symbol      C-appearance.txt
+desktop-graph       D-graph.txt
+desktop-world       D2-tour.txt
+desktop-find-home   E-find.txt
+desktop-find-home   E2-type.txt
+
+# The facet gallery's films (facet-gallery), each on its own clock: filmed 0..4800 ms, as W-Motion did.
+float-reverse       to=4800
+float-chain         to=4800
+float-deepen        to=4800
+float-back          to=4800
+float-tip           to=4800
+float-pin           to=4800
+float-sweep         to=4800
+menu-film           to=4800
+hint-mode           to=4800
+toast-film          to=4800
+dialog-film         to=4800
+flow-list           to=4800
+flow-reflow         to=4800
+flow-descent        to=4800
+flow-graph          to=4800
+flow-presence       to=4800
+version-comb        to=4800
+controls-live       to=4800
+film-rose           to=4800
+film-comb           to=4800
+film-mosaic         to=4800
+graph-focus         to=4800
+graph-flight-a      to=4800
+graph-journey       to=4800
+graph-hover         to=4800
