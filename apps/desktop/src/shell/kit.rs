@@ -347,6 +347,20 @@ pub(crate) fn kind_mark(kind: Kind, base: facet::icons::KindSize, measure: &Meas
     facet::icons::kind_mark(kind, size, palette)
 }
 
+/// Dead end #15: a link without a place is drawn as text, never as a
+/// control that looks live but goes nowhere. One rule, so every caller
+/// (a relation row, a doc reference, an Ask row) reads a route the same
+/// way: lit at `ink0` and a pointer when there is somewhere to go, `ink3`
+/// and inert otherwise. Callers still own their own hover/click wiring;
+/// this only answers the ink so the two states can never be confused.
+pub(crate) fn link_ink(has_place: bool, palette: &Palette) -> Hsla {
+    if has_place {
+        palette.ink0.into()
+    } else {
+        palette.ink3.into()
+    }
+}
+
 /// A world node's kind as the mark it wears.
 pub(crate) const fn world_kind(kind: facet::graph::Kind) -> Kind {
     use facet::graph::Kind as World;

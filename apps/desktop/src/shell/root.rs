@@ -238,6 +238,9 @@ impl Shell {
     pub(crate) fn graph_entity(&self, cx: &App) -> Option<Entity<facet::graph::GraphView>> { self.reader.read(cx).graph_entity(cx) }
 
     #[cfg(test)]
+    pub(crate) fn ask_entity(&self) -> Entity<Ask> { self.ask.clone() }
+
+    #[cfg(test)]
     pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &App) -> (Option<gpui::Bounds<gpui::Pixels>>, Option<gpui::Bounds<gpui::Pixels>>, gpui::LayerTransform) {
         self.reader.read(cx).graph_canvas_geometry(node, cx)
     }
@@ -500,6 +503,20 @@ impl Shell {
         );
     }
 
+    /// S2: the exact identity behind an anatomy link could not be resolved
+    /// (no admitted package, or no exact match in its complete outline).
+    /// The link does not move the page; the Notice says so.
+    fn symbol_link_unresolved(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
+        self.cancel_symbol_link(cx);
+        let snapshot = self.links.snapshot(cx);
+        let notice = crate::runtime::graph_focus::Notice {
+            visit: snapshot.route().clone(),
+            root: snapshot.key(),
+            message: format!("{} isn't in the index", query.text).into(),
+        };
+        self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+    }
+
     /// A resource event may be for a previous route, release, or fixture.
     /// Only the same generation and exact source identity can open a page.
     fn resolve_symbol_link(&mut self, cx: &mut Context<Self>) {
@@ -514,7 +531,7 @@ impl Shell {
         ) {
             return;
         }
-        let Some(package) = &request.package else { self.find_symbol_link(request.query, cx); return };
+        let Some(package) = &request.package else { self.symbol_link_unresolved(request.query, cx); return };
         let resource = self.links.store.read(cx).package(package);
         match request.step(&resource) {
             SymbolLinkStep::Waiting => self.pending_symbol_link = Some(request),
@@ -528,7 +545,7 @@ impl Shell {
                     self.find_symbol_link(request.query, cx);
                 }
             }
-            SymbolLinkStep::Find => self.find_symbol_link(request.query, cx),
+            SymbolLinkStep::Find => self.symbol_link_unresolved(request.query, cx),
         }
     }
 
@@ -575,7 +592,7 @@ impl Shell {
                 return;
             }
         }
-        let Some(package) = request.package.clone() else { self.find_symbol_link(request.query, cx); return };
+        let Some(package) = request.package.clone() else { self.symbol_link_unresolved(request.query, cx); return };
         let opening: SharedString = format!("Opening {}…", request.query.text).into();
         self.status.update(cx, |status, cx| status.set_opening(Some(opening), cx));
         self.pending_symbol_link = Some(request);
@@ -937,7 +954,13 @@ impl Shell {
         let graph_focus = self.links.store.read(cx).graph_focus().cloned();
         if let Some(focus) = graph_focus {
             let Some(Route::Symbol(route)) = focus.indexed.as_ref().and_then(|(package, symbol)| kit::symbol_route(package.as_str(), symbol)) else {
-                // Not in the index: nothing to hold (the notice says so, S2).
+                // Not in the index: nothing to hold, and the Notice says so.
+                let notice = crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: format!("{}::{}::{} isn't in the index", focus.package, focus.module, focus.name).into(),
+                };
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
                 return;
             };
             if let Some(stone) = self.reader.read(cx).graph_focus_glyph(cx) {
@@ -1192,7 +1215,7 @@ impl Render for Shell {
         self.frame = Some(frame);
         // The status bar grows a line when the address's name has to wrap;
         // sized here from the same fit the bar sets, in the same frame.
-        let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.graph_notice().cloned()) };
+        let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.notice().cloned()) };
         // The foot grows only for what the graph says in it; the hand's
         // marks sit on one line.
         let status_height = if super::status::graph_speaks(&snapshot, graph_focus.as_ref(), graph_notice.as_ref()) {

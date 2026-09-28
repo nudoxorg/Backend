@@ -34,12 +34,12 @@ pub(crate) fn display_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtim
     (wrap_identifier(&focus.status(), &role, room, cx), role)
 }
 
-pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::GraphNotice>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
+pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
     if let Some(notice) = notice.filter(|notice| notice.active(snapshot)) {
         let measure = Measure::new(width, &cx.facet());
         let role = measure.role(ty::MONO_SMALL);
         let room = (width - measure.space(Space::Roomy) * 2.0).max(px(1.0));
-        return (wrap_identifier(&format!("Graph · {}", notice.message), &role, room, cx), role);
+        return (wrap_identifier(&notice.message, &role, room, cx), role);
     }
     display_lines(snapshot, focus, width, cx)
 }
@@ -64,7 +64,7 @@ fn fit(address: &Address, role: &TypeRole, room: Pixels, cx: &App) -> Vec<String
 pub(crate) fn graph_speaks(
     snapshot: &AppSnapshot,
     focus: Option<&crate::runtime::graph_focus::GraphFocus>,
-    notice: Option<&crate::runtime::graph_focus::GraphNotice>,
+    notice: Option<&crate::runtime::graph_focus::Notice>,
 ) -> bool {
     notice.is_some_and(|notice| notice.active(snapshot)) || focus.is_some_and(|focus| focus.active(snapshot))
 }
@@ -170,7 +170,7 @@ impl Render for Status {
             return foot.pl((self.reader_left + px(20.0 * measure.scale())).min(self.core.width() / 3.0))
                 .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).child(opening.clone()));
         }
-        let (focus, notice) = (store.graph_focus().cloned(), store.graph_notice().cloned());
+        let (focus, notice) = (store.graph_focus().cloned(), store.notice().cloned());
         let speaks = graph_speaks(&snapshot, focus.as_ref(), notice.as_ref());
         let hand = snapshot.session().hand.clone();
         if !speaks || !hand.is_empty() {

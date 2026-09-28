@@ -526,6 +526,37 @@ fn j_and_k_walk_focus_inside_the_reader_only(cx: &mut TestAppContext) {
     assert_eq!(zone, super::focus::Zone::Titlebar);
 }
 
+/// The lead's report: on a symbol page, Tab, J and Space each changed
+/// nothing. Confirms all three are wired end to end on a fresh page: Tab
+/// moves the keyboard zone, J walks the reader's focus, and Space peeks a
+/// focused row (the §14/hand ruling "Space peeks", scoped by S9).
+#[gpui::test]
+fn tab_j_and_space_each_change_a_fresh_symbol_page(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.keys("x");
+    let (zone_before, focus_before) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone_before, super::focus::Zone::Reader, "a fresh page keeps the keyboard in the reader");
+    rig.keys("tab");
+    let (zone_after_tab, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(zone_after_tab, zone_before, "Tab moved the keyboard to another zone");
+    rig.keys("shift-tab");
+    let (zone_back, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone_back, zone_before, "shift-Tab returns to the reader");
+    rig.keys("j");
+    let (_, focus_after_j) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(focus_after_j, focus_before, "J walked the focus");
+    let mut peeked = false;
+    for _ in 0..32 {
+        rig.keys("space");
+        peeked = rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1;
+        if peeked {
+            break;
+        }
+        rig.keys("j");
+    }
+    assert!(peeked, "Space opened a peek on some focused row");
+}
+
 #[gpui::test]
 fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Package(crate::navigation::PackageRoute {
@@ -1425,12 +1456,12 @@ fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut Tes
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "an unavailable pinned symbol does not route arbitrary A or B");
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
     rig.graph.store.read_with(rig.cx, |store, cx| {
-        let notice = store.graph_notice().expect("hidden pinned failure has visible current-page feedback");
+        let notice = store.notice().expect("hidden pinned failure has visible current-page feedback");
         let (lines, _) = super::status::feedback_lines(&store.snapshot(), None, Some(notice), px(1440.0), cx);
         assert!(lines.join("").contains("no exact match"));
     });
     rig.go(Intent::Navigate(page_route("RelationLabel")));
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_notice().is_none()), "the previous page's failed card intent does not follow another route");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "the previous page's failed card intent does not follow another route");
 }
 
 #[gpui::test]
