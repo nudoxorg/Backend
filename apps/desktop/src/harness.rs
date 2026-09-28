@@ -124,6 +124,21 @@ fn tree_workspace(project: &LocalProjectId) -> WorkspaceState {
     }
 }
 
+/// The shelf's Library when Orbit is the start route, with `toml_pin` (J1's
+/// "your project") as the one project open and ready: the same honest way
+/// [`tree_workspace`] gives the Tree route its one project, from the
+/// fixture's own indexed roots, never invented. Without this, Orbit boots
+/// with an empty workspace and its centre draws nothing to click.
+fn orbit_workspace(fixture: &Fixture) -> Result<WorkspaceState, String> {
+    let root = fixture
+        .projects()
+        .iter()
+        .find(|project| project.ends_with("toml_pin"))
+        .ok_or_else(|| "toml_pin is not among the fixture's indexed projects".to_owned())?;
+    let project = LocalProjectId::from_path(root).map_err(|error| format!("toml_pin project identity: {error:?}"))?;
+    Ok(tree_workspace(&project))
+}
+
 /// A crate's unpacked source in the local cargo registry cache
 /// (`$CARGO_HOME/registry/src/<index>/<name-version>`): indexed offline,
 /// never fetched.
@@ -772,6 +787,12 @@ pub(super) fn prepare_with_progress(
     ))) = &route
     {
         snapshot = snapshot.with_workspace(tree_workspace(project));
+    } else if target == route::Target::Orbit {
+        // Orbit is the first-look start (J1, gui-plan §3 item 10): "your
+        // project" is `toml_pin`, so Orbit's own boot needs a workspace the
+        // same way the Tree route already gets one, or the centre has no
+        // project to draw.
+        snapshot = snapshot.with_workspace(orbit_workspace(fixture)?);
     }
     crate::runtime::trace::span("boot.resolve_route", resolving, start);
     let project = LocalProjectId::from_path(&fixture.projects()[0])
@@ -832,6 +853,15 @@ pub(super) fn mount(
 /// Which regions re-rendered since the previous frame, and how many reads
 /// landed: what a slow frame did.
 fn annotate(cx: &mut App) -> String {
+    // The latency ledger joins each played frame's real draw time to the
+    // read marks (`NUDOX_TRACE`); the virtual clock alone cannot see I/O.
+    crate::runtime::trace::frames_now();
+    let note = annotate_regions(cx);
+    crate::runtime::trace::mark("harness.frame", &note);
+    note
+}
+
+fn annotate_regions(cx: &mut App) -> String {
     let Some(booted) = cx.try_global::<Booted>() else {
         return String::new();
     };
@@ -972,6 +1002,9 @@ fn quiet(cx: &mut App) -> bool {
 /// become intents, `route` navigates. ⌘/⌥ holds arrive as real modifier
 /// events and the shell reveals on its own.
 fn adapt(act: &Act, _window: &mut Window, cx: &mut App) {
+    // After the platform dispatched `act` (a key, a move) and before a
+    // route act navigates: the ledger's "input happened" instant.
+    crate::runtime::trace::mark("harness.act", act);
     let Some(booted) = cx.try_global::<Booted>() else {
         return;
     };

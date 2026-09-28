@@ -52,6 +52,7 @@ fn run(opened: Opened) {
         persistence,
         client,
     } = opened;
+    let starting_actor = std::time::Instant::now();
     let actor = match EngineActor::start(client, 32) {
         Ok(actor) => actor,
         Err(error) => {
@@ -59,8 +60,10 @@ fn run(opened: Opened) {
             return;
         }
     };
+    crate::runtime::trace::span("boot.actor", starting_actor, "EngineActor::start");
     let runtime = DesktopRuntime::new(snapshot, actor);
     let endpoint = host.endpoint().to_path_buf();
+    let starting_reads = std::time::Instant::now();
     let reads = match ReadPool::start(READ_SESSIONS, |_| SessionReader::connect(&endpoint)) {
         Ok(reads) => Some(reads),
         Err(error) => {
@@ -69,16 +72,23 @@ fn run(opened: Opened) {
             None
         }
     };
+    crate::runtime::trace::span("boot.read_pool", starting_reads, format_args!("{READ_SESSIONS} sessions"));
+    let starting_platform = std::time::Instant::now();
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(facet::icons::Assets)
         .run(move |cx: &mut App| {
+            crate::runtime::trace::span("boot.platform", starting_platform, "Application::with_platform..run");
+            let installing = std::time::Instant::now();
             if let Err(error) = install(cx) {
                 eprintln!("backend-desktop: install UI assets: {error}");
                 return;
             }
+            crate::runtime::trace::span("boot.fonts", installing, "gpui_component::init + facet::fonts::install");
             crate::runtime::trace::frames(cx);
             crate::runtime::trace::mark("boot.app_running", "gpui");
+            let installing_graph = std::time::Instant::now();
             let graph = UiEntityGraph::install_with_reads(cx, runtime, Some(persistence), reads);
+            crate::runtime::trace::span("boot.ui_graph", installing_graph, "UiEntityGraph::install_with_reads");
             // Temporary: `NUDOX_DEBUG_PAGE="search:Engine;orbit;health"` opens a
             // plain-text window onto the data plane (see runtime::debug_page).
             if let Ok(spec) = std::env::var("NUDOX_DEBUG_PAGE") {
@@ -89,14 +99,18 @@ fn run(opened: Opened) {
                 );
             }
             let options = window_options(cx);
+            let opening = std::time::Instant::now();
             if let Err(error) = cx.open_window(options, move |window, cx| {
+                let building = std::time::Instant::now();
                 let shell = crate::shell::open_shell(&graph, window, cx);
+                crate::runtime::trace::span("boot.shell", building, "shell::open_shell");
                 // gpui_component::Root hosts the component layer the Ask
                 // field's input engine (IME) expects; the shell is its view.
                 cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
             }) {
                 eprintln!("backend-desktop: open window: {error}");
             }
+            crate::runtime::trace::span("boot.open_window", opening, "cx.open_window (incl. shell)");
             crate::runtime::trace::mark("boot.window_opened", "open_window returned");
             cx.activate(true);
         });
@@ -167,6 +181,7 @@ fn attempt_once() -> Result<Opened, String> {
         return Err("the local service returned mismatched startup identities".to_owned());
     }
     crate::runtime::trace::span("boot.bootstrap_root", bootstrapping, "product subscription");
+    let restoring = std::time::Instant::now();
     let key = VersionedRoot::from_revision(1, revision, 0);
     let persistence = PersistentState::at(host.data().join("desktop-state.json"));
     let admitted = persistence.load_recovering().map_err(|error| {
@@ -205,8 +220,10 @@ fn attempt_once() -> Result<Opened, String> {
         hand: restored.hand,
         whispered: restored.whispered,
         whisper: None,
+        preview: None,
     });
     let client = LocalEngineClient::new(host.endpoint(), host_project.clone());
+    crate::runtime::trace::span("boot.state", restoring, "desktop-state.json + cold shelf/settings/session");
     Ok(Opened {
         host,
         snapshot,

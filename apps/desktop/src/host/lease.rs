@@ -49,7 +49,9 @@ impl DesktopHost {
     /// # Errors
     /// Returns an error when paths, credentials, composition, or binding fail.
     pub fn start() -> Result<Self, HostError> {
+        let discovering = std::time::Instant::now();
         let paths = super::paths::discover().map_err(HostError::Runtime)?;
+        crate::runtime::trace::span("boot.discover", discovering, "paths::discover");
         Self::start_with_paths(paths)
     }
 
@@ -63,7 +65,10 @@ impl DesktopHost {
     /// Returns an error when credentials, composition, or binding fail.
     pub fn start_with_paths(paths: WorkspacePaths) -> Result<Self, HostError> {
         paths.initialize().map_err(HostError::Runtime)?;
-        if Self::endpoint_is_live(&paths) {
+        let probing = std::time::Instant::now();
+        let live = Self::endpoint_is_live(&paths);
+        crate::runtime::trace::span("boot.probe_live", probing, live);
+        if live {
             return Ok(Self {
                 paths,
                 embedded: None,
@@ -71,7 +76,10 @@ impl DesktopHost {
         }
         let config =
             ProcessConfig::parse(Self::owner_arguments(&paths)?).map_err(HostError::Service)?;
-        match EmbeddedLocalService::start(config) {
+        let embedding = std::time::Instant::now();
+        let started = EmbeddedLocalService::start(config);
+        crate::runtime::trace::span("boot.embed", embedding, "EmbeddedLocalService::start");
+        match started {
             Ok(embedded) => Ok(Self {
                 paths,
                 embedded: Some(embedded),
