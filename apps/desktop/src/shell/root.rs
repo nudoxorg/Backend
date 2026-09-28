@@ -76,6 +76,8 @@ pub struct Shell {
     zen: bool,
     /// The hand's Row rung is open (H, or the foot's marks).
     hand_open: bool,
+    /// The card the keyboard stands on in the open hand (shown order).
+    hand_at: usize,
     shelf_over_open: bool,
     shelf_width: f32,
     zone: Zone,
@@ -177,6 +179,7 @@ impl Shell {
             motion: Motion::new(),
             zen: false,
             hand_open: false,
+            hand_at: 0,
             shelf_over_open: false,
             shelf_width: SHELF,
             zone: Zone::Reader,
@@ -236,6 +239,9 @@ impl Shell {
     pub(crate) fn graph_gem_morphing(&self, cx: &App) -> bool { self.reader.read(cx).graph_gem_morphing(cx) }
 
     #[cfg(test)]
+    pub(crate) fn graph_focus_glyph(&self, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> { self.reader.read(cx).graph_focus_glyph(cx) }
+
+    #[cfg(test)]
     pub(crate) fn graph_find_state(&self, window: &Window, cx: &App) -> (bool, bool) {
         self.reader.read(cx).graph_find_state(window, cx)
     }
@@ -257,6 +263,11 @@ impl Shell {
             pins: self.pins.read(cx).renders(),
             ask: self.ask.read(cx).renders(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_marks(&self, cx: &App) -> usize {
+        self.status.read(cx).marks_drawn()
     }
 
     #[cfg(test)]
@@ -390,6 +401,10 @@ impl Shell {
         if keys {
             self.titlebar.update(cx, |_, cx| cx.notify());
             self.shelf.update(cx, |_, cx| cx.notify());
+            // The hand's marks show ⌘1–⌘5 while ⌘ is held.
+            if !self.links.snapshot(cx).session().hand.is_empty() {
+                self.status.update(cx, |_, cx| cx.notify());
+            }
         }
         if xray {
             self.reader.update(cx, |_, cx| cx.notify());
@@ -594,6 +609,10 @@ impl Shell {
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // ↵ in the open hand goes to the card it stands on.
+        if self.hand_open && self.hand_key("enter", cx) {
+            return;
+        }
         if let Some(target) = self.current(cx) {
             run(target.act, window, cx);
         }
@@ -743,6 +762,10 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hints.is_none() && self.hand_open && self.hand_key(event.keystroke.key.as_str(), cx) {
+            cx.stop_propagation();
+            return;
+        }
         let Some(hints) = self.hints.as_mut() else {
             return;
         };
@@ -815,23 +838,96 @@ impl Shell {
 
     /// ⌘1–⌘4: Orbit, the package, the page, the code. The last two are
     /// views of the declaration you are on, not places.
-    /// ⌘D: hold what you are on (a declaration, else its package).
-    pub(crate) fn hold(&mut self, cx: &mut Context<Self>) {
+    /// ⌘D: hold what you are on (a declaration, else its package). Take →
+    /// hand: the stone travels from where you held it (the hero's, its
+    /// text-free mark) to its place in the foot.
+    pub(crate) fn hold(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
+        // On the graph, what you hold is its focus (its indexed row), and
+        // the stone leaves from the canvas glyph.
+        let graph_focus = self.links.store.read(cx).graph_focus().cloned();
+        if let Some(focus) = graph_focus {
+            let Some(Route::Symbol(route)) = focus.indexed.as_ref().and_then(|(package, symbol)| kit::symbol_route(package.as_str(), symbol)) else {
+                // Not in the index: nothing to hold (the notice says so, S2).
+                return;
+            };
+            if let Some(stone) = self.reader.read(cx).graph_focus_glyph(cx) {
+                facet::motion::shared::remember(super::hand::take_key(route.id.as_str()), stone, window, cx);
+            }
+            let at = now_ms();
+            let held = crate::model::hand::Held { package: route.package, id: Some(route.id), why: crate::model::hand::HeldWhy::Pin, held_at: at, touched_at: at };
+            self.links.dispatch(Intent::Hold(held), cx);
+            return;
+        }
         let (package, id) = match snapshot.route() {
             Route::Symbol(route) => (route.package.clone(), Some(route.id.clone())),
             Route::Package(route) => (route.package.clone(), None),
             Route::Orbit(_) | Route::World => return,
         };
+        if let Some(id) = &id
+            && let Ok(symbol) = crate::model::pages::SymbolRef::new(id.as_str())
+            && let Some(stone) = facet::motion::shared::last_bounds(kit::shared_id(&symbol), window, cx)
+        {
+            facet::motion::shared::remember(super::hand::take_key(id.as_str()), stone, window, cx);
+        }
         let at = now_ms();
         let held = crate::model::hand::Held { package, id, why: crate::model::hand::HeldWhy::Pin, held_at: at, touched_at: at };
         self.links.dispatch(Intent::Hold(held), cx);
     }
 
-    /// H: open or close the hand.
+    /// T: tour the package you are in (its page, or a declaration's) in
+    /// the graph, from its first stop.
+    pub(crate) fn tour(&mut self, cx: &mut Context<Self>) {
+        let package = match self.links.snapshot(cx).route() {
+            Route::Package(route) => route.package.clone(),
+            Route::Symbol(route) if route.view != View::Graph => route.package.clone(),
+            Route::Symbol(_) | Route::Orbit(_) | Route::World => return,
+        };
+        self.links.dispatch(Intent::Tour(package), cx);
+    }
+
+    /// H: open or close the hand (the keyboard starts on its first card).
     pub(crate) fn toggle_hand(&mut self, cx: &mut Context<Self>) {
         self.hand_open = !self.hand_open && !self.links.snapshot(cx).session().hand.is_empty();
+        self.hand_at = 0;
         cx.notify();
+    }
+
+    /// Inside the open hand: ← / → walk the cards, ↵ goes, ⌫ lets go.
+    /// Returns whether the key was the hand's.
+    fn hand_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let hand = self.links.snapshot(cx).session().hand.clone();
+        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let count = view.cards.len();
+        if count == 0 {
+            return false;
+        }
+        match key {
+            "left" => self.hand_at = self.hand_at.saturating_sub(1),
+            "right" => self.hand_at = (self.hand_at + 1).min(count - 1),
+            "enter" => {
+                let at = self.hand_at.min(count - 1);
+                self.hand_open = false;
+                self.hand_card(at, cx);
+            }
+            "backspace" => {
+                let at = self.hand_at.min(count - 1);
+                self.links.dispatch(Intent::LetGo(view.cards[at].held.clone()), cx);
+                self.hand_at = at.saturating_sub(usize::from(at + 1 == count));
+                if count == 1 {
+                    self.hand_open = false;
+                }
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// The card the keyboard stands on in the open hand.
+    #[cfg(test)]
+    pub(crate) const fn hand_at(&self) -> usize {
+        self.hand_at
     }
 
     /// ⌘1–⌘5: go to the hand's nth card, in the order it is shown.
@@ -1011,7 +1107,10 @@ impl Render for Shell {
         // The foot grows only for what the graph says in it; the hand's
         // marks sit on one line.
         let status_height = if super::status::graph_speaks(&snapshot, graph_focus.as_ref(), graph_notice.as_ref()) {
-            let (lines, role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), viewport.width, cx);
+            // Set beside the hand's marks when it holds anything (the same
+            // room the foot sets it in).
+            let room = super::status::line_room(viewport.width, px(frame.shelf_width), snapshot.session().hand.held().len(), scale);
+            let (lines, role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), room, cx);
             super::status::height(lines.len(), &role, frame.status)
         } else {
             frame.status
@@ -1039,6 +1138,11 @@ impl Render for Shell {
         context.add(CONTEXT);
         if self.hints.is_some() {
             context.add("hints");
+        }
+        // An open jump-bar menu owns the plain keys (arrows, ↵, type-ahead,
+        // Esc): the shell's bindings step aside (`keys::binding`, `!Menu`).
+        if super::titlebar::menu_open(window, cx) {
+            context.add("Menu");
         }
 
         let body = div()
@@ -1101,7 +1205,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.zoom(ZoomStep::In, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.zoom(ZoomStep::Out, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Hold, _, cx| shell.hold(cx)))
+            .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| shell.hold(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.toggle_hand(cx)))
             .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.hand_card(0, cx)))
             .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| shell.hand_card(1, cx)))
@@ -1109,6 +1213,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| shell.hand_card(3, cx)))
             .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| shell.hand_card(4, cx)))
             .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.copy_address(cx)))
+            .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| shell.tour(cx)))
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             }))
@@ -1146,7 +1251,7 @@ impl Render for Shell {
                     .bottom(px(status_height + 6.0 * scale))
                     .left(px(shelf_width + 14.0 * scale))
                     .max_w(viewport.width - px(shelf_width + 28.0 * scale))
-                    .child(super::hand::row(&view, &self.links, &measure, palette)),
+                    .child(super::hand::row(&view, self.hand_at, &self.links, &measure, palette)),
             );
         } else if self.hand_open {
             self.hand_open = false;

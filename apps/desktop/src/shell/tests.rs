@@ -163,6 +163,9 @@ pub(crate) fn dossier() -> PackageDossier {
                         node("relation_label", DeclarationKind::Function, vec![]),
                     ],
                 ),
+                // A `#[cfg(test)]` module between two real ones: the shelf
+                // and the jump menu fold it into a trailing "tests" row.
+                node("glyph_tests", DeclarationKind::Module, vec![node("folds_rows", DeclarationKind::Function, vec![])]),
                 node("outline", DeclarationKind::Module, vec![node("Outline", DeclarationKind::Struct, vec![])]),
             ]),
             complete: true,
@@ -272,7 +275,7 @@ impl EngineClient for RootOnly {
 }
 
 /// A fresh index-backed open carries the actual declaration source line.
-fn indexed_view_route(name: &str, view: View) -> Route {
+pub(crate) fn indexed_view_route(name: &str, view: View) -> Route {
     let Route::Symbol(mut route) = view_route(name, view) else { unreachable!() };
     route.line = Some(138);
     Route::Symbol(route)

@@ -27,7 +27,7 @@ use facet::paint::{Bevel, Chamfer, cut};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
-    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString,
+    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, WindowControlArea, div, px,
 };
 use std::cell::Cell;
@@ -92,7 +92,7 @@ impl Render for Titlebar {
         let snapshot = self.links.snapshot(cx);
         let (here, segments) = {
             let store = self.links.store.read(cx);
-            (jump::here(&snapshot, store), jump::segments(snapshot.route(), store))
+            (jump::here(&snapshot, store), jump::bar_segments(&snapshot, store))
         };
         let orbit = matches!(snapshot.route(), Route::Orbit(OrbitRoute::Home)) && snapshot.overlay().is_none();
         let shelf_on = snapshot.settings().shelf_open;
@@ -241,7 +241,7 @@ impl Titlebar {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(24.0 * scale))
+                    .size(hit_side(measure))
                     .cursor_pointer()
                     .child(text(ty::ROW, measure, if can_back { palette.ink2 } else { palette.ink4 }).child("‹"))
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -293,7 +293,7 @@ impl Titlebar {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(24.0 * scale))
+                        .size(hit_side(measure))
                         .cursor_pointer()
                         .child(text(ty::ROW, measure, palette.ink2).child("›"))
                         .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
@@ -347,24 +347,28 @@ impl Titlebar {
         };
         for (index, segment) in segments.iter().enumerate().take(lead).skip(keep_from) {
             let id: SharedString = format!("jump-seg-{index}").into();
-            plate = plate.child(self.segment(id, index, segment, measure, palette)).child(text(ty::SMALL, measure, palette.ink4).child("›"));
+            plate = plate.child(self.segment(id, index, segment, measure, palette, cx)).child(text(ty::SMALL, measure, palette.ink4).child("›"));
         }
         let last_id: SharedString = format!("jump-seg-{lead}").into();
         let last_links = self.links.clone();
         let last_targets = self.targets.clone();
         plate = plate.child(
-            div()
-                .id(last_id.clone())
-                .flex()
-                .items_center()
-                .gap(measure.space(Space::Snug))
-                .min_w(px(0.0))
-                .cursor_pointer()
-                .child(mark)
-                .child(name)
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    siblings_menu(&last_links, &last_targets, lead, window, cx);
-                }),
+            self.targets.track(
+                last_id.clone(),
+                div()
+                    .id(last_id.clone())
+                    .flex()
+                    .items_center()
+                    .h(hit_side(measure))
+                    .gap(measure.space(Space::Snug))
+                    .min_w(px(0.0))
+                    .cursor_pointer()
+                    .child(mark)
+                    .child(name)
+                    .on_click(move |_: &ClickEvent, window, cx| {
+                        siblings_menu(&last_links, &last_targets, lead, window, cx);
+                    }),
+            ),
         );
         // Not a declaration: the place names itself (`registry`, `Appearance`).
         let quiet: Option<SharedString> = if segments.is_empty() || here.path.starts_with("viewing ") {
@@ -394,7 +398,14 @@ impl Titlebar {
                 .on_click(move |_: &ClickEvent, _, cx| ask_links.shell(cx, |shell, cx| shell.open_ask(cx))),
         );
         let hover_targets = self.targets.clone();
-        let address = SharedString::from(jump::address_parts(snapshot).full());
+        // A graph focus is fixture data, and the tip says so.
+        let address = SharedString::from(
+            self.links
+                .store
+                .read(cx)
+                .graph_focus()
+                .map_or_else(|| jump::address_parts(snapshot).full(), crate::runtime::graph_focus::GraphFocus::status),
+        );
         let ask_act_links = self.links.clone();
         let act: super::focus::Act = Rc::new(move |_, cx| ask_act_links.shell(cx, |shell, cx| shell.open_ask(cx)));
         self.targets.push(Target { id: "here".into(), label: here.name.clone(), act, peek: None, source: None });
@@ -430,7 +441,7 @@ impl Titlebar {
 
     /// One segment before the name: its siblings, or its page when it has
     /// none to list (the package).
-    fn segment(&mut self, id: SharedString, index: usize, segment: &Segment, measure: &Measure, palette: &Palette) -> AnyElement {
+    fn segment(&mut self, id: SharedString, index: usize, segment: &Segment, measure: &Measure, palette: &Palette, cx: &App) -> AnyElement {
         let links = self.links.clone();
         let targets = self.targets.clone();
         let route = segment.route.clone();
@@ -443,7 +454,14 @@ impl Titlebar {
                 }
             })
         };
+        if segment.quiet {
+            return text(ty::SMALL, measure, palette.ink3).flex_none().whitespace_nowrap().child(segment.name.clone()).into_any_element();
+        }
         self.targets.push(Target { id: id.clone(), label: segment.name.clone(), act: Rc::clone(&act), peek: None, source: None });
+        // At least 24 × 24 to hit (gui-plan.md:213), grown by padding that
+        // a matching negative margin takes back: the plate looks the same.
+        let side = hit_side(measure);
+        let pad = ((side - super::text_fit::text_width(&segment.name, &measure.role(ty::SMALL), cx)) / 2.0).max(px(0.0));
         self.targets
             .track(
                 id.clone(),
@@ -451,6 +469,11 @@ impl Titlebar {
                     .id(id)
                     .cursor_pointer()
                     .flex_none()
+                    .h(side)
+                    .flex()
+                    .items_center()
+                    .px(pad)
+                    .mx(-pad)
                     .child(text(ty::SMALL, measure, palette.ink2).whitespace_nowrap().child(segment.name.clone()))
                     .on_click(move |_: &ClickEvent, window, cx| {
                         if index == 0 {
@@ -567,25 +590,72 @@ impl Titlebar {
     }
 }
 
+/// The smallest hit area, 24 × 24 px at any text size (gui-plan.md:213).
+fn hit_side(measure: &Measure) -> Pixels {
+    px((24.0 * measure.scale()).max(24.0))
+}
+
+/// Whether one of the jump bar's menus (back's places, a segment's
+/// siblings) is open.
+pub(crate) fn menu_open(window: &Window, cx: &mut App) -> bool {
+    std::iter::once(gpui::ElementId::from(SharedString::from("jump-back-menu")))
+        .chain((0..8).flat_map(|index| [format!("jump-siblings-{index}"), format!("jump-siblings-{index}-tests")]).map(|key| gpui::ElementId::from(SharedString::from(key))))
+        .any(|key| facet::overlay::float::is_open(&key, window, cx))
+}
+
 /// Opens the siblings of segment `index` under it: the outline level it
 /// sits at; choosing one opens its page.
 fn siblings_menu(links: &Links, targets: &Targets, index: usize, window: &mut Window, cx: &mut App) {
     let Some(anchor) = targets.bounds_of(&format!("jump-seg-{index}")).or_else(|| targets.bounds_of("here")) else {
         return;
     };
-    let route = links.snapshot(cx).route().clone();
+    let route = jump::bar_route(&links.snapshot(cx), links.store.read(cx));
     let siblings = jump::siblings(&route, index, links.store.read(cx));
     if siblings.is_empty() {
         return;
     }
-    let items = siblings.iter().map(|sibling| MenuItem::new(sibling.name.clone())).collect();
+    open_siblings(links, anchor, index, siblings, false, window, cx);
+}
+
+/// The siblings menu: the real entries, then the test-only modules folded
+/// into one "tests" row (choosing it reopens the menu with them unfolded).
+fn open_siblings(
+    links: &Links,
+    anchor: gpui::Bounds<gpui::Pixels>,
+    index: usize,
+    siblings: jump::Siblings,
+    unfolded: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let mut items: Vec<MenuItem> = siblings.real.iter().map(|sibling| MenuItem::new(sibling.name.clone())).collect();
+    let folded = !siblings.tests.is_empty() && !unfolded;
+    if !siblings.tests.is_empty()
+        && let Some(last) = items.last_mut()
+    {
+        last.separator_after = true;
+    }
+    if folded {
+        items.push(MenuItem::new("tests"));
+    } else {
+        items.extend(siblings.tests.iter().map(|sibling| MenuItem::new(sibling.name.clone())));
+    }
     let links = links.clone();
-    let menu = Menu::new(items, move |choice, _, cx| {
-        if let Some(route) = siblings.get(choice).and_then(|sibling| sibling.route.clone()) {
+    let menu = Menu::new(items, move |choice, window, cx| {
+        if folded && choice == siblings.real.len() {
+            let (links, siblings) = (links.clone(), siblings.clone());
+            window.defer(cx, move |window, cx| open_siblings(&links, anchor, index, siblings, true, window, cx));
+            return;
+        }
+        let chosen = siblings.real.iter().chain(siblings.tests.iter()).nth(choice);
+        if let Some(route) = chosen.and_then(|sibling| sibling.route.clone()) {
             links.dispatch(Intent::Navigate(route), cx);
         }
     });
-    menu::open(format!("jump-siblings-{index}"), anchor, Side::Below, menu, window, cx);
+    // Unfolded, it is a new menu in the same place (the closing one keeps
+    // its key until it has left).
+    let key = if unfolded { format!("jump-siblings-{index}-tests") } else { format!("jump-siblings-{index}") };
+    menu::open(key, anchor, Side::Below, menu, window, cx);
 }
 
 /// The view a place shows, when it is a declaration or the world graph.

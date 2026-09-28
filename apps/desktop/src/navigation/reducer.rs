@@ -23,8 +23,17 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 effects.push(Effect::Persist);
             }
         }
+        Intent::Tour(_) => {
+            navigate(&mut next, Route::World);
+            effects.push(Effect::Persist);
+        }
         Intent::Hold(held) => {
             let mut session = next.session().clone();
+            // The first card ever held is whispered once per install.
+            if !session.whispered {
+                session.whispered = true;
+                session.whisper = Some(held.clone());
+            }
             session.hand = session.hand.hold(held);
             next = next.with_session(session);
             effects.push(Effect::Persist);

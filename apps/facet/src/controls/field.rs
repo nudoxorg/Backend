@@ -245,7 +245,7 @@ impl RenderOnce for Field {
             .child(input)
             .id(id)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
-        let column = div()
+        div()
             .flex()
             .flex_col()
             .gap(measure.space(Space::Snug))
@@ -256,8 +256,7 @@ impl RenderOnce for Field {
                     .set(ty::SMALL, &measure)
                     .text_color(with_alpha(palette.coral.base.into(), fault))
                     .child(reason)
-            }));
-        column
+            }))
     }
 }
 

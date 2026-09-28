@@ -57,6 +57,8 @@ mod comb_tests;
 mod hand_tests;
 #[cfg(test)]
 mod jump_tests;
+#[cfg(test)]
+mod graph_tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};
 pub use reader::Way;

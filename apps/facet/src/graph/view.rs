@@ -802,6 +802,7 @@ impl GraphView {
         cx.stop_propagation();
     }
 
+    // Keep `super::keys::KEYS` (the words hosts list) in step with this.
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
@@ -2400,6 +2401,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "gallery")] // uses the gallery aligner and gui-harness types
     #[gpui::test]
     fn keyboard_hover_reentry_keeps_the_actual_fractional_envelope(cx: &mut TestAppContext) {
         use crate::gallery::align::{self, Check, Tolerance};
@@ -2443,6 +2445,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "gallery")] // uses the gallery aligner and gui-harness types
     #[gpui::test]
     fn latest_focus_waits_for_true_prism_collapse_without_reusing_outgoing_hits(cx: &mut TestAppContext) {
         use crate::gallery::align::{self, Check, Tolerance};
@@ -2695,6 +2698,7 @@ mod tests {
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
     }
 
+    #[cfg(feature = "gallery")] // uses the gallery aligner and gui-harness types
     fn hover_observed(cx: &mut VisualTestContext, elapsed: Duration, events: usize) -> crate::gallery::align::Observed {
         frame_after(cx, elapsed);
         let (at_ms, mut ledger) = cx.update(|_, cx| {
@@ -2705,6 +2709,7 @@ mod tests {
         ledger.bounds.clear(); ledger.texts.clear();
         crate::gallery::align::Observed { drawn: backend_gui_harness::Drawn { at_ms, invalidations: 1, callbacks: 0, cpu: Duration::ZERO, input_cpu: Duration::ZERO, input_events: events, input_max: Duration::ZERO, viewport: backend_gui_harness::Viewport { width: 1024, height: 768, scale: 1 }, captured: false }, ledger, events, state: None }
     }
+    #[cfg(feature = "gallery")] // uses the gallery aligner and gui-harness types
     #[gpui::test]
     fn direct_hover_return_swaps_existing_packets_and_keeps_both_tracks_continuous(cx: &mut TestAppContext) {
         use crate::gallery::align::{self, Check, Tolerance};
@@ -2750,6 +2755,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "gallery")] // uses the gallery aligner and gui-harness types
     #[gpui::test]
     fn distinct_hover_handoff_preserves_every_visible_envelope_within_motion_budget(cx: &mut TestAppContext) {
         use crate::gallery::align::{self, Check, Tolerance};

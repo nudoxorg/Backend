@@ -19,6 +19,7 @@ pub mod draw;
 pub mod discovery;
 pub(crate) mod highlight;
 pub mod interaction;
+pub mod keys;
 pub mod layout;
 pub mod model;
 pub(crate) mod cold_tour;

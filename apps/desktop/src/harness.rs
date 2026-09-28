@@ -27,6 +27,7 @@ use crate::core::{LocalProjectId, VersionedRoot};
 use crate::model::pages::{PackageRef, SearchQuery, SymbolRef};
 use crate::model::{
     AppSnapshot, AppearancePreference, ContrastPreference, DensityPreference, MotionPreference,
+    ProjectPhase, WorkspaceProject, WorkspaceState,
 };
 use crate::navigation::Intent;
 use crate::runtime::reads::{OutlineCache, PageReader, ReadContext, ReadPool, ReadRequest, SessionReader};
@@ -89,6 +90,27 @@ pub fn keep_index_in(dir: PathBuf) {
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The pinned two-member workspace the `tree` route reads (`browse_tests.rs`
+/// proves its numbers): never the live repository, whose `Cargo.lock` and
+/// dependency graph drift as the workspace changes, which would make the
+/// scene and its captures non-deterministic.
+fn browse_tree_root() -> PathBuf {
+    repo().join("apps/desktop/tests/fixtures/browse_tree")
+}
+
+/// The shelf's Library, with the tree's own project as the one project open
+/// and ready: the body and the shelf then name the same workspace.
+fn tree_workspace(project: &LocalProjectId) -> WorkspaceState {
+    let mut row = WorkspaceProject::indexing_with_id(project.clone());
+    row.phase = ProjectPhase::Ready;
+    WorkspaceState {
+        projects: vec![row].into(),
+        active: Some(project.clone()),
+        host: Some(project.clone()),
+        path_error: None,
+    }
 }
 
 /// A crate's unpacked source in the local cargo registry cache
@@ -326,8 +348,8 @@ pub mod route {
             Target::Orbit => Ok(Route::Orbit(OrbitRoute::Home)),
             Target::World => Ok(Route::World),
             Target::Tree => {
-                let repo = super::repo().canonicalize().map_err(|error| format!("route tree: {error}"))?;
-                crate::core::LocalProjectId::from_path(&repo)
+                let root = super::browse_tree_root().canonicalize().map_err(|error| format!("route tree: {error}"))?;
+                crate::core::LocalProjectId::from_path(&root)
                     .map(|project| Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))))
                     .map_err(|error| format!("route tree: {error:?}"))
             }
@@ -486,7 +508,22 @@ pub fn boot(start: &str, window: &mut Window, cx: &mut App) -> Result<AnyView, S
     if view.root() != revision.root() {
         return Err("the owner returned mismatched startup identities".to_owned());
     }
-    let snapshot = AppSnapshot::empty(VersionedRoot::from_revision(1, revision, 0));
+    let target = route::parse(start)?;
+    let route = (target != route::Target::Orbit)
+        .then(|| route::to_route(&target, fixture))
+        .transpose()?;
+    let mut snapshot = AppSnapshot::empty(VersionedRoot::from_revision(1, revision, 0));
+    // The tree route reads a project directly (never through the fixture
+    // owner's index), so the shelf must be told the same project is open;
+    // otherwise the Library head reads "0 projects" beside a body that
+    // shows one, which is the workspace the reader is looking at read twice
+    // and disagreeing.
+    if let Some(crate::navigation::Route::Orbit(crate::navigation::OrbitRoute::Browse(
+        crate::navigation::BrowseRoute::Tree(project),
+    ))) = &route
+    {
+        snapshot = snapshot.with_workspace(tree_workspace(project));
+    }
     let project = LocalProjectId::from_path(&fixture.projects()[0])
         .map_err(|error| format!("project identity: {error}"))?;
     let actor = EngineActor::start(LocalEngineClient::new(&endpoint, project), 32)
@@ -500,9 +537,7 @@ pub fn boot(start: &str, window: &mut Window, cx: &mut App) -> Result<AnyView, S
     for intent in settings_intents(&facet) {
         graph.root.update(cx, |root, cx| root.dispatch(intent, cx));
     }
-    let target = route::parse(start)?;
-    if target != route::Target::Orbit {
-        let route = route::to_route(&target, fixture)?;
+    if let Some(route) = route {
         graph
             .root
             .update(cx, |root, cx| root.dispatch(Intent::Navigate(route), cx));
@@ -737,11 +772,13 @@ pub fn scenes() -> Vec<Scene> {
 #[cfg(test)]
 mod tests {
     use super::route::{Target, View, parse};
+    use super::{browse_tree_root, repo};
 
     #[test]
     fn route_words_parse_into_targets_and_reject_the_rest() {
         assert_eq!(parse("orbit"), Ok(Target::Orbit));
         assert_eq!(parse("world"), Ok(Target::World));
+        assert_eq!(parse("tree"), Ok(Target::Tree));
         assert_eq!(
             parse("package present at=0.1.0"),
             Ok(Target::Package {
@@ -761,5 +798,22 @@ mod tests {
         assert!(parse("symbol X view=map").is_err());
         assert!(parse("package").is_err());
         assert!(parse("elsewhere").is_err());
+    }
+
+    /// `tree` must resolve to the pinned two-member fixture
+    /// (`apps/desktop/tests/fixtures/browse_tree`, proven deterministic by
+    /// `shell::browse_tests`), never to the live repository: the lead's walk
+    /// of the 16:30 harness build caught the body reading the live tree
+    /// ("Your 45 packages…, and 884 in all", which drifts with every commit)
+    /// beside a shelf that still read the fixture ("Library 0 projects").
+    #[test]
+    fn the_tree_route_is_pinned_to_the_fixture_workspace_not_the_live_repository() {
+        let root = browse_tree_root();
+        assert!(
+            root.ends_with("apps/desktop/tests/fixtures/browse_tree"),
+            "{}",
+            root.display()
+        );
+        assert_ne!(root, repo(), "the tree route must never read the live repository directly");
     }
 }

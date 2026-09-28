@@ -182,6 +182,10 @@ pub struct DataStore {
     stats: StoreStats,
     graph_focus: Option<super::graph_focus::GraphFocus>,
     graph_notice: Option<super::graph_focus::GraphNotice>,
+    /// A tour asked for (T) and the ask's number: the graph flies it once
+    /// it shows the world. Leaving the world drops it.
+    tour: Option<(PackageRef, u64)>,
+    tours: u64,
 }
 
 impl std::fmt::Debug for DataStore {
@@ -276,6 +280,8 @@ impl DataStore {
             wake_task: None,
             stats: StoreStats::default(),
             graph_focus: None,
+            tour: None,
+            tours: 0,
             graph_notice: None,
         }
     }
@@ -291,6 +297,18 @@ impl DataStore {
 
     /// Semantic equality is the notification boundary: camera and hover frames
     /// cannot invalidate the shell regions or schedule data-plane reads.
+    /// Asks the graph to tour `package` (the route is already the world).
+    pub(crate) fn ask_tour(&mut self, package: PackageRef, cx: &mut Context<Self>) {
+        self.tours += 1;
+        self.tour = Some((package, self.tours));
+        cx.notify();
+    }
+
+    /// The tour asked for, with its number, while the route is the world.
+    pub(crate) fn tour_ask(&self) -> Option<&(PackageRef, u64)> {
+        self.tour.as_ref().filter(|_| matches!(self.snapshot.route(), Route::World))
+    }
+
     pub(crate) fn admit_graph_focus(&mut self, focus: Option<super::graph_focus::GraphFocus>, notice: Option<super::graph_focus::GraphNotice>, cx: &mut Context<Self>) {
         if self.graph_focus != focus || self.graph_notice != notice {
             self.graph_focus = focus;
@@ -371,6 +389,9 @@ impl DataStore {
         }
         if old.route() != snapshot.route() {
             changed.push(Branch::Route);
+            if !matches!(snapshot.route(), Route::World) {
+                self.tour = None;
+            }
         }
         if old.overlay() != snapshot.overlay() {
             changed.push(Branch::Overlay);

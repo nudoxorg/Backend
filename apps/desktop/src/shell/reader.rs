@@ -138,7 +138,11 @@ impl Reader {
     }
 
     pub(crate) fn reset_world(&mut self, cx: &mut Context<Self>) {
-        if let Some(map) = &self.map { map.update(cx, |map, cx| map.reset_world(cx)); }
+        if let Some(map) = &self.map { map.update(cx, bodies::graph::Map::reset_world); }
+    }
+
+    pub(crate) fn graph_focus_glyph(&self, cx: &gpui::App) -> Option<gpui::Bounds<Pixels>> {
+        self.map.as_ref().and_then(|map| map.read(cx).focus_glyph(cx))
     }
 
     pub(crate) fn graph_focused(&self, cx: &gpui::App) -> bool {

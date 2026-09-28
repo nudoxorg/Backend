@@ -613,13 +613,11 @@ fn collect_manifests(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), Artif
             .parent()
             .and_then(Path::file_name)
             .is_some_and(|name| name == "manifests")
-        {
-            if path
+            && path
                 .extension()
                 .is_some_and(|extension| extension == "json")
-            {
-                output.push(path);
-            }
+        {
+            output.push(path);
         }
     }
     Ok(())

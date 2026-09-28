@@ -48,7 +48,11 @@ pub(super) fn body(
     });
     let reading = decls.and_then(|decls| crate::runtime::fixture_world::reading(&package, decls, cx));
     if let Some(reading) = &reading {
-        leaves.push(start_here(reading, ctx));
+        let id = match place {
+            Route::Package(route) => Some(route.package.clone()),
+            _ => None,
+        };
+        leaves.push(start_here(reading, id, ctx));
     }
     leaves.push(start_with(&dossier, reading.is_some(), ctx, cx));
     if let Some(leaf) = dependencies(&dossier, ctx) {
@@ -106,9 +110,10 @@ fn hero(dossier: &PackageDossier, ctx: &mut Ctx<'_>) -> Leaf {
 
 /// Start here: the package's reading path as a strip — each stop's gem,
 /// its name (the first underlined: that is where you begin) and its role
-/// beneath, joined by periwinkle legs. Below 760 effective px, rows that
-/// also say why. Every stop opens its page.
-fn start_here(reading: &crate::runtime::fixture_world::Reading, ctx: &mut Ctx<'_>) -> Leaf {
+/// beneath, joined by periwinkle legs; "T fly it" at the right flies the
+/// same path in the graph. Below 760 effective px, rows that also say why.
+/// Every stop opens its page.
+fn start_here(reading: &crate::runtime::fixture_world::Reading, package: Option<crate::core::PackageId>, ctx: &mut Ctx<'_>) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
     let world = &reading.world;
@@ -152,6 +157,23 @@ fn start_here(reading: &crate::runtime::fixture_world::Reading, ctx: &mut Ctx<'_
             .child(words)
             .on_click(move |_: &ClickEvent, window, cx| act(window, cx));
         strip = strip.child(ctx.targets.track(id, stop));
+    }
+    if let Some(package) = package {
+        let links = ctx.links.clone();
+        let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::Tour(package.clone()), cx));
+        let label = ctx.say("fly it");
+        ctx.targets.push(Target { id: "tour-fly".into(), label: label.clone(), act: Rc::clone(&act), peek: None, source: None });
+        let fly = div()
+            .id("tour-fly")
+            .flex()
+            .items_center()
+            .gap(measure.space(Space::Snug))
+            .min_h(px((24.0 * scale).max(24.0)))
+            .cursor_pointer()
+            .child(facet::controls::kbd("T", &measure).voice(facet::controls::KbdVoice::Quiet).size(facet::controls::KbdSize::Small))
+            .child(text(ty::SMALL, &measure, palette.ink3).child(label))
+            .on_click(move |_: &ClickEvent, window, cx| act(window, cx));
+        strip = strip.child(div().flex_1()).child(ctx.targets.track("tour-fly", fly));
     }
     Leaf::new(strip)
 }

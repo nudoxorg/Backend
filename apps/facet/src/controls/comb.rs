@@ -24,6 +24,26 @@
 //!
 //! Keyboard-complete, text-scale aware (everything is sized from the
 //! [`Measure`]); reduced motion snaps every spring.
+//!
+//! **Styles** ([`CombStyle`], the marks lane's version mark). The shelf keeps
+//! the look above ([`CombStyle::Plain`]). The other styles make the comb *be*
+//! the version (`v4/marks/`):
+//!
+//! - **Rider** (the hero): the version number is the pin's own tooth on the
+//!   comb. Releases before it are history; after it they trail off fainter,
+//!   breaking ones standing taller. Scrubbing moves the number itself: its
+//!   head walks every release between (one timeline tween, 18 ms a release),
+//!   the ticks part around it, and only the semver wheels that change roll
+//!   (an odometer on the REEL spring), up for later and down for earlier.
+//! - **Baseline** (rows): the number sits still at the comb's start; the pin
+//!   is a mint tick inside the comb.
+//! - **Band** (below 240 px): one hairline band from the first release to
+//!   the newest, with only the breaking releases, the pin and what you view
+//!   standing out of it.
+//!
+//! Every style keeps the scrub (drag, keys, Esc home, the lens, the tip and
+//! the "viewing" line) and can carry hollow mint "also" teeth (other
+//! versions your tree holds) and cards for the number and each tooth.
 
 use super::GRIP;
 use super::state::{pointer_away, track, watch_pointer};
@@ -91,6 +111,32 @@ pub struct Release {
     pub age: SharedString,
 }
 
+/// How the comb draws itself (see the module docs).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub enum CombStyle {
+    /// Ticks by step, the pin a mint capsule (the shelf).
+    #[default]
+    Plain,
+    /// The number rides the comb as the pin's own tooth (the hero).
+    Rider,
+    /// The number fixed at the start, the pin a tick inside (rows).
+    Baseline,
+    /// One hairline band (below 240 px).
+    Band,
+}
+
+/// Builds a card's content (the float layer's builder).
+pub type CardContent = Rc<dyn Fn(&Measure, &mut Window, &mut App) -> AnyElement>;
+
+/// A hollow mint tooth: another version of this package your tree holds.
+#[derive(Clone)]
+pub struct AlsoTooth {
+    /// The release it stands on.
+    pub index: usize,
+    /// Its card (who pulls that copy in, and whether you can act).
+    pub card: CardContent,
+}
+
 /// What the comb emits: the reader chose this release.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VersionSelected(pub ReleaseId);
@@ -110,6 +156,13 @@ pub struct VersionComb {
     touches: Rc<[bool]>,
     measure: Measure,
     on_select: Option<OnSelect>,
+    style: CombStyle,
+    yanked: Rc<[bool]>,
+    also: Rc<[AlsoTooth]>,
+    number_card: Option<CardContent>,
+    latest: Option<usize>,
+    number_look: bool,
+    also_look: Option<usize>,
 }
 
 /// A version comb for `releases` (oldest first), as wide as `measure`.
@@ -130,6 +183,13 @@ pub fn version_comb(
         touches: Rc::from(Vec::new()),
         measure: *measure,
         on_select: None,
+        style: CombStyle::Plain,
+        yanked: Rc::from(Vec::new()),
+        also: Rc::from(Vec::new()),
+        number_card: None,
+        latest: None,
+        number_look: false,
+        also_look: None,
     }
 }
 
@@ -182,6 +242,62 @@ impl VersionComb {
     #[must_use]
     pub const fn lens_look(mut self, x: f32) -> Self {
         self.lens_look = Some(x);
+        self
+    }
+
+    /// How the comb draws itself.
+    #[must_use]
+    pub const fn style(mut self, style: CombStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// The releases their authors withdrew (by index): hollow ticks.
+    #[must_use]
+    pub fn yanked(mut self, releases: impl IntoIterator<Item = usize>) -> Self {
+        let mut flags = vec![false; self.releases.len()];
+        for index in releases {
+            if let Some(flag) = flags.get_mut(index) {
+                *flag = true;
+            }
+        }
+        self.yanked = Rc::from(flags);
+        self
+    }
+
+    /// Other versions of this package your tree holds: hollow mint teeth,
+    /// each with its card.
+    #[must_use]
+    pub fn also(mut self, teeth: impl IntoIterator<Item = AlsoTooth>) -> Self {
+        self.also = teeth.into_iter().filter(|t| t.index < self.releases.len()).collect();
+        self
+    }
+
+    /// The number's card (its semver reading), for the styled combs.
+    #[must_use]
+    pub fn number_card(mut self, card: impl Fn(&Measure, &mut Window, &mut App) -> AnyElement + 'static) -> Self {
+        self.number_card = Some(Rc::new(card));
+        self
+    }
+
+    /// The newest release, named faintly at the comb's end (Rider).
+    #[must_use]
+    pub const fn latest(mut self, index: usize) -> Self {
+        self.latest = Some(index);
+        self
+    }
+
+    /// Opens the number's card on the first paint (state sheets).
+    #[must_use]
+    pub const fn number_look(mut self) -> Self {
+        self.number_look = true;
+        self
+    }
+
+    /// Opens the card of the also tooth on release `index` (state sheets).
+    #[must_use]
+    pub const fn also_look(mut self, index: usize) -> Self {
+        self.also_look = Some(index);
         self
     }
 
@@ -728,6 +844,9 @@ fn tip_content(release: &Release) -> impl Fn(&Measure, &mut Window, &mut App) ->
 impl RenderOnce for VersionComb {
     #[allow(clippy::too_many_lines)]
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if self.style != CombStyle::Plain {
+            return styled::render(self, window, cx);
+        }
         let palette = cx.palette();
         let measure = self.measure;
         let s = measure.scale();
@@ -1192,8 +1311,11 @@ impl RenderOnce for VersionComb {
                     cx.stop_propagation();
                 }
             })
+            .into_any_element()
     }
 }
+
+mod styled;
 
 /// The releases a person cannot reach by pointer on `layout`. A person goes to a
 /// release the way one reaches anything in a fisheye: sweep towards where

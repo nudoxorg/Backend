@@ -76,6 +76,8 @@ actions!(
         HandCard5,
         /// Copy this place's `nudox://` address.
         CopyAddress,
+        /// Tour this package in the graph.
+        Tour,
     ]
 );
 
@@ -151,6 +153,8 @@ pub(crate) enum Command {
     HandCard5,
     /// ⌘⇧C.
     CopyAddress,
+    /// T.
+    Tour,
 }
 
 /// Where a row listens.
@@ -229,6 +233,7 @@ pub(crate) const TABLE: &[Key] = &[
     key(Command::HandCard4, "secondary-4", "⌘4", Scope::Shell, "the hand's fourth card"),
     key(Command::HandCard5, "secondary-5", "⌘5", Scope::Shell, "the hand's fifth card"),
     key(Command::CopyAddress, "secondary-shift-c", "⌘⇧C", Scope::Shell, "copy the address"),
+    key(Command::Tour, "t", "T", Scope::Plain, "tour this package in the graph"),
 ];
 
 /// The cap a command shows (its first row).
@@ -241,14 +246,23 @@ pub(crate) fn cap(command: Command) -> &'static str {
 }
 
 fn binding(key: &Key) -> KeyBinding {
+    // The graph keeps its own walk, ↵, find, Esc and Space (a tour's next
+    // stop) while it has the keyboard.
     let graph_owns = matches!(key.command,
-        Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape);
-    let context = Some(match (key.scope, graph_owns) {
-        (Scope::Shell, true) => "NudoxShell && !Graph",
-        (Scope::Plain, true) => "NudoxShell && !Input && !Graph",
-        (Scope::Shell, false) => "NudoxShell",
-        (Scope::Plain, false) => "NudoxShell && !Input",
-    });
+        Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape | Command::Peek | Command::Tour);
+    // An open menu keeps every plain key (arrows, ↵, type-ahead) and Esc.
+    let menu_owns = key.scope == Scope::Plain || key.command == Command::Escape;
+    let mut context = String::from(CONTEXT);
+    if key.scope == Scope::Plain {
+        context.push_str(" && !Input");
+    }
+    if graph_owns {
+        context.push_str(" && !Graph");
+    }
+    if menu_owns {
+        context.push_str(" && !Menu");
+    }
+    let context = Some(context.as_str());
     let chord = key.chord;
     match key.command {
         Command::FocusNext => KeyBinding::new(chord, FocusNext, context),
@@ -284,6 +298,7 @@ fn binding(key: &Key) -> KeyBinding {
         Command::HandCard4 => KeyBinding::new(chord, HandCard4, context),
         Command::HandCard5 => KeyBinding::new(chord, HandCard5, context),
         Command::CopyAddress => KeyBinding::new(chord, CopyAddress, context),
+        Command::Tour => KeyBinding::new(chord, Tour, context),
     }
 }
 

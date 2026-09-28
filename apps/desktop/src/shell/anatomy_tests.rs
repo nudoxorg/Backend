@@ -19,7 +19,7 @@ const GLYPH: &str = "//! Glyphs.\n\npub fn print_labels(out: &mut String) {\n   
 /// `RelationLabel` (an enum of `Typed(SemanticLinkKind)` and `Related`,
 /// so made of `SemanticLinkKind`), `relation_label(link: &Link) ->
 /// RelationLabel`, and a caller of the enum.
-fn world() -> Arc<World> {
+pub(super) fn world() -> Arc<World> {
     let node = |kind, name: &str, line, parent: Option<u32>| {
         let mut node = Node::new(kind, name, 0, 0);
         node.line = line;
@@ -37,7 +37,14 @@ fn world() -> Arc<World> {
     let mut caller = node(Kind::Function, "print_labels", 3, None);
     caller.end = Some(6);
     caller.file = Some("glyph.rs".into());
-    let payload = node(Kind::Enum, "SemanticLinkKind", 40, None);
+    // At the page fixture's line, so a held SemanticLinkKind joins too.
+    let payload = node(Kind::Enum, "SemanticLinkKind", 138, None);
+    // `RelationLabel::kind` reads its SemanticLinkKind (the hand's road
+    // when RelationLabel itself is let go).
+    let mut kind = node(Kind::Method, "kind", 142, Some(0));
+    kind.recv = Some("&self".into());
+    kind.ret = Some("SemanticLinkKind".into());
+    kind.sig = Some("pub fn kind(&self) -> SemanticLinkKind".into());
     let error = node(Kind::Struct, "LabelError", 60, None);
     // Another of your packages uses it: that is what makes a door.
     let mut main = Node::new(Kind::Function, "main", 1, 1);
@@ -74,7 +81,7 @@ fn world() -> Arc<World> {
                     file: "app.rs".into(),
                 },
             ],
-            vec![label, typed, related, function, caller, payload, error, main],
+            vec![label, typed, related, function, caller, payload, error, main, kind],
             vec![
                 Edge {
                     from: 4,
@@ -215,7 +222,7 @@ fn a_declaration_the_world_does_not_know_keeps_its_indexed_body(cx: &mut TestApp
     assert!(said.iter().any(|line| line == "Made of"), "{said:#?}");
 }
 
-fn package_route() -> crate::navigation::Route {
+pub(super) fn package_route() -> crate::navigation::Route {
     crate::navigation::Route::Package(crate::navigation::PackageRoute {
         project: None,
         package: crate::core::PackageId::new(PACKAGE).expect("package"),
@@ -244,7 +251,8 @@ fn the_package_page_starts_here_with_its_reading_path(cx: &mut TestAppContext) {
         ],
         "{said:#?}"
     );
-    assert_eq!(said.get(from + 9).map(String::as_str), Some("Modules"), "{said:#?}");
+    assert_eq!(said.get(from + 9).map(String::as_str), Some("fly it"), "the tour flies from the strip: {said:#?}");
+    assert_eq!(said.get(from + 10).map(String::as_str), Some("Modules"), "{said:#?}");
 }
 
 /// A stop is a door to its page (joined through the package outline).

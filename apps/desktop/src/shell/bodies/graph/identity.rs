@@ -154,6 +154,16 @@ impl IdentityAdapter {
         )
     }
 
+    /// The world's packages bound to `package` (its fixture indices).
+    pub(crate) fn packages_of(&self, package: &PackageRef) -> Vec<u32> {
+        self.aliases
+            .get(package)
+            .into_iter()
+            .flatten()
+            .filter_map(|&index| u32::try_from(index).ok())
+            .collect()
+    }
+
     pub(crate) fn candidates(&self, decl: &DeclRef, package: &PackageRef) -> Vec<NodeId> {
         let (Some(line), Some(path), Some(packages)) =
             (decl.line, decl.path.as_deref(), self.aliases.get(package))

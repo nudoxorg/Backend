@@ -25,7 +25,26 @@ mod gpui_driver;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use thiserror::Error;
+
+/// Serializes every real platform construction in this crate.
+///
+/// `gpui_ce_platform::current_platform` builds a fresh `MacPlatform` on each
+/// call, which reads the current keyboard layout through Apple's HIToolbox
+/// (`TISCopyCurrentKeyboardLayoutInputSource`). HIToolbox's own internal
+/// input-source cache is not safe to touch from two threads at once: doing
+/// so `abort()`s the whole process from inside Apple's library
+/// (`islGetInputSourceListWithAdditions.cold.3`), with no Rust panic to
+/// catch — signal 6, no panic message. `gpui_driver::capture_gpui_state`
+/// and `session::Session::open` both call `current_platform`, on whichever
+/// OS thread their caller (a test, in this crate) happens to run on, so
+/// this lock has to be shared across both rather than kept as two
+/// independent, uncoordinated per-module mutexes.
+pub(crate) fn platform_init_guard() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 pub use artifact::{
     ArtifactError, ArtifactWriter, CaptureManifest, CaptureProvenance, FrameArtifact,
@@ -200,7 +219,7 @@ pub fn preflight_viewport(
     for step in actions {
         match step {
             InputStep::Wait { milliseconds } => {
-                elapsed = elapsed.saturating_add(u64::from(*milliseconds));
+                elapsed = elapsed.saturating_add(*milliseconds);
             }
             InputStep::Resize { width, height } if elapsed <= first_frame => {
                 effective = Viewport::new(*width, *height, effective.scale)?;

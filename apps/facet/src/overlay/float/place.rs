@@ -36,6 +36,18 @@ pub struct Placement {
     pub connector: Option<(Point<Pixels>, Point<Pixels>)>,
 }
 
+/// Where a card above or below its anchor lines up.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub enum Align {
+    /// Centred on the anchor (peeks on words, tips).
+    #[default]
+    Centre,
+    /// Hanging from the anchor's left edge, its plate a little outside it
+    /// so its text lines up with the anchor's (inline marks). Without room
+    /// on the right it hangs from the anchor's right edge instead.
+    Start,
+}
+
 /// What a card hangs off.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hang {
@@ -74,6 +86,25 @@ pub fn place_with_gap(
     viewport: Size<Pixels>,
     gap: f32,
 ) -> Placement {
+    place_aligned(anchor, natural, side, hang, viewport, gap, Align::Centre, 0.0)
+}
+
+/// [`place_with_gap`] with an alignment: [`Align::Start`] hangs the card's
+/// plate `inset` px left of the anchor's left edge (its padding then lines
+/// its text up with the anchor), or `inset` px right of the anchor's right
+/// edge when that would run past the viewport.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn place_aligned(
+    anchor: Bounds<Pixels>,
+    natural: Size<Pixels>,
+    side: Side,
+    hang: Hang,
+    viewport: Size<Pixels>,
+    gap: f32,
+    align: Align,
+    inset: f32,
+) -> Placement {
     let (vw, vh) = (f(viewport.width), f(viewport.height));
     let (w, h) = (
         f(natural.width).min((vw - 2.0 * MARGIN).max(1.0)),
@@ -92,7 +123,7 @@ pub fn place_with_gap(
             }
         }
         Hang::Parent(parent) => beside_parent(anchor, parent, w, h, vw, vh),
-        Hang::Anchor => beside_anchor(anchor, w, h, side, vw, vh, gap),
+        Hang::Anchor => beside_anchor(anchor, w, h, side, vw, vh, gap, align, inset),
     }
 }
 
@@ -102,7 +133,18 @@ fn clamp_axis(start: f32, length: f32, limit: f32) -> f32 {
     if high < low { low } else { start.clamp(low, high) }
 }
 
-fn beside_anchor(anchor: Bounds<Pixels>, w: f32, h: f32, side: Side, vw: f32, vh: f32, gap: f32) -> Placement {
+#[allow(clippy::too_many_arguments)]
+fn beside_anchor(
+    anchor: Bounds<Pixels>,
+    w: f32,
+    h: f32,
+    side: Side,
+    vw: f32,
+    vh: f32,
+    gap: f32,
+    align: Align,
+    inset: f32,
+) -> Placement {
     let (ax, ay) = (f(anchor.origin.x), f(anchor.origin.y));
     let (aw, ah) = (f(anchor.size.width), f(anchor.size.height));
     let room = |side: Side| match side {
@@ -130,11 +172,18 @@ fn beside_anchor(anchor: Bounds<Pixels>, w: f32, h: f32, side: Side, vw: f32, vh
         vh - 2.0 * MARGIN
     };
     let (height, capped) = if h > space { (space, Some(px(space))) } else { (h, None) };
+    // Above and below: centred on the anchor's midpoint, or hanging from
+    // its start (from its end when the start has no room on the right).
+    let along = match align {
+        Align::Centre => ax + aw / 2.0 - w / 2.0,
+        Align::Start if ax - inset + w <= vw - MARGIN => ax - inset,
+        Align::Start => ax + aw + inset - w,
+    };
     let (x, y) = match chosen {
-        // Above and below: centred on the anchor's midpoint; beside: the
-        // card's top level with the anchor's top. Then shifted inside.
-        Side::Below => (clamp_axis(ax + aw / 2.0 - w / 2.0, w, vw), ay + ah + gap),
-        Side::Above => (clamp_axis(ax + aw / 2.0 - w / 2.0, w, vw), ay - gap - height),
+        // Beside: the card's top level with the anchor's top. Then shifted
+        // inside.
+        Side::Below => (clamp_axis(along, w, vw), ay + ah + gap),
+        Side::Above => (clamp_axis(along, w, vw), ay - gap - height),
         Side::Right => (ax + aw + gap, clamp_axis(ay, height, vh)),
         Side::Left => (ax - gap - w, clamp_axis(ay, height, vh)),
     };
@@ -243,6 +292,24 @@ mod tests {
         let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         x >= MARGIN - 0.01 && y >= MARGIN - 0.01 && x + w <= vw - MARGIN + 0.01 && y + h <= vh - MARGIN + 0.01
+    }
+
+    #[test]
+    fn a_start_hung_card_lines_up_with_its_anchor_and_flips_to_its_end_at_the_right_edge() {
+        use super::{Align, place_aligned};
+        let vp = size(px(1000.0), px(700.0));
+        let card = size(px(356.0), px(120.0));
+        // Room on the right: the plate starts 12 px left of the anchor.
+        let left = place_aligned(b(300.0, 100.0, 90.0, 18.0), card, Side::Below, Hang::Anchor, vp, 12.0, Align::Start, 12.0);
+        assert!((f32::from(left.bounds.origin.x) - 288.0).abs() < 0.01, "{:?}", left.bounds);
+        // No room: its right edge sits 12 px past the anchor's right edge.
+        let right = place_aligned(b(820.0, 100.0, 90.0, 18.0), card, Side::Below, Hang::Anchor, vp, 12.0, Align::Start, 12.0);
+        let end = f32::from(right.bounds.origin.x + right.bounds.size.width);
+        assert!((end - 922.0).abs() < 0.01, "{:?}", right.bounds);
+        assert!(inside(right.bounds, 1000.0, 700.0));
+        // Centred stays the default for every other card.
+        let centred = place(b(300.0, 100.0, 90.0, 18.0), card, Side::Below, Hang::Anchor, vp);
+        assert!((f32::from(centred.bounds.origin.x) - (345.0 - 178.0)).abs() < 0.01);
     }
 
     #[test]

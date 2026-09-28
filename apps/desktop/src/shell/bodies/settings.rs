@@ -191,6 +191,17 @@ fn keys(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
             ctx,
         ));
     }
+    // The graph's own keys, while it has the keyboard.
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let heading = ctx.say("In the graph");
+    leaves.push(Leaf::new(
+        text(ty::HEAD, &measure, palette.ink0).pt(measure.space(Space::Roomy)).pb(measure.space(Space::Base)).child(heading),
+    ));
+    for key in facet::graph::keys::KEYS {
+        let caps = ctx.say(key.cap);
+        leaves.push(setting(key.says, text(ty::MONO_ROW, &measure, palette.ink1).child(caps).into_any_element(), ctx));
+    }
     leaves
 }
 

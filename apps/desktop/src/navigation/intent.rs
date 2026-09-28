@@ -80,6 +80,9 @@ pub enum Intent {
     /// View the current package or declaration at another release (`None`:
     /// the pinned one). Replaces the current entry, like a view switch.
     SetRelease(Option<super::route::ReleaseId>),
+    /// Tour a package in the graph (T): the world, flying the package's
+    /// reading path from its first stop. A place (Back returns).
+    Tour(crate::core::PackageId),
     /// Hold a thing in the hand (touching it when it is already held).
     Hold(crate::model::hand::Held),
     /// Let go of a held thing.
