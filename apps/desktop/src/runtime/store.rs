@@ -181,7 +181,11 @@ pub struct DataStore {
     wake_task: Option<Task<()>>,
     stats: StoreStats,
     graph_focus: Option<super::graph_focus::GraphFocus>,
-    graph_notice: Option<super::graph_focus::GraphNotice>,
+    /// The one visit-scoped notice (§15 ruling 1), for any route: an
+    /// unresolved link, an unindexed hold, or a pinned card's failed
+    /// lookup. A newer notice replaces an older one; it never survives a
+    /// route change ([`super::graph_focus::Notice::active`]).
+    notice: Option<super::graph_focus::Notice>,
     /// A tour asked for (T) and the ask's number: the graph flies it once
     /// it shows the world. Leaving the world drops it.
     tour: Option<(PackageRef, u64)>,
@@ -282,7 +286,7 @@ impl DataStore {
             graph_focus: None,
             tour: None,
             tours: 0,
-            graph_notice: None,
+            notice: None,
         }
     }
 
@@ -291,8 +295,20 @@ impl DataStore {
         self.graph_focus.as_ref().filter(|focus| focus.active(&self.snapshot))
     }
 
-    pub(crate) fn graph_notice(&self) -> Option<&super::graph_focus::GraphNotice> {
-        self.graph_notice.as_ref().filter(|notice| notice.active(&self.snapshot))
+    /// The current notice, when its visit and root are still the one showing.
+    pub(crate) fn notice(&self) -> Option<&super::graph_focus::Notice> {
+        self.notice.as_ref().filter(|notice| notice.active(&self.snapshot))
+    }
+
+    /// Posts (or clears) the one visit-scoped notice on its own, for a
+    /// caller with no graph focus of its own to admit alongside it (an
+    /// anatomy link, Ask, an unindexed hold). A newer notice replaces an
+    /// older one; setting `None` clears it early.
+    pub(crate) fn set_notice(&mut self, notice: Option<super::graph_focus::Notice>, cx: &mut Context<Self>) {
+        if self.notice != notice {
+            self.notice = notice;
+            self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
+        }
     }
 
     /// Semantic equality is the notification boundary: camera and hover frames
@@ -309,10 +325,10 @@ impl DataStore {
         self.tour.as_ref().filter(|_| matches!(self.snapshot.route(), Route::World))
     }
 
-    pub(crate) fn admit_graph_focus(&mut self, focus: Option<super::graph_focus::GraphFocus>, notice: Option<super::graph_focus::GraphNotice>, cx: &mut Context<Self>) {
-        if self.graph_focus != focus || self.graph_notice != notice {
+    pub(crate) fn admit_graph_focus(&mut self, focus: Option<super::graph_focus::GraphFocus>, notice: Option<super::graph_focus::Notice>, cx: &mut Context<Self>) {
+        if self.graph_focus != focus || self.notice != notice {
             self.graph_focus = focus;
-            self.graph_notice = notice;
+            self.notice = notice;
             self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
         }
     }
@@ -586,6 +602,7 @@ impl DataStore {
             return;
         };
         self.stats.submitted = self.stats.submitted.saturating_add(1);
+        super::trace::mark("read.submit", format_args!("{key:?} {priority:?}"));
         pool.submit(ReadJob {
             key,
             request,
@@ -612,6 +629,7 @@ impl DataStore {
             match self.pages.land(&outcome.key, outcome.generation, outcome.result) {
                 Landing::Applied => {
                     applied += 1;
+                    super::trace::mark("read.land", format_args!("{:?}", outcome.key));
                     self.stats.landed = self.stats.landed.saturating_add(1);
                     self.emit(StoreEvent::Resource(outcome.key), cx);
                 }

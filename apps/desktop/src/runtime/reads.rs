@@ -562,7 +562,19 @@ impl Engine for SessionEngine {
         probe: Probe<'_>,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        self.with_session(|session| match probe {
+        let asking = std::time::Instant::now();
+        let name = match &probe {
+            Probe::Packages => "probe.packages",
+            Probe::Document(_) => "probe.document",
+            Probe::Source(_) => "probe.source",
+            Probe::Related(_) => "probe.related",
+            Probe::Graph(_) => "probe.graph",
+            Probe::Search { .. } => "probe.search",
+            Probe::Names { .. } => "probe.names",
+            Probe::Outline(_) | Probe::OutlinePage { .. } => "probe.outline",
+            Probe::Index(_) | Probe::Remove(_) => "probe.mutation",
+        };
+        let reply = self.with_session(|session| match probe {
             Probe::Packages => session.packages(),
             Probe::Document(at) => session.document(at),
             Probe::Source(at) => session.source(at),
@@ -575,7 +587,9 @@ impl Engine for SessionEngine {
             Probe::Index(_) | Probe::Remove(_) => Err(ClientError::Protocol(
                 "the read lane never mutates the owner".to_owned(),
             )),
-        })
+        });
+        super::trace::span(name, asking, "owner round trip");
+        reply
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
@@ -584,7 +598,14 @@ impl Engine for SessionEngine {
                 "the read lane never runs a mutating surface command".to_owned(),
             ));
         }
-        self.with_session(|session| session.surface(command.clone()))
+        let asking = std::time::Instant::now();
+        let name = super::trace::enabled().then(|| format!("{command:?}"));
+        let reply = self.with_session(|session| session.surface(command.clone()));
+        if let Some(name) = name {
+            let variant = name.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("surface");
+            super::trace::span("surface", asking, variant);
+        }
+        reply
     }
 }
 

@@ -14,6 +14,7 @@ pub mod mapping;
 pub mod page_mapping;
 pub mod reads;
 pub mod store;
+pub mod trace;
 pub mod ui_graph;
 pub mod wake;
 pub mod wiring;
