@@ -98,6 +98,20 @@ unwrap_used = "deny"
 debug = 1
 incremental = true
 
+# The local owner's start is the harness's hot path: blake3 per tree leaf, the library projection's search-posting build, certificate admission. Optimizing only these crates took a desktop capture from 123 s to 55 s (W-Instant, 2026-09-28). facet, desktop and third-party crates stay at 0 on purpose: GUI lanes rebuild them constantly. debug-assertions and overflow-checks are inherited unchanged.
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.backend-version]
+opt-level = 2
+[profile.dev.package.backend-flow]
+opt-level = 2
+[profile.dev.package.backend-library]
+opt-level = 2
+[profile.dev.package.backend-store]
+opt-level = 2
+[profile.dev.package.backend-engine]
+opt-level = 2
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
