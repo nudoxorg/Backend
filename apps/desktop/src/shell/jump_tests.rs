@@ -67,13 +67,47 @@ fn a_module_segment_opens_its_siblings_from_the_outline(cx: &mut TestAppContext)
     click(&mut rig, "jump-seg-1", MouseButton::Left);
     assert!(is_open(&mut rig, "jump-siblings-1"), "glyph's menu");
     let names: Vec<String> = rig.graph.store.read_with(rig.cx, |store, _| {
-        super::jump::siblings(&page_route("RelationLabel"), 1, store).into_iter().map(|s| s.name.to_string()).collect()
+        super::jump::siblings(&page_route("RelationLabel"), 1, store).real.into_iter().map(|s| s.name.to_string()).collect()
     });
     assert_eq!(names, ["identity", "glyph", "outline"], "the modules beside glyph");
     let members: Vec<String> = rig.graph.store.read_with(rig.cx, |store, _| {
-        super::jump::siblings(&page_route("RelationLabel"), 2, store).into_iter().map(|s| s.name.to_string()).collect()
+        super::jump::siblings(&page_route("RelationLabel"), 2, store).real.into_iter().map(|s| s.name.to_string()).collect()
     });
     assert_eq!(members, ["RelationLabel", "RelationDirection", "KindGlyph", "relation_label"], "what glyph holds");
+}
+
+/// A `#[cfg(test)]` module never sits among the real ones: the menu folds
+/// it into one trailing "tests" row, and choosing that row unfolds it.
+#[gpui::test]
+fn test_only_modules_fold_into_one_trailing_tests_row(cx: &mut TestAppContext) {
+    let mut rig = open(cx, "RelationLabel");
+    let tests: Vec<String> = rig.graph.store.read_with(rig.cx, |store, _| {
+        super::jump::siblings(&page_route("RelationLabel"), 1, store).tests.into_iter().map(|s| s.name.to_string()).collect()
+    });
+    assert_eq!(tests, ["glyph_tests"], "the test module, apart");
+    click(&mut rig, "jump-seg-1", MouseButton::Left);
+    // The menu opens on identity; glyph, outline, then the fold.
+    rig.keys("down down down enter");
+    assert!(is_open(&mut rig, "jump-siblings-1-tests"), "choosing the fold reopens the menu, unfolded");
+    assert_eq!(rig.route(), page_route("RelationLabel"), "unfolding is not going");
+    rig.keys("down down down enter");
+    assert!(matches!(rig.route(), Route::Symbol(ref symbol) if symbol.id.as_str().ends_with("::glyph_tests")), "the test module's page: {:?}", rig.route());
+}
+
+/// The shelf folds test-only modules the same way, after the real ones.
+#[gpui::test]
+fn the_shelf_folds_test_only_modules_into_a_trailing_tests_row(cx: &mut TestAppContext) {
+    let mut rig = open(cx, "Identity");
+    let rows = |rig: &mut Rig| -> Vec<String> {
+        let ledger = painted(rig);
+        ledger.texts.iter().filter(|text| text.key.starts_with("shelf-row:")).map(|text| text.content.clone()).collect()
+    };
+    assert_eq!(rows(&mut rig), ["identity", "Identity", "glyph", "outline", "tests"], "real modules, then one fold");
+    let ledger = painted(&mut rig);
+    let fold = ledger.targets.iter().find(|target| target.key == super::shelf::TESTS_ROW).expect("the fold is a target").bounds.clone();
+    rig.cx.simulate_click(point(px(fold.x + fold.width / 2.0), px(fold.y + fold.height / 2.0)), Modifiers::default());
+    rig.settle();
+    assert_eq!(rows(&mut rig), ["identity", "Identity", "glyph", "outline", "tests", "glyph_tests"], "opened, it lists them under itself");
 }
 
 #[gpui::test]
@@ -85,4 +119,38 @@ fn cmd_shift_c_copies_the_address(cx: &mut TestAppContext) {
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.keys("cmd-shift-c");
     assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("nudox://orbit"));
+}
+
+/// Depth moved to ⌃1–⌃4 when the hand took ⌘1–⌘5.
+#[gpui::test]
+fn ctrl_1_to_4_move_through_the_depths(cx: &mut TestAppContext) {
+    let mut rig = open(cx, "RelationLabel");
+    rig.keys("ctrl-4");
+    assert!(matches!(rig.route(), Route::Symbol(ref symbol) if symbol.view == crate::navigation::View::Code), "⌃4: the code: {:?}", rig.route());
+    rig.keys("ctrl-3");
+    assert_eq!(rig.route(), page_route("RelationLabel"), "⌃3: the page");
+    rig.keys("ctrl-2");
+    assert!(matches!(rig.route(), Route::Package(_)), "⌃2: the package: {:?}", rig.route());
+    rig.keys("ctrl-1");
+    assert!(matches!(rig.route(), Route::Orbit(_)), "⌃1: Orbit: {:?}", rig.route());
+}
+
+/// Every jump-bar target is at least 24 × 24 px to hit (gui-plan.md:213),
+/// while the drawn words keep their own size.
+#[gpui::test]
+fn every_jump_bar_target_is_at_least_24_px_square(cx: &mut TestAppContext) {
+    let mut rig = open(cx, "RelationLabel");
+    rig.go(Intent::Navigate(page_route("KindGlyph")));
+    click(&mut rig, "jump-back", MouseButton::Left);
+    let ledger = painted(&mut rig);
+    let targets: Vec<_> = ledger.targets.iter().filter(|target| target.key.starts_with("jump-")).collect();
+    let keys: Vec<&str> = targets.iter().map(|target| target.key.as_str()).collect();
+    for key in ["jump-back", "jump-forward", "jump-seg-0", "jump-seg-1", "jump-seg-2"] {
+        assert!(keys.contains(&key), "{key} is measured: {keys:?}");
+    }
+    for target in targets {
+        assert!(target.bounds.width >= 24.0 && target.bounds.height >= 24.0, "{} is {}×{}", target.key, target.bounds.width, target.bounds.height);
+    }
+    let glyph = ledger.texts.iter().find(|text| text.content == "glyph").expect("the module's word");
+    assert!(glyph.bounds.height < 20.0, "the word itself is not enlarged: {}", glyph.bounds.height);
 }

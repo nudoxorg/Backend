@@ -80,6 +80,8 @@ pub(crate) struct Shelf {
     hover: HoverIntent,
     /// Groups the user opened or closed by hand.
     toggled: BTreeSet<SymbolRef>,
+    /// Whether the trailing "tests" fold was opened or closed by hand.
+    tests_toggled: bool,
     /// The resting width of the full shelf, from the shell.
     rest: Pixels,
     /// The resting width of the spine, from the shell.
@@ -106,6 +108,7 @@ impl Shelf {
             targets: Targets::named(name),
             hover: HoverIntent::default(),
             toggled: BTreeSet::new(),
+            tests_toggled: false,
             rest: px(264.0),
             spine: px(42.0),
             rows: Rc::new(Vec::new()),
@@ -426,15 +429,52 @@ impl Shelf {
         };
         let mut rows = Vec::new();
         let weak = cx.weak_entity();
+        // Test-only modules never sit among the real ones: they fold into
+        // one trailing "tests" row, wherever in the top two levels they are.
+        let mut tests: Vec<&OutlineNode> = Vec::new();
         for root in tree.roots.iter() {
+            if is_test_module(root) {
+                tests.push(root);
+                continue;
+            }
             let holds_current = current
                 .as_ref()
                 .is_some_and(|current| contains(root, current));
             let open = holds_current != self.toggled.contains(&root.decl.coordinate);
             self.push_node(&weak, &mut rows, root, 0, &package, current.as_ref(), open);
-            if open {
-                for child in root.children.iter() {
+            for child in root.children.iter() {
+                if is_test_module(child) {
+                    tests.push(child);
+                } else if open {
                     self.push_node(&weak, &mut rows, child, 1, &package, current.as_ref(), false);
+                }
+            }
+        }
+        if !tests.is_empty() {
+            let holds_current = current
+                .as_ref()
+                .is_some_and(|current| tests.iter().any(|node| contains(node, current)));
+            let open = holds_current != self.tests_toggled;
+            let toggle = weak.clone();
+            rows.push(Row {
+                id: TESTS_ROW.into(),
+                depth: 0,
+                mark: RowMark::Kind(Kind::Module),
+                name: "tests".into(),
+                current: false,
+                group: None,
+                act: Some(Rc::new(move |_, cx| {
+                    let _ = toggle.update(cx, |shelf, cx| {
+                        shelf.tests_toggled = !shelf.tests_toggled;
+                        cx.notify();
+                    });
+                })),
+                warm: None,
+                source: None,
+            });
+            if open {
+                for node in tests {
+                    self.push_node(&weak, &mut rows, node, 1, &package, current.as_ref(), false);
                 }
             }
         }
@@ -618,7 +658,7 @@ impl Shelf {
         let indent = measure.space(Space::Roomy) + measure.space(Space::Gutter) * f32::from(row.depth);
         let ink: Hsla = if row.current { palette.ink0.into() } else { palette.ink1.into() };
         let mark = match row.mark {
-            RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, &measure, palette),
+            RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, measure, palette),
             RowMark::Icon(icon) => icons::ui(icon, IconSize::S14, palette.ink2)
                 .size(measure.icon(14.0))
                 .into_any_element(),
@@ -636,14 +676,19 @@ impl Shelf {
             .pr(measure.space(Space::Roomy))
             .hover(|style| style.bg(palette.tint))
             .child(mark)
-            .child(
+            .child(facet::probe::text(
+                gpui::ElementId::Name(format!("shelf-row:{}", row.id).into()),
+                row.name.clone(),
+                measure.role(ty::MONO_ROW),
+                1.0,
+                facet::probe::TextOverflow::Ellipsis,
                 text(ty::MONO_ROW, measure, ink)
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .child(row.name.clone()),
-            );
+            ));
         if row.current {
             element = element
                 .bg(palette.tint)
@@ -654,6 +699,12 @@ impl Shelf {
             element = element.on_click(cx.listener(move |shelf, _: &ClickEvent, _, cx| {
                 shelf.targets.focus(row_id(&group));
                 shelf.toggle(group.clone(), cx);
+            }));
+        } else if row.id.as_ref() == TESTS_ROW {
+            element = element.on_click(cx.listener(|shelf, _: &ClickEvent, _, cx| {
+                shelf.targets.focus(SharedString::from(TESTS_ROW));
+                shelf.tests_toggled = !shelf.tests_toggled;
+                cx.notify();
             }));
         } else if let Some(act) = row.act.clone() {
             let id = row.id.clone();
@@ -684,7 +735,7 @@ impl Shelf {
             .overflow_hidden();
         for row in self.rows.iter().filter(|row| row.depth == 0 || row.current).take(24) {
             let mark = match row.mark {
-                RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, &measure, palette),
+                RowMark::Kind(kind) => super::kit::kind_mark(kind, KindSize::Sm, measure, palette),
                 RowMark::Icon(icon) => icons::ui(icon, IconSize::S14, palette.ink2).into_any_element(),
             };
             let act = row.act.clone();
@@ -712,7 +763,30 @@ impl Shelf {
 }
 
 /// A module row reads as its module (`glyph`), not its file (`glyph.rs`).
-fn shelf_name(node: &OutlineNode) -> String {
+/// The trailing fold that holds a package's test-only modules.
+pub(crate) const TESTS_ROW: &str = "shelf-tests";
+
+/// Whether `node` is a test-only module (`#[cfg(test)] mod browse_tests;`,
+/// an inline `mod tests`). The index carries no `cfg` attributes, so this
+/// is the tour's file rule (`facet::semantics::tour`'s `is_test`: `tests/`,
+/// `benches/`, `examples/`, `*_test(s).rs`, `tests.rs`) read from the
+/// module's own name and path.
+pub(crate) fn is_test_module(node: &OutlineNode) -> bool {
+    if node.decl.kind != Some(backend_library::DeclarationKind::Module) {
+        return false;
+    }
+    let stem = shelf_name(node);
+    let stem = stem.rsplit("::").next().unwrap_or(&stem);
+    let named = matches!(stem, "tests" | "test") || stem.ends_with("_tests") || stem.ends_with("_test");
+    let placed = node.decl.path.as_deref().is_some_and(|path| {
+        ["test/", "tests/", "benches/", "examples/"]
+            .iter()
+            .any(|dir| path.starts_with(dir) || path.contains(&format!("/{dir}")))
+    });
+    named || placed
+}
+
+pub(crate) fn shelf_name(node: &OutlineNode) -> String {
     let name = node.decl.name.as_ref();
     if node.decl.kind == Some(backend_library::DeclarationKind::Module)
         && let Some((stem, extension)) = name.rsplit_once('.')

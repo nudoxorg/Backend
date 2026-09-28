@@ -8,6 +8,8 @@
 //! - `float-lab`: the layer with pins, a chain and a tip at once.
 //! - `float-rise`, `float-sweep`, `float-chain`, `float-back`, `float-pin`,
 //!   `float-reverse`, `float-tip`, `float-deepen`: one motion each, for films.
+//! - `hover-grammar`: the pointer's own film (PLAN §2c, `sig-peek.png`): the
+//!   words are [`crate::hover`] hoverables, the pointer is scripted.
 
 #![allow(clippy::too_many_lines)]
 
@@ -21,7 +23,7 @@ use crate::icons::{Kind, Lang};
 use crate::measure::{Measure, Reveal, Set};
 use crate::paint::ground;
 use crate::theme::{ActiveFacet, Facet};
-use crate::tokens::{Face, TypeRole};
+use crate::tokens::{Face, Tone, TypeRole};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, IntoElement, ParentElement,
     Pixels, Render, SharedString, Styled, Window, div, point, px, size,
@@ -106,6 +108,12 @@ pub(crate) const SCENES: &[Scene] = &[
         title: "Film: a tip opens at 1 ms and closes at 300 ms",
         size: (700, 300),
         build: film_tip,
+    },
+    Scene {
+        id: "hover-grammar",
+        title: "Film: the hover grammar. The pointer rests on a word at 100 ms: its ink rises, its bevel draws and the word's other occurrence underlines at once; at 450 ms the peek unfurls from the word; the pointer leaves at 1000 ms and the card goes back into it.",
+        size: (900, 560),
+        build: hover_grammar,
     },
     Scene {
         id: "float-deepen",
@@ -904,4 +912,91 @@ fn film_deepen(window: &mut Window, cx: &mut App) -> AnyView {
         window,
         cx,
     )
+}
+
+// ------------------------------------------------------------------ hover grammar
+
+/// Where the hover-grammar page sits, and where its first word is: the
+/// declared pointer rests inside it.
+const GRAMMAR_ORIGIN: (f32, f32) = (60.0, 48.0);
+
+/// The pointer's film: at rest off the page, onto `SemanticLinkKind` at
+/// 100 ms, off the page at 1000 ms.
+const GRAMMAR_SCRIPT: &str = "move 20,520 @0; move 150,58 @100; move 20,520 @1000";
+
+/// A page fragment whose words are hoverables: a signature, a prose line
+/// with the same subject again, and two rows the peek unrolls over.
+struct HoverStage;
+
+impl Render for HoverStage {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let facet = cx.facet();
+        let palette = facet.palette();
+        let measure = facet.measure(window.viewport_size().width).within(px(640.0));
+        let hue = Kind::Enum.hue(&palette);
+        let word = |id: &'static str, name: &'static str, rest: Tone, role: TypeRole, peek: fn() -> Peek| {
+            let subject = crate::hover::Subject::new(format!("present::relation::{name}"));
+            crate::hover::hoverable(id, subject, hue, move |lit| {
+                div()
+                    .set(role, &measure)
+                    .text_color(crate::hover::ink(rest, lit, &palette))
+                    .child(name)
+                    .into_any_element()
+            })
+            .peek(move |anchor| peek::request(key(id), anchor, peek()))
+        };
+        let text = |role: TypeRole, tone: Tone, content: &'static str| {
+            div().set(role, &measure).text_color(tone.hsla()).child(content)
+        };
+        let line = || div().flex().items_baseline();
+        let row = |name: &'static str, say: &'static str| {
+            line()
+                .gap(px(12.0))
+                .min_h(px(34.0))
+                .items_center()
+                .child(crate::icons::kind_mark(Kind::Variant, crate::icons::KindSize::Sm, &palette))
+                .child(text(ROW_NAME, palette.ink0, name))
+                .child(text(ROW_SAY, palette.ink3, say))
+        };
+        let page = div()
+            .absolute()
+            .left(px(GRAMMAR_ORIGIN.0))
+            .top(px(GRAMMAR_ORIGIN.1))
+            .w(px(640.0))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                line()
+                    .child(text(ROW_NAME, palette.ink1, "Typed("))
+                    .child(word("hover:SemanticLinkKind", "SemanticLinkKind", palette.ink1, ROW_NAME, semantic_link_kind))
+                    .child(text(ROW_NAME, palette.ink3, ", "))
+                    .child(word("hover:RelationDirection", "RelationDirection", palette.ink1, ROW_NAME, relation_direction))
+                    .child(text(ROW_NAME, palette.ink1, ")")),
+            )
+            .child(
+                line()
+                    .child(text(ROW_SAY, palette.ink2, "Every "))
+                    .child(word("hover:SemanticLinkKind:prose", "SemanticLinkKind", palette.ink2, ROW_SAY, semantic_link_kind))
+                    .child(text(ROW_SAY, palette.ink2, " names one way a symbol touches another.")),
+            )
+            .child(row("Neighbourhood", "A bounded neighbourhood of one symbol."))
+            .child(row("Related", "Related, and nothing more."))
+            .child(row("Calls", "A call from one function to another."))
+            .child(row("MethodCall", "A call through a receiver."))
+            .child(row("TypeReference", "A type named in a signature."));
+        div()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .bg(palette.g0.hsla())
+            .child(ground())
+            .child(page)
+            .child(float::layer(window, cx))
+    }
+}
+
+fn hover_grammar(_window: &mut Window, cx: &mut App) -> AnyView {
+    crate::gallery::declare_script(GRAMMAR_SCRIPT, cx);
+    cx.new(|_| HoverStage).into()
 }

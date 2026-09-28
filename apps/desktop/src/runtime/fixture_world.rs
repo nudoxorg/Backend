@@ -49,12 +49,16 @@ pub(crate) fn blocking() -> Result<Loaded, String> {
     FIXTURE
         .get_or_init(|| {
             let path = folder().join("world.json");
+            let reading = std::time::Instant::now();
             let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
             let world = Arc::new(World::from_json(&bytes).map_err(|error| error.to_string())?);
+            super::trace::span("world.parse", reading, format_args!("{} bytes", bytes.len()));
+            let joining = std::time::Instant::now();
             let identities = Arc::new(IdentityAdapter::load(
                 &world,
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
             ));
+            super::trace::span("world.identities", joining, "IdentityAdapter::load");
             Ok((world, identities))
         })
         .clone()
@@ -165,12 +169,15 @@ struct Prepared {
 
 impl Prepared {
     fn new(world: Arc<World>, identities: Arc<IdentityAdapter>) -> Self {
-        Self {
+        let preparing = std::time::Instant::now();
+        let prepared = Self {
             names: Names::new(&world),
             recipes: Recipes::new(&world).into_prepared(),
             world,
             identities,
-        }
+        };
+        super::trace::span("world.tables", preparing, "Names + Recipes");
+        prepared
     }
 }
 
@@ -273,7 +280,7 @@ impl Tables {
             .recipes
             .getting_one(world, node)
             .or_else(|| self.recipes.calling_it(world, node))
-            .map(|section| section.view(world));
+            .map(|section| section.view(world, node));
         let sources = &self.sources;
         let uses = page::in_use(world, node, &mut |package, file| sources.read(package, file))
             .into_iter()
@@ -303,6 +310,12 @@ enum Service {
 }
 
 impl Global for Service {}
+
+/// Whether the optional pinned semantic world is still being prepared.
+/// Failed or not-yet-requested worlds are settled states for the shell.
+pub(crate) fn is_loading(cx: &App) -> bool {
+    matches!(cx.try_global::<Service>(), Some(Service::Loading))
+}
 
 /// The anatomy of `decl` (in `package`) when the fixture world knows it:
 /// exactly one node at its file, line and name.
@@ -391,6 +404,19 @@ pub(crate) fn hand_view(hand: &crate::model::hand::Hand, cx: &mut App) -> Rc<Han
 pub(crate) fn symbol_of(node: NodeId, package: &PackageRef, tree: &OutlineTree, cx: &App) -> Option<SymbolRef> {
     match cx.try_global::<Service>() {
         Some(Service::Ready(tables)) => tables.borrow().identities.outline_symbol(node, package, tree),
+        _ => None,
+    }
+}
+
+/// Exact, immutable identity inputs for a page link. A caller pins these
+/// Arcs for the lifetime of its index lookup and rejects a changed world.
+/// This never builds page anatomy or rereads source on the UI thread.
+pub(crate) fn link_world(cx: &App) -> Option<(Arc<World>, Arc<IdentityAdapter>)> {
+    match cx.try_global::<Service>() {
+        Some(Service::Ready(tables)) => {
+            let tables = tables.borrow();
+            Some((Arc::clone(&tables.world), Arc::clone(&tables.identities)))
+        }
         _ => None,
     }
 }

@@ -94,7 +94,8 @@ fn fail<T>(message: impl Into<String>) -> Result<T> {
     Err(GalleryError(message.into()))
 }
 
-const FLAGS: [&str; 10] = [
+const FLAGS: [&str; 11] = [
+    "dump",
     "one-sheet",
     "full",
     "quick",
@@ -278,6 +279,7 @@ fn run(args: &[String]) -> Result<()> {
         "sequence" => sequence(&options),
         "sheet" => sheet(&options),
         "motion-report" => motion_report(&options),
+        "legibility" => legibility(&options),
         "storm" => storm(&options),
         "lint" => lint(&options),
         "matrix" => matrix(&options),
@@ -352,12 +354,7 @@ fn suffix(shot: &Shot, time: u64) -> String {
 /// names and reports name the script that actually played.
 fn resolve_script(scene: &Scene, shot: &mut Shot) -> Result<()> {
     if shot.script.is_none() {
-        let mut probe = shot.clone();
-        probe.times = vec![0];
-        probe.script = None;
-        probe.frame_ms = 0;
-        let played = gallery::run(scene, &probe, &mut |_, _, _| Ok(()))?;
-        shot.script = Some(played);
+        shot.script = Some(gallery::declared(scene, shot)?);
     }
     Ok(())
 }
@@ -524,6 +521,83 @@ fn film(options: &Options) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// The legibility law on a film (`gallery::legible`): samples the scene's
+/// script every 16 ms from `--from` to `--to` (default: the script's end plus
+/// 600 ms) at 2x and fails if two readable texts intersect, or a drawn text
+/// lingers under legibility, in any frame. `--out DIR` writes
+/// `<scene>-legibility.{txt,json}` and, with `--frames`, every frame that
+/// broke the law.
+fn legibility(options: &Options) -> Result<()> {
+    let scene = scene(options.require("scene")?)?;
+    let mut shot = options.shot(&scene)?;
+    if shot.scale != 2 {
+        return fail("legibility measures glyph contrast from pixels: it needs --scale 2");
+    }
+    resolve_script(&scene, &mut shot)?;
+    shot.probe = true;
+    let step = gallery::legible::STEP_MS;
+    let end = shot.script.as_ref().map_or(0, Script::end_ms) + 600;
+    let from = options.number::<u64>("from")?.unwrap_or(0) / step * step;
+    let to = options.number::<u64>("to")?.unwrap_or(end);
+    shot.times = (from..=to).step_by(usize::try_from(step).unwrap_or(16)).collect();
+    shot.until_ms = to;
+    let keep = options.flag("frames");
+    let mut film = Vec::new();
+    let mut kept = Vec::new();
+    gallery::run(&scene, &shot, &mut |tick, window, _| {
+        if let Some(image) = tick.image {
+            film.push(gallery::legible::measure(
+                image,
+                window.painted_texts(),
+                shot.scale,
+                tick.drawn.at_ms,
+                !tick.ledger.any_live(),
+            ));
+            if keep {
+                kept.push((tick.drawn.at_ms, image.clone()));
+            }
+        }
+        Ok(())
+    })?;
+    let report = gallery::legible::judge(&film);
+    let text = gallery::legible::text(scene.id, &report);
+    print!("{text}");
+    if let Some(dir) = options.get("out") {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).map_err(GalleryError::from_display)?;
+        std::fs::write(dir.join(format!("{}-legibility.txt", scene.id)), &text)
+            .map_err(GalleryError::from_display)?;
+        std::fs::write(
+            dir.join(format!("{}-legibility.json", scene.id)),
+            format!("{}\n", gallery::legible::json(scene.id, &report)),
+        )
+        .map_err(GalleryError::from_display)?;
+        if options.flag("dump") {
+            let lines = film
+                .iter()
+                .map(|frame| gallery::legible::frame_json(frame).to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(dir.join(format!("{}-texts.jsonl", scene.id)), format!("{lines}\n"))
+                .map_err(GalleryError::from_display)?;
+        }
+        for (at, image) in &kept {
+            let broken = report
+                .findings
+                .iter()
+                .any(|finding| (finding.from_ms..=finding.to_ms).contains(at));
+            if broken {
+                save(image, &dir.join(format!("{}-{at:05}.png", scene.id)))?;
+            }
+        }
+    }
+    if report.passed() {
+        Ok(())
+    } else {
+        fail(format!("{}: {} legibility findings", scene.id, report.findings.len()))
+    }
 }
 
 fn sheet(options: &Options) -> Result<()> {
@@ -1264,6 +1338,8 @@ fn storm(options: &Options) -> Result<()> {
 }
 
 fn window(options: &Options) -> Result<()> {
+    let diagnostics = std::env::var_os("NUDOX_REVIEW_DIAGNOSTICS").is_some();
+    if diagnostics { eprintln!("[w-pages-review] window command entered"); }
     let trace_path=options.get("native-trace").map(PathBuf::from);
     let scene = scene(options.require("scene")?)?;
     let shot = options.shot(&scene)?;
@@ -1273,15 +1349,19 @@ fn window(options: &Options) -> Result<()> {
     let window_size = size(px(width as f32), px(height as f32));
     let failure=std::rc::Rc::new(std::cell::RefCell::new(None));
     let boot_failure=std::rc::Rc::clone(&failure);
+    if diagnostics { eprintln!("[w-pages-review] before Application::run"); }
     gpui::Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(crate::icons::Assets)
         .run(move |cx| {
+        if diagnostics { eprintln!("[w-pages-review] Application::run callback entered"); }
+        if diagnostics { eprintln!("[w-pages-review] gallery bootstrap starting"); }
         if let Err(error) = gallery::bootstrap(facet, false, cx) {
             eprintln!("facet-gallery: {error}");
             *boot_failure.borrow_mut()=Some(error);
             cx.quit();
             return;
         }
+        if diagnostics { eprintln!("[w-pages-review] gallery bootstrap complete"); }
         if let Some(path)=&trace_path {
             if let Err(error)=super::native_trace::start(path,cx) {
                 eprintln!("facet-gallery: native trace: {error}");
@@ -1299,6 +1379,7 @@ fn window(options: &Options) -> Result<()> {
             }),
             ..WindowOptions::default()
         };
+        if diagnostics { eprintln!("[w-pages-review] open_window starting"); }
         if let Err(error) = cx.open_window(options, move |window, cx| {
             gallery::mount(&scene, window, cx)
         }) {
@@ -1307,9 +1388,15 @@ fn window(options: &Options) -> Result<()> {
             cx.quit();
             return;
         }
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
+        if diagnostics { eprintln!("[w-pages-review] open_window returned; windows={}", cx.windows().len()); }
+        cx.on_window_closed(move |cx, window| {
+            if diagnostics { eprintln!("[w-pages-review] window closed {window:?}; remaining={}", cx.windows().len()); }
+            cx.quit();
+        }).detach();
         cx.activate(true);
+        if diagnostics { eprintln!("[w-pages-review] application activated"); }
     });
+    if diagnostics { eprintln!("[w-pages-review] Application::run returned"); }
     if let Some(error)=failure.borrow_mut().take() { return Err(error); }
     Ok(())
 }

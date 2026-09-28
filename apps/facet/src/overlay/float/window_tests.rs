@@ -271,12 +271,13 @@ fn the_executor_timer_publishes_the_original_exit_segment_terminal_before_cullin
             cx,
         )
     });
-    advance(cx, 200);
+    // Fully open (every card unfurls: 320 ms in, 300 ms out).
+    advance(cx, 400);
     draw(cx);
     cx.update(|window, cx| {
         super::close_all(window, cx);
     });
-    advance(cx, 149);
+    advance(cx, 299);
     draw(cx);
     let before = cx
         .update(|_, cx| crate::probe::take(cx))

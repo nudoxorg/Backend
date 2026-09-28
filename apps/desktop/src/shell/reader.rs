@@ -32,6 +32,54 @@ use gpui::{
 };
 use std::cell::Cell;
 use std::rc::Rc;
+use std::collections::BTreeSet;
+
+/// A disclosure has a semantic identity, never a position in a render.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) enum SymbolFold {
+    Relations(&'static str),
+    RelationPackage(&'static str, u32),
+    IndexedRelationPage(&'static str, usize),
+    Methods(crate::model::pages::Receiver),
+    Member(String),
+    Capabilities,
+    Docs,
+    Uses,
+}
+
+/// Kept per declaration across lens changes; bounded to protect long sessions.
+#[derive(Clone, Default)]
+pub(crate) struct SymbolDisclosure {
+    scope: String,
+    open: BTreeSet<SymbolFold>,
+    unrolls: Rc<std::cell::RefCell<std::collections::BTreeMap<SymbolFold, Presence>>>,
+}
+
+impl SymbolDisclosure {
+    fn for_symbol(symbol: &crate::model::pages::SymbolRef) -> Self { Self { scope: symbol.as_str().to_owned(), ..Self::default() } }
+    pub(crate) fn is_open(&self, fold: &SymbolFold) -> bool { self.open.contains(fold) }
+    pub(crate) fn indexed_relation_page(&self, label: &'static str) -> usize {
+        self.open.iter().find_map(|fold| match fold {
+            SymbolFold::IndexedRelationPage(word, page) if *word == label => Some(*page),
+            _ => None,
+        }).unwrap_or(0)
+    }
+    pub(crate) fn unroll(&self, fold: SymbolFold) -> Presence {
+        let mut unrolls = self.unrolls.borrow_mut();
+        if unrolls.len() >= 128 && !unrolls.contains_key(&fold) {
+            if let Some(key) = unrolls.keys().next().cloned() { unrolls.remove(&key); }
+        }
+        unrolls.entry(fold.clone()).or_insert_with(|| Presence::new(format!("symbol-unroll-{}-{fold:?}", self.scope))).clone()
+    }
+    fn toggle(&mut self, fold: SymbolFold) {
+        if let SymbolFold::IndexedRelationPage(label, page) = &fold {
+            self.open.retain(|item| !matches!(item, SymbolFold::IndexedRelationPage(word, _) if word == label));
+            if *page > 0 { self.open.insert(fold.clone()); }
+            return;
+        }
+        if !self.open.remove(&fold) && self.open.len() < 128 { self.open.insert(fold); }
+    }
+}
 
 /// The reading measure at 100 % text.
 pub(crate) const FOLIO: f32 = 784.0;
@@ -86,6 +134,11 @@ pub(crate) struct Reader {
     said: Vec<SharedString>,
     /// The hero name's lines as the last render set them.
     hero: Vec<SharedString>,
+    symbol_disclosures: Vec<(crate::model::pages::SymbolRef, SymbolDisclosure)>,
+    package_outline_expanded: bool,
+    /// Up to four explicit Find choices survive Compare and Back.
+    find_held: Vec<facet::browse::find::HeldPackage>,
+    find_workspace: Option<crate::core::LocalProjectId>,
 }
 
 impl Reader {
@@ -121,6 +174,10 @@ impl Reader {
             }],
             said: Vec::new(),
             hero: Vec::new(),
+            symbol_disclosures: Vec::new(),
+            package_outline_expanded: false,
+            find_held: Vec::new(),
+            find_workspace: snapshot.workspace().host.clone(),
         }
     }
 
@@ -138,7 +195,11 @@ impl Reader {
     }
 
     pub(crate) fn reset_world(&mut self, cx: &mut Context<Self>) {
-        if let Some(map) = &self.map { map.update(cx, |map, cx| map.reset_world(cx)); }
+        if let Some(map) = &self.map { map.update(cx, bodies::graph::Map::reset_world); }
+    }
+
+    pub(crate) fn graph_focus_glyph(&self, cx: &gpui::App) -> Option<gpui::Bounds<Pixels>> {
+        self.map.as_ref().and_then(|map| map.read(cx).focus_glyph(cx))
     }
 
     pub(crate) fn graph_focused(&self, cx: &gpui::App) -> bool {
@@ -205,6 +266,57 @@ impl Reader {
         }
     }
 
+    pub(crate) fn symbol_disclosure(&mut self, symbol: &crate::model::pages::SymbolRef) -> SymbolDisclosure {
+        if let Some((_, state)) = self.symbol_disclosures.iter().find(|(key, _)| key == symbol) { return state.clone(); }
+        let state = SymbolDisclosure::for_symbol(symbol);
+        self.symbol_disclosures.push((symbol.clone(), state.clone()));
+        if self.symbol_disclosures.len() > 24 { self.symbol_disclosures.remove(0); }
+        state
+    }
+
+    pub(crate) fn toggle_symbol(&mut self, symbol: crate::model::pages::SymbolRef, fold: SymbolFold, cx: &mut Context<Self>) {
+        let mut state = self.symbol_disclosures.iter().position(|(key, _)| key == &symbol)
+            .map(|at| self.symbol_disclosures.remove(at).1).unwrap_or_else(|| SymbolDisclosure::for_symbol(&symbol));
+        state.toggle(fold);
+        self.symbol_disclosures.push((symbol, state));
+        if self.symbol_disclosures.len() > 24 { self.symbol_disclosures.remove(0); }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_current_symbol(&mut self, fold: SymbolFold, cx: &mut Context<Self>) {
+        if let Some(symbol) = route_symbol(&self.route) { self.toggle_symbol(symbol, fold, cx); }
+    }
+
+    pub(crate) fn toggle_package_outline(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.route, Route::Package(_)) {
+            self.package_outline_expanded = !self.package_outline_expanded;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_find_held(&mut self, held: Vec<facet::browse::find::HeldPackage>, cx: &mut Context<Self>) {
+        let mut unique: Vec<facet::browse::find::HeldPackage> = Vec::with_capacity(4);
+        for package in held {
+            if !unique.iter().any(|item| item.key == package.key) { unique.push(package); }
+            if unique.len() == 4 { break; }
+        }
+        if self.find_held != unique {
+            self.find_held = unique;
+            cx.notify();
+        }
+    }
+
+    /// Align a tracked section heading with the reading viewport. This uses
+    /// real prepaint geometry, so text zoom and open folds need no estimates.
+    pub(crate) fn jump_symbol_section(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        if let Some(bounds) = self.targets.bounds_of(id) {
+            let offset = self.scroll.offset();
+            let top = self.scroll.bounds().origin.y + px(24.0);
+            self.scroll.set_offset(point(offset.x, (offset.y + top - bounds.origin.y).min(px(0.0))));
+            cx.notify();
+        }
+    }
+
     /// A link was entered or left: hover intent may prefetch its page.
     pub(crate) fn hover_link(&mut self, key: PageKey, hovered: bool, cx: &mut Context<Self>) {
         let links = self.links.clone();
@@ -218,6 +330,9 @@ impl Reader {
     }
 
     fn arrive(&mut self, next: &Route, overlay: Option<Overlay>) {
+        if self.route != *next {
+            self.package_outline_expanded = false;
+        }
         let view_switch = overlay == self.overlay && self.route.same_place(next);
         let way = if view_switch {
             if bodies::graph::is_graph(&self.route) && !bodies::graph::is_graph(next) { Way::GraphPage } else { Way::View }
@@ -413,12 +528,25 @@ impl Region for Reader {
             let snapshot = store.snapshot();
             let overlay = snapshot.overlay().filter(|overlay| matches!(overlay, Overlay::Settings(_) | Overlay::Inbox));
             if *snapshot.route() != self.route || overlay != self.overlay {
+                if overlay == self.overlay && find_refinement(&self.route, snapshot.route()) {
+                    // Typing refines one place. Keeping its keyed surface
+                    // holds the live input and selection while results reflow.
+                    self.route = snapshot.route().clone();
+                    if let Some(current) = self.places.last_mut() { current.route = self.route.clone(); }
+                    return;
+                }
                 // (A release change or a view switch replaces the entry; it
                 // still arrives as a new page.)
                 self.arrive(snapshot.route(), overlay);
             }
         }
     }
+}
+
+fn find_refinement(previous: &Route, next: &Route) -> bool {
+    let find = |route: &Route| matches!(route,
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome | crate::navigation::BrowseRoute::Find(_))));
+    find(previous) && find(next)
 }
 
 /// Only an immediately preceding page of this exact typed declaration owns
@@ -457,6 +585,7 @@ impl Reader {
         let mut scratch_hover = HoverIntent::default();
         let mut hover = if current { std::mem::take(&mut self.hover) } else { HoverIntent::default() };
         let leaves = {
+            let symbol_disclosure = route_symbol(&place.route).map(|symbol| self.symbol_disclosure(&symbol)).unwrap_or_default();
             let mut ctx = Ctx {
                 active: current,
                 measure: layout.folio_measure,
@@ -465,9 +594,13 @@ impl Reader {
                 reveal: facet.reveal,
                 links: &links,
                 targets: &targets,
+                reader_scroll: self.scroll.clone(),
                 lens: if current { self.lens } else { place.lens },
                 said: &mut said,
                 hero: &mut hero,
+                symbol_disclosure,
+                package_outline_expanded: self.package_outline_expanded,
+                find_held: self.find_held.clone(),
             };
             let hover = if current { &mut hover } else { &mut scratch_hover };
             bodies::build(&place.route, place.overlay, snapshot, &pages, &mut ctx, hover, cx)
@@ -517,6 +650,10 @@ impl Render for Reader {
         self.laid_out = Some(laid_out);
         let palette = facet.palette();
         let snapshot = self.links.snapshot(cx);
+        if self.find_workspace.as_ref() != snapshot.workspace().host.as_ref() {
+            self.find_workspace = snapshot.workspace().host.clone();
+            self.find_held.clear();
+        }
         if bodies::graph::is_graph(snapshot.route()) && snapshot.overlay().is_none() {
             let map = self.map.get_or_insert_with(|| {
                 let links = self.links.clone();

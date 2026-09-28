@@ -210,6 +210,15 @@ impl UiRootEntity {
                     sequence: self.graph_view_generation,
                 });
             }
+            // The world, then the ask the graph flies once it shows.
+            Intent::Tour(package) => {
+                self.dispatch_runtime(Intent::Tour(package.clone()), cx);
+                if let Some(store) = &self.store
+                    && let Ok(package) = crate::model::pages::PackageRef::parse(package.as_str())
+                {
+                    store.update(cx, |store, cx| store.ask_tour(package, cx));
+                }
+            }
             Intent::OpenFolderPicker => self.start_folder_picker(cx),
             Intent::RevealProject(project) => cx.reveal_path(&project.path()),
             Intent::TestConnection => {

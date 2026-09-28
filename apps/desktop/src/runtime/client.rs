@@ -333,7 +333,8 @@ fn fault(error: ClientError) -> EngineFault {
             | ClientError::FreshnessMismatch
             | ClientError::RequestMismatch { .. }
             | ClientError::CursorMismatch
-            | ClientError::StaleCursor => FaultCode::Cancelled,
+            | ClientError::StaleCursor
+            | ClientError::StaleSelection => FaultCode::Cancelled,
         },
         error.to_string(),
     ))

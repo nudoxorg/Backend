@@ -1275,6 +1275,7 @@ pub struct ControlChannel {
     peer: EndpointId,
     scope: Option<AssignmentScope>,
     role: ControlRole,
+    worker_namespace: Option<[u8; 16]>,
     sent: u8,
     received: u8,
 }
@@ -1488,6 +1489,7 @@ pub async fn connect_control(
         peer,
         scope: Some(scope),
         role,
+        worker_namespace: None,
         sent: 0,
         received: 0,
     })
@@ -1570,6 +1572,7 @@ pub(crate) async fn accept_control_connection_with_timeout(
         peer,
         scope: policy.scope,
         role: policy.role,
+        worker_namespace: policy.worker_namespace,
         sent: 0,
         received: 0,
     })

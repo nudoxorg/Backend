@@ -21,6 +21,8 @@ mod reply_page;
 mod subscription;
 mod subscription_snapshot;
 #[cfg(test)]
+mod claim_index_tests;
+#[cfg(test)]
 mod tests;
 
 pub use admission::{

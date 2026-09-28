@@ -427,11 +427,12 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
         let mut last_progress = Instant::now();
         while !self.is_shutdown() {
             self.accept_available()?;
-            if self.drain_owner_once() || self.active.load(Ordering::Acquire) != 0 {
+            let made_progress = self.drain_owner_once();
+            let active = self.active.load(Ordering::Acquire);
+            if made_progress || active != 0 {
                 last_progress = Instant::now();
-                continue;
             }
-            if self.idle_window_elapsed(last_progress) {
+            if active == 0 && self.idle_window_elapsed(last_progress) {
                 // Nothing has been connected and no owner work has progressed
                 // for the whole window. A detached daemon has no parent to
                 // reap it, so this branch is the only thing between one
@@ -443,7 +444,12 @@ impl<O: OwnerService + 'static> UnixListenerService<O> {
                 self.stop.store(true, Ordering::Release);
                 break;
             }
-            thread::sleep(self.config.poll_interval);
+            // Keep a connected but idle client alive without hot-spinning the
+            // embedded owner poll. Real owner/request progress immediately
+            // drains again, so this wait is never inserted after a frame.
+            if !made_progress {
+                thread::sleep(self.config.poll_interval);
+            }
         }
         self.finish_workers();
         self.service.close();
@@ -732,6 +738,30 @@ mod tests {
         }
 
         fn serve_one(&mut self) -> bool {
+            false
+        }
+
+        fn close(&mut self) {}
+    }
+
+    #[derive(Debug)]
+    struct CountingOwner(Arc<AtomicUsize>);
+
+    impl OwnerService for CountingOwner {
+        fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+            Ok(body.to_vec())
+        }
+
+        fn engine(
+            &mut self,
+            _request_id: u64,
+            _request: EngineRequest,
+        ) -> Result<EngineStatus, ProtocolError> {
+            Ok(EngineStatus::Accepted)
+        }
+
+        fn serve_one(&mut self) -> bool {
+            self.0.fetch_add(1, Ordering::Relaxed);
             false
         }
 
@@ -1035,7 +1065,24 @@ mod tests {
 
     #[test]
     fn a_connected_client_holds_the_idle_window_open() {
+        struct RunningListener {
+            shutdown: super::ListenerShutdown,
+            worker: Option<thread::JoinHandle<Result<usize, super::ListenerError>>>,
+            client: Option<std::os::unix::net::UnixStream>,
+        }
+
+        impl Drop for RunningListener {
+            fn drop(&mut self) {
+                self.client.take();
+                self.shutdown.request();
+                if let Some(worker) = self.worker.take() {
+                    let _ = worker.join();
+                }
+            }
+        }
+
         let path = socket_path("idle-held-open");
+        let owner_polls = Arc::new(AtomicUsize::new(0));
         let config = ListenerConfig {
             path: path.clone(),
             limits: limits(),
@@ -1049,33 +1096,50 @@ mod tests {
             poll_interval: Duration::from_millis(1),
             idle_timeout: Some(Duration::from_millis(100)),
         };
-        let service = LocaldService::new(FakeOwner, config.limits)
+        let service = LocaldService::new(CountingOwner(Arc::clone(&owner_polls)), config.limits)
             .unwrap_or_else(|error| panic!("service: {error}"));
         let mut listener = UnixListenerService::bind(service, config)
             .unwrap_or_else(|error| panic!("bind: {error}"));
-        let held = std::os::unix::net::UnixStream::connect(&path)
+        let mut held = std::os::unix::net::UnixStream::connect(&path)
             .unwrap_or_else(|error| panic!("connect: {error}"));
-        let runner = thread::spawn(move || listener.run().map(|report| report.connections));
+        held.set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap_or_else(|error| panic!("read timeout: {error}"));
+        let shutdown = listener.shutdown_handle();
+        let worker = thread::spawn(move || listener.run().map(|report| report.connections));
+        let mut runner = RunningListener { shutdown, worker: Some(worker), client: Some(held) };
 
         // Six idle windows with the client connected. Nothing may retire.
         thread::sleep(Duration::from_millis(600));
         assert!(
-            !runner.is_finished(),
+            !runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished),
             "a listener retired while a client was connected"
         );
         assert!(path.exists());
+        let poll_count = owner_polls.load(Ordering::Relaxed);
+        assert!(poll_count < 5_000, "idle connected client caused {poll_count} owner polls in 600ms");
 
-        drop(held);
+        // The no-work wait must not add a request-sized delay after a client
+        // actually submits work on the connection it already holds.
+        let request = crate::protocol::frame(b"ping", limits())
+            .unwrap_or_else(|error| panic!("frame: {error}"));
+        let held = runner.client.as_mut().expect("held client");
+        held.write_all(&request).unwrap_or_else(|error| panic!("write: {error}"));
+        assert_eq!(
+            read_frame(held, limits()).unwrap_or_else(|error| panic!("read: {error}")),
+            b"ping"
+        );
+
+        runner.client.take();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline && !runner.is_finished() {
+        while Instant::now() < deadline && !runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished) {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(
-            runner.is_finished(),
+            runner.worker.as_ref().is_some_and(thread::JoinHandle::is_finished),
             "a listener stayed resident after its last client left"
         );
         assert_eq!(
-            runner
+            runner.worker.take().expect("listener worker")
                 .join()
                 .unwrap_or_else(|_| panic!("listener thread panicked"))
                 .unwrap_or_else(|error| panic!("run: {error}")),

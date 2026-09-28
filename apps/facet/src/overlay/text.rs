@@ -56,6 +56,8 @@ impl Link {
 pub enum Decor {
     /// A hairline underline (a rest-able word at rest).
     Hairline,
+    /// A dotted underline: this name opens an index lookup, not a resolved symbol.
+    Lookup,
     /// A dashed box (the `+N` overflow chip).
     Chip,
 }
@@ -237,6 +239,14 @@ impl Element for Words {
                         );
                         window.paint_quad(fill(underline, line3));
                     }
+                    Decor::Lookup => {
+                        let mut x = rect.left();
+                        while x < rect.right() {
+                            let width = px(2.0).min(rect.right() - x);
+                            window.paint_quad(fill(Bounds::new(point(x, rect.bottom() - px(1.0)), size(width, px(1.0))), line3));
+                            x += px(4.0);
+                        }
+                    }
                     Decor::Chip => {
                         let inset = rect.size.height * 0.12;
                         let chip = Bounds::from_corners(
@@ -352,6 +362,23 @@ pub enum Piece {
     Code(String),
     /// `*emphasis*`: upright, brighter.
     Emphasis(String),
+    /// `**strong**`: stronger words without source punctuation.
+    Strong(String),
+    /// A Markdown reference or inline link; its label is what is read.
+    Reference { label: String, target: String },
+    /// An unresolved shortcut reference. It can be read, but has no guessed destination.
+    Shortcut { label: String, code: bool },
+}
+
+impl Piece {
+    /// The words to show without Markdown source punctuation.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Plain(text) | Self::Code(text) | Self::Emphasis(text) | Self::Strong(text) => text,
+            Self::Reference { label, .. } | Self::Shortcut { label, .. } => label,
+        }
+    }
 }
 
 /// Parses the prose markup. Unclosed markers are literal text.
@@ -360,27 +387,41 @@ pub fn parse(markup: &str) -> Vec<Piece> {
     let mut pieces = Vec::new();
     let mut plain = String::new();
     let mut rest = markup;
-    while let Some(at) = rest.find(['`', '*']) {
-        let marker = rest[at..].chars().next().unwrap_or('`');
-        let after = &rest[at + 1..];
-        match after.find(marker) {
-            Some(end) if end > 0 => {
-                plain.push_str(&rest[..at]);
-                if !plain.is_empty() {
-                    pieces.push(Piece::Plain(std::mem::take(&mut plain)));
-                }
-                let inner = after[..end].to_owned();
-                pieces.push(if marker == '`' {
-                    Piece::Code(inner)
-                } else {
-                    Piece::Emphasis(inner)
-                });
-                rest = &after[end + 1..];
-            }
-            _ => {
-                plain.push_str(&rest[..=at]);
-                rest = after;
-            }
+    while let Some(at) = rest.find(['`', '*', '[']) {
+        plain.push_str(&rest[..at]);
+        let marked = &rest[at..];
+        let parsed = if let Some(after) = marked.strip_prefix("**") {
+            after.find("**").filter(|end| *end > 0).map(|end| (Piece::Strong(after[..end].to_owned()), end + 4))
+        } else if let Some(after) = marked.strip_prefix('*') {
+            after.find('*').filter(|end| *end > 0).map(|end| (Piece::Emphasis(after[..end].to_owned()), end + 2))
+        } else if let Some(after) = marked.strip_prefix('`') {
+            after.find('`').filter(|end| *end > 0).map(|end| (Piece::Code(after[..end].to_owned()), end + 2))
+        } else if let Some(after) = marked.strip_prefix('[') {
+            after.find(']').and_then(|end| {
+                let label = &after[..end];
+                let suffix = &after[end + 1..];
+                let (target, consumed) = if let Some(target) = suffix.strip_prefix('[') {
+                    let close = target.find(']')?;
+                    (&target[..close], end + close + 4)
+                } else if let Some(target) = suffix.strip_prefix('(') {
+                    let close = target.find(')')?;
+                    (&target[..close], end + close + 4)
+                } else if label.chars().any(char::is_whitespace) || label.starts_with('`') {
+                    let code = label.len() > 2 && label.starts_with('`') && label.ends_with('`');
+                    let label = if code { &label[1..label.len() - 1] } else { label };
+                    return Some((Piece::Shortcut { label: label.to_owned(), code }, end + 2));
+                } else { return None };
+                (!label.is_empty() && !target.is_empty()).then(|| (Piece::Reference { label: label.to_owned(), target: target.to_owned() }, consumed))
+            })
+        } else { None };
+        if let Some((piece, consumed)) = parsed {
+            if !plain.is_empty() { pieces.push(Piece::Plain(std::mem::take(&mut plain))); }
+            pieces.push(piece);
+            rest = &marked[consumed..];
+        } else {
+            let size = marked.chars().next().map_or(1, char::len_utf8);
+            plain.push_str(&marked[..size]);
+            rest = &marked[size..];
         }
     }
     plain.push_str(rest);
@@ -462,6 +503,7 @@ impl Prose {
             italic: false,
             ..base
         };
+        let strong = TypeRole { weight: 700.0, italic: false, ..base };
         let ink = self.color.unwrap_or_else(|| palette.ink1.into());
         let bright: Hsla = palette.ink0.into();
         let quiet_code = self.code_color.unwrap_or(bright);
@@ -476,6 +518,7 @@ impl Prose {
                 Piece::Emphasis(text) => {
                     runs.push(&text, emphasis, bright);
                 }
+                Piece::Strong(text) => { runs.push(&text, strong, bright); }
                 Piece::Code(text) => {
                     let link = self
                         .resolver
@@ -491,6 +534,14 @@ impl Prose {
                         linked.push(range.clone());
                         links.push((range, link));
                     }
+                }
+                Piece::Reference { label, target } => {
+                    let link = self.resolver.as_ref().and_then(|resolve| resolve(&target, occurrence));
+                    let range = runs.push(&label, base, if link.is_some() { bright } else { ink });
+                    if let Some(link) = link { linked.push(range.clone()); links.push((range, link)); }
+                }
+                Piece::Shortcut { label, code: is_code } => {
+                    runs.push(&label, if is_code { code } else { base }, if is_code { quiet_code } else { ink });
                 }
             }
         }
@@ -746,6 +797,26 @@ mod tests {
             ]
         );
         assert_eq!(parse("2 * 3 and a `lone tick"), [Piece::Plain("2 * 3 and a `lone tick".into())]);
+        assert_eq!(
+            parse("A **data structure** using `T`; see [the manual][crate::ser]."),
+            [
+                Piece::Plain("A ".into()), Piece::Strong("data structure".into()),
+                Piece::Plain(" using ".into()), Piece::Code("T".into()),
+                Piece::Plain("; see ".into()),
+                Piece::Reference { label: "the manual".into(), target: "crate::ser".into() },
+                Piece::Plain(".".into()),
+            ],
+        );
+        assert_eq!(
+            parse("Use [`serde_derive`] or [derive section of the manual]; keep [T] literal."),
+            [
+                Piece::Plain("Use ".into()),
+                Piece::Shortcut { label: "serde_derive".into(), code: true },
+                Piece::Plain(" or ".into()),
+                Piece::Shortcut { label: "derive section of the manual".into(), code: false },
+                Piece::Plain("; keep [T] literal.".into()),
+            ],
+        );
     }
 
     #[test]

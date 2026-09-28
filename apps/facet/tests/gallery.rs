@@ -434,3 +434,26 @@ fn a_scene_with_zero_probe_coverage_reports_not_covered_never_pass() {
         matrix_stage.summary
     );
 }
+
+/// `gallery::declared` reads a scene's script at mount without quiescing,
+/// playing or drawing; it must resolve exactly the script a full run plays
+/// (the old `resolve_script` path), and nothing for a scene that declares none.
+#[test]
+fn a_declared_script_resolves_the_same_without_playing_the_scene() {
+    let _platform = platform();
+    for id in ["controls-live", "chrome-resize", "version-comb"] {
+        let scene = scene(id);
+        let shot = Shot::new(&scene);
+        let declared = gallery::declared(&scene, &shot).expect("declared script");
+        let mut probe = shot.clone();
+        probe.times = vec![0];
+        probe.script = None;
+        probe.frame_ms = 0;
+        let played = gallery::run(&scene, &probe, &mut |_, _, _| Ok(())).expect("full run");
+        assert!(!declared.is_empty(), "{id} declares a script");
+        assert_eq!(declared.to_string(), played.to_string(), "{id}: declared vs played");
+    }
+    let scene = scene("flow-list");
+    let declared = gallery::declared(&scene, &Shot::new(&scene)).expect("declared script");
+    assert!(declared.is_empty(), "flow-list declares no script: {declared}");
+}

@@ -17,14 +17,35 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
             navigate(&mut next, route);
             effects.push(Effect::Persist);
         }
+        Intent::RefineFind { expected, query } => {
+            let owns_field = match snapshot.route() {
+                Route::Orbit(super::OrbitRoute::Browse(super::BrowseRoute::Find(current))) => expected.as_ref() == Some(current),
+                Route::Orbit(super::OrbitRoute::Browse(super::BrowseRoute::FindHome)) => expected.is_none(),
+                _ => false,
+            };
+            if owns_field && expected != query {
+                let route = query.map_or(super::BrowseRoute::FindHome, super::BrowseRoute::Find);
+                replace(&mut next, Route::Orbit(super::OrbitRoute::Browse(route)));
+                effects.push(Effect::Persist);
+            }
+        }
         Intent::SetView(view) => {
             if let Some(route) = snapshot.route().with_view(view) {
                 replace(&mut next, route);
                 effects.push(Effect::Persist);
             }
         }
+        Intent::Tour(_) => {
+            navigate(&mut next, Route::World);
+            effects.push(Effect::Persist);
+        }
         Intent::Hold(held) => {
             let mut session = next.session().clone();
+            // The first card ever held is whispered once per install.
+            if !session.whispered {
+                session.whispered = true;
+                session.whisper = Some(held.clone());
+            }
             session.hand = session.hand.hold(held);
             next = next.with_session(session);
             effects.push(Effect::Persist);
@@ -279,6 +300,30 @@ mod tests {
         let reduced = reduce(&value, Intent::Noop);
         assert_eq!(reduced.snapshot, value);
         assert!(reduced.effects.is_empty());
+    }
+
+    #[test]
+    fn find_typing_keeps_one_history_stop_and_stale_callbacks_cannot_steal_navigation() {
+        use crate::model::pages::SearchQuery;
+        use crate::navigation::{BrowseRoute, OrbitRoute};
+        let initial = snapshot();
+        let first = SearchQuery::new("tom", 50).unwrap();
+        let final_query = SearchQuery::new("toml", 50).unwrap();
+        let route = Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(first.clone())));
+        let opened = reduce(&initial, Intent::Navigate(route)).snapshot;
+        let refined = reduce(&opened, Intent::RefineFind { expected: Some(first.clone()), query: Some(final_query.clone()) }).snapshot;
+        assert_eq!(refined.route(), &Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(final_query.clone()))));
+        assert_eq!(reduce(&refined, Intent::Back).snapshot.route(), initial.route());
+        let stale = reduce(&refined, Intent::RefineFind { expected: Some(first.clone()), query: Some(SearchQuery::new("old", 50).unwrap()) });
+        assert_eq!(stale.snapshot, refined);
+        assert!(stale.effects.is_empty());
+        let departed = reduce(&refined, Intent::Navigate(package_route(None))).snapshot;
+        let late = reduce(&departed, Intent::RefineFind { expected: Some(final_query.clone()), query: Some(first) });
+        assert_eq!(late.snapshot, departed);
+        assert!(late.effects.is_empty());
+        let cleared = reduce(&refined, Intent::RefineFind { expected: Some(final_query), query: None }).snapshot;
+        assert_eq!(cleared.route(), &Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome)));
+        assert_eq!(reduce(&cleared, Intent::Back).snapshot.route(), initial.route());
     }
 
     #[test]

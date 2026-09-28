@@ -24,9 +24,11 @@ pub mod overlay;
 pub mod probe;
 pub mod code;
 pub mod graph;
+pub mod hover;
 pub mod semantics;
 pub mod anatomy;
 pub mod browse;
+pub mod marks;
 
 #[cfg(feature = "gallery")]
 pub mod gallery;

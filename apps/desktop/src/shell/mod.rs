@@ -41,6 +41,7 @@ mod reveal;
 mod root;
 mod shelf;
 mod status;
+mod symbol_links;
 mod system;
 mod text_fit;
 mod titlebar;
@@ -57,6 +58,8 @@ mod comb_tests;
 mod hand_tests;
 #[cfg(test)]
 mod jump_tests;
+#[cfg(test)]
+mod graph_tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};
 pub use reader::Way;

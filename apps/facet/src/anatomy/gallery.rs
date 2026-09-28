@@ -139,7 +139,7 @@ fn scene(qualified: &'static str, cx: &mut App) -> AnyView {
             let name = world.name_of(u.caller);
             (u, name)
         });
-        let recipe = RECIPES.with(|r| r.getting_one(world, node).or_else(|| r.calling_it(world, node)).map(|s| s.view(world)));
+        let recipe = RECIPES.with(|r| r.getting_one(world, node).or_else(|| r.calling_it(world, node)).map(|s| s.view(world, node)));
         (node, page(world, names, node), uses.collect(), recipe)
     });
     cx.new(|_: &mut Context<AnatomyScene>| AnatomyScene { node }).into()

@@ -163,6 +163,9 @@ pub(crate) fn dossier() -> PackageDossier {
                         node("relation_label", DeclarationKind::Function, vec![]),
                     ],
                 ),
+                // A `#[cfg(test)]` module between two real ones: the shelf
+                // and the jump menu fold it into a trailing "tests" row.
+                node("glyph_tests", DeclarationKind::Module, vec![node("folds_rows", DeclarationKind::Function, vec![])]),
                 node("outline", DeclarationKind::Module, vec![node("Outline", DeclarationKind::Struct, vec![])]),
             ]),
             complete: true,
@@ -272,7 +275,7 @@ impl EngineClient for RootOnly {
 }
 
 /// A fresh index-backed open carries the actual declaration source line.
-fn indexed_view_route(name: &str, view: View) -> Route {
+pub(crate) fn indexed_view_route(name: &str, view: View) -> Route {
     let Route::Symbol(mut route) = view_route(name, view) else { unreachable!() };
     route.line = Some(138);
     Route::Symbol(route)
@@ -447,18 +450,17 @@ fn a_page_renders_its_real_content_through_the_shell(cx: &mut TestAppContext) {
     for expected in [
         "RelationLabel",
         "The readable label of RelationLabel.",
-        "pub enum RelationLabel {\n    Typed(SemanticLinkKind),\n    Related,\n}",
-        "Made of",
-        "Typed(SemanticLinkKind)",
+        "One of",
+        "Typed · SemanticLinkKind",
         "A relation whose kind is known.",
-        "Does",
-        "reads",
-        "as_str(self) -> &'static str",
+        "What it does",
+        "as_str",
         "Display",
         "Relations need a compiler publication; this package has none.",
     ] {
         assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
     }
+    assert!(!said.iter().any(|line| line.starts_with("pub enum RelationLabel {")), "source lives in Code: {said:#?}");
     // The route and the store agree, and the thread has Orbit behind.
     assert_eq!(rig.route(), page_route("RelationLabel"));
 }
@@ -522,6 +524,37 @@ fn j_and_k_walk_focus_inside_the_reader_only(cx: &mut TestAppContext) {
     rig.keys("tab");
     let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, super::focus::Zone::Titlebar);
+}
+
+/// The lead's report: on a symbol page, Tab, J and Space each changed
+/// nothing. Confirms all three are wired end to end on a fresh page: Tab
+/// moves the keyboard zone, J walks the reader's focus, and Space peeks a
+/// focused row (the §14/hand ruling "Space peeks", scoped by S9).
+#[gpui::test]
+fn tab_j_and_space_each_change_a_fresh_symbol_page(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.keys("x");
+    let (zone_before, focus_before) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone_before, super::focus::Zone::Reader, "a fresh page keeps the keyboard in the reader");
+    rig.keys("tab");
+    let (zone_after_tab, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(zone_after_tab, zone_before, "Tab moved the keyboard to another zone");
+    rig.keys("shift-tab");
+    let (zone_back, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(zone_back, zone_before, "shift-Tab returns to the reader");
+    rig.keys("j");
+    let (_, focus_after_j) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(focus_after_j, focus_before, "J walked the focus");
+    let mut peeked = false;
+    for _ in 0..32 {
+        rig.keys("space");
+        peeked = rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1;
+        if peeked {
+            break;
+        }
+        rig.keys("j");
+    }
+    assert!(peeked, "Space opened a peek on some focused row");
 }
 
 #[gpui::test]
@@ -638,9 +671,13 @@ fn every_setting_applies_live(cx: &mut TestAppContext) {
 fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     // Stand on a member row and peek it.
-    rig.keys("j j j j j j");
-    rig.keys("space");
-    let (_, peek, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let mut peek = false;
+    for _ in 0..32 {
+        rig.keys("space");
+        peek = rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1;
+        if peek { break; }
+        rig.keys("j");
+    }
     assert!(peek, "space opened a peek");
     rig.keys("f");
     let (_, peek, hints) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
@@ -1419,12 +1456,12 @@ fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut Tes
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "an unavailable pinned symbol does not route arbitrary A or B");
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
     rig.graph.store.read_with(rig.cx, |store, cx| {
-        let notice = store.graph_notice().expect("hidden pinned failure has visible current-page feedback");
+        let notice = store.notice().expect("hidden pinned failure has visible current-page feedback");
         let (lines, _) = super::status::feedback_lines(&store.snapshot(), None, Some(notice), px(1440.0), cx);
         assert!(lines.join("").contains("no exact match"));
     });
     rig.go(Intent::Navigate(page_route("RelationLabel")));
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_notice().is_none()), "the previous page's failed card intent does not follow another route");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "the previous page's failed card intent does not follow another route");
 }
 
 #[gpui::test]

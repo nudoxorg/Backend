@@ -226,13 +226,15 @@ fn graph_query_certificate(
                 value: request.recipe_preimage(),
             },
         );
-        certificate.claims = certificate
-            .claims
-            .iter()
-            .filter(|claim| !matches!(claim, WireClaim::Cursor { .. }))
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+        certificate = WireCertificate::from_claims(
+            certificate
+                .claims
+                .iter()
+                .filter(|claim| !matches!(claim, WireClaim::Cursor { .. }))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
         append_cursor_claim(&mut certificate, cursor);
     }
     Ok(certificate)
@@ -318,9 +320,7 @@ impl ClaimBuilder {
     }
 
     fn finish(self) -> WireCertificate {
-        WireCertificate {
-            claims: self.claims.into_boxed_slice(),
-        }
+        WireCertificate::from_claims(self.claims.into_boxed_slice())
     }
 }
 
@@ -1105,9 +1105,9 @@ mod tests {
         ]);
         let child_row = root.row_ref(RowId::Symbol(child)).expect("child row");
         let peer_row = root.row_ref(RowId::Symbol(peer)).expect("peer row");
-        let mut separate = WireCertificate {
-            claims: row_claims(&root, std::slice::from_ref(child_row)).into_boxed_slice(),
-        };
+        let mut separate = WireCertificate::from_claims(
+            row_claims(&root, std::slice::from_ref(child_row)).into_boxed_slice(),
+        );
         for claim in row_claims(&root, std::slice::from_ref(peer_row)) {
             separate = separate.with_claim_once(claim);
         }
@@ -1144,9 +1144,9 @@ mod tests {
                 id,
             } if id == &backend_engine::encode_id(missing.as_bytes())
         )));
-        let mut separate = WireCertificate {
-            claims: row_claims(&root, std::slice::from_ref(linker_row)).into_boxed_slice(),
-        };
+        let mut separate = WireCertificate::from_claims(
+            row_claims(&root, std::slice::from_ref(linker_row)).into_boxed_slice(),
+        );
         for claim in row_claims(&root, std::slice::from_ref(child_row)) {
             separate = separate.with_claim_once(claim);
         }

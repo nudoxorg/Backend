@@ -121,6 +121,8 @@ use product_state::ProductState;
 mod coverage;
 #[path = "builtin/local_manifest.rs"]
 mod local_manifest;
+#[path = "builtin/project_root_residence.rs"]
+mod project_root_residence;
 #[path = "builtin/search_source_page.rs"]
 mod search_source_page;
 use coverage::{SemanticDeployment, reconcile_semantic_lane, view_coverage};

@@ -2,6 +2,7 @@
 
 pub mod actor;
 pub mod browse_reads;
+pub(crate) mod browse_views;
 pub mod client;
 pub mod coordinator;
 pub mod debug_page;
@@ -13,6 +14,7 @@ pub mod mapping;
 pub mod page_mapping;
 pub mod reads;
 pub mod store;
+pub mod trace;
 pub mod ui_graph;
 pub mod wake;
 pub mod wiring;

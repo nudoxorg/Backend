@@ -13,7 +13,7 @@
 use super::kit::{kind_of, symbol_route, text};
 use super::region::Links;
 use crate::model::pages::{MatchReason, PageKey, SearchQuery, SearchRow};
-use crate::navigation::{Intent, Route};
+use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route};
 use crate::runtime::store::StoreEvent;
 use facet::icons::{self, Icon, IconSize, KindSize};
 use facet::paint::{Bevel, Chamfer, cut};
@@ -22,7 +22,7 @@ use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, div, px,
+    Subscription, Task, Window, ScrollHandle, div, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use std::time::Duration;
@@ -49,6 +49,7 @@ pub(crate) struct Ask {
     selected: usize,
     renders: u64,
     pending: Option<Task<()>>,
+    scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -78,6 +79,7 @@ impl Ask {
             selected: 0,
             renders: 0,
             pending: None,
+            scroll: ScrollHandle::new(),
             _subscriptions: vec![typed, landed],
         }
     }
@@ -128,27 +130,57 @@ impl Ask {
             return;
         }
         self.selected = self.selected.saturating_add_signed(delta).min(count - 1);
+        if self.selected + 1 < count { self.scroll.scroll_to_item(self.selected); }
         cx.notify();
     }
 
-    /// Opens the selected row.
+    /// Opens the selected row. Dead end #14: a row with no place does not
+    /// silently do nothing — the Notice says there is nowhere to go.
     pub(crate) fn choose(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let choices = self.choices(cx);
-        if let Some(route) = choices.get(self.selected).and_then(|choice| choice.route.clone()) {
-            self.links.dispatch(Intent::Navigate(route), cx);
+        let Some(choice) = choices.get(self.selected) else { return };
+        match choice.route.clone() {
+            Some(route) => self.links.dispatch(Intent::Navigate(route), cx),
+            None => {
+                // The Notice is a page-foot fixture (never drawn under an
+                // overlay); closing Ask, exactly as a real navigation
+                // would, is what makes it visible at all.
+                self.links.dispatch(Intent::DismissOverlay, cx);
+                let snapshot = self.links.snapshot(cx);
+                let notice = crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: format!("{} has no page yet", choice.name).into(),
+                };
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+            }
         }
     }
 
     fn choices(&self, cx: &App) -> Vec<Choice> {
         let Some(query) = &self.query else {
-            return Vec::new();
+            return vec![Choice {
+                name: "Find packages".into(),
+                place: "Explore what your index knows".into(),
+                reason: "open Find".into(),
+                kind: icons::Kind::Package,
+                route: Some(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))),
+            }];
         };
         let store = self.links.store.read(cx);
         let results = store.search(query);
-        results
+        let mut choices: Vec<Choice> = results
             .loaded_value()
-            .map(|page| page.rows.iter().map(result_choice).collect())
-            .unwrap_or_default()
+            .map(|page| page.rows.iter().take(8).map(result_choice).collect())
+            .unwrap_or_default();
+        choices.push(Choice {
+            name: "All answers as a page".into(),
+            place: query.text.to_string().into(),
+            reason: "explore packages".into(),
+            kind: icons::Kind::Package,
+            route: Some(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query.clone())))),
+        });
+        choices
     }
 
     /// Whether a search for the current query is still on its way.
@@ -227,47 +259,66 @@ impl Render for Ask {
         } else if searching {
             "asking…".into()
         } else {
-            format!("{} results", choices.len()).into()
+            format!("{} quick answers", choices.len().saturating_sub(1)).into()
         };
-        let mut list = div().flex().flex_col().py(measure.space(Space::Tight));
-        for (index, choice) in choices.iter().enumerate().take(40) {
+        let available = (viewport.height - px(72.0 * facet.text_scale) - px(16.0 * facet.text_scale)).max(px(0.0));
+        // Reserve the input, status and the two-line page door before giving
+        // the remaining viewport to the independently scrolling quick list.
+        let list_height = (available - px(192.0 * facet.text_scale)).max(px(0.0)).min(px(420.0 * facet.text_scale));
+        let quick = choices.len().saturating_sub(1);
+        let mut list = div().id("ask-results").flex().flex_col().py(measure.space(Space::Tight))
+            .min_h(px(0.0)).max_h(list_height).overflow_y_scroll().track_scroll(&self.scroll);
+        for (index, choice) in choices.iter().enumerate().take(quick) {
             let on = index == self.selected;
-            let route = choice.route.clone();
-            let links = self.links.clone();
-            list = list.child(
-                div()
-                    .id(("ask-row", index))
-                    .flex()
-                    .items_center()
-                    .gap(measure.space(Space::Roomy))
-                    .px(measure.space(Space::Gutter))
-                    .py(measure.space(Space::Snug))
-                    .when_on(on, palette)
-                    .hover(|style| style.bg(palette.tint))
-                    .child(super::kit::kind_mark(choice.kind, KindSize::Sm, &measure, palette))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .child(text(ty::MONO_ROW, &measure, palette.ink0).child(choice.name.clone()))
-                            .child(
-                                text(ty::MONO_SMALL, &measure, palette.ink3)
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(choice.place.clone()),
-                            ),
-                    )
-                    .child(text(ty::CAPTION, &measure, palette.ink3).flex_none().child(choice.reason.clone()))
-                    .on_click(move |_: &ClickEvent, _, cx| {
-                        if let Some(route) = route.clone() {
-                            links.dispatch(Intent::Navigate(route), cx);
-                        }
-                    }),
-            );
+            let has_place = choice.route.is_some();
+            let mut row = div()
+                .id(("ask-row", index))
+                .flex()
+                .items_center()
+                .gap(measure.space(Space::Roomy))
+                .px(measure.space(Space::Gutter))
+                .py(measure.space(Space::Snug))
+                .when_on(on, palette)
+                .child(super::kit::kind_mark(choice.kind, KindSize::Sm, &measure, palette))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        // Dead end #14/#15: a row with no place is drawn as
+                        // text (kit's rule), never as a link that goes
+                        // nowhere.
+                        .child(text(ty::MONO_ROW, &measure, super::kit::link_ink(has_place, palette)).child(choice.name.clone()))
+                        .child(
+                            text(ty::MONO_SMALL, &measure, palette.ink3)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(choice.place.clone()),
+                        ),
+                )
+                .children((measure.effective() >= 440.0).then(|| text(ty::CAPTION, &measure, palette.ink3).flex_none().child(choice.reason.clone())));
+            if let Some(route) = choice.route.clone() {
+                let links = self.links.clone();
+                row = row.hover(|style| style.bg(palette.tint)).on_click(move |_: &ClickEvent, _, cx| {
+                    links.dispatch(Intent::Navigate(route.clone()), cx);
+                });
+            }
+            list = list.child(row);
         }
+        let footer = choices.last().map(|choice| {
+            let links = self.links.clone();
+            let route = choice.route.clone();
+            div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
+                .px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy))
+                .when_on(self.selected == quick, palette).hover(|style| style.bg(palette.tint)).cursor_pointer()
+                .child(super::kit::kind_mark(icons::Kind::Package, KindSize::Sm, &measure, palette))
+                .child(div().flex_1().min_w_0().flex().flex_col()
+                    .child(text(ty::ROW, &measure, palette.ink0).child("All answers as a page"))
+                    .child(text(ty::CAPTION, &measure, palette.ink3).child(if measure.effective() < 440.0 { "Inspect and compare packages" } else { "Inspect packages and compare what they expose" })))
+                .on_click(move |_, _, cx| { if let Some(route) = route.clone() { links.dispatch(Intent::Navigate(route), cx); } })
+        });
         if choices.is_empty() && !searching {
             let words = if self.query.is_some() { "Nothing matches that yet." } else { "Nothing walked yet." };
             list = list.child(div().px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet(words, &measure, palette)));
@@ -313,7 +364,7 @@ impl Render for Ask {
         div()
             .id("ask")
             .w(width)
-            .child(surface)
+            .child(surface.max_h(available).children(footer))
     }
 }
 
@@ -332,3 +383,65 @@ impl<E: Styled> AskStyle for E {}
 
 #[allow(dead_code)]
 fn _any(_: AnyElement) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::pages::{DeclRef, Gap, GapReason, Known, MatchReason, PageValue, ReadFailure, SearchPage, SearchRow};
+    use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
+    use crate::shell::tests::{Fixture, page_route, rig_with_reads};
+    use backend_library::DeclarationKind;
+    use gpui::TestAppContext;
+    use std::sync::Arc;
+
+    /// A search fixture whose one row has no package: the coordinate names
+    /// a bare declaration the index cannot place (dead end #14).
+    struct NoPlaceSearch;
+    impl PageReader for NoPlaceSearch {
+        fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+            if let ReadRequest::Search(query) | ReadRequest::SearchMore { query, .. } = request {
+                // A label with an empty project part (`::Mystery`) is the
+                // one shape whose `coordinate.package()` is genuinely
+                // `None`: a bare name (no `::`) is itself admitted as a
+                // local project reference, so it is NOT enough on its own.
+                let decl = DeclRef::from_label("::Mystery", None, Some(DeclarationKind::Struct), None).expect("decl");
+                debug_assert!(decl.coordinate.package().is_none(), "the fixture's row must have no place");
+                return Ok(PageValue::Search(SearchPage {
+                    query: Arc::clone(&query.text),
+                    rows: Arc::from([SearchRow {
+                        rank: 0,
+                        decl,
+                        package: None,
+                        score: Known::Unknown(Gap::new(GapReason::NotServed, "")),
+                        signature: Known::Unknown(Gap::new(GapReason::NotServed, "")),
+                        snippet: None,
+                        reason: MatchReason::ExactName,
+                    }]),
+                    coverage: backend_present::CoverageLine::new(&[], None),
+                    next: None,
+                }));
+            }
+            Fixture.read(request, context)
+        }
+    }
+
+    /// Dead end #14: an Ask row with no place does not move the page on
+    /// ⏎, and the Notice says why instead of doing nothing silently.
+    #[gpui::test]
+    fn a_row_with_no_place_speaks_through_the_notice_on_enter(cx: &mut TestAppContext) {
+        let pool = ReadPool::start(2, |_| NoPlaceSearch).expect("pool");
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0, pool);
+        rig.keys("cmd-k");
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        rig.cx.update(|_, cx| ask.update(cx, |ask, cx| ask.typed("mystery".to_owned(), cx)));
+        rig.frame(120);
+        rig.settle();
+        let route_before = rig.route();
+        rig.cx.update(|window, cx| ask.update(cx, |ask, cx| ask.choose(window, cx)));
+        assert_eq!(rig.route(), route_before, "a row with no place does not move the page");
+        let (ask_open, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+        assert!(!ask_open, "Ask closes so the Notice (a page-foot fixture) is visible");
+        let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+        assert_eq!(message.as_deref(), Some("Mystery has no page yet"));
+    }
+}

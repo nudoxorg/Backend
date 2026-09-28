@@ -9,7 +9,7 @@ pub mod reducer;
 pub mod route;
 mod workspace_reducer;
 
-pub use browse::BrowseRoute;
+pub use browse::{BrowseRoute, CompareError, CompareSet};
 pub use action::{
     AccessibilityRole, ActionId, ActionNode, ActionSpec, CommandPaletteState, KeyChord,
     SemanticFamily, SemanticState, VoiceChannel,

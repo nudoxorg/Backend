@@ -21,6 +21,7 @@ use super::region::{Links, measured, new_region};
 use super::reveal::{HOLD, RevealHold};
 use super::shelf::Shelf;
 use super::status::Status;
+use super::symbol_links::{Request as SymbolLinkRequest, Step as SymbolLinkStep};
 use super::jump::route_symbol;
 use super::titlebar::Titlebar;
 use super::{kit, peeks};
@@ -76,6 +77,8 @@ pub struct Shell {
     zen: bool,
     /// The hand's Row rung is open (H, or the foot's marks).
     hand_open: bool,
+    /// The card the keyboard stands on in the open hand (shown order).
+    hand_at: usize,
     shelf_over_open: bool,
     shelf_width: f32,
     zone: Zone,
@@ -87,6 +90,10 @@ pub struct Shell {
     /// How many peeks are pinned (the pins column exists only for pins).
     pinned: usize,
     ask_open: bool,
+    /// An exact fixture-node link waiting for the index. Each new visit
+    /// invalidates it even if Back later restores the same route.
+    symbol_link_generation: u64,
+    pending_symbol_link: Option<SymbolLinkRequest>,
     /// The system's appearance and text size, and the window's display.
     around: Surroundings,
     renders: u64,
@@ -177,6 +184,7 @@ impl Shell {
             motion: Motion::new(),
             zen: false,
             hand_open: false,
+            hand_at: 0,
             shelf_over_open: false,
             shelf_width: SHELF,
             zone: Zone::Reader,
@@ -186,6 +194,8 @@ impl Shell {
             peeking: None,
             pinned: 0,
             ask_open: false,
+            symbol_link_generation: 0,
+            pending_symbol_link: None,
             around: Surroundings {
                 dark: is_dark(window.appearance()),
                 text: 1.0,
@@ -228,12 +238,18 @@ impl Shell {
     pub(crate) fn graph_entity(&self, cx: &App) -> Option<Entity<facet::graph::GraphView>> { self.reader.read(cx).graph_entity(cx) }
 
     #[cfg(test)]
+    pub(crate) fn ask_entity(&self) -> Entity<Ask> { self.ask.clone() }
+
+    #[cfg(test)]
     pub(crate) fn graph_canvas_geometry(&self, node: facet::graph::NodeId, cx: &App) -> (Option<gpui::Bounds<gpui::Pixels>>, Option<gpui::Bounds<gpui::Pixels>>, gpui::LayerTransform) {
         self.reader.read(cx).graph_canvas_geometry(node, cx)
     }
 
     #[cfg(test)]
     pub(crate) fn graph_gem_morphing(&self, cx: &App) -> bool { self.reader.read(cx).graph_gem_morphing(cx) }
+
+    #[cfg(test)]
+    pub(crate) fn graph_focus_glyph(&self, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> { self.reader.read(cx).graph_focus_glyph(cx) }
 
     #[cfg(test)]
     pub(crate) fn graph_find_state(&self, window: &Window, cx: &App) -> (bool, bool) {
@@ -257,6 +273,11 @@ impl Shell {
             pins: self.pins.read(cx).renders(),
             ask: self.ask.read(cx).renders(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_marks(&self, cx: &App) -> usize {
+        self.status.read(cx).marks_drawn()
     }
 
     #[cfg(test)]
@@ -390,6 +411,10 @@ impl Shell {
         if keys {
             self.titlebar.update(cx, |_, cx| cx.notify());
             self.shelf.update(cx, |_, cx| cx.notify());
+            // The hand's marks show ⌘1–⌘5 while ⌘ is held.
+            if !self.links.snapshot(cx).session().hand.is_empty() {
+                self.status.update(cx, |_, cx| cx.notify());
+            }
         }
         if xray {
             self.reader.update(cx, |_, cx| cx.notify());
@@ -408,6 +433,7 @@ impl Shell {
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
             StoreEvent::Snapshot(Branch::Route) => {
+                self.cancel_symbol_link(cx);
                 if !super::bodies::graph::is_graph(self.links.snapshot(cx).route()) {
                     self.focus.focus(window, cx);
                 }
@@ -425,11 +451,17 @@ impl Shell {
                 self.sync_overlay(window, cx);
             }
             StoreEvent::Resource(key) => {
+                if self.pending_symbol_link.as_ref().is_some_and(|request| {
+                    matches!(key, PageKey::Package(package) if request.package.as_ref() == Some(package))
+                }) {
+                    self.resolve_symbol_link(cx);
+                }
                 // The open card reads the store each frame: redraw it.
                 if self.peeking.as_ref() == Some(key) {
                     cx.notify();
                 }
             }
+            StoreEvent::Snapshot(Branch::Root) => self.cancel_symbol_link(cx),
             StoreEvent::Snapshot(_) => {}
         }
     }
@@ -455,28 +487,117 @@ impl Shell {
         self.links.dispatch(Intent::OpenCommandPalette, cx);
     }
 
-    /// A link in the page's anatomy was followed: a symbol of this page's
-    /// package opens its page (joined through the package outline). A symbol
-    /// elsewhere only peeks for now: its page is found through the index
-    /// the way the graph's open is, which is not wired here yet.
-    fn open_anatomy(&mut self, open: &facet::anatomy::Open, cx: &mut Context<Self>) {
-        let facet::semantics::Target::Node(node) = open.target else {
+    fn cancel_symbol_link(&mut self, cx: &mut Context<Self>) {
+        self.symbol_link_generation = self.symbol_link_generation.wrapping_add(1);
+        self.pending_symbol_link = None;
+        self.status.update(cx, |status, cx| status.set_opening(None, cx));
+    }
+
+    fn find_symbol_link(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
+        self.cancel_symbol_link(cx);
+        self.links.dispatch(
+            Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
+                crate::navigation::BrowseRoute::Find(query),
+            ))),
+            cx,
+        );
+    }
+
+    /// S2: the exact identity behind an anatomy link could not be resolved
+    /// (no admitted package, or no exact match in its complete outline).
+    /// The link does not move the page; the Notice says so.
+    fn symbol_link_unresolved(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
+        self.cancel_symbol_link(cx);
+        let snapshot = self.links.snapshot(cx);
+        let notice = crate::runtime::graph_focus::Notice {
+            visit: snapshot.route().clone(),
+            root: snapshot.key(),
+            message: format!("{} isn't in the index", query.text).into(),
+        };
+        self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+    }
+
+    /// A resource event may be for a previous route, release, or fixture.
+    /// Only the same generation and exact source identity can open a page.
+    fn resolve_symbol_link(&mut self, cx: &mut Context<Self>) {
+        let Some(request) = self.pending_symbol_link.take() else { return };
+        let snapshot = self.links.snapshot(cx);
+        let current = crate::runtime::fixture_world::link_world(cx);
+        if !request.accepts(
+            self.symbol_link_generation,
+            snapshot.route(),
+            snapshot.key(),
+            current.as_ref(),
+        ) {
             return;
+        }
+        let Some(package) = &request.package else { self.symbol_link_unresolved(request.query, cx); return };
+        let resource = self.links.store.read(cx).package(package);
+        match request.step(&resource) {
+            SymbolLinkStep::Waiting => self.pending_symbol_link = Some(request),
+            SymbolLinkStep::Resolved(resolved) => {
+                self.cancel_symbol_link(cx);
+                if let Some(route) = kit::symbol_view_route(
+                    resolved.package.as_str(), &resolved.symbol, View::Page, resolved.line,
+                ) {
+                    self.links.dispatch(Intent::Navigate(route), cx);
+                } else {
+                    self.find_symbol_link(request.query, cx);
+                }
+            }
+            SymbolLinkStep::Find => self.symbol_link_unresolved(request.query, cx),
+        }
+    }
+
+    /// Follow a recorded node through exact indexed source identity. A
+    /// spelled path is only a contextual search, not an invented coordinate.
+    fn open_anatomy(&mut self, open: &facet::anatomy::Open, cx: &mut Context<Self>) {
+        self.cancel_symbol_link(cx);
+        let node = match &open.target {
+            facet::semantics::Target::Node(node) => *node,
+            facet::semantics::Target::Path(path) => {
+                // An unresolved type is a contextual index lookup, never an
+                // invented exact symbol coordinate.
+                if let Ok(query) = crate::model::pages::SearchQuery::new(path.as_ref(), 50) {
+                    self.find_symbol_link(query, cx);
+                }
+                return;
+            }
         };
         let snapshot = self.links.snapshot(cx);
-        let Some(package) = crate::runtime::store::route_package(snapshot.route()) else {
+        let Some((world, identities)) = crate::runtime::fixture_world::link_world(cx) else { return };
+        let Some(request) = SymbolLinkRequest::new(
+            node,
+            snapshot.route().clone(),
+            snapshot.key(),
+            self.symbol_link_generation,
+            world,
+            identities,
+        ) else { return };
+        if snapshot.route().at().is_some() {
+            // Fixture nodes describe the pinned world, not the viewed old
+            // release. Offer the index query without claiming an exact page.
+            self.find_symbol_link(request.query, cx);
             return;
-        };
-        let dossier = self.links.store.read(cx).package(&package);
-        let Some(tree) = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned()) else {
-            return;
-        };
-        let Some(symbol) = crate::runtime::fixture_world::symbol_of(node, &package, &tree, cx) else {
-            return;
-        };
-        if let Some(route) = kit::symbol_route(package.as_str(), &symbol) {
-            self.links.dispatch(Intent::Navigate(route), cx);
         }
+        if let Some(package) = crate::runtime::store::route_package(snapshot.route())
+        {
+            let dossier = self.links.store.read(cx).package(&package);
+            if let Ok(Some(dossier)) = super::bodies::graph::open_value(&dossier, snapshot.key())
+                && let Some(tree) = dossier.outline.known()
+                && let Some(symbol) = crate::runtime::fixture_world::symbol_of(node, &package, tree, cx)
+                && let Some(route) = kit::symbol_route(package.as_str(), &symbol)
+            {
+                self.links.dispatch(Intent::Navigate(route), cx);
+                return;
+            }
+        }
+        let Some(package) = request.package.clone() else { self.symbol_link_unresolved(request.query, cx); return };
+        let opening: SharedString = format!("Opening {}…", request.query.text).into();
+        self.status.update(cx, |status, cx| status.set_opening(Some(opening), cx));
+        self.pending_symbol_link = Some(request);
+        self.links.store.update(cx, |store, cx| { store.ensure(PageKey::Package(package), cx); });
+        self.resolve_symbol_link(cx);
     }
 
     /// ⌘\: the shelf opens or closes; on a window too narrow to hold it the
@@ -594,6 +715,10 @@ impl Shell {
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // ↵ in the open hand goes to the card it stands on.
+        if self.hand_open && self.hand_key("enter", cx) {
+            return;
+        }
         if let Some(target) = self.current(cx) {
             run(target.act, window, cx);
         }
@@ -743,6 +868,10 @@ impl Shell {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hints.is_none() && self.hand_open && self.hand_key(event.keystroke.key.as_str(), cx) {
+            cx.stop_propagation();
+            return;
+        }
         let Some(hints) = self.hints.as_mut() else {
             return;
         };
@@ -815,23 +944,102 @@ impl Shell {
 
     /// ⌘1–⌘4: Orbit, the package, the page, the code. The last two are
     /// views of the declaration you are on, not places.
-    /// ⌘D: hold what you are on (a declaration, else its package).
-    pub(crate) fn hold(&mut self, cx: &mut Context<Self>) {
+    /// ⌘D: hold what you are on (a declaration, else its package). Take →
+    /// hand: the stone travels from where you held it (the hero's, its
+    /// text-free mark) to its place in the foot.
+    pub(crate) fn hold(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
+        // On the graph, what you hold is its focus (its indexed row), and
+        // the stone leaves from the canvas glyph.
+        let graph_focus = self.links.store.read(cx).graph_focus().cloned();
+        if let Some(focus) = graph_focus {
+            let Some(Route::Symbol(route)) = focus.indexed.as_ref().and_then(|(package, symbol)| kit::symbol_route(package.as_str(), symbol)) else {
+                // Not in the index: nothing to hold, and the Notice says so.
+                let notice = crate::runtime::graph_focus::Notice {
+                    visit: snapshot.route().clone(),
+                    root: snapshot.key(),
+                    message: format!("{}::{}::{} isn't in the index", focus.package, focus.module, focus.name).into(),
+                };
+                self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
+                return;
+            };
+            if let Some(stone) = self.reader.read(cx).graph_focus_glyph(cx) {
+                facet::motion::shared::remember(super::hand::take_key(route.id.as_str()), stone, window, cx);
+            }
+            let at = now_ms();
+            let held = crate::model::hand::Held { package: route.package, id: Some(route.id), why: crate::model::hand::HeldWhy::Pin, held_at: at, touched_at: at };
+            self.links.dispatch(Intent::Hold(held), cx);
+            return;
+        }
         let (package, id) = match snapshot.route() {
             Route::Symbol(route) => (route.package.clone(), Some(route.id.clone())),
             Route::Package(route) => (route.package.clone(), None),
             Route::Orbit(_) | Route::World => return,
         };
+        if let Some(id) = &id
+            && let Ok(symbol) = crate::model::pages::SymbolRef::new(id.as_str())
+            && let Some(stone) = facet::motion::shared::last_bounds(kit::shared_id(&symbol), window, cx)
+        {
+            facet::motion::shared::remember(super::hand::take_key(id.as_str()), stone, window, cx);
+        }
         let at = now_ms();
         let held = crate::model::hand::Held { package, id, why: crate::model::hand::HeldWhy::Pin, held_at: at, touched_at: at };
         self.links.dispatch(Intent::Hold(held), cx);
     }
 
-    /// H: open or close the hand.
+    /// T: tour the package you are in (its page, or a declaration's) in
+    /// the graph, from its first stop.
+    pub(crate) fn tour(&mut self, cx: &mut Context<Self>) {
+        let package = match self.links.snapshot(cx).route() {
+            Route::Package(route) => route.package.clone(),
+            Route::Symbol(route) if route.view != View::Graph => route.package.clone(),
+            Route::Symbol(_) | Route::Orbit(_) | Route::World => return,
+        };
+        self.links.dispatch(Intent::Tour(package), cx);
+    }
+
+    /// H: open or close the hand (the keyboard starts on its first card).
     pub(crate) fn toggle_hand(&mut self, cx: &mut Context<Self>) {
         self.hand_open = !self.hand_open && !self.links.snapshot(cx).session().hand.is_empty();
+        self.hand_at = 0;
         cx.notify();
+    }
+
+    /// Inside the open hand: ← / → walk the cards, ↵ goes, ⌫ lets go.
+    /// Returns whether the key was the hand's.
+    fn hand_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let hand = self.links.snapshot(cx).session().hand.clone();
+        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let count = view.cards.len();
+        if count == 0 {
+            return false;
+        }
+        match key {
+            "left" => self.hand_at = self.hand_at.saturating_sub(1),
+            "right" => self.hand_at = (self.hand_at + 1).min(count - 1),
+            "enter" => {
+                let at = self.hand_at.min(count - 1);
+                self.hand_open = false;
+                self.hand_card(at, cx);
+            }
+            "backspace" => {
+                let at = self.hand_at.min(count - 1);
+                self.links.dispatch(Intent::LetGo(view.cards[at].held.clone()), cx);
+                self.hand_at = at.saturating_sub(usize::from(at + 1 == count));
+                if count == 1 {
+                    self.hand_open = false;
+                }
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// The card the keyboard stands on in the open hand.
+    #[cfg(test)]
+    pub(crate) const fn hand_at(&self) -> usize {
+        self.hand_at
     }
 
     /// ⌘1–⌘5: go to the hand's nth card, in the order it is shown.
@@ -1007,11 +1215,14 @@ impl Render for Shell {
         self.frame = Some(frame);
         // The status bar grows a line when the address's name has to wrap;
         // sized here from the same fit the bar sets, in the same frame.
-        let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.graph_notice().cloned()) };
+        let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.notice().cloned()) };
         // The foot grows only for what the graph says in it; the hand's
         // marks sit on one line.
         let status_height = if super::status::graph_speaks(&snapshot, graph_focus.as_ref(), graph_notice.as_ref()) {
-            let (lines, role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), viewport.width, cx);
+            // Set beside the hand's marks when it holds anything (the same
+            // room the foot sets it in).
+            let room = super::status::line_room(viewport.width, px(frame.shelf_width), snapshot.session().hand.held().len(), scale);
+            let (lines, role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), room, cx);
             super::status::height(lines.len(), &role, frame.status)
         } else {
             frame.status
@@ -1039,6 +1250,11 @@ impl Render for Shell {
         context.add(CONTEXT);
         if self.hints.is_some() {
             context.add("hints");
+        }
+        // An open jump-bar menu owns the plain keys (arrows, ↵, type-ahead,
+        // Esc): the shell's bindings step aside (`keys::binding`, `!Menu`).
+        if super::titlebar::menu_open(window, cx) {
+            context.add("Menu");
         }
 
         let body = div()
@@ -1101,7 +1317,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.zoom(ZoomStep::In, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.zoom(ZoomStep::Out, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)))
-            .on_action(cx.listener(|shell, _: &keys::Hold, _, cx| shell.hold(cx)))
+            .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| shell.hold(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.toggle_hand(cx)))
             .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.hand_card(0, cx)))
             .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| shell.hand_card(1, cx)))
@@ -1109,6 +1325,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| shell.hand_card(3, cx)))
             .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| shell.hand_card(4, cx)))
             .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.copy_address(cx)))
+            .on_action(cx.listener(|shell, _: &keys::Tour, _, cx| shell.tour(cx)))
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             }))
@@ -1146,7 +1363,7 @@ impl Render for Shell {
                     .bottom(px(status_height + 6.0 * scale))
                     .left(px(shelf_width + 14.0 * scale))
                     .max_w(viewport.width - px(shelf_width + 28.0 * scale))
-                    .child(super::hand::row(&view, &self.links, &measure, palette)),
+                    .child(super::hand::row(&view, self.hand_at, &self.links, &measure, palette)),
             );
         } else if self.hand_open {
             self.hand_open = false;

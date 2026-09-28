@@ -220,6 +220,23 @@ fn roles_are_derived_from_what_packages_declare() {
 }
 
 #[test]
+fn a_direct_dependency_is_marked_direct_and_a_transitive_one_is_not() {
+    let tree = tree(&rustsec());
+    // toml is a direct dependency (its own why-path is one hop: "desktop → toml 0.8.23",
+    // proven by `toml_is_here_twice_and_each_copy_has_its_own_reason`).
+    let toml = tree.package("toml", "0.8.23").expect("toml 0.8.23");
+    assert_eq!(toml.role, PackageRole::Direct, "{:?}", toml.role);
+    // bincode 1.3.3 is reached only through syntect, four hops from a member
+    // ("desktop → gpui_ce_components 0.2.0 → gpui_ce_components_base 0.2.0 →
+    // syntect 5.3.0 → bincode 1.3.3", proven by
+    // `bincode_is_unmaintained_and_the_path_says_how_it_got_here`): no member
+    // depends on it directly, so it must never read as Direct. A mutation
+    // that marks every package Direct must not pass this line.
+    let bincode = tree.package("bincode", "1.3.3").expect("bincode 1.3.3");
+    assert_ne!(bincode.role, PackageRole::Direct, "{:?}", bincode.role);
+}
+
+#[test]
 fn bincode_is_unmaintained_and_the_path_says_how_it_got_here() {
     let tree = tree(&rustsec());
     let affecting = tree

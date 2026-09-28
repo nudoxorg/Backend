@@ -31,6 +31,8 @@ pub(crate) struct Map {
     loading: Option<Task<()>>,
     ready_scene: Option<(Arc<facet::graph::scene::Scene>, Arc<IdentityAdapter>)>,
     identities: Option<Arc<IdentityAdapter>>,
+    /// The last tour ask flown (the store's ask number).
+    toured: u64,
     entry_origin: Option<facet::motion::shared::Endpoint>,
     painted_focus: Option<(NodeId, gpui::Bounds<gpui::Pixels>, bool)>,
     canvas_transform: gpui::LayerTransform,
@@ -104,6 +106,17 @@ pub(crate) fn install_test_fixture(cx: &mut App) {
         &world,
         PackageRef::parse("/fixture/present").expect("typed package"),
     ));
+    let layout = facet::graph::layout::layout_of(&world);
+    cx.set_global(TestFixture {
+        scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
+        identities,
+    });
+}
+
+/// Mounts `world` as the graph's fixture for the next map (tests): the
+/// same world the page's anatomy reads, joined by `identities`.
+#[cfg(test)]
+pub(crate) fn install_test_world(world: Arc<World>, identities: Arc<IdentityAdapter>, cx: &mut App) {
     let layout = facet::graph::layout::layout_of(&world);
     cx.set_global(TestFixture {
         scene: Arc::new(facet::graph::scene::Scene::new(world, layout)),
@@ -207,6 +220,7 @@ impl Map {
             resolved: BTreeMap::new(),
             pending: None,
             open_generation: 0,
+            toured: 0,
             _graph_events: None,
             _open_intents: open_intents,
             _events: events,
@@ -380,6 +394,20 @@ impl Map {
             graph.update(cx, |graph, cx| graph.show_world(cx));
             self.painted_focus = None;
         }
+        // T explicitly asked for the package tour: fly it once,
+        // from the first stop, when the world shows.
+        if matches!(route, Route::World)
+            && let Some((package, ask)) = self.links.store.read(cx).tour_ask().cloned()
+            && ask > self.toured
+        {
+            self.toured = ask;
+            let index = self.identities.as_ref().and_then(|identities| identities.packages_of(&package).first().copied());
+            let started = index.is_some_and(|index| graph.update(cx, |graph, cx| graph.start_tour(index, 0, cx)));
+            if !started {
+                self.error = Some(format!("This graph fixture has no guided tour of {}.", package.display_name()));
+            }
+            return;
+        }
         if let Some(at) = route.at() {
             self.error = Some(format!(
                 "Graph fixture is pinned; release {} is not re-scoped by this map.",
@@ -447,6 +475,13 @@ impl Map {
         if let Some(graph) = &self.graph {
             graph.update(cx, |graph, cx| graph.show_world(cx));
         }
+    }
+
+    /// Where the focus's glyph is on screen (window px, through the canvas
+    /// layer's transform), for a take that starts from the canvas.
+    pub(crate) fn focus_glyph(&self, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> {
+        let graph = self.graph.as_ref()?.read(cx);
+        canvas_bounds(graph.node_bounds(graph.focused()?), self.canvas_transform)
     }
 
     pub(crate) fn focused(&self, cx: &App) -> bool {
@@ -554,7 +589,7 @@ impl Map {
         let notice = (!self.visible)
             .then(|| self.error.as_ref())
             .flatten()
-            .map(|error| crate::runtime::graph_focus::GraphNotice {
+            .map(|error| crate::runtime::graph_focus::Notice {
                 visit: snapshot.route().clone(),
                 root: snapshot.key(),
                 message: Arc::from(error.as_str()),
@@ -854,7 +889,7 @@ impl Map {
 
 /// A last-good value cannot settle the latest root's open. Activity is
 /// checked first because an active retry retains its previous terminal too.
-fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Result<Option<&T>, String> {
+pub(crate) fn open_value<T>(resource: &Resource<T>, root: VersionedRoot) -> Result<Option<&T>, String> {
     if matches!(
         resource.activity(),
         Activity::Waiting | Activity::Working | Activity::NotYet

@@ -239,10 +239,10 @@ pub(super) fn reduce(snapshot: &AppSnapshot, intent: &Intent) -> Option<Reductio
                 workspace.active = workspace.projects.first().map(|item| item.id.clone());
             }
             next = next.with_workspace(workspace);
-            if removed_active {
-                if let Some(fallback) = next.workspace().active.clone() {
-                    next = set_project_phase(&next, &fallback, ProjectPhase::Indexing, None, None);
-                }
+            if removed_active
+                && let Some(fallback) = next.workspace().active.clone()
+            {
+                next = set_project_phase(&next, &fallback, ProjectPhase::Indexing, None, None);
             }
             let mut shelf = next.shelf().clone();
             shelf.items = shelf

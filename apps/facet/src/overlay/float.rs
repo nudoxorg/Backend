@@ -44,12 +44,14 @@
 
 mod model;
 pub mod place;
+pub mod unfurl;
 #[cfg(all(test, feature = "gallery"))]
 mod storm;
 #[cfg(test)]
 mod window_tests;
 
 pub use model::{AIM_IDLE, Card, DEEPEN, MAX_DEPTH, Model, Pending, Pin, Presence, WARM};
+pub use unfurl::Bands;
 
 use crate::measure::{Measure, Space};
 use crate::motion::{self, Motion, Spec, spec};
@@ -128,6 +130,14 @@ pub struct FloatRequest {
     pub side: Side,
     /// Builds the content.
     pub content: Content,
+    /// Enters by unfurling from the anchor (MOTION.md "peek"): the anchor's
+    /// underline draws, travels to become the card's facing edge, and the
+    /// body unrolls from that edge by clip. Nothing fades, scales or rises.
+    /// Every card enters this way (DIRECTION v5 §3: nothing crossfades); the
+    /// field stays for callers that still ask for it explicitly.
+    pub unfurl: bool,
+    /// How the card lines up with its anchor above or below it.
+    pub align: place::Align,
 }
 
 impl FloatRequest {
@@ -147,7 +157,25 @@ impl FloatRequest {
                 FloatKind::Peek | FloatKind::Lens | FloatKind::Menu => Side::Below,
             },
             content: Rc::new(content),
+            unfurl: true,
+            align: place::Align::Centre,
         }
+    }
+
+    /// Hangs from the anchor's start (inline marks): the card's text lines
+    /// up with the anchor's, flipping to its end at the window's right edge.
+    #[must_use]
+    pub const fn hang_from_start(mut self) -> Self {
+        self.align = place::Align::Start;
+        self
+    }
+
+    /// Enters by unfurling from the anchor (the default; see
+    /// [`FloatRequest::unfurl`](Self#structfield.unfurl)).
+    #[must_use]
+    pub const fn unfurl(mut self) -> Self {
+        self.unfurl = true;
+        self
     }
 
     /// The preferred side.
@@ -165,6 +193,8 @@ impl std::fmt::Debug for FloatRequest {
             .field("anchor", &self.anchor)
             .field("kind", &self.kind)
             .field("side", &self.side)
+            .field("unfurl", &self.unfurl)
+            .field("align", &self.align)
             .finish_non_exhaustive()
     }
 }
@@ -172,6 +202,19 @@ impl std::fmt::Debug for FloatRequest {
 /// Paint priority of the layer among deferred draws (above popovers and
 /// everything else that defers).
 pub const PRIORITY: usize = 1_000;
+
+/// How far a start-hung card's plate sits outside its anchor, px at 100 %
+/// text (its padding then lines its text up with the anchor's).
+pub const MARK_INSET: f32 = 12.0;
+
+/// An unfurl card's whole entrance: the underline draws under the token
+/// (0–60 ms), becomes the card's facing edge (60–140 ms), and the body
+/// unrolls from that edge (100–220 ms). See [`unfurl`].
+pub const UNFURL_ENTER: Duration = Duration::from_millis(220);
+/// An unfurl card's whole exit, the way it came: the body rolls up
+/// (0–120 ms), the edge shrinks back to the word (120–210 ms), the
+/// underline undraws (210–300 ms).
+pub const UNFURL_EXIT: Duration = Duration::from_millis(300);
 
 // ------------------------------------------------------------------ state
 
@@ -786,18 +829,19 @@ struct CardDraw {
     side: Side,
     anchor: Bounds<Pixels>,
     presence: f32,
+    /// How far the unfurl's underline, edge and body have run.
+    bands: Bands,
     open: bool,
     sheet: bool,
     hidden: bool,
     focus: f32,
-    swap: f32,
     element: AnyElement,
     layout: LayoutId,
     painted: Bounds<Pixels>,
-    connector: Option<(Point<Pixels>, Point<Pixels>)>,
-    /// Grows the card out of its anchor while it enters or leaves
-    /// (identity at rest).
-    grow: gpui::LayerTransform,
+    /// How far a warm swap's content wipe has run (0..1).
+    wipe: f32,
+    /// The content a warm swap is wiping out (unfurl cards).
+    previous: Option<AnyElement>,
 }
 
 struct LayerElement {
@@ -818,9 +862,6 @@ impl IntoElement for LayerElement {
         self
     }
 }
-
-/// The rise distance of an entering card, px at 100 % text.
-const RISE: f32 = 6.0;
 
 /// A straight line, like [`crate::motion::LINEAR`], but nudged off the
 /// corners. `LINEAR`'s control points sit exactly on its endpoints, so its
@@ -1077,6 +1118,19 @@ impl Element for LayerElement {
                 _ => Vec::new(),
             };
             let surface = if sheet { Surface::Sheet } else { Surface::Card };
+            // A wiping unfurl card lays out what it replaced too (built
+            // first, so the new content's title wins).
+            let wiping = card.unfurl && card.swapped.is_some_and(|at| now.saturating_duration_since(at).as_secs_f32() < 0.16);
+            let previous = match (&card.previous, wiping) {
+                (Some(previous), true) => {
+                    let mut old = card.clone();
+                    old.content = previous.clone();
+                    let mut element = self.build_card(&old, width, cap, surface, crumbs.clone(), window, cx);
+                    ids.push(element.request_layout(window, cx));
+                    Some(element)
+                }
+                _ => None,
+            };
             let mut element = self.build_card(card, width, cap, surface, crumbs, window, cx);
             let layout = element.request_layout(window, cx);
             ids.push(layout);
@@ -1098,9 +1152,11 @@ impl Element for LayerElement {
                 window,
                 cx,
             );
+            // A warm swap wipes the new content in over 160 ms.
+            let swap_span = 0.16;
             let swap = card.swapped.map_or(1.0, |at| {
                 let run = now.saturating_duration_since(at).as_secs_f32();
-                (run / 0.12).clamp(0.0, 1.0)
+                (run / swap_span).clamp(0.0, 1.0)
             });
             self.cards.push(CardDraw {
                 id: card.id,
@@ -1109,16 +1165,16 @@ impl Element for LayerElement {
                 side: card.side,
                 anchor: card.anchor,
                 presence,
+                bands: card.presence.bands(now),
                 open: card.is_open(),
                 sheet,
                 hidden,
                 focus,
-                swap: 0.35 + 0.65 * swap,
                 element,
                 layout,
                 painted: Bounds::default(),
-                connector: None,
-                grow: gpui::LayerTransform::IDENTITY,
+                wipe: swap,
+                previous,
             });
             if card.presence.live(now) || swap < 1.0 {
                 motion::request_frame(window, cx);
@@ -1256,13 +1312,16 @@ impl Element for LayerElement {
                     None => Hang::Anchor,
                 }
             };
-            let placed = place::place_with_gap(
+            let align = self.layer.borrow().model.card(id).map_or(place::Align::Centre, |card| card.align);
+            let placed = place::place_aligned(
                 anchor,
                 natural.size,
                 side,
                 hang,
                 viewport,
                 kind.gap() * scale,
+                align,
+                MARK_INSET * scale,
             );
             caps.push((id, placed.capped.is_some(), placed.room));
             let target = placed.bounds;
@@ -1306,36 +1365,15 @@ impl Element for LayerElement {
                     out[slot] = motion_store.animate(key.clone(), value, spec::FOLLOW, window, cx);
                 }
             }
-            let rise = if sheet { 24.0 } else { RISE * scale };
-            let drift = (1.0 - presence) * rise;
-            let dy = drift;
+            // An unfurl never rises: it is uncovered where it lives, and its
+            // own edge crosses the gap from the anchor (no connector).
             let tail = if sheet { 14.0 } else { 0.0 };
             let painted = Bounds::new(
-                point(px(out[0]), px(out[1] + dy)),
+                point(px(out[0]), px(out[1])),
                 size(px(out[2].max(1.0)), px(out[3].max(1.0) + tail)),
             );
             self.cards[index].painted = painted;
-            // A child's hairline leaves from its parent's edge (never across
-            // the parent's text), level with the anchor word.
-            let from = match hang {
-                Hang::Parent(parent) => {
-                    let x = if placed.side == Side::Left {
-                        parent.left()
-                    } else {
-                        parent.right()
-                    };
-                    Bounds::new(point(x, anchor.origin.y), size(px(0.0), anchor.size.height))
-                }
-                Hang::Anchor | Hang::Sheet => anchor,
-            };
-            // Peeks and lenses hang off a word or a tick by a hairline; a
-            // menu sits on its button and a tip beside its mark.
-            let hangs = matches!(kind, FloatKind::Peek | FloatKind::Lens);
-            self.cards[index].connector = if sheet || !hangs {
-                None
-            } else {
-                place::connector(from, painted, placed.side)
-            };
+            self.cards[index].side = placed.side;
             if let Some(level) = level
                 && open
             {
@@ -1358,30 +1396,34 @@ impl Element for LayerElement {
             let mask = if hidden || !open {
                 Bounds::new(painted.origin, size(px(0.0), px(0.0)))
             } else {
-                painted
+                // Only what has unrolled can be hovered.
+                unrolled(painted, placed.side, sheet, self.cards[index].bands.body)
             };
-            // The card grows out of the side that faces its anchor.
-            let facing = match (sheet, placed.side) {
-                (true, _) | (false, Side::Above) => point(painted.center().x, painted.bottom()),
-                (false, Side::Below) => point(painted.center().x, painted.top()),
-                (false, Side::Right) => point(painted.left(), painted.center().y),
-                (false, Side::Left) => point(painted.right(), painted.center().y),
-            };
-            let grown = 0.97 + 0.03 * presence.clamp(0.0, 1.0);
-            let grow = if grown >= 1.0 {
-                gpui::LayerTransform::IDENTITY
-            } else {
-                gpui::LayerTransform::scale_about(facing, size(grown, grown))
-            };
-            self.cards[index].grow = grow;
-            let element = &mut self.cards[index].element;
-            let fade = presence.clamp(0.0, 1.0);
-            window.with_layer_transform(grow, |window| {
-                window.with_group_opacity(painted, fade, |window| {
-                    window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
-                        window.with_element_offset(shift, |window| element.prepaint(window, cx));
-                    });
+            // The wipe: the new content arrives from 12 px left of its
+            // place, the old leaves 12 px to the right.
+            let wipe = crate::tokens::motion::GLIDE.ease(self.cards[index].wipe.clamp(0.0, 1.0));
+            if let Some(old) = self.cards[index].previous.as_mut() {
+                // What a warm swap replaced is only being wiped out: it is
+                // painted, never hovered (its words must not open cards
+                // under the new content).
+                let away = point(px(12.0 * wipe), px(0.0));
+                let inert = Bounds::new(painted.origin, size(px(0.0), px(0.0)));
+                window.with_content_mask(Some(ContentMask { bounds: inert }), |window| {
+                    window.with_element_offset(shift + away, |window| old.prepaint(window, cx));
                 });
+            }
+            // While a wipe runs, only the new content left of its boundary
+            // is there to hover.
+            let mask = if self.cards[index].previous.is_some() {
+                Bounds::new(mask.origin, size(mask.size.width * wipe, mask.size.height))
+            } else {
+                mask
+            };
+            let arrive = if self.cards[index].previous.is_some() { point(px(-12.0 * (1.0 - wipe)), px(0.0)) } else { point(px(0.0), px(0.0)) };
+            let shift = shift + arrive;
+            let element = &mut self.cards[index].element;
+            window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
+                window.with_element_offset(shift, |window| element.prepaint(window, cx));
             });
         }
         for element in &mut self.extras {
@@ -1485,82 +1527,8 @@ impl Element for LayerElement {
             if draw.hidden {
                 continue;
             }
-            let t = draw.presence.clamp(0.0, 1.0);
-            // The anchor stays lit while its card is open.
-            if draw.level.is_some() && draw.kind != FloatKind::Menu {
-                let line: Hsla = palette.peri.base.into();
-                let anchor = draw.anchor;
-                let underline = Bounds::new(
-                    point(
-                        anchor.origin.x,
-                        anchor.origin.y + anchor.size.height - px(1.5),
-                    ),
-                    size(anchor.size.width, px(1.5)),
-                );
-                window.paint_quad(fill(underline, line.opacity(t)));
-            }
-            if let Some((from, to)) = draw.connector {
-                let line: Hsla = palette.line3.into();
-                let rect = Bounds::from_corners(
-                    point(from.x.min(to.x), from.y.min(to.y)),
-                    point(from.x.max(to.x) + px(1.0), from.y.max(to.y) + px(1.0)),
-                );
-                window.paint_quad(fill(rect, line.opacity(t)));
-            }
-            let chamfer = if draw.sheet {
-                14.0
-            } else {
-                draw.kind.chamfer()
-            };
-            // One group: plate, bevel and content composite once and fade
-            // together (a translucent plate never shows the bevel through).
-            let painted = draw.painted;
-            let grow = draw.grow;
-            window.with_layer_transform(grow, |window| {
-                window.with_group_opacity(painted, t, |window| {
-                    let shadow: Hsla = palette.shadow.into();
-                    window.paint_chamfer_shadows(
-                        draw.painted,
-                        motion::compositing::chamfers(chamfer),
-                        &[
-                            BoxShadow {
-                                color: shadow.opacity(0.86),
-                                offset: point(px(0.0), px(18.0)),
-                                blur_radius: px(15.0),
-                                spread_radius: px(0.0),
-                                inset: false,
-                            },
-                            BoxShadow {
-                                color: shadow.opacity(0.5),
-                                offset: point(px(0.0), px(2.0)),
-                                blur_radius: px(3.0),
-                                spread_radius: px(0.0),
-                                inset: false,
-                            },
-                        ],
-                    );
-                    let rest = Edge::of(Bevel::Rest, palette);
-                    let focus = Edge::of(Bevel::Focus, palette);
-                    let spec = CutPaint {
-                        chamfer,
-                        edge: rest.mix(focus, draw.focus),
-                        fill: Some(palette_plate(draw.kind, palette)),
-                        ..CutPaint::new(palette)
-                    };
-                    paint_cut(window, draw.painted, &spec, palette);
-                    let element = &mut draw.element;
-                    window.with_element_opacity(Some(draw.swap), |window| {
-                        window.with_content_mask(
-                            Some(ContentMask {
-                                bounds: draw.painted,
-                            }),
-                            |window| {
-                                element.paint(window, cx);
-                            },
-                        );
-                    });
-                })
-            });
+            // Every card unfurls: nothing it paints is carried by opacity.
+            paint_unfurl(draw, palette, window, cx);
         }
         if let Some((element, _)) = self.pins.as_mut() {
             element.paint(window, cx);
@@ -1937,6 +1905,149 @@ fn pinned_stack(
         stack = stack.child(pin_row(pin, layer, &inner, window, cx));
     }
     stack.into_any_element()
+}
+
+/// The part of a card an unfurl has uncovered at body progress `body`: it
+/// unrolls away from the edge that faces its anchor (below a word: down;
+/// above a mark: up; beside a parent card: sideways; a bottom sheet: up
+/// from the window's floor).
+#[must_use]
+pub fn unrolled(painted: Bounds<Pixels>, side: Side, sheet: bool, body: f32) -> Bounds<Pixels> {
+    let (o, s) = (painted.origin, painted.size);
+    let body = body.clamp(0.0, 1.0);
+    match (sheet, side) {
+        (true, _) | (false, Side::Above) => {
+            Bounds::new(point(o.x, o.y + s.height * (1.0 - body)), size(s.width, s.height * body))
+        }
+        (false, Side::Below) => Bounds::new(o, size(s.width, s.height * body)),
+        (false, Side::Right) => Bounds::new(o, size(s.width * body, s.height)),
+        (false, Side::Left) => {
+            Bounds::new(point(o.x + s.width * (1.0 - body), o.y), size(s.width * body, s.height))
+        }
+    }
+}
+
+/// The unfurl's travelling edge at progress `edge`: the anchor's underline
+/// rect carried to the card's facing edge (a 1 px line along it).
+#[must_use]
+pub fn unfurl_edge(anchor: Bounds<Pixels>, painted: Bounds<Pixels>, side: Side, sheet: bool, chamfer: f32, edge: f32) -> Bounds<Pixels> {
+    let hair = px(1.5);
+    let from = Bounds::new(
+        point(anchor.origin.x, anchor.origin.y + anchor.size.height - hair),
+        size(anchor.size.width, px(1.0)),
+    );
+    let cut = px(chamfer);
+    let to = match (sheet, side) {
+        (true, _) => Bounds::new(painted.origin, size(painted.size.width, px(1.0))),
+        (false, Side::Below) => Bounds::new(point(painted.origin.x + cut, painted.origin.y), size(painted.size.width - cut, px(1.0))),
+        (false, Side::Above) => Bounds::new(point(painted.origin.x, painted.bottom() - px(1.0)), size(painted.size.width - cut, px(1.0))),
+        (false, Side::Right) => Bounds::new(point(painted.origin.x, painted.origin.y + cut), size(px(1.0), painted.size.height - cut)),
+        (false, Side::Left) => Bounds::new(point(painted.right() - px(1.0), painted.origin.y), size(px(1.0), painted.size.height - cut)),
+    };
+    if sheet {
+        return to;
+    }
+    let lerp = |a: Pixels, b: Pixels| a + (b - a) * edge.clamp(0.0, 1.0);
+    Bounds::new(
+        point(lerp(from.origin.x, to.origin.x), lerp(from.origin.y, to.origin.y)),
+        size(lerp(from.size.width, to.size.width), lerp(from.size.height, to.size.height)),
+    )
+}
+
+/// Paints one unfurl card: the anchor's underline, the edge that travels
+/// from it to the card's facing edge, and the body uncovered away from that
+/// edge. At rest the edge stays as the card's periwinkle hairline and the
+/// underline stays under the word while its card is open. No opacity
+/// carries any of it; a warm swap wipes the new content in reading order.
+fn paint_unfurl(draw: &mut CardDraw, palette: &Palette, window: &mut Window, cx: &mut App) {
+    let Bands { line, edge, body } = draw.bands;
+    let peri: Hsla = palette.peri.base.into();
+    let anchor = draw.anchor;
+    let painted = draw.painted;
+    let (side, sheet) = (draw.side, draw.sheet);
+    let hair = px(1.5);
+    if draw.level.is_some() && line > 0.0 && !sheet {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(anchor.origin.x, anchor.origin.y + anchor.size.height - hair),
+                size(anchor.size.width * line, hair),
+            ),
+            peri,
+        ));
+    }
+    let chamfer = if sheet { 14.0 } else { draw.kind.chamfer() };
+    if body > 0.0 {
+        let shadow: Hsla = palette.shadow.into();
+        let reveal = unrolled(painted, side, sheet, body);
+        // The shadow belongs to the unrolled part only: it may fall below
+        // and beside it, never ahead of the edge.
+        let shade = Bounds::new(
+            point(reveal.origin.x - px(48.0), reveal.origin.y),
+            size(reveal.size.width + px(96.0), reveal.size.height + px(64.0) * body),
+        );
+        window.with_content_mask(Some(ContentMask { bounds: shade }), |window| {
+            window.paint_chamfer_shadows(
+                reveal,
+                motion::compositing::chamfers(chamfer),
+                &[
+                    BoxShadow {
+                        color: shadow.opacity(0.86),
+                        offset: point(px(0.0), px(18.0)),
+                        blur_radius: px(15.0),
+                        spread_radius: px(0.0),
+                        inset: false,
+                    },
+                    BoxShadow {
+                        color: shadow.opacity(0.5),
+                        offset: point(px(0.0), px(2.0)),
+                        blur_radius: px(3.0),
+                        spread_radius: px(0.0),
+                        inset: false,
+                    },
+                ],
+            );
+        });
+        window.with_content_mask(Some(ContentMask { bounds: reveal }), |window| {
+            let rest = Edge::of(Bevel::Rest, palette);
+            let focus = Edge::of(Bevel::Focus, palette);
+            let spec = CutPaint {
+                chamfer,
+                edge: rest.mix(focus, draw.focus),
+                fill: Some(palette_plate(draw.kind, palette)),
+                ..CutPaint::new(palette)
+            };
+            paint_cut(window, painted, &spec, palette);
+            // The boundary travels in reading order: new content to its
+            // left, the content it replaced to its right, never both in one
+            // place.
+            let wiped = crate::tokens::motion::GLIDE.ease(draw.wipe.clamp(0.0, 1.0));
+            let boundary = painted.size.width * wiped;
+            if let Some(old) = draw.previous.as_mut() {
+                // A 12 px gutter at the seam: the two never touch.
+                let seam = (boundary + px(12.0)).min(painted.size.width);
+                let rest = Bounds::new(
+                    point(painted.origin.x + seam, painted.origin.y),
+                    size(painted.size.width - seam, painted.size.height),
+                );
+                window.with_content_mask(Some(ContentMask { bounds: rest }), |window| old.paint(window, cx));
+            }
+            let content = Bounds::new(painted.origin, size(boundary, painted.size.height));
+            let element = &mut draw.element;
+            window.with_content_mask(Some(ContentMask { bounds: content }), |window| {
+                element.paint(window, cx);
+            });
+        });
+    }
+    if (edge > 0.0 || body > 0.0) && !sheet {
+        // The edge: the underline's rect travelling to the card's facing
+        // edge, where it stays as the card's hairline.
+        let rect = unfurl_edge(anchor, painted, side, sheet, chamfer, edge);
+        window.paint_quad(fill(rect, peri.opacity(1.0 - 0.45 * edge)));
+    } else if sheet && body > 0.0 {
+        // A sheet's edge rides the top of what has unrolled.
+        let reveal = unrolled(painted, side, sheet, body);
+        window.paint_quad(fill(Bounds::new(reveal.origin, size(reveal.size.width, px(1.0))), peri.opacity(0.55)));
+    }
 }
 
 // ------------------------------------------------------------------ triggers

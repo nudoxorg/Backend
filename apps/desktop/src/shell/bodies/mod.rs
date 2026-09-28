@@ -72,12 +72,20 @@ pub(crate) struct Ctx<'a> {
     pub links: &'a Links,
     /// Keyboard targets of the reader.
     pub targets: &'a Targets,
+    /// Native reading viewport for keyboard-only reveal of a chosen row.
+    pub reader_scroll: gpui::ScrollHandle,
     /// The page's lens (tab) for declaration pages.
     pub lens: Lens,
     /// The text each body renders, recorded for content assertions.
     pub said: &'a mut Vec<SharedString>,
     /// The hero name's lines, as fitted (the name never ellipsizes).
     pub hero: &'a mut Vec<SharedString>,
+    /// Stable, bounded per-declaration disclosure and clip motion state.
+    pub symbol_disclosure: super::reader::SymbolDisclosure,
+    /// Bounded package outline; expanded only on the current package route.
+    pub package_outline_expanded: bool,
+    /// Explicit Find choices retained through Compare and route history.
+    pub find_held: Vec<facet::browse::find::HeldPackage>,
 }
 
 impl Ctx<'_> {
@@ -211,7 +219,7 @@ pub(crate) fn build(
     match route {
         Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),
         Route::Orbit(_) => orbit::body(snapshot, store, ctx, hover, cx),
-        Route::Package(_) => package::body(route, store, ctx, hover, cx),
+        Route::Package(_) => package::body(route, snapshot, store, ctx, hover, cx),
         Route::Symbol(symbol) => match symbol.view {
             View::Page => symbol::body(route, symbol, store, ctx, hover, cx),
             View::Code => source::body(route, symbol, store, ctx, cx),

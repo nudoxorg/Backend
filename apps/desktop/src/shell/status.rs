@@ -34,12 +34,12 @@ pub(crate) fn display_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtim
     (wrap_identifier(&focus.status(), &role, room, cx), role)
 }
 
-pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::GraphNotice>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
+pub(crate) fn feedback_lines(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph_focus::GraphFocus>, notice: Option<&crate::runtime::graph_focus::Notice>, width: Pixels, cx: &App) -> (Vec<String>, TypeRole) {
     if let Some(notice) = notice.filter(|notice| notice.active(snapshot)) {
         let measure = Measure::new(width, &cx.facet());
         let role = measure.role(ty::MONO_SMALL);
         let room = (width - measure.space(Space::Roomy) * 2.0).max(px(1.0));
-        return (wrap_identifier(&format!("Graph · {}", notice.message), &role, room, cx), role);
+        return (wrap_identifier(&notice.message, &role, room, cx), role);
     }
     display_lines(snapshot, focus, width, cx)
 }
@@ -64,9 +64,27 @@ fn fit(address: &Address, role: &TypeRole, room: Pixels, cx: &App) -> Vec<String
 pub(crate) fn graph_speaks(
     snapshot: &AppSnapshot,
     focus: Option<&crate::runtime::graph_focus::GraphFocus>,
-    notice: Option<&crate::runtime::graph_focus::GraphNotice>,
+    notice: Option<&crate::runtime::graph_focus::Notice>,
 ) -> bool {
     notice.is_some_and(|notice| notice.active(snapshot)) || focus.is_some_and(|focus| focus.active(snapshot))
+}
+
+/// Where the hand's marks start: 20 px into the reader column, never past
+/// a third of the bar.
+pub(crate) fn marks_left(width: Pixels, reader_left: Pixels, scale: f32) -> Pixels {
+    (reader_left + px(20.0 * scale)).min(width / 3.0)
+}
+
+/// The width the graph's line is set in: the whole bar with an empty hand;
+/// beside the marks (the chevron and up to five stones) otherwise, so the
+/// hand stays in the foot while the graph speaks.
+pub(crate) fn line_room(width: Pixels, reader_left: Pixels, cards: usize, scale: f32) -> Pixels {
+    if cards == 0 {
+        return width;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let marks = px((14.0 + 23.0 * cards as f32 + 16.0) * scale);
+    (width - marks_left(width, reader_left, scale) - marks).max(px(160.0 * scale))
 }
 
 /// How tall the status bar is for `lines` of address in `role`, given its
@@ -81,7 +99,17 @@ pub(crate) struct Status {
     links: Links,
     /// Where the reader column starts (the hand's marks start 20 px in).
     reader_left: Pixels,
+    /// Redraws once the first-card whisper has had its time.
+    whisper_timer: Option<gpui::Task<()>>,
+    /// The whisper this foot first drew, and when (the motion clock).
+    whisper_seen: Option<(crate::model::hand::Held, std::time::Instant)>,
+    /// The hand at rest.
+    marks: super::hand::Marks,
+    opening: Option<SharedString>,
 }
+
+/// How long the first-card whisper stays.
+const WHISPER_MS: u64 = 2_400;
 
 impl Status {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
@@ -89,12 +117,29 @@ impl Status {
             core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::GraphFocus, Branch::Hand]),
             links,
             reader_left: px(0.0),
+            whisper_timer: None,
+            whisper_seen: None,
+            marks: super::hand::Marks::default(),
+            opening: None,
         }
     }
 
     /// Where the reader column starts, from the shell's frame.
     pub(crate) fn set_reader_left(&mut self, left: Pixels) {
         self.reader_left = left;
+    }
+
+    pub(crate) fn set_opening(&mut self, opening: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.opening != opening {
+            self.opening = opening;
+            cx.notify();
+        }
+    }
+
+    /// How many marks the foot draws (tests).
+    #[cfg(test)]
+    pub(crate) fn marks_drawn(&self) -> usize {
+        self.marks.drawn()
     }
 
     /// Where the reader column starts, as last set.
@@ -114,24 +159,79 @@ impl Region for Status {
 }
 
 impl Render for Status {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.core.rendered();
         let measure = self.core.measure(cx);
         let palette = cx.facet().palette();
         let store = self.links.store.read(cx);
         let snapshot = store.snapshot();
         let foot = div().size_full().flex().flex_col().justify_center().border_t_1().border_color(palette.line1.hsla());
-        if !graph_speaks(&snapshot, store.graph_focus(), store.graph_notice()) {
-            let hand = snapshot.session().hand.clone();
-            let view = crate::runtime::fixture_world::hand_view(&hand, cx);
-            let left = (self.reader_left + px(20.0 * measure.scale())).min(self.core.width() / 3.0);
-            return foot.pl(left).children(super::hand::marks(&view, &self.links, &measure, palette));
+        if let Some(opening) = &self.opening {
+            return foot.pl((self.reader_left + px(20.0 * measure.scale())).min(self.core.width() / 3.0))
+                .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).child(opening.clone()));
         }
-        let (lines, role) = feedback_lines(&snapshot, store.graph_focus(), store.graph_notice(), self.core.width(), cx);
-        let color = palette.ink3.hsla();
-        foot
-            .px(measure.space(Space::Roomy))
-            .children(lines.into_iter().enumerate().map(move |(index, line)| {
+        let (focus, notice) = (store.graph_focus().cloned(), store.notice().cloned());
+        let speaks = graph_speaks(&snapshot, focus.as_ref(), notice.as_ref());
+        let hand = snapshot.session().hand.clone();
+        if !speaks || !hand.is_empty() {
+            let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+            let left = marks_left(self.core.width(), self.reader_left, measure.scale());
+            // The first card ever held: "Value *in hand*", once per install.
+            // Timed on the motion clock (virtual under the harness), from
+            // the frame that first drew it.
+            let now = facet::motion::now(cx);
+            let whisper = snapshot.session().whisper.clone().and_then(|held| {
+                let since = match &self.whisper_seen {
+                    Some((seen, at)) if seen.same(&held) => *at,
+                    _ => {
+                        self.whisper_seen = Some((held.clone(), now));
+                        now
+                    }
+                };
+                let age = u64::try_from(now.saturating_duration_since(since).as_millis()).unwrap_or(u64::MAX);
+                (age < WHISPER_MS).then(|| (held, WHISPER_MS - age))
+            });
+            let words = whisper.map(|(held, left_ms)| {
+                self.whisper_timer = Some(cx.spawn(async move |status, cx| {
+                    cx.background_executor().timer(std::time::Duration::from_millis(left_ms)).await;
+                    let _ = status.update(cx, |_, cx| cx.notify());
+                }));
+                let name = view
+                    .cards
+                    .iter()
+                    .find(|card| card.held.same(&held))
+                    .map_or_else(|| SharedString::default(), |card| card.name.clone());
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(5.0 * measure.scale()))
+                    .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).child(name))
+                    .child(super::kit::text(ty::CAPTION, &measure, palette.ink3).child("in hand"))
+            });
+            // The graph's line sits to the right of the marks, on their row.
+            let said = speaks.then(|| {
+                let room = line_room(self.core.width(), self.reader_left, hand.held().len(), measure.scale());
+                let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), room, cx);
+                div().flex().flex_col().min_w(px(0.0)).children(said_lines(lines, role, palette.ink3.hsla()))
+            });
+            return foot.pl(left).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(measure.space(Space::Roomy))
+                    .children(self.marks.render(&view, &self.links, &measure, palette, window, cx))
+                    .children(words)
+                    .children(said),
+            );
+        }
+        let (lines, role) = feedback_lines(&snapshot, focus.as_ref(), notice.as_ref(), self.core.width(), cx);
+        foot.px(measure.space(Space::Roomy)).children(said_lines(lines, role, palette.ink3.hsla()))
+    }
+}
+
+/// The graph's line(s), each published to the probe as `address:{n}:…`.
+fn said_lines(lines: Vec<String>, role: facet::tokens::TypeRole, color: gpui::Hsla) -> impl Iterator<Item = gpui::AnyElement> {
+    lines.into_iter().enumerate().map(move |(index, line)| {
                 let words = SharedString::from(line);
                 facet::probe::text(
                     ElementId::Name(format!("address:{index}:{words}").into()),
@@ -141,6 +241,6 @@ impl Render for Status {
                     facet::probe::TextOverflow::Clip,
                     div().whitespace_nowrap().typeset_at(role, 1.0).text_color(color).child(words),
                 )
-            }))
-    }
+                .into_any_element()
+    })
 }

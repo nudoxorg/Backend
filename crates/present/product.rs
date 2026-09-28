@@ -20,7 +20,7 @@ use backend_library::{
     ProjectRecord, RegistryDiscoveryCandidate, RegistryEvidenceFacet, RegistryMetadata,
     RegistryNativeAvailability, RegistryNativeDetails, RegistryNativeMetadata,
     RegistryPackageFactAuthority, RegistryPackageFactFreshness, RegistryPackageRecord,
-    RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchHit,
+    RegistryPackageSearchGroup, RegistryReleaseMatchScope, RegistrySearchGroupKind, RegistrySearchHit,
     RegistrySearchRelease, ReleaseRecord, SemanticVersionFreshness, SemanticVersionRecord,
     SubscriptionRecord, SurfaceReply, TreeNodeRecord, TreeOpener, TreeSubject, encode_id,
 };

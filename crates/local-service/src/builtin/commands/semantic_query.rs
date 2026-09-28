@@ -886,7 +886,8 @@ fn project_opened_reference_facts(
 }
 
 /// Answers "where is this declaration used" from the semantic occurrence
-/// plane.
+/// plane, falling back to the structural lane when the package has no
+/// complete semantic publication.
 ///
 /// The queried coordinate resolves against the published view; the selected
 /// complete publications of its package are then asked for every occurrence
@@ -894,6 +895,15 @@ fn project_opened_reference_facts(
 /// targets, and provenance (relation kind, authority class, and the captured
 /// source span) all survive to the reply; nothing is reduced to bare
 /// adjacency.
+///
+/// A package with no complete semantic publication (a workspace member the
+/// compiler has not admitted, for instance) cannot answer this way: there is
+/// no image to walk. `execute_structural_references` answers instead, from
+/// same-file and import-resolved call text; every fact it produces carries
+/// [`backend_engine::SemanticConfidence::Syntactic`], so a caller can tell a
+/// path match from a compiler-verified one apart. Typed relations (the rose)
+/// have no structural analogue and still refuse the query outright in that
+/// case — only references falls back.
 pub(super) fn execute_references(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     compiler: &LocalCompilerClient,
