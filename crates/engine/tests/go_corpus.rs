@@ -548,11 +548,15 @@ fn production_go_authority_scopes_a_multi_package_module_to_its_owning_package()
     .with_configuration(configuration);
 
     let cancelled = AtomicBool::new(false);
+    let unit_key = backend_engine::application::CompilationUnitKeyV2::GoPackage {
+        root: "errgroup".into(),
+    };
     let owner = backend_engine::application::enter_package_authority(
         backend_engine::application::PackageAuthorityRequest {
             package_root: &module_root,
             source_path: &path,
             source: &source,
+            unit_key: &unit_key,
             profile: PROFILE,
             toolchain: ToolchainSelection::ResolvedNative(toolchain()?),
             control: CompileControl {

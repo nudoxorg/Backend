@@ -77,7 +77,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
         .map_err(|error| client_fault(&error, &args.package))?;
 
     let store = FileStore::open(&args.store, FILESTORE_PACK_BYTES)
-        .map_err(|error| endpoint_fault(&args.store.to_string_lossy(), error.to_string()))?;
+        .map_err(|error| endpoint_fault(&args.store.to_string_lossy(), format!("{error:?}")))?;
     let mut store = FileSemanticRangeStore::open(store, transport_limits())
         .map_err(|error| endpoint_fault(&args.store.to_string_lossy(), error))?;
     let have_ids = client
@@ -90,7 +90,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
             let checkpoint = SemanticRangeClientCheckpoint::decode(&bytes).map_err(|error| {
                 endpoint_fault(&args.checkpoint.to_string_lossy(), error.to_string())
             })?;
-            client
+            let (cursor, coverage, poll) = client
                 .resume_semantic_range(
                     &checkpoint,
                     &manifest,
@@ -98,7 +98,8 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
                     transport_limits(),
                     &mut store,
                 )
-                .map_err(|error| client_fault(&error, &args.package))?
+                .map_err(|error| client_fault(&error, &args.package))?;
+            (cursor, Some(coverage), poll)
         }
         None => {
             let mut cursor = client

@@ -83,7 +83,9 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
     let package = PackageSourceSet::new(&request, &package_root, &sources)?;
     let mut staged_phases = Vec::new();
     let staged =
-        compiler.compile_package_sources_staged(package, &mut |phase| staged_phases.push(phase))?;
+        compiler.compile_package_sources_staged(package.clone(), &mut |phase| {
+            staged_phases.push(phase)
+        })?;
     assert_eq!(
         staged.embedding_status(),
         StagedEmbeddingStatus::NotConfigured
