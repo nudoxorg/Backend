@@ -52,14 +52,28 @@ head `d0fc947b9`.
 - **Known flake:** `backend-store` `dropping_a_real_pending_witness_is_drained_before_shutdown`
   (a pre-existing race).
 
-### 1.3 ⚠️ The live gate changed on 2026-09-27
+### 1.3 Where the live gates stand (2026-09-28 evening)
 
-MachineConfigurations PR #15 (Harmonia store cache, applied on `ilo` at 19:20) replaced the live
-`nudox-backend-pr` script with a crane Nix-derivation chain. It builds only `backend-mcp`'s crate
-closure and runs its unit tests (`nextest -E 'kind(lib)'`). **The root-flake checks and
-`backend test pr` no longer run in the live gate.** In this plan that derivation gate is the
-`unit` lane, and it runs **alongside** the full `linux` lane (§3). This needs agreeing between
-Robert and Codex before the next pipeline change.
+- **`concourse/backend-pr` (the unit gate)** is MachineConfigurations PR #15's crane derivation
+  chain: `backend-mcp`'s crate closure plus `nextest -E 'kind(lib)'`. **It has been broken since
+  it landed:** it wrote `rust-service.nix` into the task through `| from json`, which parses the
+  Nix source as JSON and throws inside the gate's `try`, so every verified PR (and
+  `nudox-backend/main`) failed with nothing after `flake-ref:`. Fixed in **MC PR #20**.
+- **The full lanes** run from **MC PR #19** as a second pipeline, `nudox-backend-lanes-pr`,
+  beside the unit gate. It runs each lane's script from the PR's own tree, one after another,
+  and posts `concourse/backend-<lane>` plus the aggregate `concourse/backend-lanes`:
+
+  | Lane | Shell | Script (Backend owns it) |
+  |---|---|---|
+  | `linux` | `compiler` | `.config/ci/linux.nu`: root flake check + `backend test pr` |
+  | `cross` | `cross` | `.config/ci/cross-check.nu`: workspace `cargo check` for Windows GNU and aarch64 Linux (Backend PR #10) |
+
+  A lane script missing from a branch reports "not defined on this branch" instead of blocking.
+  Adding a platform is one file here plus one entry in `pipelines/apps.nix`.
+- **Disk:** a full `linux` lane holds 100–130 GB in its task volume. MC PR #19 also moves Nix GC
+  to daily and raises `min-free`/`max-free` on the store host. The agent fleet on `ilo`
+  (`/root/fleet`) writes ~270 GB per rebuild and must be stopped or capped before the lanes go
+  live.
 
 ---
 
@@ -177,9 +191,9 @@ Each step adds one lane and stays green.
 
 | # | Step | Repo | Needs |
 |---|---|---|---|
-| 0 | Sync PR #8 with `canonical`, green, then merge | Backend | — |
-| 1 | `backend ci <lane>` plus the lane table (`fast`, `unit`, `linux`) | Backend | — |
-| 2 | Generic `backendLane` recipe, aggregate status, serial group | MC | agreement on §1.3 with Codex |
+| 0 | Sync PR #8 with `canonical` (done: merge `01023404d`), green, then merge | Backend | MC #20 applied |
+| 1 | Lane scripts in `.config/ci/` (`linux` done in PR #8, `cross` in PR #10) | Backend | — |
+| 2 | Lanes pipeline + aggregate status (MC PR #19); branch protection on `concourse/backend-lanes` | MC | #19 applied |
 | 3 | `cross` lane plus the Windows readiness fixes (§4.4) | Backend + one MC line | 1–2 |
 | 4 | Window drivers plus the `windows-wine` lane (§4.1–4.2) | Backend + one MC line | 3 |
 | 5 | ARM worker plus the `arm64` lane | MC | a CAX server |
