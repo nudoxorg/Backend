@@ -14,7 +14,7 @@
 use crate::semantics::types::{Nowhere, Piece, Scope};
 
 /// Bump whenever [`PagePlan`] or what [`compile`] writes into it changes.
-pub const PLAN_SCHEMA: u32 = 1;
+pub const PLAN_SCHEMA: u32 = 2;
 
 // ------------------------------------------------------------------ inputs
 
@@ -114,6 +114,47 @@ pub struct SourceMember {
     pub summary: Option<String>,
     /// Its deprecation, when the source marks one.
     pub deprecated: Option<Deprecated>,
+    /// What a method does to the value it is called on.
+    pub effect: Effect,
+    /// Its address, for the page's doors (hover, peek, open).
+    pub link: Option<String>,
+}
+
+/// What a method does to the value it is called on (the index's receiver
+/// groups): the fork reads an accessor off it, Getting one reads a maker.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[repr(u8)]
+pub enum Effect {
+    /// Not a method, or unreported.
+    #[default]
+    None = 0,
+    /// Borrows it: reads only.
+    Reads = 1,
+    /// Borrows it mutably: changes it.
+    Changes = 2,
+    /// Takes it: uses it up.
+    UsesUp = 3,
+    /// Makes one (a constructor, a conversion into it).
+    Makes = 4,
+}
+
+/// A route to one, as the caller already knows it (the world's recipes).
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct SourceRail {
+    /// What you start from, in words.
+    pub from: Ty,
+    /// The step's verb (`parse`, `from`, `NewFlagSet`).
+    pub verb: String,
+    /// The step can fail.
+    pub fails: bool,
+    /// The step may give nothing.
+    pub maybe: bool,
+    /// The case it lands on, when the maker's body says so.
+    pub lands: Option<String>,
+    /// The call as code.
+    pub code: Option<String>,
+    /// The step's address.
+    pub link: Option<String>,
 }
 
 /// Everything [`compile`] reads. The store hashes exactly this.
@@ -146,6 +187,15 @@ pub struct Source {
     /// The sections the page has content for, in any order, with what their
     /// stubs count.
     pub sections: Vec<SectionFacts>,
+    /// Its methods (the index's receiver groups), in ledger order.
+    pub does: Vec<SourceMember>,
+    /// Routes to one the caller already knows (the world's recipes). Empty:
+    /// [`compile`] reads them off `does`'s makers.
+    pub rails: Vec<SourceRail>,
+    /// The oldest release it is known in.
+    pub since: Option<String>,
+    /// Whether it is in one of your own packages.
+    pub yours: bool,
 }
 
 /// What the page knows about one of its sections.
@@ -262,20 +312,12 @@ impl Ty {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
 pub enum Mark {
-    /// The package and its version.
-    Package {
-        /// The package.
-        name: String,
-        /// Its version.
-        version: Option<String>,
-    } = 0,
-    /// Where it is declared.
-    Path {
-        /// The module path.
-        text: String,
-    } = 1,
+    /// The oldest release it is known in.
+    Since(String) = 0,
     /// Deprecated: struck, with a card.
-    Deprecated(Deprecated) = 2,
+    Deprecated(Deprecated) = 1,
+    /// It is in one of your own packages.
+    Yours = 2,
 }
 
 /// The top of the page.
@@ -292,7 +334,8 @@ pub struct Hero {
     /// The author's first sentence. No doc, no lede: the page never speaks
     /// in the author's voice.
     pub lede: Option<String>,
-    /// Facts as components.
+    /// Facts as components, only those the chrome does not already say (the
+    /// gem says the kind, the jump bar the path, ⌘. the file).
     pub marks: Vec<Mark>,
 }
 
@@ -346,6 +389,92 @@ pub enum Spec {
     None = 0,
     /// A record: a bracket.
     Record(Record) = 1,
+    /// A choice: a fork.
+    Choice(Choice) = 2,
+}
+
+/// How a case is spelled.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(u8)]
+pub enum CaseKind {
+    /// A variant's name (`String`, `Typed`).
+    Name = 0,
+    /// A literal (`"email"`): a stone.
+    Literal = 1,
+    /// A named constant with a printed value (Go's iota block).
+    Constant = 2,
+    /// A type (`string | number`): the type in words.
+    Type = 3,
+}
+
+/// An accessor that reads one case: it sits on that case's tine.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Accessor {
+    /// Its name (`as_str`).
+    pub name: String,
+    /// It hands the case out to change (`as_table_mut`).
+    pub changes: bool,
+    /// Its address.
+    pub link: Option<String>,
+}
+
+/// One case of a choice: a tine.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Case {
+    /// Its name as spelled.
+    pub name: String,
+    /// How it is spelled.
+    pub kind: CaseKind,
+    /// What it carries, positional parts in words.
+    pub carries: Vec<Ty>,
+    /// Named parts (a struct variant).
+    pub fields: Vec<Rung>,
+    /// Its printed value (an iota position, an explicit discriminant).
+    pub value: Option<String>,
+    /// Its doc sentence: only on hover, never at rest.
+    pub doc: Option<String>,
+    /// Accessors that read it.
+    pub accessors: Vec<Accessor>,
+    /// Deprecated: struck.
+    pub deprecated: bool,
+    /// Its address.
+    pub link: Option<String>,
+}
+
+/// A choice: a fork whose trunk is the spine.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Choice {
+    /// The cases, in declaration order.
+    pub cases: Vec<Case>,
+    /// Open: the trunk runs on, dashed, to what else it admits (`any int`,
+    /// `any text`, `more may come`).
+    pub open: Option<String>,
+    /// Fields every case holds (a discriminated union's base), on the trunk
+    /// before it splits.
+    pub shared: Vec<Rung>,
+    /// The field that tells the cases apart (`code`).
+    pub told_by: Option<String>,
+    /// What every case is underneath (Go's `int`).
+    pub each: Option<Ty>,
+}
+
+/// One route to one: what you have, a step, what it lands on.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Rail {
+    /// What you start from, in words.
+    pub from: Ty,
+    /// The step's verb.
+    pub verb: String,
+    /// The step can fail: a coral `?`.
+    pub fails: bool,
+    /// The step may give nothing: a dotted rail.
+    pub maybe: bool,
+    /// The case it lands on, when known.
+    pub lands: Option<String>,
+    /// The call as code (the first rail prints it).
+    pub code: Option<String>,
+    /// The step's address.
+    pub link: Option<String>,
 }
 
 /// A section's identity: the anchor id's first half, and its order.
@@ -418,6 +547,8 @@ pub struct PagePlan {
     pub spec: Spec,
     /// The sections, in reading order.
     pub sections: Vec<Section>,
+    /// Getting one's rails, best first.
+    pub getting: Vec<Rail>,
 }
 
 /// An anchor's identity: a section and an index into its plan data, so it
@@ -446,6 +577,24 @@ pub enum Part {
     Row(u16) = 4,
     /// The private count.
     Private = 5,
+    /// The spine, from the gem to the last section head.
+    Spine = 6,
+    /// A section's stub into its margin.
+    Stub = 7,
+    /// A section's rule.
+    Rule = 8,
+    /// A section's body, below its head.
+    Body = 9,
+    /// The n-th rail.
+    Rail(u16) = 10,
+    /// The n-th shared field on a fork's trunk.
+    Shared(u16) = 11,
+    /// A fold's "and N more".
+    More = 12,
+    /// An open choice's dashed end.
+    Open = 13,
+    /// Where Getting one's rails meet: the terminal bar.
+    Terminal = 14,
 }
 
 // ------------------------------------------------------------------ compile
@@ -459,7 +608,7 @@ pub fn compile(source: &Source) -> PagePlan {
     facts.sort_by_key(|facts| facts.id);
     facts.dedup_by_key(|facts| facts.id);
     let sections = facts.iter().filter(|facts| facts.id != SectionId::Spec).map(|facts| section(source, facts)).collect();
-    PagePlan { hero: hero(source, &spec), spec, sections }
+    PagePlan { hero: hero(source, &spec), spec, sections, getting: rails::rails(source) }
 }
 
 fn plural(n: u32, one: &str, many: &str) -> String {
@@ -505,12 +654,11 @@ fn fam_of(kind: DeclKind) -> Fam {
 fn hero(source: &Source, spec: &Spec) -> Hero {
     // An interface that only holds data is a record in plain words: it takes
     // the type's hue, not the contract's.
-    let fam = match spec { Spec::Record(_) => Fam::Type, Spec::None => fam_of(source.kind) };
-    let mut marks = vec![Mark::Package { name: source.package.clone(), version: source.version.clone() }];
-    if !source.module.is_empty() && source.module != source.package {
-        marks.push(Mark::Path { text: source.module.clone() });
-    }
+    let fam = match spec { Spec::Record(_) | Spec::Choice(_) => Fam::Type, Spec::None => fam_of(source.kind) };
+    let mut marks = Vec::new();
+    if let Some(since) = &source.since { marks.push(Mark::Since(since.clone())); }
     if let Some(deprecated) = &source.deprecated { marks.push(Mark::Deprecated(deprecated.clone())); }
+    if source.yours { marks.push(Mark::Yours); }
     Hero {
         kind: source.kind,
         fam,
@@ -522,6 +670,7 @@ fn hero(source: &Source, spec: &Spec) -> Hero {
 }
 
 fn specimen(source: &Source) -> Spec {
+    if let Some(choice) = choice::choice(source) { return Spec::Choice(choice); }
     let fields = source.made_of.iter().filter(|member| member.kind == DeclKind::Field).collect::<Vec<_>>();
     let shaped_as_record = match source.kind {
         DeclKind::Struct | DeclKind::Class => true,
@@ -679,9 +828,19 @@ fn plain_number(name: &str) -> Option<&'static str> {
 fn rust_words(ty: &str) -> Vec<Tok> {
     if ty.is_empty() { return Vec::new(); }
     let scope = Scope::new(&Nowhere);
-    let spelled = scope.spell_text(ty);
+    toks_of(&scope.spell_text(ty).pieces)
+}
+
+/// A type the semantics layer already spelled (a world recipe's port), in
+/// the plan's words.
+#[must_use]
+pub fn spelled(pieces: &[Piece], exact: &str) -> Ty {
+    Ty { toks: toks_of(pieces), exact: exact.trim().to_owned() }
+}
+
+fn toks_of(pieces: &[Piece]) -> Vec<Tok> {
     let mut out = Vec::new();
-    for piece in &spelled.pieces {
+    for piece in pieces {
         match piece {
             Piece::Space => {}
             Piece::Word(w) => {
@@ -833,5 +992,7 @@ fn go_words(ty: &str) -> Vec<Tok> {
     vec![named(ty.rsplit('.').next().unwrap_or(ty).to_owned())]
 }
 
+mod choice;
+mod rails;
 #[cfg(test)]
 mod tests;
