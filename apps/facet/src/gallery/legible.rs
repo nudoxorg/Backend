@@ -470,6 +470,246 @@ pub fn json(scene: &str, report: &Report) -> Json {
     ])
 }
 
+/// One transition of a scripted film: the window from an act to the next
+/// act at a later instant (acts at one instant share a window).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Window {
+    /// What the catalog calls it: the act line's trailing `# comment`, or
+    /// the act itself.
+    pub label: String,
+    /// The act(s) that open it, as scripted (time stripped).
+    pub act: String,
+    /// When the act lands, virtual ms.
+    pub from_ms: u64,
+    /// When the next window opens (exclusive); `None` runs to the film's end.
+    pub to_ms: Option<u64>,
+}
+
+/// The transition windows of a film script: one per scripted instant, named
+/// by the act line's trailing `# comment` (a comment-only line names
+/// nothing). Times follow the script syntax: `@T` absolute, `+T` after the
+/// previous statement, none at the previous statement's instant.
+#[must_use]
+pub fn windows(source: &str) -> Vec<Window> {
+    let mut out: Vec<Window> = Vec::new();
+    let mut previous = 0_u64;
+    for line in source.lines() {
+        let (code, label) = split_comment(line);
+        for statement in code.split(';').map(str::trim).filter(|statement| !statement.is_empty()) {
+            let mut words: Vec<&str> = statement.split_whitespace().collect();
+            let mut at = previous;
+            if let Some(last) = words.last().copied() {
+                if let Some(time) = last.strip_prefix('@').and_then(|time| time.parse::<u64>().ok()) {
+                    at = time;
+                    words.pop();
+                } else if let Some(delta) = last.strip_prefix('+').and_then(|delta| delta.parse::<u64>().ok()) {
+                    at = previous.saturating_add(delta);
+                    words.pop();
+                }
+            }
+            previous = at;
+            let act = words.join(" ");
+            let label = label.clone().unwrap_or_else(|| act.clone());
+            match out.last_mut() {
+                Some(window) if window.from_ms == at => {
+                    window.act = format!("{}; {act}", window.act);
+                    if window.label != label {
+                        window.label = format!("{} + {label}", window.label);
+                    }
+                }
+                _ => {
+                    if let Some(window) = out.last_mut() {
+                        window.to_ms = Some(at);
+                    }
+                    out.push(Window { label, act, from_ms: at, to_ms: None });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A line's statements and its trailing `# comment` (outside quotes).
+fn split_comment(line: &str) -> (&str, Option<String>) {
+    let mut quoted = false;
+    for (at, ch) in line.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '#' if !quoted => {
+                let comment = line[at + 1..].trim();
+                return (&line[..at], (!comment.is_empty()).then(|| comment.to_owned()));
+            }
+            _ => {}
+        }
+    }
+    (line, None)
+}
+
+/// What one transition window did against the law.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Text changed in the window and every frame held the law.
+    Pass,
+    /// Some frame broke the law.
+    Fail,
+    /// Every frame held the law, but no drawn text changed: the act did
+    /// nothing visible, so the pass proves nothing.
+    NotExercised,
+}
+
+impl Verdict {
+    /// A stable name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Fail => "FAIL",
+            Self::NotExercised => "NOT EXERCISED",
+        }
+    }
+}
+
+/// One line of the ledger: a window and what the law found in it.
+#[derive(Clone, Debug)]
+pub struct Transition {
+    /// The window.
+    pub window: Window,
+    /// Motion overlaps (pairs that never overlap at rest), by first frame.
+    pub overlap: Vec<Finding>,
+    /// Faded runs.
+    pub faded: Vec<Finding>,
+    /// Overlaps that also exist at rest (layout, not motion).
+    pub at_rest: Vec<Finding>,
+    /// Texts drawn in the window that were not drawn as it opened.
+    pub new: usize,
+    /// Texts drawn as it opened that are gone by its end.
+    pub gone: usize,
+}
+
+impl Transition {
+    /// The window's verdict.
+    #[must_use]
+    pub fn verdict(&self) -> Verdict {
+        if !self.overlap.is_empty() || !self.faded.is_empty() {
+            Verdict::Fail
+        } else if self.new + self.gone == 0 {
+            Verdict::NotExercised
+        } else {
+            Verdict::Pass
+        }
+    }
+
+    /// The longest violating run, ms.
+    #[must_use]
+    pub fn longest_ms(&self) -> u64 {
+        self.overlap
+            .iter()
+            .chain(&self.faded)
+            .map(|finding| finding.to_ms - finding.from_ms + STEP_MS)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// How long after the act the last violating frame is, ms.
+    #[must_use]
+    pub fn last_ms(&self) -> u64 {
+        self.overlap
+            .iter()
+            .chain(&self.faded)
+            .map(|finding| finding.to_ms.saturating_sub(self.window.from_ms))
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Assigns a film's findings to its transition windows (each finding to the
+/// window its first frame falls in) and measures whether each window
+/// changed any drawn text.
+#[must_use]
+pub fn ledger(film: &[Measured], report: &Report, windows: &[Window]) -> Vec<Transition> {
+    let drawn = |frame: &Measured| {
+        frame
+            .texts
+            .iter()
+            .filter(|text| text.contrast >= READABLE)
+            .map(|text| text.key.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    windows
+        .iter()
+        .map(|window| {
+            let inside = |at: u64| at >= window.from_ms && window.to_ms.is_none_or(|to| at < to);
+            let mut overlap = Vec::new();
+            let mut faded = Vec::new();
+            let mut at_rest = Vec::new();
+            for finding in report.findings.iter().filter(|finding| inside(finding.from_ms)) {
+                match (finding.rule, finding.at_rest) {
+                    (Rule::Overlap, false) => overlap.push(finding.clone()),
+                    (Rule::Overlap, true) => at_rest.push(finding.clone()),
+                    (Rule::Faded, _) => faded.push(finding.clone()),
+                }
+            }
+            let start = film
+                .iter()
+                .rev()
+                .find(|frame| frame.at_ms < window.from_ms)
+                .or_else(|| film.iter().find(|frame| inside(frame.at_ms)))
+                .map(drawn)
+                .unwrap_or_default();
+            let frames: Vec<&Measured> = film.iter().filter(|frame| inside(frame.at_ms)).collect();
+            let seen: std::collections::BTreeSet<String> = frames.iter().flat_map(|frame| drawn(frame)).collect();
+            let end = frames.last().map(|frame| drawn(frame)).unwrap_or_default();
+            Transition {
+                window: window.clone(),
+                overlap,
+                faded,
+                at_rest,
+                new: seen.difference(&start).count(),
+                gone: start.difference(&end).count(),
+            }
+        })
+        .collect()
+}
+
+/// The ledger as text: one verdict line per transition, then up to three
+/// overlaps and two faded runs as examples.
+#[must_use]
+pub fn ledger_text(film: &str, transitions: &[Transition]) -> String {
+    let mut out = String::new();
+    for transition in transitions {
+        let window = &transition.window;
+        out.push_str(&format!(
+            "{:<13} {film}  {}  (`{}` @{})  overlap {}  faded {}  (+{} at rest)  longest {} ms  last +{} ms  texts +{} -{}\n",
+            transition.verdict().name(),
+            window.label,
+            window.act,
+            window.from_ms,
+            transition.overlap.len(),
+            transition.faded.len(),
+            transition.at_rest.len(),
+            transition.longest_ms(),
+            transition.last_ms(),
+            transition.new,
+            transition.gone,
+        ));
+        let mut overlap = transition.overlap.iter().collect::<Vec<_>>();
+        overlap.sort_by_key(|finding| std::cmp::Reverse(finding.frames));
+        let mut faded = transition.faded.iter().collect::<Vec<_>>();
+        faded.sort_by_key(|finding| std::cmp::Reverse(finding.frames));
+        for finding in overlap.into_iter().take(3).chain(faded.into_iter().take(2)) {
+            out.push_str(&format!(
+                "      {:<7} {}..{} ms: {} [{}]\n",
+                finding.rule.name(),
+                finding.from_ms,
+                finding.to_ms,
+                finding.what,
+                finding.detail
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Measured, Rule, Seen, judge};
@@ -582,6 +822,46 @@ mod tests {
         );
         let covered = judge(&film(true));
         assert!(covered.passed(), "a card hides the page text it covers: {covered:?}");
+    }
+
+    #[test]
+    fn a_film_script_splits_into_named_windows_and_the_ledger_places_each_finding_once() {
+        use super::{Verdict, Window, ledger, windows};
+        let source = "# the film\nroute package present @320  # route-down\nkey cmd-[ @640 # back\nmove 1,1\nkey j +160\n";
+        let named = windows(source);
+        assert_eq!(
+            named,
+            vec![
+                Window { label: "route-down".into(), act: "route package present".into(), from_ms: 320, to_ms: Some(640) },
+                Window { label: "back + move 1,1".into(), act: "key cmd-[; move 1,1".into(), from_ms: 640, to_ms: Some(800) },
+                Window { label: "key j".into(), act: "key j".into(), from_ms: 800, to_ms: None },
+            ]
+        );
+        // `old` is drawn until 320; `new` arrives at 336 and crosses `old`
+        // for two frames; after 640 nothing changes; at 800 `j` appears.
+        let film: Vec<_> = (0..60_u64)
+            .map(|k| {
+                let at = k * 16;
+                let mut texts = Vec::new();
+                if at < 368 {
+                    texts.push(seen("old", 0.0, 0.0, 8.0));
+                }
+                if at >= 336 {
+                    texts.push(seen("new", 0.0, if at < 368 { 10.0 } else { 40.0 }, 8.0));
+                }
+                if at >= 800 {
+                    texts.push(seen("j", 200.0, 0.0, 8.0));
+                }
+                frame(at, texts)
+            })
+            .collect();
+        let report = judge(&film);
+        let rows = ledger(&film, &report, &named);
+        assert_eq!(rows[0].verdict(), Verdict::Fail, "{rows:?}");
+        assert_eq!((rows[0].overlap.len(), rows[0].new, rows[0].gone), (1, 1, 1), "{rows:?}");
+        assert_eq!((rows[0].overlap[0].from_ms, rows[0].last_ms()), (336, 32), "{rows:?}");
+        assert_eq!(rows[1].verdict(), Verdict::NotExercised, "{rows:?}");
+        assert_eq!(rows[2].verdict(), Verdict::Pass, "{rows:?}");
     }
 
     #[test]

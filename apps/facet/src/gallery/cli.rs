@@ -21,6 +21,8 @@
 //! facet-gallery verify [--scenes all|a,b] [--seeds N] [--matrix gate|full|quick|none] [--quick]
 //!                      [--no-canaries] --out DIR
 //! facet-gallery lint --scene ID|all [--input …] [--time MS] [shot options]
+//! facet-gallery legibility --scene ID --scale 2 [--input …] [--from MS] [--to MS] [--frames] [--dump] [--out DIR]
+//! facet-gallery legibility --catalog FILE --scale 2 [--only a,b] [--frames] [--dump] [--out DIR]
 //! facet-gallery window --scene ID [--theme …] [--text-scale PCT] [--reduced-motion] [--native-trace FILE.jsonl]
 //! ```
 //!
@@ -529,24 +531,52 @@ fn film(options: &Options) -> Result<()> {
 /// lingers under legibility, in any frame. `--out DIR` writes
 /// `<scene>-legibility.{txt,json}` and, with `--frames`, every frame that
 /// broke the law.
+///
+/// `--catalog FILE` runs every film the catalog lists instead (see
+/// [`catalog`]) and prints the ledger.
 fn legibility(options: &Options) -> Result<()> {
+    if let Some(path) = options.get("catalog") {
+        return catalog(options, Path::new(path));
+    }
     let scene = scene(options.require("scene")?)?;
     let mut shot = options.shot(&scene)?;
+    resolve_script(&scene, &mut shot)?;
+    let dir = options.get("out").map(PathBuf::from);
+    let span = (options.number::<u64>("from")?, options.number::<u64>("to")?);
+    let (report, _) = film_legibility(options, &scene, shot, span, dir.as_deref())?;
+    if report.passed() {
+        Ok(())
+    } else {
+        fail(format!("{}: {} legibility findings", scene.id, report.findings.len()))
+    }
+}
+
+/// Films one scene under the law from `span.0` (default 0) to `span.1`
+/// (default: the script's end plus 600 ms): prints its verdict, writes its
+/// outputs into `dir` (with `--dump` the per-frame texts, with `--frames`
+/// every frame that broke the law) and returns the report with the measured
+/// film.
+fn film_legibility(
+    options: &Options,
+    scene: &Scene,
+    mut shot: Shot,
+    span: (Option<u64>, Option<u64>),
+    dir: Option<&Path>,
+) -> Result<(gallery::legible::Report, Vec<gallery::legible::Measured>)> {
     if shot.scale != 2 {
         return fail("legibility measures glyph contrast from pixels: it needs --scale 2");
     }
-    resolve_script(&scene, &mut shot)?;
     shot.probe = true;
     let step = gallery::legible::STEP_MS;
     let end = shot.script.as_ref().map_or(0, Script::end_ms) + 600;
-    let from = options.number::<u64>("from")?.unwrap_or(0) / step * step;
-    let to = options.number::<u64>("to")?.unwrap_or(end);
+    let from = span.0.unwrap_or(0) / step * step;
+    let to = span.1.unwrap_or(end);
     shot.times = (from..=to).step_by(usize::try_from(step).unwrap_or(16)).collect();
     shot.until_ms = to;
     let keep = options.flag("frames");
     let mut film = Vec::new();
     let mut kept = Vec::new();
-    gallery::run(&scene, &shot, &mut |tick, window, _| {
+    gallery::run(scene, &shot, &mut |tick, window, _| {
         if let Some(image) = tick.image {
             film.push(gallery::legible::measure(
                 image,
@@ -564,9 +594,8 @@ fn legibility(options: &Options) -> Result<()> {
     let report = gallery::legible::judge(&film);
     let text = gallery::legible::text(scene.id, &report);
     print!("{text}");
-    if let Some(dir) = options.get("out") {
-        let dir = PathBuf::from(dir);
-        std::fs::create_dir_all(&dir).map_err(GalleryError::from_display)?;
+    if let Some(dir) = dir {
+        std::fs::create_dir_all(dir).map_err(GalleryError::from_display)?;
         std::fs::write(dir.join(format!("{}-legibility.txt", scene.id)), &text)
             .map_err(GalleryError::from_display)?;
         std::fs::write(
@@ -593,10 +622,112 @@ fn legibility(options: &Options) -> Result<()> {
             }
         }
     }
-    if report.passed() {
+    Ok((report, film))
+}
+
+/// `legibility --catalog FILE`: every film in the transition catalog, under
+/// the law, as one ledger.
+///
+/// The catalog lists one film per line, `<scene> [<script>] [from=MS]
+/// [to=MS]` (`#` starts a comment; the script is relative to the catalog; a
+/// scene that plays on its own clock names its film's end with `to=`). A film's transitions are
+/// its script's instants, each named by its act line's trailing `# comment`
+/// (`gallery::legible::windows`); a film without a script plays the scene's
+/// own and is one transition. A binary films the scenes it serves and names
+/// the rest as skipped. `--only a,b` keeps the films whose scene or script
+/// stem is listed. Prints one ledger line per transition (PASS, FAIL, or NOT
+/// EXERCISED when nothing drawn changed) and writes `DIR/<film>/…` plus
+/// `DIR/ledger.txt` with `--out DIR`. Fails when any transition fails.
+fn catalog(options: &Options, path: &Path) -> Result<()> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| GalleryError(format!("--catalog {}: {error}", path.display())))?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let only: Option<Vec<&str>> = options.get("only").map(|only| only.split(',').map(str::trim).collect());
+    let out = options.get("out").map(PathBuf::from);
+    let known: HashSet<&str> = all_scenes()
+        .iter()
+        .map(|scene| scene.id)
+        .chain(super::bench::CANARIES.iter().map(|scene| scene.id))
+        .collect();
+    let mut ledger = String::new();
+    let (mut pass, mut failed, mut idle, mut skipped) = (0, 0, 0, Vec::new());
+    for line in source.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let mut words = line.split_whitespace();
+        let Some(scene_id) = words.next() else { continue };
+        let words: Vec<&str> = words.collect();
+        let bound = |name: &str| -> Result<Option<u64>> {
+            words
+                .iter()
+                .find_map(|word| word.strip_prefix(name))
+                .map(|value| value.parse::<u64>().map_err(|_| GalleryError(format!("{scene_id}: `{name}{value}` is not ms"))))
+                .transpose()
+        };
+        let span = (bound("from=")?, bound("to=")?);
+        let script = words.iter().copied().find(|word| !word.contains('='));
+        let stem = script.map_or(scene_id, |script| script.trim_end_matches(".txt"));
+        let name = if script.is_some() { stem.to_owned() } else { scene_id.to_owned() };
+        if only.as_ref().is_some_and(|only| !only.contains(&scene_id) && !only.contains(&stem)) {
+            continue;
+        }
+        if !known.contains(scene_id) {
+            skipped.push(name);
+            continue;
+        }
+        let scene = scene(scene_id)?;
+        let mut shot = options.shot(&scene)?;
+        let windows = match script {
+            Some(script) => {
+                let file = base.join(script);
+                let source = std::fs::read_to_string(&file)
+                    .map_err(|error| GalleryError(format!("{}: {error}", file.display())))?;
+                shot.script = Some(Script::parse(&source).map_err(GalleryError::from_display)?);
+                gallery::legible::windows(&source)
+            }
+            None => {
+                resolve_script(&scene, &mut shot)?;
+                vec![gallery::legible::Window {
+                    label: scene.id.to_owned(),
+                    act: "the scene's own script".to_owned(),
+                    from_ms: 0,
+                    to_ms: None,
+                }]
+            }
+        };
+        let started = std::time::Instant::now();
+        let dir = out.as_ref().map(|out| out.join(&name));
+        let (report, film) = film_legibility(options, &scene, shot, span, dir.as_deref())?;
+        let rows = gallery::legible::ledger(&film, &report, &windows);
+        for row in &rows {
+            match row.verdict() {
+                gallery::legible::Verdict::Pass => pass += 1,
+                gallery::legible::Verdict::Fail => failed += 1,
+                gallery::legible::Verdict::NotExercised => idle += 1,
+            }
+        }
+        let text = gallery::legible::ledger_text(&name, &rows);
+        println!("ledger  {name}  ({scene_id}, {} frames, {:.0} s)", film.len(), started.elapsed().as_secs_f32());
+        print!("{text}");
+        ledger.push_str(&text);
+    }
+    let summary = format!(
+        "catalog  {}  {pass} pass  {failed} fail  {idle} not exercised{}\n",
+        path.display(),
+        if skipped.is_empty() {
+            String::new()
+        } else {
+            format!("  (skipped, not served by {}: {})", registry().name, skipped.join(", "))
+        }
+    );
+    print!("{summary}");
+    if let Some(out) = &out {
+        std::fs::create_dir_all(out).map_err(GalleryError::from_display)?;
+        std::fs::write(out.join("ledger.txt"), format!("{ledger}{summary}")).map_err(GalleryError::from_display)?;
+    }
+    if failed == 0 {
         Ok(())
     } else {
-        fail(format!("{}: {} legibility findings", scene.id, report.findings.len()))
+        fail(format!("{failed} catalog transitions break the legibility law"))
     }
 }
 
