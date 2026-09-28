@@ -1337,6 +1337,19 @@ pub(crate) fn compose_owner(
         )
     };
     let profile = profile_descriptor(profile).map_err(ProcessError::Profile)?;
+    // The compiler root must be private before anything creates it: the
+    // compiler host's own native-work setup (reached through
+    // `builtin_dispatcher` below) creates it implicitly via plain
+    // `create_dir_all`, and `EmbeddingRuntimeProvision::open` later requires
+    // its exact parent (this directory) to already carry the strict
+    // owner-only DACL that a plain create never applies.
+    let compiler_root = config.workspace.join("compiler");
+    backend_platform::durable::ensure_private_directory(&compiler_root).map_err(|error| {
+        ProcessError::Profile(format!(
+            "prepare private compiler root {}: {error}",
+            compiler_root.display()
+        ))
+    })?;
     // The attempt lease spans one closure exchange, one execution/fallback
     // exchange, and the worker's declared wall budget. All values use the
     // same Unix-millisecond owner clock as dispatch completion.
@@ -1361,7 +1374,6 @@ pub(crate) fn compose_owner(
         relation_registry,
     )
     .map_err(|error| ProcessError::Profile(error.to_string()))?;
-    let compiler_root = config.workspace.join("compiler");
     let embedding = backend_engine::application::EmbeddingRuntimeProvision::open(
         compiler_root.join("embedding.config"),
     )

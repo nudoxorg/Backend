@@ -74,8 +74,10 @@ impl TursoAuthority {
         let text = path
             .to_str()
             .ok_or_else(|| AuthorityError::NonUtf8Path(path.to_path_buf()))?;
+        // See connection.rs: turso's multiprocess-WAL IO backend does not yet
+        // support Windows, so fall back to single-process WAL there.
         let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
+            .experimental_multiprocess_wal(!cfg!(windows))
             .experimental_index_method(true)
             .build()
             .await?;

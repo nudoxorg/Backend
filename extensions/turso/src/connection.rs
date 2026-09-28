@@ -29,8 +29,12 @@ impl TursoProjection {
         // multiprocess WAL keeps immutable read snapshots independent from the
         // single serialized writer lane and persists the coordination state
         // next to the database.
+        // turso's multiprocess-WAL IO backend does not yet support Windows
+        // (build fails at open time with "experimental multiprocess WAL is
+        // not supported by the active IO backend"); fall back to
+        // single-process WAL there rather than fail closed.
         let database = turso::Builder::new_local(text)
-            .experimental_multiprocess_wal(true)
+            .experimental_multiprocess_wal(!cfg!(windows))
             .experimental_index_method(true)
             .build()
             .await?;
