@@ -187,6 +187,27 @@ fn cmd_d_on_a_graph_focus_holds_the_focus_from_its_glyph(cx: &mut TestAppContext
     assert!(last.value > 860.0 && !last.live, "it lands in the foot: {} (live {})", last.value, last.live);
 }
 
+/// ⌘D on a graph focus the index has no row for holds nothing, and says so
+/// through the one visit-scoped Notice (§15 ruling 1) instead of failing
+/// silently. Navigating away clears it: the Notice never outlives its visit.
+#[gpui::test]
+fn cmd_d_on_an_unindexed_graph_focus_speaks_through_the_notice(cx: &mut TestAppContext) {
+    let mut rig = world_rig(cx, Route::World);
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
+    rig.settle();
+    rig.keys("cmd-d");
+    rig.settle();
+    let held = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().hand.held().len());
+    assert_eq!(held, 0, "not indexed: nothing to hold");
+    let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+    assert_eq!(message.as_deref(), Some("present::glyph::RelationLabel isn't in the index"));
+    let ledger = painted(&mut rig);
+    let line = ledger.texts.iter().find(|text| text.key.starts_with("address:0:")).expect("the notice is drawn in the foot");
+    assert!(line.content.contains("isn't in the index"), "{}", line.content);
+    rig.go(Intent::Navigate(crate::navigation::Route::Orbit(crate::navigation::OrbitRoute::Home)));
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "a notice does not survive navigation");
+}
+
 /// T on a package page: the world, flying the package's reading path from
 /// its first stop (the graph was not mounted yet: the cold path). Back
 /// returns to the page, and T again flies again.
@@ -216,4 +237,18 @@ fn the_recorded_outline_keeps_the_graph_tour_explicit(cx: &mut TestAppContext) {
     rig.keys("t");
     assert_eq!(rig.route(), Route::World);
     assert_eq!(tour_stop(&mut rig).as_deref(), Some("relation_label"));
+}
+
+/// The lead's report: T pressed while already on World (no page-side ask,
+/// no focus) must still be the graph's own key, not a dead one. S9 scoped
+/// the shell's T to `!Graph` so the canvas keeps it; with nothing focused,
+/// `tour_package` falls back to the camera's own territory, so landing on
+/// World over a package and pressing T starts that package's tour.
+#[gpui::test]
+fn t_on_world_over_a_package_starts_its_tour_with_nothing_focused(cx: &mut TestAppContext) {
+    let mut rig = world_rig(cx, Route::World);
+    assert_eq!(tour_stop(&mut rig).as_deref(), None, "no tour yet");
+    rig.keys("t");
+    assert_eq!(rig.route(), Route::World, "T in the graph never navigates");
+    assert!(tour_stop(&mut rig).is_some(), "T over a package starts its tour from the camera's own territory");
 }

@@ -262,6 +262,24 @@ fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(
     assert_eq!(rig.route(), exact, "a fresh click can open only the complete cross-package outline match");
 }
 
+/// S2: a link whose package is not even admitted (the fixture's `app` here)
+/// cannot be resolved to any page. The link does not move it; the Notice
+/// says so instead of silently doing nothing (§15 ruling 1), and it clears
+/// the moment the page navigates away.
+#[gpui::test]
+fn an_anatomy_link_the_index_lacks_speaks_through_the_notice_instead_of_moving(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    install(&mut rig); // single-package identity: `app`/`main` (node 7) is not admitted
+    let open = || facet::anatomy::Open { target: facet::semantics::Target::Node(7) };
+    rig.cx.update(|window, cx| window.dispatch_action(Box::new(open()), cx));
+    rig.settle();
+    assert_eq!(rig.route(), page_route("RelationLabel"), "an unresolvable link does not move the page");
+    let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+    assert_eq!(message.as_deref(), Some("main isn't in the index"));
+    rig.go(Intent::Navigate(page_route("SemanticLinkKind")));
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "a notice does not survive navigation");
+}
+
 /// The painted texts published under exactly `key`, in paint order.
 fn at(ledger: &Ledger, key: &str) -> Vec<String> {
     ledger.texts.iter().filter(|text| text.key == key).map(|text| text.content.clone()).collect()
