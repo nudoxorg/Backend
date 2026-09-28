@@ -5,7 +5,7 @@
 use super::state::{Shown, shown};
 use super::{Ctx, Leaf};
 use crate::model::AppSnapshot;
-use crate::model::pages::{IndexedPackage, PageKey, Readiness};
+use crate::model::pages::{IndexedPackage, PackageRef, PageKey, Readiness};
 use crate::navigation::{Intent, Route};
 use crate::shell::focus::{Act, Target};
 use crate::shell::kit::{HoverIntent, package_route, pending, quiet, text};
@@ -71,7 +71,26 @@ pub(super) fn body(
         let id: SharedString = format!("orbit-project-{}", project.path).into();
         let links = ctx.links.clone();
         let project_id = project.id.clone();
-        let act: Act = Rc::new(move |_, cx| links.dispatch(Intent::ActivateProject(project_id.clone()), cx));
+        // Your project reads as a package too (J1 "first look": Orbit →
+        // your project → its own page), the same route a local checkout
+        // gets everywhere else (`package_route`, reused as-is). Parsing can
+        // fail for a path the engine would refuse; then the tile still
+        // activates the project, it just has nowhere further to go.
+        let project_route = PackageRef::parse(&project.path).ok().and_then(|package| package_route(&package));
+        // A click focuses the tile it lands on (so Back, returning here,
+        // restores it) and remembers this route was left by it, since
+        // `Reader::arrive` unfocuses every new page it draws.
+        let targets = ctx.targets.clone();
+        let leave_id = id.clone();
+        let act: Act = Rc::new(move |_, cx| {
+            let leaving = links.snapshot(cx).route().clone();
+            targets.focus(leave_id.clone());
+            targets.remember_leave(leaving, leave_id.clone());
+            links.dispatch(Intent::ActivateProject(project_id.clone()), cx);
+            if let Some(route) = project_route.clone() {
+                links.dispatch(Intent::Navigate(route), cx);
+            }
+        });
         ctx.targets.push(Target {
             id: id.clone(),
             label: name.clone(),

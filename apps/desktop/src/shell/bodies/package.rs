@@ -68,12 +68,6 @@ fn hero(
 ) -> Leaf {
     let measure = ctx.measure;
     let palette = ctx.palette;
-    eprintln!(
-        "MARKS_DEBUG hero package={:?} versions={:?} record_source={:?}",
-        dossier.package.as_str(),
-        dossier.versions,
-        dossier.record.known().map(|r| r.source)
-    );
     let record = dossier.record.known();
     let name = ctx.say(
         record
