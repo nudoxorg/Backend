@@ -1,0 +1,1617 @@
+{
+ "pkg": "pflag",
+ "path": "github.com/spf13/pflag",
+ "doc": "Package pflag is a drop-in replacement for Go's flag package, implementing\nPOSIX/GNU-style --flags.\n\npflag is compatible with the GNU extensions to the POSIX recommendations\nfor command-line options. See\nhttp://www.gnu.org/software/libc/manual/html_node/Argument-Syntax.html\n\nUsage:\n\npflag is a drop-in replacement of Go's native flag package. If you import\npflag under the name \"flag\" then all code should continue to function\nwith no changes.\n\n\timport flag \"github.com/spf13/pflag\"\n\nThere is one exception to this: if you directly instantiate the Flag struct\nthere is one more field \"Shorthand\" that you will need to set.\nMost code never instantiates this struct directly, and instead uses\nfunctions such as String(), BoolVar(), and Var(), and is therefore\nunaffected.\n\nDefine flags using flag.String(), Bool(), Int(), etc.\n\nThis declares an integer flag, -flagname, stored in the pointer ip, with type *int.\n\n\tvar ip = flag.Int(\"flagname\", 1234, \"help message for flagname\")\n\nIf you like, you can bind the flag to a variable using the Var() functions.\n\n\tvar flagvar int\n\tfunc init() {\n\t\tflag.IntVar(\u0026flagvar, \"flagname\", 1234, \"help message for flagname\")\n\t}\n\nOr you can create custom flags that satisfy the Value interface (with\npointer receivers) and couple them to flag parsing by\n\n\tflag.Var(\u0026flagVal, \"name\", \"help message for flagname\")\n\nFor such flags, the default value is just the initial value of the variable.\n\nAfter all flags are defined, call\n\n\tflag.Parse()\n\nto parse the command line into the defined flags.\n\nFlags may then be used directly. If you're using the flags themselves,\nthey are all pointers; if you bind to variables, they're values.\n\n\tfmt.Println(\"ip has value \", *ip)\n\tfmt.Println(\"flagvar has value \", flagvar)\n\nAfter parsing, the arguments after the flag are available as the\nslice flag.Args() or individually as flag.Arg(i).\nThe arguments are indexed from 0 through flag.NArg()-1.\n\nThe pflag package also defines some new functions that are not in flag,\nthat give one-letter shorthands for flags. You can use these by appending\n'P' to the name of any function that defines a flag.\n\n\tvar ip = flag.IntP(\"flagname\", \"f\", 1234, \"help message\")\n\tvar flagvar bool\n\tfunc init() {\n\t\tflag.BoolVarP(\u0026flagvar, \"boolname\", \"b\", true, \"help message\")\n\t}\n\tflag.VarP(\u0026flagval, \"varname\", \"v\", \"help message\")\n\nShorthand letters can be used with single dashes on the command line.\nBoolean shorthand flags can be combined with other shorthand flags.\n\nCommand line flag syntax:\n\n\t--flag    // boolean flags only\n\t--flag=x\n\nUnlike the flag package, a single dash before an option means something\ndifferent than a double dash. Single dashes signify a series of shorthand\nletters for flags. All but the last shorthand letter must be boolean flags.\n\n\t// boolean flags\n\t-f\n\t-abc\n\t// non-boolean flags\n\t-n 1234\n\t-Ifile\n\t// mixed\n\t-abcs \"hello\"\n\t-abcn1234\n\nFlag parsing stops after the terminator \"--\". Unlike the flag package,\nflags can be interspersed with arguments anywhere on the command line\nbefore this terminator.\n\nInteger flags accept 1234, 0664, 0x1234 and may be negative.\nBoolean flags (in their long form) accept 1, 0, t, f, true, false,\nTRUE, FALSE, True, False.\nDuration flags accept any input valid for time.ParseDuration.\n\nThe default set of command-line flags is controlled by\ntop-level functions.  The FlagSet type allows one to define\nindependent sets of flags, such as to implement subcommands\nin a command-line interface. The methods of FlagSet are\nanalogous to the top-level functions for the command-line\nflag set.",
+ "consumer": "github.com/spf13/cobra",
+ "objects": {
+  "callable": {
+   "name": "FlagSet.Parse",
+   "kind": "method",
+   "doc": "Parse parses flag definitions from the argument list, which should not\ninclude the command name.  Must be called after all flags in the FlagSet\nare defined and before flags are accessed by the program.\nThe return value will be ErrHelp if -help was set but not defined.",
+   "decl": "func (f *FlagSet) Parse (f *FlagSet) Parse(arguments []string) error",
+   "file": "flag.go",
+   "line": 1164,
+   "params": [
+    {
+     "name": "arguments",
+     "type": "[]string",
+     "doc": "",
+     "exported": false
+    }
+   ],
+   "results": [
+    {
+     "name": "",
+     "type": "error",
+     "doc": "",
+     "exported": false
+    }
+   ],
+   "recv": {
+    "name": "f",
+    "type": "*FlagSet",
+    "doc": "",
+    "exported": false
+   },
+   "kinds": [
+    {
+     "type": "NotExistError",
+     "sentinel": "",
+     "messages": [
+      "no such flag -%v",
+      "unknown flag: --%s",
+      "unknown shorthand flag: %q in -%s"
+     ],
+     "makers": [
+      "FlagSet.Set",
+      "FlagSet.parseLongArg",
+      "FlagSet.parseSingleShortArg"
+     ],
+     "through": "",
+     "wraps": false,
+     "file": "flag.go",
+     "line": 488
+    },
+    {
+     "type": "",
+     "sentinel": "",
+     "messages": null,
+     "makers": [
+      "FlagSet.Set"
+     ],
+     "through": "Value.Set",
+     "wraps": false,
+     "file": "flag.go",
+     "line": 491
+    },
+    {
+     "type": "InvalidValueError",
+     "sentinel": "",
+     "messages": [
+      "invalid argument %q for %q flag: %v"
+     ],
+     "makers": [
+      "FlagSet.Set"
+     ],
+     "through": "",
+     "wraps": true,
+     "file": "flag.go",
+     "line": 493
+    },
+    {
+     "type": "InvalidSyntaxError",
+     "sentinel": "",
+     "messages": [
+      "bad flag syntax: %s"
+     ],
+     "makers": [
+      "FlagSet.parseLongArg"
+     ],
+     "through": "",
+     "wraps": false,
+     "file": "flag.go",
+     "line": 982
+    },
+    {
+     "type": "",
+     "sentinel": "ErrHelp",
+     "messages": [
+      "pflag: help requested"
+     ],
+     "makers": [
+      "FlagSet.parseLongArg",
+      "FlagSet.parseSingleShortArg",
+      "FlagSet.Parse"
+     ],
+     "through": "",
+     "wraps": false,
+     "file": "flag.go",
+     "line": 126
+    },
+    {
+     "type": "ValueRequiredError",
+     "sentinel": "",
+     "messages": [
+      "flag needs an argument: --%s"
+     ],
+     "makers": [
+      "FlagSet.parseLongArg",
+      "FlagSet.parseSingleShortArg"
+     ],
+     "through": "",
+     "wraps": false,
+     "file": "flag.go",
+     "line": 1024
+    }
+   ],
+   "policy": [
+    {
+     "case": "ContinueOnError",
+     "action": "return",
+     "note": ""
+    },
+    {
+     "case": "ExitOnError",
+     "action": "exit 0 | exit 2",
+     "note": "errors.Is(err, ErrHelp)"
+    },
+    {
+     "case": "PanicOnError",
+     "action": "panic",
+     "note": ""
+    }
+   ],
+   "makers": [
+    {
+     "name": "NewFlagSet",
+     "sig": "func(name string, errorHandling ErrorHandling) *FlagSet",
+     "doc": "NewFlagSet returns a new, empty flag set with the specified name,\nerror handling property and SortFlags set to true.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 1264
+    }
+   ],
+   "uses": [
+    {
+     "pkg": "cobra",
+     "caller": "Command.ParseFlags",
+     "text": "err := c.Flags().Parse(args)",
+     "file": "command.go",
+     "line": 1882
+    },
+    {
+     "pkg": "pflag",
+     "caller": "Parse",
+     "text": "CommandLine.Parse(os.Args[1:])",
+     "file": "flag.go",
+     "line": 1238
+    }
+   ],
+   "useCount": {
+    "cobra": 1,
+    "pflag": 1
+   }
+  },
+  "choice": {
+   "name": "ErrorHandling",
+   "kind": "type",
+   "doc": "ErrorHandling defines how to handle flag parsing errors.",
+   "decl": "type ErrorHandling int",
+   "file": "flag.go",
+   "line": 129,
+   "consts": [
+    {
+     "name": "ContinueOnError",
+     "value": "0",
+     "doc": "ContinueOnError will return an err from Parse() if an error is found",
+     "file": "flag.go",
+     "line": 133
+    },
+    {
+     "name": "ExitOnError",
+     "value": "1",
+     "doc": "ExitOnError will call os.Exit(2) if an error is found when parsing",
+     "file": "flag.go",
+     "line": 135
+    },
+    {
+     "name": "PanicOnError",
+     "value": "2",
+     "doc": "PanicOnError will panic() if an error is found when parsing flags",
+     "file": "flag.go",
+     "line": 137
+    }
+   ],
+   "takers": [
+    {
+     "name": "FlagSet.Init",
+     "sig": "func(name string, errorHandling ErrorHandling)",
+     "doc": "Init sets the name and error handling property for a flag set.\nBy default, the zero FlagSet uses an empty name and the\nContinueOnError error handling policy.",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 1283
+    },
+    {
+     "name": "NewFlagSet",
+     "sig": "func(name string, errorHandling ErrorHandling) *FlagSet",
+     "doc": "NewFlagSet returns a new, empty flag set with the specified name,\nerror handling property and SortFlags set to true.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 1264
+    }
+   ],
+   "uses": [
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "ContinueOnError ErrorHandling = iota",
+     "file": "flag.go",
+     "line": 133
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "errorHandling     ErrorHandling",
+     "file": "flag.go",
+     "line": 183
+    },
+    {
+     "pkg": "pflag",
+     "caller": "NewFlagSet",
+     "text": "func NewFlagSet(name string, errorHandling ErrorHandling) *FlagSet {",
+     "file": "flag.go",
+     "line": 1264
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Init",
+     "text": "func (f *FlagSet) Init(name string, errorHandling ErrorHandling) {",
+     "file": "flag.go",
+     "line": 1283
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.Flags",
+     "text": "c.flags = flag.NewFlagSet(c.DisplayName(), flag.ContinueOnError)",
+     "file": "command.go",
+     "line": 1690
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.LocalNonPersistentFlags",
+     "text": "out := flag.NewFlagSet(c.DisplayName(), flag.ContinueOnError)",
+     "file": "command.go",
+     "line": 1705
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.LocalFlags",
+     "text": "c.lflags = flag.NewFlagSet(c.DisplayName(), flag.ContinueOnError)",
+     "file": "command.go",
+     "line": 1720
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.InheritedFlags",
+     "text": "c.iflags = flag.NewFlagSet(c.DisplayName(), flag.ContinueOnError)",
+     "file": "command.go",
+     "line": 1748
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.PersistentFlags",
+     "text": "c.pflags = flag.NewFlagSet(c.DisplayName(), flag.ContinueOnError)",
+     "file": "command.go",
+     "line": 1777
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.ResetFlags",
+     "text": "c.flags = flag.NewFlagSet(c.DisplayName(), flag.ContinueOnError)",
+     "file": "command.go",
+     "line": 1790
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.ResetFlags",
+     "text": "c.pflags = flag.NewFlagSet(c.DisplayName(), flag.ContinueOnError)",
+     "file": "command.go",
+     "line": 1792
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.updateParentsPflags",
+     "text": "c.parentsPflags = flag.NewFlagSet(c.DisplayName(), flag.ContinueOnError)",
+     "file": "command.go",
+     "line": 1909
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.fail",
+     "text": "if f.errorHandling != ContinueOnError {",
+     "file": "flag.go",
+     "line": 938
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Parse",
+     "text": "case ContinueOnError:",
+     "file": "flag.go",
+     "line": 1185
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.ParseAll",
+     "text": "case ContinueOnError:",
+     "file": "flag.go",
+     "line": 1214
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Parse",
+     "text": "case ExitOnError:",
+     "file": "flag.go",
+     "line": 1187
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.ParseAll",
+     "text": "case ExitOnError:",
+     "file": "flag.go",
+     "line": 1216
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "var CommandLine = NewFlagSet(os.Args[0], ExitOnError)",
+     "file": "flag.go",
+     "line": 1260
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Parse",
+     "text": "case PanicOnError:",
+     "file": "flag.go",
+     "line": 1193
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.ParseAll",
+     "text": "case PanicOnError:",
+     "file": "flag.go",
+     "line": 1222
+    }
+   ],
+   "useCount": {
+    "cobra": 8,
+    "pflag": 12
+   }
+  },
+  "contract": {
+   "name": "Value",
+   "kind": "interface",
+   "doc": "Value is the interface to the dynamic value stored in a flag.\n(The default value is represented as a string.)",
+   "decl": "type Value interface {\n\tString() string\n\tSet(string) error\n\tType() string\n}",
+   "file": "flag.go",
+   "line": 208,
+   "methods": [
+    {
+     "name": "String",
+     "sig": "func() string",
+     "doc": "",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 209
+    },
+    {
+     "name": "Set",
+     "sig": "func(string) error",
+     "doc": "",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 210
+    },
+    {
+     "name": "Type",
+     "sig": "func() string",
+     "doc": "",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 211
+    }
+   ],
+   "satisfiers": [
+    {
+     "name": "boolSliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]bool; changed bool}",
+     "file": "bool_slice.go",
+     "line": 10
+    },
+    {
+     "name": "boolValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "bool",
+     "file": "bool.go",
+     "line": 13
+    },
+    {
+     "name": "boolfuncValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": false,
+     "under": "func(string) error",
+     "file": "bool_func.go",
+     "line": 4
+    },
+    {
+     "name": "bytesBase64Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "[]byte",
+     "file": "bytes.go",
+     "line": 112
+    },
+    {
+     "name": "bytesHexValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "[]byte",
+     "file": "bytes.go",
+     "line": 11
+    },
+    {
+     "name": "countValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "int",
+     "file": "count.go",
+     "line": 6
+    },
+    {
+     "name": "durationSliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]time.Duration; changed bool}",
+     "file": "duration_slice.go",
+     "line": 10
+    },
+    {
+     "name": "durationValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "int64",
+     "file": "duration.go",
+     "line": 8
+    },
+    {
+     "name": "flagValueWrapper",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{inner flag.Value; flagType string}",
+     "file": "golangflag.go",
+     "line": 27
+    },
+    {
+     "name": "float32SliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]float32; changed bool}",
+     "file": "float32_slice.go",
+     "line": 10
+    },
+    {
+     "name": "float32Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "float32",
+     "file": "float32.go",
+     "line": 6
+    },
+    {
+     "name": "float64SliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]float64; changed bool}",
+     "file": "float64_slice.go",
+     "line": 10
+    },
+    {
+     "name": "float64Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "float64",
+     "file": "float64.go",
+     "line": 6
+    },
+    {
+     "name": "funcValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": false,
+     "under": "func(string) error",
+     "file": "func.go",
+     "line": 4
+    },
+    {
+     "name": "int16Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "int16",
+     "file": "int16.go",
+     "line": 6
+    },
+    {
+     "name": "int32SliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]int32; changed bool}",
+     "file": "int32_slice.go",
+     "line": 10
+    },
+    {
+     "name": "int32Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "int32",
+     "file": "int32.go",
+     "line": 6
+    },
+    {
+     "name": "int64SliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]int64; changed bool}",
+     "file": "int64_slice.go",
+     "line": 10
+    },
+    {
+     "name": "int64Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "int64",
+     "file": "int64.go",
+     "line": 6
+    },
+    {
+     "name": "int8Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "int8",
+     "file": "int8.go",
+     "line": 6
+    },
+    {
+     "name": "intSliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]int; changed bool}",
+     "file": "int_slice.go",
+     "line": 10
+    },
+    {
+     "name": "intValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "int",
+     "file": "int.go",
+     "line": 6
+    },
+    {
+     "name": "ipMaskValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "[]byte",
+     "file": "ipmask.go",
+     "line": 10
+    },
+    {
+     "name": "ipNetSliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]net.IPNet; changed bool}",
+     "file": "ipnet_slice.go",
+     "line": 11
+    },
+    {
+     "name": "ipNetValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{IP net.IP; Mask net.IPMask}",
+     "file": "ipnet.go",
+     "line": 10
+    },
+    {
+     "name": "ipSliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]net.IP; changed bool}",
+     "file": "ip_slice.go",
+     "line": 11
+    },
+    {
+     "name": "ipValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "[]byte",
+     "file": "ip.go",
+     "line": 10
+    },
+    {
+     "name": "stringArrayValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]string; changed bool}",
+     "file": "string_array.go",
+     "line": 4
+    },
+    {
+     "name": "stringSliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]string; changed bool}",
+     "file": "string_slice.go",
+     "line": 10
+    },
+    {
+     "name": "stringToInt64Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *map[string]int64; changed bool}",
+     "file": "string_to_int64.go",
+     "line": 11
+    },
+    {
+     "name": "stringToIntValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *map[string]int; changed bool}",
+     "file": "string_to_int.go",
+     "line": 11
+    },
+    {
+     "name": "stringToStringValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *map[string]string; changed bool}",
+     "file": "string_to_string.go",
+     "line": 12
+    },
+    {
+     "name": "stringValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "string",
+     "file": "string.go",
+     "line": 4
+    },
+    {
+     "name": "textValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": false,
+     "under": "struct{p encoding.TextUnmarshaler}",
+     "file": "text.go",
+     "line": 10
+    },
+    {
+     "name": "timeValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{*time.Time; formats []string}",
+     "file": "time.go",
+     "line": 10
+    },
+    {
+     "name": "uint16Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "uint16",
+     "file": "uint16.go",
+     "line": 6
+    },
+    {
+     "name": "uint32Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "uint32",
+     "file": "uint32.go",
+     "line": 6
+    },
+    {
+     "name": "uint64Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "uint64",
+     "file": "uint64.go",
+     "line": 6
+    },
+    {
+     "name": "uint8Value",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "uint8",
+     "file": "uint8.go",
+     "line": 6
+    },
+    {
+     "name": "uintSliceValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "struct{value *[]uint; changed bool}",
+     "file": "uint_slice.go",
+     "line": 10
+    },
+    {
+     "name": "uintValue",
+     "pkg": "pflag",
+     "exported": false,
+     "ptr": true,
+     "under": "uint",
+     "file": "uint.go",
+     "line": 6
+    }
+   ],
+   "takers": [
+    {
+     "name": "FlagSet.Var",
+     "sig": "func(value Value, name string, usage string)",
+     "doc": "Var defines a flag with the specified name and usage string. The type and\nvalue of the flag are represented by the first argument, of type Value, which\ntypically holds a user-defined implementation of Value. For instance, the\ncaller could create a flag that turns a comma-separated string into a slice\nof strings by giving the slice the methods of Value; in particular, Set would\ndecompose the comma-separated string into the slice.",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 845
+    },
+    {
+     "name": "FlagSet.VarP",
+     "sig": "func(value Value, name string, shorthand string, usage string)",
+     "doc": "VarP is like Var, but accepts a shorthand letter that can be used after a single dash.",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 864
+    },
+    {
+     "name": "FlagSet.VarPF",
+     "sig": "func(value Value, name string, shorthand string, usage string) *Flag",
+     "doc": "VarPF is like VarP, but returns the flag created",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 850
+    },
+    {
+     "name": "Var",
+     "sig": "func(value Value, name string, usage string)",
+     "doc": "Var defines a flag with the specified name and usage string. The type and\nvalue of the flag are represented by the first argument, of type Value, which\ntypically holds a user-defined implementation of Value. For instance, the\ncaller could create a flag that turns a comma-separated string into a slice\nof strings by giving the slice the methods of Value; in particular, Set would\ndecompose the comma-separated string into the slice.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 926
+    },
+    {
+     "name": "VarP",
+     "sig": "func(value Value, name string, shorthand string, usage string)",
+     "doc": "VarP is like Var, but accepts a shorthand letter that can be used after a single dash.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 931
+    }
+   ],
+   "uses": [
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "Value",
+     "file": "bool.go",
+     "line": 8
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.BoolFuncP",
+     "text": "var val Value = boolfuncValue(fn)",
+     "file": "bool_func.go",
+     "line": 24
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "Value               Value               // value as set",
+     "file": "flag.go",
+     "line": 196
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Var",
+     "text": "func (f *FlagSet) Var(value Value, name string, usage string) {",
+     "file": "flag.go",
+     "line": 845
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.VarPF",
+     "text": "func (f *FlagSet) VarPF(value Value, name, shorthand, usage string) *Flag {",
+     "file": "flag.go",
+     "line": 850
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.VarP",
+     "text": "func (f *FlagSet) VarP(value Value, name, shorthand, usage string) {",
+     "file": "flag.go",
+     "line": 864
+    },
+    {
+     "pkg": "pflag",
+     "caller": "Var",
+     "text": "func Var(value Value, name string, usage string) {",
+     "file": "flag.go",
+     "line": 926
+    },
+    {
+     "pkg": "pflag",
+     "caller": "VarP",
+     "text": "func VarP(value Value, name, shorthand, usage string) {",
+     "file": "flag.go",
+     "line": 931
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.FuncP",
+     "text": "var val Value = funcValue(fn)",
+     "file": "func.go",
+     "line": 22
+    },
+    {
+     "pkg": "pflag",
+     "caller": "wrapFlagValue",
+     "text": "func wrapFlagValue(v goflag.Value) Value {",
+     "file": "golangflag.go",
+     "line": 39
+    },
+    {
+     "pkg": "pflag",
+     "caller": "wrapFlagValue",
+     "text": "if pv, ok := v.(Value); ok {",
+     "file": "golangflag.go",
+     "line": 41
+    }
+   ],
+   "useCount": {
+    "cobra": 0,
+    "pflag": 11
+   }
+  },
+  "record": {
+   "name": "Flag",
+   "kind": "struct",
+   "doc": "A Flag represents the state of a flag.",
+   "decl": "type Flag struct {\n\tName                string              // name as it appears on command line\n\tShorthand           string              // one-letter abbreviated flag\n\tUsage               string              // help message\n\tValue               Value               // value as set\n\tDefValue            string              // default value (as text); for usage message\n\tChanged             bool                // If the user set the value (or if left to default)\n\tNoOptDefVal         string              // default value (as text); if the flag is on the command line without any options\n\tDeprecated          string              // If this flag is deprecated, this string is the new or now thing to use\n\tHidden              bool                // used by cobra.Command to allow flags to be hidden from help/usage text\n\tShorthandDeprecated string              // If the shorthand of this flag is deprecated, this string is the new or now thing to use\n\tAnnotations         map[string][]string // used by cobra.Command bash autocomple code\n}",
+   "file": "flag.go",
+   "line": 192,
+   "fields": [
+    {
+     "name": "Name",
+     "type": "string",
+     "doc": "name as it appears on command line",
+     "exported": true
+    },
+    {
+     "name": "Shorthand",
+     "type": "string",
+     "doc": "one-letter abbreviated flag",
+     "exported": true
+    },
+    {
+     "name": "Usage",
+     "type": "string",
+     "doc": "help message",
+     "exported": true
+    },
+    {
+     "name": "Value",
+     "type": "Value",
+     "doc": "value as set",
+     "exported": true
+    },
+    {
+     "name": "DefValue",
+     "type": "string",
+     "doc": "default value (as text); for usage message",
+     "exported": true
+    },
+    {
+     "name": "Changed",
+     "type": "bool",
+     "doc": "If the user set the value (or if left to default)",
+     "exported": true
+    },
+    {
+     "name": "NoOptDefVal",
+     "type": "string",
+     "doc": "default value (as text); if the flag is on the command line without any options",
+     "exported": true
+    },
+    {
+     "name": "Deprecated",
+     "type": "string",
+     "doc": "If this flag is deprecated, this string is the new or now thing to use",
+     "exported": true
+    },
+    {
+     "name": "Hidden",
+     "type": "bool",
+     "doc": "used by cobra.Command to allow flags to be hidden from help/usage text",
+     "exported": true
+    },
+    {
+     "name": "ShorthandDeprecated",
+     "type": "string",
+     "doc": "If the shorthand of this flag is deprecated, this string is the new or now thing to use",
+     "exported": true
+    },
+    {
+     "name": "Annotations",
+     "type": "map[string][]string",
+     "doc": "used by cobra.Command bash autocomple code",
+     "exported": true
+    }
+   ],
+   "makers": [
+    {
+     "name": "FlagSet.Lookup",
+     "sig": "func(name string) *Flag",
+     "doc": "Lookup returns the Flag structure of the named flag, returning nil if none exists.",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 376
+    },
+    {
+     "name": "FlagSet.ShorthandLookup",
+     "sig": "func(name string) *Flag",
+     "doc": "ShorthandLookup returns the Flag structure of the short handed flag,\nreturning nil if none exists.\nIt panics, if len(name) \u003e 1.",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 383
+    },
+    {
+     "name": "FlagSet.VarPF",
+     "sig": "func(value Value, name string, shorthand string, usage string) *Flag",
+     "doc": "VarPF is like VarP, but returns the flag created",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 850
+    },
+    {
+     "name": "InvalidValueError.GetFlag",
+     "sig": "func() *Flag",
+     "doc": "GetFlag returns the flag for which the error occurred.",
+     "ptr": true,
+     "file": "errors.go",
+     "line": 125
+    },
+    {
+     "name": "Lookup",
+     "sig": "func(name string) *Flag",
+     "doc": "Lookup returns the Flag structure of the named command-line flag,\nreturning nil if none exists.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 473
+    },
+    {
+     "name": "PFlagFromGoFlag",
+     "sig": "func(goflag *flag.Flag) *Flag",
+     "doc": "PFlagFromGoFlag will return a *pflag.Flag given a *flag.Flag\nIf the *flag.Flag.Name was a single character (ex: `v`) it will be accessiblei\nwith both `-v` and `--v` in flags. If the golang flag was more than a single\ncharacter (ex: `verbose`) it will only be accessible via `--verbose`",
+     "ptr": false,
+     "file": "golangflag.go",
+     "line": 74
+    },
+    {
+     "name": "ShorthandLookup",
+     "sig": "func(name string) *Flag",
+     "doc": "ShorthandLookup returns the Flag structure of the short handed flag,\nreturning nil if none exists.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 479
+    },
+    {
+     "name": "ValueRequiredError.GetFlag",
+     "sig": "func() *Flag",
+     "doc": "GetFlag returns the flag for which the error occurred.",
+     "ptr": true,
+     "file": "errors.go",
+     "line": 82
+    }
+   ],
+   "takers": [
+    {
+     "name": "FlagSet.AddFlag",
+     "sig": "func(flag *Flag)",
+     "doc": "AddFlag will add the flag to the FlagSet",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 869
+    },
+    {
+     "name": "FlagSet.ParseAll",
+     "sig": "func(arguments []string, fn func(flag *Flag, value string) error) error",
+     "doc": "ParseAll parses flag definitions from the argument list, which should not\ninclude the command name. The arguments for fn are flag and value. Must be\ncalled after all flags in the FlagSet are defined and before flags are\naccessed by the program. The return value will be ErrHelp if -help was set\nbut not defined.",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 1207
+    },
+    {
+     "name": "FlagSet.Visit",
+     "sig": "func(fn func(*Flag))",
+     "doc": "Visit visits the flags in lexicographical order or\nin primordial order if f.SortFlags is false, calling fn for each.\nIt visits only those flags that have been set.",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 348
+    },
+    {
+     "name": "FlagSet.VisitAll",
+     "sig": "func(fn func(*Flag))",
+     "doc": "VisitAll visits the flags in lexicographical order or\nin primordial order if f.SortFlags is false, calling fn for each.\nIt visits all flags, even those not set.",
+     "ptr": true,
+     "file": "flag.go",
+     "line": 302
+    },
+    {
+     "name": "ParseAll",
+     "sig": "func(fn func(flag *Flag, value string) error)",
+     "doc": "ParseAll parses the command-line flags from os.Args[1:] and called fn for each.\nThe arguments for fn are flag and value. Must be called after all flags are\ndefined and before flags are accessed by the program.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 1244
+    },
+    {
+     "name": "UnquoteUsage",
+     "sig": "func(flag *Flag) (name string, usage string)",
+     "doc": "UnquoteUsage extracts a back-quoted name from the usage\nstring for a flag and returns it and the un-quoted usage.\nGiven \"a `name` to show\" it returns (\"name\", \"a name to show\").\nIf there are no back quotes, the name is an educated guess of the\ntype of the flag's value, or the empty string if the flag is boolean.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 592
+    },
+    {
+     "name": "Visit",
+     "sig": "func(fn func(*Flag))",
+     "doc": "Visit visits the command-line flags in lexicographical order or\nin primordial order if f.SortFlags is false, calling fn for each.\nIt visits only those flags that have been set.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 371
+    },
+    {
+     "name": "VisitAll",
+     "sig": "func(fn func(*Flag))",
+     "doc": "VisitAll visits the command-line flags in lexicographical order or\nin primordial order if f.SortFlags is false, calling fn for each.\nIt visits all flags, even those not set.",
+     "ptr": false,
+     "file": "flag.go",
+     "line": 341
+    }
+   ],
+   "uses": [
+    {
+     "pkg": "cobra",
+     "caller": "writeShortFlag",
+     "text": "func writeShortFlag(buf io.StringWriter, flag *pflag.Flag, cmd *Command) {",
+     "file": "bash_completions.go",
+     "line": 497
+    },
+    {
+     "pkg": "cobra",
+     "caller": "writeFlag",
+     "text": "func writeFlag(buf io.StringWriter, flag *pflag.Flag, cmd *Command) {",
+     "file": "bash_completions.go",
+     "line": 508
+    },
+    {
+     "pkg": "cobra",
+     "caller": "writeLocalNonPersistentFlag",
+     "text": "func writeLocalNonPersistentFlag(buf io.StringWriter, flag *pflag.Flag) {",
+     "file": "bash_completions.go",
+     "line": 523
+    },
+    {
+     "pkg": "cobra",
+     "caller": "writeFlags",
+     "text": "cmd.NonInheritedFlags().VisitAll(func(flag *pflag.Flag) {",
+     "file": "bash_completions.go",
+     "line": 566
+    },
+    {
+     "pkg": "cobra",
+     "caller": "writeFlags",
+     "text": "cmd.InheritedFlags().VisitAll(func(flag *pflag.Flag) {",
+     "file": "bash_completions.go",
+     "line": 580
+    },
+    {
+     "pkg": "cobra",
+     "caller": "writeRequiredFlag",
+     "text": "flags.VisitAll(func(flag *pflag.Flag) {",
+     "file": "bash_completions.go",
+     "line": 596
+    },
+    {
+     "pkg": "cobra",
+     "caller": "nonCompletableFlag",
+     "text": "func nonCompletableFlag(flag *pflag.Flag) bool {",
+     "file": "bash_completions.go",
+     "line": 696
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.ValidateRequiredFlags",
+     "text": "flags.VisitAll(func(pflag *flag.Flag) {",
+     "file": "command.go",
+     "line": 1187
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.DebugFlags",
+     "text": "x.flags.VisitAll(func(f *flag.Flag) {",
+     "file": "command.go",
+     "line": 1510
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.DebugFlags",
+     "text": "x.pflags.VisitAll(func(f *flag.Flag) {",
+     "file": "command.go",
+     "line": 1519
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.LocalNonPersistentFlags",
+     "text": "c.LocalFlags().VisitAll(func(f *flag.Flag) {",
+     "file": "command.go",
+     "line": 1706
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.LocalFlags",
+     "text": "addToLocal := func(f *flag.Flag) {",
+     "file": "command.go",
+     "line": 1731
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.InheritedFlags",
+     "text": "c.parentsPflags.VisitAll(func(f *flag.Flag) {",
+     "file": "command.go",
+     "line": 1760
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.Flag",
+     "text": "func (c *Command) Flag(name string) (flag *flag.Flag) {",
+     "file": "command.go",
+     "line": 1844
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.persistentFlag",
+     "text": "func (c *Command) persistentFlag(name string) (flag *flag.Flag) {",
+     "file": "command.go",
+     "line": 1855
+    },
+    {
+     "pkg": "cobra",
+     "caller": "",
+     "text": "var flagCompletionFunctions = map[*pflag.Flag]CompletionFunc{}",
+     "file": "completions.go",
+     "line": 38
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.getCompletions",
+     "text": "doCompleteFlags := func(flag *pflag.Flag) {",
+     "file": "completions.go",
+     "line": 444
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.getCompletions",
+     "text": "finalCmd.InheritedFlags().VisitAll(func(flag *pflag.Flag) {",
+     "file": "completions.go",
+     "line": 461
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.getCompletions",
+     "text": "finalCmd.NonInheritedFlags().VisitAll(func(flag *pflag.Flag) {",
+     "file": "completions.go",
+     "line": 469
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.getCompletions",
+     "text": "finalCmd.NonInheritedFlags().VisitAll(func(flag *pflag.Flag) {",
+     "file": "completions.go",
+     "line": 505
+    },
+    {
+     "pkg": "cobra",
+     "caller": "getFlagNameCompletions",
+     "text": "func getFlagNameCompletions(flag *pflag.Flag, toComplete string) []Completion {",
+     "file": "completions.go",
+     "line": 596
+    },
+    {
+     "pkg": "cobra",
+     "caller": "completeRequireFlags",
+     "text": "doCompleteRequiredFlags := func(flag *pflag.Flag) {",
+     "file": "completions.go",
+     "line": 632
+    },
+    {
+     "pkg": "cobra",
+     "caller": "completeRequireFlags",
+     "text": "finalCmd.InheritedFlags().VisitAll(func(flag *pflag.Flag) {",
+     "file": "completions.go",
+     "line": 644
+    },
+    {
+     "pkg": "cobra",
+     "caller": "completeRequireFlags",
+     "text": "finalCmd.NonInheritedFlags().VisitAll(func(flag *pflag.Flag) {",
+     "file": "completions.go",
+     "line": 647
+    },
+    {
+     "pkg": "cobra",
+     "caller": "checkIfFlagCompletion",
+     "text": "func checkIfFlagCompletion(finalCmd *Command, args []string, lastArg string) (*pflag.Flag, []string, string, error) {",
+     "file": "completions.go",
+     "line": 654
+    },
+    {
+     "pkg": "cobra",
+     "caller": "findFlag",
+     "text": "func findFlag(cmd *Command, name string) *pflag.Flag {",
+     "file": "completions.go",
+     "line": 929
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.ValidateFlagGroups",
+     "text": "flags.VisitAll(func(pflag *flag.Flag) {",
+     "file": "flag_groups.go",
+     "line": 93
+    },
+    {
+     "pkg": "cobra",
+     "caller": "processFlagForGroupAnnotation",
+     "text": "func processFlagForGroupAnnotation(flags *flag.FlagSet, pflag *flag.Flag, annotation string, groupStatus map[string]map[string]bool) {",
+     "file": "flag_groups.go",
+     "line": 121
+    },
+    {
+     "pkg": "cobra",
+     "caller": "Command.enforceFlagGroupsForCompletion",
+     "text": "c.Flags().VisitAll(func(pflag *flag.Flag) {",
+     "file": "flag_groups.go",
+     "line": 234
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "flag                *Flag",
+     "file": "errors.go",
+     "line": 66
+    },
+    {
+     "pkg": "pflag",
+     "caller": "ValueRequiredError.GetFlag",
+     "text": "func (e *ValueRequiredError) GetFlag() *Flag {",
+     "file": "errors.go",
+     "line": 82
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "flag  *Flag",
+     "file": "errors.go",
+     "line": 102
+    },
+    {
+     "pkg": "pflag",
+     "caller": "InvalidValueError.GetFlag",
+     "text": "func (e *InvalidValueError) GetFlag() *Flag {",
+     "file": "errors.go",
+     "line": 125
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "actual            map[NormalizedName]*Flag",
+     "file": "flag.go",
+     "line": 174
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "orderedActual     []*Flag",
+     "file": "flag.go",
+     "line": 175
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "sortedActual      []*Flag",
+     "file": "flag.go",
+     "line": 176
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "formal            map[NormalizedName]*Flag",
+     "file": "flag.go",
+     "line": 177
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "orderedFormal     []*Flag",
+     "file": "flag.go",
+     "line": 178
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "sortedFormal      []*Flag",
+     "file": "flag.go",
+     "line": 179
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "shorthands        map[byte]*Flag",
+     "file": "flag.go",
+     "line": 180
+    },
+    {
+     "pkg": "pflag",
+     "caller": "sortFlags",
+     "text": "func sortFlags(flags map[NormalizedName]*Flag) []*Flag {",
+     "file": "flag.go",
+     "line": 227
+    },
+    {
+     "pkg": "pflag",
+     "caller": "sortFlags",
+     "text": "func sortFlags(flags map[NormalizedName]*Flag) []*Flag {",
+     "file": "flag.go",
+     "line": 227
+    },
+    {
+     "pkg": "pflag",
+     "caller": "sortFlags",
+     "text": "result := make([]*Flag, len(list))",
+     "file": "flag.go",
+     "line": 235
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.VisitAll",
+     "text": "func (f *FlagSet) VisitAll(fn func(*Flag)) {",
+     "file": "flag.go",
+     "line": 302
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.VisitAll",
+     "text": "var flags []*Flag",
+     "file": "flag.go",
+     "line": 307
+    },
+    {
+     "pkg": "pflag",
+     "caller": "VisitAll",
+     "text": "func VisitAll(fn func(*Flag)) {",
+     "file": "flag.go",
+     "line": 341
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Visit",
+     "text": "func (f *FlagSet) Visit(fn func(*Flag)) {",
+     "file": "flag.go",
+     "line": 348
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Visit",
+     "text": "var flags []*Flag",
+     "file": "flag.go",
+     "line": 353
+    },
+    {
+     "pkg": "pflag",
+     "caller": "Visit",
+     "text": "func Visit(fn func(*Flag)) {",
+     "file": "flag.go",
+     "line": 371
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Lookup",
+     "text": "func (f *FlagSet) Lookup(name string) *Flag {",
+     "file": "flag.go",
+     "line": 376
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.ShorthandLookup",
+     "text": "func (f *FlagSet) ShorthandLookup(name string) *Flag {",
+     "file": "flag.go",
+     "line": 383
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.lookup",
+     "text": "func (f *FlagSet) lookup(name NormalizedName) *Flag {",
+     "file": "flag.go",
+     "line": 397
+    },
+    {
+     "pkg": "pflag",
+     "caller": "Lookup",
+     "text": "func Lookup(name string) *Flag {",
+     "file": "flag.go",
+     "line": 473
+    },
+    {
+     "pkg": "pflag",
+     "caller": "ShorthandLookup",
+     "text": "func ShorthandLookup(name string) *Flag {",
+     "file": "flag.go",
+     "line": 479
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Set",
+     "text": "f.actual = make(map[NormalizedName]*Flag)",
+     "file": "flag.go",
+     "line": 502
+    },
+    {
+     "pkg": "pflag",
+     "caller": "Flag.defaultIsZeroValue",
+     "text": "func (f *Flag) defaultIsZeroValue() bool {",
+     "file": "flag.go",
+     "line": 557
+    },
+    {
+     "pkg": "pflag",
+     "caller": "UnquoteUsage",
+     "text": "func UnquoteUsage(flag *Flag) (name string, usage string) {",
+     "file": "flag.go",
+     "line": 592
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.FlagUsagesWrapped",
+     "text": "f.VisitAll(func(flag *Flag) {",
+     "file": "flag.go",
+     "line": 711
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.VarPF",
+     "text": "func (f *FlagSet) VarPF(value Value, name, shorthand, usage string) *Flag {",
+     "file": "flag.go",
+     "line": 850
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.VarPF",
+     "text": "flag := \u0026Flag{",
+     "file": "flag.go",
+     "line": 852
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.AddFlag",
+     "text": "func (f *FlagSet) AddFlag(flag *Flag) {",
+     "file": "flag.go",
+     "line": 869
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.AddFlag",
+     "text": "f.formal = make(map[NormalizedName]*Flag)",
+     "file": "flag.go",
+     "line": 879
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.AddFlag",
+     "text": "f.shorthands = make(map[byte]*Flag)",
+     "file": "flag.go",
+     "line": 895
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.AddFlagSet",
+     "text": "newSet.VisitAll(func(flag *Flag) {",
+     "file": "flag.go",
+     "line": 913
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.Parse",
+     "text": "set := func(flag *Flag, value string) error {",
+     "file": "flag.go",
+     "line": 1178
+    },
+    {
+     "pkg": "pflag",
+     "caller": "",
+     "text": "type parseFunc func(flag *Flag, value string) error",
+     "file": "flag.go",
+     "line": 1200
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.ParseAll",
+     "text": "func (f *FlagSet) ParseAll(arguments []string, fn func(flag *Flag, value string) error) error {",
+     "file": "flag.go",
+     "line": 1207
+    },
+    {
+     "pkg": "pflag",
+     "caller": "ParseAll",
+     "text": "func ParseAll(fn func(flag *Flag, value string) error) {",
+     "file": "flag.go",
+     "line": 1244
+    },
+    {
+     "pkg": "pflag",
+     "caller": "PFlagFromGoFlag",
+     "text": "func PFlagFromGoFlag(goflag *goflag.Flag) *Flag {",
+     "file": "golangflag.go",
+     "line": 74
+    },
+    {
+     "pkg": "pflag",
+     "caller": "PFlagFromGoFlag",
+     "text": "flag := \u0026Flag{",
+     "file": "golangflag.go",
+     "line": 76
+    },
+    {
+     "pkg": "pflag",
+     "caller": "FlagSet.CopyToGoFlagSet",
+     "text": "f.VisitAll(func(flag *Flag) {",
+     "file": "golangflag.go",
+     "line": 122
+    }
+   ],
+   "useCount": {
+    "cobra": 29,
+    "pflag": 42
+   }
+  }
+ },
+ "counts": {
+  "SliceValue": 11,
+  "exported": 193,
+  "files": 42
+ }
+}
