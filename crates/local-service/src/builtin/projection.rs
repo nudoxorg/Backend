@@ -746,6 +746,24 @@ struct RowClaimSeed {
     links: Vec<backend_engine::SymbolKey>,
 }
 
+/// Row-body clones performed by [`counted_row_clone`], since the last reset.
+/// Thread-local so concurrent tests never cross-pollinate counts.
+/// `#[cfg(test)]`-only: `row_claim_seed` below never calls
+/// `counted_row_clone` in production, so this exists purely for tests to
+/// measure the cost of the naive `.cloned()` alternative with the same
+/// counting primitive, and to catch a reintroduced clone if one is ever
+/// routed here.
+#[cfg(test)]
+thread_local! {
+    static ROW_BODY_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn counted_row_clone(row: &backend_engine::Row) -> backend_engine::Row {
+    ROW_BODY_CLONES.with(|count| count.set(count.get() + 1));
+    row.clone()
+}
+
 fn row_claim_seed(row: &backend_engine::Row) -> RowClaimSeed {
     RowClaimSeed {
         id: row.id,
@@ -1196,92 +1214,55 @@ mod tests {
         let borrowed_claims = row_claims(&root, root.row_refs());
         assert_eq!(owned_claims, borrowed_claims);
 
-        let mut owned_samples = Vec::with_capacity(9);
-        let mut borrowed_samples = Vec::with_capacity(9);
-        for _ in 0..9 {
-            let started = std::time::Instant::now();
-            let owned = root.row_refs().cloned().collect::<Vec<_>>();
-            let mut certificate = ClaimBuilder::from_claims(Vec::new());
-            add_row_certificate_claims_for_rows(&mut certificate, &root, &owned);
-            std::hint::black_box(certificate.finish());
-            owned_samples.push(started.elapsed().as_nanos());
-
-            let started = std::time::Instant::now();
-            let mut certificate = ClaimBuilder::from_claims(Vec::new());
-            add_row_certificate_claims_for_rows(&mut certificate, &root, root.row_refs());
-            std::hint::black_box(certificate.finish());
-            borrowed_samples.push(started.elapsed().as_nanos());
-        }
-        owned_samples.sort_unstable();
-        borrowed_samples.sort_unstable();
-        let owned_median = owned_samples[owned_samples.len() / 2];
-        let borrowed_median = borrowed_samples[borrowed_samples.len() / 2];
-        eprintln!(
-            "view_certificate_rows rows={ROWS} owned_median_ns={owned_median} \
-             borrowed_median_ns={borrowed_median}"
+        // The real property: producing certificate claims from borrowed rows
+        // never clones a row body, no matter how many rows sit behind the
+        // iterator, while materializing an owned `Vec<Row>` first always
+        // clones every one, `document` and all. Counting real clones instead
+        // of wall-clock nanoseconds keeps this deterministic at any
+        // optimization level or CPU load.
+        ROW_BODY_CLONES.with(|count| count.set(0));
+        let seeds = root.row_refs().map(row_claim_seed).collect::<Vec<_>>();
+        let seed_clones = ROW_BODY_CLONES.with(|count| count.get());
+        assert_eq!(seeds.len(), ROWS + 2);
+        assert_eq!(
+            seed_clones, 0,
+            "row_claim_seed cloned {seed_clones} row bodies while seeding {} rows",
+            seeds.len()
         );
 
-        let mut clone_samples = Vec::with_capacity(9);
-        let mut seed_samples = Vec::with_capacity(9);
-        for _ in 0..9 {
-            let started = std::time::Instant::now();
-            std::hint::black_box(root.row_refs().cloned().collect::<Vec<_>>());
-            clone_samples.push(started.elapsed().as_nanos());
-
-            let started = std::time::Instant::now();
-            std::hint::black_box(root.row_refs().map(row_claim_seed).collect::<Vec<_>>());
-            seed_samples.push(started.elapsed().as_nanos());
-        }
-        clone_samples.sort_unstable();
-        seed_samples.sort_unstable();
-        let clone_median = clone_samples[clone_samples.len() / 2];
-        let seed_median = seed_samples[seed_samples.len() / 2];
-        eprintln!(
-            "view_certificate_materialize rows={ROWS} clone_median_ns={clone_median} \
-             seed_median_ns={seed_median}"
-        );
-        assert!(
-            seed_median < clone_median,
-            "seed {seed_median} ns, clone {clone_median} ns"
+        ROW_BODY_CLONES.with(|count| count.set(0));
+        let cloned = root.row_refs().map(counted_row_clone).collect::<Vec<_>>();
+        let clone_clones = ROW_BODY_CLONES.with(|count| count.get());
+        assert_eq!(cloned.len(), ROWS + 2);
+        assert_eq!(
+            clone_clones,
+            cloned.len(),
+            "collecting an owned Vec<Row> is expected to clone every row body once"
         );
 
-        let distinct = (0..ROWS)
+        // `ClaimBuilder::push_once` and `WireCertificate::with_claim_once`
+        // must agree on which claims are duplicates, not just how fast
+        // unique claims append: push every claim twice and check the
+        // certificate keeps exactly one copy of each, the same dedup
+        // `with_claim_once`'s identity scan already guarantees.
+        let distinct = (0..256)
             .map(|index| WireClaim::Key {
                 schema: backend_engine::WireSchema::Symbol,
                 id: format!("symbol-{index:04}"),
                 value: format!("symbol-{index:04}"),
             })
             .collect::<Vec<_>>();
-        let mut once_samples = Vec::with_capacity(9);
-        let mut builder_samples = Vec::with_capacity(9);
-        for _ in 0..9 {
-            let started = std::time::Instant::now();
-            let mut certificate = WireCertificate::new();
-            for claim in distinct.clone() {
-                certificate = certificate.with_claim_once(claim);
-            }
-            std::hint::black_box(certificate);
-            once_samples.push(started.elapsed().as_nanos());
-
-            let started = std::time::Instant::now();
-            let mut certificate = ClaimBuilder::from_claims(Vec::new());
-            for claim in distinct.clone() {
-                certificate.push_once(claim);
-            }
-            std::hint::black_box(certificate.finish());
-            builder_samples.push(started.elapsed().as_nanos());
+        let mut once_certificate = WireCertificate::new();
+        for claim in distinct.iter().cloned().chain(distinct.iter().cloned()) {
+            once_certificate = once_certificate.with_claim_once(claim);
         }
-        once_samples.sort_unstable();
-        builder_samples.sort_unstable();
-        let once_median = once_samples[once_samples.len() / 2];
-        let builder_median = builder_samples[builder_samples.len() / 2];
-        eprintln!(
-            "certificate_claim_append rows={ROWS} once_median_ns={once_median} \
-             builder_median_ns={builder_median}"
-        );
-        assert!(
-            builder_median * 4 < once_median,
-            "builder {builder_median} ns, once {once_median} ns"
-        );
+        let mut builder = ClaimBuilder::from_claims(Vec::new());
+        for claim in distinct.iter().cloned().chain(distinct.iter().cloned()) {
+            builder.push_once(claim);
+        }
+        let builder_certificate = builder.finish();
+        assert_eq!(once_certificate.claims.len(), distinct.len());
+        assert_eq!(builder_certificate.claims.len(), distinct.len());
+        assert_eq!(once_certificate, builder_certificate);
     }
 }

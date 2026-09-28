@@ -2397,9 +2397,7 @@ pub(crate) fn indexed_semantic_versions(
     _package: &PackageReference,
     _workspace: Option<&Path>,
 ) -> Result<Box<[SemanticVersionRecord]>, String> {
-    // A manifest version and registry fact hash are not compiler publication
-    // identities. Only the versioned compiler journal can populate this
-    // surface; a source-only row has no semantic generation to select.
+    // Manifest metadata cannot stand in for a selected compiler generation.
     Ok(Box::new([]))
 }
 
@@ -2414,9 +2412,32 @@ fn indexed_package_records(
             continue;
         }
         if Path::new(&row.label).is_dir() {
+            // An unreadable sibling can only fail this query when it names
+            // this exact local path; otherwise it is skipped, unproven.
+            let requested = matches!(
+                package,
+                PackageReference::Local(label) if label.as_str() == row.label.as_str()
+            );
             let project_root = Path::new(&row.label);
-            let manifest = super::local_manifest::require_local_manifest(project_root)?;
-            if package_reference_matches(package, &manifest.record.coordinate) {
+            let manifest = match super::local_manifest::read_local_manifest(project_root) {
+                Ok(Some(manifest)) => manifest,
+                Ok(None) => {
+                    if requested {
+                        return Err(format!(
+                            "indexed project {} has no supported manifest",
+                            project_root.display()
+                        ));
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    if requested {
+                        return Err(error);
+                    }
+                    continue;
+                }
+            };
+            if package_matches(package, &manifest.record) {
                 records.push(manifest.record);
             }
             continue;
@@ -3050,9 +3071,19 @@ fn indexed_package_coordinates(
             coordinates.insert(row.label.clone());
             continue;
         }
-        let source_root =
-            super::local_manifest::indexed_package_source_root(&row.label, workspace)?;
-        let manifest = super::local_manifest::require_local_manifest(&source_root)?;
+        // This enumerates every indexed coordinate; there is no single
+        // package being asked about here, so no row can ever be "the one
+        // requested". A row that cannot supply its own coordinate (an
+        // unresolved source root, or a project with no supported manifest)
+        // must not blank out every other indexed project's coordinate.
+        let Ok(source_root) =
+            super::local_manifest::indexed_package_source_root(&row.label, workspace)
+        else {
+            continue;
+        };
+        let Ok(Some(manifest)) = super::local_manifest::read_local_manifest(&source_root) else {
+            continue;
+        };
         coordinates.insert(manifest.record.coordinate.as_str().to_owned());
     }
     Ok(coordinates)
@@ -5425,5 +5456,121 @@ edition = \"2021\"
             reused_ns[reused_ns.len() / 2]
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Builds a view whose `RowId::Package` rows are indexed local directories,
+    /// one per `project_root`, mirroring how a non-registry (path-indexed)
+    /// project is published: `row.label` is the directory path itself.
+    fn package_view(recipe: &[u8], project_roots: &[&Path]) -> ViewRoot {
+        let root = backend_engine::view_state_root(&[]);
+        let basis = backend_engine::Basis::new(root, backend_engine::object_version(b"source"));
+        let rows = project_roots
+            .iter()
+            .map(|project_root| {
+                let label = project_root.to_str().expect("utf8 fixture path").to_owned();
+                Row::new(
+                    RowId::Package(backend_engine::package_key(&label)),
+                    basis,
+                    label,
+                )
+            })
+            .collect();
+        ViewRoot::new_incomplete(
+            backend_engine::view_key(recipe),
+            basis,
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, root, 0),
+            rows,
+            Vec::new(),
+        )
+        .expect("view with package rows")
+    }
+
+    fn write_toml_manifest(root: &Path) {
+        fs::write(
+            root.join("Cargo.toml"),
+            "\
+[package]
+name = \"toml\"
+version = \"0.8.23\"
+edition = \"2021\"
+",
+        )
+        .expect("real manifest");
+    }
+
+    #[test]
+    fn indexed_semantic_versions_never_invents_a_generation_from_a_manifest() {
+        let poisoned_root = fixture("no-manifest-sibling-versions");
+        let real_root = fixture("toml-real-versions");
+        write_toml_manifest(&real_root);
+
+        let view = package_view(
+            b"indexed-semantic-versions-poisoned-sibling",
+            &[&poisoned_root, &real_root],
+        );
+        let package = PackageReference::parse("pkg:cargo/toml@0.8.23").expect("query package");
+
+        let versions = indexed_semantic_versions(&view, &package, None)
+            .expect("manifest-only projects cannot create a semantic generation");
+        assert!(versions.is_empty(), "no compiler generation was selected");
+
+        let _ = fs::remove_dir_all(poisoned_root);
+        let _ = fs::remove_dir_all(real_root);
+    }
+
+    #[test]
+    fn indexed_package_records_skips_a_manifest_less_sibling() {
+        let poisoned_root = fixture("no-manifest-sibling-records");
+        let real_root = fixture("toml-real-records");
+        write_toml_manifest(&real_root);
+
+        let view = package_view(
+            b"indexed-package-records-poisoned-sibling",
+            &[&poisoned_root, &real_root],
+        );
+        let package = PackageReference::parse("pkg:cargo/toml@0.8.23").expect("query package");
+
+        let records = indexed_package_records(&view, &package, None).expect(
+            "a sibling project with no supported manifest must not fail an unrelated \
+             package's records query",
+        );
+
+        assert_eq!(
+            records.len(),
+            1,
+            "expected only the real toml package; the poisoned sibling must be skipped"
+        );
+        assert_eq!(records[0].name.as_str(), "toml");
+        assert_eq!(records[0].version.as_str(), "0.8.23");
+        assert_eq!(records[0].coordinate.as_str(), "pkg:cargo/toml@0.8.23");
+
+        let _ = fs::remove_dir_all(poisoned_root);
+        let _ = fs::remove_dir_all(real_root);
+    }
+
+    #[test]
+    fn indexed_package_coordinates_skips_a_manifest_less_sibling() {
+        let poisoned_root = fixture("no-manifest-sibling-coordinates");
+        let real_root = fixture("toml-real-coordinates");
+        write_toml_manifest(&real_root);
+
+        let view = package_view(
+            b"indexed-package-coordinates-poisoned-sibling",
+            &[&poisoned_root, &real_root],
+        );
+        let workspace = fixture("workspace-coordinates");
+
+        let coordinates = indexed_package_coordinates(&view, &workspace).expect(
+            "a sibling project with no supported manifest must not fail coordinate enumeration",
+        );
+
+        assert_eq!(
+            coordinates,
+            BTreeSet::from(["pkg:cargo/toml@0.8.23".to_owned()])
+        );
+
+        let _ = fs::remove_dir_all(poisoned_root);
+        let _ = fs::remove_dir_all(real_root);
+        let _ = fs::remove_dir_all(workspace);
     }
 }

@@ -209,7 +209,7 @@ pub(super) fn rows_replacing_package<'row>(
     let mut rows = Vec::with_capacity(current.len().saturating_add(replacement.len()));
     for row in current {
         if !row_belongs_to_package(row, package) {
-            rows.push(row.clone());
+            rows.push(cloned_row(row));
         }
     }
     let kept = BTreeSet::from_iter(rows.iter().map(|row| row.id));
@@ -265,12 +265,12 @@ pub(super) fn row_changes_replacing_package<'row>(
         }
         match incoming.remove(id) {
             Some(next) if next == *row => {}
-            Some(next) => changes.push(RowChange::Upsert(Box::new(next.clone()))),
+            Some(next) => changes.push(RowChange::Upsert(Box::new(cloned_row(next)))),
             None => changes.push(RowChange::Remove(*id)),
         }
     }
     for row in incoming.into_values() {
-        changes.push(RowChange::Upsert(Box::new(row.clone())));
+        changes.push(RowChange::Upsert(Box::new(cloned_row(row))));
     }
     changes.sort_by_key(RowChange::id);
     Ok(changes)
@@ -279,6 +279,27 @@ pub(super) fn row_changes_replacing_package<'row>(
 /// Whether a row is the package frontier or a declaration that package owns.
 pub(super) fn row_belongs_to_package(row: &Row, package: PackageKey) -> bool {
     row.package == Some(package) || row.id == RowId::Package(package)
+}
+
+/// Row clones performed by the splice/patch functions in this module, since
+/// the last reset. Thread-local so tests running concurrently never
+/// cross-pollinate counts. `#[cfg(test)]`-only: absent from a non-test build.
+#[cfg(test)]
+thread_local! {
+    static ROW_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Clones one row, counting the clone under test builds.
+///
+/// Every row-body clone the splice and patch functions below perform routes
+/// through here instead of a bare `row.clone()`, so a test can prove exactly
+/// how many rows (siblings included, or not) a given call cloned. Outside
+/// test builds the `#[cfg(test)]` body is absent and this is nothing but
+/// `row.clone()`.
+fn cloned_row(row: &Row) -> Row {
+    #[cfg(test)]
+    ROW_CLONES.with(|count| count.set(count.get() + 1));
+    row.clone()
 }
 
 /// File keys an edit can reproject without reopening the rest of the package.
@@ -393,7 +414,7 @@ pub(super) fn rows_replacing_paths<'row>(
     for row in current {
         let replaced = row_on_package_path(row, package, paths);
         if !replaced {
-            rows.push(row.clone());
+            rows.push(cloned_row(row));
         }
     }
     let kept = BTreeSet::from_iter(rows.iter().map(|row| row.id));
@@ -477,7 +498,7 @@ pub(super) fn row_changes_splicing_changed_files<'row>(
         if !structural_ids.insert(row.id) {
             return Err(RowSpliceError::Collision);
         }
-        replacement.push(row.clone());
+        replacement.push(cloned_row(row));
     }
     for row in &current {
         let row = *row;
@@ -598,7 +619,7 @@ fn row_is_projected_semantic(row: &Row) -> bool {
 }
 
 fn mark_semantic_row_stale(row: &Row) -> Row {
-    let mut stale = row.clone();
+    let mut stale = cloned_row(row);
     let noted = stale.document.iter().any(|fragment| {
         matches!(fragment, backend_engine::Fragment::Text(text) if text == super::view_build::STALE_NOTE)
     });
@@ -1498,31 +1519,35 @@ mod tests {
             RowSpliceError::Collision
         );
 
-        let mut splice_samples = Vec::with_capacity(9);
-        let mut change_samples = Vec::with_capacity(9);
-        for _ in 0..9 {
-            let started = std::time::Instant::now();
-            std::hint::black_box(
-                rows_replacing_package(&rows, edited, replacement.clone()).expect("splice"),
-            );
-            splice_samples.push(started.elapsed().as_nanos());
-            let started = std::time::Instant::now();
-            std::hint::black_box(
-                row_changes_replacing_package(&rows, edited, &replacement).expect("changes"),
-            );
-            change_samples.push(started.elapsed().as_nanos());
-        }
-        splice_samples.sort_unstable();
-        change_samples.sort_unstable();
-        let splice_median = splice_samples[splice_samples.len() / 2];
-        let change_median = change_samples[change_samples.len() / 2];
-        eprintln!(
-            "package_splice_changes rows=4096 splice_median_ns={splice_median} \
-             change_median_ns={change_median}"
+        // The real property behind "skip sibling bodies": a full splice
+        // rebuilds the kept half of the row set, cloning every row outside
+        // `edited` -- all 4096 sibling bodies plus the sibling package row.
+        // Projecting the same edit as row changes clones only the one row
+        // that actually differs (`pkg:edited::new`): the untouched
+        // package-frontier row is recognized as equal (no clone), and the
+        // removed row is a bare id (no clone). Counting real clones instead
+        // of wall-clock nanoseconds keeps this deterministic at any
+        // optimization level or CPU load.
+        ROW_CLONES.with(|count| count.set(0));
+        let full_splice =
+            rows_replacing_package(&rows, edited, replacement.clone()).expect("splice");
+        let splice_clones = ROW_CLONES.with(|count| count.get());
+        ROW_CLONES.with(|count| count.set(0));
+        let change_set =
+            row_changes_replacing_package(&rows, edited, &replacement).expect("changes");
+        let change_clones = ROW_CLONES.with(|count| count.get());
+        assert_eq!(full_splice, merged);
+        assert_eq!(change_set, changes);
+        let kept_outside_edited = rows.len() - 2;
+        assert_eq!(
+            splice_clones, kept_outside_edited,
+            "a full splice is expected to clone every kept row: {splice_clones} clones for \
+             {kept_outside_edited} rows kept outside pkg:edited"
         );
-        assert!(
-            change_median * 2 < splice_median,
-            "changes {change_median} ns, splice {splice_median} ns"
+        assert_eq!(
+            change_clones, 1,
+            "row_changes_replacing_package cloned {change_clones} rows; expected exactly the \
+             1 changed row and none of the 4096 pkg:sibling bodies"
         );
     }
 
@@ -2120,34 +2145,35 @@ mod tests {
             resident_symbols(root.rows(), package)
         );
 
-        let mut owned_samples = Vec::with_capacity(9);
-        let mut borrowed_samples = Vec::with_capacity(9);
-        for _ in 0..9 {
-            let started = std::time::Instant::now();
-            let cloned = root.row_refs().cloned().collect::<Vec<_>>();
-            std::hint::black_box(
-                row_changes_splicing_changed_files(&cloned, package, &paths, &[]).expect("owned"),
-            );
-            owned_samples.push(started.elapsed().as_nanos());
-            let started = std::time::Instant::now();
-            std::hint::black_box(
-                row_changes_splicing_changed_files(root.row_refs(), package, &paths, &[])
-                    .expect("borrowed"),
-            );
-            borrowed_samples.push(started.elapsed().as_nanos());
-        }
-        owned_samples.sort_unstable();
-        borrowed_samples.sort_unstable();
-        let owned_median = owned_samples[owned_samples.len() / 2];
-        let borrowed_median = borrowed_samples[borrowed_samples.len() / 2];
-        eprintln!(
-            "file_splice_rows rows=4096 owned_median_ns={owned_median} \
-             borrowed_median_ns={borrowed_median}"
+        // The real property behind "skip sibling bodies": computing changes
+        // clones only the one row that actually differs (`draw`), never any
+        // of the 4096 `pkg:beta` sibling bodies -- whether the caller passes
+        // borrowed row refs directly or an already-owned `Vec<Row>`. Counting
+        // real clones instead of wall-clock nanoseconds keeps this
+        // deterministic at any optimization level or CPU load.
+        let cloned = root.row_refs().cloned().collect::<Vec<_>>();
+        assert_eq!(cloned.len(), 4097);
+        ROW_CLONES.with(|count| count.set(0));
+        let owned_again =
+            row_changes_splicing_changed_files(&cloned, package, &paths, &[]).expect("owned");
+        let owned_clones = ROW_CLONES.with(|count| count.get());
+        ROW_CLONES.with(|count| count.set(0));
+        let borrowed_again =
+            row_changes_splicing_changed_files(root.row_refs(), package, &paths, &[])
+                .expect("borrowed");
+        let borrowed_clones = ROW_CLONES.with(|count| count.get());
+        assert_eq!(owned_again, borrowed);
+        assert_eq!(borrowed_again, borrowed);
+        assert_eq!(
+            owned_clones, 1,
+            "row_changes_splicing_changed_files cloned {owned_clones} rows from owned input; \
+             expected exactly the 1 changed row and none of the 4096 pkg:beta bodies"
         );
-        // The equality and sibling-allocation checks above are correctness
-        // assertions. Keep the timing as diagnostic data: scheduler noise and
-        // different allocators make a fixed speedup ratio unsuitable for a
-        // unit test, even when the borrowed path is faster.
+        assert_eq!(
+            borrowed_clones, 1,
+            "row_changes_splicing_changed_files cloned {borrowed_clones} rows from borrowed \
+             input; expected exactly the 1 changed row and none of the 4096 pkg:beta bodies"
+        );
     }
 
     #[test]
