@@ -437,6 +437,17 @@ impl GraphView {
     #[must_use]
     pub fn focus_bounds(&self) -> Option<Bounds<Pixels>> { self.node_bounds(self.state.focus?) }
 
+    /// The node path of the chain currently held (⏎ on a chain result),
+    /// from its start through each step's producer to the output — the
+    /// same path a peek's road plate names. `None` when no chain is held
+    /// (holding a chain clears the focus, so the two are exclusive). S7c:
+    /// the host resolves each stop through its own exact-identity service
+    /// and holds them together.
+    #[must_use]
+    pub fn held_chain(&self) -> Option<&[NodeId]> {
+        self.state.exploration.chain().map(|chain| chain.path.as_slice())
+    }
+
     /// The exact visible glyph rectangle of a symbol, sharing the
     /// renderer's capped metrics. Used for direct-open identity handoffs.
     #[must_use]
@@ -593,7 +604,27 @@ impl GraphView {
         }
         let (scene, rig) = (self.scene.as_ref()?, self.rig.as_ref()?);
         #[allow(clippy::cast_possible_truncation)]
-        scene.territory_at(rig.cam.x as f32, rig.cam.y as f32).map(|t| t.pkg)
+        let (x, y) = (rig.cam.x as f32, rig.cam.y as f32);
+        if let Some(t) = scene.territory_at(x, y) {
+            return Some(t.pkg);
+        }
+        // At world scale the camera's exact centre can sit in the gap
+        // between territories even while the view reads as "over" one
+        // (S9/T: the lead's report — T over a package did nothing because
+        // this fell through to `None`). The nearest territory's centre is
+        // still what "T, here" means at this zoom.
+        #[allow(clippy::cast_possible_truncation)]
+        scene
+            .layout
+            .packages
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let da = (a.x - x).powi(2) + (a.y - y).powi(2);
+                let db = (b.x - x).powi(2) + (b.y - y).powi(2);
+                da.total_cmp(&db)
+            })
+            .map(|(p, _)| p as u32)
     }
 
     fn go_stop(&mut self, at: usize, cx: &mut Context<Self>) {
@@ -3067,6 +3098,29 @@ mod tests {
             assert!(!v.node_bounds(3).expect("visible tour stop").intersects(&plate));
         });
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "all finite room correction must be idle after settlement");
+    }
+
+    /// S7c: `held_chain` names exactly the road ⏎ on a chain result holds,
+    /// and is `None` at rest and again once a plain focus replaces it
+    /// (holding a chain and having a focus are mutually exclusive).
+    #[gpui::test]
+    fn held_chain_names_the_road_a_chain_result_holds(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Focus(0), window, cx));
+        frames(cx, 10);
+        view.read_with(cx, |v, _| assert_eq!(v.held_chain(), None, "nothing held at rest"));
+        let chain = super::Chain { cost: 1.0, from: "#0".into(), output: "text".into(), via: None,
+            steps: vec![super::super::discovery::ChainStep { node: 2, verb: "read".into(), input: "#0".into(), output: "text".into(), riders: vec![], fails: false, maybe: false }],
+            path: vec![0, 2], stops: vec![super::RoadStop { node: 0, label: "Page".into(), calls: vec![2], yours: true }],
+            brief: "Page to text".into(), rail: "Page reads text".into(), code: "page.read()".into() };
+        view.update(cx, |v, cx| v.hold_chain(chain, cx));
+        frames(cx, 10);
+        view.read_with(cx, |v, _| assert_eq!(v.held_chain(), Some([0, 2].as_slice()), "the held road's own path"));
+        view.update(cx, |v, cx| v.set_focus(Some(1), false, cx));
+        frames(cx, 10);
+        view.read_with(cx, |v, _| assert_eq!(v.held_chain(), None, "a plain focus is not a held chain"));
     }
 
     #[gpui::test]
