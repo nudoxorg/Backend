@@ -92,12 +92,12 @@ impl TypeInk {
         Self {
             base: role,
             link: palette.ink1.hsla(),
-            yours: palette.mint.base.hsla(),
+            yours: palette.ink1.hsla(),
             words: palette.ink3.hsla(),
-            punct: palette.ink4.hsla(),
+            punct: palette.ink3.hsla(),
             prim: palette.ink2.hsla(),
             var: palette.ink1.hsla(),
-            source: palette.ink4.hsla(),
+            source: palette.ink3.hsla(),
         }
     }
 }
@@ -271,15 +271,25 @@ impl Line {
         let layout = text.layout().clone();
         let mut rest = Vec::new();
         for (k, (range, target)) in self.links.iter().enumerate() {
+            let key = ElementId::NamedChild(Arc::new(id.clone()), SharedString::from(format!("link-{k}")));
+            let request_key = key.clone();
             if let Some(card) = (links.peek)(target) {
-                let key = ElementId::NamedChild(Arc::new(id.clone()), SharedString::from(format!("link-{k}")));
-                let request_key = key.clone();
                 rest.push((range.clone(), Link::new(key, move |rect| peek::request(request_key.clone(), rect, card.clone()))));
+            } else if let Target::Path(path) = target {
+                let label = SharedString::from(format!("Find {path} in the index"));
+                rest.push((range.clone(), Link::new(key, move |rect| {
+                    let label = label.clone();
+                    crate::overlay::float::FloatRequest::new(request_key.clone(), rect, crate::overlay::float::FloatKind::Tip, move |measure, _, cx| {
+                        use crate::theme::ActiveFacet;
+                        let palette = cx.facet().palette();
+                        gpui::div().set(roles::QUIET, measure).text_color(palette.ink1.hsla()).p(super::k(measure, 8.0)).child(label.clone()).into_any_element()
+                    })
+                })));
             }
         }
         let mut element = words(id.clone(), text, rest, palette);
-        for (range, _) in &self.links {
-            element = element.decor(range.clone(), Decor::Hairline);
+        for (range, target) in &self.links {
+            element = element.decor(range.clone(), if matches!(target, Target::Path(_)) { Decor::Lookup } else { Decor::Hairline });
         }
         let marks = self.marks;
         let targets = self.links;

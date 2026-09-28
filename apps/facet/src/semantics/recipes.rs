@@ -1434,7 +1434,7 @@ impl Recipes {
 
 // ------------------------------------------------------------------ views
 
-use super::model::{RailView, RecipeView, StepView};
+use super::model::{RailView, RecipePort, RecipeView, StepView};
 use super::types::{Piece, Target};
 use gpui::SharedString;
 
@@ -1495,6 +1495,14 @@ impl Rail {
     #[must_use]
     pub fn view(&self, world: &World, call: bool) -> RailView {
         let mut lead = Vec::new();
+        let starts = match &self.lead {
+            Lead::None => Vec::new(),
+            Lead::FromA(key) | Lead::From(key) => vec![RecipePort { ty: key_pieces(world, key), name: None }],
+            Lead::Plain(inputs) => inputs.iter().map(|(key, name)| RecipePort {
+                ty: key_pieces(world, key),
+                name: (inputs.len() > 1 && shown_name(name)).then(|| SharedString::from(name.clone())),
+            }).collect(),
+        };
         match &self.lead {
             Lead::None => {}
             Lead::FromA(k) => {
@@ -1535,6 +1543,10 @@ impl Rail {
                         p
                     })
                     .collect(),
+                side_inputs: s.riders.iter().map(|r| RecipePort {
+                    ty: key_pieces(world, &r.key),
+                    name: shown_name(&r.name).then(|| SharedString::from(r.name.clone())),
+                }).collect(),
                 station: s.station.as_ref().map(|k| key_pieces(world, k)),
             })
             .collect();
@@ -1551,14 +1563,14 @@ impl Rail {
                 also.extend([Piece::Space, word(&format!("and {} more", self.also_more))]);
             }
         }
-        RailView { lead, steps, also, code: SharedString::from(self.code.clone()), call }
+        RailView { lead, starts, steps, also, code: SharedString::from(self.code.clone()), call }
     }
 }
 
 impl Section {
     /// The section ready to draw.
     #[must_use]
-    pub fn view(&self, world: &World) -> RecipeView {
+    pub fn view(&self, world: &World, node: NodeId) -> RecipeView {
         let foot = SharedString::from(self.foot(world));
         match self {
             Self::Getting { rails, .. } => RecipeView {
@@ -1566,12 +1578,13 @@ impl Section {
                 rails: rails.iter().map(|r| r.view(world, false)).collect(),
                 foot: Some(foot),
                 sentence: None,
+                outcome: Some(key_pieces(world, &format!("#{node}"))),
             },
             Self::Calling { rail, .. } => {
-                RecipeView { heading: self.heading(), rails: vec![rail.view(world, true)], foot: Some(foot), sentence: None }
+                RecipeView { heading: self.heading(), rails: vec![rail.view(world, true)], foot: Some(foot), sentence: None, outcome: None }
             }
             Self::PickOnly(_) | Self::Received { .. } => {
-                RecipeView { heading: self.heading(), rails: Vec::new(), foot: None, sentence: Some(foot) }
+                RecipeView { heading: self.heading(), rails: Vec::new(), foot: None, sentence: Some(foot), outcome: None }
             }
         }
     }

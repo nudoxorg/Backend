@@ -21,6 +21,7 @@ use super::region::{Links, measured, new_region};
 use super::reveal::{HOLD, RevealHold};
 use super::shelf::Shelf;
 use super::status::Status;
+use super::symbol_links::{Request as SymbolLinkRequest, Step as SymbolLinkStep};
 use super::jump::route_symbol;
 use super::titlebar::Titlebar;
 use super::{kit, peeks};
@@ -89,6 +90,10 @@ pub struct Shell {
     /// How many peeks are pinned (the pins column exists only for pins).
     pinned: usize,
     ask_open: bool,
+    /// An exact fixture-node link waiting for the index. Each new visit
+    /// invalidates it even if Back later restores the same route.
+    symbol_link_generation: u64,
+    pending_symbol_link: Option<SymbolLinkRequest>,
     /// The system's appearance and text size, and the window's display.
     around: Surroundings,
     renders: u64,
@@ -189,6 +194,8 @@ impl Shell {
             peeking: None,
             pinned: 0,
             ask_open: false,
+            symbol_link_generation: 0,
+            pending_symbol_link: None,
             around: Surroundings {
                 dark: is_dark(window.appearance()),
                 text: 1.0,
@@ -423,6 +430,7 @@ impl Shell {
             StoreEvent::Snapshot(Branch::GraphFocus) => cx.notify(),
             StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
             StoreEvent::Snapshot(Branch::Route) => {
+                self.cancel_symbol_link(cx);
                 if !super::bodies::graph::is_graph(self.links.snapshot(cx).route()) {
                     self.focus.focus(window, cx);
                 }
@@ -440,11 +448,17 @@ impl Shell {
                 self.sync_overlay(window, cx);
             }
             StoreEvent::Resource(key) => {
+                if self.pending_symbol_link.as_ref().is_some_and(|request| {
+                    matches!(key, PageKey::Package(package) if request.package.as_ref() == Some(package))
+                }) {
+                    self.resolve_symbol_link(cx);
+                }
                 // The open card reads the store each frame: redraw it.
                 if self.peeking.as_ref() == Some(key) {
                     cx.notify();
                 }
             }
+            StoreEvent::Snapshot(Branch::Root) => self.cancel_symbol_link(cx),
             StoreEvent::Snapshot(_) => {}
         }
     }
@@ -470,28 +484,103 @@ impl Shell {
         self.links.dispatch(Intent::OpenCommandPalette, cx);
     }
 
-    /// A link in the page's anatomy was followed: a symbol of this page's
-    /// package opens its page (joined through the package outline). A symbol
-    /// elsewhere only peeks for now: its page is found through the index
-    /// the way the graph's open is, which is not wired here yet.
-    fn open_anatomy(&mut self, open: &facet::anatomy::Open, cx: &mut Context<Self>) {
-        let facet::semantics::Target::Node(node) = open.target else {
+    fn cancel_symbol_link(&mut self, cx: &mut Context<Self>) {
+        self.symbol_link_generation = self.symbol_link_generation.wrapping_add(1);
+        self.pending_symbol_link = None;
+        self.status.update(cx, |status, cx| status.set_opening(None, cx));
+    }
+
+    fn find_symbol_link(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
+        self.cancel_symbol_link(cx);
+        self.links.dispatch(
+            Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Browse(
+                crate::navigation::BrowseRoute::Find(query),
+            ))),
+            cx,
+        );
+    }
+
+    /// A resource event may be for a previous route, release, or fixture.
+    /// Only the same generation and exact source identity can open a page.
+    fn resolve_symbol_link(&mut self, cx: &mut Context<Self>) {
+        let Some(request) = self.pending_symbol_link.take() else { return };
+        let snapshot = self.links.snapshot(cx);
+        let current = crate::runtime::fixture_world::link_world(cx);
+        if !request.accepts(
+            self.symbol_link_generation,
+            snapshot.route(),
+            snapshot.key(),
+            current.as_ref(),
+        ) {
             return;
+        }
+        let Some(package) = &request.package else { self.find_symbol_link(request.query, cx); return };
+        let resource = self.links.store.read(cx).package(package);
+        match request.step(&resource) {
+            SymbolLinkStep::Waiting => self.pending_symbol_link = Some(request),
+            SymbolLinkStep::Resolved(resolved) => {
+                self.cancel_symbol_link(cx);
+                if let Some(route) = kit::symbol_view_route(
+                    resolved.package.as_str(), &resolved.symbol, View::Page, resolved.line,
+                ) {
+                    self.links.dispatch(Intent::Navigate(route), cx);
+                } else {
+                    self.find_symbol_link(request.query, cx);
+                }
+            }
+            SymbolLinkStep::Find => self.find_symbol_link(request.query, cx),
+        }
+    }
+
+    /// Follow a recorded node through exact indexed source identity. A
+    /// spelled path is only a contextual search, not an invented coordinate.
+    fn open_anatomy(&mut self, open: &facet::anatomy::Open, cx: &mut Context<Self>) {
+        self.cancel_symbol_link(cx);
+        let node = match &open.target {
+            facet::semantics::Target::Node(node) => *node,
+            facet::semantics::Target::Path(path) => {
+                // An unresolved type is a contextual index lookup, never an
+                // invented exact symbol coordinate.
+                if let Ok(query) = crate::model::pages::SearchQuery::new(path.as_ref(), 50) {
+                    self.find_symbol_link(query, cx);
+                }
+                return;
+            }
         };
         let snapshot = self.links.snapshot(cx);
-        let Some(package) = crate::runtime::store::route_package(snapshot.route()) else {
+        let Some((world, identities)) = crate::runtime::fixture_world::link_world(cx) else { return };
+        let Some(request) = SymbolLinkRequest::new(
+            node,
+            snapshot.route().clone(),
+            snapshot.key(),
+            self.symbol_link_generation,
+            world,
+            identities,
+        ) else { return };
+        if snapshot.route().at().is_some() {
+            // Fixture nodes describe the pinned world, not the viewed old
+            // release. Offer the index query without claiming an exact page.
+            self.find_symbol_link(request.query, cx);
             return;
-        };
-        let dossier = self.links.store.read(cx).package(&package);
-        let Some(tree) = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned()) else {
-            return;
-        };
-        let Some(symbol) = crate::runtime::fixture_world::symbol_of(node, &package, &tree, cx) else {
-            return;
-        };
-        if let Some(route) = kit::symbol_route(package.as_str(), &symbol) {
-            self.links.dispatch(Intent::Navigate(route), cx);
         }
+        if let Some(package) = crate::runtime::store::route_package(snapshot.route())
+        {
+            let dossier = self.links.store.read(cx).package(&package);
+            if let Ok(Some(dossier)) = super::bodies::graph::open_value(&dossier, snapshot.key())
+                && let Some(tree) = dossier.outline.known()
+                && let Some(symbol) = crate::runtime::fixture_world::symbol_of(node, &package, tree, cx)
+                && let Some(route) = kit::symbol_route(package.as_str(), &symbol)
+            {
+                self.links.dispatch(Intent::Navigate(route), cx);
+                return;
+            }
+        }
+        let Some(package) = request.package.clone() else { self.find_symbol_link(request.query, cx); return };
+        let opening: SharedString = format!("Opening {}…", request.query.text).into();
+        self.status.update(cx, |status, cx| status.set_opening(Some(opening), cx));
+        self.pending_symbol_link = Some(request);
+        self.links.store.update(cx, |store, cx| { store.ensure(PageKey::Package(package), cx); });
+        self.resolve_symbol_link(cx);
     }
 
     /// ⌘\: the shelf opens or closes; on a window too narrow to hold it the

@@ -639,6 +639,75 @@ the desktop model already uses.
   (`apps/desktop/src/shell/bodies/symbol.rs:87-90`). `runtime/fixture_releases.rs` already has
   toml and smallvec releases, and the upgrade lens reads them. The page's "What changed" section
   should read the same source until the index serves release history.
+- **Blanket impls are missing from `world.json` and the index** — confirmed independently by
+  `docsrs/PARITY.md` (the extractor's `paths()` only resolves nominal self-types; `&T`/
+  `Cow<T>` yield no self-type node) and by `facts/PLAN.md` (the real engine's `derive_impl_blocks`
+  has the identical loss via its leaf-name heuristic). Fixed by R1 (Phase 2).
+- **Glacier theme contrast**: `page2/RULINGS.md` states every run should be ≥ ink3 (≈5.1:1);
+  the anatomy port's own evidence log (`wave2/shell/anatomy-lint-glacier.log`, cited in
+  `QUEUE.md`) records ink3 measured at **3.68-4.38**, and the `does` line specifically at
+  **1.03:1** — a near-invisible line. This needs a calibration pass before the page can be
+  called done; it is flagged in `QUEUE.md` as a queued Sonnet task ("Theme calibration"), not
+  yet started as far as this pass could tell.
+- **Cross-language consistency**: the page must work for all seven supported ecosystems. What
+  the facts carrier gives today, per language, for the two Phase-1 facts that generalize best:
+  - Rust: deprecation from `#[deprecated]` (structural: sees and drops before Phase 1, now
+    kept; semantic: staged via `FactSet::attach_item_attributes`); obligation from
+    `function_signature_item`/`function_item` in a trait.
+  - Java: deprecation from `@Deprecated` (kept raw in `JavaFacts.annotations` since before
+    Phase 1, only the *interpretation* was missing — now interpreted); obligation from
+    `default`/`abstract` modifiers.
+  - C#: deprecation from `[Obsolete(...)]` (kept with arguments already); obligation from
+    interface member bodies / `abstract`/`virtual`.
+  - Python: deprecation from `@deprecated`/`@typing_extensions.deprecated`/
+    `warnings.deprecated` decorators (kept raw with arguments already); obligation from
+    `@abstractmethod` inside an ABC/Protocol base.
+  - TypeScript: deprecation from JSDoc `@deprecated` (kept as doc text already); obligation
+    from interface `method_signature`/`?`-optional members, abstract class members.
+  - Go: deprecation from a `// Deprecated:` doc paragraph (kept verbatim, no flag before
+    Phase 1); obligation: interface methods are always Required (Go has no default-method
+    concept — this axis collapses to nothing for Go, by design, not a gap).
+  - C++: deprecation from `[[deprecated("...")]]`/`__attribute__((deprecated))` (structural
+    only; the semantic/libclang lane does not model attributes at all, `frontends/clang/src/
+    legacy/facts.rs:234-261` — this is a real, standing gap, not deferred by choice); obligation
+    from `= 0` pure-virtual vs a virtual with a body.
+  All seven are exercised end-to-end by `tests/compatibility/tests/structural_facts.rs` (§2.3),
+  which is the practical proof that the grammar generalizes — but only at the structural
+  (tree-sitter) layer. Whether each language's *semantic* (compiler-backed) lowering also
+  surfaces these facts for a real toolchain-indexed package was not verified in this pass for
+  Java/C#/Python/TS/Go/C++ (no non-Rust toolchain was exercised); the Rust semantic lane was
+  proven by `facts_truth.rs`'s `facts_standalone` fixture.
+
+---
+
+## 8. Seams with other lanes
+
+- **W-Shell**: owns the hand/jump bar and the graph door. Per its own resume brief
+  (`QUEUE.md`, and the W-Shell transcript filtered for "chain"/"anatomy"/"made by"): it is
+  building §15, "the plan for graph integration", listing every seam that makes the graph
+  first-class, including **the symbol page's door into the graph: a focus request carrying
+  origin rects** (from `GRAPH-HANDOFF.md`), and **cross-package navigation from anatomy
+  links** (anatomy links today only peek, per `GRAPH-HANDOFF.md`; they need the graph's
+  search-and-resolve exposed as a service). Whoever builds the page2 door drawing and flight
+  (§3, §4 ruling 7) should coordinate the exact focus-request shape with W-Shell rather than
+  invent a second one — `apps/facet/src/semantics/recipes/chain.rs`'s `Connector` is already
+  the shared authority for chains between the hand and (eventually) the graph's
+  `discovery.rs::chains`, per `GRAPH-HANDOFF.md`'s "one chain authority" item.
+- **W-Marks**: builds `ecosystem_mark`, `license_mark`, `version` (on `controls::comb`) and
+  `dep_link`, wired into the package hero's marks line — not the symbol page directly, but the
+  same "facts are components" pattern this brief's §1 describes should be followed for the
+  symbol page's own marks line (path · alias · since · gate · deprecated) once W-Marks's
+  components are available to reuse. Do not build parallel mark components; ask W-Marks (or
+  its successor) for its finished API first.
+- **The motion grammar** (`Nudox-Design-System/v4/motion/MOTION.md`, binding for every lane):
+  the door's flight is `Gather` (spread's cousin — things go *to* their new places, not away),
+  480ms with a `(k mod 8) × 17ms` stagger, ordered nearest-first; the page's recede is a close
+  (clip), never a fade to near-zero opacity; curves are `glide` for the cubic-out. Every other
+  transition on the page (fold/unfold, peek unfurl, section flip) should be picked from
+  `MOTION.md`'s vocabulary (§"The vocabulary") rather than invented ad hoc — the whole point
+  of the grammar is that a motion's meaning is legible without narration.
+
+---
 
 ## 9. Working rules and commands
 

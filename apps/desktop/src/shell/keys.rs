@@ -245,24 +245,23 @@ pub(crate) fn cap(command: Command) -> &'static str {
         .map_or("", |key| key.cap)
 }
 
-fn binding(key: &Key) -> KeyBinding {
-    // The graph keeps its own walk, ↵, find, Esc and Space (a tour's next
-    // stop) while it has the keyboard.
+fn binding_context(key: &Key) -> String {
+    // Graph, menus and Compare each own a different part of the keyboard.
     let graph_owns = matches!(key.command,
         Command::FocusNext | Command::FocusPrev | Command::Activate | Command::Ask | Command::Escape | Command::Peek | Command::Tour);
-    // An open menu keeps every plain key (arrows, ↵, type-ahead) and Esc.
     let menu_owns = key.scope == Scope::Plain || key.command == Command::Escape;
+    let compare_owns = matches!(key.command, Command::FocusNext | Command::FocusPrev);
     let mut context = String::from(CONTEXT);
-    if key.scope == Scope::Plain {
-        context.push_str(" && !Input");
-    }
-    if graph_owns {
-        context.push_str(" && !Graph");
-    }
-    if menu_owns {
-        context.push_str(" && !Menu");
-    }
-    let context = Some(context.as_str());
+    if key.scope == Scope::Plain { context.push_str(" && !Input"); }
+    if graph_owns { context.push_str(" && !Graph"); }
+    if menu_owns { context.push_str(" && !Menu"); }
+    if compare_owns { context.push_str(" && !BrowseCompare"); }
+    context
+}
+
+fn binding(key: &Key) -> KeyBinding {
+    let context_text = binding_context(key);
+    let context = Some(context_text.as_str());
     let chord = key.chord;
     match key.command {
         Command::FocusNext => KeyBinding::new(chord, FocusNext, context),
@@ -312,6 +311,16 @@ pub fn bindings() -> Vec<KeyBinding> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn compare_keeps_its_own_row_keys_without_losing_shell_shortcuts() {
+        for chord in ["j", "k", "down", "up"] {
+            let key = TABLE.iter().find(|key| key.chord == chord).expect("row key is bound");
+            assert!(binding_context(key).contains("!BrowseCompare"), "{chord} must reach the focused Compare page");
+        }
+        let ask = TABLE.iter().find(|key| key.command == Command::Ask).expect("Ask is bound");
+        assert!(!binding_context(ask).contains("BrowseCompare"), "Ask stays available over Compare");
+    }
 
     #[test]
     fn no_chord_is_bound_twice_and_every_command_has_a_cap() {

@@ -74,6 +74,14 @@ pub enum FolderPickerOutcome {
 pub enum Intent {
     /// Replace the current typed route.
     Navigate(Route),
+    /// Refine the current Find page without adding a history stop per keystroke.
+    /// An old field callback cannot replace a different page or newer query.
+    RefineFind {
+        /// Query owning the field when it scheduled the refinement.
+        expected: Option<crate::model::pages::SearchQuery>,
+        /// Latest admitted query.
+        query: Option<crate::model::pages::SearchQuery>,
+    },
     /// Show the current declaration another way. Replaces the current
     /// history entry's view: not navigation, so Back leaves the declaration.
     SetView(super::route::View),

@@ -41,6 +41,7 @@ mod reveal;
 mod root;
 mod shelf;
 mod status;
+mod symbol_links;
 mod system;
 mod text_fit;
 mod titlebar;

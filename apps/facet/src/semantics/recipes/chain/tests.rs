@@ -20,7 +20,6 @@ fn world() -> (&'static World, Recipes) {
     });
     (world, Recipes::from_prepared(prepared.clone()))
 }
-
 /// The one node named `name` of `kind` in package `package`, top-level
 /// unless `owner` names its parent.
 fn find(world: &World, package: &str, owner: Option<&str>, name: &str, kind: Kind) -> NodeId {

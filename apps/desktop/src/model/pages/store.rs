@@ -647,7 +647,7 @@ fn append_search(previous: &SearchPage, next: SearchPage) -> SearchPage {
     SearchPage {
         query: next.query,
         rows: rows.into(),
-        coverage: next.coverage,
+        coverage: previous.coverage.across_pages(next.coverage),
         next: next.next,
     }
 }

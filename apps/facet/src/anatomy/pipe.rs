@@ -7,6 +7,7 @@ use super::text::{Line, Links, TypeInk};
 use super::{k, roles, stacked};
 use crate::measure::{Measure, Set};
 use crate::semantics::model::Pipe;
+use crate::semantics::members::Receiver;
 use crate::semantics::types::Piece;
 use crate::theme::ActiveFacet;
 use gpui::{
@@ -71,25 +72,31 @@ impl RenderOnce for PipeView {
         if self.pipe.inputs.is_empty() {
             pins = pins.child(crate::probe::text(
                 id("in-none".to_owned()),
-                "takes nothing",
+                "No inputs",
                 m.role(roles::INPUT),
                 1.0,
                 crate::probe::TextOverflow::Wrap,
-                div().set(roles::INPUT, &m).text_color(palette.ink3.hsla()).child("takes nothing"),
+                div().set(roles::INPUT, &m).text_color(palette.ink3.hsla()).child("No inputs"),
             ));
         }
         for (n, input) in self.pipe.inputs.iter().enumerate() {
+            let label: SharedString = match input.receiver {
+                Some(Receiver::Reads) => "Shared access".into(),
+                Some(Receiver::Changes) => "Editable access".into(),
+                Some(Receiver::UsesUp) => "By value".into(),
+                _ => input.name.clone(),
+            };
             let mut row = div()
                 .flex()
                 .items_baseline()
                 .gap(k(&m, 14.0))
                 .child(crate::probe::text(
                     id(format!("in-{n}-name")),
-                    input.name.clone(),
+                    label.clone(),
                     m.role(roles::INPUT),
                     1.0,
                     crate::probe::TextOverflow::Wrap,
-                    div().flex_none().set(roles::INPUT, &m).text_color(palette.ink3.hsla()).child(input.name.clone()),
+                    div().flex_none().set(roles::INPUT, &m).text_color(palette.ink1.hsla()).child(label),
                 ));
             if let Some(ty) = &input.ty {
                 let mut line = Line::new();
@@ -106,26 +113,30 @@ impl RenderOnce for PipeView {
         match &self.pipe.output {
             Some(ty) => output.spelled(ty, &out_ink, &self.links, xray),
             None => {
-                output.push("nothing", roles::words(roles::OUTPUT), palette.ink3.hsla());
+                output.push("No value returned", roles::words(roles::OUTPUT), palette.ink3.hsla());
             }
         }
         let mut outs = div()
             .flex()
             .flex_col()
             .min_w_0()
-            .child(output.element(id("out".into()), roles::OUTPUT, &m, &self.links, palette));
+            .child(div().flex().items_center().gap(k(&m, 8.0))
+                .child(div().flex_none().w(px(3.0)).h(k(&m, 16.0)).bg(palette.mint.base.hsla()))
+                .child(output.element(id("out".into()), roles::OUTPUT, &m, &self.links, palette)));
         if let Some(fails) = &self.pipe.fails {
             let mut fail_ink = TypeInk::new(roles::TYPE, palette);
             fail_ink.link = palette.ink1.hsla();
             let mut line = Line::new();
-            line.push("or fails with ", roles::words(roles::TYPE), palette.ink3.hsla());
+                line.push("Failure · ", roles::words(roles::TYPE), palette.ink1.hsla());
             match fails {
                 Some(err) => line.spelled(err, &fail_ink, &self.links, xray),
                 None => {
-                    line.push("an error", roles::words(roles::TYPE), palette.ink3.hsla());
+                    line.push("an error", roles::words(roles::TYPE), palette.ink1.hsla());
                 }
             }
-            outs = outs.child(div().mt(k(&m, 8.0)).child(line.element(id("fails".into()), roles::TYPE, &m, &self.links, palette)));
+            outs = outs.child(div().mt(k(&m, 10.0)).flex().items_center().gap(k(&m, 8.0))
+                .child(super::operation::connector(&m, palette.coral.base.hsla(), true))
+                .child(line.element(id("fails".into()), roles::TYPE, &m, &self.links, palette)));
         }
         let body = if narrow {
             div()
@@ -133,6 +144,7 @@ impl RenderOnce for PipeView {
                 .flex_col()
                 .gap(k(&m, 10.0))
                 .child(pins.pb(k(&m, 10.0)).border_b_1().border_color(palette.line3.hsla()))
+                .child(super::operation::connector(&m, palette.peri.base.hsla(), false))
                 .child(outs)
         } else {
             div()
@@ -140,7 +152,7 @@ impl RenderOnce for PipeView {
                 .items_center()
                 .gap(k(&m, 10.0))
                 .child(pins.py(k(&m, 6.0)).pr(k(&m, 18.0)).border_r_1().border_color(palette.line3.hsla()))
-                .child(arrow(&m, palette.line3.hsla(), palette.ink3.hsla()))
+                .child(arrow(&m, palette.line3.hsla(), palette.peri.base.hsla()))
                 .child(outs.flex_1())
         };
         let mut root = div().id(self.id.clone()).flex().flex_col().gap(k(&m, 12.0)).child(body);

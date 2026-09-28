@@ -4,25 +4,106 @@
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Pages};
 use crate::model::browse::{BrowseKey, BrowseValue, TreeModel};
-use crate::model::pages::PageKey;
-use crate::navigation::BrowseRoute;
+use crate::model::pages::{PageKey, PackageRef, SearchQuery, SymbolRef};
+use crate::navigation::{BrowseRoute, CompareSet, Intent, OrbitRoute, Route, View};
+use crate::shell::kit::{package_route, symbol_route, symbol_view_route};
 use crate::shell::reader::Reader;
 use facet::browse::{Alert, AlertTone, LibraryModel, LibraryRole, LibraryRow, Twice, library};
 use gpui::{Context, SharedString};
 use std::sync::Arc;
+use std::rc::Rc;
 
 pub(super) fn body(route: &BrowseRoute, store: &Pages, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
     let key = BrowseKey::from(route);
     let resource = store.browse(&key);
+    // Find owns a live editing engine, including while a newly admitted
+    // query is being read. Replacing it with a generic loading page loses
+    // IME composition, focus, the debounce and the package hand.
+    if matches!(route, BrowseRoute::Find(_) | BrowseRoute::FindHome) {
+        let value = match shown(&resource) { Shown::Ready(BrowseValue::Find(value)) => Some(value.as_ref()), _ => None };
+        let model = match value {
+            Some(value) => Arc::clone(&value.prepared),
+            None => Arc::new(facet::browse::find::Model { query: match route { BrowseRoute::Find(query) => query.text.to_string().into(), _ => "".into() }, candidates: vec![], loose: vec![], coverage: vec![], more_answers: false, loading: true }),
+        };
+        // Find's reveal state lives in its native component. Its painted text
+        // probes are the authority for what is visible in this frame.
+        let actions = find_actions(route, ctx, cx);
+        let mut leaves = vec![Leaf::new(facet::browse::find::find("find", model, actions, &ctx.measure))];
+        if matches!(shown(&resource), Shown::Fault(_) | Shown::Unavailable(_, _)) {
+            leaves.extend(not_ready(&shown(&resource), &PageKey::Browse(key), "Find", ctx, cx));
+        }
+        return leaves;
+    }
     match shown(&resource) {
         Shown::Ready(BrowseValue::Tree(tree)) => {
             let model = library_model(tree, ctx);
             vec![Leaf::new(library("library", Arc::new(model), &ctx.measure))]
         }
+        Shown::Ready(BrowseValue::Compare(compare)) => {
+            let model = Arc::clone(&compare.prepared);
+            let actions = compare_actions(route, ctx, cx);
+            vec![Leaf::new(facet::browse::compare::compare("compare", model, actions, &ctx.measure))]
+        }
         other => {
             let (name, _) = route.here();
-            not_ready(&other, &PageKey::Browse(key), &format!("{name}'s tree"), ctx, cx)
+            not_ready(&other, &PageKey::Browse(key), &name, ctx, cx)
         }
+    }
+}
+
+fn open_symbol_action(ctx: &Ctx<'_>, code: bool) -> Rc<dyn Fn(SharedString, &mut gpui::Window, &mut gpui::App)> {
+    let links = ctx.links.clone();
+    Rc::new(move |key, _, cx| {
+        if let Ok(symbol) = SymbolRef::new(&key) && let Some(package) = symbol.package() {
+            let route = if code { symbol_view_route(package.as_str(), &symbol, View::Code, None) } else { symbol_route(package.as_str(), &symbol) };
+            if let Some(route) = route { links.dispatch(Intent::Navigate(route), cx); }
+        }
+    })
+}
+
+fn open_package_action(ctx: &Ctx<'_>) -> Rc<dyn Fn(SharedString, &mut gpui::Window, &mut gpui::App)> {
+    let links = ctx.links.clone();
+    Rc::new(move |key, _, cx| {
+        if let Ok(package) = PackageRef::parse(&key) && let Some(route) = package_route(&package) { links.dispatch(Intent::Navigate(route), cx); }
+    })
+}
+
+fn find_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>) -> facet::browse::find::Actions {
+    let expected = match route { BrowseRoute::Find(query) => Some(query.clone()), _ => None };
+    let refine_links = ctx.links.clone();
+    let compare_links = ctx.links.clone();
+    let reader = cx.weak_entity();
+    facet::browse::find::Actions {
+        scroll: ctx.reader_scroll.clone(),
+        initial_held: ctx.find_held.clone(),
+        persist_held: Rc::new(move |held, cx| { let _ = reader.update(cx, |reader, cx| reader.set_find_held(held, cx)); }),
+        refine: Rc::new(move |text, cx| {
+            let query = SearchQuery::new(&text, SearchQuery::DEFAULT_LIMIT).ok();
+            refine_links.dispatch(Intent::RefineFind { expected: expected.clone(), query }, cx);
+        }),
+        open_symbol: open_symbol_action(ctx, false), open_code: open_symbol_action(ctx, true), open_package: open_package_action(ctx),
+        compare: Rc::new(move |keys, _, cx| {
+            let packages = keys.iter().map(|key| PackageRef::parse(key)).collect::<Result<Vec<_>, _>>();
+            if let Ok(packages) = packages && let Ok(selection) = CompareSet::new(packages) {
+                compare_links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection)))), cx);
+            }
+        }),
+    }
+}
+
+fn compare_actions(route: &BrowseRoute, ctx: &Ctx<'_>, cx: &mut Context<Reader>) -> facet::browse::compare::Actions {
+    let packages = match route { BrowseRoute::Compare(selection) => selection.packages().to_vec(), _ => vec![] };
+    let links = ctx.links.clone();
+    let reader = cx.weak_entity();
+    let held = ctx.find_held.clone();
+    facet::browse::compare::Actions { active: ctx.active && ctx.links.snapshot(cx).overlay().is_none(), scroll: ctx.reader_scroll.clone(), open_package: open_package_action(ctx), open_symbol: open_symbol_action(ctx, false), open_code: open_symbol_action(ctx, true),
+        remove_package: Rc::new(move |key, _, cx| {
+            if let Ok(selection) = CompareSet::new(packages.iter().filter(|package| package.as_str() != key.as_ref()).cloned()) {
+                let updated = held.iter().filter(|package| package.key != key).cloned().collect();
+                let _ = reader.update(cx, |reader, cx| reader.set_find_held(updated, cx));
+                links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Compare(selection)))), cx);
+            }
+        })
     }
 }
 

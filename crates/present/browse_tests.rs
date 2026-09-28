@@ -64,6 +64,23 @@ fn toml_is_here_twice_and_moving_yours_would_not_drop_a_copy() {
 }
 
 #[test]
+fn a_third_recorded_version_never_reads_as_twice() {
+    let mut source = tree();
+    let toml = source.twice.iter_mut().find(|duplicate| duplicate.name == "toml").expect("toml duplicate");
+    let mut copies = toml.copies.to_vec();
+    let mut third = copies[1].clone();
+    third.version = "1.2.0".to_owned();
+    copies.push(third);
+    toml.copies = copies.into_boxed_slice();
+    let reading = read_tree(&source);
+    assert_eq!(reading.twice_heading.as_ref().map(|(title, _)| title.as_str()), Some("Multiple versions"));
+    assert!(reading.twice_line.as_deref().is_some_and(|line| line.contains("appear at more than one version")));
+    let formats = reading.roles.iter().find(|role| role.id == RoleId::Formats).expect("formats");
+    let toml = formats.rows.iter().find(|row| row.name == "toml").expect("toml row");
+    assert_eq!(toml.at_rest.as_deref(), Some("3 versions · 0.8.23 · 1.1.5 · 1.2.0"));
+}
+
+#[test]
 fn each_role_says_what_it_is_for_and_why_a_dependency_is_in_it() {
     let reading = read_tree(&tree());
     let formats = reading.roles.iter().find(|role| role.id == RoleId::Formats).expect("formats");

@@ -426,7 +426,8 @@ pub static GLACIER: Palette = Palette {
     ink0: hex(0x0a1222),
     ink1: hex(0x1d2940),
     ink2: hex(0x4b5a75),
-    ink3: hex(0x66758f),
+    // The quiet reading ink still clears 5:1 on Glacier's darkest ground.
+    ink3: hex(0x555d79),
     ink4: hex(0xa3aec2),
     bevel_hi: hex(0xffffff),
     bevel_lo: hexa(0x1e326e, 0.22),
@@ -725,4 +726,30 @@ pub mod motion {
 #[must_use]
 pub fn scaled(value: f32, scale: f32) -> Pixels {
     px(value * scale)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GLACIER, Tone};
+
+    fn luminance(tone: Tone) -> f32 {
+        let rgba = tone.rgba();
+        let linear = |channel: f32| {
+            if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * linear(rgba.red) + 0.7152 * linear(rgba.green) + 0.0722 * linear(rgba.blue)
+    }
+
+    fn contrast(a: Tone, b: Tone) -> f32 {
+        let (light, dark) = (luminance(a), luminance(b));
+        (light.max(dark) + 0.05) / (light.min(dark) + 0.05)
+    }
+
+    #[test]
+    fn glacier_quiet_reading_ink_clears_its_darkest_ground() {
+        for ground in [GLACIER.g0, GLACIER.g1, GLACIER.g2, GLACIER.g3] {
+            assert!(contrast(GLACIER.ink3, ground) >= 5.1);
+        }
+        assert!(luminance(GLACIER.ink2) < luminance(GLACIER.ink3));
+    }
 }

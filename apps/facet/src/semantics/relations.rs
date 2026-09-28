@@ -21,6 +21,10 @@ use gpui::SharedString;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
+/// Bounded, package-scoped discovery for the symbol page. The graph keeps
+/// its own spatial presentation of these same authoritative groups.
+pub mod rows;
+
 fn is_type_like(kind: Kind) -> bool {
     matches!(kind, Kind::Struct | Kind::Enum | Kind::Trait | Kind::Type | Kind::Union)
 }

@@ -24,14 +24,14 @@ pub struct TreeReading {
     pub source_note: Option<String>,
     /// One line per advisory that affects the tree.
     pub alerts: Box<[AlertReading]>,
-    /// "60 crates are here twice", when any are.
+    /// "60 crates are here twice", or a count-aware line when some have
+    /// three or more versions.
     pub twice_line: Option<String>,
     /// What the advisory sources could say.
     pub health: String,
     /// The roles, in display order, with their dependencies.
     pub roles: Box<[RoleReading]>,
-    /// "Here twice", then "60 crates compile at more than one version",
-    /// when any package is here twice.
+    /// "Here twice" or "Multiple versions", then the recorded count.
     pub twice_heading: Option<(String, String)>,
     /// The packages present at more than one incompatible version.
     pub twice: Box<[TwiceReading]>,
@@ -120,12 +120,13 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
         )),
     };
     let alerts = tree.health.affecting.iter().map(alert).collect();
+    let all_pairs = tree.twice.iter().all(|duplicate| duplicate.copies.len() == 2);
     let twice_line = (!tree.twice.is_empty()).then(|| {
-        format!(
-            "{} {} here twice",
-            count(tree.twice.len()),
-            if tree.twice.len() == 1 { "crate is" } else { "crates are" }
-        )
+        if all_pairs {
+            format!("{} {} here twice", count(tree.twice.len()), if tree.twice.len() == 1 { "crate is" } else { "crates are" })
+        } else {
+            format!("{} {} at more than one version", count(tree.twice.len()), if tree.twice.len() == 1 { "crate appears" } else { "crates appear" })
+        }
     });
     let twice_by_name: BTreeMap<&str, &Duplicate> =
         tree.twice.iter().map(|duplicate| (duplicate.name.as_str(), duplicate)).collect();
@@ -164,11 +165,11 @@ pub fn read_tree(tree: &ProjectTree) -> TreeReading {
         roles,
         twice_heading: (!tree.twice.is_empty()).then(|| {
             (
-                "Here twice".to_owned(),
+                if all_pairs { "Here twice" } else { "Multiple versions" }.to_owned(),
                 format!(
                     "{} {} at more than one version",
                     count(tree.twice.len()),
-                    if tree.twice.len() == 1 { "crate compiles" } else { "crates compile" }
+                    if tree.twice.len() == 1 { "crate appears" } else { "crates appear" }
                 ),
             )
         }),
@@ -297,7 +298,8 @@ fn row(dependency: &DirectDependency, twice: &BTreeMap<&str, &Duplicate>) -> Row
         .get(dependency.name.as_str())
         .map(|duplicate| {
             format!(
-                "twice · {}",
+                "{} · {}",
+                if duplicate.copies.len() == 2 { "twice".to_owned() } else { format!("{} versions", duplicate.copies.len()) },
                 duplicate
                     .copies
                     .iter()

@@ -105,6 +105,7 @@ pub(crate) struct Status {
     whisper_seen: Option<(crate::model::hand::Held, std::time::Instant)>,
     /// The hand at rest.
     marks: super::hand::Marks,
+    opening: Option<SharedString>,
 }
 
 /// How long the first-card whisper stays.
@@ -119,12 +120,20 @@ impl Status {
             whisper_timer: None,
             whisper_seen: None,
             marks: super::hand::Marks::default(),
+            opening: None,
         }
     }
 
     /// Where the reader column starts, from the shell's frame.
     pub(crate) fn set_reader_left(&mut self, left: Pixels) {
         self.reader_left = left;
+    }
+
+    pub(crate) fn set_opening(&mut self, opening: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.opening != opening {
+            self.opening = opening;
+            cx.notify();
+        }
     }
 
     /// How many marks the foot draws (tests).
@@ -157,6 +166,10 @@ impl Render for Status {
         let store = self.links.store.read(cx);
         let snapshot = store.snapshot();
         let foot = div().size_full().flex().flex_col().justify_center().border_t_1().border_color(palette.line1.hsla());
+        if let Some(opening) = &self.opening {
+            return foot.pl((self.reader_left + px(20.0 * measure.scale())).min(self.core.width() / 3.0))
+                .child(super::kit::text(ty::MONO_SMALL, &measure, palette.ink1).child(opening.clone()));
+        }
         let (focus, notice) = (store.graph_focus().cloned(), store.graph_notice().cloned());
         let speaks = graph_speaks(&snapshot, focus.as_ref(), notice.as_ref());
         let hand = snapshot.session().hand.clone();

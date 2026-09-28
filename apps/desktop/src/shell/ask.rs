@@ -13,7 +13,7 @@
 use super::kit::{kind_of, symbol_route, text};
 use super::region::Links;
 use crate::model::pages::{MatchReason, PageKey, SearchQuery, SearchRow};
-use crate::navigation::{Intent, Route};
+use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route};
 use crate::runtime::store::StoreEvent;
 use facet::icons::{self, Icon, IconSize, KindSize};
 use facet::paint::{Bevel, Chamfer, cut};
@@ -22,7 +22,7 @@ use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement,
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, div, px,
+    Subscription, Task, Window, ScrollHandle, div, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use std::time::Duration;
@@ -49,6 +49,7 @@ pub(crate) struct Ask {
     selected: usize,
     renders: u64,
     pending: Option<Task<()>>,
+    scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -78,6 +79,7 @@ impl Ask {
             selected: 0,
             renders: 0,
             pending: None,
+            scroll: ScrollHandle::new(),
             _subscriptions: vec![typed, landed],
         }
     }
@@ -128,6 +130,7 @@ impl Ask {
             return;
         }
         self.selected = self.selected.saturating_add_signed(delta).min(count - 1);
+        if self.selected + 1 < count { self.scroll.scroll_to_item(self.selected); }
         cx.notify();
     }
 
@@ -141,14 +144,28 @@ impl Ask {
 
     fn choices(&self, cx: &App) -> Vec<Choice> {
         let Some(query) = &self.query else {
-            return Vec::new();
+            return vec![Choice {
+                name: "Find packages".into(),
+                place: "Explore what your index knows".into(),
+                reason: "open Find".into(),
+                kind: icons::Kind::Package,
+                route: Some(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))),
+            }];
         };
         let store = self.links.store.read(cx);
         let results = store.search(query);
-        results
+        let mut choices: Vec<Choice> = results
             .loaded_value()
-            .map(|page| page.rows.iter().map(result_choice).collect())
-            .unwrap_or_default()
+            .map(|page| page.rows.iter().take(8).map(result_choice).collect())
+            .unwrap_or_default();
+        choices.push(Choice {
+            name: "All answers as a page".into(),
+            place: query.text.to_string().into(),
+            reason: "explore packages".into(),
+            kind: icons::Kind::Package,
+            route: Some(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query.clone())))),
+        });
+        choices
     }
 
     /// Whether a search for the current query is still on its way.
@@ -206,10 +223,16 @@ impl Render for Ask {
         } else if searching {
             "asking…".into()
         } else {
-            format!("{} results", choices.len()).into()
+            format!("{} quick answers", choices.len().saturating_sub(1)).into()
         };
-        let mut list = div().flex().flex_col().py(measure.space(Space::Tight));
-        for (index, choice) in choices.iter().enumerate().take(40) {
+        let available = (viewport.height - px(72.0 * facet.text_scale) - px(16.0 * facet.text_scale)).max(px(0.0));
+        // Reserve the input, status and the two-line page door before giving
+        // the remaining viewport to the independently scrolling quick list.
+        let list_height = (available - px(192.0 * facet.text_scale)).max(px(0.0)).min(px(420.0 * facet.text_scale));
+        let quick = choices.len().saturating_sub(1);
+        let mut list = div().id("ask-results").flex().flex_col().py(measure.space(Space::Tight))
+            .min_h(px(0.0)).max_h(list_height).overflow_y_scroll().track_scroll(&self.scroll);
+        for (index, choice) in choices.iter().enumerate().take(quick) {
             let on = index == self.selected;
             let route = choice.route.clone();
             let links = self.links.clone();
@@ -239,7 +262,7 @@ impl Render for Ask {
                                     .child(choice.place.clone()),
                             ),
                     )
-                    .child(text(ty::CAPTION, &measure, palette.ink3).flex_none().child(choice.reason.clone()))
+                    .children((measure.effective() >= 440.0).then(|| text(ty::CAPTION, &measure, palette.ink3).flex_none().child(choice.reason.clone())))
                     .on_click(move |_: &ClickEvent, _, cx| {
                         if let Some(route) = route.clone() {
                             links.dispatch(Intent::Navigate(route), cx);
@@ -247,6 +270,18 @@ impl Render for Ask {
                     }),
             );
         }
+        let footer = choices.last().map(|choice| {
+            let links = self.links.clone();
+            let route = choice.route.clone();
+            div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
+                .px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy))
+                .when_on(self.selected == quick, palette).hover(|style| style.bg(palette.tint)).cursor_pointer()
+                .child(super::kit::kind_mark(icons::Kind::Package, KindSize::Sm, &measure, palette))
+                .child(div().flex_1().min_w_0().flex().flex_col()
+                    .child(text(ty::ROW, &measure, palette.ink0).child("All answers as a page"))
+                    .child(text(ty::CAPTION, &measure, palette.ink3).child(if measure.effective() < 440.0 { "Inspect and compare packages" } else { "Inspect packages and compare what they expose" })))
+                .on_click(move |_, _, cx| { if let Some(route) = route.clone() { links.dispatch(Intent::Navigate(route), cx); } })
+        });
         if choices.is_empty() && !searching {
             let words = if self.query.is_some() { "Nothing matches that yet." } else { "Nothing walked yet." };
             list = list.child(div().px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet(words, &measure, palette)));
@@ -261,11 +296,13 @@ impl Render for Ask {
                     .bevel(Bevel::Peri)
                     .fill(palette.glass)
                     .floating()
+                    .max_h(available)
                     .flex()
                     .flex_col()
                     .child(
                         div()
                             .flex()
+                            .flex_none()
                             .items_center()
                             .gap(measure.space(Space::Roomy))
                             .px(measure.space(Space::Gutter))
@@ -273,10 +310,11 @@ impl Render for Ask {
                             .border_b_1()
                             .border_color(palette.line1.hsla())
                             .child(icons::ui(Icon::Search, IconSize::S16, palette.ink2).size(measure.icon(16.0)))
-                            .child(div().flex_1().min_w(px(0.0)).set_ui(&measure, palette).child(field))
-                            .child(text(ty::MONO_SMALL, &measure, palette.ink3).flex_none().child(count)),
+                            .child(div().flex_1().min_w(px(0.0)).set_ui(&measure, palette).child(field)),
                     )
-                    .child(div().max_h(px(420.0 * facet.text_scale)).overflow_hidden().child(list)),
+                    .child(div().flex_none().px(measure.space(Space::Gutter)).py(measure.space(Space::Tight)).child(text(ty::CAPTION, &measure, palette.ink3).child(count)))
+                    .child(list)
+                    .children(footer),
             )
     }
 }

@@ -3,8 +3,8 @@
 //! importance), for the four target pages and every 997th symbol.
 
 use super::world::{find, world};
-use crate::graph::model::NodeId;
-use crate::semantics::relations::{Group, Note, PAGE_SHOWS, Side, Word, except, prism, relations_of};
+use crate::graph::model::{Kind, NodeId};
+use crate::semantics::relations::{Group, Note, PAGE_SHOWS, Side, Word, except, page_shows, prism, relations_of};
 
 fn line(i: NodeId, g: &Group) -> String {
     let w = world();
@@ -144,4 +144,56 @@ fn in_use_ranks_callers_as_the_prototype_does() {
         checked += 1;
     }
     assert_eq!(checked, 4);
+}
+
+#[test]
+fn page_discovery_counts_the_whole_pinned_neighborhood_before_disclosure() {
+    use crate::semantics::relations::rows::{Band, rows};
+    let w = world();
+    let visitor = find("serde_core::de::Visitor");
+    let rows = rows(w, visitor, relations_of(w, visitor));
+    let implementations = rows.iter().find(|row| row.word == Word::ImplementedBy).expect("implementations");
+    assert_eq!(implementations.count(), "27 relations, 0 of yours, in 4 packages");
+    assert_eq!(implementations.invitation(3), "done by: OptionVisitor, ArrayVisitor, OsStringVisitor and 24 more");
+    assert_eq!(implementations.invitation(1), "done by: OptionVisitor and 26 more");
+    assert_eq!(implementations.scopes.iter().map(|scope| scope.band).collect::<Vec<_>>(), [Band::Here, Band::Elsewhere]);
+    assert_eq!(implementations.scopes[0].packages[0].names.len(), 19);
+    assert_eq!(implementations.scopes[1].packages.iter().map(|package| package.names.len()).sum::<usize>(), 8);
+    assert_eq!(implementations.scopes.iter().flat_map(|scope| &scope.packages).flat_map(|package| &package.names).count(), 27);
+}
+
+#[test]
+fn producer_relations_are_not_claimed_by_shape_anatomy() {
+    // The fork says its parts. Getting one is responsible for producers;
+    // removing MadeBy with the shape omissions would lose those facts.
+    assert!(!PAGE_SHOWS.contains(&Word::MadeBy));
+    let w = world();
+    let label = find("present::glyph::RelationLabel");
+    let remaining = except(relations_of(w, label), &PAGE_SHOWS);
+    let producers = remaining.iter().find(|group| group.word == Word::MadeBy).expect("producers");
+    let identities: Vec<_> = producers
+        .entries
+        .iter()
+        .map(|entry| {
+            let node = w.node(entry.node.expect("pinned producer identity"));
+            (node.name.as_ref(), node.file.as_deref().map(|file| file.as_ref()), node.line)
+        })
+        .collect();
+    assert_eq!(identities, [("relation_label", Some("crates/present/glyph.rs"), 170), ("label", Some("crates/present/page.rs"), 235)]);
+}
+
+#[test]
+fn a_type_page_drops_producers_only_because_getting_one_covers_them() {
+    let w = world();
+    let kind = w.node(find("present::glyph::RelationLabel")).kind;
+    assert_eq!(kind, Kind::Enum);
+
+    let raw = relations_of(w, find("present::glyph::RelationLabel"));
+    assert!(raw.iter().any(|group| group.word == Word::MadeBy), "the pinned enum has a producer row");
+
+    let shown = page_shows(kind);
+    assert!(shown.contains(&Word::MadeBy), "the enum's Getting one section owns producer coverage");
+    assert!(!page_shows(Kind::Function).contains(&Word::MadeBy), "functions do not claim type producer coverage");
+    let prism = except(raw, &shown);
+    assert!(!prism.iter().any(|group| group.word == Word::MadeBy), "the type page does not repeat the producer row in its prism");
 }

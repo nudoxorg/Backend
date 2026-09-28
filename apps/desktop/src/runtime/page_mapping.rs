@@ -100,6 +100,28 @@ impl OutlineIndex {
         self.rows.is_empty()
     }
 
+    /// A bounded comparison packet, built on the read worker from the original
+    /// rows so names never stand in for missing type or signature evidence.
+    pub fn comparison_api(&self, package: &PackageRef) -> crate::model::browse::PackageApi {
+        const LIMIT: usize = 2048;
+        let mut candidates = self.rows.iter().filter_map(|row| {
+            let decl = DeclRef::from_row(row)?;
+            matches!(row.kind, Some(DeclarationKind::Module | DeclarationKind::Function | DeclarationKind::Method | DeclarationKind::Constructor | DeclarationKind::Struct | DeclarationKind::Class | DeclarationKind::Enum | DeclarationKind::Trait | DeclarationKind::Interface | DeclarationKind::Type | DeclarationKind::Union | DeclarationKind::Macro))
+                .then_some((decl, row))
+        }).collect::<Vec<_>>();
+        candidates.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name).then_with(|| left.coordinate.cmp(&right.coordinate)));
+        let complete = self.complete && candidates.len() <= LIMIT;
+        let items = candidates.into_iter().take(LIMIT).map(|(decl, row)| {
+            let summary = row.document.iter().find_map(|fragment| match fragment {
+                Fragment::Text(text) if !text.trim().is_empty() && text != &row.label => Some(Arc::from(text.lines().next().unwrap_or_default().trim())),
+                _ => None,
+            });
+            let signature = signature_text(row.signature.as_deref(), decl.language, decl.key, Some(self));
+            crate::model::browse::ApiItem { decl, signature, summary }
+        }).collect::<Vec<_>>();
+        crate::model::browse::PackageApi { package: package.clone(), items: items.into(), complete }
+    }
+
     /// Returns one row by key.
     #[must_use]
     pub fn row(&self, key: SymbolKey) -> Option<&Row> {
@@ -2136,6 +2158,29 @@ mod tests {
             RowSpec { label: identity.clone(), kind: DeclarationKind::Struct, signature: Some("pub struct Identity"), parent: Some(&identity_module), doc: Some("One parsed row identity."), site: Some(("identity.rs", 339)) },
         ];
         specs.iter().map(row).collect()
+    }
+
+    #[test]
+    fn comparison_packets_keep_callable_shapes_docs_and_exact_identity_without_promising_public_api() {
+        let package = PackageRef::parse("/repo/crates/present").unwrap();
+        let index = OutlineIndex::new(present_rows(), true);
+        let api = index.comparison_api(&package);
+        assert!(api.complete);
+        let method = api.items.iter().find(|item| item.decl.name.as_ref() == "retitle").unwrap();
+        assert_eq!(method.decl.kind, Some(DeclarationKind::Method));
+        assert_eq!(method.signature.known().unwrap().text.as_ref(), "pub fn retitle(&mut self, title: &str)");
+        assert_eq!(method.summary, None);
+        let constructor = api.items.iter().find(|item| item.decl.name.as_ref() == "new").unwrap();
+        assert_eq!(constructor.summary.as_deref(), Some("Assembles one page from already-typed parts."));
+        assert_eq!(constructor.decl.coordinate.as_str(), present("page.rs:410::new"));
+        let modules = api.items.iter().filter(|item| item.decl.kind == Some(DeclarationKind::Module))
+            .map(|item| item.decl.coordinate.as_str()).collect::<Vec<_>>();
+        assert_eq!(modules.len(), 2, "both recorded file modules survive the comparison projection");
+        assert!(modules.contains(&present("page.rs").as_str()));
+        assert!(modules.contains(&present("identity.rs").as_str()));
+        assert!(!api.items.iter().any(|item| item.decl.name.as_ref() == "prose"));
+        let partial = OutlineIndex::new(present_rows(), false).comparison_api(&package);
+        assert!(!partial.complete);
     }
 
     fn present_document(label: &str, signature: &str, doc: &str, site: (&str, u32), excerpt: &str) -> Document {

@@ -102,7 +102,7 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
         "twice · 0.8.23 · 1.1.6",
         "bincode",
         "Here twice",
-        "4 crates compile at more than one version",
+        "4 crates appear at more than one version",
     ] {
         assert!(said.iter().any(|line| line == expected), "{expected:?} is not on screen: {said:#?}");
     }
@@ -116,8 +116,9 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
     });
     assert_eq!(address, "nudox://browse_tree/tree");
 
-    // The same owner reads another project without serving the first one's
-    // cached tree (the fixture sits inside this repository's directory).
+    // The same owner reads a second pinned project without serving the
+    // first one's cached tree. Neither assertion depends on this repo's
+    // live Cargo.lock or directory name.
     let mut reader = SessionReader::connect(&endpoint);
     let tree = |root: &Path, reader: &mut SessionReader| {
         let key = crate::model::browse::BrowseKey::Tree(LocalProjectId::from_path(root).expect("project"));
@@ -129,8 +130,9 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
             other => panic!("the tree read failed: {other:?}"),
         }
     };
-    let repository_tree = tree(&repository(), &mut reader);
-    assert_eq!(repository_tree.name, "backend");
+    let other_fixture = repository().join("frontends/rust/fixtures/toml_pin");
+    let other_tree = tree(&other_fixture, &mut reader);
+    assert_eq!(other_tree.name, "toml_pin");
     let again = tree(&fixture, &mut reader);
     assert_eq!(again.name, "browse_tree");
     assert_eq!(again.lede, lede);

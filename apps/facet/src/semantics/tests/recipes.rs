@@ -222,16 +222,22 @@ fn the_page_rail_draws_what_its_words_say() {
     use crate::semantics::types::Piece;
     let w = world();
     let r = recipes();
-    let view = r.getting_one(w, find("present::page::Page")).expect("a section").view(w);
+    let node = find("present::page::Page");
+    let view = r.getting_one(w, node).expect("a section").view(w, node);
     let text = |p: &[Piece]| p.iter().map(Piece::text).collect::<String>();
     let rail = &view.rails[0];
     assert_eq!(text(&rail.lead), "from text what");
+    assert_eq!(text(&rail.starts[0].ty), "text", "the start port comes from the recipe key, not its display sentence");
+    assert!(rail.starts[0].name.is_none(), "one incidental binding does not distract from its input type");
+    assert_eq!(text(view.outcome.as_deref().expect("known endpoint")), "Page");
     let verbs: Vec<&str> = rail.steps.iter().map(|s| s.verb.as_ref()).collect();
     assert_eq!(verbs, ["shape", "Source::Absent", "new"]);
     let stations: Vec<String> = rail.steps.iter().filter_map(|s| s.station.as_deref().map(text)).collect();
     assert_eq!(stations, ["Fault", "Source"]);
     let riders: Vec<String> = rail.steps[2].riders.iter().map(|x| text(x)).collect();
     assert_eq!(riders, ["+ Identity identity", "+ a DeclarationKind kind"]);
+    let side: Vec<String> = rail.steps[2].side_inputs.iter().map(|port| text(&port.ty)).collect();
+    assert_eq!(side, ["Identity", "DeclarationKind"]);
     assert!(rail.code.starts_with("let source = Source::Absent"));
     assert_eq!(view.foot.as_deref(), Some("4 ways in this world make one · ⌥ for code"));
     // Every station and rider name is a link into the world.
