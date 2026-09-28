@@ -7,8 +7,9 @@ use gpui::TestAppContext;
 
 /// Reduced motion switched on while a page is still arriving, then off
 /// again: the arrival ends where reduced motion put it and never plays
-/// backwards (the storm's seed 3: `reader.pages.place-*` jumped 0.930 ->
-/// 1.000 in 0 ms across a motion toggle).
+/// backwards (the storm's seed 3: the arriving page jumped 0.930 -> 1.000 in
+/// 0 ms across a motion toggle). The arrival is the reader's one driver,
+/// `reader.carry` (the plate's openness).
 #[gpui::test]
 fn a_page_arriving_when_motion_is_reduced_lands_and_stays_landed(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
@@ -21,50 +22,35 @@ fn a_page_arriving_when_motion_is_reduced_lands_and_stays_landed(cx: &mut TestAp
         rig.frame(16);
     }
     let arriving = rig.cx.update(|_, cx| facet::probe::take(cx));
-    let place = arrival(&arriving);
-    let before = last(&arriving, &place);
+    let before = last(&arriving, CARRY).expect("the page is arriving on the reader's driver");
     assert!(before.live && before.value < 0.99, "the page is still arriving: {before:?}");
     queue(&mut rig, Intent::SetMotion(MotionPreference::Reduced));
     rig.frame(16);
     let reduced = rig.cx.update(|_, cx| facet::probe::take(cx));
-    let landed = last(&reduced, &place);
     assert!(
-        !landed.live && (landed.value - 1.0).abs() < 1e-3,
-        "reduced motion lands the arriving page at once: {place} is {:.4}{}",
-        landed.value,
-        if landed.live { " and still moving" } else { "" }
+        last(&reduced, CARRY).is_none(),
+        "reduced motion lands the arriving page at once: {:?}",
+        last(&reduced, CARRY)
     );
+    let pages = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx));
+    assert_eq!(pages, 1, "only the arrived page is drawn");
     queue(&mut rig, Intent::SetMotion(MotionPreference::Full));
     for _ in 0..40 {
         rig.frame(16);
     }
     let after = rig.cx.update(|_, cx| facet::probe::take(cx));
-    for sample in after.tracks.iter().filter(|track| track.key == place) {
-        assert!(
-            !sample.live && (sample.value - 1.0).abs() < 1e-3,
-            "motion back on never replays the arrival: {place} at {:.0} ms is {:.4}",
-            sample.at_ms,
-            sample.value
-        );
-    }
+    assert!(
+        last(&after, CARRY).is_none(),
+        "motion back on never replays the arrival: {:?}",
+        last(&after, CARRY)
+    );
 }
 
-/// The opacity track of the newest page in the reader's stack.
-fn arrival(ledger: &facet::probe::Ledger) -> String {
-    ledger
-        .tracks
-        .iter()
-        .filter_map(|track| {
-            let rest = track.key.strip_prefix("reader.pages.place-")?.strip_suffix(".opacity")?;
-            rest.parse::<u64>().ok().map(|n| (n, track.key.clone()))
-        })
-        .max()
-        .map(|(_, key)| key)
-        .expect("an arriving page")
-}
+/// The reader's place-change driver.
+const CARRY: &str = "reader.carry";
 
-fn last<'a>(ledger: &'a facet::probe::Ledger, key: &str) -> &'a facet::probe::TrackSample {
-    ledger.tracks.iter().rev().find(|track| track.key == key).expect("a sample")
+fn last<'a>(ledger: &'a facet::probe::Ledger, key: &str) -> Option<&'a facet::probe::TrackSample> {
+    ledger.tracks.iter().rev().find(|track| track.key == key)
 }
 
 /// The storm's seed 3: focus on a reader target, then the window shrinks

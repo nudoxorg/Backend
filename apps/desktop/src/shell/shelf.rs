@@ -158,7 +158,7 @@ impl Shelf {
         if let Some(index) = self
             .targets
             .focused()
-            .and_then(|id| self.rows.iter().position(|row| &row.id == id))
+            .and_then(|id| self.rows.iter().position(|row| row.id == id))
         {
             self.scroll.scroll_to_item(index, ScrollStrategy::Center);
         }
@@ -676,19 +676,24 @@ impl Shelf {
             .pr(measure.space(Space::Roomy))
             .hover(|style| style.bg(palette.tint))
             .child(mark)
-            .child(facet::probe::text(
-                gpui::ElementId::Name(format!("shelf-row:{}", row.id).into()),
-                row.name.clone(),
-                measure.role(ty::MONO_ROW),
-                1.0,
-                facet::probe::TextOverflow::Ellipsis,
+            .child(
+                // `text(...)` (kit's `Said`) already publishes what it is
+                // given as its own probe text under `text:{content}` once
+                // `.child` records its words (kit.rs's `Said::into_element`).
+                // Wrapping that again in `facet::probe::text(shelf-row:…)`
+                // published the same label twice at (near) the same bounds
+                // — the row's mark painting its own name on top of itself,
+                // read here as "shelf-row:X and text:X overlap by …". One
+                // registration, keyed as the row (`.keyed` instead of the
+                // second wrapper), says the same thing once.
                 text(ty::MONO_ROW, measure, ink)
+                    .keyed(gpui::ElementId::Name(format!("shelf-row:{}", row.id).into()))
                     .min_w(px(0.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .child(row.name.clone()),
-            ));
+            );
         if row.current {
             element = element
                 .bg(palette.tint)

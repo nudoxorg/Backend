@@ -261,6 +261,14 @@ impl Shell {
         self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(_, bounds)| bounds)
     }
 
+    /// The reader's own targets: a clone still shares its focus and
+    /// left-by state (see [`super::focus::Targets`]), so a test can drive
+    /// them the same way a click does.
+    #[cfg(test)]
+    pub(crate) fn reader_targets(&self, cx: &App) -> super::focus::Targets {
+        self.reader.read(cx).targets.clone()
+    }
+
     /// Render counters of the root and every region.
     #[must_use]
     pub fn render_counts(&self, cx: &App) -> RenderCounts {
@@ -317,10 +325,10 @@ impl Shell {
     #[must_use]
     pub fn focus_state(&self, cx: &App) -> (Zone, Option<SharedString>) {
         let focused = match self.zone {
-            Zone::Titlebar => self.titlebar.read(cx).targets.focused().cloned(),
-            Zone::Shelf => self.shelf.read(cx).targets.focused().cloned(),
-            Zone::Reader => self.reader.read(cx).targets.focused().cloned(),
-            Zone::Pins => self.pins.read(cx).targets.focused().cloned(),
+            Zone::Titlebar => self.titlebar.read(cx).targets.focused(),
+            Zone::Shelf => self.shelf.read(cx).targets.focused(),
+            Zone::Reader => self.reader.read(cx).targets.focused(),
+            Zone::Pins => self.pins.read(cx).targets.focused(),
         };
         (self.zone, focused)
     }
@@ -434,8 +442,20 @@ impl Shell {
             StoreEvent::Snapshot(Branch::Overlay) => self.sync_overlay(window, cx),
             StoreEvent::Snapshot(Branch::Route) => {
                 self.cancel_symbol_link(cx);
-                if !super::bodies::graph::is_graph(self.links.snapshot(cx).route()) {
+                let route = self.links.snapshot(cx).route().clone();
+                if !super::bodies::graph::is_graph(&route) {
                     self.focus.focus(window, cx);
+                }
+                // A route a click once left (not a key walk) restores the
+                // keyboard to the row that led away from it: this is how
+                // Back reads as returning, not as a fresh, unfocused page.
+                // `Reader::arrive` clears the reader's own focus on every
+                // arrival, including this one still landing from the same
+                // event, so the restore is deferred past it rather than
+                // raced against it.
+                let reader_targets = self.reader.read(cx).targets.clone();
+                if let Some(id) = reader_targets.left_by(&route) {
+                    cx.defer(move |_cx| reader_targets.focus(id));
                 }
                 // Navigation closes what floats (pins stay).
                 let mut closed = float::close_all(window, cx);

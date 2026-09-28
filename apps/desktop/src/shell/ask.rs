@@ -1,22 +1,26 @@
-//! Ask (⌘K): one field, one list, one reason per row, a short preview.
+//! The query (⌘K, /): the jump bar is the path at rest and the query when
+//! you type; the results are a plate over the shelf's column, and walking
+//! them shows each place in the reader for real.
 //!
 //! Typing asks the store for a search through the read pool (latest wins:
-//! a newer query supersedes the older one, whose rows never land). The list
-//! re-renders only when its own query's page lands. With an empty field the
-//! list waits for a question (the jump bar's back menu holds where you
-//! have been).
+//! a newer query supersedes the older one, whose rows never land). ↑ ↓ walk
+//! the rows and **preview** each one (`Intent::Preview`: no history); ↵
+//! keeps the shown place (`CommitPreview`), or opens the chosen row when
+//! nothing was walked; Esc and Back put the place you were on back. Rows are
+//! grouped by where they are: in the package you are reading first, then
+//! everywhere. The part of each name the query matched is underlined in
+//! periwinkle; a row that matched somewhere else says where ("docs").
 //!
-//! PLACEHOLDER frame: the dialog plate is composed from facet primitives
-//! until `facet::overlay::float` exports the dialog; the field is
-//! `gpui_component`'s input (IME) until the facet input lands.
+//! The field itself is drawn by the jump bar ([`Ask::input`]); this entity
+//! draws the plate. The field is `gpui_component`'s input (IME) until the
+//! facet input lands.
 
 use super::kit::{kind_of, symbol_route, text};
 use super::region::Links;
 use crate::model::pages::{MatchReason, PageKey, SearchQuery, SearchRow};
 use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Route};
 use crate::runtime::store::StoreEvent;
-use facet::icons::{self, Icon, IconSize, KindSize};
-use facet::paint::{Bevel, Chamfer, cut};
+use facet::icons::{self, KindSize};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Space};
 use gpui::{
@@ -24,29 +28,47 @@ use gpui::{
     IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Task, Window, ScrollHandle, div, px,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{InputEvent, InputState};
 use std::time::Duration;
 
 /// How long typing rests before the query is asked.
 const SETTLE: Duration = Duration::from_millis(90);
 
+/// Rows per group before the rest fold into "all results".
+const PER_GROUP: usize = 8;
+
+/// Where a row is, relative to the place you are reading.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Group {
+    /// In the package you are reading.
+    Here,
+    /// Anywhere else.
+    Everywhere,
+}
+
 /// One row of the list.
 #[derive(Clone)]
 struct Choice {
     name: SharedString,
+    /// The byte range of `name` the query matched, when it matched there.
+    matched: Option<std::ops::Range<usize>>,
     place: SharedString,
-    reason: SharedString,
+    /// Said only when the name does not show why the row matched.
+    reason: Option<SharedString>,
     kind: icons::Kind,
     route: Option<Route>,
+    group: Group,
 }
 
-/// The Ask surface.
+/// The query surface.
 pub(crate) struct Ask {
     links: Links,
     input: Entity<InputState>,
     query: Option<SearchQuery>,
-    /// Trail mode: the list is history, not results.
     selected: usize,
+    /// Whether ↑ ↓ have walked the rows since the last keystroke: ↵ then
+    /// keeps the shown place instead of opening the first row.
+    walked: bool,
     renders: u64,
     pending: Option<Task<()>>,
     scroll: ScrollHandle,
@@ -55,7 +77,7 @@ pub(crate) struct Ask {
 
 impl Ask {
     pub(crate) fn new(links: Links, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Ask anything, or find a package"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find a name, or ask"));
         let typed = cx.subscribe_in(&input, window, |ask: &mut Self, input, event: &InputEvent, window, cx| match event {
             InputEvent::Change => {
                 let text = input.read(cx).value().to_string();
@@ -77,6 +99,7 @@ impl Ask {
             input,
             query: None,
             selected: 0,
+            walked: false,
             renders: 0,
             pending: None,
             scroll: ScrollHandle::new(),
@@ -88,9 +111,15 @@ impl Ask {
         self.renders
     }
 
+    /// The field, for the jump bar to draw in its place.
+    pub(crate) const fn input(&self) -> &Entity<InputState> {
+        &self.input
+    }
+
     /// Opens fresh: empty field, focused.
     pub(crate) fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = 0;
+        self.walked = false;
         self.query = None;
         self.pending = None;
         self.input.update(cx, |input, cx| {
@@ -106,6 +135,11 @@ impl Ask {
         if query == self.query {
             return;
         }
+        // A new query shows where you were again until you walk its rows.
+        if self.walked || self.links.snapshot(cx).session().preview.is_some() {
+            self.links.dispatch(Intent::EndPreview, cx);
+        }
+        self.walked = false;
         self.query = query.clone();
         cx.notify();
         let Some(query) = query else {
@@ -123,27 +157,38 @@ impl Ask {
         }));
     }
 
-    /// Moves the selection.
+    /// Moves the selection and shows the row's place in the reader.
     pub(crate) fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.choices(cx).len();
-        if count == 0 {
+        let choices = self.choices(cx);
+        if choices.is_empty() {
             return;
         }
-        self.selected = self.selected.saturating_add_signed(delta).min(count - 1);
-        if self.selected + 1 < count { self.scroll.scroll_to_item(self.selected); }
+        let next = if self.walked { self.selected.saturating_add_signed(delta).min(choices.len() - 1) } else { self.selected };
+        self.selected = next;
+        self.walked = true;
+        self.scroll.scroll_to_item(self.selected);
+        if let Some(route) = choices[next].route.clone() {
+            self.links.dispatch(Intent::Preview(route), cx);
+        }
         cx.notify();
     }
 
-    /// Opens the selected row. Dead end #14: a row with no place does not
-    /// silently do nothing — the Notice says there is nowhere to go.
+    /// ↵: keeps the place the walk is showing, or opens the chosen row.
+    /// Dead end #14: a row with no place does not silently do nothing — the
+    /// Notice says there is nowhere to go.
     pub(crate) fn choose(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let choices = self.choices(cx);
         let Some(choice) = choices.get(self.selected) else { return };
+        let previewing = self.links.snapshot(cx).session().preview.is_some();
         match choice.route.clone() {
+            Some(route) if previewing && self.walked && self.links.snapshot(cx).route() == &route => {
+                self.links.dispatch(Intent::CommitPreview, cx);
+                self.links.dispatch(Intent::DismissOverlay, cx);
+            }
             Some(route) => self.links.dispatch(Intent::Navigate(route), cx),
             None => {
                 // The Notice is a page-foot fixture (never drawn under an
-                // overlay); closing Ask, exactly as a real navigation
+                // overlay); closing the query, exactly as a real navigation
                 // would, is what makes it visible at all.
                 self.links.dispatch(Intent::DismissOverlay, cx);
                 let snapshot = self.links.snapshot(cx);
@@ -157,30 +202,50 @@ impl Ask {
         }
     }
 
+    /// The route for "every result, as a page" (⌘↵).
+    pub(crate) fn all_results(&self) -> Option<Route> {
+        self.query.clone().map(|query| Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query))))
+    }
+
+    /// What the jump bar says at the query's end: how many, and where.
+    pub(crate) fn count(&self, cx: &App) -> SharedString {
+        if self.query.is_none() {
+            return SharedString::default();
+        }
+        if self.searching(cx) {
+            return "…".into();
+        }
+        let choices = self.choices(cx);
+        let here = choices.iter().filter(|choice| choice.group == Group::Here).count();
+        let everywhere = choices.len() - here;
+        match (here, everywhere) {
+            (0, 0) => "nothing".into(),
+            (0, n) => format!("{n} found").into(),
+            (h, 0) => format!("{h} here").into(),
+            (h, n) => format!("{h} here · {n} elsewhere").into(),
+        }
+    }
+
     fn choices(&self, cx: &App) -> Vec<Choice> {
-        let Some(query) = &self.query else {
-            return vec![Choice {
-                name: "Find packages".into(),
-                place: "Explore what your index knows".into(),
-                reason: "open Find".into(),
-                kind: icons::Kind::Package,
-                route: Some(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))),
-            }];
-        };
+        let Some(query) = &self.query else { return Vec::new() };
+        let snapshot = self.links.snapshot(cx);
+        let here = route_package(snapshot.committed_route()).map(str::to_owned);
         let store = self.links.store.read(cx);
         let results = store.search(query);
-        let mut choices: Vec<Choice> = results
-            .loaded_value()
-            .map(|page| page.rows.iter().take(8).map(result_choice).collect())
-            .unwrap_or_default();
-        choices.push(Choice {
-            name: "All answers as a page".into(),
-            place: query.text.to_string().into(),
-            reason: "explore packages".into(),
-            kind: icons::Kind::Package,
-            route: Some(Route::Orbit(OrbitRoute::Browse(BrowseRoute::Find(query.clone())))),
-        });
-        choices
+        let Some(page) = results.loaded_value() else { return Vec::new() };
+        let mut rows: Vec<Choice> = page.rows.iter().map(|row| result_choice(row, &query.text, here.as_deref())).collect();
+        // Stable: the producer's order within each group.
+        rows.sort_by_key(|choice| choice.group == Group::Everywhere);
+        let mut shown = Vec::with_capacity(rows.len());
+        let (mut in_here, mut elsewhere) = (0, 0);
+        for row in rows {
+            let count = if row.group == Group::Here { &mut in_here } else { &mut elsewhere };
+            if *count < PER_GROUP {
+                *count += 1;
+                shown.push(row);
+            }
+        }
+        shown
     }
 
     /// Whether a search for the current query is still on its way.
@@ -191,36 +256,69 @@ impl Ask {
     }
 }
 
-fn result_choice(row: &SearchRow) -> Choice {
+/// The package a route reads, when it reads one.
+fn route_package(route: &Route) -> Option<&str> {
+    match route {
+        Route::Package(route) => Some(route.package.as_str()),
+        Route::Symbol(route) => Some(route.package.as_str()),
+        Route::Orbit(_) | Route::World => None,
+    }
+}
+
+fn result_choice(row: &SearchRow, query: &str, here: Option<&str>) -> Choice {
+    let name = row.decl.name.to_string();
+    let matched = matched_range(&name, query);
     let reason = match row.reason {
-        MatchReason::ExactName => "exact name",
-        MatchReason::Name => "in the name",
-        MatchReason::Signature => "in the signature",
-        MatchReason::Docs => "in the docs",
-        MatchReason::Producer => "the index's pick",
+        MatchReason::ExactName | MatchReason::Name if matched.is_some() => None,
+        MatchReason::ExactName | MatchReason::Name => None,
+        MatchReason::Signature => Some("signature"),
+        MatchReason::Docs => Some("docs"),
+        MatchReason::Producer => None,
+    };
+    let package = row.decl.coordinate.package();
+    let group = match (package.as_ref(), here) {
+        (Some(package), Some(here)) if package.as_str() == here => Group::Here,
+        _ => Group::Everywhere,
     };
     let place = row.package.as_ref().map_or_else(
         || row.decl.path.as_deref().unwrap_or_default().to_owned(),
         |package| {
             let name = crate::model::pages::PackageRef::parse(package).map_or_else(|_| package.to_string(), |package| package.display_name().to_owned());
-            match &row.decl.path {
-                Some(path) => format!("{name} · {path}"),
-                None => name,
+            match (&row.decl.path, group) {
+                // In the package you are reading, the package goes without saying.
+                (Some(path), Group::Here) => path.clone().to_string(),
+                (Some(path), Group::Everywhere) => format!("{name} · {path}"),
+                (None, _) => name,
             }
         },
     );
-    let route = row
-        .decl
-        .coordinate
-        .package()
-        .and_then(|package| symbol_route(package.as_str(), &row.decl.coordinate));
+    let route = package.and_then(|package| symbol_route(package.as_str(), &row.decl.coordinate));
     Choice {
-        name: row.decl.name.to_string().into(),
+        name: name.into(),
+        matched,
         place: place.into(),
-        reason: reason.into(),
+        reason: reason.map(SharedString::from),
         kind: kind_of(row.decl.kind),
         route,
+        group,
     }
+}
+
+/// Where `query` sits in `name`, ignoring case: a whole-word query first,
+/// else its first run of letters (a question's words don't underline).
+fn matched_range(name: &str, query: &str) -> Option<std::ops::Range<usize>> {
+    let needle = query.trim();
+    if needle.is_empty() || needle.contains(char::is_whitespace) {
+        return None;
+    }
+    let lower = name.to_lowercase();
+    // Byte offsets agree only when lowercasing kept every length (ASCII
+    // names, the common case); otherwise nothing is underlined.
+    if lower.len() != name.len() {
+        return None;
+    }
+    let at = lower.find(&needle.to_lowercase())?;
+    Some(at..at + needle.len())
 }
 
 fn semantic_search_label(status: backend_library::SemanticSearchStatus) -> String {
@@ -250,139 +348,141 @@ impl Render for Ask {
         let facet = cx.facet();
         let palette = facet.palette();
         let viewport = window.viewport_size();
-        let width = (viewport.width - px(32.0)).min(px(680.0 * facet.text_scale)).max(px(0.0));
-        let measure = Measure::new(width, &facet);
+        let measure = Measure::new(viewport.width, &facet);
         let choices = self.choices(cx);
         let searching = self.searching(cx);
-        let count: SharedString = if self.query.is_none() {
-            "a name, a shape, or a question".into()
-        } else if searching {
-            "asking…".into()
-        } else {
-            format!("{} quick answers", choices.len().saturating_sub(1)).into()
-        };
-        let available = (viewport.height - px(72.0 * facet.text_scale) - px(16.0 * facet.text_scale)).max(px(0.0));
-        // Reserve the input, status and the two-line page door before giving
-        // the remaining viewport to the independently scrolling quick list.
-        let list_height = (available - px(192.0 * facet.text_scale)).max(px(0.0)).min(px(420.0 * facet.text_scale));
-        let quick = choices.len().saturating_sub(1);
-        let mut list = div().id("ask-results").flex().flex_col().py(measure.space(Space::Tight))
-            .min_h(px(0.0)).max_h(list_height).overflow_y_scroll().track_scroll(&self.scroll);
-        for (index, choice) in choices.iter().enumerate().take(quick) {
-            let on = index == self.selected;
-            let has_place = choice.route.is_some();
-            let mut row = div()
-                .id(("ask-row", index))
-                .flex()
-                .items_center()
-                .gap(measure.space(Space::Roomy))
-                .px(measure.space(Space::Gutter))
-                .py(measure.space(Space::Snug))
-                .when_on(on, palette)
-                .child(super::kit::kind_mark(choice.kind, KindSize::Sm, &measure, palette))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w(px(0.0))
-                        .flex_1()
-                        // Dead end #14/#15: a row with no place is drawn as
-                        // text (kit's rule), never as a link that goes
-                        // nowhere.
-                        .child(text(ty::MONO_ROW, &measure, super::kit::link_ink(has_place, palette)).child(choice.name.clone()))
-                        .child(
-                            text(ty::MONO_SMALL, &measure, palette.ink3)
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(choice.place.clone()),
-                        ),
-                )
-                .children((measure.effective() >= 440.0).then(|| text(ty::CAPTION, &measure, palette.ink3).flex_none().child(choice.reason.clone())));
-            if let Some(route) = choice.route.clone() {
-                let links = self.links.clone();
-                row = row.hover(|style| style.bg(palette.tint)).on_click(move |_: &ClickEvent, _, cx| {
-                    links.dispatch(Intent::Navigate(route.clone()), cx);
-                });
-            }
-            list = list.child(row);
-        }
-        let footer = choices.last().map(|choice| {
-            let links = self.links.clone();
-            let route = choice.route.clone();
-            div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
-                .px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy))
-                .when_on(self.selected == quick, palette).hover(|style| style.bg(palette.tint)).cursor_pointer()
-                .child(super::kit::kind_mark(icons::Kind::Package, KindSize::Sm, &measure, palette))
-                .child(div().flex_1().min_w_0().flex().flex_col()
-                    .child(text(ty::ROW, &measure, palette.ink0).child("All answers as a page"))
-                    .child(text(ty::CAPTION, &measure, palette.ink3).child(if measure.effective() < 440.0 { "Inspect and compare packages" } else { "Inspect packages and compare what they expose" })))
-                .on_click(move |_, _, cx| { if let Some(route) = route.clone() { links.dispatch(Intent::Navigate(route), cx); } })
-        });
-        if choices.is_empty() && !searching {
-            let words = if self.query.is_some() { "Nothing matches that yet." } else { "Nothing walked yet." };
-            list = list.child(div().px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet(words, &measure, palette)));
-        }
-        let field = Input::new(&self.input).appearance(false).bordered(false);
-        let semantic_status = self.query.as_ref().and_then(|query| {
+        let mut list = div().id("ask-results").flex().flex_col().pt(measure.space(Space::Tight))
+            .size_full().overflow_y_scroll().track_scroll(&self.scroll);
+        if let Some(status) = self.query.as_ref().and_then(|query| {
             self.links
                 .store
                 .read(cx)
                 .search(query)
                 .loaded_value()
                 .and_then(|page| page.coverage.semantic_search_status())
-        });
-        let mut surface = cut()
-            .chamfer(Chamfer::Lg)
-            .bevel(Bevel::Peri)
-            .fill(palette.glass)
-            .floating()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(measure.space(Space::Roomy))
-                    .px(measure.space(Space::Gutter))
-                    .h(px(52.0 * facet.text_scale))
-                    .border_b_1()
-                    .border_color(palette.line1.hsla())
-                    .child(icons::ui(Icon::Search, IconSize::S16, palette.ink2).size(measure.icon(16.0)))
-                    .child(div().flex_1().min_w(px(0.0)).set_ui(&measure, palette).child(field))
-                    .child(text(ty::MONO_SMALL, &measure, palette.ink3).flex_none().child(count)),
-            );
-        if let Some(status) = semantic_status {
-            surface = surface.child(
+        }) {
+            list = list.child(
                 div()
                     .px(measure.space(Space::Gutter))
                     .py(measure.space(Space::Snug))
                     .child(text(ty::MONO_SMALL, &measure, palette.ink3).child(semantic_search_label(status))),
             );
         }
-        surface = surface.child(div().max_h(px(420.0 * facet.text_scale)).overflow_hidden().child(list));
+        let mut group = None;
+        for (index, choice) in choices.iter().enumerate() {
+            if group != Some(choice.group) {
+                group = Some(choice.group);
+                let (words, count) = match choice.group {
+                    Group::Here => (
+                        route_package(self.links.snapshot(cx).committed_route())
+                            .and_then(|package| crate::model::pages::PackageRef::parse(package).ok())
+                            .map_or_else(|| "here".to_owned(), |package| format!("in {}", package.display_name())),
+                        choices.iter().filter(|c| c.group == Group::Here).count(),
+                    ),
+                    Group::Everywhere => ("everywhere".to_owned(), choices.iter().filter(|c| c.group == Group::Everywhere).count()),
+                };
+                list = list.child(group_head(words, count, &measure, palette));
+            }
+            list = list.child(self.row(index, choice, &measure, palette));
+        }
+        if choices.is_empty() && self.query.is_some() && !searching {
+            list = list.child(div().px(measure.space(Space::Gutter)).py(measure.space(Space::Roomy)).child(super::kit::quiet("Nothing matches that yet.", &measure, palette)));
+        }
+        if let Some(route) = self.all_results().filter(|_| !choices.is_empty()) {
+            let links = self.links.clone();
+            list = list.child(
+                div().id("ask-find-page").flex().flex_none().items_center().gap(measure.space(Space::Roomy))
+                    .h(measure.row() + measure.space(Space::Snug)).px(measure.space(Space::Gutter)).mt(measure.space(Space::Tight))
+                    .border_t_1().border_color(palette.line1.hsla())
+                    .hover(|style| style.bg(palette.tint)).cursor_pointer()
+                    .child(text(ty::SMALL, &measure, palette.ink2).child("every result, as a page"))
+                    .on_click(move |_: &ClickEvent, _, cx| links.dispatch(Intent::Navigate(route.clone()), cx)),
+            );
+        }
         div()
             .id("ask")
-            .w(width)
-            .child(surface.max_h(available).children(footer))
+            .size_full()
+            .bg(palette.g2)
+            .border_r_1()
+            .border_color(palette.line2.hsla())
+            .child(list)
     }
 }
 
-trait AskStyle: Styled + Sized {
-    fn when_on(self, on: bool, palette: &facet::Palette) -> Self {
-        if on { self.bg(palette.plate2) } else { self }
-    }
-
-    fn set_ui(self, measure: &Measure, palette: &facet::Palette) -> Self {
-        use facet::Set as _;
-        self.set(ty::HEAD, measure).text_color(palette.ink0.hsla())
+impl Ask {
+    fn row(&self, index: usize, choice: &Choice, measure: &Measure, palette: &facet::Palette) -> AnyElement {
+        let on = index == self.selected && (self.walked || index == 0);
+        let has_place = choice.route.is_some();
+        let ink = if on { palette.ink0.hsla() } else { super::kit::link_ink(has_place, palette) };
+        let name = &choice.name;
+        let mut words = div().flex().items_baseline().min_w(px(0.0)).flex_none();
+        match choice.matched.clone() {
+            Some(range) => {
+                let (before, hit, after) = (&name[..range.start], &name[range.clone()], &name[range.end..]);
+                if !before.is_empty() {
+                    words = words.child(text(ty::MONO_ROW, measure, ink).child(before.to_owned()));
+                }
+                words = words.child(
+                    text(ty::MONO_ROW, measure, palette.ink0)
+                        .border_b(px(1.5 * measure.scale()))
+                        .border_color(palette.peri.base.hsla())
+                        .child(hit.to_owned()),
+                );
+                if !after.is_empty() {
+                    words = words.child(text(ty::MONO_ROW, measure, ink).child(after.to_owned()));
+                }
+            }
+            None => words = words.child(text(ty::MONO_ROW, measure, ink).child(name.clone())),
+        }
+        let mut row = div()
+            .id(("ask-row", index))
+            .relative()
+            .flex()
+            .items_center()
+            .gap(measure.space(Space::Roomy))
+            .h(measure.row() + measure.space(Space::Snug))
+            .px(measure.space(Space::Gutter))
+            .child(super::kit::kind_mark(choice.kind, KindSize::Sm, measure, palette))
+            .child(words)
+            .children(choice.reason.clone().map(|reason| text(ty::MONO_SMALL, measure, palette.ink3).flex_none().child(reason)))
+            .child(
+                text(ty::MONO_SMALL, measure, palette.ink3)
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_right()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(choice.place.clone()),
+            );
+        if on {
+            row = row.bg(palette.plate2).child(
+                div().absolute().left_0().top_0().bottom_0().w(px(2.0 * measure.scale())).bg(palette.peri.base.hsla()),
+            );
+        }
+        if let Some(route) = choice.route.clone() {
+            let links = self.links.clone();
+            row = row.cursor_pointer().hover(|style| style.bg(palette.tint)).on_click(move |_: &ClickEvent, _, cx| {
+                links.dispatch(Intent::Navigate(route.clone()), cx);
+            });
+        }
+        row.into_any_element()
     }
 }
 
-impl<E: Styled> AskStyle for E {}
-
-#[allow(dead_code)]
-fn _any(_: AnyElement) {}
+fn group_head(words: String, count: usize, measure: &Measure, palette: &facet::Palette) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(measure.space(Space::Base))
+        .h(measure.row())
+        .px(measure.space(Space::Gutter))
+        .mt(measure.space(Space::Tight))
+        .child(text(ty::LABEL, measure, palette.ink3).flex_none().child(words))
+        .child(div().flex_1().h(px(1.0)).bg(palette.line1.hsla()))
+        .child(text(ty::MONO_SMALL, measure, palette.ink3).flex_none().child(count.to_string()))
+        .into_any_element()
+}
 
 #[cfg(test)]
 mod tests {

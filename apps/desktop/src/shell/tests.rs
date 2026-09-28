@@ -584,6 +584,88 @@ fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
     assert!(matches!(rig.route(), Route::Symbol(_)));
 }
 
+/// `shelf.rs`'s `row()` used to wrap an already self-publishing `text()`
+/// (kit's `Said`, which records its own words under `text:{content}` once
+/// `.child` is called) in a second, explicit `facet::probe::text("shelf-row:…",
+/// …)`: the same label painted twice, at (near) the same bounds — read by
+/// the harness as `overlap shelf-row:X + text:X: "X" and "X" overlap by …`,
+/// on every checkpoint of J1 that shows a shelf row.
+#[gpui::test]
+fn a_shelf_row_paints_its_label_once(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let all: Vec<_> = ledger.texts.iter().filter(|text| text.content == "RelationLabel").collect();
+    let shelf_hits = all.iter().filter(|text| text.key.starts_with("shelf-row:")).count();
+    let stray_hits = all.iter().filter(|text| text.key == "text:RelationLabel").count();
+    assert_eq!(shelf_hits, 1, "the shelf row's own label: {all:#?}");
+    assert_eq!(stray_hits, 0, "a second, default-keyed registration of the same label (the double paint): {all:#?}");
+}
+
+/// `jump_bar`'s row used to size itself from its own content (no `flex_1`),
+/// while its one real child (`here`) is `flex_1().min_w(0)` — a 0%-basis,
+/// 0-floor item contributes ~0 to that computation, so the row collapsed to
+/// almost nothing. Its fixed-size children (each segment, each `›`) still
+/// painted at their natural size regardless (nothing shrinks a `flex_none`
+/// item below it); only the current name — the sole child with no floor of
+/// its own, `min_w(0)` for its own truncation — absorbed the whole
+/// shortfall, down to a literal 0 px box (J1's stop-1/code checkpoints:
+/// `clip text:from_str: "from_str" needs 60.0 px … in a 0.0 px box`).
+#[gpui::test]
+fn the_jump_bar_keeps_the_current_names_own_box(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
+    rig.repaint();
+    let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let segments: Vec<_> = ledger.targets.iter().filter(|target| target.key.starts_with("jump-seg-")).collect();
+    assert!(
+        segments.len() >= 2,
+        "expected a multi-segment breadcrumb (present › glyph › RelationLabel): {:?}",
+        segments.iter().map(|target| &target.key).collect::<Vec<_>>()
+    );
+    for segment in &segments {
+        assert!(
+            segment.bounds.width > 0.0,
+            "{} laid out a {} px box: {:?}",
+            segment.key,
+            segment.bounds.width,
+            segments.iter().map(|target| (&target.key, target.bounds.width)).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Back does not merely leave a route, it returns to one: the row (or
+/// link) a click once left is focused again. `Reader::arrive` unfocuses
+/// every page it draws, including the one Back lands back on, so the
+/// restore has to survive that — this is what J1's back-1/back-2/back-3
+/// checkpoints assert (`focus … in reader`).
+#[gpui::test]
+fn back_to_a_route_a_click_left_restores_focus_there(cx: &mut TestAppContext) {
+    let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
+    let left = rig.route();
+    // What a click does before it navigates away (`orbit.rs`'s project
+    // tile does exactly this; any body that adopts the same pattern gets
+    // the same Back behaviour for free): focus the target, and remember
+    // which route it left.
+    let leave_id: gpui::SharedString = "left-by-test-row".into();
+    rig.shell.update(rig.cx, |shell, cx| {
+        let targets = shell.reader_targets(cx);
+        targets.focus(leave_id.clone());
+        targets.remember_leave(left.clone(), leave_id.clone());
+    });
+    let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(focused, Some(leave_id.clone()), "the click focused its own row first");
+    // Navigate away: a fresh page starts unfocused.
+    rig.go(Intent::Navigate(page_route("Related")));
+    let (_, away) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_ne!(away, Some(leave_id.clone()), "a fresh page starts unfocused");
+    // Back to the route the click left: the keyboard returns to that row.
+    rig.go(Intent::Navigate(left));
+    let (_, restored) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    assert_eq!(restored, Some(leave_id), "Back did not restore focus to the row that led away from it");
+}
+
 #[gpui::test]
 fn holding_command_shows_keys_only_after_the_hold_and_only_where_keys_are(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);

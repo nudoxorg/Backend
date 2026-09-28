@@ -216,7 +216,18 @@ impl Titlebar {
         let scale = measure.scale();
         let height = px(32.0 * scale);
         let session = snapshot.session();
-        let mut bar = div().flex().items_center().min_w(px(0.0)).gap(measure.space(Space::Snug));
+        // `flex_1`: without it this row sizes itself from its own content
+        // (width: auto), and its one real child, `here` below, is itself
+        // `flex_1().min_w(0)` — a 0%-basis, 0-floor item contributes ~0 to
+        // that auto computation, so `bar` collapsed to nearly nothing and
+        // handed `here`/`plate` almost no room to lay out in. `plate`'s
+        // fixed-size children (each segment, each `›`) kept painting at
+        // their own natural size regardless (nothing shrinks a `flex_none`
+        // item below it), so the only child with no floor of its own — the
+        // current name, `min_w(0)` for its own truncation — absorbed the
+        // whole shortfall, down to a literal 0 px box (`ask_field`'s field
+        // has no such wrapper and never collapses this way).
+        let mut bar = div().flex().items_center().min_w(px(0.0)).flex_1().gap(measure.space(Space::Snug));
 
         // Back: a click steps back; a long press or a right click lists.
         let can_back = !session.back.is_empty();
@@ -313,6 +324,7 @@ impl Titlebar {
             .min_w(px(0.0))
             .overflow_hidden()
             .whitespace_nowrap()
+            .text_ellipsis()
             .child(here.name.clone());
         #[cfg(test)]
         let name = facet::probe::text(
@@ -347,7 +359,12 @@ impl Titlebar {
         };
         for (index, segment) in segments.iter().enumerate().take(lead).skip(keep_from) {
             let id: SharedString = format!("jump-seg-{index}").into();
-            plate = plate.child(self.segment(id, index, segment, measure, palette, cx)).child(text(ty::SMALL, measure, palette.ink4).child("›"));
+            // `ink4` reads 2.72:1 on the abyss ground — tokens.rs documents
+            // it as "rules and inactive ticks only, never text", and this
+            // separator is drawn as a text glyph. `ink3` ("quiet words",
+            // already this file's tone for the plate's own quiet line) is
+            // the nearest step up that clears 4.5:1 (6.12:1 here).
+            plate = plate.child(self.segment(id, index, segment, measure, palette, cx)).child(text(ty::SMALL, measure, palette.ink3).child("›"));
         }
         let last_id: SharedString = format!("jump-seg-{lead}").into();
         let last_links = self.links.clone();

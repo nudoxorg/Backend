@@ -10,6 +10,7 @@
 //! moves in.
 
 use crate::model::pages::{PageKey, SymbolRef};
+use crate::navigation::Route;
 use facet::motion::{Motion, spec};
 use facet::paint::{Bevel, CutPaint, Edge, paint_cut};
 use facet::{ActiveFacet as _, Measure};
@@ -66,7 +67,11 @@ pub(crate) struct Targets {
     name: &'static str,
     list: Rc<RefCell<Vec<Target>>>,
     bounds: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
-    focused: Option<SharedString>,
+    /// Shared (not per-clone) so a target focused while building one frame's
+    /// `Ctx` is still focused once that clone is dropped: a body only ever
+    /// borrows `&Targets`, never `&mut`, so setting focus from a click needs
+    /// interior mutability here, the same way `list`/`bounds` already do.
+    focused: Rc<RefCell<Option<SharedString>>>,
     /// The zone is the active one: the glow shows only there.
     active: bool,
     /// Where the bevel was last heading, kept while it comes to rest unseen.
@@ -76,6 +81,12 @@ pub(crate) struct Targets {
     layouts: Rc<RefCell<HashMap<SharedString, LayoutId>>>,
     /// The bevel's own motion store: its liveness is the bevel's alone.
     motion: Motion,
+    /// Which target a route was left by (a click, not a key walk): keyed on
+    /// the exact route, so Back landing on it again can put the keyboard
+    /// back on the row that led away from it. `Reader::arrive` clears
+    /// `focused` on every arrival ("a new page starts unfocused"), so this
+    /// lives apart from it and survives that clear.
+    left_by: Rc<RefCell<HashMap<Route, SharedString>>>,
 }
 
 impl Targets {
@@ -96,8 +107,11 @@ impl Targets {
 
     /// The focused target's layout in this frame, once laid out.
     pub(crate) fn focused_layout(&self) -> Option<LayoutId> {
-        let id = self.focused.as_ref().filter(|_| self.active)?;
-        self.layouts.borrow().get(id).copied()
+        if !self.active {
+            return None;
+        }
+        let id = self.focused.borrow().clone()?;
+        self.layouts.borrow().get(&id).copied()
     }
 
     /// Registers one target in walk order.
@@ -120,13 +134,13 @@ impl Targets {
     }
 
     /// The focused target's id.
-    pub(crate) fn focused(&self) -> Option<&SharedString> {
-        self.focused.as_ref()
+    pub(crate) fn focused(&self) -> Option<SharedString> {
+        self.focused.borrow().clone()
     }
 
     /// Whether `id` is focused in the active zone.
     pub(crate) fn is_focused(&self, id: &str) -> bool {
-        self.active && self.focused.as_deref() == Some(id)
+        self.active && self.focused.borrow().as_deref() == Some(id)
     }
 
     /// Marks this zone active or not; returns whether that changed.
@@ -138,13 +152,28 @@ impl Targets {
 
 
     /// Forgets the focused target (a new page starts unfocused).
-    pub(crate) fn clear_focus(&mut self) {
-        self.focused = None;
+    pub(crate) fn clear_focus(&self) {
+        *self.focused.borrow_mut() = None;
     }
 
-    /// Focuses `id` (a pointer click keeps the keyboard where the pointer is).
-    pub(crate) fn focus(&mut self, id: impl Into<SharedString>) {
-        self.focused = Some(id.into());
+    /// Focuses `id` (a pointer click keeps the keyboard where the pointer
+    /// is). `&self`: a body only ever holds `&Targets`, so a click can call
+    /// this directly, the same way it already calls `push`/`track`.
+    pub(crate) fn focus(&self, id: impl Into<SharedString>) {
+        *self.focused.borrow_mut() = Some(id.into());
+    }
+
+    /// Remembers that activating `id` is what left `route` (a click, not a
+    /// key walk): [`Self::left_by`] reads this back so Back can put the
+    /// keyboard on the same row when it lands on `route` again.
+    pub(crate) fn remember_leave(&self, route: Route, id: impl Into<SharedString>) {
+        self.left_by.borrow_mut().insert(route, id.into());
+    }
+
+    /// The target `route` was left by, when a click (not a key walk) is
+    /// what left it.
+    pub(crate) fn left_by(&self, route: &Route) -> Option<SharedString> {
+        self.left_by.borrow().get(route).cloned()
     }
 
     /// Moves focus `delta` targets along the last rendered list, clamping at
@@ -156,26 +185,23 @@ impl Targets {
             return false;
         }
         let last = list.len() - 1;
-        let next = match self
-            .focused
-            .as_ref()
-            .and_then(|id| list.iter().position(|target| &target.id == id))
-        {
+        let focused = self.focused.borrow().clone();
+        let next = match focused.as_ref().and_then(|id| list.iter().position(|target| &target.id == id)) {
             Some(index) => index.saturating_add_signed(delta).min(last),
             None if delta >= 0 => 0,
             None => last,
         };
         let id = list[next].id.clone();
         drop(list);
-        let moved = self.focused.as_ref() != Some(&id);
-        self.focused = Some(id);
+        let moved = focused.as_ref() != Some(&id);
+        *self.focused.borrow_mut() = Some(id);
         moved
     }
 
     /// The focused target, if it is still on screen.
     pub(crate) fn current(&self) -> Option<Target> {
-        let id = self.focused.as_ref()?;
-        self.list.borrow().iter().find(|target| &target.id == id).cloned()
+        let id = self.focused.borrow().clone()?;
+        self.list.borrow().iter().find(|target| target.id == id).cloned()
     }
 
     /// Every target with its last recorded bounds (hint mode).
@@ -195,8 +221,8 @@ impl Targets {
 
     /// The focused target's bounds, when recorded.
     pub(crate) fn focused_bounds(&self) -> Option<Bounds<Pixels>> {
-        let id = self.focused.as_ref()?;
-        self.bounds.borrow().get(id).copied()
+        let id = self.focused.borrow().clone()?;
+        self.bounds.borrow().get(&id).copied()
     }
 
     /// The travelling focus bevel for this region: add it as the region's
@@ -205,7 +231,7 @@ impl Targets {
         FocusGlow {
             keys: ["x", "y", "w", "h"].map(|axis| ElementId::Name(format!("{}.glow-{axis}", self.name).into())),
             bounds: Rc::clone(&self.bounds),
-            focused: self.focused.clone().filter(|_| self.active),
+            focused: self.focused.borrow().clone().filter(|_| self.active),
             heading: Rc::clone(&self.heading),
             motion: self.motion.clone(),
             chamfer: f32::from(measure.space(facet::Space::Base)).max(4.0),
