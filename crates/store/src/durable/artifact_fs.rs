@@ -1068,8 +1068,13 @@ mod imp {
     ) -> Result<bool, StoreError> {
         let staged_path = staging.path.join(staging_name);
         check_regular(&staged_path, source)?;
+        let mut permissions = source
+            .metadata()
+            .map_err(|error| io_error(&error))?
+            .permissions();
+        permissions.set_readonly(true);
         source
-            .set_permissions(std::fs::Permissions::from_readonly(true))
+            .set_permissions(permissions)
             .map_err(|error| io_error(&error))?;
         source.sync_all().map_err(|error| io_error(&error))?;
         let objects = store.root.join("objects");
@@ -1100,9 +1105,14 @@ mod imp {
         bytes: &[u8],
     ) -> Result<bool, StoreError> {
         let temp_path = staging.path.join(CLOSURE_TEMP_FILE);
-        let temp = create_stage_file(staging, CLOSURE_TEMP_FILE)?;
+        let mut temp = create_stage_file(staging, CLOSURE_TEMP_FILE)?;
         temp.write_all(bytes).map_err(|error| io_error(&error))?;
-        temp.set_permissions(std::fs::Permissions::from_readonly(true))
+        let mut permissions = temp
+            .metadata()
+            .map_err(|error| io_error(&error))?
+            .permissions();
+        permissions.set_readonly(true);
+        temp.set_permissions(permissions)
             .map_err(|error| io_error(&error))?;
         temp.sync_all().map_err(|error| io_error(&error))?;
         drop(temp);
