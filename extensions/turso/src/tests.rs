@@ -86,10 +86,53 @@ fn path() -> PathBuf {
 }
 
 fn remove_database(path: &std::path::Path) {
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", "-tshm"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
         let _ = std::fs::remove_file(sidecar);
     }
+}
+
+async fn assert_projection_integrity_without_fts(projection: &TursoProjection) {
+    let mut indexes = projection
+        .connection
+        .query(
+            "SELECT name FROM sqlite_master \
+             WHERE type='index' AND tbl_name='backend_projection_rows'",
+            (),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("projection index query: {error}"));
+    let mut names = Vec::new();
+    while let Some(row) = indexes
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("projection index next: {error}"))
+    {
+        names.push(
+            row.get::<String>(0)
+                .unwrap_or_else(|error| panic!("projection index name: {error}")),
+        );
+    }
+    assert!(
+        names
+            .iter()
+            .any(|name| name == "backend_projection_rows_label")
+    );
+    assert!(!names.iter().any(|name| name.contains("fts")));
+
+    let mut integrity = projection
+        .connection
+        .query("PRAGMA integrity_check", ())
+        .await
+        .unwrap_or_else(|error| panic!("projection integrity check: {error}"));
+    let result = integrity
+        .next()
+        .await
+        .unwrap_or_else(|error| panic!("projection integrity result: {error}"))
+        .unwrap_or_else(|| panic!("projection integrity check returned no result"))
+        .get::<String>(0)
+        .unwrap_or_else(|error| panic!("projection integrity text: {error}"));
+    assert_eq!(result, "ok");
 }
 
 #[test]
@@ -142,11 +185,17 @@ fn exact_root_reuses_database_and_hot_delta_changes_one_row() {
             ProjectionUpdate::Reused { rows: 1 }
         );
         let found = projection
-            .search("workspace", 10)
+            .lookup_label("workspace", 10)
             .await
-            .unwrap_or_else(|error| panic!("search: {error}"));
+            .unwrap_or_else(|error| panic!("lookup label: {error}"));
         assert_eq!(found.root.as_ref(), next.root().as_bytes());
         assert_eq!(found.ids.as_ref(), &[RowId::Package(package).stable_key()]);
+        assert_projection_integrity_without_fts(&projection).await;
+        let prefix = projection
+            .lookup_label("work", 10)
+            .await
+            .unwrap_or_else(|error| panic!("exact label lookup: {error}"));
+        assert!(prefix.ids.is_empty(), "labels are matched exactly");
         drop(projection);
 
         let mut reopened = TursoProjection::open(&path)
@@ -295,7 +344,9 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
                 });
                 barrier.wait();
                 let result = match prepared {
-                    Ok(projection) => futures_executor::block_on(projection.search("workspace", 8)),
+                    Ok(projection) => {
+                        futures_executor::block_on(projection.lookup_label("workspace", 8))
+                    }
                     Err(error) => Err(error),
                 };
                 sender.send(result).expect("reader result receiver");
@@ -403,11 +454,11 @@ fn multiprocess_wal_stress_serializes_writers_and_preserves_read_snapshots() {
             ProjectionUpdate::Reused { rows: 2 }
         );
         let rows = restarted
-            .search("workspace", 8)
+            .lookup_label("workspace", 8)
             .await
-            .unwrap_or_else(|error| panic!("post-restart search: {error}"));
+            .unwrap_or_else(|error| panic!("post-restart label lookup: {error}"));
         assert_eq!(rows.root.as_ref(), second_view.root().as_bytes());
-        assert_eq!(rows.ids.len(), 2);
+        assert_eq!(rows.ids.as_ref(), &[RowId::Package(package).stable_key()]);
 
         for suffix in ["", "-wal", "-shm"] {
             let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
@@ -948,6 +999,216 @@ fn package_graph_same_root_reconciles_changed_facts_after_restart() {
 }
 
 #[test]
+fn package_graph_source_witness_delta_edits_deletes_and_reopens_exactly() {
+    futures_executor::block_on(async {
+        let path = path();
+        let coordinate = PackageReference::parse("pkg:cargo/shared@1.0.0").expect("source");
+        let state_coordinate =
+            PackageReference::parse("pkg:cargo/stateful@1.0.0").expect("state source");
+        let authority_a = PackageGraphSourceAuthority::Registry(
+            RegistryAuthorityId::from_configured_source([0x31; 32]),
+        );
+        let authority_b = PackageGraphSourceAuthority::Registry(
+            RegistryAuthorityId::from_configured_source([0x52; 32]),
+        );
+        let authority_state = PackageGraphSourceAuthority::Forge([0x73; 32]);
+        let key_a = PackageGraphSourceKey::new(coordinate.clone(), authority_a);
+        let key_b = PackageGraphSourceKey::new(coordinate.clone(), authority_b);
+        let state_key = PackageGraphSourceKey::new(state_coordinate.clone(), authority_state);
+        let empty_key = PackageGraphSourceKey::unattributed(
+            PackageReference::parse("pkg:cargo/empty@1.0.0").expect("empty source"),
+        );
+        let edge = |source: &PackageReference,
+                    source_authority: PackageGraphSourceAuthority,
+                    target: &str,
+                    requirement: &str,
+                    frontier: u8| {
+            PackageDependencyRecord::new_with_source_authority(
+                source.clone(),
+                source_authority,
+                PackageDependencyTarget::new(RegistryEcosystem::Cargo, target, requirement, None)
+                    .expect("edge target"),
+                DependencyScope::Runtime,
+                false,
+                DependencyEvidence {
+                    authority: match source_authority {
+                        PackageGraphSourceAuthority::Registry(_) => {
+                            DependencyAuthority::RegistryMetadata
+                        }
+                        PackageGraphSourceAuthority::Forge(_) => DependencyAuthority::ForgeManifest,
+                        _ => unreachable!("fixture authority"),
+                    },
+                    frontier: [frontier; 32],
+                    provenance: [frontier.wrapping_add(1); 32],
+                },
+            )
+        };
+        let edge_a = edge(&coordinate, authority_a, "keep", "^1", 1);
+        let edge_b_old = edge(&coordinate, authority_b, "replace", "^1", 3);
+        let edge_b_new = edge(&coordinate, authority_b, "replace", "^2", 5);
+        let initial = vec![
+            (
+                key_a.clone(),
+                DependencyFacts::Known(vec![edge_a.clone()].into_boxed_slice()),
+            ),
+            (
+                key_b.clone(),
+                DependencyFacts::Known(vec![edge_b_old.clone()].into_boxed_slice()),
+            ),
+            (
+                state_key.clone(),
+                DependencyFacts::Unavailable(ProductText::new("forge timeout").expect("reason")),
+            ),
+        ];
+        let selected_root =
+            view_state_root(&[("graph".to_owned(), "same-root-source-delta".to_owned())]);
+        let mut projection = TursoProjection::open(&path).await.expect("open initial");
+        projection
+            .synchronize_package_graph(selected_root.clone(), &initial)
+            .await
+            .expect("seed graph");
+        let edge_a_rowid = stored_edge(&projection, &edge_a.facts_version).await;
+        drop(projection);
+
+        // Reopening must retain source witnesses so this same-root update can
+        // isolate the changed authority and state without rebuilding other
+        // authorities at the shared coordinate.
+        let mut projection = TursoProjection::open(&path).await.expect("cold reopen");
+        let changed = vec![
+            (
+                empty_key.clone(),
+                DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+            ),
+            (
+                key_b.clone(),
+                DependencyFacts::Known(vec![edge_b_new.clone()].into_boxed_slice()),
+            ),
+            (
+                state_key.clone(),
+                DependencyFacts::Unknown(
+                    ProductText::new("manifest has no graph").expect("reason"),
+                ),
+            ),
+            (
+                key_a.clone(),
+                DependencyFacts::Known(vec![edge_a.clone()].into_boxed_slice()),
+            ),
+        ];
+        let checked = CheckedPackageGraphFacts::new(changed.clone()).expect("checked delta");
+        assert_eq!(
+            projection
+                .synchronize_checked_package_graph(selected_root.clone(), &checked)
+                .await
+                .expect("same-root source delta"),
+            ProjectionUpdate::Rebuilt { rows: 2 }
+        );
+        assert_eq!(
+            stored_edge(&projection, &edge_a.facts_version).await,
+            edge_a_rowid
+        );
+        assert_eq!(
+            projection
+                .package_dependencies_for_source(&key_a)
+                .await
+                .expect("authority A remains")
+                .edges
+                .as_ref(),
+            [edge_a.clone()]
+        );
+        assert_eq!(
+            projection
+                .package_dependencies_for_source(&key_b)
+                .await
+                .expect("authority B is replaced")
+                .edges
+                .as_ref(),
+            [edge_b_new.clone()]
+        );
+        assert_eq!(
+            projection
+                .package_dependencies_for_source(&state_key)
+                .await
+                .expect("unknown state")
+                .state
+                .expect("state row")
+                .kind,
+            1
+        );
+        assert!(
+            projection
+                .package_dependencies_for_source(&empty_key)
+                .await
+                .expect("known empty source")
+                .state
+                .is_none()
+        );
+        assert_eq!(
+            crate::graph::package_graph_metadata_from(&projection.connection)
+                .await
+                .expect("graph metadata")
+                .expect("metadata")
+                .facts_witness,
+            checked.witness()
+        );
+
+        let no_op_changes = graph_total_changes(&projection).await;
+        assert_eq!(
+            projection
+                .synchronize_checked_package_graph(selected_root.clone(), &checked)
+                .await
+                .expect("exact no-op"),
+            ProjectionUpdate::Reused { rows: 2 }
+        );
+        assert_eq!(graph_total_changes(&projection).await, no_op_changes);
+
+        // Dropping the authority and the unknown source removes their edges,
+        // state, and source-presence entries as one generation.
+        let after_deletion = vec![
+            (
+                empty_key.clone(),
+                DependencyFacts::Known(Vec::<PackageDependencyRecord>::new().into_boxed_slice()),
+            ),
+            (
+                key_a.clone(),
+                DependencyFacts::Known(vec![edge_a.clone()].into_boxed_slice()),
+            ),
+        ];
+        projection
+            .synchronize_package_graph(selected_root.clone(), &after_deletion)
+            .await
+            .expect("delete sources at same root");
+        assert_eq!(
+            projection
+                .package_dependencies_for_source(&key_b)
+                .await
+                .expect("deleted authority")
+                .source_selection,
+            PackageGraphSourceSelection::Missing
+        );
+        assert_eq!(
+            projection
+                .package_dependencies_for_source(&state_key)
+                .await
+                .expect("deleted state source")
+                .source_selection,
+            PackageGraphSourceSelection::Missing
+        );
+        drop(projection);
+
+        let reopened = TursoProjection::open(&path)
+            .await
+            .expect("reopen final graph");
+        let final_graph = graph_snapshot(&reopened)
+            .await
+            .unwrap_or_else(|error| panic!("final source delta snapshot: {error}"));
+        assert_eq!(final_graph.edge_count, 1);
+        assert_eq!(final_graph.root.as_slice(), selected_root.as_bytes());
+        drop(reopened);
+        remove_database(&path);
+    });
+}
+
+#[test]
 fn package_graph_concurrent_writers_publish_whole_generations() {
     futures_executor::block_on(async {
         let path = path();
@@ -1094,7 +1355,11 @@ fn package_graph_root_move_keeps_an_unchanged_edge_and_replaces_one() {
             .await
             .expect("replace");
         let after_edge_delta = graph_total_changes(&projection).await;
-        assert_eq!(after_edge_delta - before_edge_delta, 3);
+        assert_eq!(
+            after_edge_delta - before_edge_delta,
+            4,
+            "one-source reconciliation deletes/inserts the edge, advances its witness, and publishes metadata"
+        );
         assert_eq!(
             stored_edge(&projection, &kept.facts_version).await,
             kept_row
@@ -1381,8 +1646,8 @@ async fn stored_edge(projection: &TursoProjection, edge_id: &[u8; 32]) -> i64 {
 }
 
 #[test]
-#[ignore = "bounded Turso FTS projection stress probe"]
-fn stress_fts_projection_reports_build_query_and_delta_costs() {
+#[ignore = "bounded Turso exact-label projection stress probe"]
+fn stress_exact_label_projection_reports_build_lookup_and_delta_costs() {
     futures_executor::block_on(async {
         const ROWS: usize = 20_000;
         let path = path();
@@ -1390,11 +1655,6 @@ fn stress_fts_projection_reports_build_query_and_delta_costs() {
         let package = package_key("stress");
         let rows = (0..ROWS)
             .map(|index| {
-                let marker = if index == ROWS - 1 {
-                    " singular-needle"
-                } else {
-                    ""
-                };
                 Row::in_package(
                     RowId::Symbol(backend_library::symbol_key(&format!(
                         "stress::symbol_{index:05}"
@@ -1405,7 +1665,7 @@ fn stress_fts_projection_reports_build_query_and_delta_costs() {
                 )
                 .with_signature(format!("fn symbol_{index:05}()"))
                 .with_document(vec![Fragment::Text(format!(
-                    "indexed package documentation common-token{marker}"
+                    "package documentation for symbol_{index:05}"
                 ))])
             })
             .collect::<Vec<_>>();
@@ -1422,26 +1682,27 @@ fn stress_fts_projection_reports_build_query_and_delta_costs() {
         assert_eq!(update, ProjectionUpdate::Rebuilt { rows: ROWS as u64 });
 
         let started = Instant::now();
-        let rare = projection
-            .search("singular needle", 10)
+        let exact = projection
+            .lookup_label("symbol_19999", 10)
             .await
-            .unwrap_or_else(|error| panic!("rare search: {error}"));
-        let rare_ms = started.elapsed().as_secs_f64() * 1_000.0;
-        assert_eq!(rare.ids.len(), 1);
-
-        let started = Instant::now();
-        let common = projection
-            .search("common token", 25)
+            .unwrap_or_else(|error| panic!("exact label lookup: {error}"));
+        let lookup_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(exact.root.as_ref(), view.root().as_bytes());
+        assert_eq!(
+            exact.ids.as_ref(),
+            &[RowId::Symbol(backend_library::symbol_key("stress::symbol_19999")).stable_key()]
+        );
+        let absent = projection
+            .lookup_label("singular needle", 10)
             .await
-            .unwrap_or_else(|error| panic!("common search: {error}"));
-        let common_ms = started.elapsed().as_secs_f64() * 1_000.0;
-        assert_eq!(common.ids.len(), 25);
+            .unwrap_or_else(|error| panic!("absent exact label lookup: {error}"));
+        assert!(absent.ids.is_empty());
 
         let replacement = Row::in_package(
             RowId::Symbol(backend_library::symbol_key("stress::symbol_10000")),
             view.basis(),
             package,
-            "symbol_10000",
+            "symbol_10000-v2",
         )
         .with_document(vec![Fragment::Text("changed edge".to_owned())]);
         let prepared = view
@@ -1450,7 +1711,7 @@ fn stress_fts_projection_reports_build_query_and_delta_costs() {
                 capability(view.basis().object),
             )
             .unwrap_or_else(|error| panic!("prepare: {error:?}"));
-        let (_, committed) = view
+        let (next, committed) = view
             .commit(prepared)
             .unwrap_or_else(|error| panic!("commit: {error:?}"));
         let started = Instant::now();
@@ -1460,12 +1721,27 @@ fn stress_fts_projection_reports_build_query_and_delta_costs() {
             .unwrap_or_else(|error| panic!("apply: {error}"));
         let delta_ms = started.elapsed().as_secs_f64() * 1_000.0;
         assert_eq!(update, ProjectionUpdate::Advanced { changed_rows: 1 });
+        let updated = projection
+            .lookup_label("symbol_10000-v2", 10)
+            .await
+            .unwrap_or_else(|error| panic!("updated exact label lookup: {error}"));
+        assert_eq!(updated.root.as_ref(), next.root().as_bytes());
+        assert_eq!(updated.ids.len(), 1);
+        let stale_label = projection
+            .lookup_label("symbol_10000", 10)
+            .await
+            .unwrap_or_else(|error| panic!("old exact label lookup: {error}"));
+        assert!(stale_label.ids.is_empty());
 
-        let bytes = std::fs::metadata(&path)
-            .unwrap_or_else(|error| panic!("metadata: {error}"))
-            .len();
+        let bytes = ["", "-wal", "-shm", "-tshm"]
+            .iter()
+            .map(|suffix| {
+                let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+                std::fs::metadata(sidecar).map_or(0, |metadata| metadata.len())
+            })
+            .sum::<u64>();
         eprintln!(
-            "turso_fts_stress rows={ROWS} build_ms={build_ms:.2} rare_ms={rare_ms:.3} common_ms={common_ms:.3} one_row_delta_ms={delta_ms:.3} database_bytes={bytes}"
+            "turso_exact_label_stress rows={ROWS} build_ms={build_ms:.2} exact_lookup_ms={lookup_ms:.3} one_row_delta_ms={delta_ms:.3} projection_bytes_with_sidecars={bytes}"
         );
         drop(projection);
         for suffix in ["", "-wal", "-shm"] {
@@ -1514,23 +1790,23 @@ fn rebuild_keeps_an_unchanged_rowid_and_records_only_real_mutations() {
         assert_eq!(recorded_changes(&projection, &revised).await, 2);
 
         let alpha = projection
-            .search("alpha", 10)
+            .lookup_label("alpha", 10)
             .await
-            .unwrap_or_else(|error| panic!("search alpha: {error}"));
+            .unwrap_or_else(|error| panic!("lookup alpha: {error}"));
         assert_eq!(alpha.root.as_ref(), revised.root().as_bytes());
         assert_eq!(alpha.ids.as_ref(), &[keep_key]);
         let edited = projection
-            .search("gamma-two", 10)
+            .lookup_label("gamma-two", 10)
             .await
-            .unwrap_or_else(|error| panic!("search edit: {error}"));
+            .unwrap_or_else(|error| panic!("lookup edit: {error}"));
         assert_eq!(
             edited.ids.as_ref(),
             &[RowId::Package(package_key("edit")).stable_key()]
         );
         let removed = projection
-            .search("beta", 10)
+            .lookup_label("beta", 10)
             .await
-            .unwrap_or_else(|error| panic!("search removed: {error}"));
+            .unwrap_or_else(|error| panic!("lookup removed: {error}"));
         assert!(removed.ids.is_empty());
 
         drop(projection);
@@ -1580,9 +1856,9 @@ fn frontier_republish_keeps_rows_until_a_hot_delta_clears_the_digest() {
             .unwrap_or_else(|error| panic!("restore: {error}"));
         assert_eq!(stored_rowid(&projection, &kept_key).await, kept_rowid);
         let extra_rows = projection
-            .search("extra", 10)
+            .lookup_label("extra", 10)
             .await
-            .unwrap_or_else(|error| panic!("search extra: {error}"));
+            .unwrap_or_else(|error| panic!("lookup extra: {error}"));
         assert!(extra_rows.ids.is_empty());
     });
 }
@@ -1603,7 +1879,7 @@ fn root_at(rows: Vec<Row>, sequence: u64) -> ViewRoot {
 }
 
 #[test]
-fn projection_row_hash_matches_the_streaming_byte_identity() {
+fn projection_row_content_and_hash_survive_synchronize_and_restart() {
     futures_executor::block_on(async {
         let path = path();
         let basis = root(Vec::new()).basis();
@@ -1637,19 +1913,98 @@ fn projection_row_hash_matches_the_streaming_byte_identity() {
         let mut rows = projection
             .connection
             .query(
-                "SELECT content_hash FROM backend_projection_rows WHERE row_id=?1",
-                [key],
+                "SELECT content_hash, signature, document \
+                 FROM backend_projection_rows WHERE row_id=?1",
+                [key.as_str()],
             )
             .await
             .unwrap_or_else(|error| panic!("hash query: {error}"));
-        let stored: Vec<u8> = rows
+        let stored = rows
             .next()
             .await
             .unwrap_or_else(|error| panic!("hash next: {error}"))
-            .unwrap_or_else(|| panic!("missing hash"))
+            .unwrap_or_else(|| panic!("missing row"));
+        let content_hash: Vec<u8> = stored
             .get(0)
             .unwrap_or_else(|error| panic!("hash bytes: {error}"));
-        assert_eq!(stored, streaming_row_hash(&row).as_bytes().as_slice());
+        let signature: String = stored
+            .get(1)
+            .unwrap_or_else(|error| panic!("signature: {error}"));
+        let document: String = stored
+            .get(2)
+            .unwrap_or_else(|error| panic!("document: {error}"));
+        assert_eq!(content_hash, streaming_row_hash(&row).as_bytes().as_slice());
+        assert_eq!(signature, "fn hashed()");
+        assert_eq!(document, "alphabetadocs\n");
+        drop(rows);
+
+        let updated_row = row
+            .clone()
+            .with_signature("fn hashed_updated()")
+            .with_document(vec![Fragment::Text("updated payload".to_owned())]);
+        let prepared = view
+            .prepare(
+                ViewDelta::Upsert {
+                    row: updated_row.clone(),
+                },
+                capability(view.basis().object),
+            )
+            .unwrap_or_else(|error| panic!("prepare content update: {error:?}"));
+        let (next, committed) = view
+            .clone()
+            .commit(prepared)
+            .unwrap_or_else(|error| panic!("commit content update: {error:?}"));
+        projection
+            .apply(&committed)
+            .await
+            .unwrap_or_else(|error| panic!("apply content update: {error}"));
+        drop(projection);
+
+        let restarted_projection = TursoProjection::open(&path)
+            .await
+            .unwrap_or_else(|error| panic!("reopen projection: {error}"));
+        let found = restarted_projection
+            .lookup_label("hashed", 1)
+            .await
+            .unwrap_or_else(|error| panic!("restarted label lookup: {error}"));
+        assert_eq!(found.root.as_ref(), next.root().as_bytes());
+        assert_eq!(found.ids.as_ref(), &[key.clone()]);
+        let mut rows = restarted_projection
+            .connection
+            .query(
+                "SELECT content_hash, signature, document \
+                 FROM backend_projection_rows WHERE row_id=?1",
+                [key.as_str()],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("restarted row query: {error}"));
+        let restarted_row = rows
+            .next()
+            .await
+            .unwrap_or_else(|error| panic!("restarted row next: {error}"))
+            .unwrap_or_else(|| panic!("restarted row missing"));
+        assert_eq!(
+            restarted_row
+                .get::<Vec<u8>>(0)
+                .unwrap_or_else(|error| panic!("restarted content hash: {error}"))
+                .as_slice(),
+            streaming_row_hash(&updated_row).as_bytes().as_slice()
+        );
+        assert_eq!(
+            restarted_row
+                .get::<String>(1)
+                .unwrap_or_else(|error| panic!("restarted signature: {error}")),
+            "fn hashed_updated()"
+        );
+        assert_eq!(
+            restarted_row
+                .get::<String>(2)
+                .unwrap_or_else(|error| panic!("restarted document: {error}")),
+            "updated payload"
+        );
+        drop(rows);
+        drop(restarted_projection);
+        remove_database(&path);
     });
 }
 

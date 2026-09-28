@@ -1,5 +1,6 @@
 //! Deterministic, parallel, content-versioned filesystem ingestion.
 
+use super::source_frontier;
 use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxFrontend, typed_of,
 };
@@ -54,20 +55,26 @@ pub(super) struct IndexSnapshot {
     pub(super) reused_compiler_files: Vec<ReusedCompilerFile>,
     pub(super) compiler_configuration: CompilerConfigurationSnapshot,
     pub(super) revision_fence: CompilerRevisionFence,
+    /// Source bytes actually read by this scan. This is distinct from the
+    /// byte-length budget, which is also charged for files admitted from a
+    /// verified frontier.
+    pub(super) source_bytes_read: usize,
 }
 
 /// Captured tree and file metadata used to reject a compiler result if known
 /// source/configuration paths change after scanning. Source contents are
 /// separately re-admitted at the compiler boundary before native execution.
+#[derive(Clone)]
 pub(super) struct CompilerRevisionFence {
     root: PathBuf,
     directories: Vec<(PathBuf, Option<FileSystemRevision>)>,
-    files: Vec<CompilerFileRevision>,
+    pub(super) files: Vec<CompilerFileRevision>,
 }
 
-struct CompilerFileRevision {
-    relative_path: PathBuf,
-    metadata: Option<FileSystemRevision>,
+#[derive(Clone)]
+pub(super) struct CompilerFileRevision {
+    pub(super) relative_path: PathBuf,
+    pub(super) metadata: Option<FileSystemRevision>,
 }
 
 /// Entry kind admitted into a complete compiler workspace inventory.
@@ -102,8 +109,8 @@ pub(super) struct CompilerWorkspaceSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FileSystemRevision {
-    length: u64,
+pub(super) struct FileSystemRevision {
+    pub(super) length: u64,
     modified: Option<SystemTime>,
     #[cfg(unix)]
     unix: (u64, u64, i64, i64),
@@ -147,7 +154,10 @@ struct ScannedFile {
     relative: String,
     key: [u8; 32],
     record: ProductSourceRecord,
+    /// Source size charged against the project's bounded ingest budget.
     source_bytes: usize,
+    /// Bytes actually returned by a source read in this scan.
+    source_bytes_read: usize,
     encoded_record_bytes: usize,
     /// `None` when the claiming frontend has no semantic profile for this
     /// extension: the file is still a project row, it simply carries nothing
@@ -355,9 +365,9 @@ impl ProjectRoot {
         {
             self.open_confined(relative).map_err(|error| match error {
                 SourceFault::Fatal(detail) => detail,
-                SourceFault::Unavailable(_) | SourceFault::Vanished => {
-                    "workspace file changed or became unreadable".to_owned()
-                }
+                SourceFault::Unavailable(_)
+                | SourceFault::UnavailableRead(_, _)
+                | SourceFault::Vanished => "workspace file changed or became unreadable".to_owned(),
             })
         }
         #[cfg(windows)]
@@ -837,12 +847,22 @@ fn read_bounded(mut file: fs::File, maximum_bytes: usize) -> Result<Vec<u8>, Sou
         .map_err(|_| SourceFault::Fatal("source allocation exceeds memory".to_owned()))?;
     let bound = u64::try_from(maximum_bytes)
         .map_err(|_| SourceFault::Fatal("input bound exceeds this target".to_owned()))?;
-    file.by_ref()
+    if file
+        .by_ref()
         .take(bound.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::Unreadable))?;
+        .is_err()
+    {
+        return Err(SourceFault::UnavailableRead(
+            SourceUnavailableReason::Unreadable,
+            bytes.len(),
+        ));
+    }
     if bytes.len() > maximum_bytes {
-        return Err(SourceFault::Unavailable(SourceUnavailableReason::TooLarge));
+        return Err(SourceFault::UnavailableRead(
+            SourceUnavailableReason::TooLarge,
+            bytes.len(),
+        ));
     }
     Ok(bytes)
 }
@@ -861,6 +881,9 @@ enum SourceFault {
     Vanished,
     /// The file is present but nothing could be extracted from it.
     Unavailable(SourceUnavailableReason),
+    /// The file was read, but its bytes could not be extracted. Retain the
+    /// number of bytes actually returned by the bounded read for measurement.
+    UnavailableRead(SourceUnavailableReason, usize),
     /// The scan itself cannot continue.
     Fatal(String),
 }
@@ -1125,6 +1148,107 @@ fn frontends() -> Result<&'static FrontendSet, String> {
         .ok_or_else(|| "frontend registry failed to initialize".to_owned())
 }
 
+fn scan_source_paths(
+    root: &Path,
+    root_capability: &ProjectRoot,
+    paths: &[PathBuf],
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    frontends: &FrontendSet,
+    delta: Option<&source_frontier::SourceDelta>,
+) -> Result<Vec<ScannedFile>, String> {
+    let workers = thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(MAX_WORKERS)
+        .min(paths.len().max(1));
+    let chunk = paths.len().div_ceil(workers);
+    thread::scope(|scope| {
+        let queue = workers
+            .checked_mul(RESULT_QUEUE_PER_WORKER)
+            .ok_or_else(|| "source result queue width overflow".to_owned())?;
+        let (sender, receiver) = mpsc::sync_channel(queue);
+        let mut handles = Vec::with_capacity(workers);
+        for group in paths.chunks(chunk.max(1)) {
+            let root = root;
+            let root_capability = root_capability;
+            let sender = sender.clone();
+            handles.push(scope.spawn(move || {
+                for path in group {
+                    let result = if let Some(cached) = delta
+                        .filter(|delta| delta.is_current())
+                        .and_then(|delta| delta.unchanged.get(path))
+                    {
+                        let Some(record) = reusable.get(&cached.key) else {
+                            let _ = sender
+                                .send(Err("source frontier lost its exact CAS row".to_owned()));
+                            break;
+                        };
+                        let profile = match profile_fault(frontends, path) {
+                            Ok(profile) => profile,
+                            Err(SourceFault::Unavailable(_))
+                            | Err(SourceFault::UnavailableRead(_, _))
+                            | Err(SourceFault::Vanished) => {
+                                let _ =
+                                    sender.send(Err("source frontier profile changed".to_owned()));
+                                break;
+                            }
+                            Err(SourceFault::Fatal(error)) => {
+                                let _ = sender.send(Err(error));
+                                break;
+                            }
+                        };
+                        let Ok(source_bytes) = usize::try_from(cached.revision.length) else {
+                            let _ = sender
+                                .send(Err("source byte length exceeds this target".to_owned()));
+                            break;
+                        };
+                        reused_scanned_file(
+                            cached.relative_path.clone(),
+                            cached.key,
+                            record.clone(),
+                            source_bytes,
+                            0,
+                            cached.content,
+                            profile,
+                            Some(cached.encoded_record_bytes),
+                        )
+                        .map(Some)
+                    } else {
+                        scan_file(root, root_capability, path, project, reusable, frontends)
+                    };
+                    let failed = result.is_err();
+                    if sender.send(result).is_err() || failed {
+                        break;
+                    }
+                }
+            }));
+        }
+        drop(sender);
+        let mut output = Vec::with_capacity(paths.len());
+        let mut budget = IngestBudget::default();
+        let mut failure = None;
+        for result in receiver {
+            match result {
+                Ok(Some(file)) if failure.is_none() => {
+                    if let Err(error) = budget.charge(&file) {
+                        failure = Some(error);
+                    } else {
+                        output.push(file);
+                    }
+                }
+                Err(error) if failure.is_none() => failure = Some(error),
+                Ok(_) | Err(_) => {}
+            }
+        }
+        for handle in handles {
+            if handle.join().is_err() && failure.is_none() {
+                failure = Some("source analysis worker panicked".to_owned());
+            }
+        }
+        failure.map_or(Ok(output), Err)
+    })
+}
+
 /// Recovers one declaration excerpt from its already indexed source file.
 ///
 /// This only serves bytes that still match the indexed source identity. It
@@ -1150,9 +1274,8 @@ pub(super) fn recover_indexed_excerpt(
         return None;
     }
     let bytes = ProjectRoot::open(root).ok()?.read(relative).ok()?;
-    if backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
-        &bytes,
-    ) != expected_source
+    if backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(&bytes)
+        != expected_source
     {
         return None;
     }
@@ -1231,6 +1354,24 @@ fn scan_project_with_configuration_policy(
     discovery: DiscoveryPolicy,
     capture_configuration_contents: bool,
 ) -> Result<IndexSnapshot, String> {
+    scan_project_with_configuration_policy_attempt(
+        coordinate,
+        project,
+        reusable,
+        discovery,
+        capture_configuration_contents,
+        true,
+    )
+}
+
+fn scan_project_with_configuration_policy_attempt(
+    coordinate: &str,
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    discovery: DiscoveryPolicy,
+    capture_configuration_contents: bool,
+    allow_frontier_reuse: bool,
+) -> Result<IndexSnapshot, String> {
     let root = Path::new(coordinate)
         .canonicalize()
         .map_err(|error| format!("open project {coordinate}: {error}"))?;
@@ -1239,11 +1380,17 @@ fn scan_project_with_configuration_policy(
     }
     let root_capability = ProjectRoot::open(&root)?;
     let frontends = frontends()?;
+    let frontier_policy_allowed = discovery == source_selection_policy();
     let mut project_paths =
-        project_paths_with_policy(&root, &root_capability, Some(frontends), discovery)?;
+        project_paths_with_policy(&root, &root_capability, Some(frontends), discovery.clone())?;
     let mut paths = std::mem::take(&mut project_paths.sources);
     paths.sort();
     let directories = std::mem::take(&mut project_paths.directories);
+    let (local_policy_paths, mut local_policy_paths_complete) =
+        match source_frontier::source_policy_candidates(&root, &directories) {
+            Some(paths) => (paths, true),
+            None => (Vec::new(), false),
+        };
     let mut file_revisions = BTreeMap::<PathBuf, CompilerFileRevision>::new();
     for path in &paths {
         let relative = path
@@ -1270,58 +1417,144 @@ fn scan_project_with_configuration_policy(
                 metadata: project_paths.file_revisions.get(path).copied().flatten(),
             });
     }
+    for (path, metadata) in &project_paths.file_revisions {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(source_frontier::is_policy_file_name)
+        {
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| "discovered policy file escaped its project root".to_owned())?
+                .to_path_buf();
+            file_revisions
+                .entry(relative.clone())
+                .or_insert_with(|| CompilerFileRevision {
+                    relative_path: relative,
+                    metadata: *metadata,
+                });
+        }
+    }
+    for path in &local_policy_paths {
+        let relative = path
+            .strip_prefix(&root)
+            .map_err(|_| "discovered policy file escaped its project root".to_owned())?
+            .to_path_buf();
+        let metadata = file_system_revision(path);
+        local_policy_paths_complete &= metadata.is_some();
+        file_revisions
+            .entry(relative.clone())
+            .or_insert_with(|| CompilerFileRevision {
+                relative_path: relative,
+                metadata,
+            });
+    }
+    let revision_fence = CompilerRevisionFence {
+        root: root.clone(),
+        directories: directories.clone(),
+        files: file_revisions.values().cloned().collect(),
+    };
+    let frontier_sources = paths
+        .iter()
+        .filter_map(|path| {
+            let frontend = frontends.for_path(path)?;
+            let relative = path
+                .strip_prefix(&root)
+                .ok()?
+                .to_str()?
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            Some(source_frontier::SourcePath {
+                absolute: path.clone(),
+                relative,
+                language: frontend.language(),
+                analysis: frontend.analysis_version(),
+                revision: project_paths.file_revisions.get(path).copied().flatten(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut configuration_paths = project_paths
+        .configurations
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect::<Vec<_>>();
+    configuration_paths.extend(project_paths.file_revisions.keys().filter_map(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(source_frontier::is_policy_file_name)
+            .then(|| path.clone())
+    }));
+    configuration_paths.sort();
+    configuration_paths.dedup();
+    let frontier_paths_complete = frontier_sources.len() == paths.len();
+    let wanted_paths = frontier_paths_complete
+        .then(|| {
+            source_frontier::source_wanted_paths(&root, &frontier_sources, &configuration_paths)
+        })
+        .flatten();
+    let git_before =
+        (frontier_policy_allowed && frontier_paths_complete && local_policy_paths_complete)
+            .then(|| {
+                wanted_paths.as_ref().and_then(|wanted| {
+                    source_frontier::git_source_state(&root, wanted, &local_policy_paths)
+                })
+            })
+            .flatten();
+    let source_delta = if frontier_policy_allowed && allow_frontier_reuse {
+        git_before.as_ref().and_then(|state| {
+            source_frontier::source_delta(
+                &root,
+                project,
+                &frontier_sources,
+                &configuration_paths,
+                directories.iter().all(|(_, revision)| revision.is_some()),
+                reusable,
+                state,
+                |path| frontends.for_path(path).is_some(),
+            )
+        })
+    } else {
+        None
+    };
     preflight_source_bytes(&paths)?;
-    let workers = thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(MAX_WORKERS)
-        .min(paths.len().max(1));
-    let chunk = paths.len().div_ceil(workers);
-    let scanned = thread::scope(|scope| {
-        let queue = workers
-            .checked_mul(RESULT_QUEUE_PER_WORKER)
-            .ok_or_else(|| "source result queue width overflow".to_owned())?;
-        let (sender, receiver) = mpsc::sync_channel(queue);
-        let mut handles = Vec::with_capacity(workers);
-        for group in paths.chunks(chunk.max(1)) {
-            let root = &root;
-            let root_capability = &root_capability;
-            let sender = sender.clone();
-            handles.push(scope.spawn(move || {
-                for path in group {
-                    let result =
-                        scan_file(root, root_capability, path, project, reusable, frontends);
-                    let failed = result.is_err();
-                    if sender.send(result).is_err() || failed {
-                        break;
-                    }
-                }
-            }));
+    let mut scanned = scan_source_paths(
+        &root,
+        &root_capability,
+        &paths,
+        project,
+        reusable,
+        frontends,
+        source_delta.as_ref(),
+    )?;
+    let mut source_bytes_read = scanned
+        .iter()
+        .map(|file| file.source_bytes_read)
+        .sum::<usize>();
+    let cache_witness = git_before;
+    if source_delta.is_some() {
+        #[cfg(test)]
+        source_frontier::trigger_source_frontier_race(&root);
+        let after = wanted_paths.as_ref().and_then(|wanted| {
+            source_frontier::git_source_state(&root, wanted, &local_policy_paths)
+        });
+        let stable = cache_witness
+            .as_ref()
+            .zip(after.as_ref())
+            .is_some_and(|(before, after)| {
+                source_frontier::git_states_same_during_scan(before, after)
+            });
+        if !stable || !compiler_revision_is_current(&revision_fence)? {
+            let mut full = scan_project_with_configuration_policy_attempt(
+                coordinate,
+                project,
+                reusable,
+                discovery,
+                capture_configuration_contents,
+                false,
+            )?;
+            full.source_bytes_read = full.source_bytes_read.saturating_add(source_bytes_read);
+            return Ok(full);
         }
-        drop(sender);
-        let mut output = Vec::with_capacity(paths.len());
-        let mut budget = IngestBudget::default();
-        let mut failure = None;
-        for result in receiver {
-            match result {
-                Ok(Some(file)) if failure.is_none() => {
-                    if let Err(error) = budget.charge(&file) {
-                        failure = Some(error);
-                    } else {
-                        output.push(file);
-                    }
-                }
-                Err(error) if failure.is_none() => failure = Some(error),
-                Ok(_) | Err(_) => {}
-            }
-        }
-        for handle in handles {
-            if handle.join().is_err() && failure.is_none() {
-                failure = Some("source analysis worker panicked".to_owned());
-            }
-        }
-        failure.map_or(Ok(output), Err)
-    })?;
-    let mut scanned = scanned;
+    }
     scanned.sort_by(|left, right| left.relative.cmp(&right.relative));
 
     let mut source = blake3::Hasher::new();
@@ -1335,6 +1568,7 @@ fn scan_project_with_configuration_policy(
             record,
             compiler_source,
             reused_compiler,
+            source_bytes_read: _,
             ..
         } = scanned;
         let file = record
@@ -1368,18 +1602,25 @@ fn scan_project_with_configuration_policy(
     } else {
         CompilerConfigurationSnapshot::default()
     };
-    Ok(IndexSnapshot {
+    let snapshot = IndexSnapshot {
         source_version: *source.finalize().as_bytes(),
         files,
         compiler_sources,
         reused_compiler_files,
         compiler_configuration,
-        revision_fence: CompilerRevisionFence {
-            root,
-            directories,
-            files: file_revisions.into_values().collect(),
-        },
-    })
+        revision_fence,
+        source_bytes_read,
+    };
+    if let (Some(before), Some(wanted)) = (cache_witness.as_ref(), wanted_paths.as_ref()) {
+        let after = source_frontier::git_source_state(&root, wanted, &local_policy_paths);
+        if after.as_ref().is_some_and(|after| {
+            source_frontier::git_states_same_during_scan(before, after)
+                && compiler_revision_is_current(&snapshot.revision_fence).unwrap_or(false)
+        }) {
+            source_frontier::remember_snapshot_frontier(&root, project, &snapshot, before);
+        }
+    }
+    Ok(snapshot)
 }
 
 /// Revalidates the scanner's source/configuration revision without a second
@@ -1542,7 +1783,11 @@ fn project_paths_with_policy(
             .map_err(|error| format!("{error}: {}", entry.path().display()))?;
         directory_entries = directory_entries.saturating_add(1);
         if entry.is_file() {
-            let mut revision_path = false;
+            let mut revision_path = entry
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(source_frontier::is_policy_file_name);
             if frontends.is_some_and(|frontends| frontends.for_path(entry.path()).is_some()) {
                 if sources.len() >= ProductSourceRecord::MAX_PROJECT_FILES {
                     return Err("project contains too many supported source files".to_owned());
@@ -1804,7 +2049,10 @@ fn scan_file(
             Err(format!("read source {}: {message}", path.display()))
         }
         Err(SourceFault::Unavailable(reason)) => {
-            unavailable_file(root, path, project, frontends, reason).map(Some)
+            unavailable_file(root, path, project, frontends, reason, 0).map(Some)
+        }
+        Err(SourceFault::UnavailableRead(reason, bytes_read)) => {
+            unavailable_file(root, path, project, frontends, reason, bytes_read).map(Some)
         }
     }
 }
@@ -1816,6 +2064,7 @@ fn unavailable_file(
     project: [u8; 32],
     frontends: &FrontendSet,
     reason: SourceUnavailableReason,
+    source_bytes_read: usize,
 ) -> Result<ScannedFile, String> {
     let relative = relative_coordinate(root, path)?;
     let frontend = frontends
@@ -1842,6 +2091,7 @@ fn unavailable_file(
         key,
         record,
         source_bytes: 0,
+        source_bytes_read,
         encoded_record_bytes: encoded.len(),
     })
 }
@@ -1872,7 +2122,13 @@ fn scan_one(
     let frontend = frontends
         .for_path(path)
         .ok_or_else(|| SourceFault::Fatal("unsupported source language".to_owned()))?;
-    let profile = profile_fault(frontends, path)?;
+    let profile = match profile_fault(frontends, path) {
+        Ok(profile) => profile,
+        Err(SourceFault::Unavailable(reason)) => {
+            return Err(SourceFault::UnavailableRead(reason, bytes.len()));
+        }
+        Err(error) => return Err(error),
+    };
     let key = product_source_file_key(project, &relative);
     let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
     let analysis = frontend.analysis_version();
@@ -1893,19 +2149,30 @@ fn scan_one(
         // The bytes already hashed to the admitted text. Drop them here; a
         // later package compile re-reads through the project root and refuses
         // the compile if that second read no longer matches `content`.
-        return reused_scanned_file(relative, key, record.clone(), bytes.len(), content, profile)
-            .map_err(SourceFault::Fatal);
+        return reused_scanned_file(
+            relative,
+            key,
+            record.clone(),
+            bytes.len(),
+            bytes.len(),
+            content,
+            profile,
+            None,
+        )
+        .map_err(SourceFault::Fatal);
     }
 
     let source = std::str::from_utf8(&bytes)
-        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::NotText))?
+        .map_err(|_| SourceFault::UnavailableRead(SourceUnavailableReason::NotText, bytes.len()))?
         .to_owned();
     // Structural parsing is an explicit baseline projection for local browsing.
     // Package semantics are compiled and published by the engine application module.
     let analyzed = frontend
         .baseline
         .analyze(Path::new(&relative), &bytes)
-        .map_err(|_| SourceFault::Unavailable(SourceUnavailableReason::Unparsed))?;
+        .map_err(|_| {
+            SourceFault::UnavailableRead(SourceUnavailableReason::Unparsed, bytes.len())
+        })?;
     debug_assert_eq!(analyzed.language(), frontend.language());
     debug_assert_eq!(analyzed.content().to_bytes(), content);
     // A real source file routinely extracts more detail than one canonical
@@ -1930,8 +2197,17 @@ fn scan_one(
         backend_version::SourceFactDomain,
     >::from_canonical_bytes(&bytes))
     .map_err(SourceFault::Fatal)?;
-    scanned_file(relative, key, record, source, bytes.len(), path, profile)
-        .map_err(SourceFault::Fatal)
+    scanned_file(
+        relative,
+        key,
+        record,
+        source,
+        bytes.len(),
+        bytes.len(),
+        path,
+        profile,
+    )
+    .map_err(SourceFault::Fatal)
 }
 
 fn scanned_file(
@@ -1940,6 +2216,7 @@ fn scanned_file(
     record: ProductSourceRecord,
     source: String,
     source_bytes: usize,
+    source_bytes_read: usize,
     path: &Path,
     profile: LanguageProfile,
 ) -> Result<ScannedFile, String> {
@@ -1948,12 +2225,14 @@ fn scanned_file(
         key,
         record,
         source_bytes,
+        source_bytes_read,
         path,
         Some(CompilerSource {
             profile,
             relative_path: relative,
             source,
         }),
+        None,
         None,
     )
 }
@@ -1963,8 +2242,10 @@ fn reused_scanned_file(
     key: [u8; 32],
     record: ProductSourceRecord,
     source_bytes: usize,
+    source_bytes_read: usize,
     content: [u8; 32],
     profile: LanguageProfile,
+    encoded_record_bytes: Option<usize>,
 ) -> Result<ScannedFile, String> {
     let path = PathBuf::from(&relative);
     finish_scanned_file(
@@ -1972,6 +2253,7 @@ fn reused_scanned_file(
         key,
         record,
         source_bytes,
+        source_bytes_read,
         &path,
         None,
         Some(ReusedCompilerFile {
@@ -1979,6 +2261,7 @@ fn reused_scanned_file(
             relative_path: relative,
             content,
         }),
+        encoded_record_bytes,
     )
 }
 
@@ -1987,13 +2270,19 @@ fn finish_scanned_file(
     key: [u8; 32],
     record: ProductSourceRecord,
     source_bytes: usize,
+    source_bytes_read: usize,
     path: &Path,
     compiler_source: Option<CompilerSource>,
     reused_compiler: Option<ReusedCompilerFile>,
+    known_encoded_record_bytes: Option<usize>,
 ) -> Result<ScannedFile, String> {
-    let mut encoded = Vec::new();
-    ProductSourceRelation::encode_value(&record, &mut encoded);
-    let encoded_record_bytes = encoded.len();
+    let encoded_record_bytes = if let Some(size) = known_encoded_record_bytes {
+        size
+    } else {
+        let mut encoded = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut encoded);
+        encoded.len()
+    };
     if encoded_record_bytes > MAX_ENCODED_RECORD_BYTES {
         return Err(format!(
             "source projection {} exceeds the {} byte record limit",
@@ -2008,6 +2297,7 @@ fn finish_scanned_file(
         key,
         record,
         source_bytes,
+        source_bytes_read,
         encoded_record_bytes,
     })
 }
@@ -2235,6 +2525,10 @@ fn reread_fault(path: &str, fault: SourceFault) -> String {
             format!("source {path} vanished after its content hash was admitted")
         }
         SourceFault::Unavailable(reason) => format!(
+            "source {path} became unavailable ({}) after its content hash was admitted",
+            reason.name()
+        ),
+        SourceFault::UnavailableRead(reason, _) => format!(
             "source {path} became unavailable ({}) after its content hash was admitted",
             reason.name()
         ),
@@ -2784,7 +3078,15 @@ mod tests {
             );
         let label = "pkg:cargo/example@1.0.0::recovered";
         let recover = |path: &str, line, kind| {
-            recover_indexed_excerpt(&root, path, identity, SourceLanguage::Rust, label, line, kind)
+            recover_indexed_excerpt(
+                &root,
+                path,
+                identity,
+                SourceLanguage::Rust,
+                label,
+                line,
+                kind,
+            )
         };
         assert!(matches!(
             recover("src/value.rs", 1, Some(DeclarationKind::Function)),
@@ -2871,6 +3173,435 @@ mod tests {
         let directory = std::env::temp_dir().join(unique);
         fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
         Ok(directory)
+    }
+
+    #[cfg(unix)]
+    struct GitScratch(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for GitScratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    fn git_test_command(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .map_err(|error| format!("could not run Git test helper: {error}"))?;
+        if !output.status.success() {
+            return Err(format!("Git test helper failed: git {}", args.join(" ")));
+        }
+        Ok(output.stdout)
+    }
+
+    #[cfg(unix)]
+    fn git_test_repo(label: &str, files: &[(&str, &[u8])]) -> Result<Option<GitScratch>, String> {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let repository = GitScratch(scratch_dir(label)?);
+        let root = &repository.0;
+        git_test_command(root, &["init", "-q"])?;
+        git_test_command(
+            root,
+            &["config", "user.email", "frontier-test@example.invalid"],
+        )?;
+        git_test_command(root, &["config", "user.name", "Source Frontier Test"])?;
+        for (relative, bytes) in files {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            fs::write(path, bytes).map_err(|error| error.to_string())?;
+        }
+        git_test_command(root, &["add", "-A"])?;
+        git_test_command(root, &["commit", "-m", "initial source snapshot"])?;
+        Ok(Some(repository))
+    }
+
+    #[cfg(unix)]
+    fn git_test_commit(root: &Path, message: &str) -> Result<(), String> {
+        git_test_command(root, &["add", "-A"])?;
+        git_test_command(root, &["commit", "-m", message])?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn git_project_key(root: &Path) -> [u8; 32] {
+        *blake3::hash(root.as_os_str().as_encoded_bytes()).as_bytes()
+    }
+
+    fn reusable_rows(snapshot: &IndexSnapshot) -> BTreeMap<[u8; 32], ProductSourceRecord> {
+        snapshot.files.iter().cloned().collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_frontier_warm_scan_reads_no_source_bytes_with_ignored_build_output() -> Result<(), String>
+    {
+        let Some(repository) = git_test_repo(
+            "frontier-ignored-build",
+            &[
+                (".gitignore", b"/target/\n"),
+                ("lib.rs", b"pub fn stable() -> u8 { 7 }\n"),
+            ],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        let project = git_project_key(root);
+        let source_bytes = b"pub fn stable() -> u8 { 7 }\n";
+        fs::create_dir_all(root.join("target")).map_err(|error| error.to_string())?;
+        fs::write(root.join("target/generated.rs"), b"pub fn generated() {}\n")
+            .map_err(|error| error.to_string())?;
+
+        let cold = scan_project(
+            root.to_str().ok_or("non-UTF-8 Git path")?,
+            project,
+            &BTreeMap::new(),
+        )?;
+        assert_eq!(cold.files.len(), 1);
+        assert_eq!(cold.source_bytes_read, source_bytes.len());
+        let warm = scan_project(
+            root.to_str().ok_or("non-UTF-8 Git path")?,
+            project,
+            &reusable_rows(&cold),
+        )?;
+        assert_eq!(warm.source_bytes_read, 0);
+        assert_eq!(warm.files.len(), 1);
+        assert_eq!(cold.source_version, warm.source_version);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_frontier_reads_only_an_edited_file_and_handles_rename_delete() -> Result<(), String> {
+        let Some(repository) = git_test_repo(
+            "frontier-edit-rename",
+            &[
+                ("lib.rs", b"pub fn kept() {}\n"),
+                ("old.rs", b"pub fn moved() {}\n"),
+            ],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        let reusable = reusable_rows(&cold);
+        let edited = b"pub fn kept() { let _ = 1; }\n";
+        fs::write(root.join("lib.rs"), edited).map_err(|error| error.to_string())?;
+        let delta = scan_project(root_text, project, &reusable)?;
+        assert_eq!(delta.source_bytes_read, edited.len());
+        assert_eq!(delta.reused_compiler_files.len(), 1);
+
+        git_test_command(root, &["mv", "old.rs", "new.rs"])?;
+        let renamed = scan_project(root_text, project, &reusable)?;
+        assert_eq!(
+            renamed.source_bytes_read,
+            edited.len() + b"pub fn moved() {}\n".len()
+        );
+        assert!(renamed.files.iter().all(|(_, record)| {
+            record
+                .file_fields()
+                .is_some_and(|fields| fields.path != "old.rs")
+        }));
+        assert!(renamed.files.iter().any(|(_, record)| {
+            record
+                .file_fields()
+                .is_some_and(|fields| fields.path == "new.rs")
+        }));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_frontier_falls_back_for_new_untracked_source_and_ignore_policy_change()
+    -> Result<(), String> {
+        let Some(repository) = git_test_repo(
+            "frontier-untracked-policy",
+            &[
+                (".gitignore", b"/hidden_sources/\n"),
+                ("lib.rs", b"pub fn stable() {}\n"),
+            ],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        let reusable = reusable_rows(&cold);
+
+        let extra = b"pub fn untracked() {}\n";
+        fs::write(root.join("extra.rs"), extra).map_err(|error| error.to_string())?;
+        let with_untracked = scan_project(root_text, project, &reusable)?;
+        assert_eq!(
+            with_untracked.source_bytes_read,
+            b"pub fn stable() {}\n".len() + extra.len()
+        );
+        assert!(with_untracked.files.iter().any(|(_, record)| {
+            record
+                .file_fields()
+                .is_some_and(|fields| fields.path == "extra.rs")
+        }));
+
+        fs::remove_file(root.join("extra.rs")).map_err(|error| error.to_string())?;
+        fs::create_dir_all(root.join("hidden_sources")).map_err(|error| error.to_string())?;
+        let newly_selected = b"pub fn now_visible() {}\n";
+        fs::write(root.join("hidden_sources/generated.rs"), newly_selected)
+            .map_err(|error| error.to_string())?;
+        let policy_change = b"# generated sources are now visible\n";
+        fs::write(root.join(".gitignore"), policy_change).map_err(|error| error.to_string())?;
+        let changed_policy = scan_project(root_text, project, &reusable)?;
+        assert_eq!(
+            changed_policy.source_bytes_read,
+            b"pub fn stable() {}\n".len() + newly_selected.len()
+        );
+        assert!(changed_policy.files.iter().any(|(_, record)| {
+            record
+                .file_fields()
+                .is_some_and(|fields| fields.path == "hidden_sources/generated.rs")
+        }));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_frontier_witnesses_a_local_ignore_file_hidden_by_gitignore() -> Result<(), String> {
+        let Some(repository) = git_test_repo(
+            "frontier-hidden-ignore-policy",
+            &[
+                (".gitignore", b"/.ignore\n"),
+                ("lib.rs", b"pub fn stable() {}\n"),
+            ],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        fs::create_dir_all(root.join("hidden_sources")).map_err(|error| error.to_string())?;
+        let hidden = b"pub fn became_visible() {}\n";
+        fs::write(root.join("hidden_sources/generated.rs"), hidden)
+            .map_err(|error| error.to_string())?;
+        fs::write(root.join(".ignore"), b"hidden_sources/\n").map_err(|error| error.to_string())?;
+
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        assert_eq!(cold.files.len(), 1);
+        let reusable = reusable_rows(&cold);
+        fs::write(root.join(".ignore"), b"# source selection changed\n")
+            .map_err(|error| error.to_string())?;
+
+        let changed_policy = scan_project(root_text, project, &reusable)?;
+        assert_eq!(
+            changed_policy.source_bytes_read,
+            b"pub fn stable() {}\n".len() + hidden.len()
+        );
+        assert!(changed_policy.files.iter().any(|(_, record)| {
+            record
+                .file_fields()
+                .is_some_and(|fields| fields.path == "hidden_sources/generated.rs")
+        }));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_frontier_falls_back_when_a_selected_path_is_a_symlink() -> Result<(), String> {
+        use std::os::unix::fs::symlink;
+
+        let Some(repository) =
+            git_test_repo("frontier-symlink", &[("lib.rs", b"pub fn stable() {}\n")])?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        let reusable = reusable_rows(&cold);
+        let outside = root
+            .parent()
+            .ok_or("missing scratch parent")?
+            .join("outside.rs");
+        fs::write(&outside, b"pub fn outside() {}\n").map_err(|error| error.to_string())?;
+        symlink(&outside, root.join("linked.rs")).map_err(|error| error.to_string())?;
+
+        let fallback = scan_project(root_text, project, &reusable)?;
+        assert_eq!(fallback.source_bytes_read, b"pub fn stable() {}\n".len());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_frontier_detects_mutation_after_a_zero_read_reuse_attempt() -> Result<(), String> {
+        let Some(repository) = git_test_repo(
+            "frontier-race",
+            &[
+                ("lib.rs", b"pub fn old_value() {}\n"),
+                ("kept.rs", b"pub fn kept() {}\n"),
+            ],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        let reusable = reusable_rows(&cold);
+        let changed = b"pub fn new_value() {}\n";
+        source_frontier::install_source_frontier_race(
+            root.clone(),
+            root.join("lib.rs"),
+            changed.to_vec(),
+        );
+
+        let raced = scan_project(root_text, project, &reusable)?;
+        assert_eq!(
+            raced.source_bytes_read,
+            changed.len() + b"pub fn kept() {}\n".len()
+        );
+        assert!(raced.compiler_sources.iter().any(|source| {
+            source.relative_path == "lib.rs" && source.source.as_bytes() == changed
+        }));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cold_frontier_reopen_uses_the_full_source_read() -> Result<(), String> {
+        let Some(repository) = git_test_repo(
+            "frontier-cold-reopen",
+            &[("lib.rs", b"pub fn stable() {}\n")],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        let reusable = reusable_rows(&cold);
+        source_frontier::clear_source_frontier_for(root, project);
+
+        let reopened = scan_project(root_text, project, &reusable)?;
+        assert_eq!(reopened.source_bytes_read, b"pub fn stable() {}\n".len());
+        assert_eq!(reopened.source_version, cold.source_version);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_crlf_lf_change_with_the_same_git_blob_is_reread() -> Result<(), String> {
+        let Some(repository) = git_test_repo(
+            "frontier-line-endings",
+            &[
+                (".gitattributes", b"*.rs text\n"),
+                ("lib.rs", b"pub fn first() {}\npub fn second() {}\r\n"),
+            ],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        git_test_command(root, &["config", "core.autocrlf", "true"])?;
+        git_test_command(root, &["add", "--renormalize", "."])?;
+        git_test_command(root, &["commit", "--amend", "--no-edit"])?;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        let original = fs::read(root.join("lib.rs")).map_err(|error| error.to_string())?;
+        let blob_before = git_test_command(root, &["ls-files", "--stage", "--", "lib.rs"])?;
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        let reusable = reusable_rows(&cold);
+
+        let swapped = b"pub fn first() {}\r\npub fn second() {}\n";
+        assert_eq!(original.len(), swapped.len());
+        fs::write(root.join("lib.rs"), swapped).map_err(|error| error.to_string())?;
+        git_test_command(root, &["add", "--", "lib.rs"])?;
+        let blob_after = git_test_command(root, &["ls-files", "--stage", "--", "lib.rs"])?;
+        assert_eq!(blob_before, blob_after);
+        assert!(git_test_command(root, &["status", "--porcelain"])?.is_empty());
+
+        let changed = scan_project(root_text, project, &reusable)?;
+        assert_eq!(changed.source_bytes_read, swapped.len());
+        let old = cold.files[0]
+            .1
+            .file_fields()
+            .ok_or("expected original source record")?
+            .content_version;
+        let new = changed.files[0]
+            .1
+            .file_fields()
+            .ok_or("expected changed source record")?
+            .content_version;
+        assert_ne!(
+            old, new,
+            "raw line endings are part of the admitted source bytes"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "manual large-fixture measurement; reports source bytes and wall time"]
+    fn benchmark_git_frontier_reads_large_fixture_once_then_reuses_all_rows() -> Result<(), String>
+    {
+        use std::time::Instant;
+
+        let Some(repository) = git_test_repo(
+            "frontier-large-benchmark",
+            &[("src/lib.rs", b"pub fn root() {}\n")],
+        )?
+        else {
+            return Ok(());
+        };
+        let root = &repository.0;
+        fs::create_dir_all(root.join("src/generated")).map_err(|error| error.to_string())?;
+        for index in 0..1024 {
+            let text = format!(
+                "pub fn item_{index}() -> usize {{ {index} }}\n// {}\n",
+                "x".repeat(4_000)
+            );
+            fs::write(root.join(format!("src/generated/item_{index}.rs")), text)
+                .map_err(|error| error.to_string())?;
+        }
+        git_test_commit(root, "large source fixture")?;
+        let root_text = root.to_str().ok_or("non-UTF-8 Git path")?;
+        let project = git_project_key(root);
+        let cold_start = Instant::now();
+        let cold = scan_project(root_text, project, &BTreeMap::new())?;
+        let cold_elapsed = cold_start.elapsed();
+        let reusable = reusable_rows(&cold);
+        let warm_start = Instant::now();
+        let warm = scan_project(root_text, project, &reusable)?;
+        let warm_elapsed = warm_start.elapsed();
+        assert_eq!(cold.files.len(), 1025);
+        assert_eq!(warm.source_bytes_read, 0);
+        eprintln!(
+            "source_frontier_benchmark files={} cold_bytes={} warm_bytes={} cold_ms={} warm_ms={}",
+            cold.files.len(),
+            cold.source_bytes_read,
+            warm.source_bytes_read,
+            cold_elapsed.as_millis(),
+            warm_elapsed.as_millis()
+        );
+        Ok(())
     }
 
     #[test]

@@ -21,10 +21,15 @@ pub use full::{
     TerminalPoolFault,
 };
 pub use full_wire::{
-    AdmittedSemanticImage, FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
-    FullSemanticImageIdentityField, PreparedFullSemanticImage, SemanticImageView,
-    encode_full_semantic_image, full_semantic_image_len, reset_semantic_image_validations,
-    semantic_image_validations,
+    FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
+    FullSemanticImageIdentityField, PreparedFullSemanticImage, SemanticImageProofOwner,
+    SemanticImageView, encode_full_semantic_image, full_semantic_image_len,
+    reset_semantic_image_validations, semantic_image_validations,
+};
+#[cfg(feature = "mmap")]
+pub use full_wire::{
+    MappedSemanticImage, MappedSemanticImageError, MappedSemanticImageIoPhase,
+    load_semantic_image_mmap, open_semantic_image_mmap,
 };
 /// Exact planning failures from [`encode_full_semantic_image`].
 pub type SemanticImageEncodeError = FullPlanError;

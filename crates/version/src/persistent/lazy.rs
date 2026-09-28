@@ -545,6 +545,84 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
         }
     }
 
+    /// Looks up strictly increasing keys while loading each shared tree path
+    /// once. Missing keys produce `None` in the corresponding result slot.
+    ///
+    /// The call retains only one child path at a time. Its scratch space is
+    /// proportional to the requested keys and returned values, independent
+    /// of the relation's total row count.
+    ///
+    /// # Errors
+    /// Returns [`LazyTreeError::Node`] for keys that are not strictly
+    /// increasing or for a malformed branch, and forwards loader failures.
+    pub fn lookup_many_sorted(
+        &self,
+        keys: &[R::Key],
+    ) -> Result<Vec<Option<R::Value>>, LazyTreeError<L::Error>> {
+        if keys.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate));
+        }
+        let mut values = Vec::with_capacity(keys.len());
+        self.lookup_many_in_node(&self.root, keys, &mut values)?;
+        Ok(values)
+    }
+
+    fn lookup_many_in_node(
+        &self,
+        node: &CheckedCanonicalRoot<R>,
+        keys: &[R::Key],
+        values: &mut Vec<Option<R::Value>>,
+    ) -> Result<(), LazyTreeError<L::Error>> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        if node.node().level() == 0 {
+            let entries = node.leaf_entries().map_err(LazyTreeError::Node)?;
+            let mut entry_index = 0;
+            for key in keys {
+                while entry_index < entries.len() && entries[entry_index].0.cmp(key).is_lt() {
+                    entry_index += 1;
+                }
+                values.push(
+                    entries
+                        .get(entry_index)
+                        .filter(|(candidate, _)| candidate == key)
+                        .map(|(_, value)| value.clone()),
+                );
+            }
+            return Ok(());
+        }
+
+        let summaries = node.child_summaries().map_err(LazyTreeError::Node)?;
+        if summaries.is_empty() {
+            return Err(LazyTreeError::Node(NodeError::InvalidBranch));
+        }
+        let mut start = 0;
+        let mut child_index = 0;
+        while start < keys.len() {
+            // Both sequences are ordered. Walk child boundaries and requested
+            // keys together instead of searching the same branch summaries
+            // for every key in a dense batch.
+            while child_index + 1 < summaries.len()
+                && summaries[child_index + 1].first_key <= keys[start]
+            {
+                child_index += 1;
+            }
+            let mut end = start.saturating_add(1);
+            while end < keys.len()
+                && (child_index + 1 == summaries.len()
+                    || keys[end] < summaries[child_index + 1].first_key)
+            {
+                end = end.saturating_add(1);
+            }
+            let claim = child_claim(&summaries[child_index]).map_err(LazyTreeError::Node)?;
+            let child = self.load(claim)?;
+            self.lookup_many_in_node(&child, &keys[start..end], values)?;
+            start = end;
+        }
+        Ok(())
+    }
+
     /// Reads at most `limit` rows after an optional canonical key.
     ///
     /// The cursor seeks to the first leaf that can hold a later key, then

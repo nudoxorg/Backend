@@ -5,7 +5,6 @@
 
 use std::{
     collections::HashMap,
-    ffi::OsString,
     num::NonZeroUsize,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
@@ -25,6 +24,7 @@ use crate::publication::{binding::CompilationBindingFacts, manifest::Compilation
 use arrayvec::ArrayVec;
 use backend_compile::EmbeddingExecutable;
 use backend_frontend_csharp::legacy::{CSharpAuthorityConfiguration, CSharpOracle};
+use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_frontend_go::legacy::{ConfiguredGoOracle, GoOracleInvocationModeV1};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
@@ -45,8 +45,6 @@ use thiserror::Error;
 
 const COMPILER_LANE_COUNT: usize = 2;
 const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
-const MAX_RUNTIME_ENVIRONMENT_ENTRIES: usize = 4_096;
-const MAX_RUNTIME_ENVIRONMENT_BYTES: usize = 1024 * 1024;
 
 use crate::application::compiler::{
     EmbeddingProvisioningFailure, EmbeddingRequirement, LocalCompilerExecution,
@@ -308,10 +306,10 @@ impl LocalCompilerPlaneRecipeIdentity {
 
 /// Exact host-local execution identity for a staged semantic plane.
 ///
-/// It binds the opened toolchain, local authority/options, host environment, target, and exact
-/// input/read-witness claim. Its distinct type and host-scoped recipe prevent promotion into the
-/// portable worker recipe used by remote admission. Input coverage is copied exactly and is never
-/// upgraded by this value.
+/// It binds the opened toolchain, local authority/options, closed compiler-child environment
+/// recipe, target, and exact input/read-witness claim. Its distinct type and host-scoped recipe
+/// prevent promotion into the portable worker recipe used by remote admission. Input coverage is
+/// copied exactly and is never upgraded by this value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LocalCompilerPlaneExecutionIdentity {
     target: ContentId<CompilationTargetDomain>,
@@ -357,6 +355,11 @@ impl LocalCompilerPlaneExecutionIdentity {
         self.local_authority_fingerprint
     }
 
+    fn with_local_authority_fingerprint(mut self, fingerprint: [u8; 32]) -> Self {
+        self.local_authority_fingerprint = fingerprint;
+        self
+    }
+
     #[must_use]
     pub const fn environment_identity(self) -> [u8; 32] {
         self.environment_identity
@@ -394,6 +397,11 @@ pub(crate) struct LocalCompilerPlaneExecutionSeed {
 }
 
 impl LocalCompilerPlaneExecutionSeed {
+    fn with_local_authority_fingerprint(mut self, fingerprint: [u8; 32]) -> Self {
+        self.local_authority_fingerprint = fingerprint;
+        self
+    }
+
     pub(crate) fn bind_input(
         self,
         input: SemanticInputWitness,
@@ -467,6 +475,11 @@ impl LocalCompilerExecutionIdentity {
     #[must_use]
     pub const fn local_authority_fingerprint(self) -> [u8; 32] {
         self.local_authority_fingerprint
+    }
+
+    fn with_local_authority_fingerprint(mut self, fingerprint: [u8; 32]) -> Self {
+        self.local_authority_fingerprint = fingerprint;
+        self
     }
 
     #[must_use]
@@ -558,9 +571,9 @@ impl LocalCompilerCapability {
         self.local_authority_fingerprint
     }
 
-    /// Identity of the exact bounded host environment admitted when this
-    /// compiler runtime opened. This is a digest only; raw environment values
-    /// are never returned or sent to another host.
+    /// Identity of the closed compiler-child environment recipe for this profile.
+    /// Ambient owner variables are not inherited by compiler children and do
+    /// not participate in this portable identity.
     #[must_use]
     pub const fn environment_identity(self) -> Option<[u8; 32]> {
         self.environment_identity
@@ -698,7 +711,6 @@ pub struct LocalCompilerCapabilities(
 
 impl LocalCompilerCapabilities {
     fn from_configuration(configuration: &LocalCompilerRuntimeConfiguration) -> Self {
-        let process_environment = runtime_environment_digest();
         let target_platform_identity = runtime_target_platform_identity();
         Self(LanguageProfile::PRODUCT_PROFILES.map(|profile| {
             let language = profile.language();
@@ -709,9 +721,8 @@ impl LocalCompilerCapabilities {
                 .find(|candidate| candidate.tool == toolchain);
             let identity = runtime.and_then(|candidate| candidate.identity);
             let local_authority_fingerprint =
-                package_authority_fingerprint(profile, &configuration.package_authority);
-            let environment_identity = process_environment
-                .map(|environment| compiler_environment_identity(profile, environment));
+                package_authority_fingerprint(profile, &configuration.package_authority, runtime);
+            let environment_identity = Some(compiler_environment_identity(profile));
             let portable_options_digest = portable_invocation_options_digest(
                 profile,
                 &configuration.package_authority,
@@ -816,6 +827,7 @@ impl LocalCompilerCapabilities {
 fn package_authority_fingerprint(
     profile: LanguageProfile,
     authority: &LocalRuntimePackageAuthority,
+    runtime: Option<&LocalRuntimeToolchain>,
 ) -> Option<[u8; 32]> {
     let mut identity = blake3::Hasher::new();
     identity.update(b"compiler-application.package-authority.v1\0");
@@ -823,8 +835,21 @@ fn package_authority_fingerprint(
     match profile.language() {
         Language::Rust => {
             let rust = authority.rust.as_ref()?;
+            identity.update(
+                backend_frontend_rust::legacy::RUST_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1
+                    .as_bytes(),
+            );
+            let cargo = rust.toolchain.cargo.as_deref()?;
+            let cargo_home = rust.toolchain.cargo_home.as_deref()?;
             update_path_identity(&mut identity, &rust.toolchain.tool);
             update_path_identity(&mut identity, &rust.toolchain.sysroot);
+            update_path_identity(&mut identity, cargo);
+            update_path_identity(&mut identity, cargo_home);
+            update_optional_string_identity(
+                &mut identity,
+                rust.toolchain.rustup_toolchain.as_deref(),
+            );
+            update_optional_path_identity(&mut identity, rust.toolchain.rustup_home.as_deref());
             identity.update(&rust.maximum_source_bytes.0.to_be_bytes());
             identity.update(&[
                 u8::from(rust.all_features),
@@ -852,6 +877,10 @@ fn package_authority_fingerprint(
         }
         Language::Java => {
             let java = authority.java.as_ref()?;
+            identity.update(
+                backend_frontend_java::legacy::JAVA_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1
+                    .as_bytes(),
+            );
             update_path_identity(&mut identity, java.toolchain.root());
             identity.update(&(java.classpath.len() as u64).to_be_bytes());
             for path in &java.classpath {
@@ -860,6 +889,10 @@ fn package_authority_fingerprint(
         }
         Language::CSharp => {
             let csharp = authority.csharp.as_ref()?;
+            identity.update(
+                backend_frontend_csharp::legacy::CSHARP_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1
+                    .as_bytes(),
+            );
             update_path_identity(&mut identity, csharp.producer.oracle_path());
             identity.update(&(csharp.producer.output_limit as u64).to_be_bytes());
             identity.update(&(csharp.producer.image_limit as u64).to_be_bytes());
@@ -874,9 +907,19 @@ fn package_authority_fingerprint(
             identity.update(&(csharp.maximum_source_bytes as u64).to_be_bytes());
         }
         Language::Clang => {
-            // Clang package semantics are owned directly by the selected
-            // libclang toolchain; there is no second helper or resolver.
-            identity.update(b"direct-libclang-package-authority");
+            let clang = authority.clang.as_ref()?;
+            let driver = runtime?.executable_path()?;
+            if clang.driver() != driver {
+                return None;
+            }
+            identity.update(b"direct-libclang-package-authority-v2\0");
+            identity.update(&clang_authority_fingerprint(
+                clang.driver(),
+                clang.resource_dir(),
+                clang.sysroot(),
+                clang.libclang_path(),
+                clang.system_include_dirs().iter().map(PathBuf::as_path),
+            ));
         }
     }
     match authority.maximum_image_bytes {
@@ -889,6 +932,27 @@ fn package_authority_fingerprint(
         }
     }
     Some(*identity.finalize().as_bytes())
+}
+
+fn clang_authority_fingerprint<'path>(
+    driver: &Path,
+    resource_dir: &Path,
+    sysroot: Option<&Path>,
+    libclang: &Path,
+    system_include_dirs: impl IntoIterator<Item = &'path Path>,
+) -> [u8; 32] {
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"compiler-application.clang-native-authority.v1\0");
+    update_path_identity(&mut identity, driver);
+    update_path_identity(&mut identity, resource_dir);
+    update_optional_path_identity(&mut identity, sysroot);
+    update_path_identity(&mut identity, libclang);
+    let system_include_dirs: Vec<_> = system_include_dirs.into_iter().collect();
+    identity.update(&(system_include_dirs.len() as u64).to_be_bytes());
+    for directory in system_include_dirs {
+        update_path_identity(&mut identity, directory);
+    }
+    *identity.finalize().as_bytes()
 }
 
 fn update_path_identity(identity: &mut blake3::Hasher, path: &Path) {
@@ -930,48 +994,15 @@ fn update_string_list_identity(identity: &mut blake3::Hasher, values: &[Box<str>
     }
 }
 
-/// Hashes the exact process environment under fixed entry and byte bounds.
-/// This conservative digest detects ambient state that could affect toolchain
-/// probing; native compiler children separately receive their explicit,
-/// environment-cleared command recipes.
-fn runtime_environment_digest() -> Option<[u8; 32]> {
-    let mut entries = Vec::<(OsString, OsString)>::new();
-    let mut total_bytes = 0_usize;
-    for (name, value) in std::env::vars_os() {
-        if entries.len() >= MAX_RUNTIME_ENVIRONMENT_ENTRIES {
-            return None;
-        }
-        total_bytes = total_bytes.checked_add(name.as_encoded_bytes().len())?;
-        total_bytes = total_bytes.checked_add(value.as_encoded_bytes().len())?;
-        if total_bytes > MAX_RUNTIME_ENVIRONMENT_BYTES {
-            return None;
-        }
-        entries.try_reserve(1).ok()?;
-        entries.push((name, value));
-    }
-    entries.sort_unstable_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+/// Identifies the closed environment recipe supplied to native compiler children.
+/// Exact tools, versions, portable options, and target platform are attested in
+/// their own recipe fields; adapter-specific fixed environment values are
+/// versioned with the native payload.
+fn compiler_environment_identity(profile: LanguageProfile) -> [u8; 32] {
     let mut environment = blake3::Hasher::new();
-    environment.update(b"compiler-application.process-environment.v1\0");
-    environment.update(&(entries.len() as u32).to_be_bytes());
-    for (name, value) in entries {
-        let name = name.as_encoded_bytes();
-        let value = value.as_encoded_bytes();
-        environment.update(&(name.len() as u64).to_be_bytes());
-        environment.update(name);
-        environment.update(&(value.len() as u64).to_be_bytes());
-        environment.update(value);
-    }
-    Some(*environment.finalize().as_bytes())
-}
-
-fn compiler_environment_identity(
-    profile: LanguageProfile,
-    process_environment: [u8; 32],
-) -> [u8; 32] {
-    let mut environment = blake3::Hasher::new();
-    environment.update(b"compiler-application.execution-environment.v1\0");
+    environment.update(b"compiler-application.execution-environment.v2\0");
     environment.update(&<[u8; 2]>::from(profile));
-    environment.update(&process_environment);
+    environment.update(crate::application::NATIVE_COMPILER_ENVIRONMENT_POLICY_ID);
     environment.update(&backend_compile::NATIVE_PAYLOAD_VERSION.to_be_bytes());
     *environment.finalize().as_bytes()
 }
@@ -1031,7 +1062,10 @@ fn portable_invocation_options_digest(
             ]);
         }
         Language::Clang => {
-            options.update(b"direct-libclang-default-options-v1\0");
+            // clang-sys 1.9.1 cannot prove that its in-process runtime loader
+            // opened this configured path. Keep C-family execution local until
+            // the loaded library itself can be attested by the frontend.
+            return None;
         }
         Language::TypeScript => {
             let checker = authority.typescript.as_ref()?;
@@ -1350,7 +1384,7 @@ impl LocalRuntimeToolchain {
         self.executable.as_deref()
     }
 
-    const fn probe_failed(tool: NativeTool) -> Self {
+    pub(crate) const fn probe_failed(tool: NativeTool) -> Self {
         Self {
             facts: LocalRuntimeToolchainFacts {
                 tool,
@@ -1515,6 +1549,9 @@ pub struct LocalRuntimeCSharpAuthority {
 /// Owned language-authority adapters for package compilation.
 #[derive(Debug, Default)]
 pub struct LocalRuntimePackageAuthority {
+    /// Explicit Clang driver, resource/sysroot, and selected libclang paths.
+    /// Missing or unverified native-library selection withholds C-family authority.
+    pub clang: Option<backend_frontend_clang::ClangAuthorityEnvironment>,
     /// TypeScript checker authority.
     pub typescript: Option<ExplicitTypeScriptChecker>,
     /// Python Pyrefly authority.
@@ -1613,6 +1650,13 @@ impl LocalCompilerRuntimeConfiguration {
     pub fn with_embedding_requirement(mut self, requirement: EmbeddingRequirement) -> Self {
         self.embedding_requirement = requirement;
         self
+    }
+
+    /// Returns the same compiler identity snapshot that runtime admission derives from this
+    /// configuration, without starting compiler threads or touching the configured paths.
+    #[must_use]
+    pub(crate) fn capabilities(&self) -> LocalCompilerCapabilities {
+        LocalCompilerCapabilities::from_configuration(self)
     }
 }
 
@@ -2478,6 +2522,7 @@ enum LaneJob {
         request: OwnedPackageSourceSet,
         response: PackageCompileResponse,
         cancelled: Arc<AtomicBool>,
+        go_authority_witness: Option<GoPackageAuthorityWitness>,
         execution_identity: Option<LocalCompilerExecutionIdentity>,
         plane_execution_seed: Option<LocalCompilerPlaneExecutionSeed>,
         reservation: StagedOutputLease,
@@ -2730,6 +2775,7 @@ fn run_worker_generation(
             },
         });
     let authority = PackageAuthorityConfiguration {
+        clang: configuration.package_authority.clang.as_ref(),
         typescript: configuration.package_authority.typescript.as_ref(),
         python: configuration.package_authority.python.as_ref(),
         rust,
@@ -3139,6 +3185,28 @@ fn queue_package_sources(
     in_flight: &mut usize,
 ) {
     let facts = request.facts();
+    let capability = capabilities.for_profile(facts.profile);
+    let go_authority_witness =
+        if facts.language == Language::Go && capability.local_authority_fingerprint().is_some() {
+            match GoPackageAuthorityWitness::capture(&request.package_root) {
+                Ok(witness) => Some(witness),
+                Err(error) => {
+                    response.send_error(PackageSemanticRuntimeError::Package(
+                        PackageSemanticError::GoAuthorityWitness(error),
+                    ));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+    let package_authority_fingerprint = go_authority_witness.as_ref().and_then(|witness| {
+        capability
+            .local_authority_fingerprint()
+            .map(|base| package_go_authority_fingerprint(base, witness))
+    });
+    let reusable_go_authority =
+        go_authority_witness_allows_semantic_reuse(facts.language, go_authority_witness.as_ref());
     let reservation_bytes = staged_output_reservation(
         request.sources.len(),
         image_cap,
@@ -3160,17 +3228,40 @@ fn queue_package_sources(
             return;
         }
     };
-    let execution_identity = capabilities
-        .for_profile(facts.profile)
-        .execution_identity_for_unit(&request.package_target, facts.profile, facts.stage);
-    let plane_execution_seed = capabilities
-        .for_profile(facts.profile)
-        .plane_execution_seed_for_unit(&request.package_target, facts.profile, facts.stage);
+    let portable_go_authority =
+        go_authority_witness_is_portable(facts.language, go_authority_witness.as_ref());
+    let execution_identity = portable_go_authority
+        .then(|| {
+            capability.execution_identity_for_unit(
+                &request.package_target,
+                facts.profile,
+                facts.stage,
+            )
+        })
+        .flatten()
+        .map(|identity| match package_authority_fingerprint {
+            Some(fingerprint) => identity.with_local_authority_fingerprint(fingerprint),
+            None => identity,
+        });
+    let plane_execution_seed = reusable_go_authority
+        .then(|| {
+            capability.plane_execution_seed_for_unit(
+                &request.package_target,
+                facts.profile,
+                facts.stage,
+            )
+        })
+        .flatten()
+        .map(|seed| match package_authority_fingerprint {
+            Some(fingerprint) => seed.with_local_authority_fingerprint(fingerprint),
+            None => seed,
+        });
     let identity = lane_identity(facts, capabilities, None);
     let job = LaneJob::PackageSources {
         request,
         response,
         cancelled,
+        go_authority_witness,
         execution_identity,
         plane_execution_seed,
         reservation,
@@ -3184,6 +3275,31 @@ fn queue_package_sources(
             reject_lane_job(job, CompilerRuntimeCause::RequestOwnerStopped);
         }
     }
+}
+
+fn package_go_authority_fingerprint(
+    base: [u8; 32],
+    witness: &GoPackageAuthorityWitness,
+) -> [u8; 32] {
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"compiler-application.go-package-authority-witness.v1\0");
+    identity.update(&base);
+    identity.update(&witness.identity());
+    *identity.finalize().as_bytes()
+}
+
+fn go_authority_witness_is_portable(
+    language: Language,
+    witness: Option<&GoPackageAuthorityWitness>,
+) -> bool {
+    language != Language::Go || witness.is_some_and(|witness| !witness.requires_local_execution())
+}
+
+fn go_authority_witness_allows_semantic_reuse(
+    language: Language,
+    witness: Option<&GoPackageAuthorityWitness>,
+) -> bool {
+    language != Language::Go || witness.is_some_and(GoPackageAuthorityWitness::is_complete)
 }
 
 fn maximum_image_bytes(configuration: &LocalCompilerRuntimeConfiguration) -> usize {
@@ -3360,6 +3476,7 @@ fn run_lane(
                 request,
                 response,
                 cancelled,
+                go_authority_witness,
                 execution_identity,
                 plane_execution_seed,
                 reservation,
@@ -3378,6 +3495,10 @@ fn run_lane(
                             &request.package_root,
                             &sources,
                         )?;
+                        let package = match go_authority_witness.as_ref() {
+                            Some(witness) => package.with_go_authority_witness(witness),
+                            None => package,
+                        };
                         let package = match request.input_claim {
                             Some(input) => package.with_input_claim(input),
                             None => package,
@@ -3712,7 +3833,7 @@ mod portable_recipe_tests {
             Stage::LowerIr,
             NativeTool::Python,
             runtime.identity.expect("resolved toolchain identity"),
-            [7; 32],
+            compiler_environment_identity(profile),
             [8; 32],
             options,
         )
@@ -3761,6 +3882,213 @@ mod portable_recipe_tests {
         assert_ne!(first, reordered);
         assert_ne!(first, changed);
         assert_ne!(first, changed_pyrefly);
+    }
+
+    #[test]
+    fn portable_environment_identity_is_profile_specific_and_recipe_binds_real_inputs() {
+        let profile = LanguageProfile::Python(PythonVersion::Python314);
+        let baseline = compiler_environment_identity(profile);
+
+        let baseline_recipe = crate::application::CompilerInvocationRecipeV2::new(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Python,
+            ContentId::from_digest([1; 32]),
+            baseline,
+            [3; 32],
+            [4; 32],
+        )
+        .expect("baseline recipe");
+        let changed_toolchain = crate::application::CompilerInvocationRecipeV2::new(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Python,
+            ContentId::from_digest([2; 32]),
+            baseline,
+            [3; 32],
+            [4; 32],
+        )
+        .expect("toolchain-bound recipe");
+        let changed_platform = crate::application::CompilerInvocationRecipeV2::new(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Python,
+            ContentId::from_digest([1; 32]),
+            baseline,
+            [5; 32],
+            [4; 32],
+        )
+        .expect("platform-bound recipe");
+        let changed_profile =
+            compiler_environment_identity(LanguageProfile::Python(PythonVersion::Python313));
+
+        assert_ne!(baseline, changed_profile, "profile is a meaningful input");
+        assert_ne!(baseline_recipe.identity(), changed_toolchain.identity());
+        assert_ne!(baseline_recipe.identity(), changed_platform.identity());
+    }
+}
+
+#[cfg(test)]
+mod clang_native_authority_tests {
+    use super::*;
+    use backend_semantic::vocabulary::CStandard;
+
+    fn authority_identity(driver: &Path, resource_dir: &Path) -> [u8; 32] {
+        clang_authority_fingerprint(
+            driver,
+            resource_dir,
+            Some(Path::new("/opt/clang/sysroot")),
+            Path::new("/opt/clang/lib/libclang.so"),
+            [Path::new("/opt/clang/include")],
+        )
+    }
+
+    #[test]
+    fn same_version_different_clang_paths_and_resources_have_distinct_local_scopes() {
+        let profile = LanguageProfile::C(CStandard::C23);
+        let toolchain = ContentId::from_canonical_bytes(b"clang version 20.1.0");
+        let environment = compiler_environment_identity(profile);
+        let platform = [9; 32];
+
+        let first_authority = authority_identity(
+            Path::new("/nix/store/aaa-clang/bin/clang"),
+            Path::new("/nix/store/aaa-clang/lib/clang/20"),
+        );
+        let same_authority = authority_identity(
+            Path::new("/nix/store/aaa-clang/bin/clang"),
+            Path::new("/nix/store/aaa-clang/lib/clang/20"),
+        );
+        let relocated_authority = authority_identity(
+            Path::new("/nix/store/bbb-clang/bin/clang"),
+            Path::new("/nix/store/bbb-clang/lib/clang/20"),
+        );
+
+        assert_eq!(first_authority, same_authority);
+        assert_ne!(first_authority, relocated_authority);
+        assert_ne!(
+            semantic_lineage(
+                profile,
+                NativeTool::Clang,
+                toolchain,
+                first_authority,
+                environment,
+                platform,
+            ),
+            semantic_lineage(
+                profile,
+                NativeTool::Clang,
+                toolchain,
+                relocated_authority,
+                environment,
+                platform,
+            ),
+            "the same version bytes cannot collapse distinct Clang closures into one scope"
+        );
+        assert_eq!(
+            portable_invocation_options_digest(
+                profile,
+                &LocalRuntimePackageAuthority::default(),
+                None,
+            ),
+            None,
+            "clang-sys does not attest its in-process loaded library, so no remote grant is issued"
+        );
+        assert_eq!(
+            package_authority_fingerprint(profile, &LocalRuntimePackageAuthority::default(), None,),
+            None,
+            "a missing explicit driver/libclang witness makes Clang locally unavailable"
+        );
+    }
+}
+
+#[cfg(test)]
+mod go_workspace_identity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_GO_WORK_TEST: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn go_package_authority_witness_changes_local_identity_and_placement() {
+        let sequence = NEXT_GO_WORK_TEST.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "backend-go-work-witness-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create package root");
+        assert!(!go_authority_witness_is_portable(Language::Go, None));
+        assert!(!go_authority_witness_allows_semantic_reuse(
+            Language::Go,
+            None
+        ));
+
+        let without_workspace = GoPackageAuthorityWitness::capture(&root)
+            .expect("capture package without Go manifests");
+        assert!(go_authority_witness_is_portable(
+            Language::Go,
+            Some(&without_workspace)
+        ));
+        let absent_identity = package_go_authority_fingerprint([7; 32], &without_workspace);
+
+        let module = root.join("module");
+        std::fs::create_dir_all(&module).expect("create workspace module");
+        std::fs::write(
+            module.join("go.mod"),
+            b"module example.test/module\ngo 1.24\n",
+        )
+        .expect("write module manifest");
+        std::fs::write(module.join("module.go"), b"package module\n").expect("write module source");
+        let workspace_path = root.join("go.work");
+        std::fs::write(&workspace_path, b"go 1.24\nuse ./module\n").expect("write workspace file");
+        let workspace =
+            GoPackageAuthorityWitness::capture(&root).expect("capture workspace authority inputs");
+        assert!(!go_authority_witness_is_portable(
+            Language::Go,
+            Some(&workspace)
+        ));
+        assert!(
+            workspace.is_complete(),
+            "all bounded workspace inputs were captured"
+        );
+        assert!(go_authority_witness_allows_semantic_reuse(
+            Language::Go,
+            Some(&workspace)
+        ));
+        assert_eq!(
+            workspace.go_work_witness().path(),
+            Some(workspace_path.as_path())
+        );
+        assert_ne!(
+            absent_identity,
+            package_go_authority_fingerprint([7; 32], &workspace),
+            "a selected workspace and local module tree change package-local authority identity"
+        );
+        assert!(
+            workspace
+                .matches_current(&root)
+                .expect("revalidate unchanged workspace")
+        );
+
+        std::fs::write(
+            &workspace_path,
+            b"go 1.24\nuse ./module\nreplace example.test/x => ./other\n",
+        )
+        .expect("change workspace file");
+        assert!(
+            !workspace
+                .matches_current(&root)
+                .expect("revalidate changed workspace")
+        );
+        let incomplete = GoPackageAuthorityWitness::capture(&root)
+            .expect("capture missing local replacement target");
+        assert!(!incomplete.is_complete());
+        assert!(incomplete.requires_local_execution());
+        assert!(
+            !go_authority_witness_allows_semantic_reuse(Language::Go, Some(&incomplete)),
+            "an incomplete local tree must not receive a reusable plane identity"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
@@ -3838,15 +4166,18 @@ mod local_plane_identity_tests {
     #[test]
     fn local_plane_identity_is_host_scoped_input_bound_and_disjoint_from_portable_recipe() {
         let first = local_identity([7; 32], [8; 32], [9; 32]);
-        let changed_host = local_identity([17; 32], [8; 32], [9; 32]);
+        let changed_environment = local_identity([17; 32], [8; 32], [9; 32]);
         let changed_read_set = local_identity([7; 32], [18; 32], [9; 32]);
 
-        assert_ne!(first, changed_host);
-        assert_ne!(first.recipe_identity(), changed_host.recipe_identity());
+        assert_ne!(first, changed_environment);
+        assert_ne!(
+            first.recipe_identity(),
+            changed_environment.recipe_identity()
+        );
         assert_ne!(
             local_manifest_root(first),
-            local_manifest_root(changed_host),
-            "a changed host environment changes the canonical local plane root"
+            local_manifest_root(changed_environment),
+            "a changed child environment recipe changes the canonical local plane root"
         );
         assert_ne!(first, changed_read_set);
         assert_ne!(

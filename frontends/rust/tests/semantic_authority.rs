@@ -439,6 +439,160 @@ fn cancelled_authority_never_loads_the_workspace() -> Result<(), TestFailure> {
     outcome
 }
 
+/// Proves the exact serde_json 1.0.145 build script is admitted as its own Cargo target.
+#[test]
+fn serde_json_1_0_145_build_script_resolves_as_a_cargo_target() -> Result<(), TestFailure> {
+    const BUILD_SCRIPT: &[u8] = include_bytes!("fixtures/serde_json-1.0.145-build-script.txt");
+    let root = project_root()?;
+    let outcome = (|| {
+        write_fixture(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"serde_json\"\nversion = \"1.0.145\"\nedition = \"2021\"\nbuild = \"build.rs\"\n",
+            "write serde_json build-script manifest",
+        )?;
+        write_fixture(
+            root.join("src/lib.rs"),
+            "pub fn fixture() {}\n",
+            "write serde_json fixture library",
+        )?;
+        write_fixture(
+            root.join("build.rs"),
+            std::str::from_utf8(BUILD_SCRIPT).map_err(|_| TestFailure::BuildScriptFixture)?,
+            "write serde_json build script",
+        )?;
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let build_script = root.join("build.rs");
+        let project =
+            RustProject::open_with_source(&root, &build_script, &toolchain, RustEdition::Rust2021)?;
+        let cancelled = AtomicBool::new(false);
+        project.analyze(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
+            },
+            |authority| {
+                if authority.source != BUILD_SCRIPT {
+                    return Err(RustAuthorityError::SourceBinding {
+                        expected: BUILD_SCRIPT.len(),
+                        observed: authority.source.len(),
+                    });
+                }
+                let resolved_main = authority.declarations().any(|declaration| {
+                    if !matches!(declaration.definition, RustDefinition::Function(_)) {
+                        return false;
+                    }
+                    authority
+                        .declaration_name(&declaration)
+                        .ok()
+                        .and_then(|span| authority.source_at(span).ok())
+                        .is_some_and(|name| name == b"main")
+                });
+                if !resolved_main {
+                    return Err(RustAuthorityError::MissingSemanticFact {
+                        fact: SemanticKind::Function,
+                    });
+                }
+                Ok(())
+            },
+        )?;
+        Ok(())
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove fixture",
+        source,
+    })?;
+    outcome
+}
+
+/// Regresses the exact serde 1.0.228 build script beneath an unrelated Cargo workspace.
+#[test]
+fn serde_1_0_228_build_script_resolves_inside_generated_staging_workspace()
+-> Result<(), TestFailure> {
+    const BUILD_SCRIPT: &[u8] = include_bytes!("fixtures/serde-1.0.228-build-script.txt");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(TestFailure::Clock)?
+        .as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("nudox-serde-staging-{nonce}-{sequence}"));
+    let package = workspace.join("serde-1.0.228");
+    fs::create_dir_all(package.join("src")).map_err(|source| TestFailure::Io {
+        operation: "create staged serde fixture",
+        source,
+    })?;
+    let outcome = (|| {
+        write_fixture(
+            workspace.join("Cargo.toml"),
+            "# nudox-registry-workspace-v1\n[workspace]\nmembers = [\"serde-1.0.228\"]\nresolver = \"2\"\n",
+            "write generated staging workspace",
+        )?;
+        write_fixture(
+            package.join("Cargo.toml"),
+            "[package]\nname = \"serde\"\nversion = \"1.0.228\"\nedition = \"2021\"\nbuild = \"build.rs\"\n",
+            "write serde manifest",
+        )?;
+        write_fixture(
+            package.join("src/lib.rs"),
+            "pub fn fixture() {}\n",
+            "write serde fixture library",
+        )?;
+        write_fixture(
+            package.join("build.rs"),
+            std::str::from_utf8(BUILD_SCRIPT).map_err(|_| TestFailure::BuildScriptFixture)?,
+            "write serde build script",
+        )?;
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let build_script = package.join("build.rs");
+        let project = RustProject::open_with_source(
+            &package,
+            &build_script,
+            &toolchain,
+            RustEdition::Rust2021,
+        )?;
+        let cancelled = AtomicBool::new(false);
+        project.analyze(
+            RustAnalysisControl {
+                cancelled: &cancelled,
+                maximum_source_bytes: SourceByteLimit::from(8_192),
+                deadline: Instant::now() + std::time::Duration::from_secs(180),
+            },
+            |authority| {
+                if authority.source != BUILD_SCRIPT {
+                    return Err(RustAuthorityError::SourceBinding {
+                        expected: BUILD_SCRIPT.len(),
+                        observed: authority.source.len(),
+                    });
+                }
+                let resolved_main = authority.declarations().any(|declaration| {
+                    if !matches!(declaration.definition, RustDefinition::Function(_)) {
+                        return false;
+                    }
+                    authority
+                        .declaration_name(&declaration)
+                        .ok()
+                        .and_then(|span| authority.source_at(span).ok())
+                        .is_some_and(|name| name == b"main")
+                });
+                if !resolved_main {
+                    return Err(RustAuthorityError::MissingSemanticFact {
+                        fact: SemanticKind::Function,
+                    });
+                }
+                Ok(())
+            },
+        )?;
+        Ok(())
+    })();
+    fs::remove_dir_all(&workspace).map_err(|source| TestFailure::Io {
+        operation: "remove staged serde fixture",
+        source,
+    })?;
+    outcome
+}
+
 /// Selects the configured compiler or a standard system lookup without preserving ambient metadata.
 fn rustc_path() -> PathBuf {
     std::env::var_os("RUSTC").map_or_else(|| PathBuf::from("rustc"), PathBuf::from)
@@ -471,6 +625,9 @@ enum TestFailure {
     /// Root source admission failed to reject its declared byte-budget violation.
     #[error("Rust source budget admitted an oversized root before workspace loading")]
     SourceBudgetAuthority,
+    /// The exact registry build-script fixture could not be converted back into source text.
+    #[error("serde_json build-script regression fixture was not valid UTF-8")]
+    BuildScriptFixture,
     /// Rust authority returned a typed failure.
     #[error("Rust authority failed: {0}")]
     Authority(#[from] RustAuthorityError),

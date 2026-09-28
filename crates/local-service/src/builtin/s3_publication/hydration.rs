@@ -3,6 +3,70 @@ use super::signing::{aws_timestamp, hex};
 use super::*;
 
 impl S3ClosurePublisher {
+    fn fetch_verified_remote_object(
+        &self,
+        store: &FileStore,
+        selected: RemoteClosureSelection,
+        object_id: UntrustedObjectId,
+        expected_schema: backend_version::SchemaIdentity,
+        expected_payload_len: u64,
+    ) -> Result<Arc<CheckedPackedObject>, PublicationError> {
+        let receipt = self.selected_receipt(store, selected)?;
+        let object_index = receipt
+            .object_ids
+            .binary_search(object_id.as_bytes())
+            .map_err(|_| PublicationError::Receipt)?;
+        let object_index = u64::try_from(object_index).map_err(|_| PublicationError::Receipt)?;
+        let mut first_object = 0_u64;
+        let pack = receipt
+            .packs
+            .iter()
+            .find(|pack| {
+                let next = first_object.saturating_add(u64::from(pack.object_count));
+                let contains = object_index >= first_object && object_index < next;
+                first_object = next;
+                contains
+            })
+            .ok_or(PublicationError::Receipt)?;
+        let capability = self.read_capability(pack, receipt.fence)?;
+        let remote = self
+            .route
+            .open_pack(&capability, receipt.fence)
+            .map_err(|source| PublicationError::RemoteHydration {
+                operation: RemoteHydrationOperation::OpenPack,
+                source: Some(source),
+            })?;
+        let packed = self
+            .route
+            .get_object_claim(&remote, object_id, receipt.fence, store.relation_registry())
+            .map_err(|source| PublicationError::RemoteHydration {
+                operation: RemoteHydrationOperation::FetchObject,
+                source: Some(source),
+            })?;
+        if packed.id().as_bytes() != object_id.as_bytes()
+            || packed.fence() != receipt.fence
+            || packed.pack_id().as_bytes() != &pack.pack_id
+            || packed.layout_id().as_bytes() != &pack.layout_id
+        {
+            return Err(PublicationError::Receipt);
+        }
+        let verified = packed.verified_envelope();
+        if verified.id().as_bytes() != object_id.as_bytes()
+            || verified.schema() != expected_schema
+            || verified.payload_len() != expected_payload_len
+            || !packed.integrity_current()
+        {
+            return Err(PublicationError::Receipt);
+        }
+        let maximum_envelope_bytes = expected_payload_len
+            .checked_add(128)
+            .ok_or(PublicationError::Receipt)?;
+        if packed.envelope_bytes() > maximum_envelope_bytes {
+            return Err(PublicationError::Receipt);
+        }
+        Ok(Arc::new(packed))
+    }
+
     fn read_capability(
         &self,
         pack: &PackReceiptSummary,
@@ -160,18 +224,13 @@ impl S3ClosurePublisher {
         if verified.id().as_bytes() != object_id.as_bytes()
             || verified.schema() != expected_schema
             || verified.payload_len() != expected_payload_len
+            || !packed.integrity_current()
         {
             return Err(PublicationError::Receipt);
         }
         let payload_offset = envelope_bytes
             .checked_sub(verified.payload_len())
             .ok_or(PublicationError::Receipt)?;
-        envelope
-            .seek(SeekFrom::Start(payload_offset))
-            .map_err(|_| PublicationError::RemoteHydration {
-                operation: RemoteHydrationOperation::SeekPayload,
-                source: None,
-            })?;
         let payload_len =
             usize::try_from(expected_payload_len).map_err(|_| PublicationError::Receipt)?;
         let mut payload = Vec::new();
@@ -179,12 +238,104 @@ impl S3ClosurePublisher {
             .try_reserve_exact(payload_len)
             .map_err(|_| PublicationError::Store)?;
         payload.resize(payload_len, 0);
-        envelope
-            .read_exact(&mut payload)
-            .map_err(|_| PublicationError::RemoteHydration {
+        packed
+            .read_envelope_range(payload_offset, &mut payload)
+            .map_err(|source| PublicationError::RemoteHydration {
                 operation: RemoteHydrationOperation::ReadPayload,
-                source: None,
+                source: Some(source),
             })?;
+        Ok(payload)
+    }
+
+    /// Reads one page from a selected object after a single full, authenticated
+    /// pack-envelope fetch. The checked object remains in a bounded disk-backed
+    /// LRU so later pages seek the same verified temp file without another GET
+    /// or a full-payload allocation.
+    pub(super) fn hydrate_object_range_from_s3(
+        &self,
+        store: &FileStore,
+        selected: RemoteClosureSelection,
+        object_id: UntrustedObjectId,
+        expected_schema: backend_version::SchemaIdentity,
+        expected_payload_len: u64,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, PublicationError> {
+        if expected_payload_len == 0
+            || expected_payload_len > backend_replication::MAX_SEMANTIC_IMAGE_BYTES
+            || length == 0
+            || length > 16 * 1024
+        {
+            return Err(PublicationError::Receipt);
+        }
+        let end = offset
+            .checked_add(length)
+            .ok_or(PublicationError::Receipt)?;
+        if end > expected_payload_len {
+            return Err(PublicationError::Receipt);
+        }
+        let key = VerifiedRemoteObjectKey {
+            closure: selected.closure,
+            object_id: *object_id.as_bytes(),
+            schema_domain: expected_schema.domain(),
+            schema_type: expected_schema.ty(),
+            schema_version: expected_schema.version(),
+            payload_len: expected_payload_len,
+        };
+
+        // Owner control requests are serialized by CommandAdapter's admission
+        // mutex. Keeping this lock across a cold GET also coalesces duplicate
+        // misses if another internal caller reaches this method concurrently.
+        let mut cache = self
+            .verified_remote_objects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let object = match cache.get(key) {
+            Some(object) => object,
+            None => {
+                let object = self.fetch_verified_remote_object(
+                    store,
+                    selected,
+                    object_id,
+                    expected_schema,
+                    expected_payload_len,
+                )?;
+                cache.admit(key, Arc::clone(&object), object.envelope_bytes());
+                object
+            }
+        };
+
+        let header_bytes = object
+            .envelope_bytes()
+            .checked_sub(expected_payload_len)
+            .ok_or(PublicationError::Receipt)?;
+        let start = header_bytes
+            .checked_add(offset)
+            .ok_or(PublicationError::Receipt)?;
+        let count = usize::try_from(length).map_err(|_| PublicationError::Receipt)?;
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(count)
+            .map_err(|_| PublicationError::Store)?;
+        payload.resize(count, 0);
+        if object.read_envelope_range(start, &mut payload).is_err() {
+            cache.invalidate(key);
+            let refreshed = self.fetch_verified_remote_object(
+                store,
+                selected,
+                object_id,
+                expected_schema,
+                expected_payload_len,
+            )?;
+            payload.fill(0);
+            refreshed
+                .read_envelope_range(start, &mut payload)
+                .map_err(|retry_source| PublicationError::RemoteHydration {
+                    operation: RemoteHydrationOperation::ReadPayload,
+                    source: Some(retry_source),
+                })?;
+            cache.admit(key, Arc::clone(&refreshed), refreshed.envelope_bytes());
+        }
         Ok(payload)
     }
 }

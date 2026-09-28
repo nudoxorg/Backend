@@ -165,13 +165,19 @@ pub use semantic_facts::{
     DecodedOccurrence, OccurrenceCursor, OccurrenceFault, OccurrenceInput, OccurrenceLane,
 };
 pub use semantic_image::{
-    AdmittedSemanticImage, CoreProvenanceFault, CoreProvenanceIdentityField,
-    CoreSemanticImageFault, CoreSemanticImageField, ExtensionPlanFault, FullEntityFault,
-    FullPlanError, FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
+    CoreProvenanceFault, CoreProvenanceIdentityField, CoreSemanticImageFault,
+    CoreSemanticImageField, ExtensionPlanFault, FullEntityFault, FullPlanError,
+    FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
     FullSemanticImageIdentityField, GraphPlanFault, PreparedFullSemanticImage, ScopeComponent,
-    SemanticImageEncodeError, SemanticImageIdentity, SemanticImageReopenError, SemanticImageView,
-    TerminalPoolDomain, TerminalPoolFault, encode_full_semantic_image, full_semantic_image_len,
-    reset_semantic_image_validations, semantic_image_validations,
+    SemanticImageEncodeError, SemanticImageIdentity, SemanticImageProofOwner,
+    SemanticImageReopenError, SemanticImageView, TerminalPoolDomain, TerminalPoolFault,
+    encode_full_semantic_image, full_semantic_image_len, reset_semantic_image_validations,
+    semantic_image_validations,
+};
+#[cfg(feature = "mmap")]
+pub use semantic_image::{
+    MappedSemanticImage, MappedSemanticImageError, MappedSemanticImageIoPhase,
+    load_semantic_image_mmap, open_semantic_image_mmap,
 };
 pub use semantic_render::{
     CFamilySemanticDocumentDialect, CSharpSemanticDocumentDialect, CanonicalTypeRenderError,
@@ -204,8 +210,9 @@ pub use versioned::{
     SemanticManifestRoot, SemanticPlane, SemanticPlaneCatalog, SemanticPlaneCatalogEntry,
     SemanticPlaneCatalogRoot, SemanticPlaneCoverageScope, SemanticPlaneImageKey, SemanticPlaneKind,
     SemanticPlaneManifest, SemanticPlaneRoot, SemanticPlaneSegment, SemanticRangeRequest,
-    SemanticSegmentId, UntrustedSemanticSegmentId, VERSIONED_PLANE_MANIFEST_SCHEMA,
-    VERSIONED_PLANE_SEGMENT_SCHEMA, VersionedPlaneManifestSchema, VersionedPlaneSegmentSchema,
+    SemanticSegmentId, SemanticSegmentVerifier, UntrustedSemanticSegmentId,
+    VERSIONED_PLANE_MANIFEST_SCHEMA, VERSIONED_PLANE_SEGMENT_SCHEMA, VersionedPlaneManifestSchema,
+    VersionedPlaneSegmentSchema,
 };
 pub use view::OccurrenceFault as OccurrenceViewFault;
 pub use view::{

@@ -634,26 +634,24 @@ impl SemanticPlaneSegment {
         plane: SemanticPlaneKind,
         payload: &[u8],
     ) -> Result<SemanticSegmentId, SemanticManifestError> {
-        if payload.len() as u64 != self.byte_length {
-            return Err(SemanticManifestError::SegmentLength {
-                expected: self.byte_length,
-                observed: payload.len() as u64,
-            });
-        }
-        let observed = segment_identity(
+        let mut verifier = self.streaming_admission(plane);
+        verifier.update(payload)?;
+        verifier.finish()
+    }
+
+    /// Starts incremental admission of a fetched or locally mapped payload.
+    /// Feed the exact payload bytes in any bounded chunks, then call
+    /// [`SemanticSegmentVerifier::finish`] to obtain its admitted identity.
+    #[must_use]
+    pub fn streaming_admission(&self, plane: SemanticPlaneKind) -> SemanticSegmentVerifier {
+        SemanticSegmentVerifier::new(
             plane,
             self.first_key,
             self.last_key,
             self.row_count,
-            payload,
-        );
-        if observed.as_bytes() != self.id_claim.as_bytes() {
-            return Err(SemanticManifestError::SegmentIdentity {
-                expected: self.id_claim,
-                observed,
-            });
-        }
-        Ok(observed)
+            self.byte_length,
+            self.id_claim,
+        )
     }
 
     #[must_use]
@@ -687,6 +685,75 @@ impl SemanticPlaneSegment {
 
     fn re_admit_input(&mut self, witness: CoverageWitness) -> Result<(), SemanticManifestError> {
         self.input.re_admit(witness)
+    }
+}
+
+/// Incremental verifier for one exact semantic segment claim.
+///
+/// It binds the plane metadata and declared payload length before accepting
+/// bytes, and only returns a [`SemanticSegmentId`] after the exact byte count
+/// and claimed identity have both been checked.
+pub struct SemanticSegmentVerifier {
+    hasher: blake3::Hasher,
+    expected_length: u64,
+    observed_length: u64,
+    id_claim: UntrustedSemanticSegmentId,
+}
+
+impl SemanticSegmentVerifier {
+    fn new(
+        plane: SemanticPlaneKind,
+        first_key: [u8; 32],
+        last_key: [u8; 32],
+        row_count: u32,
+        byte_length: u64,
+        id_claim: UntrustedSemanticSegmentId,
+    ) -> Self {
+        Self {
+            hasher: segment_hasher(plane, first_key, last_key, row_count, byte_length),
+            expected_length: byte_length,
+            observed_length: 0,
+            id_claim,
+        }
+    }
+
+    /// Adds the next exact payload bytes. A chunk that would exceed the
+    /// declared payload length is rejected without hashing any part of it.
+    pub fn update(&mut self, chunk: &[u8]) -> Result<(), SemanticManifestError> {
+        let chunk_length =
+            u64::try_from(chunk.len()).map_err(|_| SemanticManifestError::CountOverflow)?;
+        let observed_length = self
+            .observed_length
+            .checked_add(chunk_length)
+            .ok_or(SemanticManifestError::CountOverflow)?;
+        if observed_length > self.expected_length {
+            return Err(SemanticManifestError::SegmentLength {
+                expected: self.expected_length,
+                observed: observed_length,
+            });
+        }
+        self.hasher.update(chunk);
+        self.observed_length = observed_length;
+        Ok(())
+    }
+
+    /// Finishes admission and returns the trusted identity only when the
+    /// exact declared byte count and untrusted claim both match.
+    pub fn finish(self) -> Result<SemanticSegmentId, SemanticManifestError> {
+        if self.observed_length != self.expected_length {
+            return Err(SemanticManifestError::SegmentLength {
+                expected: self.expected_length,
+                observed: self.observed_length,
+            });
+        }
+        let observed = SemanticSegmentId(*self.hasher.finalize().as_bytes());
+        if observed.as_bytes() != self.id_claim.as_bytes() {
+            return Err(SemanticManifestError::SegmentIdentity {
+                expected: self.id_claim,
+                observed,
+            });
+        }
+        Ok(observed)
     }
 }
 
@@ -2014,15 +2081,26 @@ fn segment_identity(
     row_count: u32,
     payload: &[u8],
 ) -> SemanticSegmentId {
+    let mut hasher = segment_hasher(plane, first_key, last_key, row_count, payload.len() as u64);
+    hasher.update(payload);
+    SemanticSegmentId(*hasher.finalize().as_bytes())
+}
+
+fn segment_hasher(
+    plane: SemanticPlaneKind,
+    first_key: [u8; 32],
+    last_key: [u8; 32],
+    row_count: u32,
+    byte_length: u64,
+) -> blake3::Hasher {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.semantic.ir.segment.v1\0");
     update_plane_kind_hash(&mut hasher, plane);
     hasher.update(&first_key);
     hasher.update(&last_key);
     hasher.update(&row_count.to_be_bytes());
-    hasher.update(&(payload.len() as u64).to_be_bytes());
-    hasher.update(payload);
-    SemanticSegmentId(*hasher.finalize().as_bytes())
+    hasher.update(&byte_length.to_be_bytes());
+    hasher
 }
 
 fn segment_id_claim(id: SemanticSegmentId) -> UntrustedSemanticSegmentId {
@@ -3303,9 +3381,9 @@ mod tests {
             input(90),
             vec![plane(ir, vec![segment(ir, 1, b"fact")])],
         );
-        let segment = value.planes()[0].segments()[0];
+        let claim_segment = value.planes()[0].segments()[0];
         assert!(matches!(
-            segment.admit(ir, b"fake"),
+            claim_segment.admit(ir, b"fake"),
             Err(SemanticManifestError::SegmentIdentity { .. })
         ));
         let mut cursor = value
@@ -3325,6 +3403,68 @@ mod tests {
         assert!(matches!(
             SemanticHydrationCursor::resume(&other, token, &[]),
             Err(SemanticManifestError::StaleManifest { .. })
+        ));
+    }
+
+    #[test]
+    fn streaming_segment_admission_checks_chunks_length_and_content_id() {
+        let plane = SemanticPlaneKind::Ir(SemanticIrPlane::Core);
+        let payload = (0..70_123)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let segment = segment(plane, 42, &payload);
+
+        let mut verifier = segment.streaming_admission(plane);
+        let chunk_sizes = [1, 31, 4093, 17, 16_384, 997];
+        let mut offset = 0;
+        let mut chunk = 0;
+        while offset < payload.len() {
+            let end = (offset + chunk_sizes[chunk % chunk_sizes.len()]).min(payload.len());
+            verifier
+                .update(&payload[offset..end])
+                .expect("bounded chunk is accepted");
+            offset = end;
+            chunk += 1;
+        }
+        assert_eq!(
+            verifier.finish().expect("complete payload is admitted"),
+            segment
+                .admit(plane, &payload)
+                .expect("borrowed admission is the same identity")
+        );
+
+        let mut truncated = segment.streaming_admission(plane);
+        truncated
+            .update(&payload[..payload.len() - 1])
+            .expect("truncated prefix is accepted until finish");
+        assert!(matches!(
+            truncated.finish(),
+            Err(SemanticManifestError::SegmentLength {
+                expected,
+                observed
+            }) if expected == payload.len() as u64 && observed == payload.len() as u64 - 1
+        ));
+
+        let mut corrupted_payload = payload.clone();
+        corrupted_payload[32_777] ^= 0x80;
+        let mut corrupted = segment.streaming_admission(plane);
+        for bytes in corrupted_payload.chunks(8191) {
+            corrupted
+                .update(bytes)
+                .expect("same-length corrupted chunk is accepted for hashing");
+        }
+        assert!(matches!(
+            corrupted.finish(),
+            Err(SemanticManifestError::SegmentIdentity { .. })
+        ));
+
+        let mut overlong = segment.streaming_admission(plane);
+        overlong
+            .update(&payload)
+            .expect("declared payload length is accepted");
+        assert!(matches!(
+            overlong.update(b"x"),
+            Err(SemanticManifestError::SegmentLength { .. })
         ));
     }
 }

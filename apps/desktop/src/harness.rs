@@ -168,6 +168,25 @@ fn utf8(path: &Path) -> Result<&str, String> {
         .ok_or_else(|| format!("{} is not UTF-8", path.display()))
 }
 
+/// Creates the fixture owner and its data directory with the platform's
+/// owner-only state guarantees before the local runtime opens either path.
+fn prepare_fixture_data(state: &Path) -> Result<PathBuf, String> {
+    let parent = state
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    backend_platform::durable::ensure_private_child_directory(state)
+        .map_err(|error| format!("private fixture state {}: {error}", state.display()))?;
+    let data = state.join("data");
+    backend_platform::durable::ensure_private_directory(&data)
+        .map_err(|error| format!("private fixture data {}: {error}", data.display()))?;
+    let compiler = data.join("compiler");
+    backend_platform::durable::ensure_private_directory(&compiler)
+        .map_err(|error| format!("private fixture compiler {}: {error}", compiler.display()))?;
+    Ok(data)
+}
+
 /// Starts (or reuses) the fixture owner and waits until every fixture crate
 /// is indexed and the row count is stable.
 ///
@@ -233,11 +252,11 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
         .cloned()
         .or_else(|| std::env::var_os("NUDOX_HARNESS_STATE").map(PathBuf::from))
         .unwrap_or_else(|| repo.join(".local/harness/desktop"));
-    std::fs::create_dir_all(state.join("data")).map_err(|error| format!("{}: {error}", state.display()))?;
-    let endpoint = endpoint_for(&state.join("data"))?;
+    let data = prepare_fixture_data(&state)?;
+    let endpoint = endpoint_for(&data)?;
     let paths = backend_runtime::WorkspacePaths::discover(
         Some(projects[0].clone()),
-        Some(state.join("data")),
+        Some(data),
         Some(endpoint.clone()),
     )
     .map_err(|error| format!("workspace paths: {error}"))?;
@@ -402,6 +421,13 @@ pub mod route {
         Find(String),
         /// Compare two to four fixture packages.
         Compare(Vec<String>),
+        /// A package's dependency or dependent graph on its exact release.
+        PackageGraph {
+            /// Name or path resolved against the fixture index.
+            id: String,
+            /// Which side of the package graph to show.
+            direction: backend_library::PackageGraphDirection,
+        },
         /// A package by name or path (`present`), optionally at a release.
         Package {
             /// Name or path.
@@ -440,7 +466,7 @@ pub mod route {
         Ok(at)
     }
 
-    /// Parses `orbit`, `world`, `package ID [at=RELEASE]`, or
+    /// Parses `orbit`, `world`, `package ID [at=RELEASE]`, `graph ID|PURL [dependencies|dependents]`, or
     /// `symbol ID [view=page|code|graph] [at=RELEASE] [kind=KIND] [path=PATH]`.
     ///
     /// # Errors
@@ -454,6 +480,18 @@ pub mod route {
             ["find"] => Ok(Target::Find(String::new())),
             ["find", words @ ..] if !words.is_empty() => Ok(Target::Find(words.join(" "))),
             ["compare", packages @ ..] if (2..=4).contains(&packages.len()) => Ok(Target::Compare(packages.iter().map(|package| (*package).to_owned()).collect())),
+            ["graph", id] => Ok(Target::PackageGraph {
+                id: (*id).to_owned(),
+                direction: backend_library::PackageGraphDirection::Dependencies,
+            }),
+            ["graph", id, "dependencies"] => Ok(Target::PackageGraph {
+                id: (*id).to_owned(),
+                direction: backend_library::PackageGraphDirection::Dependencies,
+            }),
+            ["graph", id, "dependents"] => Ok(Target::PackageGraph {
+                id: (*id).to_owned(),
+                direction: backend_library::PackageGraphDirection::Dependents,
+            }),
             ["package", id, rest @ ..] => Ok(Target::Package {
                 id: (*id).to_owned(),
                 at: options("package", rest, &mut None)?,
@@ -529,6 +567,22 @@ pub mod route {
                 let packages = names.iter().map(|name| resolve_package(name, fixture)).collect::<Result<Vec<_>, _>>()?;
                 let selection = crate::navigation::CompareSet::new(packages).map_err(|error| format!("route compare: {error:?}"))?;
                 Ok(Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Compare(selection))))
+            }
+            Target::PackageGraph { id, direction } => {
+                let package = if id.starts_with("pkg:") {
+                    crate::model::pages::PackageRef::parse(id)
+                        .map_err(|error| format!("graph package {id}: {error:?}"))?
+                } else {
+                    resolve_package(id, fixture)?
+                };
+                Ok(Route::Orbit(OrbitRoute::Browse(
+                    crate::navigation::BrowseRoute::PackageGraph {
+                        package,
+                        direction: *direction,
+                        authority: None,
+                        cursor: None,
+                    },
+                )))
             }
             Target::Package { id, at } => {
                 let package = resolve_package(id, fixture)?;
@@ -890,6 +944,40 @@ fn browse_route_state(route: &crate::navigation::BrowseRoute) -> gallery::json::
                 ),
             ),
         ]),
+        BrowseRoute::PackageGraph {
+            package,
+            direction,
+            authority,
+            cursor,
+        } => Json::obj([
+            ("kind", Json::str("package-graph")),
+            ("package", Json::str(package.as_str())),
+            (
+                "direction",
+                Json::str(match direction {
+                    backend_library::PackageGraphDirection::Dependencies => "dependencies",
+                    backend_library::PackageGraphDirection::Dependents => "dependents",
+                }),
+            ),
+            (
+                "authority",
+                authority
+                    .as_ref()
+                    .map_or(Json::Null, |authority| Json::str(authority.selector())),
+            ),
+            (
+                "after",
+                cursor.as_ref().map_or(Json::Null, |cursor| {
+                    Json::str(
+                        cursor
+                            .after_edge_id
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>(),
+                    )
+                }),
+            ),
+        ]),
     }
 }
 
@@ -1043,6 +1131,18 @@ pub fn scenes() -> Vec<Scene> {
             build: |window, cx| build("package toml-0.8.23", window, cx),
         },
         Scene {
+            id: "desktop-package-graph",
+            title: "The exact `toml` release with its dependency graph and provenance",
+            size: (1440, 900),
+            build: |window, cx| {
+                build(
+                    "graph pkg:cargo/toml@0.8.23 dependencies",
+                    window,
+                    cx,
+                )
+            },
+        },
+        Scene {
             id: "desktop-symbol",
             title: "present::glyph::RelationLabel, its page",
             size: (1440, 900),
@@ -1152,11 +1252,69 @@ mod tests {
     use super::route::{Target, View, parse};
     use super::{browse_tree_root, repo};
 
+    #[cfg(unix)]
+    #[test]
+    fn cold_fixture_state_and_data_directories_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos();
+        let scratch = std::env::temp_dir().join(format!(
+            "nudox-harness-private-state-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&scratch).expect("create scratch parent");
+        std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o700))
+            .expect("make scratch parent owner-only");
+        let state = scratch.join("journey-index");
+        let data = super::prepare_fixture_data(&state).expect("create private fixture state");
+
+        assert_eq!(
+            std::fs::metadata(&state)
+                .expect("fixture state metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+        );
+        assert_eq!(
+            std::fs::metadata(&data).expect("fixture data metadata").permissions().mode() & 0o777,
+            0o700,
+        );
+        assert_eq!(
+            std::fs::metadata(data.join("compiler"))
+                .expect("fixture compiler metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+        );
+
+        std::fs::remove_dir_all(scratch).expect("remove scratch fixture state");
+    }
+
     #[test]
     fn route_words_parse_into_targets_and_reject_the_rest() {
         assert_eq!(parse("orbit"), Ok(Target::Orbit));
         assert_eq!(parse("world"), Ok(Target::World));
         assert_eq!(parse("tree"), Ok(Target::Tree));
+        assert_eq!(
+            parse("graph pkg:cargo/toml@0.8.23 dependencies"),
+            Ok(Target::PackageGraph {
+                id: "pkg:cargo/toml@0.8.23".into(),
+                direction: backend_library::PackageGraphDirection::Dependencies,
+            })
+        );
+        assert_eq!(
+            parse("graph pkg:cargo/toml@0.8.23 dependents"),
+            Ok(Target::PackageGraph {
+                id: "pkg:cargo/toml@0.8.23".into(),
+                direction: backend_library::PackageGraphDirection::Dependents,
+            })
+        );
+        assert!(parse("graph toml sideways").is_err());
         assert_eq!(parse("find parse toml"), Ok(Target::Find("parse toml".into())));
         assert_eq!(parse("compare toml present"), Ok(Target::Compare(vec!["toml".into(), "present".into()])));
         assert_eq!(
@@ -1257,9 +1415,20 @@ mod tests {
             r#"{"kind":"compare","packages":["pkg:cargo/toml@0.8.23","pkg:cargo/toml_edit@0.22.27"]}"#,
         );
         let reversed = BrowseRoute::Compare(
-            CompareSet::new([second, first]).expect("two packages"),
+            CompareSet::new([second.clone(), first.clone()]).expect("two packages"),
         );
         assert_ne!(super::browse_route_state(&route), super::browse_route_state(&reversed));
+
+        let graph = BrowseRoute::PackageGraph {
+            package: first,
+            direction: backend_library::PackageGraphDirection::Dependencies,
+            authority: None,
+            cursor: None,
+        };
+        assert_eq!(
+            super::browse_route_state(&graph).to_string(),
+            r#"{"kind":"package-graph","package":"pkg:cargo/toml@0.8.23","direction":"dependencies","authority":null,"after":null}"#,
+        );
     }
 
     fn outline_node(
@@ -1354,6 +1523,7 @@ mod tests {
             .map(|scene| scene.id)
             .collect::<Vec<_>>();
         for id in [
+            "desktop-package-graph",
             "desktop-value",
             "desktop-from-str",
             "desktop-serialize",

@@ -83,13 +83,6 @@ impl TursoProjection {
             delete_absent_rows(&tx, &stored, &desired).await?;
             changed_rows
         };
-        // Each writing statement can create one immutable FTS segment. Compact
-        // a large rebuild once before publishing the root fence. Unchanged
-        // hashes never enter that write, and hot one-row deltas stay append-only.
-        if changed_rows > 0 && view.row_count() > REBUILD_BATCH_ROWS as u64 {
-            tx.execute("OPTIMIZE INDEX backend_projection_rows_fts", ())
-                .await?;
-        }
         tx.execute(
             "INSERT INTO backend_projection_meta \
              (singleton, schema_version, root, view_version, row_count, row_digest) \
@@ -420,6 +413,18 @@ fn row_values(row: &Row) -> [turso::Value; 10] {
     ]
 }
 
+fn render_document(fragments: &[Fragment]) -> String {
+    let mut output = String::new();
+    for fragment in fragments {
+        match fragment {
+            Fragment::Text(value) | Fragment::Code(value) => output.push_str(value),
+            Fragment::Link { label, .. } => output.push_str(label),
+            Fragment::Break => output.push('\n'),
+        }
+    }
+    output
+}
+
 async fn record_commit(
     connection: &turso::Connection,
     root: &[u8; 32],
@@ -542,16 +547,4 @@ fn write_option(bytes: &mut Vec<u8>, value: Option<&[u8]>) {
 fn write_field(bytes: &mut Vec<u8>, value: &[u8]) {
     bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
     bytes.extend_from_slice(value);
-}
-
-fn render_document(fragments: &[Fragment]) -> String {
-    let mut output = String::new();
-    for fragment in fragments {
-        match fragment {
-            Fragment::Text(value) | Fragment::Code(value) => output.push_str(value),
-            Fragment::Link { label, .. } => output.push_str(label),
-            Fragment::Break => output.push('\n'),
-        }
-    }
-    output
 }

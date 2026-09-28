@@ -154,6 +154,52 @@ impl RustProject {
                 maximum: control.maximum_source_bytes,
             });
         }
+        let cargo = self
+            .toolchain
+            .cargo
+            .as_ref()
+            .ok_or(LoadError::MissingCargoConfiguration)?;
+        let cargo_home = self
+            .toolchain
+            .cargo_home
+            .as_ref()
+            .ok_or(LoadError::MissingCargoConfiguration)?;
+        let path = self.toolchain.authority_path()?;
+        let extra_env = [
+            (
+                "CARGO".to_owned(),
+                Some(cargo.to_string_lossy().into_owned()),
+            ),
+            (
+                "CARGO_HOME".to_owned(),
+                Some(cargo_home.to_string_lossy().into_owned()),
+            ),
+            // A selected Cargo wrapper can still need HOME even when
+            // CARGO_HOME is explicit. Use the admitted cache root itself so
+            // isolated children never inherit the caller's ambient HOME.
+            (
+                "HOME".to_owned(),
+                Some(cargo_home.to_string_lossy().into_owned()),
+            ),
+            (
+                "RUSTC".to_owned(),
+                Some(self.toolchain.tool.to_string_lossy().into_owned()),
+            ),
+            (
+                "RUSTUP_HOME".to_owned(),
+                self.toolchain
+                    .rustup_home
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            ),
+            (
+                "RUSTUP_TOOLCHAIN".to_owned(),
+                self.toolchain.rustup_toolchain.clone(),
+            ),
+            ("PATH".to_owned(), Some(path)),
+        ]
+        .into_iter()
+        .collect();
         let config = CargoConfig {
             sysroot: Some(RustLibSource::Path(AbsPathBuf::assert_utf8(
                 self.toolchain.sysroot.clone(),
@@ -161,6 +207,8 @@ impl RustProject {
             no_deps: false,
             metadata_extra_args: vec!["--offline".to_owned()],
             features: features.cargo_features(),
+            extra_env,
+            isolate_env: true,
             ..CargoConfig::default()
         };
         let load = ra_ap_load_cargo::LoadCargoConfig {
@@ -629,10 +677,7 @@ impl<'analysis> RustAuthority<'analysis> {
         self.cross_file_package_path_from_file(range.file_id)
     }
 
-    fn cross_file_package_path_from_file(
-        &self,
-        file_id: EditionedFileId,
-    ) -> Option<String> {
+    fn cross_file_package_path_from_file(&self, file_id: EditionedFileId) -> Option<String> {
         if file_id == self.source_file {
             return None;
         }

@@ -176,6 +176,127 @@ fn invalidation_verifies_only_intersecting_registration_ids() {
 }
 
 #[test]
+fn changed_facets_and_scopes_select_only_positive_and_negative_exact_readers() {
+    let scope_root = scope(52);
+    let other_scope = scope(53);
+    let coverage = complete(52);
+    let other_coverage = complete(53);
+    let name_version = ObjectVersion::from_value(&FacetValue::new(FacetKind::Name, vec![52]));
+    let type_version = ObjectVersion::from_value(&FacetValue::new(FacetKind::Type, vec![52]));
+    let mut index = RetainedReaders::default();
+    let positive_reader = work(52);
+    let negative_reader = work(53);
+    let other_facet_reader = work(54);
+    let other_scope_reader = work(55);
+
+    index
+        .register(
+            positive_reader,
+            ScopedReadObservation::positive(
+                ScopedRead::exact(FacetKind::Name, scope_root, b"present".to_vec()),
+                name_version,
+                coverage,
+            )
+            .expect("positive observation"),
+        )
+        .expect("register positive reader");
+    index
+        .register(
+            negative_reader,
+            ScopedReadObservation::negative(
+                ScopedRead::negative(FacetKind::Name, scope_root, b"missing".to_vec()),
+                coverage,
+            )
+            .expect("negative observation"),
+        )
+        .expect("register negative reader");
+    index
+        .register(
+            other_facet_reader,
+            ScopedReadObservation::positive(
+                ScopedRead::exact(FacetKind::Type, scope_root, b"present".to_vec()),
+                type_version,
+                coverage,
+            )
+            .expect("other-facet observation"),
+        )
+        .expect("register other-facet reader");
+    index
+        .register(
+            other_scope_reader,
+            ScopedReadObservation::positive(
+                ScopedRead::exact(FacetKind::Name, other_scope, b"present".to_vec()),
+                name_version,
+                other_coverage,
+            )
+            .expect("other-scope observation"),
+        )
+        .expect("register other-scope reader");
+
+    let changes = [
+        ScopedRead::exact(FacetKind::Name, scope_root, b"present".to_vec()),
+        ScopedRead::exact(FacetKind::Name, scope_root, b"missing".to_vec()),
+    ];
+    let report = index
+        .invalidate(&changes)
+        .expect("invalidate changed reads");
+    assert_eq!(
+        report.readers.into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([positive_reader, negative_reader])
+    );
+    assert_eq!(report.counters.candidate_registrations, 2);
+    assert_eq!(report.counters.verified_reads, 2);
+    assert_eq!(report.counters.full_scan_reads, 0);
+}
+
+#[test]
+fn candidate_budget_bounds_repeated_hits_to_one_retained_range() {
+    let scope_root = scope(56);
+    let coverage = complete(56);
+    let facet_version = ObjectVersion::from_value(&FacetValue::new(FacetKind::Name, vec![56]));
+    let reader = work(56);
+    let retained = ScopedRead::range(FacetKind::Name, scope_root, b"a".to_vec(), b"z".to_vec())
+        .expect("retained range");
+    let mut index = RetainedReaders::default();
+    index
+        .register(
+            reader,
+            ScopedReadObservation::positive(retained, facet_version, coverage)
+                .expect("range observation"),
+        )
+        .expect("register range");
+    let changes = [
+        ScopedRead::exact(FacetKind::Name, scope_root, b"b".to_vec()),
+        ScopedRead::exact(FacetKind::Name, scope_root, b"c".to_vec()),
+    ];
+
+    assert_eq!(
+        index.invalidate_budgeted(
+            &changes,
+            InvalidationBudget {
+                max_changed_reads: 2,
+                max_probes: 64,
+                max_candidates: 1,
+            },
+        ),
+        Err(SemanticError::ReuseWorkLimit)
+    );
+    let report = index
+        .invalidate_budgeted(
+            &changes,
+            InvalidationBudget {
+                max_changed_reads: 2,
+                max_probes: 64,
+                max_candidates: 2,
+            },
+        )
+        .expect("two registration/read hits fit the budget");
+    assert_eq!(report.readers, vec![reader]);
+    assert_eq!(report.counters.candidate_registrations, 2);
+    assert_eq!(report.counters.verified_reads, 2);
+}
+
+#[test]
 fn unregister_reader_releases_many_global_recipe_and_authority_buckets() {
     let reader = work(42);
     let mut index = RetainedReaders::default();

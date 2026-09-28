@@ -459,6 +459,7 @@ fn clang_phase(cause: &backend_frontend_clang::legacy::CollectError) -> Authorit
         }
         backend_frontend_clang::legacy::CollectError::Cancelled
         | backend_frontend_clang::legacy::CollectError::Library(_)
+        | backend_frontend_clang::legacy::CollectError::ConfiguredLibrary(_)
         | backend_frontend_clang::legacy::CollectError::MissingApi { .. }
         | backend_frontend_clang::legacy::CollectError::IndexUnavailable
         | backend_frontend_clang::legacy::CollectError::MainFileUnavailable => AuthorityPhase::Open,
@@ -579,8 +580,19 @@ fn python_class(
 fn go_phase(cause: &backend_frontend_go::legacy::OracleError) -> AuthorityPhase {
     match cause {
         backend_frontend_go::legacy::OracleError::Decode { .. } => AuthorityPhase::Parse,
-        backend_frontend_go::legacy::OracleError::Staleness { .. } => AuthorityPhase::Project,
+        backend_frontend_go::legacy::OracleError::Staleness { .. }
+        | backend_frontend_go::legacy::OracleError::WorkspaceWitnessChanged
+        | backend_frontend_go::legacy::OracleError::PackageAuthorityWitnessChanged => {
+            AuthorityPhase::Project
+        }
+        backend_frontend_go::legacy::OracleError::WorkspaceWitness(_)
+        | backend_frontend_go::legacy::OracleError::PackageAuthorityWitness(_) => {
+            AuthorityPhase::Resolve
+        }
         backend_frontend_go::legacy::OracleError::Spawn { .. }
+        | backend_frontend_go::legacy::OracleError::MissingChildEnvironment
+        | backend_frontend_go::legacy::OracleError::UnsupportedCgoOracleBinary
+        | backend_frontend_go::legacy::OracleError::UnsupportedCgo { .. }
         | backend_frontend_go::legacy::OracleError::ToolingUnavailable { .. }
         | backend_frontend_go::legacy::OracleError::Exit { .. }
         | backend_frontend_go::legacy::OracleError::OutputLimit { .. }

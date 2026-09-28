@@ -1,9 +1,8 @@
 //! SQL schema and stable statement text for the projection.
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 pub(crate) const MAX_AUDIT_ROOTS: i64 = 128;
-/// Rows per multi-row rebuild statement. Each statement becomes one immutable
-/// FTS segment, so batching bounds both statement size and segment count.
+/// Rows per multi-row rebuild statement.
 pub(crate) const REBUILD_BATCH_ROWS: usize = 512;
 
 pub(crate) const SCHEMA: &str = r"
@@ -31,8 +30,6 @@ CREATE INDEX IF NOT EXISTS backend_projection_rows_label
     ON backend_projection_rows(label);
 CREATE INDEX IF NOT EXISTS backend_projection_rows_package
     ON backend_projection_rows(package_id, parent_id, row_id);
-CREATE INDEX IF NOT EXISTS backend_projection_rows_fts
-    ON backend_projection_rows USING fts (label, signature, document);
 CREATE TABLE IF NOT EXISTS backend_projection_commits (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     root BLOB NOT NULL UNIQUE,
@@ -66,6 +63,8 @@ CREATE INDEX IF NOT EXISTS backend_projection_package_edges_source
     ON backend_projection_package_edges(source, source_authority_kind, source_authority_id, edge_id);
 CREATE INDEX IF NOT EXISTS backend_projection_package_edges_target
     ON backend_projection_package_edges(target_ecosystem, target_name, resolved, edge_id);
+CREATE INDEX IF NOT EXISTS backend_projection_package_edges_target_page
+    ON backend_projection_package_edges(target_ecosystem, target_name, edge_id);
 CREATE TABLE IF NOT EXISTS backend_projection_package_states (
     source TEXT NOT NULL,
     source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
@@ -78,6 +77,13 @@ CREATE TABLE IF NOT EXISTS backend_projection_package_sources (
     source TEXT NOT NULL,
     source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
     source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
+    PRIMARY KEY(source, source_authority_kind, source_authority_id)
+);
+CREATE TABLE IF NOT EXISTS backend_projection_package_source_witnesses (
+    source TEXT NOT NULL,
+    source_authority_kind INTEGER NOT NULL CHECK (source_authority_kind BETWEEN 0 AND 4),
+    source_authority_id BLOB NOT NULL CHECK (length(source_authority_id) = 32),
+    facts_witness BLOB NOT NULL CHECK (length(facts_witness) = 32),
     PRIMARY KEY(source, source_authority_kind, source_authority_id)
 );
 ";

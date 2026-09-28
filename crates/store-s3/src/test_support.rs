@@ -101,7 +101,8 @@ impl LoopbackS3 {
     /// Builds the production pack route, restricted to this loopback server.
     pub fn route(&self, maximum_object_bytes: u64) -> Result<S3PackRoute, crate::RemoteStoreError> {
         let endpoint = S3Endpoint::loopback_http(&self.origin)?;
-        let config = S3RouteConfig::new([endpoint], maximum_object_bytes, 3, Duration::ZERO)?;
+        let config =
+            S3RouteConfig::new_for_pack_route([endpoint], maximum_object_bytes, 3, Duration::ZERO)?;
         Ok(S3PackRoute::new(S3ObjectRoute::new(config)))
     }
 

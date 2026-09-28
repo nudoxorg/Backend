@@ -20,7 +20,8 @@ use super::wire::{
     DIRECTORY_BYTES, FullDirectoryKind, HEADER_BYTES, RANGE_ROW_BYTES, SPARSE_BINDING_ROW_BYTES,
 };
 use super::{
-    FullSemanticImageFault, SemanticImageView, encode_full_semantic_image, full_semantic_image_len,
+    FullSemanticImageError, FullSemanticImageFault, SemanticImageProofOwner, SemanticImageView,
+    encode_full_semantic_image, full_semantic_image_len,
 };
 
 fn version(value: u8) -> EntityVersion {
@@ -86,6 +87,70 @@ fn encoded(ir: &Ir) -> Result<alloc::vec::Vec<u8>, crate::ir::BuildError> {
     let mut bytes = vec![0; length];
     encode_full_semantic_image(ir, &mut bytes).expect("full image writes");
     Ok(bytes)
+}
+
+#[test]
+fn an_admission_proof_fails_closed_for_a_different_backing_allocation() {
+    let image_a = encoded(&image(false).expect("first canonical IR builds"))
+        .expect("first canonical image encodes");
+    let image_b = encoded(&csharp_image().expect("second canonical IR builds"))
+        .expect("second canonical image encodes");
+    assert_ne!(image_a, image_b);
+
+    let admitted = SemanticImageView::reopen(&image_a).expect("first image admits");
+    let proof = admitted.proof();
+    assert!(matches!(
+        SemanticImageView::reopen_proven(&image_b, proof),
+        Err(FullSemanticImageError::ProofBackingMismatch)
+    ));
+}
+
+#[test]
+fn owned_proof_cache_only_admits_successful_validation() {
+    use crate::ir::{reset_semantic_image_validations, semantic_image_validations};
+
+    let valid = encoded(&image(false).expect("canonical IR builds"))
+        .expect("canonical image encodes")
+        .into_boxed_slice();
+    let owner = SemanticImageProofOwner::new(valid);
+    reset_semantic_image_validations();
+    assert!(owner.reopen().is_ok());
+    assert!(owner.reopen().is_ok());
+    assert_eq!(semantic_image_validations(), 1);
+
+    let invalid = SemanticImageProofOwner::new(Box::<[u8]>::default());
+    reset_semantic_image_validations();
+    assert!(invalid.reopen().is_err());
+    assert!(invalid.reopen().is_err());
+    assert_eq!(semantic_image_validations(), 2);
+}
+
+#[cfg(feature = "mmap")]
+#[test]
+fn mapped_semantic_image_reopens_the_canonical_reader_without_heap_copy() {
+    use crate::ir::{GenerationId, SemanticImageIdentity, load_semantic_image_mmap};
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(1);
+    let bytes =
+        encoded(&image(false).expect("canonical IR builds")).expect("canonical image encodes");
+    let identity = SemanticImageIdentity::from_encoded_bytes(&bytes);
+    let generation = GenerationId::from_canonical_bytes(&bytes);
+    let path = std::env::temp_dir().join(format!(
+        "backend-semantic-image-mmap-{}-{}.nxf",
+        std::process::id(),
+        NEXT_FILE.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::write(&path, &bytes).expect("write immutable image fixture");
+
+    let mapped = load_semantic_image_mmap(&path, identity, generation, bytes.len())
+        .expect("full image maps and validates");
+    assert_eq!(mapped.identity(), identity);
+    assert_eq!(mapped.generation(), generation);
+    assert_eq!(mapped.view().canonical_entities().len(), 2);
+    drop(mapped);
+    fs::remove_file(path).expect("remove image fixture");
 }
 
 fn csharp_image() -> Result<Ir, crate::ir::BuildError> {

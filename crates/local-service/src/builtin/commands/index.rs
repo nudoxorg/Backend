@@ -244,7 +244,8 @@ fn index_project_intent_at_with_cluster_and_intent(
     observed_profiles.extend(lost.iter().copied());
     let mut observations = BTreeMap::new();
     for profile in observed_profiles {
-        let coordinate = semantic_coordinate(package, profile, coordinate)?;
+        let coordinate =
+            super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
         let key = ProductSemanticPublicationKey::new(
             semantic_context.package_reference.clone(),
             coordinate,
@@ -546,7 +547,8 @@ fn selected_semantic_binding(
 ) -> Result<Option<[u8; 32]>, BuiltinModelError> {
     let package_reference = backend_engine::PackageReference::parse(label.to_owned())
         .map_err(|error| BuiltinModelError(format!("semantic package reference: {error:?}")))?;
-    let coordinate = semantic_coordinate(package, profile, coordinate)?;
+    let coordinate =
+        super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
     let key = ProductSemanticPublicationKey::new(package_reference, coordinate, profile)
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
     let relation = daemon
@@ -635,7 +637,11 @@ fn compile_semantic_publications(
     for (profile, sources) in by_profile {
         let expected_artifacts = u32::try_from(sources.len())
             .map_err(|_| BuiltinModelError("semantic source count exceeds u32".to_owned()))?;
-        let coordinate = semantic_coordinate(context.package, profile, context.coordinate)?;
+        let coordinate = super::super::compiler_scope::semantic_coordinate(
+            context.package,
+            profile,
+            context.coordinate,
+        )?;
         let request = PackageCompileRequest::new(
             GenerateTarget {
                 correlation: context.correlation,
@@ -903,55 +909,65 @@ fn compile_semantic_publications(
                         )
                         .into_boxed_str(),
                     };
-                    let worker_grant = trusted_worker_grant_for_assignment(
-                        owner,
-                        assignment,
-                        namespace_id,
-                        capture,
-                    )?;
-                    journal
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .bind_assignment(
-                            reservation,
+                    let preparation = (|| {
+                        let worker_grant = trusted_worker_grant_for_assignment(
+                            owner,
                             assignment,
                             namespace_id,
-                            product_key.clone(),
-                            &worker_grant,
-                            attempt_ref,
                             capture,
-                            snapshot.root_path(),
+                        )?;
+                        journal
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .bind_assignment(
+                                reservation,
+                                assignment,
+                                namespace_id,
+                                product_key.clone(),
+                                &worker_grant,
+                                attempt_ref,
+                                capture,
+                                snapshot.root_path(),
+                            )
+                            .map_err(|error| {
+                                BuiltinModelError(format!(
+                                    "persist remote compiler assignment reservation: {error}"
+                                ))
+                            })?;
+                        let evidence = CompilerInputAdmissionEvidence::new(
+                            assignment,
+                            namespace_id,
+                            capture.clone(),
+                            source_revision,
+                            snapshot.fence_digest(),
                         )
                         .map_err(|error| {
-                            BuiltinModelError(format!(
-                                "persist remote compiler assignment reservation: {error}"
-                            ))
+                            BuiltinModelError(format!("bind compiler input admission: {error:?}"))
                         })?;
-                    let evidence = CompilerInputAdmissionEvidence::new(
-                        assignment,
-                        namespace_id,
-                        capture.clone(),
-                        source_revision,
-                        snapshot.fence_digest(),
-                    )
-                    .map_err(|error| {
-                        BuiltinModelError(format!("bind compiler input admission: {error:?}"))
-                    })?;
-                    let verifier = ProductCompilerInputAdmissionVerifier {
-                        capture,
+                        let verifier = ProductCompilerInputAdmissionVerifier {
+                            capture,
+                            snapshot,
+                            store: owner.store(),
+                            authority: semantic_authority,
+                            key: &key,
+                            observation: &source_observation,
+                            owner,
+                        };
+                        let input_admission = VerifiedCompilerInputAdmission::admit(
+                            evidence, &verifier,
+                        )
+                        .map_err(|error| {
+                            BuiltinModelError(format!("admit trusted compiler route: {error:?}"))
+                        })?;
+                        Ok::<_, BuiltinModelError>((worker_grant, input_admission))
+                    })();
+                    let prepared = pre_offer_result_or_local_fallback(
+                        preparation,
+                        "remote compiler admission",
+                        revision_fence,
                         snapshot,
-                        store: owner.store(),
-                        authority: semantic_authority,
-                        key: &key,
-                        observation: &source_observation,
-                        owner,
-                    };
-                    let input_admission = VerifiedCompilerInputAdmission::admit(
-                        evidence, &verifier,
-                    )
-                    .map_err(|error| {
-                        BuiltinModelError(format!("admit trusted compiler route: {error:?}"))
-                    })?;
+                    )?;
+                    if let Some((worker_grant, input_admission)) = prepared {
                     let reservation_journal = Arc::clone(journal);
                     let selection_record_id = std::cell::Cell::new(None);
                     let selection_attempt_guard = std::cell::RefCell::new(None);
@@ -1137,6 +1153,7 @@ fn compile_semantic_publications(
                         }
                     }
                     }
+                    }
                 }
                 super::super::cluster_dispatch::CompilerDispatchDecision::LocalFallback {
                     reason,
@@ -1291,6 +1308,33 @@ enum SemanticExecutionRoute {
     RemoteSelected,
     LocalFallback,
     LocalOnly,
+}
+
+/// Converts a failed remote admission step into the local route only while the
+/// source state observed by this indexing attempt is still current. This is
+/// used exclusively before the runner can persist `OfferMayBeSent`; once that
+/// boundary is crossed, its result must be recovered through the ACK journal.
+fn pre_offer_result_or_local_fallback<T>(
+    result: Result<T, BuiltinModelError>,
+    stage: &str,
+    revision_fence: &ingest::CompilerRevisionFence,
+    snapshot: &ingest::CompilerWorkspaceSnapshot,
+) -> Result<Option<T>, BuiltinModelError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => {
+            let compiler_revision_is_current =
+                ingest::compiler_revision_is_current(revision_fence).map_err(BuiltinModelError)?;
+            let workspace_snapshot_is_current = snapshot.revalidate().map_err(BuiltinModelError)?;
+            if !compiler_revision_is_current || !workspace_snapshot_is_current {
+                return Err(BuiltinModelError(
+                    "compiler workspace changed before remote Offer; retry indexing".to_owned(),
+                ));
+            }
+            eprintln!("locald compiler route fallback: {stage} failed before Offer ({error})");
+            Ok(None)
+        }
+    }
 }
 
 struct CompilerWorkspaceCaptureView<'snapshot> {
@@ -2822,30 +2866,6 @@ fn compile_profile(source_root: &Path, source: &ingest::CompilerSource) -> Langu
     ingest::compilation_profile(source_root, &source.relative_path, source.profile)
 }
 
-fn semantic_coordinate(
-    package: backend_engine::PackageKey,
-    profile: LanguageProfile,
-    supplied: Option<&PackageUrl>,
-) -> Result<PackageUrl, BuiltinModelError> {
-    if let Some(supplied) = supplied
-        && supplied.package_type().language() == profile.language()
-    {
-        return Ok(supplied.clone());
-    }
-    let package_type = match profile.language() {
-        Language::Rust => "cargo",
-        Language::TypeScript => "npm",
-        Language::Python => "pypi",
-        Language::Go => "golang",
-        Language::Java => "maven",
-        Language::CSharp => "nuget",
-        Language::Clang => "generic",
-    };
-    let name = backend_engine::encode_id(package.as_bytes());
-    PackageUrl::parse(format!("pkg:{package_type}/local-{name}@0.0.0-local"))
-        .map_err(|error| BuiltinModelError(format!("construct local package identity: {error:?}")))
-}
-
 pub(super) fn remove_project_intent(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: backend_engine::PackageKey,
@@ -3053,6 +3073,96 @@ mod compiler_input_witness_tests {
         ));
         fs::create_dir_all(&path).expect("create compiler input witness fixture");
         path
+    }
+
+    fn pre_offer_fixture() -> (
+        PathBuf,
+        ingest::IndexSnapshot,
+        ingest::CompilerWorkspaceSnapshot,
+    ) {
+        let root = scratch_directory();
+        fs::write(root.join("Cargo.toml"), "[package]\nname='fixture'\n")
+            .expect("write fixture manifest");
+        fs::write(root.join("main.rs"), "pub fn fixture() {}\n").expect("write fixture source");
+        let root_text = root.to_str().expect("UTF-8 fixture path");
+        let scan =
+            ingest::scan_project_for_unproven_authorities(root_text, [73; 32], &BTreeMap::new())
+                .expect("scan pre-Offer fixture");
+        let snapshot = ingest::CompilerWorkspaceSnapshot::open(&root)
+            .expect("capture pre-Offer workspace snapshot");
+        (root, scan, snapshot)
+    }
+
+    #[test]
+    fn revoked_grant_and_journal_bind_failures_fall_back_before_offer() {
+        let (source_root, scan, snapshot) = pre_offer_fixture();
+        let journal_root = scratch_directory();
+        let journal = Arc::new(Mutex::new(
+            super::super::super::pending_stored::PendingStoredAckJournal::open(&journal_root)
+                .expect("open pre-Offer journal"),
+        ));
+
+        for (stage, detail) in [
+            (
+                "trusted worker grant reload",
+                "compiler assignment has no exact persisted trusted-worker grant",
+            ),
+            (
+                "assignment reservation bind",
+                "persist remote compiler assignment reservation: injected journal failure",
+            ),
+        ] {
+            let reservation = journal
+                .lock()
+                .expect("lock pre-Offer journal")
+                .reserve_capacity([74; 32])
+                .expect("reserve pre-Offer capacity");
+            let reservation_lease =
+                super::super::super::pending_stored::PendingAckReservationLease::new(
+                    Arc::clone(&journal),
+                    reservation,
+                );
+
+            let fallback = pre_offer_result_or_local_fallback(
+                Err::<(), _>(BuiltinModelError(detail.to_owned())),
+                stage,
+                &scan.revision_fence,
+                &snapshot,
+            )
+            .expect("stable source state allows local fallback");
+            assert!(fallback.is_none(), "{stage} must skip remote Offer");
+
+            drop(reservation_lease);
+            assert_eq!(
+                journal
+                    .lock()
+                    .expect("lock pre-Offer journal")
+                    .capacity_count(),
+                0,
+                "failed pre-Offer admission releases its reservation"
+            );
+        }
+
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(journal_root);
+    }
+
+    #[test]
+    fn pre_offer_fallback_retries_when_the_source_snapshot_changed() {
+        let (source_root, scan, snapshot) = pre_offer_fixture();
+        fs::write(source_root.join("main.rs"), "pub fn changed() {}\n")
+            .expect("change source after snapshot capture");
+
+        let error = pre_offer_result_or_local_fallback::<()>(
+            Err(BuiltinModelError("revoked worker grant".to_owned())),
+            "trusted worker grant reload",
+            &scan.revision_fence,
+            &snapshot,
+        )
+        .expect_err("invalidated source snapshot must stop this indexing attempt");
+        assert!(error.0.contains("retry indexing"));
+
+        let _ = fs::remove_dir_all(source_root);
     }
 
     #[test]

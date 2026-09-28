@@ -187,6 +187,7 @@ pub type PackageDependencySourceFacts = (
 #[derive(Clone, Debug)]
 pub struct CheckedPackageGraphFacts {
     facts: Arc<[PackageDependencySourceFacts]>,
+    source_witnesses: Arc<[[u8; 32]]>,
     witness: [u8; 32],
 }
 
@@ -219,17 +220,47 @@ impl CheckedPackageGraphFacts {
             }
             rows.sort_unstable_by_key(|row| row.facts_version);
         }
-        let witness = package_dependency_facts_witness(&facts);
+        // Keep source entries in the same order as Turso's keyed source
+        // witness table. Projection sync can then merge borrowed slices
+        // directly without allocating and sorting a second source vector.
+        facts.sort_unstable_by(|(left, _), (right, _)| {
+            left.coordinate
+                .as_str()
+                .cmp(right.coordinate.as_str())
+                .then_with(|| left.authority.kind_tag().cmp(&right.authority.kind_tag()))
+                .then_with(|| left.authority.id_bytes().cmp(&right.authority.id_bytes()))
+        });
+        // Keep one digest beside each immutable source entry. Consumers can
+        // compare a checked snapshot with a persisted per-source index without
+        // re-hashing every edge during every projection update.
+        let source_witnesses: Arc<[[u8; 32]]> = facts
+            .iter()
+            .map(|(source, state)| package_dependency_source_facts_witness_canonical(source, state))
+            .collect::<Vec<_>>()
+            .into();
+        let witness = package_dependency_facts_witness_from_sources(&source_witnesses);
         Ok(Self {
             facts: facts.into(),
+            source_witnesses,
             witness,
         })
     }
 
-    /// Borrows the facts without exposing mutable access to the snapshot.
+    /// Borrows facts in canonical coordinate/authority order without exposing
+    /// mutable access to the snapshot.
     #[must_use]
     pub fn facts(&self) -> &[PackageDependencySourceFacts] {
         &self.facts
+    }
+
+    /// Borrows source witnesses in the same order as [`Self::facts`]. Each
+    /// digest covers its source coordinate and authority, known edge facts or
+    /// the complete unknown/unavailable state, and both declared and
+    /// recomputed edge identities. The domain is independent from the global
+    /// graph witness so the two can evolve without aliasing.
+    #[must_use]
+    pub fn source_witnesses(&self) -> &[[u8; 32]] {
+        &self.source_witnesses
     }
 
     /// Returns the canonical witness computed during construction.
@@ -237,6 +268,100 @@ impl CheckedPackageGraphFacts {
     pub const fn witness(&self) -> [u8; 32] {
         self.witness
     }
+}
+
+fn package_dependency_source_facts_witness(
+    source: &PackageGraphSourceKey,
+    state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
+) -> [u8; 32] {
+    package_dependency_source_facts_witness_inner(source, state, false)
+}
+
+fn package_dependency_source_facts_witness_canonical(
+    source: &PackageGraphSourceKey,
+    state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
+) -> [u8; 32] {
+    package_dependency_source_facts_witness_inner(source, state, true)
+}
+
+fn package_dependency_source_facts_witness_inner(
+    source: &PackageGraphSourceKey,
+    state: &DependencyFacts<Box<[PackageDependencyRecord]>>,
+    canonical_edges: bool,
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"nudox.package-dependency-source-facts.v1\0");
+
+    // Stream the canonical nested package-reference field encoding, avoiding
+    // a temporary encoded source or edge vector.
+    let (kind, coordinate) = match &source.coordinate {
+        PackageReference::Purl(value) => (1_u8, value.as_str()),
+        PackageReference::Local(value) => (2_u8, value.as_str()),
+    };
+    let reference_len = (1 + 8 + 1 + 1 + 8 + coordinate.len()) as u64;
+    hasher.update(&[1]);
+    hasher.update(&reference_len.to_be_bytes());
+    hasher.update(&[1]);
+    hasher.update(&1_u64.to_be_bytes());
+    hasher.update(&[kind]);
+    hasher.update(&[2]);
+    hasher.update(&(coordinate.len() as u64).to_be_bytes());
+    hasher.update(coordinate.as_bytes());
+
+    hasher.update(&[6]);
+    hasher.update(&8_u64.to_be_bytes());
+    hasher.update(&source.authority.kind_tag().to_be_bytes());
+    hasher.update(&[7]);
+    hasher.update(&32_u64.to_be_bytes());
+    hasher.update(&source.authority.id_bytes());
+
+    match state {
+        DependencyFacts::Known(rows) => {
+            hasher.update(&[2]);
+            hasher.update(&1_u64.to_be_bytes());
+            hasher.update(&[1]);
+            if canonical_edges
+                || rows.windows(2).all(|pair| {
+                    (pair[0].recomputed_version(), pair[0].facts_version)
+                        <= (pair[1].recomputed_version(), pair[1].facts_version)
+                })
+            {
+                for row in rows.iter() {
+                    hash_source_edge(&mut hasher, row.recomputed_version(), row.facts_version);
+                }
+            } else {
+                // Unchecked callers may present rows in any order. Keep this
+                // fallback bounded to one source while checked snapshots use
+                // their already canonical row order and allocate no edge list.
+                let mut edges = rows
+                    .iter()
+                    .map(|row| (row.recomputed_version(), row.facts_version))
+                    .collect::<Vec<_>>();
+                edges.sort_unstable();
+                for (content_version, declared_version) in edges {
+                    hash_source_edge(&mut hasher, content_version, declared_version);
+                }
+            }
+        }
+        DependencyFacts::Unknown(reason) => {
+            hasher.update(&[2]);
+            hasher.update(&1_u64.to_be_bytes());
+            hasher.update(&[2]);
+            hash_field(&mut hasher, 4, reason.as_str().as_bytes());
+        }
+        DependencyFacts::Unavailable(reason) => {
+            hasher.update(&[2]);
+            hasher.update(&1_u64.to_be_bytes());
+            hasher.update(&[3]);
+            hash_field(&mut hasher, 4, reason.as_str().as_bytes());
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn hash_source_edge(hasher: &mut blake3::Hasher, content: [u8; 32], declared: [u8; 32]) {
+    hash_field(hasher, 3, &content);
+    hash_field(hasher, 5, &declared);
 }
 
 /// Why one dependency fact was observed.
@@ -485,53 +610,26 @@ impl PackageDependencyRecord {
 
 /// Computes a canonical witness for the complete dependency-facts input.
 ///
-/// Source entries and known edges are sorted before hashing, so callers that
-/// present the same relation in a different iteration order get the same
-/// witness. Every state, source identity, and edge content identity contributes.
+/// Source witnesses are sorted before hashing, so callers that present the
+/// same relation in a different iteration order get the same witness. Each
+/// source witness includes its state and exact authority key, as well as both
+/// the recomputed and declared identities of every edge.
 #[must_use]
 pub fn package_dependency_facts_witness(facts: &[PackageDependencySourceFacts]) -> [u8; 32] {
-    let mut entries = facts
+    let source_witnesses = facts
         .iter()
-        .map(|(source, state)| {
-            let mut encoded = Vec::new();
-            append_field(
-                &mut encoded,
-                1,
-                &package_reference_bytes(&source.coordinate),
-            );
-            append_field(&mut encoded, 6, &source.authority.kind_tag().to_be_bytes());
-            append_field(&mut encoded, 7, &source.authority.id_bytes());
-            match state {
-                DependencyFacts::Known(rows) => {
-                    append_field(&mut encoded, 2, &[1]);
-                    let mut edges = rows
-                        .iter()
-                        .map(|row| (row.recomputed_version(), row.facts_version))
-                        .collect::<Vec<_>>();
-                    edges.sort_unstable();
-                    for (content_version, declared_version) in edges {
-                        append_field(&mut encoded, 3, &content_version);
-                        append_field(&mut encoded, 5, &declared_version);
-                    }
-                }
-                DependencyFacts::Unknown(reason) => {
-                    append_field(&mut encoded, 2, &[2]);
-                    append_field(&mut encoded, 4, reason.as_str().as_bytes());
-                }
-                DependencyFacts::Unavailable(reason) => {
-                    append_field(&mut encoded, 2, &[3]);
-                    append_field(&mut encoded, 4, reason.as_str().as_bytes());
-                }
-            }
-            encoded
-        })
+        .map(|(source, state)| package_dependency_source_facts_witness(source, state))
         .collect::<Vec<_>>();
-    entries.sort_unstable();
+    package_dependency_facts_witness_from_sources(&source_witnesses)
+}
 
+fn package_dependency_facts_witness_from_sources(source_witnesses: &[[u8; 32]]) -> [u8; 32] {
+    let mut source_witnesses = source_witnesses.to_vec();
+    source_witnesses.sort_unstable();
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"nudox.package-dependency-facts.v2\0");
-    for entry in entries {
-        hash_field(&mut hasher, 1, &entry);
+    hasher.update(b"nudox.package-dependency-facts.v3\0");
+    for witness in source_witnesses {
+        hash_field(&mut hasher, 1, &witness);
     }
     *hasher.finalize().as_bytes()
 }
@@ -626,14 +724,21 @@ pub fn admit_dependency_rows(
 pub struct PackageGraphIndex {
     by_source: BTreeMap<PackageGraphSourceKey, usize>,
     by_coordinate: BTreeMap<String, Vec<usize>>,
-    reverse: BTreeMap<RegistryEcosystem, BTreeMap<String, Vec<ReverseEdge>>>,
+    reverse: BTreeMap<RegistryEcosystem, BTreeMap<String, ReverseEdges>>,
     first_gap: Option<ProductText>,
+    checked_witness: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug)]
 struct ReverseEdge {
     source_index: usize,
-    resolved: Option<String>,
+    row_index: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ReverseEdges {
+    unresolved: Vec<ReverseEdge>,
+    resolved: BTreeMap<String, Vec<ReverseEdge>>,
 }
 
 /// Sources that declare a runtime or optional edge onto one package.
@@ -671,6 +776,20 @@ pub enum PackageDependencyLookup<'a> {
 }
 
 impl PackageGraphIndex {
+    /// Builds an index whose reverse postings are bound to this checked
+    /// immutable facts snapshot.
+    #[must_use]
+    pub fn from_checked_facts(facts: &CheckedPackageGraphFacts) -> Self {
+        let mut index = Self::from_facts(facts.facts());
+        index.checked_witness = Some(facts.witness());
+        index
+    }
+
+    /// Whether this index was built for the supplied immutable graph facts.
+    pub(crate) fn is_bound_to(&self, facts: &CheckedPackageGraphFacts) -> bool {
+        self.checked_witness == Some(facts.witness())
+    }
+
     /// Builds forward and reverse adjacency from source/authority order.
     ///
     /// Multiple registries may publish the same coordinate. Their facts stay
@@ -691,7 +810,7 @@ impl PackageGraphIndex {
             }
             match state {
                 DependencyFacts::Known(rows) => {
-                    for row in rows.iter() {
+                    for (row_index, row) in rows.iter().enumerate() {
                         if !matches!(
                             row.scope,
                             DependencyScope::Runtime | DependencyScope::Optional
@@ -700,26 +819,41 @@ impl PackageGraphIndex {
                         {
                             continue;
                         }
-                        index
+                        let posting = index
                             .reverse
                             .entry(row.target.ecosystem)
                             .or_default()
                             .entry(row.target.name.as_str().to_owned())
-                            .or_default()
-                            .push(ReverseEdge {
-                                source_index,
-                                resolved: row
-                                    .target
-                                    .resolved
-                                    .as_ref()
-                                    .map(|resolved| resolved.as_str().to_owned()),
-                            });
+                            .or_default();
+                        let edge = ReverseEdge {
+                            source_index,
+                            row_index,
+                        };
+                        if let Some(resolved) = &row.target.resolved {
+                            posting
+                                .resolved
+                                .entry(resolved.as_str().to_owned())
+                                .or_default()
+                                .push(edge);
+                        } else {
+                            posting.unresolved.push(edge);
+                        }
                     }
                 }
                 DependencyFacts::Unknown(reason) | DependencyFacts::Unavailable(reason) => {
                     if index.first_gap.is_none() {
                         index.first_gap = Some(reason.clone());
                     }
+                }
+            }
+        }
+        for names in index.reverse.values_mut() {
+            for postings in names.values_mut() {
+                postings
+                    .unresolved
+                    .sort_unstable_by_key(|edge| reverse_edge_id(facts, edge));
+                for edges in postings.resolved.values_mut() {
+                    edges.sort_unstable_by_key(|edge| reverse_edge_id(facts, edge));
                 }
             }
         }
@@ -790,14 +924,11 @@ impl PackageGraphIndex {
             .get(&ecosystem)
             .and_then(|names| names.get(target.lineage_name()))
         {
-            for edge in edges {
-                let matches_version = edge
-                    .resolved
-                    .as_ref()
-                    .is_none_or(|resolved| resolved.as_str() == target.as_str());
-                if !matches_version {
-                    continue;
-                }
+            for edge in edges
+                .unresolved
+                .iter()
+                .chain(edges.resolved.get(target.as_str()).into_iter().flatten())
+            {
                 if let Some((source, _)) = facts.get(edge.source_index) {
                     sources.insert(source.clone());
                 }
@@ -808,6 +939,92 @@ impl PackageGraphIndex {
             gap: self.first_gap.clone(),
         }
     }
+
+    /// Returns the exact reverse edge page for a pinned registry package.
+    /// The unresolved and exact-version postings are independently sorted by
+    /// edge identity, so this visits only the matching posting suffix and at
+    /// most `limit + 1` rows.
+    pub(crate) fn dependent_edges_page<'a>(
+        &self,
+        facts: &'a [PackageDependencySourceFacts],
+        package: &PackageReference,
+        after: Option<[u8; 32]>,
+        limit: u16,
+    ) -> (Vec<&'a PackageDependencyRecord>, bool) {
+        let PackageReference::Purl(target) = package else {
+            return (Vec::new(), false);
+        };
+        let Some(ecosystem) = target.package_type().registry() else {
+            return (Vec::new(), false);
+        };
+        let Some(postings) = self
+            .reverse
+            .get(&ecosystem)
+            .and_then(|names| names.get(target.lineage_name()))
+        else {
+            return (Vec::new(), false);
+        };
+
+        let unresolved = &postings.unresolved;
+        let resolved = postings
+            .resolved
+            .get(target.as_str())
+            .map_or(&[][..], Vec::as_slice);
+        let mut unresolved_index = after.map_or(0, |edge_id| {
+            unresolved.partition_point(|edge| reverse_edge_id(facts, edge) <= edge_id)
+        });
+        let mut resolved_index = after.map_or(0, |edge_id| {
+            resolved.partition_point(|edge| reverse_edge_id(facts, edge) <= edge_id)
+        });
+        let page_bound = usize::from(limit).saturating_add(1);
+        let mut rows = Vec::with_capacity(page_bound);
+        while rows.len() < page_bound {
+            let next = match (
+                unresolved.get(unresolved_index),
+                resolved.get(resolved_index),
+            ) {
+                (None, None) => break,
+                (Some(edge), None) => {
+                    unresolved_index += 1;
+                    edge
+                }
+                (None, Some(edge)) => {
+                    resolved_index += 1;
+                    edge
+                }
+                (Some(left), Some(right)) => {
+                    if reverse_edge_id(facts, left) <= reverse_edge_id(facts, right) {
+                        unresolved_index += 1;
+                        left
+                    } else {
+                        resolved_index += 1;
+                        right
+                    }
+                }
+            };
+            let Some((_, DependencyFacts::Known(source_rows))) = facts.get(next.source_index)
+            else {
+                continue;
+            };
+            if let Some(row) = source_rows.get(next.row_index) {
+                rows.push(row);
+            }
+        }
+        let more = rows.len() > usize::from(limit);
+        rows.truncate(usize::from(limit));
+        (rows, more)
+    }
+}
+
+fn reverse_edge_id(facts: &[PackageDependencySourceFacts], edge: &ReverseEdge) -> [u8; 32] {
+    facts
+        .get(edge.source_index)
+        .and_then(|(_, state)| match state {
+            DependencyFacts::Known(rows) => rows.get(edge.row_index),
+            DependencyFacts::Unknown(_) | DependencyFacts::Unavailable(_) => None,
+        })
+        .map(|row| row.facts_version)
+        .expect("reverse posting must point to a known dependency row")
 }
 
 /// Walks every fact the same way the reverse index does.
@@ -1013,6 +1230,15 @@ mod tests {
         let checked_clone = checked.clone();
         assert_eq!(checked.witness(), expected_witness);
         assert_eq!(checked_clone.witness(), expected_witness);
+        assert_eq!(checked.source_witnesses().len(), checked.facts().len());
+        assert_eq!(
+            checked.source_witnesses()[0],
+            package_dependency_source_facts_witness(&source, &checked.facts()[0].1)
+        );
+        assert_eq!(
+            checked.source_witnesses().as_ptr(),
+            checked_clone.source_witnesses().as_ptr()
+        );
         assert!(std::ptr::eq(
             checked.facts().as_ptr(),
             checked_clone.facts().as_ptr()
@@ -1026,6 +1252,10 @@ mod tests {
         )])
         .expect("check changed requirement");
         assert_ne!(changed_requirement.witness(), checked.witness());
+        assert_ne!(
+            changed_requirement.source_witnesses()[0],
+            checked.source_witnesses()[0]
+        );
         assert_eq!(checked.witness(), expected_witness);
 
         let changed_state = CheckedPackageGraphFacts::new(vec![(
@@ -1034,6 +1264,10 @@ mod tests {
         )])
         .expect("check changed state");
         assert_ne!(changed_state.witness(), checked.witness());
+        assert_ne!(
+            changed_state.source_witnesses()[0],
+            checked.source_witnesses()[0]
+        );
 
         let mut caller_owned = original_facts;
         caller_owned.clear();
@@ -1212,6 +1446,15 @@ mod tests {
         assert_eq!(
             package_dependency_facts_witness(&facts),
             package_dependency_facts_witness(&reordered)
+        );
+        let checked = CheckedPackageGraphFacts::new(facts.clone()).expect("check facts");
+        let checked_reordered =
+            CheckedPackageGraphFacts::new(reordered.clone()).expect("check reordered facts");
+        assert_eq!(checked.witness(), package_dependency_facts_witness(&facts));
+        assert_eq!(checked.facts(), checked_reordered.facts());
+        assert_eq!(
+            checked.source_witnesses(),
+            checked_reordered.source_witnesses()
         );
 
         let mut mutated = first;

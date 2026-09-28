@@ -458,6 +458,11 @@ pub enum SurfaceCommand {
         /// Package locator.
         package: PackageReference,
     },
+    /// Read one root and facts-witness-bound dependency graph page.
+    PackageGraphPage {
+        /// Bounded, authority-aware page request.
+        request: crate::PackageGraphPageRequest,
+    },
     /// Read packages associated with one publisher.
     Owner {
         /// Registry publisher handle.
@@ -594,6 +599,7 @@ impl SurfaceCommand {
             Self::ForgeReference { .. } => CommandId::ForgeReference,
             Self::Dependents { .. } => CommandId::Dependents,
             Self::Dependencies { .. } => CommandId::Dependencies,
+            Self::PackageGraphPage { .. } => CommandId::PackageGraphPage,
             Self::Owner { .. } => CommandId::Owner,
             Self::IndexSearch { .. } => CommandId::IndexSearch,
             Self::PackageVersions { .. } => CommandId::PackageVersions,
@@ -640,6 +646,9 @@ impl SurfaceCommand {
             } if coordinate.package_type().language() != profile.profile()?.language() => {
                 Err(ProductAdmissionError::SemanticVersionShape)
             }
+            Self::PackageGraphPage { request } => request
+                .admit()
+                .map_err(|_| ProductAdmissionError::PackageGraphPage),
             _ => Ok(()),
         }
     }
@@ -1839,6 +1848,8 @@ pub enum SurfaceReply {
     Dependents(RegistryMetadata<Box<[RegistryPackageRecord]>>),
     /// Outgoing dependency facts.
     Dependencies(crate::DependencyFacts<Box<[crate::PackageDependencyRecord]>>),
+    /// One immutable, bounded package graph page.
+    PackageGraphPage(crate::PackageGraphPage),
     /// Publisher facts.
     Owner(RegistryMetadata<Box<[RegistryPackageRecord]>>),
     /// Bounded local index matches.
@@ -1913,6 +1924,7 @@ impl SurfaceReply {
             Self::ForgePackageReferenced(_) => CommandId::ForgeReference,
             Self::Dependents(_) => CommandId::Dependents,
             Self::Dependencies(_) => CommandId::Dependencies,
+            Self::PackageGraphPage(_) => CommandId::PackageGraphPage,
             Self::Owner(_) => CommandId::Owner,
             Self::IndexSearch(_) => CommandId::IndexSearch,
             Self::IndexSearchWithDiscovery(_) => CommandId::IndexSearch,
@@ -1979,6 +1991,11 @@ impl SurfaceReply {
             Self::PackageDetails { registry, forge } => registry.len().saturating_add(forge.len()),
             Self::IndexSearchPage(page) => page.hits.len(),
             Self::Dependencies(crate::DependencyFacts::Known(v)) => v.len(),
+            Self::PackageGraphPage(page) => {
+                page.admit()
+                    .map_err(|_| ProductAdmissionError::PackageGraphPage)?;
+                page.rows.len()
+            }
             Self::SemanticVersions(records) => {
                 let mut selected = 0_usize;
                 for record in records {
@@ -2167,6 +2184,8 @@ impl SurfaceReply {
             }
             Self::Dependencies(crate::DependencyFacts::Unknown(reason))
             | Self::Dependencies(crate::DependencyFacts::Unavailable(reason)) => text_bound(reason),
+            Self::PackageGraphPage(page) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
             Self::PackageProfile {
                 latest,
                 candidate_authority,
@@ -2403,6 +2422,8 @@ pub enum ProductAdmissionError {
     RegistrySearchGroup,
     /// Registry-to-forge lineage facts are malformed, stale, or attached to another package.
     ForgeAssociation,
+    /// A package graph request or page is malformed or outside its bound.
+    PackageGraphPage,
 }
 impl core::fmt::Display for ProductAdmissionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -2437,6 +2458,7 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::ForgeAssociation => {
                 "registry-to-forge lineage is invalid or has a stale identity"
             }
+            Self::PackageGraphPage => "package graph request or page is invalid",
         })
     }
 }

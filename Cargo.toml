@@ -126,3 +126,7 @@ gpui_ce_components = { path = "vendor/gpui_ce_components" }
 gpui-ce = { path = "vendor/gpui-ce" }
 gpui_ce_components_base = { path = "vendor/gpui_ce_components_base" }
 gpui_ce_macos = { path = "vendor/gpui_ce_macos" }
+# Rust authority pins executable discovery and child environments to the
+# admitted toolchain carried by CargoConfig.extra_env.
+ra_ap_project_model = { path = "vendor/ra_ap_project_model" }
+ra_ap_toolchain = { path = "vendor/ra_ap_toolchain" }

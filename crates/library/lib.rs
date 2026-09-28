@@ -30,6 +30,7 @@ mod graph_query;
 /// Transport-independent application service and reply vocabulary.
 pub mod interface;
 mod package_graph;
+mod package_graph_page;
 mod progress;
 /// Bounded transport decoding and presentation for thin CLI and MCP consumers.
 pub mod protocol;
@@ -114,6 +115,11 @@ pub use package_graph::{
     admit_dependency_rows, collapse_dependency_rows, dependency_optional, discover_source_entries,
     discover_source_files, linear_dependent_sources, package_dependency_facts_witness,
     source_selection_policy,
+};
+pub use package_graph_page::{
+    MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_PAGE_ROWS, PACKAGE_GRAPH_PAGE_SCHEMA,
+    PackageGraphControl, PackageGraphCursor, PackageGraphDirection, PackageGraphKnowledge,
+    PackageGraphPage, PackageGraphPageError, PackageGraphPageRequest, PackageGraphPageTerminal,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,

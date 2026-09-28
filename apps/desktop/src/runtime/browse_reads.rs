@@ -36,6 +36,10 @@ pub fn compose(engine: &mut dyn Engine, key: &BrowseKey) -> Result<PageValue, Re
             crate::core::FaultCode::Protocol,
             "find and compare require the page reader's cancellable read context",
         ))),
+        BrowseKey::PackageGraph { .. } => Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+            crate::core::FaultCode::Protocol,
+            "package graph requires the page reader's cancellable read context",
+        ))),
     }
 }
 

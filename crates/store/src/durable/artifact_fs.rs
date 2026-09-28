@@ -174,6 +174,14 @@ mod imp {
         StoreError::Io(error.to_string())
     }
 
+    fn path_error(error: Errno) -> StoreError {
+        if error == Errno::LOOP || error == Errno::NOTDIR {
+            StoreError::UnsafePath
+        } else {
+            self::error(error)
+        }
+    }
+
     fn is_missing(error: Errno) -> bool {
         error == Errno::NOENT
     }
@@ -185,7 +193,7 @@ mod imp {
             Mode::empty(),
         )
         .map(File::from)
-        .map_err(error)
+        .map_err(path_error)
     }
 
     fn open_dir_at(
@@ -202,7 +210,7 @@ mod imp {
             file: File::from(fd),
             path: parent.path.join(name),
         })
-        .map_err(error)
+        .map_err(path_error)
     }
 
     fn ensure_dir_at(
@@ -227,7 +235,7 @@ mod imp {
     fn validate_single_link_file(file: &File) -> Result<(), StoreError> {
         let metadata = file.metadata().map_err(|error| io_error(&error))?;
         if !metadata.is_file() || metadata.nlink() != 1 {
-            return Err(StoreError::Corrupt);
+            return Err(StoreError::UnsafePath);
         }
         Ok(())
     }
@@ -255,27 +263,23 @@ mod imp {
                     let file = File::from(fd);
                     let metadata = file.metadata().map_err(|error| io_error(&error))?;
                     if !metadata.is_file() {
-                        return Err(StoreError::Corrupt);
+                        return Err(StoreError::UnsafePath);
                     }
                     if metadata.nlink() == 1 {
                         return Ok(Some(file));
                     }
                     if metadata.nlink() != 2 || attempt + 1 == LINK_SETTLE_ATTEMPTS {
-                        return Err(StoreError::Corrupt);
+                        return Err(StoreError::UnsafePath);
                     }
                 }
                 Err(error) if is_missing(error) => return Ok(None),
                 Err(error) => {
-                    return Err(if error == Errno::LOOP || error == Errno::NOTDIR {
-                        StoreError::Corrupt
-                    } else {
-                        self::error(error)
-                    });
+                    return Err(path_error(error));
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        Err(StoreError::Corrupt)
+        Err(StoreError::UnsafePath)
     }
 
     fn open_immutable_child_file(
@@ -818,7 +822,7 @@ mod imp {
             || !path_metadata.is_file()
             || !file.metadata().map_err(|error| io_error(&error))?.is_file()
         {
-            return Err(StoreError::Corrupt);
+            return Err(StoreError::UnsafePath);
         }
         Ok(())
     }
@@ -826,7 +830,7 @@ mod imp {
     fn check_directory(path: &Path) -> Result<File, StoreError> {
         let metadata = fs::symlink_metadata(path).map_err(|error| io_error(&error))?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(StoreError::Corrupt);
+            return Err(StoreError::UnsafePath);
         }
         File::open(path).map_err(|error| io_error(&error))
     }

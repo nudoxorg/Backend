@@ -14,6 +14,7 @@ mod subscription_local;
 #[cfg(any(unix, windows))]
 pub use semantic_range_local::{
     LocalSemanticIndexClient, LocalSemanticRangeTransport, SemanticCatalogSnapshot,
+    SemanticImageFetch,
 };
 pub use subscription::{
     CertifiedSubscriptionTransport, SubscriptionRequest, SubscriptionTransport,

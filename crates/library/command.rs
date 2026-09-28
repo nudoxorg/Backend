@@ -157,6 +157,8 @@ pub enum CommandId {
     ProjectTree,
     /// Refresh the configured advisory sources.
     AdvisoryRefresh,
+    /// Read one package graph page fenced to its selected root and facts witness.
+    PackageGraphPage,
     /// Read engine health.
     Health,
     /// Read the constant-size current revision token.

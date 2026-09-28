@@ -31,7 +31,6 @@ impl TursoProjection {
         // next to the database.
         let database = turso::Builder::new_local(text)
             .experimental_multiprocess_wal(true)
-            .experimental_index_method(true)
             .build()
             .await?;
         let connection = database.connect()?;

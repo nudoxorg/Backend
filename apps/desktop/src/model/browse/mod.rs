@@ -4,9 +4,12 @@
 //! so the Library page says exactly what `backend project-tree` prints.
 
 use crate::core::LocalProjectId;
+use crate::model::pages::{
+    DeclRef, Known, PackageDossier, PackageRecord, PackageRef, SearchPage, SearchQuery,
+    SignatureText,
+};
 use crate::navigation::BrowseRoute;
 use crate::navigation::CompareSet;
-use crate::model::pages::{DeclRef, Known, PackageDossier, PackageRecord, PackageRef, SearchPage, SearchQuery, SignatureText};
 use std::fmt;
 use std::sync::Arc;
 
@@ -21,6 +24,17 @@ pub enum BrowseKey {
     Find(SearchQuery),
     /// Bounded comparison selection.
     Compare(CompareSet),
+    /// One package detail and a snapshot-bound graph page.
+    PackageGraph {
+        /// Exact package coordinate.
+        package: PackageRef,
+        /// Dependency direction.
+        direction: backend_library::PackageGraphDirection,
+        /// Optional exact source authority.
+        authority: Option<backend_library::PackageGraphSourceAuthority>,
+        /// Continuation cursor, when reading later pages.
+        cursor: Option<backend_library::PackageGraphCursor>,
+    },
 }
 
 impl From<&BrowseRoute> for BrowseKey {
@@ -30,6 +44,17 @@ impl From<&BrowseRoute> for BrowseKey {
             BrowseRoute::FindHome => Self::FindHome,
             BrowseRoute::Find(query) => Self::Find(query.clone()),
             BrowseRoute::Compare(selection) => Self::Compare(selection.clone()),
+            BrowseRoute::PackageGraph {
+                package,
+                direction,
+                authority,
+                cursor,
+            } => Self::PackageGraph {
+                package: package.clone(),
+                direction: *direction,
+                authority: *authority,
+                cursor: cursor.clone(),
+            },
         }
     }
 }
@@ -41,6 +66,18 @@ impl fmt::Display for BrowseKey {
             Self::FindHome => formatter.write_str("find"),
             Self::Find(query) => write!(formatter, "find {:?}", query.text),
             Self::Compare(selection) => write!(formatter, "compare {:?}", selection.packages()),
+            Self::PackageGraph {
+                package,
+                direction,
+                authority,
+                cursor,
+            } => write!(
+                formatter,
+                "package graph {} {:?} authority={authority:?} cursor={}",
+                package.as_str(),
+                direction,
+                cursor.is_some()
+            ),
         }
     }
 }
@@ -54,6 +91,8 @@ pub enum BrowseValue {
     Find(Arc<FindModel>),
     /// Package dossiers read for this comparison.
     Compare(Arc<CompareModel>),
+    /// A package dossier alongside one exact dependency graph page.
+    PackageGraph(Arc<PackageGraphModel>),
 }
 
 impl BrowseValue {
@@ -62,9 +101,18 @@ impl BrowseValue {
     pub fn tree(&self) -> Option<&TreeModel> {
         match self {
             Self::Tree(tree) => Some(tree),
-            Self::Find(_) | Self::Compare(_) => None,
+            Self::Find(_) | Self::Compare(_) | Self::PackageGraph(_) => None,
         }
     }
+}
+
+/// Package facts and graph page prepared together for the package view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageGraphModel {
+    /// Header and release facts from the package dossier.
+    pub dossier: PackageDossier,
+    /// UI-ready graph rows and continuation state, prepared off the render path.
+    pub prepared: Arc<facet::browse::package_graph::Model>,
 }
 
 /// Immutable evidence shared by every comparison presentation.

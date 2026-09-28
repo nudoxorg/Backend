@@ -9,6 +9,8 @@ mod decode;
 mod encode;
 mod extensions_decode;
 mod fault;
+#[cfg(feature = "mmap")]
+mod mapping;
 mod plan;
 mod typed;
 mod typed_decode;
@@ -24,8 +26,13 @@ pub use fault::{
     FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
     FullSemanticImageIdentityField,
 };
+#[cfg(feature = "mmap")]
+pub use mapping::{
+    MappedSemanticImage, MappedSemanticImageError, MappedSemanticImageIoPhase,
+    load_semantic_image_mmap, open_semantic_image_mmap,
+};
 pub(crate) use typed::FullTypedPlan;
 pub use view::{
-    AdmittedSemanticImage, SemanticImageView, reset_semantic_image_validations,
+    SemanticImageProofOwner, SemanticImageView, reset_semantic_image_validations,
     semantic_image_validations,
 };

@@ -536,6 +536,7 @@ const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::ForgeReference { .. }
             | SurfaceCommand::Dependents { .. }
             | SurfaceCommand::Dependencies { .. }
+            | SurfaceCommand::PackageGraphPage { .. }
             | SurfaceCommand::Owner { .. }
             | SurfaceCommand::IndexSearch { .. }
             | SurfaceCommand::PackageVersions { .. }
@@ -608,7 +609,10 @@ impl Engine for SessionEngine {
         let name = super::trace::enabled().then(|| format!("{command:?}"));
         let reply = self.with_session(|session| session.surface(command.clone()));
         if let Some(name) = name {
-            let variant = name.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("surface");
+            let variant = name
+                .split(|c: char| !c.is_alphanumeric())
+                .next()
+                .unwrap_or("surface");
             super::trace::span("surface", asking, variant);
         }
         reply
@@ -671,21 +675,33 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                 .map(|report| PageValue::Health(page_mapping::health_model(&report)))
                 .map_err(|error| failure(&error)),
             ReadRequest::Browse(key) => match key {
-                crate::model::browse::BrowseKey::Tree(_) => super::browse_reads::compose(&mut self.engine, key),
-                crate::model::browse::BrowseKey::FindHome => compose_find(&mut self.engine, None, context)
-                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
-                crate::model::browse::BrowseKey::Find(query) => compose_find(&mut self.engine, Some(query), context)
-                    .map(|page| PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))),
+                crate::model::browse::BrowseKey::Tree(_) => {
+                    super::browse_reads::compose(&mut self.engine, key)
+                }
+                crate::model::browse::BrowseKey::FindHome => {
+                    compose_find(&mut self.engine, None, context).map(|page| {
+                        PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))
+                    })
+                }
+                crate::model::browse::BrowseKey::Find(query) => {
+                    compose_find(&mut self.engine, Some(query), context).map(|page| {
+                        PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(page)))
+                    })
+                }
                 crate::model::browse::BrowseKey::Compare(selection) => {
                     let mut packages = Vec::with_capacity(selection.packages().len());
                     let mut apis = Vec::with_capacity(selection.packages().len());
                     for package in selection.packages() {
                         check(context.cancel)?;
-                        let PageValue::Package(dossier) = compose_package(&mut self.engine, &self.loader, package, context)? else {
+                        let PageValue::Package(dossier) =
+                            compose_package(&mut self.engine, &self.loader, package, context)?
+                        else {
                             return Err(shape("compare package"));
                         };
                         let api = match outline(&mut self.engine, package, context) {
-                            Ok(index) => crate::model::pages::Known::Known(index.comparison_api(package)),
+                            Ok(index) => {
+                                crate::model::pages::Known::Known(index.comparison_api(package))
+                            }
                             Err(gap) => crate::model::pages::Known::Unknown(gap),
                         };
                         check(context.cancel)?;
@@ -693,9 +709,18 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                         apis.push(api);
                     }
                     let prepared = Arc::new(super::browse_views::prepare_compare(&packages, &apis));
-                    Ok(PageValue::Browse(crate::model::browse::BrowseValue::Compare(Arc::new(
-                        crate::model::browse::CompareModel { packages: packages.into(), apis: apis.into(), prepared },
-                    ))))
+                    Ok(PageValue::Browse(
+                        crate::model::browse::BrowseValue::Compare(Arc::new(
+                            crate::model::browse::CompareModel {
+                                packages: packages.into(),
+                                apis: apis.into(),
+                                prepared,
+                            },
+                        )),
+                    ))
+                }
+                key @ crate::model::browse::BrowseKey::PackageGraph { .. } => {
+                    compose_package_graph(&mut self.engine, &self.loader, key, context)
                 }
             },
         }
@@ -1057,6 +1082,58 @@ fn compose_package(
     )))
 }
 
+fn compose_package_graph(
+    engine: &mut dyn Engine,
+    loader: &LocalPackageLoader,
+    key: &crate::model::browse::BrowseKey,
+    context: &ReadContext<'_>,
+) -> Result<PageValue, ReadFailure> {
+    use crate::model::browse::{BrowseValue, PackageGraphModel};
+    use backend_library::{
+        MAX_PACKAGE_GRAPH_PAGE_ROWS, PackageGraphPageRequest, SurfaceCommand, SurfaceReply,
+    };
+    let crate::model::browse::BrowseKey::PackageGraph {
+        package,
+        direction,
+        authority,
+        cursor,
+    } = key
+    else {
+        return Err(shape("package graph key"));
+    };
+
+    let PageValue::Package(dossier) = compose_package(engine, loader, package, context)? else {
+        return Err(shape("package dossier"));
+    };
+    check(context.cancel)?;
+    let mut request = PackageGraphPageRequest::new(
+        package.reference().clone(),
+        *direction,
+        *authority,
+        MAX_PACKAGE_GRAPH_PAGE_ROWS.min(64),
+    )
+    .map_err(|error| {
+        ReadFailure::Fault(crate::core::ErrorValue::new(
+            crate::core::FaultCode::Protocol,
+            error.to_string(),
+        ))
+    })?;
+    if let Some(cursor) = cursor {
+        request = request.with_cursor(cursor.clone());
+    }
+    let reply = engine
+        .surface(SurfaceCommand::PackageGraphPage { request })
+        .map_err(|error| failure(&error))?;
+    check(context.cancel)?;
+    let SurfaceReply::PackageGraphPage(page) = reply else {
+        return Err(shape("package graph page"));
+    };
+    let prepared = Arc::new(super::browse_views::prepare_package_graph(&dossier, &page));
+    Ok(PageValue::Browse(BrowseValue::PackageGraph(Arc::new(
+        PackageGraphModel { dossier, prepared },
+    ))))
+}
+
 fn compose_search(
     engine: &mut dyn Engine,
     query: &SearchQuery,
@@ -1099,27 +1176,46 @@ fn compose_find(
             Err(ReadFailure::Cancelled) => return Err(ReadFailure::Cancelled),
             Err(error) => Known::Unknown(Gap::new(GapReason::ReadFailed, format!("{error:?}"))),
         },
-        None => Known::unknown(GapReason::NotCaptured, "Enter a name to find indexed declarations."),
+        None => Known::unknown(
+            GapReason::NotCaptured,
+            "Enter a name to find indexed declarations.",
+        ),
     };
     check(context.cancel)?;
     let indexed = engine.probe(Probe::Packages);
     check(context.cancel)?;
-    let query_text = query.map(|query| backend_library::ProductText::new(query.text.to_string())).transpose().map_err(|_| shape("find query"))?;
-    let catalog = engine.surface(SurfaceCommand::Explore { query: query_text, limit: EXPLORE_LIMIT });
+    let query_text = query
+        .map(|query| backend_library::ProductText::new(query.text.to_string()))
+        .transpose()
+        .map_err(|_| shape("find query"))?;
+    let catalog = engine.surface(SurfaceCommand::Explore {
+        query: query_text,
+        limit: EXPLORE_LIMIT,
+    });
     check(context.cancel)?;
     let indexed_rows = match &indexed {
-        Ok(reply) => match &reply.reply { CommandReply::Packages(rows) => Some(rows.root.rows().iter().collect::<Vec<_>>()), _ => None },
+        Ok(reply) => match &reply.reply {
+            CommandReply::Packages(rows) => Some(rows.root.rows().iter().collect::<Vec<_>>()),
+            _ => None,
+        },
         Err(_) => None,
     };
     let catalog_rows = match &catalog {
         Ok(SurfaceReply::Explored(records)) => Some(records.as_ref()),
         _ => None,
     };
-    let packages = super::browse_reads::find_packages(query.map_or("", |query| query.text.as_ref()), indexed_rows.as_deref().unwrap_or_default(), catalog_rows.unwrap_or_default());
+    let packages = super::browse_reads::find_packages(
+        query.map_or("", |query| query.text.as_ref()),
+        indexed_rows.as_deref().unwrap_or_default(),
+        catalog_rows.unwrap_or_default(),
+    );
     let package_coverage = if indexed_rows.is_some() && catalog_rows.is_some() {
         Known::Known(())
     } else {
-        Known::Unknown(Gap::new(GapReason::Unavailable, "Some package sources could not answer; these are the matches available locally."))
+        Known::Unknown(Gap::new(
+            GapReason::Unavailable,
+            "Some package sources could not answer; these are the matches available locally.",
+        ))
     };
     let prepared = Arc::new(super::browse_views::prepare_find(
         query.map_or("", |query| query.text.as_ref()),
@@ -1127,14 +1223,26 @@ fn compose_find(
         &packages,
         &package_coverage,
     ));
-    Ok(FindModel { answers, packages: packages.into(), package_coverage, prepared })
+    Ok(FindModel {
+        answers,
+        packages: packages.into(),
+        package_coverage,
+        prepared,
+    })
 }
 
-fn compose_orbit(engine: &mut dyn Engine, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
-    let packages = engine.probe(Probe::Packages).and_then(|reply| match reply.reply {
-        CommandReply::Packages(snapshot) => Ok(snapshot),
-        _ => Err(ClientError::Protocol("the packages reply changed shape".to_owned())),
-    });
+fn compose_orbit(
+    engine: &mut dyn Engine,
+    context: &ReadContext<'_>,
+) -> Result<PageValue, ReadFailure> {
+    let packages = engine
+        .probe(Probe::Packages)
+        .and_then(|reply| match reply.reply {
+            CommandReply::Packages(snapshot) => Ok(snapshot),
+            _ => Err(ClientError::Protocol(
+                "the packages reply changed shape".to_owned(),
+            )),
+        });
     check(context.cancel)?;
     let projects = engine.surface(SurfaceCommand::Projects);
     check(context.cancel)?;

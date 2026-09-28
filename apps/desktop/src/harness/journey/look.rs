@@ -51,7 +51,10 @@ pub(super) fn visible(bounds: &BoundsSample, viewport: Viewport) -> bool {
 }
 
 fn centre(bounds: &BoundsSample) -> (f32, f32) {
-    (bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0)
+    (
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    )
 }
 
 fn contains(bounds: &BoundsSample, (x, y): (f32, f32)) -> bool {
@@ -126,19 +129,31 @@ impl Seen {
         rows.into_iter()
             .map(|mut row| {
                 row.sort_by(|a, b| a.bounds.x.total_cmp(&b.bounds.x));
-                row.iter().map(|text| text.content.as_str()).collect::<Vec<_>>().join(" ")
+                row.iter()
+                    .map(|text| text.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             })
             .collect()
     }
 
     /// The focused targets' keys.
     pub(super) fn focused(&self) -> Vec<&TargetSample> {
-        self.ledger.targets.iter().filter(|target| target.state.focused).collect()
+        self.ledger
+            .targets
+            .iter()
+            .filter(|target| target.state.focused)
+            .collect()
     }
 
     /// The visible text a [`Pick::Text`] names, or why not: the first
     /// `text` after each anchor in turn.
-    fn words(&self, text: &str, after: &[String], area: Option<Area>) -> Result<&TextSample, String> {
+    fn words(
+        &self,
+        text: &str,
+        after: &[String],
+        area: Option<Area>,
+    ) -> Result<&TextSample, String> {
         let shown = self.texts(area);
         let mut from = 0;
         for anchor in after {
@@ -148,7 +163,11 @@ impl Seen {
                 .ok_or_else(|| {
                     format!(
                         "the anchor \"{anchor}\" is not on screen{}{}; {}",
-                        if from > 0 { " after the anchors before it" } else { "" },
+                        if from > 0 {
+                            " after the anchors before it"
+                        } else {
+                            ""
+                        },
                         area_words(area),
                         self.summary(area)
                     )
@@ -167,7 +186,11 @@ impl Seen {
                     } else {
                         format!(
                             " after {}",
-                            after.iter().map(|anchor| format!("\"{anchor}\"")).collect::<Vec<_>>().join(" ")
+                            after
+                                .iter()
+                                .map(|anchor| format!("\"{anchor}\""))
+                                .collect::<Vec<_>>()
+                                .join(" ")
                         )
                     },
                     area_words(area),
@@ -217,7 +240,14 @@ impl Seen {
                         let (x, y) = centre(b);
                         Ok((
                             (x.round(), y.round()),
-                            format!("target `{}` at ({:.0}, {:.0}) {:.0}x{:.0}", short(&target.key), b.x, b.y, b.width, b.height),
+                            format!(
+                                "target `{}` at ({:.0}, {:.0}) {:.0}x{:.0}",
+                                short(&target.key),
+                                b.x,
+                                b.y,
+                                b.width,
+                                b.height
+                            ),
                             target.key.clone(),
                         ))
                     }
@@ -234,7 +264,10 @@ impl Seen {
                     many => Err(format!(
                         "`{probe}` matches {} targets: [{}]",
                         many.len(),
-                        many.iter().map(|target| short(&target.key)).collect::<Vec<_>>().join(", ")
+                        many.iter()
+                            .map(|target| short(&target.key))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )),
                 }
             }
@@ -275,7 +308,9 @@ impl Seen {
             return Err(format!("{} targets focused: [{}]", focused.len(), names()));
         };
         match pick {
-            Pick::Probe(probe) if glob(probe, &target.key) => Ok(format!("`{}`", short(&target.key))),
+            Pick::Probe(probe) if glob(probe, &target.key) => {
+                Ok(format!("`{}`", short(&target.key)))
+            }
             Pick::Probe(_) => Err(format!("focused: [{}]", names())),
             Pick::Text { text, after, area } => {
                 let words = self.words(text, after, *area)?;
@@ -319,7 +354,8 @@ impl Seen {
             .filter(|text| {
                 let content = text.content.to_lowercase();
                 content != lower
-                    && (content.contains(&lower) || (lower.contains(&content) && content.len() >= 3))
+                    && (content.contains(&lower)
+                        || (lower.contains(&content) && content.len() >= 3))
             })
             .take(6)
             .map(|text| {
@@ -328,7 +364,11 @@ impl Seen {
                     clip(&short(&text.content), 80),
                     text.bounds.x,
                     text.bounds.y,
-                    if visible(&text.bounds, self.viewport()) { "" } else { " outside the window" }
+                    if visible(&text.bounds, self.viewport()) {
+                        ""
+                    } else {
+                        " outside the window"
+                    }
                 )
             })
             .collect()
@@ -338,7 +378,11 @@ impl Seen {
     pub(super) fn inventory(&self, route: Option<&Route>) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
-        let _ = writeln!(out, "  route: {}", route.map_or_else(|| "(none)".to_owned(), |route| short(&describe(route))));
+        let _ = writeln!(
+            out,
+            "  route: {}",
+            route.map_or_else(|| "(none)".to_owned(), |route| short(&describe(route)))
+        );
         if let Some(frame) = &self.frame {
             let _ = writeln!(
                 out,
@@ -351,19 +395,30 @@ impl Seen {
             let _ = writeln!(
                 out,
                 "   {}{:>5.0},{:<5.0} {:?}",
-                if visible(&text.bounds, self.viewport()) { " " } else { "*" },
+                if visible(&text.bounds, self.viewport()) {
+                    " "
+                } else {
+                    "*"
+                },
                 text.bounds.x,
                 text.bounds.y,
                 short(&text.content)
             );
         }
-        let _ = writeln!(out, "  targets (paint order; F = focused, * = outside the window):");
+        let _ = writeln!(
+            out,
+            "  targets (paint order; F = focused, * = outside the window):"
+        );
         for target in &self.ledger.targets {
             let _ = writeln!(
                 out,
                 "   {}{}{:>5.0},{:<5.0} {:>4.0}x{:<4.0} {}",
                 if target.state.focused { "F" } else { " " },
-                if visible(&target.bounds, self.viewport()) { " " } else { "*" },
+                if visible(&target.bounds, self.viewport()) {
+                    " "
+                } else {
+                    "*"
+                },
                 target.bounds.x,
                 target.bounds.y,
                 target.bounds.width,
@@ -415,9 +470,31 @@ pub(super) fn describe(route: &Route) -> String {
             format!("tree {}", project.display_lossy())
         }
         Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::FindHome)) => "find".into(),
-        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query))) => format!("find {}", query.text),
-        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Compare(selection))) => format!(
-            "compare {}", selection.packages().iter().map(|package| package.as_str()).collect::<Vec<_>>().join(" "),
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query))) => {
+            format!("find {}", query.text)
+        }
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Compare(selection))) => {
+            format!(
+                "compare {}",
+                selection
+                    .packages()
+                    .iter()
+                    .map(|package| package.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        }
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::PackageGraph {
+            package,
+            direction,
+            ..
+        })) => format!(
+            "package {} graph={}",
+            package.as_str(),
+            match direction {
+                backend_library::PackageGraphDirection::Dependencies => "dependencies",
+                backend_library::PackageGraphDirection::Dependents => "dependents",
+            },
         ),
         Route::World => "world".to_owned(),
         Route::Package(package) => format!(
@@ -435,7 +512,9 @@ pub(super) fn describe(route: &Route) -> String {
             symbol.id.as_str(),
             symbol.view.as_str(),
             at(symbol.at.as_ref()),
-            symbol.line.map_or_else(String::new, |line| format!(" line={line}"))
+            symbol
+                .line
+                .map_or_else(String::new, |line| format!(" line={line}"))
         ),
     }
 }

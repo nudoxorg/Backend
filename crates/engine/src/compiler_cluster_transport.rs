@@ -53,6 +53,11 @@ pub use crate::compiler_input_tree_v2::{
     CompilerInputTreeReplacementV2, CompilerInputTreeUpdateStatsV2, CompilerInputTreeV2Error,
     CompilerWorkspaceFileRoleV2,
 };
+pub use crate::compiler_unit_read_closure_v2::{
+    CompilerReadAdapterProtocolIdentityV2, CompilerReadClosureIncompleteReasonV2,
+    CompilerUnitReadClosureErrorV2, CompilerUnitReadClosureStatsV2,
+    CompilerWorkspaceCaptureIdentityV2, PureUnitKey, VerifiedUnitReadClosure,
+};
 pub use backend_execution::CompilerPeerId;
 
 /// Grant pages sent on one control stream before opening a new authenticated stream.

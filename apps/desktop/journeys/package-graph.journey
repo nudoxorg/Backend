@@ -1,0 +1,25 @@
+# The package detail page follows an exact registry release and shows its
+# graph evidence, then uses the keyboard to cross graph directions at a
+# narrow width and larger text scale.
+size 1440x900
+start graph pkg:cargo/toml@0.8.23 dependencies
+
+check dependencies
+  route graph pkg:cargo/toml@0.8.23 dependencies
+  text "toml" in reader
+  text "pkg:cargo/toml@0.8.23" in reader
+  text "Dependencies" in reader
+
+key right
+check dependents
+  route graph pkg:cargo/toml@0.8.23 dependents
+  text "toml" in reader
+  text "Used by" in reader
+
+resize 480x900
+text-scale 125
+key left
+check narrow-dependencies
+  route graph pkg:cargo/toml@0.8.23 dependencies
+  text "toml" in reader
+  text "Dependencies" in reader

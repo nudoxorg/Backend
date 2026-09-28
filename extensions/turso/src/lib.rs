@@ -12,6 +12,7 @@ mod authority;
 mod connection;
 mod error;
 mod graph;
+mod package_graph_read;
 mod read;
 mod schema;
 mod writer;
@@ -37,6 +38,7 @@ pub use authority::{
 };
 pub use error::ProjectionError;
 pub use graph::{PackageGraphSourceSelection, PackageGraphState, RootedPackageGraph};
+pub use package_graph_read::PackageGraphReadError;
 pub use read::RootedRows;
 
 use std::fmt;

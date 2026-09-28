@@ -418,6 +418,12 @@ impl ProductState {
                 )?),
                 false,
             ),
+            SurfaceCommand::PackageGraphPage { .. } => {
+                return Err(
+                    "package graph pages must be read by the durable snapshot projection"
+                        .to_owned(),
+                );
+            }
             SurfaceCommand::PackageVersions { package } => (
                 SurfaceReply::PackageVersions(
                     package_versions(view, catalog, catalog_index, &package, workspace)?.rows,
@@ -1328,6 +1334,17 @@ fn index_search_page_with_discovery_measured_snapshot(
     let mut ranked = Vec::<MergedPageSearchCandidate>::new();
     for search_hit in &acquired_page.hits {
         let key = &search_hit.key;
+        // The acquired lineage projection places this normalized lineage in
+        // the coordinate field so it remains searchable. An exact match on
+        // the displayed lineage name is still name evidence, not an exact
+        // package-coordinate match; discovery uses the same name semantics.
+        let evidence = if search_hit.evidence == SearchMatchEvidence::ExactCoordinate
+            && normalized_query.as_str() == acquired_lineage_search_name(key)
+        {
+            SearchMatchEvidence::ExactName
+        } else {
+            search_hit.evidence
+        };
         let (releases, more_releases, facet_postings, release_match_scope) =
             catalog_index.matching_lineage_releases(catalog, key, query.as_str())?;
         work.acquired_facet_postings = work.acquired_facet_postings.saturating_add(facet_postings);
@@ -1366,7 +1383,7 @@ fn index_search_page_with_discovery_measured_snapshot(
             .map_err(|error| format!("acquired package group failed admission: {error:?}"))?;
         ranked.push(MergedPageSearchCandidate {
             candidate: PageSearchCandidate {
-                evidence: search_hit.evidence,
+                evidence,
                 hit: RegistrySearchHit::PackageGroup(group),
                 plane: SearchPlane::Acquired,
             },
@@ -1631,6 +1648,18 @@ fn registry_search_lineage(
         )
     } else {
         path.to_owned()
+    }
+}
+
+fn acquired_lineage_search_name(key: &LineageKey) -> &str {
+    let lineage = key.normalized_lineage.as_str();
+    match key.ecosystem {
+        RegistryEcosystem::Npm | RegistryEcosystem::Golang => {
+            lineage.rsplit('/').next().unwrap_or(lineage)
+        }
+        RegistryEcosystem::Maven => lineage.rsplit(':').next().unwrap_or(lineage),
+        RegistryEcosystem::Cpp => lineage.rsplit([':', '/']).next().unwrap_or(lineage),
+        RegistryEcosystem::Cargo | RegistryEcosystem::Pypi | RegistryEcosystem::Nuget => lineage,
     }
 }
 

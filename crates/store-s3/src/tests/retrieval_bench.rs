@@ -1417,7 +1417,6 @@ fn parallel_s3_batches_concurrent_server(
         pack.manifest()
             .page_for_object(object.id())
             .ok_or("single object page missing")?
-            .1
             .bytes(),
     );
     let envelope_bytes = u64::try_from(OBJECT_HEADER_BYTES + object.bytes().len())?;
@@ -1530,7 +1529,6 @@ fn benchmark_concurrency(sample_count: usize) -> Result<(), Box<dyn std::error::
                 pack.manifest()
                     .page_for_object(object.id())
                     .ok_or("single object page missing")?
-                    .1
                     .bytes(),
             ))
             .and_then(|bytes| bytes.checked_mul(u64::try_from(concurrency).ok()?))

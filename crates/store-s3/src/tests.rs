@@ -90,6 +90,7 @@ enum ServerMode {
     Store,
     DisconnectMidPut,
     CommitThenDropPutResponse,
+    DropFirstGet,
     RedirectGet,
     BadRange,
     TamperRange,
@@ -203,6 +204,12 @@ impl LoopbackServer {
                     .lock()
                     .expect("test stats mutex")
                     .request_body_bytes += request.body.len();
+                if request.method == "GET"
+                    && request_number == 0
+                    && matches!(mode, ServerMode::DropFirstGet)
+                {
+                    continue;
+                }
                 let response = match request.method.as_str() {
                     "PUT" => {
                         let mut stored = server_object.lock().expect("test object mutex");
@@ -747,6 +754,26 @@ fn range_get_requires_exact_206_metadata_and_returns_unverified_bytes() {
 }
 
 #[test]
+fn range_get_retries_a_dropped_connection_without_relaxing_range_admission() {
+    let object = object();
+    let envelope = ObjectEnvelope::from_typed(&object, 2 * 1024 * 1024).expect("encode envelope");
+    let bytes = stored_bytes(&envelope);
+    let range = AllowedRange {
+        start: 11,
+        end_inclusive: 37,
+    };
+    let server = LoopbackServer::start(ServerMode::DropFirstGet, 2, Some(bytes.clone()));
+    let grant = read_capability(&server, &envelope, fence(), Some(range));
+    let fetched = server
+        .route()
+        .get_range(&grant, range, fence())
+        .expect("retry a dropped idempotent range request");
+    assert_eq!(fetched.bytes(), &bytes[11..=37]);
+    assert_eq!(server.stats().get_requests, 2);
+    server.finish();
+}
+
+#[test]
 fn hostile_redirects_stale_fences_and_mismatched_claims_are_rejected() {
     let object = object();
     let envelope = ObjectEnvelope::from_typed(&object, 2 * 1024 * 1024).expect("encode envelope");
@@ -1202,6 +1229,17 @@ fn cold_selected_member_claim_is_admitted_only_after_full_pack_proof() {
         .expect("prove membership and admit complete typed envelope");
     assert_eq!(admitted.id(), ids[0]);
     assert_eq!(admitted.fence(), fence());
+    let envelope = admitted.verified_envelope();
+    assert_eq!(envelope.id(), ids[0]);
+    assert_eq!(
+        envelope.schema(),
+        backend_version::SchemaIdentity::new(
+            TestBytesSchema::DOMAIN,
+            TestBytesSchema::TYPE,
+            TestBytesSchema::VERSION,
+        )
+    );
+    assert_eq!(envelope.payload_len(), 384);
 
     // The route can locate the candidate page from raw bytes, but a claim
     // absent from the authenticated page is rejected before any object GET.

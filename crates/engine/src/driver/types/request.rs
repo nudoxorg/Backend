@@ -234,6 +234,15 @@ pub enum SemanticAuthorityInput<'source> {
         /// Checked project root and its exact entry translation unit.
         project: &'source backend_frontend_clang::ClangProject,
     },
+    /// Explicitly selected libclang authority for one synthetic source buffer.
+    ///
+    /// This is the narrow buffer-only Generate lane. It carries the configured
+    /// driver and libclang selection that must be verified on the calling
+    /// thread before any Clang FFI; `None` never means ambient libclang.
+    ClangBuffer {
+        /// Runtime-selected driver, resource, include, and libclang paths.
+        environment: &'source backend_frontend_clang::ClangAuthorityEnvironment,
+    },
     /// Caller-selected Cargo graph for in-process rust-analyzer admission.
     Rust {
         /// Exact Cargo root and toolchain context selected by the caller.

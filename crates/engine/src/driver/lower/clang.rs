@@ -293,11 +293,13 @@ const REF_OPENERS: [&[u8]; 2] = [b"@ref ", b"\\ref "];
 /// its compilation-database arguments and package root so project-local
 /// `#include` closures resolve to stable cross-fragment identities. Only the
 /// entry closure is analyzed; the project's other translation units are never
-/// walked eagerly. Without a project, the single caller buffer is parsed under
-/// the synthetic profile arguments, exactly as before.
+/// walked eagerly. A standalone caller buffer uses synthetic profile
+/// arguments, but still requires the caller's explicitly selected libclang
+/// environment.
 pub(crate) fn collect<'source>(
     profile: LanguageProfile,
     project: Option<&ClangProject>,
+    environment: &backend_frontend_clang::ClangAuthorityEnvironment,
     source: &'source [u8],
     cancelled: &AtomicBool,
     facts: &mut FactSet<'source>,
@@ -309,7 +311,11 @@ pub(crate) fn collect<'source>(
                 ClangInput::from_profile(c"nudox-input", source, profile).map_err(|_| {
                     ClangCollectError::Lowering(LoweringUnsupported::ClangDeclarationForm)
                 })?;
-            collect_input(input, source, cancelled, facts)
+            environment
+                .with_loaded_libclang(|| collect_input(input, source, cancelled, facts))
+                .map_err(|error| {
+                    ClangCollectError::Authority(CollectError::ConfiguredLibrary(error))
+                })?
         }
     }
 }
@@ -341,13 +347,17 @@ fn collect_project<'source>(
     let borrowed = owned.iter().map(CString::as_c_str).collect::<Vec<_>>();
     let input = ClangInput::from_database(&file_name, source, &borrowed, &directory)
         .map_err(|_| invalid())?;
-    collect_input(input, source, cancelled, facts)
+    project
+        .environment()
+        .with_loaded_libclang(|| collect_input(input, source, cancelled, facts))
+        .map_err(|error| ClangCollectError::Authority(CollectError::ConfiguredLibrary(error)))?
 }
 
 /// Collects one already-authorized database command and admits it through the
 /// same canonical lane as [`crate::driver::types::compile`].
 pub(crate) fn lower_database<'source, 'output>(
     input: ClangInput<'source>,
+    environment: &backend_frontend_clang::ClangAuthorityEnvironment,
     source: &'source [u8],
     source_identity: backend_semantic::ir::SourceIdentity,
     recipe: backend_semantic::ir::RecipeFact,
@@ -356,9 +366,13 @@ pub(crate) fn lower_database<'source, 'output>(
     output: &'output mut [u8],
 ) -> Result<&'output [u8], ClangCollectError> {
     let mut facts = FactSet::new();
-    collect_input(input, source, cancelled, &mut facts)?;
-    super::admit(&facts, source_identity, recipe, profile, output)
-        .map_err(ClangCollectError::Admission)
+    environment
+        .with_loaded_libclang(|| {
+            collect_input(input, source, cancelled, &mut facts)?;
+            super::admit(&facts, source_identity, recipe, profile, output)
+                .map_err(ClangCollectError::Admission)
+        })
+        .map_err(|error| ClangCollectError::Authority(CollectError::ConfiguredLibrary(error)))?
 }
 
 fn collect_input<'input, 'source>(
@@ -3397,10 +3411,10 @@ mod tests {
         sync::atomic::{AtomicU32, Ordering},
     };
 
-    use backend_frontend_clang::ClangProject;
     use backend_frontend_clang::legacy::{
         CollectError, IncludeFact, MAX_CLANG_DECLARATIONS, SourceSpan, SymbolIdentity,
     };
+    use backend_frontend_clang::{ClangAuthorityEnvironment, ClangProject};
     use backend_semantic::ir::{
         ClangStorageClass, DecodedDocFact, DecodedOccurrence, DecodedTypeFact, EntityKind,
         ForeignOrigin, FragmentView, NominalRef, OccurrenceTarget, PrimitiveShape, SemanticTypeTag,
@@ -3470,9 +3484,18 @@ mod tests {
         source: &[u8],
     ) -> Result<Vec<u8>, TestError> {
         let mut facts = FactSet::new();
+        let selected = project
+            .is_none()
+            .then(selected_clang_environment)
+            .transpose()?;
+        let environment = project
+            .map(ClangProject::environment)
+            .or(selected.as_ref())
+            .ok_or(TestError::Missing("selected Clang environment"))?;
         collect(
             profile,
             project,
+            environment,
             source,
             &AtomicBool::new(false),
             &mut facts,
@@ -3501,6 +3524,15 @@ mod tests {
         }
         output.truncate(length);
         Ok(output)
+    }
+
+    fn selected_clang_environment() -> Result<ClangAuthorityEnvironment, TestError> {
+        let driver =
+            std::env::var_os("NUDOX_CLANG").ok_or(TestError::Missing("selected Clang driver"))?;
+        let library =
+            std::env::var_os("LIBCLANG_PATH").ok_or(TestError::Missing("selected libclang"))?;
+        ClangAuthorityEnvironment::probe(driver, library)
+            .map_err(|_| TestError::Missing("valid selected Clang environment"))
     }
 
     /// Decodes the entity rows of one validated fragment as (name, kind).
@@ -4403,6 +4435,7 @@ mod tests {
         match collect(
             LanguageProfile::C(CStandard::C23),
             None,
+            &selected_clang_environment()?,
             source.as_bytes(),
             &AtomicBool::new(false),
             &mut facts,
@@ -4428,6 +4461,7 @@ mod tests {
         collect(
             LanguageProfile::C(CStandard::C23),
             None,
+            &selected_clang_environment()?,
             source.as_bytes(),
             &AtomicBool::new(false),
             &mut facts,

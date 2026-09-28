@@ -388,6 +388,35 @@ fn limit(invocation: &Invocation) -> Result<u16, Fault> {
         })
 }
 
+fn graph_limit(invocation: &Invocation) -> Result<u16, Fault> {
+    let Some(value) = invocation.option("limit") else {
+        return Ok(64);
+    };
+    value
+        .parse::<u16>()
+        .ok()
+        .filter(|limit| *limit > 0 && *limit <= backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS)
+        .ok_or_else(|| {
+            Fault::usage(
+                "limit",
+                format!("`{value}` is not a package graph page bound; choose a whole number from 1 to {}", backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS),
+            )
+        })
+}
+
+fn graph_cursor(
+    invocation: &Invocation,
+) -> Result<Option<backend_library::PackageGraphCursor>, Fault> {
+    invocation.option("cursor").map_or(Ok(None), |value| {
+        serde_json::from_str(value).map(Some).map_err(|error| {
+            Fault::usage(
+                "cursor",
+                format!("package graph cursor is invalid JSON: {error}"),
+            )
+        })
+    })
+}
+
 fn text(invocation: &Invocation, index: usize) -> Result<ProductText, Fault> {
     let value = invocation.require(index)?;
     ProductText::new(value)
@@ -498,6 +527,38 @@ fn surface(invocation: &Invocation, id: CommandId) -> Result<SurfaceCommand, Fau
         CommandId::Dependencies => SurfaceCommand::Dependencies {
             package: package(invocation, 0)?,
         },
+        CommandId::PackageGraphPage => {
+            let direction = match invocation.require(1)? {
+                "dependencies" => backend_library::PackageGraphDirection::Dependencies,
+                "dependents" => backend_library::PackageGraphDirection::Dependents,
+                value => {
+                    return Err(Fault::usage(
+                        "direction",
+                        format!(
+                            "`{value}` is not a package graph direction; choose dependencies or dependents"
+                        ),
+                    ));
+                }
+            };
+            let authority = invocation
+                .option("authority")
+                .map(|value| {
+                    backend_library::PackageGraphSourceAuthority::parse_selector(value)
+                        .map_err(|error| Fault::usage("authority", error.to_string()))
+                })
+                .transpose()?;
+            let mut request = backend_library::PackageGraphPageRequest::new(
+                package(invocation, 0)?,
+                direction,
+                authority,
+                graph_limit(invocation)?,
+            )
+            .map_err(|error| Fault::usage("package-graph", error.to_string()))?;
+            if let Some(cursor) = graph_cursor(invocation)? {
+                request = request.with_cursor(cursor);
+            }
+            SurfaceCommand::PackageGraphPage { request }
+        }
         CommandId::Owner => SurfaceCommand::Owner {
             owner: text(invocation, 0)?,
         },

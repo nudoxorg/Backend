@@ -152,6 +152,7 @@ fn map_store_error(error: &backend_store::StoreError) -> ReplicationError {
             ReplicationError::MessageTooLarge
         }
         backend_store::StoreError::Corrupt
+        | backend_store::StoreError::UnsafePath
         | backend_store::StoreError::WrongBase
         | backend_store::StoreError::BeforeMismatch(_)
         | backend_store::StoreError::TargetMismatch

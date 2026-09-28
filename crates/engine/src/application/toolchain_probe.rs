@@ -21,6 +21,34 @@ use crate::driver::ToolchainResolutionError;
 use backend_semantic::vocabulary::{NativeTool, NativeWorker, NativeWorkerPanic};
 use thiserror::Error;
 
+/// Stable identity for the direct compiler and version-probe environment contract.
+///
+/// Native lower-IR compiler children start with no inherited variables. The
+/// .NET tool receives two fixed CLI controls for both probing and compilation;
+/// an actual build also gets its CLI/cache directories from the request's
+/// scratch lease.
+/// Keep this byte string stable unless that contract changes; recipe identity
+/// includes it so a policy change cannot reuse an older compiler result.
+pub(crate) const NATIVE_COMPILER_ENVIRONMENT_POLICY_ID: &[u8] =
+    b"native-compiler-environment/empty-v1\0";
+
+/// The shared closed-environment policy for direct native compiler children.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct NativeCompilerEnvironment;
+
+impl NativeCompilerEnvironment {
+    /// Removes every inherited process variable before any admitted adapter
+    /// configuration is applied, then adds the tool family's exact controls.
+    pub(crate) fn apply(command: &mut Command, tool: NativeTool) {
+        command.env_clear();
+        if tool == NativeTool::CSharpCompiler {
+            command
+                .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+                .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1");
+        }
+    }
+}
+
 const READ_CHUNK_BYTES: usize = 4096;
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
@@ -281,6 +309,7 @@ pub(crate) fn probe_command(
         });
     }
     let mut command = Command::new(executable);
+    NativeCompilerEnvironment::apply(&mut command, tool);
     command
         .args(arguments)
         .stdin(Stdio::null())
@@ -565,4 +594,84 @@ fn terminate_process_group(child: &mut Child) -> io::Result<()> {
         }
     }
     child.kill()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{num::NonZeroUsize, process::Command, time::Duration};
+
+    use backend_semantic::vocabulary::NativeTool;
+
+    use super::{
+        NATIVE_COMPILER_ENVIRONMENT_POLICY_ID, NativeCompilerEnvironment, ToolchainProbeError,
+        ToolchainProbeLimits, probe_command,
+    };
+
+    #[test]
+    fn compiler_environment_contract_is_versioned_and_removes_ambient_settings() {
+        assert_eq!(
+            NATIVE_COMPILER_ENVIRONMENT_POLICY_ID,
+            b"native-compiler-environment/empty-v1\0"
+        );
+
+        // Seed representative Rust/C/Python controls on the Command, then apply
+        // the same policy used by version probes and lower-IR compiler children.
+        let mut command = Command::new("/bin/sh");
+        command
+            .env("RUSTFLAGS", "--cfg ambient")
+            .env("CPATH", "/ambient/include")
+            .env("PYTHONPATH", "/ambient/python");
+        NativeCompilerEnvironment::apply(&mut command, NativeTool::Rustc);
+        let status = command
+            .args([
+                "-c",
+                "test -z \"${RUSTFLAGS+x}\" && test -z \"${CPATH+x}\" && test -z \"${PYTHONPATH+x}\"",
+            ])
+            .status()
+            .expect("start environment-policy witness");
+        assert!(
+            status.success(),
+            "an ambient compiler variable reached the child"
+        );
+    }
+
+    #[test]
+    fn dotnet_probe_and_compile_share_only_the_fixed_cli_controls() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .env("DOTNET_CLI_TELEMETRY_OPTOUT", "0")
+            .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "0")
+            .env("CPATH", "/ambient/include");
+        NativeCompilerEnvironment::apply(&mut command, NativeTool::CSharpCompiler);
+        let status = command
+            .args([
+                "-c",
+                "test \"$DOTNET_CLI_TELEMETRY_OPTOUT\" = 1 && test \"$DOTNET_SKIP_FIRST_TIME_EXPERIENCE\" = 1 && test -z \"${CPATH+x}\"",
+            ])
+            .status()
+            .expect("start .NET environment-policy witness");
+        assert!(
+            status.success(),
+            ".NET did not receive its exact controlled environment"
+        );
+    }
+
+    #[test]
+    fn a_missing_admitted_executable_has_a_typed_spawn_failure() {
+        let executable = std::env::temp_dir()
+            .join(format!("nudox-missing-compiler-{}", std::process::id()))
+            .join("rustc");
+        let limits = ToolchainProbeLimits::new(
+            Duration::from_secs(1),
+            NonZeroUsize::new(128).expect("nonzero output bound"),
+        )
+        .expect("valid probe bounds");
+        let error = probe_command(NativeTool::Rustc, &executable, &["--version"], limits)
+            .expect_err("missing compiler path must not fall back to PATH");
+        assert!(matches!(
+            error,
+            ToolchainProbeError::Spawn { executable: observed, .. }
+                if observed == executable
+        ));
+    }
 }

@@ -149,20 +149,20 @@ fn cpp_header_entry_defaults_to_cxx_arguments_and_flag_first_shape() -> Result<(
     std::fs::create_dir_all(root.join("single_include/pkg")).map_err(|_| TestError::Profile)?;
     let header = root.join("single_include/pkg/pkg.hpp");
     std::fs::write(&header, b"").map_err(|_| TestError::Profile)?;
-    let project = backend_frontend_clang::ClangProject::open(&root, &header)
-        .map_err(|_| TestError::Profile)?;
+    let environment = fake_environment(dir.path())?;
+    let project =
+        backend_frontend_clang::ClangProject::open_with_environment(&root, &header, environment)
+            .map_err(|_| TestError::Profile)?;
     let arguments = project.arguments();
 
     assert!(
-        arguments.first().is_some_and(|argument| argument.starts_with('-')),
+        arguments
+            .first()
+            .is_some_and(|argument| argument.starts_with('-')),
         "argument vector must be flag-first (no argv[0]): {arguments:?}"
     );
     assert!(
-        arguments.ends_with(&[
-            "-std=c++17".to_owned(),
-            "-x".to_owned(),
-            "c++".to_owned(),
-        ]),
+        arguments.ends_with(&["-std=c++17".to_owned(), "-x".to_owned(), "c++".to_owned(),]),
         "a .hpp entry must default to explicit C++ arguments: {arguments:?}"
     );
     assert!(
@@ -184,16 +184,14 @@ fn h_entry_in_cpp_package_defaults_to_cxx_arguments() -> Result<(), TestError> {
         .map_err(|_| TestError::Profile)?;
     let header = root.join("include/pkg.h");
     std::fs::write(&header, b"").map_err(|_| TestError::Profile)?;
-    let project = backend_frontend_clang::ClangProject::open(&root, &header)
-        .map_err(|_| TestError::Profile)?;
+    let environment = fake_environment(dir.path())?;
+    let project =
+        backend_frontend_clang::ClangProject::open_with_environment(&root, &header, environment)
+            .map_err(|_| TestError::Profile)?;
     let arguments = project.arguments();
 
     assert!(
-        arguments.ends_with(&[
-            "-std=c++17".to_owned(),
-            "-x".to_owned(),
-            "c++".to_owned(),
-        ]),
+        arguments.ends_with(&["-std=c++17".to_owned(), "-x".to_owned(), "c++".to_owned(),]),
         "a .h entry in a C++ package must default to explicit C++ arguments: {arguments:?}"
     );
     Ok(())
@@ -208,12 +206,16 @@ fn ambiguous_h_entry_keeps_the_c_default() -> Result<(), TestError> {
     std::fs::create_dir_all(root.join("include")).map_err(|_| TestError::Profile)?;
     let header = root.join("include/pkg.h");
     std::fs::write(&header, b"").map_err(|_| TestError::Profile)?;
-    let project = backend_frontend_clang::ClangProject::open(&root, &header)
-        .map_err(|_| TestError::Profile)?;
+    let environment = fake_environment(dir.path())?;
+    let project =
+        backend_frontend_clang::ClangProject::open_with_environment(&root, &header, environment)
+            .map_err(|_| TestError::Profile)?;
     let arguments = project.arguments();
 
     assert!(
-        arguments.last().is_some_and(|argument| argument == "-std=c11"),
+        arguments
+            .last()
+            .is_some_and(|argument| argument == "-std=c11"),
         "a .h entry must keep the C default: {arguments:?}"
     );
     assert!(
@@ -221,4 +223,56 @@ fn ambiguous_h_entry_keeps_the_c_default() -> Result<(), TestError> {
         "a .h entry must not force the C++ dialect: {arguments:?}"
     );
     Ok(())
+}
+
+#[cfg(unix)]
+fn fake_environment(
+    root: &std::path::Path,
+) -> Result<backend_frontend_clang::ClangAuthorityEnvironment, TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let toolchain = root.join("fake-clang-toolchain");
+    let resource = toolchain.join("resource");
+    let sysroot = toolchain.join("sysroot");
+    let include = toolchain.join("include");
+    std::fs::create_dir_all(&resource).map_err(|_| TestError::Profile)?;
+    std::fs::create_dir_all(&sysroot).map_err(|_| TestError::Profile)?;
+    std::fs::create_dir_all(&include).map_err(|_| TestError::Profile)?;
+    let driver = toolchain.join("clang");
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  -print-resource-dir) printf '%s\\n' {};;\n  -print-sysroot) printf '%s\\n' {};;\n  -v) printf '#include <...> search starts here:\\n %s\\nEnd of search list.\\n' {} >&2;;\n  *) exit 2;;\nesac\n",
+        shell_quote(&resource),
+        shell_quote(&sysroot),
+        shell_quote(&include),
+    );
+    std::fs::write(&driver, script).map_err(|_| TestError::Profile)?;
+    let mut permissions = std::fs::metadata(&driver)
+        .map_err(|_| TestError::Profile)?
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&driver, permissions).map_err(|_| TestError::Profile)?;
+
+    #[cfg(target_os = "linux")]
+    let library_name = "libclang.so.18";
+    #[cfg(target_os = "macos")]
+    let library_name = "libclang.dylib";
+    let libclang = toolchain.join(library_name);
+    std::fs::write(&libclang, b"fixture library").map_err(|_| TestError::Profile)?;
+    backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)
+        .map_err(|_| TestError::Profile)
+}
+
+#[cfg(not(unix))]
+fn fake_environment(
+    _: &std::path::Path,
+) -> Result<backend_frontend_clang::ClangAuthorityEnvironment, TestError> {
+    let driver = std::env::var_os("NUDOX_CLANG").ok_or(TestError::Profile)?;
+    let libclang = std::env::var_os("LIBCLANG_PATH").ok_or(TestError::Profile)?;
+    backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)
+        .map_err(|_| TestError::Profile)
+}
+
+#[cfg(unix)]
+fn shell_quote(path: &std::path::Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }

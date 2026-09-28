@@ -96,6 +96,9 @@ pub enum ParseFailure {
 /// The closed failure vocabulary of one fact collection attempt.
 #[derive(Debug, Error)]
 pub enum CollectError {
+    /// The selected project environment could not establish the exact local libclang authority.
+    #[error(transparent)]
+    ConfiguredLibrary(#[from] crate::authority::ClangAuthorityError),
     /// A caller cancelled before native loading or at the next native cursor boundary.
     #[error("collection cancelled")]
     Cancelled,

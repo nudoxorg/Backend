@@ -117,13 +117,24 @@ template <> struct selector<2> { typedef short counter; };
 template <> struct selector<4> { typedef long counter; };
 ";
     let result = compile_project(source, "selector");
-    assert!(result.is_ok(), "specialization aliases must lower: {result:?}");
+    assert!(
+        result.is_ok(),
+        "specialization aliases must lower: {result:?}"
+    );
 }
 
 fn compile_fixture(source: &[u8]) -> Result<(), String> {
+    let driver = std::env::var_os("NUDOX_CLANG")
+        .ok_or_else(|| "selected Clang driver is missing".to_owned())?;
+    let libclang = std::env::var_os("LIBCLANG_PATH")
+        .ok_or_else(|| "selected libclang is missing".to_owned())?;
+    let environment = backend_frontend_clang::ClangAuthorityEnvironment::probe(driver, libclang)
+        .map_err(|cause| format!("selected Clang authority is invalid: {cause:?}"))?;
     compile_source(
         LanguageProfile::Cxx(CxxStandard::Cxx23),
-        SemanticAuthorityInput::None,
+        SemanticAuthorityInput::ClangBuffer {
+            environment: &environment,
+        },
         source,
     )
 }

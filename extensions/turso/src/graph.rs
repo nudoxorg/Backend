@@ -7,7 +7,8 @@ use backend_library::{
     PackageDependencyRecord, PackageDependencySourceFacts, PackageGraphSourceAuthority,
     PackageGraphSourceKey, PackageReference,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
 
 /// A graph query result fenced to the immutable root that supplied its facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,16 +84,16 @@ impl TursoProjection {
         root: backend_library::ViewStateRoot,
         facts: &CheckedPackageGraphFacts,
     ) -> Result<ProjectionUpdate, ProjectionError> {
-        self.synchronize_package_graph_witness(root, facts.facts(), facts.witness())
-            .await
+        self.synchronize_package_graph_witness(root, facts).await
     }
 
     async fn synchronize_package_graph_witness(
         &mut self,
         root: backend_library::ViewStateRoot,
-        facts: &[PackageDependencySourceFacts],
-        facts_witness: [u8; 32],
+        checked: &CheckedPackageGraphFacts,
     ) -> Result<ProjectionUpdate, ProjectionError> {
+        let facts = checked.facts();
+        let facts_witness = checked.witness();
         let root_bytes = root.as_bytes();
         // Read the selected metadata only after taking the writer transaction:
         // otherwise a concurrent publisher can change the selected projection
@@ -101,7 +102,8 @@ impl TursoProjection {
             .connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
-        if let Some(current) = package_graph_metadata_from(&tx).await?
+        let current = package_graph_metadata_from(&tx).await?;
+        if let Some(current) = current.as_ref()
             && current.facts_witness == facts_witness
         {
             let rows = u64::try_from(current.edge_count)
@@ -120,44 +122,146 @@ impl TursoProjection {
             tx.commit().await?;
             return Ok(ProjectionUpdate::Rebuilt { rows });
         }
-        let stored_edges = stored_edge_ids(&tx).await?;
-        let mut desired_edges = BTreeSet::new();
-        let mut due_edges = Vec::new();
-        let mut desired_states: BTreeMap<PackageGraphSourceKey, (i64, String)> = BTreeMap::new();
-        let desired_sources = facts
-            .iter()
-            .map(|(source, _)| source.clone())
-            .collect::<BTreeSet<_>>();
-        for (source, state) in facts {
-            match state {
-                DependencyFacts::Known(rows) => {
-                    for record in rows.iter() {
-                        if desired_edges.insert(record.facts_version)
-                            && !stored_edges.contains(&record.facts_version)
-                        {
-                            due_edges.push(record);
-                        }
+        let source_witnesses = checked.source_witnesses();
+
+        // Merge the canonical incoming source keys with the persisted source
+        // witness index. This visits source metadata once, while edge rows are
+        // fetched only for changed or removed keys below.
+        let force_reconcile = current.is_none();
+        let mut changed = Vec::new();
+        let mut removed = Vec::new();
+        let mut desired_index = 0_usize;
+        let mut stored = tx
+            .query(
+                "SELECT source, source_authority_kind, source_authority_id, facts_witness \
+                 FROM backend_projection_package_source_witnesses \
+                 ORDER BY source, source_authority_kind, source_authority_id",
+                (),
+            )
+            .await?;
+        while let Some(row) = stored.next().await? {
+            let source_text: String = row.get(0)?;
+            let authority_kind: i64 = row.get(1)?;
+            let authority_id = graph_digest(row.get(2)?, "graph_source_authority_id")?;
+            let witness = graph_digest(row.get(3)?, "graph_source_facts_witness")?;
+            loop {
+                let Some((incoming_source, _)) = facts.get(desired_index) else {
+                    removed.push(decode_source_key(
+                        source_text,
+                        authority_kind,
+                        authority_id,
+                    )?);
+                    break;
+                };
+                match compare_stored_source(
+                    &source_text,
+                    authority_kind,
+                    &authority_id,
+                    incoming_source,
+                ) {
+                    Ordering::Less => {
+                        removed.push(decode_source_key(
+                            source_text,
+                            authority_kind,
+                            authority_id,
+                        )?);
+                        break;
                     }
-                }
-                DependencyFacts::Unknown(reason) => {
-                    desired_states.insert(source.clone(), (1_i64, reason.as_str().to_owned()));
-                }
-                DependencyFacts::Unavailable(reason) => {
-                    desired_states.insert(source.clone(), (2_i64, reason.as_str().to_owned()));
+                    Ordering::Greater => {
+                        changed.push(desired_index);
+                        desired_index += 1;
+                    }
+                    Ordering::Equal => {
+                        if force_reconcile || witness != source_witnesses[desired_index] {
+                            changed.push(desired_index);
+                        }
+                        desired_index += 1;
+                        break;
+                    }
                 }
             }
         }
+        drop(stored);
+        if force_reconcile {
+            // A graph metadata row and its source witness rows are committed
+            // together. Reaching this branch means there was no published
+            // generation, so every supplied source must seed that generation.
+            changed = (0..facts.len()).collect();
+        } else {
+            changed.extend(desired_index..facts.len());
+        }
+
+        let mut affected_sources = changed
+            .iter()
+            .map(|index| facts[*index].0.clone())
+            .chain(removed.iter().cloned())
+            .collect::<Vec<_>>();
+        affected_sources.sort_unstable_by(compare_source_keys);
+        affected_sources.dedup();
+        let stored_edges = stored_edge_ids_for_sources(&tx, &affected_sources).await?;
+        let mut desired_edges = BTreeSet::new();
+        let mut due_edges = Vec::new();
+        for index in &changed {
+            if let DependencyFacts::Known(rows) = &facts[*index].1 {
+                for record in rows.iter() {
+                    if desired_edges.insert(record.facts_version)
+                        && !stored_edges.contains(&record.facts_version)
+                    {
+                        due_edges.push(record);
+                    }
+                }
+            }
+        }
+        let stale_edges = stored_edges
+            .iter()
+            .filter(|edge_id| !desired_edges.contains(*edge_id))
+            .copied()
+            .collect::<Vec<_>>();
+        delete_edge_ids(&tx, &stale_edges).await?;
         for batch in due_edges.chunks(EDGE_WRITE_BATCH) {
             insert_package_edges(&tx, batch).await?;
         }
-        let stale_edges = stored_edges
-            .into_iter()
-            .filter(|edge_id| !desired_edges.contains(edge_id))
+
+        let changed_sources = changed
+            .iter()
+            .map(|index| &facts[*index].0)
             .collect::<Vec<_>>();
-        delete_edge_ids(&tx, &stale_edges).await?;
-        reconcile_package_sources(&tx, &desired_sources).await?;
-        reconcile_package_states(&tx, &desired_states).await?;
-        let edge_count = desired_edges.len();
+        let mut cleared_state_sources = removed.clone();
+        cleared_state_sources.extend(changed.iter().filter_map(|index| {
+            matches!(&facts[*index].1, DependencyFacts::Known(_)).then(|| facts[*index].0.clone())
+        }));
+        cleared_state_sources.sort_unstable_by(compare_source_keys);
+        cleared_state_sources.dedup();
+        delete_package_source_rows(
+            &tx,
+            "backend_projection_package_states",
+            &cleared_state_sources,
+        )
+        .await?;
+        delete_package_source_rows(&tx, "backend_projection_package_sources", &removed).await?;
+        delete_package_source_rows(&tx, "backend_projection_package_source_witnesses", &removed)
+            .await?;
+        insert_package_sources(&tx, &changed_sources).await?;
+        upsert_package_source_witnesses(&tx, facts, source_witnesses, &changed).await?;
+        upsert_package_states(&tx, facts, &changed).await?;
+
+        let previous_edge_count = match current.as_ref() {
+            Some(metadata) => u64::try_from(metadata.edge_count).map_err(|_| {
+                ProjectionError::CorruptMetadata {
+                    field: "graph_edge_count",
+                }
+            })?,
+            None => u64::try_from(stored_edges.len())
+                .map_err(|_| ProjectionError::GraphRowCountOverflow)?,
+        };
+        let removed_count =
+            u64::try_from(stale_edges.len()).map_err(|_| ProjectionError::GraphRowCountOverflow)?;
+        let inserted_count =
+            u64::try_from(due_edges.len()).map_err(|_| ProjectionError::GraphRowCountOverflow)?;
+        let edge_count = previous_edge_count
+            .checked_sub(removed_count)
+            .and_then(|count| count.checked_add(inserted_count))
+            .ok_or(ProjectionError::GraphRowCountOverflow)?;
         let edge_count_i64 =
             i64::try_from(edge_count).map_err(|_| ProjectionError::GraphRowCountOverflow)?;
         tx.execute(
@@ -173,9 +277,7 @@ impl TursoProjection {
         )
         .await?;
         tx.commit().await?;
-        Ok(ProjectionUpdate::Rebuilt {
-            rows: u64::try_from(edge_count).unwrap_or(u64::MAX),
-        })
+        Ok(ProjectionUpdate::Rebuilt { rows: edge_count })
     }
 
     /// Returns the forward edges for `source`, fenced to one graph root.
@@ -441,21 +543,74 @@ async fn package_state_from(
     }))
 }
 
-const EDGE_WRITE_BATCH: usize = 128;
+const EDGE_WRITE_BATCH: usize = 64;
+const SOURCE_KEY_BATCH: usize = 128;
 
-async fn stored_edge_ids(
+fn compare_source_keys(left: &PackageGraphSourceKey, right: &PackageGraphSourceKey) -> Ordering {
+    left.coordinate
+        .as_str()
+        .cmp(right.coordinate.as_str())
+        .then_with(|| left.authority.kind_tag().cmp(&right.authority.kind_tag()))
+        .then_with(|| left.authority.id_bytes().cmp(&right.authority.id_bytes()))
+}
+
+fn compare_stored_source(
+    source: &str,
+    authority_kind: i64,
+    authority_id: &[u8; 32],
+    desired: &PackageGraphSourceKey,
+) -> Ordering {
+    source
+        .cmp(desired.coordinate.as_str())
+        .then_with(|| authority_kind.cmp(&desired.authority.kind_tag()))
+        .then_with(|| authority_id.cmp(&desired.authority.id_bytes()))
+}
+
+fn graph_digest(value: Vec<u8>, field: &'static str) -> Result<[u8; 32], ProjectionError> {
+    value
+        .try_into()
+        .map_err(|_| ProjectionError::CorruptMetadata { field })
+}
+
+fn decode_source_key(
+    source: String,
+    authority_kind: i64,
+    authority_id: [u8; 32],
+) -> Result<PackageGraphSourceKey, ProjectionError> {
+    let coordinate = PackageReference::parse(source).map_err(|_| {
+        ProjectionError::Database(turso::Error::Misuse(
+            "invalid package graph source witness key".to_owned(),
+        ))
+    })?;
+    Ok(PackageGraphSourceKey::new(
+        coordinate,
+        decode_source_authority(authority_kind, authority_id.to_vec())?,
+    ))
+}
+
+async fn stored_edge_ids_for_sources(
     connection: &turso::Connection,
+    sources: &[PackageGraphSourceKey],
 ) -> Result<BTreeSet<[u8; 32]>, ProjectionError> {
-    let mut rows = connection
-        .query("SELECT edge_id FROM backend_projection_package_edges", ())
-        .await?;
     let mut ids = BTreeSet::new();
-    while let Some(row) = rows.next().await? {
-        let id: Vec<u8> = row.get(0)?;
-        let id: [u8; 32] = id
-            .try_into()
-            .map_err(|_| ProjectionError::CorruptMetadata { field: "edge_id" })?;
-        ids.insert(id);
+    for batch in sources.chunks(SOURCE_KEY_BATCH) {
+        if batch.is_empty() {
+            continue;
+        }
+        let mut sql = String::from("SELECT edge_id FROM backend_projection_package_edges WHERE ");
+        for index in 0..batch.len() {
+            if index != 0 {
+                sql.push_str(" OR ");
+            }
+            sql.push_str("(source=? AND source_authority_kind=? AND source_authority_id=?)");
+        }
+        let values = batch.iter().flat_map(source_key_values).collect::<Vec<_>>();
+        let mut rows = connection
+            .query(&sql, turso::params_from_iter(values))
+            .await?;
+        while let Some(row) = rows.next().await? {
+            ids.insert(graph_digest(row.get(0)?, "edge_id")?);
+        }
     }
     Ok(ids)
 }
@@ -540,133 +695,157 @@ async fn delete_edge_ids(
     Ok(())
 }
 
-async fn reconcile_package_states(
-    connection: &turso::Connection,
-    desired: &BTreeMap<PackageGraphSourceKey, (i64, String)>,
-) -> Result<(), ProjectionError> {
-    let mut rows = connection
-        .query(
-            "SELECT source, source_authority_kind, source_authority_id, state, reason \
-             FROM backend_projection_package_states \
-             ORDER BY source, source_authority_kind, source_authority_id",
-            (),
-        )
-        .await?;
-    let mut current = BTreeMap::new();
-    while let Some(row) = rows.next().await? {
-        let source: String = row.get(0)?;
-        let coordinate = PackageReference::parse(source).map_err(|_| {
-            ProjectionError::Database(turso::Error::Misuse(
-                "invalid package graph state source".to_owned(),
-            ))
-        })?;
-        let authority = decode_source_authority(row.get(1)?, row.get(2)?)?;
-        let state: i64 = row.get(3)?;
-        let reason: String = row.get(4)?;
-        current.insert(
-            PackageGraphSourceKey::new(coordinate, authority),
-            (state, reason),
-        );
-    }
-    drop(rows);
+fn source_key_values(source: &PackageGraphSourceKey) -> [turso::Value; 3] {
+    [
+        turso::Value::Text(source.coordinate.as_str().to_owned()),
+        turso::Value::Integer(source.authority.kind_tag()),
+        turso::Value::Blob(source.authority.id_bytes().to_vec()),
+    ]
+}
 
-    for source in current
-        .keys()
-        .filter(|source| !desired.contains_key(*source))
-    {
-        connection
-            .execute(
-                "DELETE FROM backend_projection_package_states WHERE source=?1 \
-                 AND source_authority_kind=?2 AND source_authority_id=?3",
-                turso::params![
-                    source.coordinate.as_str(),
-                    source.authority.kind_tag(),
-                    source.authority.id_bytes().as_slice()
-                ],
-            )
-            .await?;
-    }
-    for (source, (state, reason)) in desired {
-        if current
-            .get(source)
-            .is_some_and(|(current_state, current_reason)| {
-                *current_state == *state && current_reason == reason
-            })
-        {
+async fn delete_package_source_rows(
+    connection: &turso::Connection,
+    table: &str,
+    sources: &[PackageGraphSourceKey],
+) -> Result<(), ProjectionError> {
+    for batch in sources.chunks(SOURCE_KEY_BATCH) {
+        if batch.is_empty() {
             continue;
         }
+        let mut sql = format!("DELETE FROM {table} WHERE ");
+        for index in 0..batch.len() {
+            if index != 0 {
+                sql.push_str(" OR ");
+            }
+            sql.push_str("(source=? AND source_authority_kind=? AND source_authority_id=?)");
+        }
+        let values = batch.iter().flat_map(source_key_values).collect::<Vec<_>>();
         connection
-            .execute(
-                "INSERT INTO backend_projection_package_states (source, source_authority_kind, \
-                 source_authority_id, state, reason) VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(source, source_authority_kind, source_authority_id) DO UPDATE SET \
-                 state=excluded.state, reason=excluded.reason",
-                turso::params![
-                    source.coordinate.as_str(),
-                    source.authority.kind_tag(),
-                    source.authority.id_bytes().as_slice(),
-                    *state,
-                    reason.as_str()
-                ],
-            )
+            .execute(&sql, turso::params_from_iter(values))
             .await?;
     }
     Ok(())
 }
 
-async fn reconcile_package_sources(
+async fn insert_package_sources(
     connection: &turso::Connection,
-    desired: &BTreeSet<PackageGraphSourceKey>,
+    sources: &[&PackageGraphSourceKey],
 ) -> Result<(), ProjectionError> {
-    let mut rows = connection
-        .query(
-            "SELECT source, source_authority_kind, source_authority_id \
-             FROM backend_projection_package_sources \
-             ORDER BY source, source_authority_kind, source_authority_id",
-            (),
-        )
-        .await?;
-    let mut current = BTreeSet::new();
-    while let Some(row) = rows.next().await? {
-        let source: String = row.get(0)?;
-        let coordinate = PackageReference::parse(source).map_err(|_| {
-            ProjectionError::Database(turso::Error::Misuse(
-                "invalid package graph source".to_owned(),
-            ))
-        })?;
-        current.insert(PackageGraphSourceKey::new(
-            coordinate,
-            decode_source_authority(row.get(1)?, row.get(2)?)?,
-        ));
-    }
-    drop(rows);
-    for source in current.difference(desired) {
+    for batch in sources.chunks(SOURCE_KEY_BATCH) {
+        if batch.is_empty() {
+            continue;
+        }
+        let mut sql = String::from(
+            "INSERT OR IGNORE INTO backend_projection_package_sources \
+             (source, source_authority_kind, source_authority_id) VALUES ",
+        );
+        append_value_rows(&mut sql, batch.len(), 3);
+        let values = batch
+            .iter()
+            .flat_map(|source| source_key_values(source))
+            .collect::<Vec<_>>();
         connection
-            .execute(
-                "DELETE FROM backend_projection_package_sources WHERE source=?1 \
-                 AND source_authority_kind=?2 AND source_authority_id=?3",
-                turso::params![
-                    source.coordinate.as_str(),
-                    source.authority.kind_tag(),
-                    source.authority.id_bytes().as_slice()
-                ],
-            )
-            .await?;
-    }
-    for source in desired.difference(&current) {
-        connection
-            .execute(
-                "INSERT INTO backend_projection_package_sources \
-                 (source, source_authority_kind, source_authority_id) VALUES (?1, ?2, ?3)",
-                turso::params![
-                    source.coordinate.as_str(),
-                    source.authority.kind_tag(),
-                    source.authority.id_bytes().as_slice()
-                ],
-            )
+            .execute(&sql, turso::params_from_iter(values))
             .await?;
     }
     Ok(())
+}
+
+async fn upsert_package_source_witnesses(
+    connection: &turso::Connection,
+    facts: &[PackageDependencySourceFacts],
+    source_witnesses: &[[u8; 32]],
+    changed: &[usize],
+) -> Result<(), ProjectionError> {
+    for batch in changed.chunks(SOURCE_KEY_BATCH) {
+        if batch.is_empty() {
+            continue;
+        }
+        let mut sql = String::from(
+            "INSERT INTO backend_projection_package_source_witnesses \
+             (source, source_authority_kind, source_authority_id, facts_witness) VALUES ",
+        );
+        append_value_rows(&mut sql, batch.len(), 4);
+        sql.push_str(
+            " ON CONFLICT(source, source_authority_kind, source_authority_id) \
+             DO UPDATE SET facts_witness=excluded.facts_witness \
+             WHERE backend_projection_package_source_witnesses.facts_witness != excluded.facts_witness",
+        );
+        let values = batch
+            .iter()
+            .flat_map(|index| {
+                let source = &facts[*index].0;
+                let mut values = source_key_values(source).to_vec();
+                values.push(turso::Value::Blob(source_witnesses[*index].to_vec()));
+                values
+            })
+            .collect::<Vec<_>>();
+        connection
+            .execute(&sql, turso::params_from_iter(values))
+            .await?;
+    }
+    Ok(())
+}
+
+async fn upsert_package_states(
+    connection: &turso::Connection,
+    facts: &[PackageDependencySourceFacts],
+    changed: &[usize],
+) -> Result<(), ProjectionError> {
+    let states = changed
+        .iter()
+        .filter_map(|index| {
+            let (state, reason) = match &facts[*index].1 {
+                DependencyFacts::Known(_) => return None,
+                DependencyFacts::Unknown(reason) => (1_i64, reason.as_str()),
+                DependencyFacts::Unavailable(reason) => (2_i64, reason.as_str()),
+            };
+            Some((&facts[*index].0, state, reason))
+        })
+        .collect::<Vec<_>>();
+    for batch in states.chunks(SOURCE_KEY_BATCH) {
+        if batch.is_empty() {
+            continue;
+        }
+        let mut sql = String::from(
+            "INSERT INTO backend_projection_package_states \
+             (source, source_authority_kind, source_authority_id, state, reason) VALUES ",
+        );
+        append_value_rows(&mut sql, batch.len(), 5);
+        sql.push_str(
+            " ON CONFLICT(source, source_authority_kind, source_authority_id) \
+             DO UPDATE SET state=excluded.state, reason=excluded.reason",
+        );
+        let values = batch
+            .iter()
+            .flat_map(|(source, state, reason)| {
+                let mut values = source_key_values(source).to_vec();
+                values.push(turso::Value::Integer(*state));
+                values.push(turso::Value::Text((*reason).to_owned()));
+                values
+            })
+            .collect::<Vec<_>>();
+        connection
+            .execute(&sql, turso::params_from_iter(values))
+            .await?;
+    }
+    Ok(())
+}
+
+fn append_value_rows(sql: &mut String, rows: usize, columns: usize) {
+    for row in 0..rows {
+        if row != 0 {
+            sql.push(',');
+        }
+        sql.push('(');
+        for column in 0..columns {
+            if column != 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+        }
+        sql.push(')');
+    }
 }
 
 fn dependency_scope_code(scope: DependencyScope) -> i64 {

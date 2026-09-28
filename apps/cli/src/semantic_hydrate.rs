@@ -77,9 +77,12 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
         .map_err(|error| client_fault(&error, &args.package))?;
 
     let store = FileStore::open(&args.store, FILESTORE_PACK_BYTES)
-        .map_err(|error| endpoint_fault(&args.store.to_string_lossy(), error.to_string()))?;
+        .map_err(|error| endpoint_fault(&args.store.to_string_lossy(), format!("{error:?}")))?;
     let mut store = FileSemanticRangeStore::open(store, transport_limits())
         .map_err(|error| endpoint_fault(&args.store.to_string_lossy(), error))?;
+    let full_image = client
+        .fetch_selected_image(image, &store, args.max_bytes, args.max_ranges)
+        .map_err(|error| client_fault(&error, &args.package))?;
     let have_ids = client
         .verified_local_segments(&manifest, image, args.plane, &mut store)
         .map_err(|error| client_fault(&error, &args.package))?;
@@ -90,7 +93,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
             let checkpoint = SemanticRangeClientCheckpoint::decode(&bytes).map_err(|error| {
                 endpoint_fault(&args.checkpoint.to_string_lossy(), error.to_string())
             })?;
-            client
+            let (cursor, coverage, poll) = client
                 .resume_semantic_range(
                     &checkpoint,
                     &manifest,
@@ -98,7 +101,8 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
                     transport_limits(),
                     &mut store,
                 )
-                .map_err(|error| client_fault(&error, &args.package))?
+                .map_err(|error| client_fault(&error, &args.package))?;
+            (cursor, Some(coverage), poll)
         }
         None => {
             let mut cursor = client
@@ -111,8 +115,8 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
         }
     };
 
-    let mut transferred_bytes = 0_u64;
-    let mut range_count = 0_usize;
+    let mut transferred_bytes = full_image.transferred_bytes();
+    let mut range_count = full_image.page_requests();
     let mut completed_segments = have_ids.len();
     loop {
         match poll {
@@ -129,7 +133,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
                 if range_count > args.max_ranges || transferred_bytes > args.max_bytes {
                     return Err(usage(
                         "--max-bytes/--max-ranges",
-                        "the selected plane exceeded this command's bounded transfer budget; rerun with larger explicit limits",
+                        "the selected image or plane exceeded this command's bounded transfer budget; rerun with larger explicit limits",
                     ));
                 }
                 match client
@@ -197,6 +201,34 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
     let total_segments = manifest
         .plane(args.plane)
         .map_or(0, |plane| plane.segments().len());
+    let local_generation = client
+        .commit_local_generation(image, &manifest, args.plane, &mut store)
+        .map_err(|error| client_fault(&error, &args.package))?;
+    let local_ir_vcs_diff = match local_generation.previous_image() {
+        None => serde_json::json!({ "state": "noBase" }),
+        Some(base_image) => match store
+            .semantic_diff_summary(client.target(), base_image, image)
+            .map_err(|error| endpoint_fault(&args.store.to_string_lossy(), error))?
+        {
+            None => serde_json::json!({
+                "state": "baseImageMissing",
+                "baseGeneration": hex(base_image.semantic_generation().as_bytes()),
+                "targetGeneration": hex(image.semantic_generation().as_bytes()),
+            }),
+            Some(diff) => serde_json::json!({
+                "state": "computed",
+                "beforeGeneration": hex(diff.before.as_bytes()),
+                "afterGeneration": hex(diff.after.as_bytes()),
+                "introducedEntities": diff.introduced_entities,
+                "deletedEntities": diff.deleted_entities,
+                "changedEntities": diff.changed_entities,
+                "addedLinks": diff.added_links,
+                "removedLinks": diff.removed_links,
+                "changedLinks": diff.changed_links,
+                "provenanceComparison": format!("{:?}", diff.provenance.comparison),
+            }),
+        },
+    };
     let result = serde_json::json!({
         "target": &args.package,
         "coordinate": &args.coordinate,
@@ -204,7 +236,15 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
         "selectedRoot": hex(snapshot.selected_root()),
         "catalogRoot": hex(snapshot.selected_stamp().catalog_root().as_bytes()),
         "imageOrdinal": image.artifact_ordinal(),
+        "fullImageIdentity": hex(full_image.image().identity().as_ref()),
+        "fullImageBytes": full_image.image().view().as_ref().len(),
+        "fullImageTransferBytes": full_image.transferred_bytes(),
+        "fullImagePages": full_image.page_requests(),
         "manifestRoot": hex(image.manifest_root().as_bytes()),
+        "semanticGeneration": hex(local_generation.semantic_generation().as_bytes()),
+        "localGeneration": hex(local_generation.identity().as_bytes()),
+        "previousLocalGeneration": local_generation.previous_identity().map(|id| hex(id.as_bytes())),
+        "localIrVcsDiff": local_ir_vcs_diff,
         "plane": plane_label(args.plane),
         "totalSegments": total_segments,
         "verifiedSegments": completed_segments,
@@ -220,10 +260,22 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
             })
             .map_err(|error| endpoint_fault("semantic-hydrate result", error.to_string())),
         Format::Human | Format::Markdown => Ok(format!(
-            "Hydrated selected semantic plane {} for {}.\nGeneration root: {}\nSegments: {}/{} verified\nTransferred: {} bytes in {} ranges\nLocal store: {}\n",
+            "Hydrated selected semantic plane {} for {}.\nSelected root: {}\nSemantic generation: {}\nLocal generation identity: {}\nFull NXFI image: {} bytes, {} fetched bytes in {} pages\nLocal IR-VCS comparison: {}\nSegments: {}/{} verified\nTransferred: {} bytes in {} ranges\nLocal store: {}\n",
             plane_label(args.plane),
             args.package,
             hex(snapshot.selected_root()),
+            hex(local_generation.semantic_generation().as_bytes()),
+            hex(local_generation.identity().as_bytes()),
+            full_image.image().view().as_ref().len(),
+            full_image.transferred_bytes(),
+            full_image.page_requests(),
+            match &local_ir_vcs_diff["state"] {
+                serde_json::Value::String(state) if state == "computed" =>
+                    "computed against prior local image",
+                serde_json::Value::String(state) if state == "baseImageMissing" =>
+                    "prior local image missing",
+                _ => "no prior local image",
+            },
             completed_segments,
             total_segments,
             transferred_bytes,
@@ -236,7 +288,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
 pub(crate) const fn help_text() -> &'static str {
     "Usage: backend [OPTIONS] semantic-hydrate --package REF --coordinate PKGURL --profile PROFILE --image-ordinal N --plane core|types|relations|occurrences|documentation|source-provenance|language-extensions|embeddings --store PATH [--checkpoint PATH] [--max-bytes N] [--max-ranges N]\n\n\
      Embeddings additionally require --model HEX --model-version HEX --tokenizer HEX --dimension N --normalization none|l2|mean-centered-l2|custom:HEX --toolchain HEX --recipe HEX.\n\
-     The command binds to the current selected generation and stores only admitted segment bytes in the caller's FileStore. A checkpoint is exact-generation bound."
+     The command binds to the current selected generation, reuses verified content-addressed segments already in the local CAS, and commits an atomic local generation head after the selected plane is complete. A checkpoint is exact-generation bound."
 }
 
 fn parse(words: &[String]) -> Result<Arguments, Fault> {

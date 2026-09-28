@@ -49,6 +49,9 @@ const MODULE_MISSING_EXIT: i32 = 3;
 const PACKAGE_FILE_LIMIT: usize = 8192;
 /// Maximum total bytes copied for one package-context run.
 const PACKAGE_BYTE_LIMIT: usize = 64 * 1024 * 1024;
+/// Versioned identity of package-authority child environment isolation.
+pub const TYPESCRIPT_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str =
+    "typescript-package-child-environment.v1";
 
 /// The payload schema this build reads; a differing schema is typed staleness.
 pub(crate) const REQUIRED_SCHEMA_VERSION: u32 = 1;
@@ -973,6 +976,9 @@ impl ExplicitTypeScriptChecker {
     pub fn local_configuration_fingerprint(&self) -> [u8; 32] {
         let mut digest = Sha256::new();
         digest.update(b"compiler.typescript.package-authority.v1\0");
+        digest.update(TYPESCRIPT_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1.as_bytes());
+        digest.update([0]);
+        digest.update(b"env=isolated;node-path=explicit-module-root;systemroot=windows-only\0");
         digest.update(self.checker.output_limit.to_be_bytes());
         digest.update(self.checker.timeout.as_secs().to_be_bytes());
         digest.update(self.checker.timeout.subsec_nanos().to_be_bytes());
@@ -1341,7 +1347,10 @@ impl Checker {
     ) -> Result<Report, CheckerError> {
         match invocation {
             ExplicitCheckerInvocation::ReportProgram(program) => {
-                self.run_child(work, program.as_ref(), file)
+                let mut command = Command::new(program.as_ref());
+                command.arg(file);
+                isolate_authority_environment(&mut command);
+                self.run_child_prepared(work, command, file)
             }
             ExplicitCheckerInvocation::Node {
                 program,
@@ -1351,6 +1360,7 @@ impl Checker {
                     .join("src/legacy/checker")
                     .join("main.cjs");
                 let mut command = Command::new(program.as_ref());
+                isolate_authority_environment(&mut command);
                 command.env("NODE_PATH", module_root.as_ref());
                 command.arg(driver).arg(file);
                 self.run_child_prepared(work, command, file)
@@ -1715,6 +1725,18 @@ fn terminate_child(child: &mut std::process::Child) {
     drop(child.wait());
 }
 
+/// Starts a package-authority child with only the environment selected by
+/// its typed invocation. Node mode adds its admitted module root after this
+/// policy is applied; the staged package remains available through paths.
+fn isolate_authority_environment(command: &mut Command) {
+    command.env_clear();
+    #[cfg(windows)]
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        // Windows process creation and DLL loading require the OS root.
+        command.env("SystemRoot", system_root);
+    }
+}
+
 fn transcript_prefix(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..bytes.len().min(TRANSCRIPT_PREFIX_LIMIT)]).into_owned()
 }
@@ -1726,7 +1748,10 @@ fn tail(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod capability_tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        process::Command,
+    };
 
     use super::{Checker, TypeScriptCheckerProgramError, TypeScriptInvocationModeV1};
 
@@ -1787,5 +1812,43 @@ mod capability_tests {
             TypeScriptCheckerProgramError::RelativeModuleRoot { directory }
                 if directory == PathBuf::from("node_modules")
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_checker_environment_drops_parent_secrets_and_options() {
+        const CHILD_PROBE: &str = "NUDOX_TS_CHILD_ENV_PROBE";
+        if std::env::var(CHILD_PROBE).as_deref() == Ok("run") {
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                "test -z \"${AWS_ACCESS_KEY_ID+x}\" && test -z \"${JAVA_TOOL_OPTIONS+x}\" && test -z \"${HOME+x}\" && test -z \"${PATH+x}\" && printf clean",
+            ]);
+            super::isolate_authority_environment(&mut command);
+
+            let output = command.output().expect("start isolated probe child");
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"clean");
+            return;
+        }
+
+        let test_name = format!(
+            "{}::explicit_checker_environment_drops_parent_secrets_and_options",
+            module_path!()
+        );
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .args(["--exact", &test_name, "--nocapture"])
+            .env(CHILD_PROBE, "run")
+            .env("AWS_ACCESS_KEY_ID", "parent-secret")
+            .env("JAVA_TOOL_OPTIONS", "-Duser.language=tr")
+            .env("HOME", "/owner/home")
+            .env("PATH", "/owner/path")
+            .output()
+            .expect("start test process with conflicting parent environment");
+        assert!(
+            output.status.success(),
+            "nested environment regression failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

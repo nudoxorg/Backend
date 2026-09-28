@@ -19,6 +19,7 @@ use backend_compile::{
     EmbeddingExecutable, EmbeddingExecutionIdentity, EmbeddingInvocation, EmbeddingNormalization,
     EmbeddingPurpose,
 };
+use backend_frontend_go::legacy::oracle::GoPackageAuthorityWitness;
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
@@ -47,6 +48,7 @@ use std::{
 use thiserror::Error;
 
 use crate::application::executor::StagedOutputLease;
+use crate::application::package_authority::enter_package_authority_with_go_authority_witness;
 use crate::application::{
     LocalCompilerConfig, LocalCompilerControl, LocalCompilerExecutionIdentity,
     LocalCompilerOpenError, LocalCompilerPath, LocalCompilerPlaneExecutionIdentity,
@@ -168,6 +170,7 @@ pub struct PackageSourceSet<'source> {
     sources: &'source [PackageSource<'source>],
     input_claim: Option<SemanticInputWitness>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
+    go_authority_witness: Option<&'source GoPackageAuthorityWitness>,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -236,6 +239,7 @@ impl<'source> PackageSourceSet<'source> {
             sources,
             input_claim: None,
             embedding_provisioning_failure: None,
+            go_authority_witness: None,
         })
     }
 
@@ -247,6 +251,14 @@ impl<'source> PackageSourceSet<'source> {
     #[must_use]
     pub fn with_input_claim(mut self, input: SemanticInputWitness) -> Self {
         self.input_claim = Some(input);
+        self
+    }
+
+    pub(crate) fn with_go_authority_witness(
+        mut self,
+        witness: &'source GoPackageAuthorityWitness,
+    ) -> Self {
+        self.go_authority_witness = Some(witness);
         self
     }
 
@@ -922,6 +934,9 @@ pub enum PackageSemanticError {
     /// Canonical package lineage could not be constructed.
     #[error("package lineage is malformed")]
     Lineage,
+    /// A Go package's authority filesystem inputs could not be admitted.
+    #[error(transparent)]
+    GoAuthorityWitness(#[from] backend_frontend_go::legacy::oracle::GoPackageAuthorityWitnessError),
     /// One package-relative declaration scope was rejected.
     #[error("package declaration scope is malformed for {path}")]
     Scope {
@@ -1092,12 +1107,20 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 timeout: *timeout,
             }
         })?;
+        let authority = match (request.profile, self.package_authority.clang) {
+            (
+                backend_semantic::vocabulary::LanguageProfile::C(_)
+                | backend_semantic::vocabulary::LanguageProfile::Cxx(_),
+                Some(environment),
+            ) => crate::driver::SemanticAuthorityInput::ClangBuffer { environment },
+            _ => crate::driver::SemanticAuthorityInput::None,
+        };
         self.stage_prepared(
             request,
             source,
             DeclarationScope::standalone(request.profile),
             toolchain,
-            crate::driver::SemanticAuthorityInput::None,
+            authority,
             control,
             scratch,
             progress,
@@ -1360,16 +1383,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     }
                 })?;
             let source_path = package.package_root.join(source.relative_path);
-            let authority = enter_package_authority(PackageAuthorityRequest {
-                package_root: package.package_root,
-                source_path: &source_path,
-                source: source.source.as_bytes(),
-                unit_key: package.package_target.unit_key(),
-                profile: target.profile,
-                toolchain,
-                control,
-                configuration: self.package_authority,
-            })
+            let authority = enter_package_authority_with_go_authority_witness(
+                PackageAuthorityRequest {
+                    package_root: package.package_root,
+                    source_path: &source_path,
+                    source: source.source.as_bytes(),
+                    unit_key: package.package_target.unit_key(),
+                    profile: target.profile,
+                    toolchain,
+                    control,
+                    configuration: self.package_authority,
+                },
+                package.go_authority_witness,
+            )
             .map_err(|cause| {
                 package_authority_terminal(
                     package.package_target.target(),
@@ -2514,6 +2540,8 @@ const fn package_authority_projection(
         | PackageAuthorityError::CompilationUnitMismatch { .. }
         | PackageAuthorityError::CompilationUnitSourceMismatch { .. }
         | PackageAuthorityError::RustToolchainExecutableMismatch { .. }
+        | PackageAuthorityError::ClangToolchainExecutableMismatch { .. }
+        | PackageAuthorityError::GoAuthorityInputsChanged { .. }
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
@@ -2523,6 +2551,7 @@ const fn package_authority_projection(
         PackageAuthorityError::CSharp(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::TypeScript(_) => (Phase::TypeCheck, Class::Authority),
         PackageAuthorityError::JavaHarness(_)
+        | PackageAuthorityError::GoAuthorityWitness(_)
         | PackageAuthorityError::ImageTooLarge { .. }
         | PackageAuthorityError::ToolchainUnavailable { .. }
         | PackageAuthorityError::Cancelled { .. }

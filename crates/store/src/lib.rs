@@ -113,6 +113,8 @@ pub enum StoreError {
     OversizedKey,
     /// Stored canonical bytes or node metadata are inconsistent.
     Corrupt,
+    /// An immutable artifact path failed its regular-file or single-link check.
+    UnsafePath,
     /// Incremental work exceeded its publication budget.
     NeedsScopedRebuild,
     /// A delta needs an authority-produced complete coverage witness.

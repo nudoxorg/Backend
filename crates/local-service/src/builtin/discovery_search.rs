@@ -45,6 +45,8 @@ const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
 pub(crate) struct DiscoverySearchKey {
     pub(crate) source: DiscoverySearchSource,
     pub(crate) coordinate: ProductPackageCoordinate,
+    /// Canonical package lineage derived from the coordinate. Grouping uses
+    /// the separately normalized `LineageKey` representation.
     pub(crate) lineage: String,
     pub(crate) manifest_path: Option<String>,
 }
@@ -1554,7 +1556,7 @@ impl DiscoverySearchIndex {
             let key = DiscoverySearchKey {
                 source: discovery_source.clone(),
                 coordinate: fact.coordinate.clone(),
-                lineage: normalize(&lineage),
+                lineage: lineage.clone(),
                 manifest_path: None,
             };
             let identity = discovery_sort_key(&discovery_source, fact.coordinate.as_str());
@@ -1691,7 +1693,7 @@ impl DiscoverySearchIndex {
                 let key = DiscoverySearchKey {
                     source: source.clone(),
                     coordinate: change.coordinate.clone(),
-                    lineage: normalize(&change.lineage),
+                    lineage: change.lineage.clone(),
                     manifest_path: None,
                 };
                 let identity = discovery_sort_key(&source, &coordinate_text);
@@ -2543,7 +2545,7 @@ fn add_discovery_document(
     let key = DiscoverySearchKey {
         source: source.clone(),
         coordinate: coordinate.clone(),
-        lineage: normalize(lineage),
+        lineage: lineage.to_owned(),
         manifest_path: None,
     };
     let sort_key = discovery_sort_key(&source, &coordinate_text);
@@ -2567,13 +2569,13 @@ fn replace_discovery_document(
 ) -> Result<(), String> {
     let source = DiscoverySearchSource::Registry(document.source);
     let coordinate_text = document.coordinate.as_str().to_owned();
+    let lineage = document.lineage;
     let key = DiscoverySearchKey {
         source: source.clone(),
         coordinate: document.coordinate.clone(),
-        lineage: normalize(&document.lineage),
+        lineage: lineage.clone(),
         manifest_path: None,
     };
-    let lineage = document.lineage;
     let identity = discovery_sort_key(&source, &coordinate_text);
     let lineage_key = discovery_lineage_key(&source, source.ecosystem(), &lineage);
     let group_key = lineage_sort_key(&lineage_key);
@@ -2624,7 +2626,7 @@ fn rebuild_lineage_search_index(
         let key = DiscoverySearchKey {
             source: source.clone(),
             coordinate: fact.coordinate.clone(),
-            lineage: normalize(&lineage),
+            lineage: lineage.clone(),
             manifest_path: None,
         };
         let identity = discovery_sort_key(&source, fact.coordinate.as_str());
@@ -2652,7 +2654,7 @@ fn forge_lineage_release(
     let key = DiscoverySearchKey {
         source: source.clone(),
         coordinate: document.coordinate.clone(),
-        lineage: normalize(&document.lineage),
+        lineage: document.lineage.clone(),
         manifest_path: document.manifest_path.clone(),
     };
     let lineage_key = discovery_lineage_key(&source, source.ecosystem(), &document.lineage);
@@ -2809,7 +2811,7 @@ fn add_or_replace_forge_document(
     let key = DiscoverySearchKey {
         source: source.clone(),
         coordinate: document.coordinate.clone(),
-        lineage: normalize(&document.lineage),
+        lineage: document.lineage.clone(),
         manifest_path: document.manifest_path.clone(),
     };
     let mut search_text = discovery_search_text(&document.metadata);
@@ -5963,7 +5965,9 @@ mod tests {
             fixed_in: DiscoveryFacet::Unknown,
         }]);
 
-        let nuget_key = key(nuget, "pkg:nuget/Unknown.Metadata@1.0.0");
+        // Keep the package name unrelated to the query so this checks unknown
+        // facets rather than a one-edit fuzzy match on the coordinate name.
+        let nuget_key = key(nuget, "pkg:nuget/unlisted-package@1.0.0");
         let mut nuget_metadata = DiscoveryMetadata::default();
         nuget_metadata.aliases = DiscoveryFacet::Unknown;
         nuget_metadata.keywords = DiscoveryFacet::Absent;
@@ -6017,7 +6021,7 @@ mod tests {
         }
         assert_eq!(
             hit_keys(index.page("net-client", 8).expect("alias query").hits),
-            [npm_key, cargo_key]
+            [npm_key.clone(), cargo_key]
         );
         assert_eq!(
             hit_keys(index.page("wire-cli", 8).expect("alias prefix typo").hits),
@@ -6273,8 +6277,7 @@ mod tests {
 
         let mut index = DiscoverySearchIndex::open(&store).expect("cold build");
         let index_identity = index.index_identity();
-        let mut first_key = key(source, first_coordinate);
-        first_key.lineage = normalize(&first_key.lineage);
+        let first_key = key(source, first_coordinate);
         assert_eq!(
             hit_keys(index.page("widget", 8).expect("initial page").hits),
             [first_key.clone()]

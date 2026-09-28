@@ -151,7 +151,7 @@ fn edit_is_package_local(edit: &BuiltinIntent) -> bool {
         .all(|change| change.key.package_key() == edit.package)
 }
 
-/// Loads one project's frontier by key lookup.
+/// Loads one project's frontier and batches its sorted source-file keys.
 pub(super) fn read_project_sources(
     snapshot: &WorkspaceSnapshot,
     package: PackageKey,
@@ -173,13 +173,13 @@ pub(super) fn read_project_sources(
         BuiltinModelError("package key does not hold a project frontier".to_owned())
     })?;
     let mut files = Vec::with_capacity(fields.files.len());
-    for file_key in fields.files.iter().copied() {
-        let file = relation
-            .lookup(&file_key)
-            .map_err(|error| BuiltinModelError(format!("read package source file: {error}")))?
-            .ok_or_else(|| {
-                BuiltinModelError("project frontier refers to a missing source file".to_owned())
-            })?;
+    let file_records = relation
+        .lookup_many_sorted(fields.files)
+        .map_err(|error| BuiltinModelError(format!("read package source files: {error}")))?;
+    for (file_key, file) in fields.files.iter().copied().zip(file_records) {
+        let file = file.ok_or_else(|| {
+            BuiltinModelError("project frontier refers to a missing source file".to_owned())
+        })?;
         if file.file_fields().is_none() {
             return Err(BuiltinModelError(
                 "project frontier refers to a non-file record".to_owned(),

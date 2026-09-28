@@ -6,7 +6,9 @@ use std::{
 };
 
 use arrayvec::ArrayVec;
+use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{CSharpOracle, DEFAULT_SOURCE_LIMIT};
+use backend_frontend_go::legacy::oracle::GoOracleChildEnvironment;
 use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
@@ -62,8 +64,18 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         home: Option<&Path>,
         executables: &NativeExecutables,
         jdk_root: Option<PathBuf>,
+        go_module_cache: Option<&Path>,
+        native_work_directory: &Path,
         probe_limits: ToolchainProbeLimits,
     ) -> Result<LocalRuntimePackageAuthority, LocalCompilerHostError> {
+        let libclang =
+            self.file_or_directory(LocalHostVariable::LibclangPath, LocalHostPathRole::Libclang)?;
+        let clang = match (executables.clang.as_deref(), libclang.as_deref()) {
+            (Some(driver), Some(libclang)) => {
+                Some(ClangAuthorityEnvironment::probe(driver, libclang)?)
+            }
+            _ => None,
+        };
         let typescript_report = self.executable(
             LocalHostVariable::NudoxTypeScriptReportProgram,
             LocalHostPathRole::TypeScriptReportProgram,
@@ -101,26 +113,41 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             (Some(_), Some(executable)) => Some(Pyrefly::from_executable(executable)?),
             _ => None,
         };
-        let rust = executables
-            .rustc
-            .as_ref()
-            .map(|rustc| self.rust_authority(rustc, probe_limits))
-            .transpose()?;
+        let rust = match (
+            executables.rustc.as_deref(),
+            executables.cargo.as_deref(),
+            executables.cargo_home.as_deref(),
+        ) {
+            (Some(rustc), Some(cargo), Some(cargo_home)) => {
+                Some(self.rust_authority(rustc, cargo, cargo_home, probe_limits)?)
+            }
+            _ => None,
+        };
         let go_oracle = self.executable(
             LocalHostVariable::NudoxGoOracle,
             LocalHostPathRole::GoOracle,
             ArrayVec::new(),
         )?;
-        let go = match (executables.go.as_ref(), go_oracle) {
-            (Some(_), Some(oracle)) => Some(
-                GoOracle::default()
-                    .with_configuration(GoOracleConfiguration::oracle_binary(oracle)?),
-            ),
-            (Some(go), None) => Some(
-                GoOracle::default()
-                    .with_configuration(GoOracleConfiguration::go_toolchain(go.clone())?),
-            ),
-            (None, _) => None,
+        let go = match (executables.go.as_deref(), go_module_cache) {
+            (Some(go), Some(module_cache)) => {
+                let goroot = self.go_root(go, probe_limits)?;
+                let child_environment = GoOracleChildEnvironment::new(
+                    go.to_path_buf(),
+                    goroot,
+                    module_cache.to_path_buf(),
+                    native_work_directory.join("go-oracle-cache"),
+                )?;
+                let configuration = match go_oracle {
+                    Some(oracle) => GoOracleConfiguration::oracle_binary(oracle)?,
+                    None => GoOracleConfiguration::go_toolchain(go.to_path_buf())?,
+                };
+                Some(
+                    GoOracle::default()
+                        .with_configuration(configuration)
+                        .with_child_environment(child_environment)?,
+                )
+            }
+            _ => None,
         };
         let java = match (executables.java.as_ref(), jdk_root) {
             (Some(_), Some(root)) => Some(LocalRuntimeJavaAuthority {
@@ -148,6 +175,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             _ => None,
         };
         Ok(LocalRuntimePackageAuthority {
+            clang,
             typescript,
             python,
             python_toolchain_identity,
@@ -162,6 +190,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     fn rust_authority(
         &self,
         rustc: &Path,
+        cargo: &Path,
+        cargo_home: &Path,
         probe_limits: ToolchainProbeLimits,
     ) -> Result<LocalRuntimeRustAuthority, LocalCompilerHostError> {
         let sysroot = match self.optional_absolute_path(LocalHostVariable::NudoxRustSysroot)? {
@@ -197,19 +227,54 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 canonicalize_existing(LocalHostPathRole::RustSysroot, &path)?
             }
         };
+        let toolchain = RustToolchain::from_paths_with_cargo(
+            rustc.to_path_buf(),
+            sysroot,
+            cargo.to_path_buf(),
+            cargo_home.to_path_buf(),
+        )?;
         Ok(LocalRuntimeRustAuthority {
-            toolchain: RustToolchain::from_paths(rustc.to_path_buf(), sysroot)?,
+            toolchain,
             maximum_source_bytes: SourceByteLimit::from(PACKAGE_SOURCE_BYTES),
             all_features: true,
             no_default_features: false,
             features: Box::new([]),
         })
     }
+
+    fn go_root(
+        &self,
+        go: &Path,
+        probe_limits: ToolchainProbeLimits,
+    ) -> Result<PathBuf, LocalCompilerHostError> {
+        let output = probe_command(NativeTool::GoCompiler, go, &["env", "GOROOT"], probe_limits)
+            .map_err(LocalCompilerHostError::GoRootProbe)?;
+        let path = match str::from_utf8(&output) {
+            Ok(text) => PathBuf::from(text.trim()),
+            Err(source) => {
+                return Err(LocalCompilerHostError::GoRootEncoding { output, source });
+            }
+        };
+        if path.as_os_str().is_empty() {
+            return Err(LocalCompilerHostError::GoRootEmpty {
+                compiler: go.to_path_buf().into_boxed_path(),
+            });
+        }
+        if !path.is_absolute() {
+            return Err(LocalCompilerHostError::GoRootRelative {
+                compiler: go.to_path_buf().into_boxed_path(),
+                goroot: path.into_boxed_path(),
+            });
+        }
+        self.validate_directory(LocalHostPathRole::GoRoot, LocalHostVariable::NudoxGo, path)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct NativeExecutables {
     pub(super) rustc: Option<PathBuf>,
+    pub(super) cargo: Option<PathBuf>,
+    pub(super) cargo_home: Option<PathBuf>,
     pub(super) clang: Option<PathBuf>,
     pub(super) python: Option<PathBuf>,
     pub(super) typescript: Option<PathBuf>,
@@ -220,21 +285,41 @@ pub(super) struct NativeExecutables {
 
 impl NativeExecutables {
     pub(super) fn toolchain_rows(&self) -> Box<[LocalRuntimeToolchain]> {
-        let mut rows = Vec::with_capacity(NativeTool::ALL.len());
-        for (tool, executable) in [
-            (NativeTool::Rustc, self.rustc.as_ref()),
-            (NativeTool::Clang, self.clang.as_ref()),
-            (NativeTool::Python, self.python.as_ref()),
-            (NativeTool::TypeScriptCompiler, self.typescript.as_ref()),
-            (NativeTool::GoCompiler, self.go.as_ref()),
-            (NativeTool::JavaCompiler, self.java.as_ref()),
-            (NativeTool::CSharpCompiler, self.csharp.as_ref()),
-        ] {
-            rows.push(match executable {
-                Some(executable) => LocalRuntimeToolchain::probing(tool, executable.clone()),
+        self.toolchain_executables()
+            .map(|(tool, executable)| match executable {
+                Some(executable) => LocalRuntimeToolchain::probing(tool, executable.to_path_buf()),
                 None => LocalRuntimeToolchain::unavailable(tool),
-            });
-        }
-        rows.into_boxed_slice()
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
+
+    pub(super) fn admitted_toolchain_rows(
+        &self,
+        limits: ToolchainProbeLimits,
+    ) -> Box<[LocalRuntimeToolchain]> {
+        self.toolchain_executables()
+            .map(|(tool, executable)| match executable {
+                Some(executable) => {
+                    LocalRuntimeToolchain::probe(tool, executable.to_path_buf(), limits)
+                        .unwrap_or_else(|_| LocalRuntimeToolchain::probe_failed(tool))
+                }
+                None => LocalRuntimeToolchain::unavailable(tool),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
+
+    fn toolchain_executables(&self) -> impl Iterator<Item = (NativeTool, Option<&Path>)> {
+        [
+            (NativeTool::Rustc, self.rustc.as_deref()),
+            (NativeTool::Clang, self.clang.as_deref()),
+            (NativeTool::Python, self.python.as_deref()),
+            (NativeTool::TypeScriptCompiler, self.typescript.as_deref()),
+            (NativeTool::GoCompiler, self.go.as_deref()),
+            (NativeTool::JavaCompiler, self.java.as_deref()),
+            (NativeTool::CSharpCompiler, self.csharp.as_deref()),
+        ]
+        .into_iter()
     }
 }

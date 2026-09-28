@@ -28,6 +28,7 @@ mod compiler_input_capture_v2;
 mod compiler_input_manifest;
 mod compiler_input_manifest_v2;
 mod compiler_input_tree_v2;
+mod compiler_unit_read_closure_v2;
 /// Private authenticated content-addressed compiler-cluster transport.
 pub use backend_cluster_transport as cluster_transport;
 pub mod daemon;
