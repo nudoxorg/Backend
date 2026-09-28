@@ -42,26 +42,6 @@ pub(super) fn packet(anatomy: &crate::runtime::fixture_world::Anatomy, cx: &mut 
     packet
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Section { Shape, Getting, Behavior, Failure, Connections, Documentation }
-
-impl Section {
-    pub(super) const fn anchor(self) -> &'static str {
-        match self {
-            Self::Shape => "symbol-shape", Self::Getting => "symbol-getting",
-            Self::Behavior => "symbol-behavior", Self::Failure => "symbol-failure",
-            Self::Connections => "symbol-connections", Self::Documentation => "symbol-documentation",
-        }
-    }
-    pub(super) const fn title(self) -> &'static str {
-        match self {
-            Self::Shape => "Anatomy", Self::Getting => "Getting one",
-            Self::Behavior => "What it does", Self::Failure => "When it fails",
-            Self::Connections => "Who uses it", Self::Documentation => "In its own words",
-        }
-    }
-}
-
 pub(super) const fn is_failure(kind: SectionKind) -> bool {
     matches!(kind, SectionKind::Errors | SectionKind::Panics | SectionKind::Safety)
 }
