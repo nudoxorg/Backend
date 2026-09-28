@@ -28,6 +28,7 @@
 //! While a track is live the store asks the window's gate for one more frame
 //! for this view; once everything settles, nothing is scheduled.
 
+pub mod carry;
 pub mod compositing;
 mod curve;
 mod element;
@@ -35,6 +36,7 @@ pub mod flight;
 pub mod flow;
 pub mod keys;
 pub mod presence;
+pub mod print;
 pub mod shared;
 pub mod pulse;
 mod spring;
@@ -52,7 +54,9 @@ pub use element::{Offset, Reveal, offset, posed, reveal};
 pub use keys::{Keys, Mix, Pose};
 pub use flight::{Camera, Flights, Shot};
 pub use flow::{Flow, Resize};
+pub use carry::{CARRY, Carry, band};
 pub use presence::{Presence, act};
+pub use print::{Edge, masked, print};
 pub use shared::{Fit, shared};
 pub use pulse::Pulse;
 pub use spring::{BOUNCY, GENTLE, Phase, SNAPPY, Spring};

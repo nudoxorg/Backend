@@ -19,6 +19,13 @@
 //! arriving end can look like the departing one early on (a graph node drawn
 //! as the hero gem it is shrinking from).
 //!
+//! A morph can also be **driven from outside** ([`drive`]): a place change
+//! has one driver (a [`super::Carry`]) that moves the plate, and the title
+//! riding the plate's edge must be at the same progress in the same frame,
+//! retargeted with it when Back interrupts. While a key is driven its
+//! element ignores its own clock and is painted exactly `t` of the way from
+//! the driven source to its layout; [`release`] hands it back (at rest).
+//!
 //! ```ignore
 //! // Symbol page:
 //! shared(("gem", id), gem(kind).size(72.))
@@ -59,9 +66,17 @@ struct Painted {
     at: Instant,
 }
 
+/// A morph driven from outside: from `from` (window space), `t` of the way.
+#[derive(Clone, Copy, Debug)]
+struct Driven {
+    from: Bounds<Pixels>,
+    t: f32,
+}
+
 #[derive(Default)]
 struct Registry {
     painted: HashMap<(WindowId, ElementId), Painted>,
+    driven: HashMap<(WindowId, ElementId), Driven>,
 }
 
 impl Global for Registry {}
@@ -124,6 +139,8 @@ pub struct Shared {
     duration: Duration,
     curve: Bezier,
     morph: Option<Morph>,
+    /// Driven from outside this frame ([`drive`]).
+    driven: Option<Driven>,
     transform: LayerTransform,
 }
 
@@ -161,6 +178,44 @@ pub fn forget(key: impl Into<ElementId>, window: &Window, cx: &mut App) {
     cx.default_global::<Registry>()
         .painted
         .remove(&(window.window_handle().window_id(), key.into()));
+}
+
+/// Drives the shared element `key` from outside: this frame and until
+/// [`release`], it is painted `t` of the way (0 = exactly over `from`, a
+/// window-space box; 1 = its own layout) with its own fit, whatever its own
+/// clock says. Call it every frame the driver moves, before the element
+/// lays out (from the driving view's `render`).
+pub fn drive(key: impl Into<ElementId>, from: Bounds<Pixels>, t: f32, window: &Window, cx: &mut App) {
+    let valid = [from.origin.x, from.origin.y, from.size.width, from.size.height]
+        .iter()
+        .all(|value| f32::from(*value).is_finite())
+        && from.size.height > gpui::px(0.0)
+        && t.is_finite();
+    let slot = (window.window_handle().window_id(), key.into());
+    let registry = cx.default_global::<Registry>();
+    if valid {
+        registry.driven.insert(slot, Driven { from, t: t.clamp(0.0, 1.0) });
+    } else {
+        registry.driven.remove(&slot);
+    }
+}
+
+/// Ends [`drive`] for `key`: the element rests on its layout (no morph of
+/// its own starts from the drive).
+pub fn release(key: impl Into<ElementId>, window: &Window, cx: &mut App) {
+    if cx.has_global::<Registry>() {
+        cx.global_mut::<Registry>()
+            .driven
+            .remove(&(window.window_handle().window_id(), key.into()));
+    }
+}
+
+/// Where `key` is driven this frame, if it is.
+fn driven(key: &ElementId, window: &Window, cx: &App) -> Option<Driven> {
+    cx.try_global::<Registry>()?
+        .driven
+        .get(&(window.window_handle().window_id(), key.clone()))
+        .copied()
 }
 
 /// A captured endpoint retains its original identity, window and expiry.
@@ -245,6 +300,7 @@ impl Shared {
             duration: SCENE,
             curve: GLIDE,
             morph: None,
+            driven: None,
             transform: LayerTransform::IDENTITY,
         }
     }
@@ -424,7 +480,15 @@ impl gpui::Element for Shared {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let now = now(cx);
-        if let Some(owner) = id {
+        self.driven = driven(&self.key, window, cx);
+        if let (Some(owner), Some(_)) = (id, self.driven) {
+            // Driven: its own clock is off, and nothing it would have started
+            // survives the drive.
+            window.with_element_state::<State, _>(owner, |state, _| {
+                ((), State { morph: None, ..state.unwrap_or_default() })
+            });
+            self.morph = None;
+        } else if let Some(owner) = id {
             let reduced = reduced(cx);
             let slot = (window.window_handle().window_id(), self.key.clone());
             let departing = cx
@@ -451,8 +515,13 @@ impl gpui::Element for Shared {
                 (state.morph, state)
             });
         }
-        let morphing = match (self.progress(now), self.morph) {
-            (Some((_, t)), Some(morph)) => Morphing {
+        let morphing = match (self.driven, self.progress(now), self.morph) {
+            (Some(driven), ..) if driven.t < 1.0 => Morphing {
+                t: driven.t,
+                from: Some(driven.from.size),
+            },
+            (Some(_), ..) => Morphing::REST,
+            (None, Some((_, t)), Some(morph)) => Morphing {
                 t,
                 from: Some(morph.from.size),
             },
@@ -481,8 +550,15 @@ impl gpui::Element for Shared {
     ) -> Self::PrepaintState {
         let now = now(cx);
         let progress = self.progress(now);
-        self.transform = match (progress, self.morph) {
-            (Some((_, t)), Some(m)) => {
+        self.transform = match (self.driven, progress, self.morph) {
+            (Some(driven), ..) => {
+                let from = window
+                    .layer_transform()
+                    .inverse()
+                    .map_or(driven.from, |inverse| inverse.apply_bounds(driven.from));
+                morph(from, bounds, self.fit, driven.t)
+            }
+            (None, Some((_, t)), Some(m)) => {
                 // The source was recorded in window space. A rising page or
                 // leaving map already has a parent transform: undo that for
                 // the source, then let the parent move the destination.
@@ -801,6 +877,40 @@ mod tests {
             let b = frame.get(key).unwrap_or_else(|| panic!("{key} painted"));
             let c = b.center();
             (f32::from(c.x), f32::from(c.y), f32::from(b.size.height))
+        }
+
+        /// Driven from outside: the title is exactly over the row on frame 0
+        /// (height fit), exactly `t` of the way after, exactly on its layout
+        /// at 1, and its own clock never takes over after the release.
+        #[gpui::test]
+        fn a_driven_morph_follows_the_driver_not_its_clock(cx: &mut TestAppContext) {
+            let seen: Seen = Rc::default();
+            let (page, cx) = cx.add_window_view({
+                let seen = Rc::clone(&seen);
+                |_, _| Page { seen }
+            });
+            cx.update(|_, cx| reset_epoch(cx));
+            let row = Bounds::new(gpui::point(px(84.0), px(312.0)), gpui::size(px(120.0), px(18.0)));
+            let drive = |cx: &mut VisualTestContext, t: f32| {
+                cx.update(|window, cx| super::super::drive("gem", row, t, window, cx));
+                page.update(cx, |_, cx| cx.notify());
+                centre(&frame(cx, &seen), "page.gem")
+            };
+            // The row's centre and height; the layout's are (336, 236, 72).
+            assert_eq!(drive(cx, 0.0), (144.0, 321.0, 18.0), "frame 0 sits on the row");
+            let (x, y, h) = drive(cx, 0.5);
+            for (actual, expected) in [(x, 240.0), (y, 278.5), (h, 45.0)] {
+                assert!((actual - expected).abs() < 1e-3, "half way: {:?}", (x, y, h));
+            }
+            // Time passing moves nothing while driven.
+            cx.executor().advance_clock(Duration::from_millis(400));
+            cx.run_until_parked();
+            let held = drive(cx, 0.5);
+            assert!((held.1 - 278.5).abs() < 1e-3, "the clock does not move a driven morph: {held:?}");
+            assert_eq!(drive(cx, 1.0), (336.0, 236.0, 72.0));
+            cx.update(|window, cx| super::super::release("gem", window, cx));
+            page.update(cx, |_, cx| cx.notify());
+            assert_eq!(centre(&frame(cx, &seen), "page.gem"), (336.0, 236.0, 72.0), "released at rest");
         }
 
         #[gpui::test]
