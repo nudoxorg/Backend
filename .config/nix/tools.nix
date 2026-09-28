@@ -19,7 +19,10 @@ let
     "apps"
     "tests"
     "tools"
+    "vendor/gpui-ce"
     "vendor/gpui_ce_components"
+    "vendor/gpui_ce_components_base"
+    "vendor/gpui_ce_macos"
   ];
   workspaceSource =
     if workspaceAvailable then
@@ -572,8 +575,7 @@ let
   ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
   serviceTools = [
     pkgs.curl
-    pkgs.qdrant
-  ];
+  ] ++ pkgs.lib.optionals (builtins.pathExists "/root/fleet/allow-qdrant") [ pkgs.qdrant ];
   observabilityTools = [
     pkgs.otel-cli
     pkgs.otel-desktop-viewer
