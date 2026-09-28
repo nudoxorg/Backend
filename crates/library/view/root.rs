@@ -1056,66 +1056,44 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::print_stdout)]
     fn label_lookup_skips_cloned_row_bodies() {
         const ROWS: usize = 4096;
-        const SAMPLES: usize = 16;
         let needle = format!("pkg::item-{:04}", ROWS - 1);
-        let cold_owned: Vec<_> = (0..SAMPLES).map(|_| heavy_root(ROWS)).collect();
-        let cold_indexed: Vec<_> = (0..SAMPLES).map(|_| heavy_root(ROWS)).collect();
-        let warm_owned = heavy_root(ROWS);
-        let warm_indexed = heavy_root(ROWS);
+        let owned = heavy_root(ROWS);
+        let indexed = heavy_root(ROWS);
         assert_eq!(
-            warm_owned
+            owned
                 .rows()
                 .iter()
                 .find(|row| row.label == needle)
                 .map(|row| row.id),
-            warm_indexed.row_by_label(&needle).map(|row| row.id)
+            indexed.row_by_label(&needle).map(|row| row.id)
         );
-        let mut owned_cold = Vec::with_capacity(SAMPLES);
-        let mut indexed_cold = Vec::with_capacity(SAMPLES);
-        let mut owned_warm = Vec::with_capacity(SAMPLES);
-        let mut indexed_warm = Vec::with_capacity(SAMPLES);
-        for _ in 0..4 {
-            std::hint::black_box(warm_owned.rows().iter().find(|row| row.label == needle));
-            std::hint::black_box(warm_indexed.row_by_label(&needle));
-        }
-        for index in 0..SAMPLES {
-            let started = std::time::Instant::now();
-            std::hint::black_box(
-                cold_owned[index]
-                    .rows()
-                    .iter()
-                    .find(|row| row.label == needle),
-            );
-            owned_cold.push(started.elapsed().as_nanos());
-            let started = std::time::Instant::now();
-            std::hint::black_box(cold_indexed[index].row_by_label(&needle));
-            indexed_cold.push(started.elapsed().as_nanos());
-            let started = std::time::Instant::now();
-            std::hint::black_box(warm_owned.rows().iter().find(|row| row.label == needle));
-            owned_warm.push(started.elapsed().as_nanos());
-            let started = std::time::Instant::now();
-            std::hint::black_box(warm_indexed.row_by_label(&needle));
-            indexed_warm.push(started.elapsed().as_nanos());
-        }
-        owned_cold.sort_unstable();
-        indexed_cold.sort_unstable();
-        owned_warm.sort_unstable();
-        indexed_warm.sort_unstable();
-        let owned_cold_median = owned_cold[SAMPLES / 2];
-        let indexed_cold_median = indexed_cold[SAMPLES / 2];
-        let owned_warm_median = owned_warm[SAMPLES / 2];
-        let indexed_warm_median = indexed_warm[SAMPLES / 2];
-        println!(
-            "view_label_index rows={ROWS} cold_owned_median_ns={owned_cold_median} \
-             cold_index_median_ns={indexed_cold_median} warm_owned_median_ns={owned_warm_median} \
-             warm_index_median_ns={indexed_warm_median}"
+        // The owned/linear-scan path must clone every row -- including its
+        // heavy document -- into the compatibility cache to hand back a
+        // slice.
+        assert!(
+            owned.compatibility_rows_are_materialized(),
+            "the linear scan through rows() is expected to fill the owned cache"
         );
-        // The lookups above assert answer parity. Timing is diagnostic data:
-        // cold setup and scheduler noise do not support a stable performance
-        // threshold in a unit test. Track the ratios in a benchmark instead.
+        // The real property: `row_by_label` answers from the borrowed label
+        // index and never clones a row body into the owned cache, no matter
+        // how many repeated lookups (hit or miss) run against it. This is a
+        // structural fact, not a wall-clock one, so it holds at any
+        // optimization level and under any CPU load.
+        assert!(
+            !indexed.compatibility_rows_are_materialized(),
+            "row_by_label must not clone row bodies before any lookup"
+        );
+        for _ in 0..8 {
+            assert!(indexed.row_by_label(&needle).is_some());
+            assert!(indexed.row_by_label("missing").is_none());
+        }
+        assert!(
+            !indexed.compatibility_rows_are_materialized(),
+            "row_by_label cloned a row body into the owned cache across {ROWS} rows and 8 \
+             repeated lookups"
+        );
     }
 
     #[test]
