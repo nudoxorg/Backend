@@ -10,7 +10,7 @@ use super::identity::{LocalAllocation, current_user};
 use std::fs::{Metadata, OpenOptions};
 use std::io;
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::os::windows::io::AsRawHandle as _;
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr;
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, GENERIC_ALL};

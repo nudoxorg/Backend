@@ -13,7 +13,7 @@ use super::security::restrict_handle_to_current_user;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
-use std::mem::{self, offset_of};
+use std::mem::offset_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle as _, IntoRawHandle as _, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 use std::ptr;
@@ -23,10 +23,9 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACCESS_ALLOWED_ACE_TYPE, ACL, ACL_SIZE_INFORMATION,
-    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-    GetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED,
-    SECURITY_DESCRIPTOR_CONTROL,
+    ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, GetAce,
+    GetAclInformation, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+    PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR_CONTROL,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY,
@@ -36,10 +35,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
     FILE_READ_DATA, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_STANDARD_INFO, FILE_TRAVERSE,
     FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
-    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo, FileStandardInfo,
-    FlushFileBuffers, GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
+    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo, FileRenameInfo,
+    FileStandardInfo, FlushFileBuffers, GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
     SetFileInformationByHandle, WRITE_DAC,
 };
+use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
 const STATUS_SUCCESS: i32 = 0;
 const FILE_OPEN: u32 = 1;
@@ -52,7 +52,7 @@ const FILE_SHARE_READ: u32 = 1;
 const FILE_SHARE_WRITE: u32 = 2;
 const FILE_SHARE_DELETE: u32 = 4;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-const ACL_INFORMATION_CLASS_SIZE: u32 = 2;
+const ACL_INFORMATION_CLASS_SIZE: i32 = 2;
 const GENERIC_ALL: u32 = 0x1000_0000;
 
 #[repr(C)]
@@ -229,17 +229,20 @@ impl WorkspaceRoot {
         for part in &parts[..parts.len() - 1] {
             current = open_directory_child_unchecked(&current, part)?;
         }
-        let parent =
-            open_directory_child_writable(&current, parts.last().ok_or_else(invalid_name)?)?;
-        if !is_owned_by_current_user(&owner_of(&HandleRef(parent.handle.as_raw_handle()))?)? {
+        let parent = Self(open_directory_child_writable(
+            &current,
+            parts.last().ok_or_else(invalid_name)?,
+        )?);
+        if !is_owned_by_current_user(&owner_of(&HandleRef(parent.0.handle.as_raw_handle()))?)? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "application data parent has a foreign owner",
             ));
         }
 
-        match open_directory_child(&parent, name) {
+        match open_directory_child(&parent.0, name) {
             Ok(child) => {
+                let child = Self(child);
                 child.flush_dir()?;
                 parent.flush_dir()
             }
@@ -250,7 +253,7 @@ impl WorkspaceRoot {
                         parent.flush_dir()
                     }
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        let child = open_directory_child(&parent, name)?;
+                        let child = Self(open_directory_child(&parent.0, name)?);
                         child.flush_dir()?;
                         parent.flush_dir()
                     }
@@ -366,10 +369,8 @@ impl WorkspaceRoot {
         let total_size = header_size
             .checked_add(name.len().checked_mul(2).ok_or_else(invalid_name)?)
             .ok_or_else(invalid_name)?;
-        let mut storage = vec![0_u64; total_size.div_ceil(mem::size_of::<u64>())];
-        // SAFETY: `storage` is aligned and sized for the fixed header plus all
-        // UTF-16 name bytes; the source and destination handles remain alive.
-        let rename = unsafe { storage.as_mut_ptr().cast::<FILE_RENAME_INFO>() };
+        let mut storage = vec![0_u64; total_size.div_ceil(size_of::<u64>())];
+        let rename = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
         // SAFETY: `rename` points into aligned, sufficiently sized storage;
         // each field write stays within the documented FILE_RENAME_INFO
         // header and the UTF-16 payload is copied below.
@@ -499,7 +500,7 @@ impl WorkspaceRoot {
         self.0.handle.as_raw_handle().cast()
     }
 
-    fn parent_and_leaf(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+    fn parent_and_leaf<'a>(&self, path: &[&'a str]) -> io::Result<(Arc<DirectoryNode>, &'a str)> {
         let (leaf, parent_path) = path.split_last().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -772,7 +773,7 @@ fn nt_create_relative(
     let mut name = name.to_vec();
     let mut unicode = unicode_string(&mut name)?;
     let mut attributes = ObjectAttributes {
-        length: mem::size_of::<ObjectAttributes>() as u32,
+        length: size_of::<ObjectAttributes>() as u32,
         root_directory: parent,
         object_name: &raw mut unicode,
         attributes: OBJ_CASE_INSENSITIVE,
@@ -793,7 +794,7 @@ fn nt_open_absolute(
     let mut name = name.to_vec();
     let mut unicode = unicode_string(&mut name)?;
     let mut attributes = ObjectAttributes {
-        length: mem::size_of::<ObjectAttributes>() as u32,
+        length: size_of::<ObjectAttributes>() as u32,
         root_directory: ptr::null_mut(),
         object_name: &raw mut unicode,
         attributes: OBJ_CASE_INSENSITIVE,
@@ -1009,7 +1010,7 @@ fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
         GetAclInformation(
             dacl_from_sd,
             (&raw mut info).cast(),
-            mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
             ACL_INFORMATION_CLASS_SIZE,
         )
     } == 0
@@ -1029,7 +1030,7 @@ fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
     // ACCESS_ALLOWED_ACE begins with ACE_HEADER and a mask followed by SID.
     // SAFETY: GetAce returned the sole ACE in a valid ACL.
     let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-    if allowed.Header.AceType != ACCESS_ALLOWED_ACE_TYPE || allowed.Mask != GENERIC_ALL {
+    if u32::from(allowed.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE || allowed.Mask != GENERIC_ALL {
         return Err(invalid_data("workspace DACL is not current-user-only"));
     }
     let sid = current_user()?;
@@ -1088,7 +1089,7 @@ fn attributes(handle: *mut c_void) -> io::Result<u32> {
             handle.cast(),
             FileAttributeTagInfo,
             (&raw mut info).cast(),
-            mem::size_of::<FileAttributeTagInfo>() as u32,
+            size_of::<FileAttributeTagInfo>() as u32,
         )
     };
     if read == 0 {
@@ -1107,7 +1108,7 @@ fn standard_info(handle: *mut c_void) -> io::Result<FILE_STANDARD_INFO> {
             handle.cast(),
             FileStandardInfo,
             (&raw mut info).cast(),
-            mem::size_of::<FILE_STANDARD_INFO>() as u32,
+            size_of::<FILE_STANDARD_INFO>() as u32,
         )
     };
     if read == 0 {
@@ -1126,7 +1127,7 @@ fn identity_info(handle: *mut c_void) -> io::Result<FILE_ID_INFO> {
             handle.cast(),
             FileIdInfo,
             (&raw mut info).cast(),
-            mem::size_of::<FILE_ID_INFO>() as u32,
+            size_of::<FILE_ID_INFO>() as u32,
         )
     };
     if read == 0 {
@@ -1153,7 +1154,7 @@ fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
                 handle,
                 class,
                 buffer.as_mut_ptr().cast(),
-                (buffer.len() * mem::size_of::<u64>()) as u32,
+                (buffer.len() * size_of::<u64>()) as u32,
             )
         };
         if read == 0 {
@@ -1164,10 +1165,10 @@ fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
             return Err(error);
         }
         restart = false;
-        let bytes = buffer.len() * mem::size_of::<u64>();
+        let bytes = buffer.len() * size_of::<u64>();
         let mut offset = 0usize;
         loop {
-            if offset % mem::align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
+            if offset % align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
                 || offset
                     .checked_add(offset_of!(FILE_ID_BOTH_DIR_INFO, FileName))
                     .is_none_or(|end| end > bytes)
@@ -1191,7 +1192,7 @@ fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
                 .ok_or_else(|| invalid_data("Windows returned an oversized directory name"))?;
             if name_bytes % 2 != 0
                 || end > bytes
-                || (buffer.as_ptr() as usize + offset + name_offset) % mem::align_of::<u16>() != 0
+                || (buffer.as_ptr() as usize + offset + name_offset) % align_of::<u16>() != 0
             {
                 return Err(invalid_data(
                     "Windows returned an invalid UTF-16 directory name",
@@ -1219,7 +1220,7 @@ fn enumerate_names(handle: HANDLE) -> io::Result<Vec<(String, i64)>> {
             let next = usize::try_from(entry.NextEntryOffset)
                 .map_err(|_| invalid_data("invalid directory offset"))?;
             if next == 0
-                || next % mem::align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
+                || next % align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
                 || offset.checked_add(next).is_none_or(|end| end >= bytes)
             {
                 return Err(invalid_data("Windows returned an invalid directory offset"));
@@ -1292,7 +1293,7 @@ fn mark_delete(handle: *mut c_void) -> io::Result<()> {
             handle.cast(),
             FileDispositionInfoEx,
             (&raw const extended).cast(),
-            mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
         )
     };
     if deleted != 0 {
@@ -1307,7 +1308,7 @@ fn mark_delete(handle: *mut c_void) -> io::Result<()> {
             handle.cast(),
             FileDispositionInfo,
             (&raw const legacy).cast(),
-            mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
         )
     };
     if deleted == 0 {

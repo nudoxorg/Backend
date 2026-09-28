@@ -188,8 +188,8 @@ fn path_from_wire(wire: &NativePathWire) -> Result<PathBuf, NativePathError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NativePath, NativePathWire};
-    use std::path::{Path, PathBuf};
+    use super::NativePath;
+    use std::path::Path;
 
     #[test]
     fn utf8_path_round_trips_through_native_wire() {

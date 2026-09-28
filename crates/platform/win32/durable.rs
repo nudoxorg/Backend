@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Publishes a private state file. `parent` must already exist.
-pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = parent(path);
     let root = super::workspace_fs::WorkspaceRoot::open(parent)?;
     let file_name = component(path.file_name())?;
@@ -41,14 +41,14 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Opens a private state file after checking its opened object's ACL and type.
-pub fn open_private_read(path: &Path) -> io::Result<File> {
+pub(crate) fn open_private_read(path: &Path) -> io::Result<File> {
     let parent = parent(path);
     let root = super::workspace_fs::WorkspaceRoot::open(parent)?;
     root.open_file_read_checked(&[component(path.file_name())?])
 }
 
 /// Deletes a checked private state file through its handle and flushes parent.
-pub fn remove_private(path: &Path) -> io::Result<()> {
+pub(crate) fn remove_private(path: &Path) -> io::Result<()> {
     let parent = parent(path);
     let root = super::workspace_fs::WorkspaceRoot::open(parent)?;
     root.remove_file_relative(&[component(path.file_name())?])?;
@@ -89,10 +89,10 @@ mod tests {
         TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
     };
     use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, READ_CONTROL,
+        ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, WRITE_DAC,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, READ_CONTROL, WRITE_DAC,
     };
 
     fn fixture(label: &str) -> PathBuf {
@@ -119,7 +119,7 @@ mod tests {
 
         let mut reopened = open_private_read(&path).expect("cold reopen journal");
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut reopened, &mut bytes).expect("read journal");
+        io::Read::read_to_end(&mut reopened, &mut bytes).expect("read journal");
         assert_eq!(bytes, b"durable journal bytes");
         drop(reopened);
 
@@ -127,7 +127,7 @@ mod tests {
             .expect("atomically replace journal");
         let mut reopened = open_private_read(&path).expect("cold reopen replacement");
         bytes.clear();
-        std::io::Read::read_to_end(&mut reopened, &mut bytes).expect("read replacement");
+        io::Read::read_to_end(&mut reopened, &mut bytes).expect("read replacement");
         assert_eq!(bytes, b"replacement journal after atomic rename");
 
         remove_private(&path).expect("durably remove journal");
@@ -149,7 +149,7 @@ mod tests {
             .expect("publish journal record");
         let mut reopened = open_private_read(&journal).expect("cold reopen journal record");
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut reopened, &mut bytes).expect("read journal record");
+        io::Read::read_to_end(&mut reopened, &mut bytes).expect("read journal record");
         assert_eq!(bytes, b"durable owner acknowledgement");
         drop(reopened);
 
@@ -211,7 +211,7 @@ mod tests {
 
         let mut reopened = open_private_read(&path).expect("cold reopen committed record");
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut reopened, &mut bytes).expect("read committed record");
+        io::Read::read_to_end(&mut reopened, &mut bytes).expect("read committed record");
         assert_eq!(bytes, b"last committed record");
         drop(reopened);
 

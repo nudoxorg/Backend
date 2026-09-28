@@ -12,7 +12,6 @@
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
-use std::mem;
 use std::os::windows::io::{AsRawHandle, FromRawHandle as _, IntoRawHandle as _, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 use std::ptr;
@@ -180,7 +179,7 @@ impl ProjectRoot {
         file_from_handle(handle)
     }
 
-    fn parent_and_leaf(&self, path: &[&str]) -> io::Result<(Arc<DirectoryNode>, &str)> {
+    fn parent_and_leaf<'a>(&self, path: &[&'a str]) -> io::Result<(Arc<DirectoryNode>, &'a str)> {
         let (leaf, parents) = path
             .split_last()
             .ok_or_else(|| invalid_name("relative path must contain at least one component"))?;
@@ -323,7 +322,7 @@ fn open_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Resu
     let mut wide = wide_component(name)?;
     let mut unicode = unicode_string(&mut wide)?;
     let mut attributes = ObjectAttributes {
-        length: mem::size_of::<ObjectAttributes>() as u32,
+        length: size_of::<ObjectAttributes>() as u32,
         root_directory: parent,
         object_name: &raw mut unicode,
         attributes: OBJ_CASE_INSENSITIVE,
@@ -341,7 +340,7 @@ fn nt_open_absolute(name: &[u16], access: u32, options: u32) -> io::Result<Owned
     let mut wide = name.to_vec();
     let mut unicode = unicode_string(&mut wide)?;
     let mut attributes = ObjectAttributes {
-        length: mem::size_of::<ObjectAttributes>() as u32,
+        length: size_of::<ObjectAttributes>() as u32,
         root_directory: ptr::null_mut(),
         object_name: &raw mut unicode,
         attributes: OBJ_CASE_INSENSITIVE,
@@ -399,7 +398,7 @@ fn attributes(handle: *mut c_void) -> io::Result<u32> {
         handle,
         FileAttributeTagInfo,
         (&raw mut info).cast(),
-        mem::size_of::<FileAttributeTagInfo>(),
+        size_of::<FileAttributeTagInfo>(),
     )?;
     Ok(info.file_attributes)
 }
@@ -410,7 +409,7 @@ fn standard_info(handle: *mut c_void) -> io::Result<FILE_STANDARD_INFO> {
         handle,
         FileStandardInfo,
         (&raw mut info).cast(),
-        mem::size_of::<FILE_STANDARD_INFO>(),
+        size_of::<FILE_STANDARD_INFO>(),
     )?;
     Ok(info)
 }
@@ -421,7 +420,7 @@ fn identity_info(handle: *mut c_void) -> io::Result<FILE_ID_INFO> {
         handle,
         FileIdInfo,
         (&raw mut info).cast(),
-        mem::size_of::<FILE_ID_INFO>(),
+        size_of::<FILE_ID_INFO>(),
     )?;
     Ok(info)
 }
@@ -432,7 +431,7 @@ fn basic_info(handle: *mut c_void) -> io::Result<FILE_BASIC_INFO> {
         handle,
         FileBasicInfo,
         (&raw mut info).cast(),
-        mem::size_of::<FILE_BASIC_INFO>(),
+        size_of::<FILE_BASIC_INFO>(),
     )?;
     Ok(info)
 }

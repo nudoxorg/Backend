@@ -13,8 +13,8 @@
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 #![cfg_attr(test, allow(clippy::expect_used))]
 
-pub mod durable;
 pub mod durability;
+pub mod durable;
 pub mod local;
 mod native_path;
 #[cfg(windows)]
