@@ -759,11 +759,6 @@ in
             test-group = "display-global";
           }
           {
-            filter = "test(/loom|contention|concurrent/)";
-            test-group = "concurrency-proof";
-            priority = 60;
-          }
-          {
             # `native` is unanchored, so a laws or store-bolero name that
             # merely contains those letters would enter this scarce group and
             # can be killed on the 45s budget. backend-laws is the proptest

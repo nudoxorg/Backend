@@ -12,15 +12,6 @@ let
     cargo = toolchains.stable;
     rustc = toolchains.stable;
   };
-  # These generated scripts run in checks with an otherwise isolated PATH and
-  # are also shipped as runtime entry points. Keep their shell tools in the
-  # runtime closure rather than relying on utilities installed on the host.
-  guiServiceToolPath = pkgs.lib.makeBinPath [
-    pkgs.coreutils
-    pkgs.gawk
-    pkgs.gnused
-    pkgs.ps
-  ];
   controlSourceRoots = [
     "crates"
     "frontends"
@@ -28,10 +19,14 @@ let
     "apps"
     "tests"
     "tools"
+    # Every path target of the root `Cargo.toml` `[patch]` table must survive
+    # the filter: Cargo reads `[patch]` while resolving even the trimmed
+    # control-plane member set, so a missing `vendor/<crate>/Cargo.toml` fails
+    # the build with "failed to load source for dependency".
     "vendor/gpui_ce_components"
+    "vendor/gpui-ce"
     "vendor/gpui_ce_components_base"
     "vendor/gpui_ce_macos"
-    "vendor/gpui-ce"
   ];
   workspaceSource =
     if workspaceAvailable then
@@ -270,16 +265,13 @@ let
         };
         doCheck = false;
         installPhase = ''
-                    # Match the pinned cargoInstallHook's target subdirectory.
-                    # cargoBuildHook always passes --target, even for native builds.
-                    release_dir="target/${pkgs.stdenv.targetPlatform.rust.cargoShortTarget}/$cargoBuildType"
                     mkdir -p "$out/bin"
                     for binary in backend-locald backend-cli backend-mcp; do
-                      if [ ! -x "$release_dir/$binary" ]; then
-                        echo "gui runtime did not build expected $binary under $release_dir" >&2
+                      if [ ! -x "target/release/$binary" ]; then
+                        echo "gui runtime did not build expected $binary" >&2
                         exit 1
                       fi
-                      cp "$release_dir/$binary" "$out/bin/$binary"
+                      cp "target/release/$binary" "$out/bin/$binary"
                     done
                     mkdir -p "$out/share/nudox"
                     cargo metadata --locked --offline --format-version 1 > "$out/share/nudox/cargo-metadata.json"
@@ -302,8 +294,6 @@ let
                     cat > "$out/bin/nudox-gui-service" <<'EOF'
           #!/bin/sh
           set -eu
-          PATH="${guiServiceToolPath}:''${PATH:-}"
-          export PATH
           action=''${1:-status}
           if [ "$#" -gt 0 ]; then shift; fi
           endpoint=''${NUDOX_GUI_LOCALD_ENDPOINT:-}
@@ -424,8 +414,6 @@ let
                     cat > "$out/bin/nudox-gui-probe" <<'EOF'
           #!/bin/sh
           set -eu
-          PATH="${guiServiceToolPath}:''${PATH:-}"
-          export PATH
           endpoint=''${NUDOX_GUI_LOCALD_ENDPOINT:-}
           workspace=''${NUDOX_GUI_WORKSPACE:-}
           while [ "$#" -gt 0 ]; do
@@ -444,8 +432,6 @@ let
                     cat > "$out/bin/nudox-gui-service-test" <<'EOF'
           #!/bin/sh
           set -eu
-          PATH="${guiServiceToolPath}:''${PATH:-}"
-          export PATH
           bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
           root=$(mktemp -d "''${TMPDIR:-/tmp}/nudox-gui-service-test.XXXXXX")
           endpoint="$root/locald.sock"
@@ -501,9 +487,6 @@ let
     uv = pkgs.uv;
   };
   nativeLibraries = [
-    # Real corpus packages include <brotli/types.h> across translation units;
-    # this must come from the compiler closure, not an incidental service tool.
-    pkgs.brotli
     pkgs.cmake
     pkgs.openssl
     pkgs.pkg-config
@@ -534,27 +517,6 @@ let
     pkgs.wayland-protocols
     pkgs.xorg.libXdmcp
   ];
-  # Cargo/nextest binaries built inside a dev shell are not Nix-fixed-up
-  # outputs. They need the same GUI libraries at runtime, not just at link
-  # time, even to list tests before any display is opened.
-  linuxDesktopRuntimePath = pkgs.lib.makeLibraryPath (
-    linuxDesktopLibraries ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.mesa ]
-  );
-  # libglvnd and vulkan-loader are only dispatchers: on NixOS the real
-  # drivers come from /run/opengl-driver, which CI containers do not have.
-  # Without them wgpu finds no adapter and the desktop never maps a window
-  # (build 2321). Point both loaders at Mesa's software drivers explicitly.
-  linuxGraphicsEnvironment = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
-    let
-      lavapipe = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json";
-    in
-    {
-      __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
-      LIBGL_DRIVERS_PATH = "${pkgs.mesa}/lib/dri";
-      VK_DRIVER_FILES = lavapipe;
-      VK_ICD_FILENAMES = lavapipe;
-    }
-  );
   nativeCompilers = builtins.attrValues compilers ++ nativeLibraries ++ linuxDesktopLibraries;
   # Go semantic oracle. The coordinate is the workspace's own vendored Go
   # module (`frontends/go/src/legacy/oracle`); its `vendorHash` is the exact
@@ -615,11 +577,10 @@ let
   ]
   ++ pkgs.lib.optional (backendControl != null) backendControl
   ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
-  # The general backend command and compiler gate need HTTP diagnostics, not
-  # a local Qdrant server. Keep the server in the explicit services/complete
-  # shells so a normal test run does not compile it just to enter its shell.
-  coreServiceTools = [ pkgs.curl ];
-  serviceTools = coreServiceTools ++ [ pkgs.qdrant ];
+  serviceTools = [
+    pkgs.curl
+    pkgs.qdrant
+  ];
   observabilityTools = [
     pkgs.otel-cli
     pkgs.otel-desktop-viewer
@@ -637,7 +598,6 @@ in
   inherit
     authorityHelpers
     backendControl
-    coreServiceTools
     gpuiOutputHashes
     guiRuntime
     lunaTools
@@ -646,8 +606,6 @@ in
     compilers
     dylintLink
     goOracle
-    linuxDesktopRuntimePath
-    linuxGraphicsEnvironment
     nativeCompilers
     qualityTools
     serviceTools

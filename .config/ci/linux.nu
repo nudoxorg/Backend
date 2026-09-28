@@ -51,8 +51,15 @@ def main [
     let flake = if $skip_flake_check {
         true
     } else {
+        # `nix develop` points TMPDIR at its own /tmp/nix-shell.* directory.
+        # A local (preferLocalBuild) check derivation then gets a build dir
+        # under it that its sandbox cannot see, and nushell builders fail
+        # with "$env.PWD points to a non-existent directory". Check with the
+        # plain /tmp the flake check always had outside the shell.
         step "root flake check" {||
-            run-external "nix" "flake" "check" "-L" "--option" "max-jobs" "2" "path:."
+            with-env {TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", TEMPDIR: "/tmp"} {
+                run-external "nix" "flake" "check" "-L" "path:."
+            }
         }
     }
 

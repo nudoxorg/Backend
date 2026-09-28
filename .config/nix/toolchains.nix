@@ -32,6 +32,14 @@ let
     "x86_64-apple-darwin"
     "aarch64-apple-darwin"
   ];
+  # The subset a Linux host can `cargo check` with the `cross` shell's hermetic
+  # zig C cross compilers alone. `x86_64-pc-windows-msvc` needs the MSVC CRT and
+  # SDK (cargo-xwin, a later archive lane) and both Darwin targets need the Apple
+  # SDK, so they stay compile-gated on their own native/emulated lanes.
+  crossCheckTargets = [
+    "x86_64-pc-windows-gnu"
+    "aarch64-unknown-linux-gnu"
+  ];
   cross = inputs.fenix.packages.${system}.combine (
     [ stable ]
     ++ map (
@@ -66,6 +74,7 @@ in
     nightly
     cross
     crossTargets
+    crossCheckTargets
     ;
   stableCargo = "${stable}/bin/cargo";
   nightlyCargo = "${nightly}/bin/cargo";

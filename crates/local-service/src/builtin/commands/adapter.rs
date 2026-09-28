@@ -1009,6 +1009,8 @@ mod tests {
         ));
     }
 
+    // Symlink creation needs a privilege Windows does not grant by default.
+    #[cfg(unix)]
     #[test]
     fn a_symlink_to_a_directory_is_indexed_in_place() {
         let tree = TempTree::new();
@@ -1037,6 +1039,8 @@ mod tests {
         assert_eq!(error.0, ADD_TARGET_REQUIRED);
     }
 
+    // Symlink creation needs a privilege Windows does not grant by default.
+    #[cfg(unix)]
     #[test]
     fn a_symlink_to_a_file_is_refused() {
         let tree = TempTree::new();
