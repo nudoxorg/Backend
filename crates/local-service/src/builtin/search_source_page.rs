@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-struct StoredSnapshot {
+pub(super) struct StoredSnapshot {
     snapshot: WorkspaceSnapshot,
     directory: PathBuf,
 }
@@ -308,16 +308,43 @@ fn store_relation(
     })
 }
 
+/// A stored snapshot whose source relation names exactly `labels`, one file
+/// each: the fixture for residences keyed by the relation root.
+#[cfg(test)]
+pub(super) fn snapshot_of_projects(labels: &[String]) -> Result<StoredSnapshot, BuiltinModelError> {
+    let declarations = shared_declarations(1).map_err(BuiltinModelError)?;
+    let entries = labelled_source_entries(labels.iter().cloned(), 1, &declarations)?;
+    let relation =
+        backend_engine::RelationState::<backend_engine::ProductSourceRelation>::from_entries(
+            entries,
+            super::admitted_coverage()?,
+        )
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    store_relation(relation, format!("projects-{}", labels.len()))
+}
+
 fn source_entries(
     projects: usize,
     files_per_project: usize,
     declarations: &Arc<[backend_compile::SourceDeclaration]>,
 ) -> Result<Vec<([u8; 32], ProductSourceRecord)>, BuiltinModelError> {
+    labelled_source_entries(
+        (0..projects).map(|project_index| format!("pkg-{project_index}")),
+        files_per_project,
+        declarations,
+    )
+}
+
+fn labelled_source_entries(
+    labels: impl ExactSizeIterator<Item = String>,
+    files_per_project: usize,
+    declarations: &Arc<[backend_compile::SourceDeclaration]>,
+) -> Result<Vec<([u8; 32], ProductSourceRecord)>, BuiltinModelError> {
+    let projects = labels.len();
     let mut entries =
         Vec::with_capacity(projects.saturating_add(projects.saturating_mul(files_per_project)));
     let mut next_file = 0u32;
-    for project_index in 0..projects {
-        let label = format!("pkg-{project_index}");
+    for label in labels {
         let project_key = backend_engine::package_key(&label).to_bytes();
         let mut file_keys = Vec::with_capacity(files_per_project);
         for file_index in 0..files_per_project {

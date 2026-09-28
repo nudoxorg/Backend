@@ -679,6 +679,37 @@ mod stale_generation {
         let _ = fs::remove_file(path);
     }
 
+    /// Only the live generation is decoded. A superseded frame is read and
+    /// checksummed but never parsed, so a start does not pay for every
+    /// workspace root the journal ever held (the desktop fixture's journal
+    /// held 20 generations, 113 MB of them dead).
+    #[test]
+    fn a_superseded_generation_is_checksummed_but_never_decoded() {
+        let generations = generations();
+        let (newest_view, newest_capability) = &generations.newest;
+        let path = journal_path("superseded-undecoded");
+        let mut journal = ViewJournal::open(&path).expect("open view journal");
+        journal
+            .append(SNAPSHOT, b"a superseded generation: checksummed, never decoded")
+            .expect("append a superseded frame");
+        journal
+            .persist(
+                generations.root,
+                newest_view,
+                Cursor::for_view_root(newest_view),
+                None,
+            )
+            .expect("persist the live generation");
+
+        let recovered = journal
+            .load_for_workspace(generations.root, newest_capability)
+            .expect("a superseded frame's bytes are not recovery input")
+            .expect("the live generation recovers");
+        assert_eq!(labels(&recovered.view), labels(newest_view));
+        assert_eq!(recovered.cursor, Cursor::for_view_root(newest_view));
+        let _ = fs::remove_file(path);
+    }
+
     /// A journal whose only frame is an event still fails closed.
     ///
     /// Skipping the events of a superseded snapshot must not also swallow an

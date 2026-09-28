@@ -94,10 +94,27 @@ impl ViewJournal {
         expected_workspace: [u8; 32],
     ) -> Result<Option<RecoveredView>, String> {
         let live = capability_fingerprint(capability);
+        // Every snapshot restarts the chain and a frame for another workspace
+        // root empties it, so only the last snapshot and the events after it
+        // can shape the result. Every frame is still read and checksummed
+        // (a torn tail is repaired as before); only that suffix is decoded.
+        // Decoding each superseded generation made a start pay for every
+        // workspace root the journal ever held: 20 snapshots and 113 MB of
+        // dead JSON in the desktop fixture's journal.
+        let mut suffix: Vec<(u8, Vec<u8>)> = Vec::new();
+        self.scan_frames(|kind, payload| {
+            match kind {
+                SNAPSHOT => suffix.clear(),
+                EVENT => {}
+                _ => return Err("view journal has an unknown record kind".to_owned()),
+            }
+            suffix.push((kind, payload));
+            Ok(())
+        })?;
         let mut state = Scoped::Empty;
         let mut events = Vec::new();
-        self.scan_frames(|kind, payload| {
-            let envelope = decode_envelope(payload)?;
+        for (kind, payload) in suffix {
+            let envelope = decode_envelope(&payload)?;
             if expected_workspace != envelope.workspace_root {
                 // A valid snapshot for an older selected workspace carries a
                 // deliberately different producer capability. Ignore that
@@ -105,18 +122,15 @@ impl ViewJournal {
                 // for a snapshot bound to the selected store HEAD.
                 state = Scoped::Empty;
                 events.clear();
-                return Ok(());
+                continue;
             }
-            match kind {
-                SNAPSHOT => {
-                    state = admit_snapshot(&envelope, capability, live)?;
-                    events.clear();
-                    Ok(())
-                }
-                EVENT => apply_event(&mut state, envelope, &mut events),
-                _ => Err("view journal has an unknown record kind".to_owned()),
+            if kind == SNAPSHOT {
+                state = admit_snapshot(&envelope, capability, live)?;
+                events.clear();
+            } else {
+                apply_event(&mut state, envelope, &mut events)?;
             }
-        })?;
+        }
         self.workspace.set(Some(expected_workspace));
         let Scoped::Accepted {
             root: view, cursor, ..
@@ -356,7 +370,7 @@ impl ViewJournal {
 
     fn scan_frames<F>(&self, mut visit: F) -> Result<(), String>
     where
-        F: FnMut(u8, &[u8]) -> Result<(), String>,
+        F: FnMut(u8, Vec<u8>) -> Result<(), String>,
     {
         let length = match fs::metadata(&self.path) {
             Ok(metadata) => metadata.len(),
@@ -433,7 +447,7 @@ impl ViewJournal {
                 }
                 return Err("view journal checksum mismatch".to_owned());
             }
-            visit(kind, &payload)?;
+            visit(kind, payload)?;
             offset = end;
         }
         Ok(())
