@@ -334,8 +334,10 @@ pub static ABYSS: Palette = Palette {
     table: hex(0x050b17),
     ink0: hex(0xf5f7fb),
     ink1: hex(0xd2d9e5),
-    ink2: hex(0x9aa6ba),
-    ink3: hex(0x74819a),
+    // Every reading ink clears 4.5:1 on every reading ground (see the tests);
+    // ink4 is rules and inactive ticks only, never text.
+    ink2: hex(0xa3aec1),
+    ink3: hex(0x8591a8),
     ink4: hex(0x4c5870),
     bevel_hi: hexa(0xc4d2ff, 0.26),
     bevel_lo: hexa(0x000000, 0.6),
@@ -367,9 +369,11 @@ pub static ABYSS: Palette = Palette {
         hue: hex(0xa9b6cc),
         bg: hexa(0xa9b6cc, 0.12),
     },
+    // Types are teal: apart from mint (yours) in hue and by 16 L*, so they
+    // stay apart under deuteranopia, protanopia and tritanopia.
     f_type: FamilyTone {
-        hue: hex(0x5fe0b4),
-        bg: hexa(0x5fe0b4, 0.13),
+        hue: hex(0x2bb8c9),
+        bg: hexa(0x2bb8c9, 0.13),
     },
     f_con: FamilyTone {
         hue: hex(0xd59cf5),
@@ -379,9 +383,11 @@ pub static ABYSS: Palette = Palette {
         hue: hex(0x8fa6ff),
         bg: hexa(0x8fa6ff, 0.14),
     },
+    // Values have no hue: amber means caution only. A value's printed value
+    // is its information; its mark is neutral ink.
     f_val: FamilyTone {
-        hue: hex(0xf3c06e),
-        bg: hexa(0xf3c06e, 0.13),
+        hue: hex(0xd2d9e5),
+        bg: hexa(0xd2d9e5, 0.1),
     },
     glass: hex(0x132039),
     well: hexa(0x020711, 0.55),
@@ -394,7 +400,7 @@ pub static ABYSS: Palette = Palette {
     shadow: hexa(0x000000, 0.7),
     syntax: Syntax {
         keyword: hex(0xc5a3ff),
-        type_name: hex(0x5fe0b4),
+        type_name: hex(0x2bb8c9),
         function: hex(0x8fa6ff),
         string: hex(0xf0c987),
         number: hex(0xf39b8a),
@@ -425,29 +431,32 @@ pub static GLACIER: Palette = Palette {
     table: hex(0xeef2f8),
     ink0: hex(0x0a1222),
     ink1: hex(0x1d2940),
-    ink2: hex(0x4b5a75),
-    // The quiet reading ink still clears 5:1 on Glacier's darkest ground.
-    ink3: hex(0x555d79),
+    ink2: hex(0x39445b),
+    // The quiet reading ink still clears 5:1 on Glacier's darkest ground,
+    // with ink2 a clear step above it.
+    ink3: hex(0x535d75),
     ink4: hex(0xa3aec2),
     bevel_hi: hex(0xffffff),
     bevel_lo: hexa(0x1e326e, 0.22),
+    // Voices are read as text too ("yours" names, failure words): each base
+    // clears 4.5:1 on every Glacier ground.
     mint: VoiceTone {
-        base: hex(0x0f9d6a),
+        base: hex(0x0b734e),
         soft: hexa(0x0f9d6a, 0.1),
         line: hexa(0x0f9d6a, 0.36),
     },
     peri: VoiceTone {
-        base: hex(0x4b5bd6),
+        base: hex(0x4757d5),
         soft: hexa(0x4b5bd6, 0.1),
         line: hexa(0x4b5bd6, 0.4),
     },
     amber: VoiceTone {
-        base: hex(0xa8650a),
+        base: hex(0x8f5609),
         soft: hexa(0xa8650a, 0.1),
         line: hexa(0xa8650a, 0.36),
     },
     coral: VoiceTone {
-        base: hex(0xc8324a),
+        base: hex(0xb42c43),
         soft: hexa(0xc8324a, 0.09),
         line: hexa(0xc8324a, 0.36),
     },
@@ -460,8 +469,8 @@ pub static GLACIER: Palette = Palette {
         bg: hexa(0x55647e, 0.1),
     },
     f_type: FamilyTone {
-        hue: hex(0x0b8f68),
-        bg: hexa(0x0b8f68, 0.1),
+        hue: hex(0x055062),
+        bg: hexa(0x055062, 0.1),
     },
     f_con: FamilyTone {
         hue: hex(0x8b3fc0),
@@ -472,8 +481,8 @@ pub static GLACIER: Palette = Palette {
         bg: hexa(0x3d52d0, 0.1),
     },
     f_val: FamilyTone {
-        hue: hex(0xa2650c),
-        bg: hexa(0xa2650c, 0.1),
+        hue: hex(0x1d2940),
+        bg: hexa(0x1d2940, 0.08),
     },
     glass: hex(0xffffff),
     well: hexa(0x1e326e, 0.05),
@@ -486,7 +495,7 @@ pub static GLACIER: Palette = Palette {
     shadow: hexa(0x14285a, 0.3),
     syntax: Syntax {
         keyword: hex(0x7b3fd1),
-        type_name: hex(0x0b8f68),
+        type_name: hex(0x055062),
         function: hex(0x3d52d0),
         string: hex(0x9a5b00),
         number: hex(0xb8432f),
@@ -604,6 +613,72 @@ pub mod ty {
     pub const AXIS: TypeRole = role(Face::Serif, 400.0, 13.0, 16.0, 0.0);
 }
 
+/// The one type scale (DIRECTION.md §5): six roles, no exceptions. Pages use
+/// only these; the shell and chrome migrate from [`ty`] in a later sweep.
+pub mod scale {
+    use super::{Face, TypeRole, role};
+
+    /// The page title: the only large text on a page.
+    pub const DISPLAY: TypeRole = role(Face::Display, 700.0, 40.0, 44.0, -0.03);
+    /// The author's first sentence, and at most one sentence per section.
+    pub const LEDE: TypeRole = role(Face::Serif, 400.0, 19.0, 28.0, 0.0);
+    /// A section heading, at ink2 beside its gutter mark.
+    pub const SECTION: TypeRole = role(Face::Ui, 600.0, 13.0, 16.0, 0.02);
+    /// Reading text.
+    pub const BODY: TypeRole = role(Face::Ui, 400.0, 14.0, 22.0, 0.0);
+    /// Every identifier, path and version.
+    pub const MONO: TypeRole = role(Face::Mono, 400.0, 13.0, 20.0, 0.0);
+    /// A name in a specimen: the mono role at weight 500.
+    pub const MONO_NAME: TypeRole = role(Face::Mono, 500.0, 13.0, 20.0, 0.0);
+    /// Labels, counts and quiet words, at ink3.
+    pub const LABEL: TypeRole = role(Face::Ui, 400.0, 12.0, 16.0, 0.0);
+    /// Counts, versions and paths at label size.
+    pub const LABEL_MONO: TypeRole = role(Face::Mono, 400.0, 12.0, 16.0, 0.0);
+}
+
+/// The page's rhythm, in px at 100 % text scale, on an 8 px grid.
+pub mod rhythm {
+    /// The grid every measure sits on.
+    pub const GRID: f32 = 8.0;
+    /// Between sections.
+    pub const SECTION: f32 = 48.0;
+    /// Between groups inside a section.
+    pub const GROUP: f32 = 16.0;
+    /// A specimen row, a rail.
+    pub const ROW: f32 = 32.0;
+    /// A verb row, a policy row.
+    pub const ROW_TIGHT: f32 = 28.0;
+    /// From a section's heading to its content.
+    pub const HEAD_GAP: f32 = 20.0;
+    /// The reading column.
+    pub const COLUMN: f32 = 640.0;
+    /// How far the spine sits left of the column.
+    pub const SPINE: f32 = 44.0;
+    /// The spine's offset below the shelf breakpoint.
+    pub const SPINE_NARROW: f32 = 36.0;
+    /// The hero gem.
+    pub const GEM: f32 = 56.0;
+    /// The hero gem below the shelf breakpoint.
+    pub const GEM_NARROW: f32 = 40.0;
+}
+
+/// Stroke weights and dashes. Weight says what a line is; the dash says how
+/// sure the page is of it.
+pub mod stroke {
+    /// Structure: rules, rungs, partitions.
+    pub const HAIR: f32 = 1.0;
+    /// A relation or a specimen's own shape, in the kind hue.
+    pub const RELATION: f32 = 1.5;
+    /// Focus: the bevel.
+    pub const FOCUS: f32 = 2.0;
+    /// Matched by name or path, not compiler-resolved.
+    pub const INFERRED: [f32; 2] = [5.0, 4.0];
+    /// Optional or maybe.
+    pub const OPTIONAL: [f32; 2] = [1.5, 3.0];
+    /// A branch that exists in the type but not on this path.
+    pub const PRUNED: [f32; 2] = [2.0, 3.0];
+}
+
 /// Geometry: chamfers, radii and shell metrics, in px at 100 % text scale.
 pub mod geo {
     use gpui::{Pixels, px};
@@ -622,6 +697,12 @@ pub mod geo {
     pub const CUT_TIP: Pixels = px(6.0);
     /// Mosaic stones.
     pub const CUT_STONE: Pixels = px(3.0);
+    /// A rail's step plate.
+    pub const CUT_STEP: Pixels = px(6.0);
+    /// A specimen's own plate (the pipe's body, the contract's socket).
+    pub const CUT_SPEC: Pixels = px(8.0);
+    /// The package page's type case.
+    pub const CUT_TRAY: Pixels = px(12.0);
     /// Bevel width at rest; focus doubles it.
     pub const BEVEL: Pixels = px(1.0);
 
@@ -730,13 +811,14 @@ pub fn scaled(value: f32, scale: f32) -> Pixels {
 
 #[cfg(test)]
 mod tests {
-    use super::{GLACIER, Tone};
+    use super::{ABYSS, GLACIER, Palette, Tone};
+
+    fn linear(channel: f32) -> f32 {
+        if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
+    }
 
     fn luminance(tone: Tone) -> f32 {
         let rgba = tone.rgba();
-        let linear = |channel: f32| {
-            if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
-        };
         0.2126 * linear(rgba.red) + 0.7152 * linear(rgba.green) + 0.0722 * linear(rgba.blue)
     }
 
@@ -745,11 +827,101 @@ mod tests {
         (light.max(dark) + 0.05) / (light.min(dark) + 0.05)
     }
 
+    /// The grounds reading text sits on (tracks, g5, carry no text).
+    fn grounds(p: &Palette) -> [(&'static str, Tone); 10] {
+        [("g0", p.g0), ("g1", p.g1), ("g2", p.g2), ("g3", p.g3), ("g4", p.g4), ("plate", p.plate), ("plate2", p.plate2), ("plate3", p.plate3), ("table", p.table), ("glass", p.glass)]
+    }
+
+    /// Every colour a page draws text in.
+    fn text_roles(p: &Palette) -> [(&'static str, Tone); 8] {
+        [("ink0", p.ink0), ("ink1", p.ink1), ("ink2", p.ink2), ("ink3", p.ink3), ("mint", p.mint.base), ("coral", p.coral.base), ("peri", p.peri.base), ("amber", p.amber.base)]
+    }
+
+    /// Every colour a page draws a meaningful mark or stroke in.
+    fn mark_roles(p: &Palette) -> [(&'static str, Tone); 7] {
+        [("type", p.f_type.hue), ("callable", p.f_call.hue), ("contract", p.f_con.hue), ("value", p.f_val.hue), ("namespace", p.f_ns.hue), ("mint", p.mint.base), ("coral", p.coral.base)]
+    }
+
+    /// Each failing pair, spelled out, so a regression names what broke.
+    fn failures(p: &Palette, theme: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for (ground, g) in grounds(p) {
+            for (role, tone) in text_roles(p) {
+                let c = contrast(tone, g);
+                if c < 4.5 { out.push(format!("{theme}: text {role} on {ground} is {c:.2}:1, below 4.5")); }
+            }
+            for (role, tone) in mark_roles(p) {
+                let c = contrast(tone, g);
+                if c < 3.0 { out.push(format!("{theme}: mark {role} on {ground} is {c:.2}:1, below 3.0")); }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_reading_text_and_mark_clears_its_ground_in_both_themes() {
+        let mut broken = failures(&ABYSS, "Abyss");
+        broken.extend(failures(&GLACIER, "Glacier"));
+        assert!(broken.is_empty(), "{}", broken.join("\n"));
+    }
+
+    #[test]
+    fn the_inks_step_down_in_order_and_ink4_is_never_text() {
+        for (theme, p) in [("Abyss", &ABYSS), ("Glacier", &GLACIER)] {
+            let steps = [p.ink0, p.ink1, p.ink2, p.ink3].map(|ink| contrast(ink, p.g1));
+            for pair in steps.windows(2) {
+                assert!(pair[0] - pair[1] >= 1.2, "{theme}: ink steps {steps:?} collapse on g1");
+            }
+            // ink4 draws rules and inactive ticks; reading it would fail.
+            assert!(contrast(p.ink4, p.g1) < 4.5, "{theme}: ink4 reads as text; rules must not");
+            assert!(text_roles(p).iter().all(|(_, tone)| *tone != p.ink4), "{theme}: a text role is ink4");
+        }
+    }
+
     #[test]
     fn glacier_quiet_reading_ink_clears_its_darkest_ground() {
         for ground in [GLACIER.g0, GLACIER.g1, GLACIER.g2, GLACIER.g3] {
             assert!(contrast(GLACIER.ink3, ground) >= 5.1);
         }
         assert!(luminance(GLACIER.ink2) < luminance(GLACIER.ink3));
+    }
+
+    // ---- colour vision: Machado, Oliveira and Fernandes (2009), severity 1.0,
+    // applied in linear sRGB; distance is CIE76 in L*a*b* (D65).
+    const NORMAL: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    const DEUTAN: [[f32; 3]; 3] = [[0.367_322, 0.860_646, -0.227_968], [0.280_085, 0.672_501, 0.047_413], [-0.011_820, 0.042_940, 0.968_881]];
+    const PROTAN: [[f32; 3]; 3] = [[0.152_286, 1.052_583, -0.204_868], [0.114_503, 0.786_281, 0.099_216], [-0.003_882, -0.048_116, 1.051_998]];
+    const TRITAN: [[f32; 3]; 3] = [[1.255_528, -0.076_749, -0.178_779], [-0.078_411, 0.930_809, 0.147_602], [0.004_733, 0.691_367, 0.303_900]];
+
+    fn lab(tone: Tone, m: &[[f32; 3]; 3]) -> [f32; 3] {
+        let c = tone.rgba();
+        let rgb = [linear(c.red), linear(c.green), linear(c.blue)];
+        let s = m.map(|row| (row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]).clamp(0.0, 1.0));
+        let x = 0.4124 * s[0] + 0.3576 * s[1] + 0.1805 * s[2];
+        let y = 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2];
+        let z = 0.0193 * s[0] + 0.1192 * s[1] + 0.9505 * s[2];
+        let f = |t: f32| if t > 0.008_856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 };
+        [116.0 * f(y) - 16.0, 500.0 * (f(x / 0.950_47) - f(y)), 200.0 * (f(y) - f(z / 1.088_83))]
+    }
+
+    fn distance(a: Tone, b: Tone, m: &[[f32; 3]; 3]) -> f32 {
+        let (a, b) = (lab(a, m), lab(b, m));
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn types_mint_and_callables_stay_apart_for_every_colour_vision() {
+        for (theme, p) in [("Abyss", &ABYSS), ("Glacier", &GLACIER)] {
+            let (teal, mint, peri) = (p.f_type.hue, p.mint.base, p.f_call.hue);
+            for (vision, m, floor) in [("normal", &NORMAL, 25.0), ("deuteranopia", &DEUTAN, 25.0), ("protanopia", &PROTAN, 25.0), ("tritanopia", &TRITAN, 10.0)] {
+                let tm = distance(teal, mint, m);
+                let tp = distance(teal, peri, m);
+                assert!(tm >= floor, "{theme} {vision}: type and yours are {tm:.1} apart, below {floor}");
+                assert!(tp >= 14.0, "{theme} {vision}: type and callable are {tp:.1} apart, below 14");
+            }
+            // Apart by lightness as well as hue: a hue loss never merges them.
+            let (lt, lm) = (lab(teal, &NORMAL)[0], lab(mint, &NORMAL)[0]);
+            assert!((lt - lm).abs() >= 10.0, "{theme}: type L* {lt:.0} and yours L* {lm:.0} differ by under 10");
+        }
     }
 }
