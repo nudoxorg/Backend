@@ -62,6 +62,8 @@ fn member(name: &str, kind: DeclarationKind, signature: &str, summary: &str) -> 
             tokens: Arc::from([]),
         }),
         summary: Some(Arc::from(summary)),
+        docs: Arc::from([DocFragment::Text(Arc::from(summary))]),
+        sections: crate::model::pages::DocSections::default(),
     }
 }
 
@@ -87,6 +89,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
         docs: Arc::from([DocFragment::Text(Arc::from(format!(
             "The readable label of {name}.\n\nIt names one relation group."
         )))]),
+        sections: crate::model::pages::DocSections::default(),
         site: SourceSite {
             location: Known::Known(SourceLocation {
                 path: Arc::from("glyph.rs"),
@@ -124,7 +127,7 @@ pub(crate) fn page(name: &str) -> SymbolPage {
     }
 }
 
-fn dossier() -> PackageDossier {
+pub(crate) fn dossier() -> PackageDossier {
     let node = |name: &str, kind: DeclarationKind, children: Vec<OutlineNode>| OutlineNode {
         decl: decl(name, kind),
         children: Arc::from(children),
@@ -221,6 +224,12 @@ impl PageReader for Fixture {
                 tree: Known::Unknown(unknown(GapReason::NotServed)),
             }),
             ReadRequest::Health => PageValue::Health(health()),
+            ReadRequest::Browse(_) => {
+                return Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+                    crate::core::FaultCode::Transport,
+                    "the fixture serves no browse pages",
+                )));
+            }
             ReadRequest::Search(query) | ReadRequest::SearchMore { query, .. } => PageValue::Search(SearchPage {
                 query: Arc::clone(&query.text),
                 rows: Arc::from([SearchRow {
@@ -301,7 +310,7 @@ pub(crate) fn rig(cx: &mut TestAppContext, route: Option<Route>, width: f32, hei
     rig_with_reads(cx, route, width, height, ReadPool::start(2, |_| Fixture).expect("pool"))
 }
 
-fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, width: f32, height: f32, pool: ReadPool) -> Rig {
+pub(crate) fn rig_with_reads(cx: &mut TestAppContext, route: Option<Route>, width: f32, height: f32, pool: ReadPool) -> Rig {
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -888,24 +897,22 @@ fn the_hero_name_is_whole_at_every_width_and_text_size(cx: &mut TestAppContext) 
             assert!(!line.content.contains('…') && !line.content.ends_with('-'));
         }
         wrapped |= lines.len() > 1;
-        // The status bar's address: its path may give way from the left,
-        // the name never does.
-        let address = ledger
-            .texts
-            .iter()
-            .filter(|text| text.key.starts_with("address:"))
-            .collect::<Vec<_>>();
-        let said = address.iter().map(|text| text.content.as_str()).collect::<String>();
-        eprintln!("{width:>6} px @ {percent:>3} %: address {:?}", address.iter().map(|text| text.content.as_str()).collect::<Vec<_>>());
+        // The address (the jump bar's, on hover): its path may give way
+        // from the left, the name never does; every line fits its room.
+        let (address, role) = rig.cx.update(|_, cx| {
+            let snapshot = rig.graph.store.read(cx).snapshot();
+            super::status::address_lines(&snapshot, px(width), cx)
+        });
+        let said = address.concat();
+        eprintln!("{width:>6} px @ {percent:>3} %: address {address:?}");
         assert!(said.ends_with(long), "the address at {width} px, {percent} % ends in the whole name: {said:?}");
+        let room = rig.cx.update(|_, cx| {
+            let measure = facet::Measure::new(px(width), &facet::ActiveFacet::facet(cx));
+            px(width) - measure.space(facet::Space::Roomy) * 2.0
+        });
         for line in &address {
-            assert!(
-                !line.clipped_without_ellipsis() && line.overflow != facet::probe::TextOverflow::Ellipsis,
-                "at {width} px, {percent} %: address line {:?} needs {} px in a {} px box",
-                line.content,
-                line.natural_width,
-                line.bounds.width
-            );
+            let needs = rig.cx.update(|_, cx| super::text_fit::text_width(line, &role, cx));
+            assert!(needs <= room, "at {width} px, {percent} %: address line {line:?} needs {needs:?} of {room:?}");
         }
         cut |= said.starts_with('…');
     }
@@ -1067,6 +1074,143 @@ fn graph_open_rejects_a_duplicate_exact_identity_on_a_later_search_page(cx: &mut
     assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "ambiguity settles the native pending state");
 }
 
+/// A worker barrier, not a virtual-clock delay: the old result is returned
+/// only after the mounted shell has observed the superseding state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeldLookupStage { Search, More }
+
+#[derive(Default)]
+struct LookupGate {
+    state: std::sync::Mutex<(bool, bool)>, // entered, released
+    wake: std::sync::Condvar,
+    claimed: std::sync::atomic::AtomicBool,
+    returned: std::sync::atomic::AtomicUsize,
+}
+
+impl LookupGate {
+    fn hold_once(&self) {
+        use std::sync::atomic::Ordering;
+        if self.claimed.swap(true, Ordering::SeqCst) { return; }
+        let mut state = self.state.lock().expect("lookup gate");
+        state.0 = true;
+        self.wake.notify_all();
+        while !state.1 {
+            // A failed test still lets the reader thread stop. The release
+            // guard below normally opens this barrier on every unwind path.
+            let (next, timed) = self.wake.wait_timeout(state, Duration::from_secs(10)).expect("lookup barrier");
+            state = next;
+            assert!(!timed.timed_out() || state.1, "the test never released its held lookup");
+        }
+        self.returned.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn entered(&self) -> bool { self.state.lock().expect("lookup gate").0 }
+    fn release(&self) {
+        self.state.lock().expect("lookup gate").1 = true;
+        self.wake.notify_all();
+    }
+}
+
+struct LookupRelease(Arc<LookupGate>);
+impl Drop for LookupRelease {
+    fn drop(&mut self) { self.0.release(); }
+}
+
+struct HeldLookupFixture { gate: Arc<LookupGate>, stage: HeldLookupStage }
+impl PageReader for HeldLookupFixture {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        let mut value = Fixture.read(request, context)?;
+        match request {
+            ReadRequest::Search(query) if query.text.as_ref() == "RelationDirection" => {
+                if self.stage == HeldLookupStage::More {
+                    let PageValue::Search(page) = &mut value else { unreachable!() };
+                    let mut unrelated = page.rows[0].clone();
+                    unrelated.package = Some(Arc::from("/fixture/other"));
+                    page.rows = Arc::from([unrelated]);
+                    page.next = Some(SearchContinuation { cursor: backend_library::PageContinuation::from_cursor(backend_library::Cursor::new()), worker: context.worker });
+                } else {
+                    self.gate.hold_once();
+                }
+            }
+            ReadRequest::SearchMore { query, .. } if query.text.as_ref() == "RelationDirection" => {
+                let PageValue::Search(page) = value else { unreachable!() };
+                value = PageValue::SearchMore(page);
+                self.gate.hold_once();
+            }
+            _ => {}
+        }
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SupersedeLookup { Focus, Route, Root, Release, Overlay }
+
+#[gpui::test]
+fn late_graph_search_and_continuation_cannot_navigate_after_superseding_state(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    for stage in [HeldLookupStage::Search, HeldLookupStage::More] {
+        for change in [SupersedeLookup::Focus, SupersedeLookup::Route, SupersedeLookup::Root, SupersedeLookup::Release, SupersedeLookup::Overlay] {
+            let gate = Arc::new(LookupGate::default());
+            let held = gate.clone();
+            let pool = ReadPool::start(2, move |_| HeldLookupFixture { gate: held.clone(), stage }).expect("held reader pool");
+            let mut rig = rig_with_reads(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0, pool);
+            // Declared after the rig so unwinding releases the worker before
+            // dropping its pool. This is a real native asynchronous request.
+            let _release_on_drop = LookupRelease(gate.clone());
+            rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+            rig.settle();
+            rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Page), cx));
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !gate.entered() {
+                rig.frame(16);
+                assert!(Instant::now() < deadline, "{stage:?}/{change:?}: lookup never entered worker");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(gate.returned.load(Ordering::SeqCst), 0, "the exact B result has not returned yet");
+            assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
+            assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "{stage:?}/{change:?}: a real open is pending before cancellation");
+            let old_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+            match change {
+                SupersedeLookup::Focus => rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx)),
+                other => rig.graph.root.update(rig.cx, |root, cx| root.queue(match other {
+                    SupersedeLookup::Route => Intent::Navigate(page_route("RelationLabel")),
+                    SupersedeLookup::Root => Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 502) },
+                    SupersedeLookup::Release => Intent::SetRelease(Some(crate::navigation::ReleaseId::new("0.3.0").expect("release"))),
+                    SupersedeLookup::Overlay => Intent::OpenSettings(crate::navigation::SettingsPage::Appearance),
+                    SupersedeLookup::Focus => unreachable!(),
+                }, cx)),
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                rig.frame(16);
+                let applied = rig.graph.store.read_with(rig.cx, |store, _| match change {
+                    SupersedeLookup::Root => store.snapshot().key() != old_root,
+                    SupersedeLookup::Overlay => store.snapshot().overlay().is_some(),
+                    SupersedeLookup::Release => store.snapshot().route().at().is_some(),
+                    SupersedeLookup::Route => store.snapshot().route() == &page_route("RelationLabel"),
+                    SupersedeLookup::Focus => true,
+                });
+                if applied && rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)) { break; }
+                assert!(Instant::now() < deadline, "{stage:?}/{change:?}: superseding state never cancelled the open");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let retained_route = rig.route();
+            let retained_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+            let retained_overlay = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
+            gate.release();
+            rig.settle();
+            assert_eq!(gate.returned.load(Ordering::SeqCst), 1, "{stage:?}/{change:?}: the old worker really returned after cancellation");
+            assert_eq!(rig.route(), retained_route, "{stage:?}/{change:?}: old B never navigates over the newer state");
+            rig.graph.store.read_with(rig.cx, |store, _| {
+                assert_eq!(store.snapshot().key(), retained_root);
+                assert_eq!(store.snapshot().overlay(), retained_overlay);
+            });
+            assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "late completion cannot revive a pending lookup");
+        }
+    }
+}
+
 #[gpui::test]
 fn graph_titlebar_page_and_code_open_visible_b_instead_of_route_a(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
@@ -1178,6 +1322,7 @@ fn new_root_without_an_indexed_join_clears_the_previous_painted_graph_ghost(cx: 
 #[gpui::test]
 fn graph_focus_display_tracks_b_without_rewriting_history_or_guessing_unindexed_rows(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+    rig.cx.update(|_, cx| facet::probe::enable(cx));
     let back = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.len());
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
@@ -1186,15 +1331,24 @@ fn graph_focus_display_tracks_b_without_rewriting_history_or_guessing_unindexed_
         let focus = store.graph_focus().expect("current typed B selection");
         assert_eq!(focus.node, 1);
         assert_eq!(focus.indexed, Some((package(), symbol("RelationDirection"))), "only the exact typed complete-outline match highlights B");
-        let here = super::thread::here(&snapshot, store);
+        let here = super::jump::here(&snapshot, store);
         assert_eq!(here.name.to_string(), "RelationDirection");
         assert!(here.path.contains("graph fixture"));
         let (lines, _) = super::status::display_lines(&snapshot, Some(focus), px(1440.0), cx);
         assert_eq!(lines, ["Graph fixture · synthetic-present-v1::glyph::RelationDirection"]);
         assert_eq!(snapshot.session().back.len(), back);
         assert_eq!(snapshot.route(), &view_route("RelationLabel", View::Graph), "selection is not navigation");
-        assert!(super::thread::address_parts(&snapshot).full().contains("RelationLabel/graph"), "the copyable address remains the real graph visit");
+        assert!(super::jump::address_parts(&snapshot).full().contains("RelationLabel/graph"), "the copyable address remains the real graph visit");
     });
+    rig.repaint();
+    let painted = rig.cx.update(|_, cx| facet::probe::take(cx));
+    let caption = painted.texts.iter().find(|sample| sample.key == "graph-test-here-name").expect("the actual native caption published its painted text");
+    assert_eq!(caption.content, "RelationDirection");
+    assert!(caption.bounds.width > 0.0 && caption.bounds.height > 0.0 && caption.bounds.y < 60.0, "B is in the painted titlebar box");
+    let status = painted.texts.iter().find(|sample| sample.key.starts_with("address:0:")).expect("the actual native status published its painted text");
+    assert_eq!(status.content, "Graph fixture · synthetic-present-v1::glyph::RelationDirection");
+    assert!(status.bounds.width > 0.0 && status.bounds.height > 0.0 && status.bounds.y > 800.0, "B's honest fixture address is in the painted status box");
+    assert!(!painted.texts.iter().any(|sample| sample.key == "graph-test-here-name" && sample.content == "RelationLabel"), "old A is absent from the current painted capsule");
     assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_current_symbols(cx)), [symbol("RelationDirection")]);
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
     rig.settle();
@@ -1207,7 +1361,7 @@ fn graph_focus_display_tracks_b_without_rewriting_history_or_guessing_unindexed_
     rig.go(Intent::Navigate(page_route("RelationLabel")));
     rig.graph.store.read_with(rig.cx, |store, _| {
         assert!(store.graph_focus().is_none(), "the hidden graph cannot rename the page capsule");
-        assert_eq!(super::thread::here(&store.snapshot(), store).name.to_string(), "RelationLabel");
+        assert_eq!(super::jump::here(&store.snapshot(), store).name.to_string(), "RelationLabel");
     });
 }
 
@@ -1333,7 +1487,7 @@ fn graph_view_intents_survive_settings_but_reject_competing_content_bursts(cx: &
 #[gpui::test]
 fn every_graph_keyboard_page_or_code_command_uses_current_b(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    for (key, view) in [("g", View::Page), ("secondary-3", View::Page), ("secondary-4", View::Code), ("secondary-.", View::Code), ("s", View::Code)] {
+    for (key, view) in [("g", View::Page), ("ctrl-3", View::Page), ("ctrl-4", View::Code), ("secondary-.", View::Code), ("s", View::Code)] {
         rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
         rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
         rig.settle();
@@ -1404,7 +1558,7 @@ fn viewing_another_release_says_so_and_escape_returns_to_the_pin(cx: &mut TestAp
     rig.go(Intent::SetRelease(Some(release.clone())));
     assert_eq!(rig.route().at(), Some(&release));
     let here = rig.graph.store.read_with(rig.cx, |store, _| {
-        super::thread::here(&store.snapshot(), store).path.to_string()
+        super::jump::here(&store.snapshot(), store).path.to_string()
     });
     assert_eq!(here, "viewing 0.3.0 · yours is the working copy", "a workspace crate is read from its working copy");
     // The index holds only the working copy of a workspace crate: the page

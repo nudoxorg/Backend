@@ -1,17 +1,22 @@
 //! Tantivy membership selection and canonical newest-first merge.
 use std::{
     cmp::Ordering,
-    sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
 };
 
 use backend_semantic::index_core::{
     ENTITY_DOCUMENT_ID_BYTES, EntityDocumentId, IndexSnapshotId, LexicalOperation, LexicalRowValue,
     LexicalScore, LexicalSegmentId, MAX_SELECTED_SEGMENTS,
 };
+use tantivy::collector::{Collector, SegmentCollector};
+use tantivy::columnar::ColumnValues;
 use tantivy::{
-    TantivyDocument, Term,
+    DocId, Score, Term,
     query::{FuzzyTermQuery, Query, TermQuery},
-    schema::{IndexRecordOption, Value},
+    schema::IndexRecordOption,
 };
 
 use super::{
@@ -332,33 +337,30 @@ fn collect_backend_matches<'segment, Q: Query>(
     if count == 0 {
         return Ok(());
     }
-    // `count` is the validated backend document count and is capped above by the core row bound;
-    // this collector therefore cannot allocate an unbounded match set or depend on caller TopK.
-    let collector = tantivy::collector::TopDocs::with_limit(count).order_by_score();
-    let matches = searcher.search(parsed, &collector).map_err(|source| {
-        TantivySegmentStoreError::Tantivy {
+    // Membership is the ordinal column. Scoring and stored-document loads are not
+    // part of canonical rank; `count` is already capped by the core row bound.
+    let field = searcher.schema().get_field_name(segment.ordinal_field);
+    let ordinals = searcher
+        .search(
+            parsed,
+            &OrdinalCollector {
+                limit: count,
+                field,
+            },
+        )
+        .map_err(|source| TantivySegmentStoreError::Tantivy {
             phase: StorePhase::Search,
             path: segment.path.clone(),
             source,
-        }
-    })?;
-    for (_, address) in matches {
-        let document: TantivyDocument =
-            searcher
-                .doc(address)
-                .map_err(|source| TantivySegmentStoreError::Tantivy {
-                    phase: StorePhase::ReadDocument,
-                    path: segment.path.clone(),
-                    source,
-                })?;
-        let ordinal = document
-            .get_first(segment.ordinal_field)
-            .and_then(|value| value.as_u64())
-            .and_then(|value| usize::try_from(value).ok())
-            .ok_or(TantivySegmentStoreError::Corrupt {
-                path: segment.path.clone(),
-                detail: "backend result ordinal missing",
-            })?;
+        })?;
+    if ordinals.len() > count {
+        return Err(TantivySegmentStoreError::CompositionCapacity);
+    }
+    for ordinal in ordinals {
+        let ordinal = usize::try_from(ordinal).map_err(|_| TantivySegmentStoreError::Corrupt {
+            path: segment.path.clone(),
+            detail: "backend result ordinal missing",
+        })?;
         let row = segment
             .rows
             .get(ordinal)
@@ -368,7 +370,9 @@ fn collect_backend_matches<'segment, Q: Query>(
             })?;
         let selected = match operation.match_mode {
             backend_semantic::index_core::LexicalMatch::Exact => row.term == operation.term,
-            backend_semantic::index_core::LexicalMatch::Prefix => row.term.starts_with(operation.term),
+            backend_semantic::index_core::LexicalMatch::Prefix => {
+                row.term.starts_with(operation.term)
+            }
         };
         if !selected {
             return Err(TantivySegmentStoreError::Corrupt {
@@ -386,4 +390,59 @@ fn collect_backend_matches<'segment, Q: Query>(
         )?;
     }
     Ok(())
+}
+
+struct OrdinalCollector<'segment> {
+    limit: usize,
+    field: &'segment str,
+}
+
+struct OrdinalSegment {
+    ordinals: Arc<dyn ColumnValues<u64>>,
+    found: Vec<u64>,
+}
+
+impl SegmentCollector for OrdinalSegment {
+    type Fruit = Vec<u64>;
+
+    fn collect(&mut self, doc: DocId, _score: Score) {
+        self.found.push(self.ordinals.get_val(doc));
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        self.found
+    }
+}
+
+impl Collector for OrdinalCollector<'_> {
+    type Fruit = Vec<u64>;
+    type Child = OrdinalSegment;
+
+    fn for_segment(
+        &self,
+        _segment_local_id: tantivy::SegmentOrdinal,
+        segment: &tantivy::SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        let mut found = Vec::new();
+        found.reserve(self.limit);
+        Ok(OrdinalSegment {
+            ordinals: segment
+                .fast_fields()
+                .u64(self.field)?
+                .first_or_default_col(0),
+            found,
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(&self, segment_fruits: Vec<Vec<u64>>) -> tantivy::Result<Vec<u64>> {
+        let mut merged = Vec::new();
+        for fruit in segment_fruits {
+            merged.extend(fruit);
+        }
+        Ok(merged)
+    }
 }

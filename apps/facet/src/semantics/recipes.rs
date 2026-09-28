@@ -17,6 +17,8 @@
 //! [`TypeExpr`]: the key vocabulary is Rust's today, like the speller's.
 
 use super::bounds::generics;
+pub mod chain;
+
 use super::members::params;
 use super::types::{TypeExpr, parse, split_top};
 use crate::graph::model::{Kind, NodeId, World};
@@ -450,7 +452,7 @@ pub struct Recipes {
 
 /// Transferable producer data; per-view caches are attached after loading.
 #[derive(Clone)]
-pub(crate) struct PreparedRecipes {
+pub struct PreparedRecipes {
     table: Arc<Vec<Producer>>,
     names: Arc<HashMap<String, Vec<NodeId>>>,
 }
@@ -481,7 +483,7 @@ impl Recipes {
     }
 
     /// Detaches thread-local recipe caches for transfer from a worker.
-    pub(crate) fn into_prepared(self) -> PreparedRecipes {
+    pub fn into_prepared(self) -> PreparedRecipes {
         PreparedRecipes { table: self.table, names: self.names }
     }
 
@@ -491,7 +493,7 @@ impl Recipes {
     }
 
     /// Attaches fresh caches after producer data arrives on the UI thread.
-    pub(crate) fn from_prepared(data: PreparedRecipes) -> Self {
+    pub fn from_prepared(data: PreparedRecipes) -> Self {
         Self { table: data.table, names: data.names, runs: RefCell::new(HashMap::new()) }
     }
 

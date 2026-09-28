@@ -567,6 +567,10 @@ impl Model {
 
     pub(crate) fn sync(&mut self, entries: Vec<Entry>, now: Instant, reduced: bool) {
         self.advance(now);
+        // In-flight records must land when motion is reduced (the fast path below never would).
+        if reduced {
+            self.settle();
+        }
         let first = !self.synced;
         self.synced = true;
 

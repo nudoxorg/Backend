@@ -1,9 +1,13 @@
-//! The thread: history drawn as beads, the here capsule, and the mono
-//! address — all derived from the session and whatever pages already landed.
+//! The jump bar's words (D-Hand): where you are as segments (package ›
+//! module › declaration), each opening its siblings from the package
+//! outline; the here line for places that are not declarations; and the
+//! mono `nudox://` address (⌘⇧C copies it; hovering the bar shows it).
+//! History never shows at rest: back and forward are ⌘[ / ⌘], and a long
+//! press on back lists the last ten places.
 
 use super::kit::kind_of;
-use crate::model::pages::{PackageRef, PageKey, SymbolRef};
-use crate::model::{AppSnapshot, SessionState};
+use crate::model::pages::{OutlineNode, PackageRef, SymbolRef};
+use crate::model::AppSnapshot;
 use crate::navigation::{OrbitRoute, Overlay, Route, SettingsPage};
 use crate::runtime::store::DataStore;
 use facet::icons::Kind;
@@ -20,26 +24,6 @@ pub(crate) enum Mark {
     Place,
 }
 
-/// One step of history.
-#[derive(Clone, Debug)]
-pub(crate) struct Bead {
-    /// Its mark.
-    pub mark: Mark,
-    /// Its name (tooltip and hint label).
-    pub label: SharedString,
-    /// How many steps back (negative) or forward (positive) it is.
-    pub steps: isize,
-}
-
-/// The thread around "here".
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Thread {
-    /// Beads behind, oldest first.
-    pub behind: Vec<Bead>,
-    /// Beads ahead, nearest first.
-    pub ahead: Vec<Bead>,
-}
-
 /// The here capsule.
 #[derive(Clone, Debug)]
 pub(crate) struct Here {
@@ -49,57 +33,6 @@ pub(crate) struct Here {
     pub name: SharedString,
     /// The breadcrumb after the name (`present › glyph`).
     pub path: SharedString,
-}
-
-/// How far back and ahead the thread reaches.
-const BEHIND: usize = 5;
-const AHEAD: usize = 2;
-
-/// The thread for a session.
-pub(crate) fn thread(session: &SessionState, store: &DataStore) -> Thread {
-    let behind = session
-        .back
-        .to_vec()
-        .into_iter()
-        .take(BEHIND)
-        .enumerate()
-        .map(|(index, route)| bead(&route, -(index as isize) - 1, store))
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let ahead = session
-        .forward
-        .to_vec()
-        .into_iter()
-        .take(AHEAD)
-        .enumerate()
-        .map(|(index, route)| bead(&route, index as isize + 1, store))
-        .collect();
-    Thread { behind, ahead }
-}
-
-fn bead(route: &Route, steps: isize, store: &DataStore) -> Bead {
-    let here = route_here(route, store);
-    Bead {
-        mark: here.mark,
-        label: here.name,
-        steps,
-    }
-}
-
-/// The page keys the thread's marks read (so a bead's gem appears when its
-/// page lands).
-pub(crate) fn thread_keys(session: &SessionState) -> Vec<PageKey> {
-    session
-        .back
-        .to_vec()
-        .into_iter()
-        .take(BEHIND)
-        .chain(session.forward.to_vec().into_iter().take(AHEAD))
-        .chain(std::iter::once(session.route.clone()))
-        .filter_map(|route| route_symbol(&route).map(PageKey::Symbol))
-        .collect()
 }
 
 pub(crate) use crate::runtime::store::{route_package, route_symbol};
@@ -161,6 +94,77 @@ fn pinned_release(route: &Route, store: &DataStore) -> Option<String> {
     current.or_else(|| package.version().map(ToOwned::to_owned))
 }
 
+/// One segment of the jump bar: its words and where it leads.
+#[derive(Clone, Debug)]
+pub(crate) struct Segment {
+    /// Its name (`present`, `glyph`, `RelationLabel`).
+    pub name: SharedString,
+    /// Where choosing it goes (its page), when it has one.
+    pub route: Option<Route>,
+}
+
+/// The segments for a declaration route: its package, then each module and
+/// owner on the way down, then the declaration itself (the last).
+pub(crate) fn segments(route: &Route, store: &DataStore) -> Vec<Segment> {
+    match route {
+        Route::Symbol(symbol) => {
+            let Ok(package) = PackageRef::parse(symbol.package.as_str()) else { return Vec::new() };
+            let identity = backend_present::Identity::parse(symbol.id.as_str());
+            let mut out = vec![Segment {
+                name: package.display_name().to_owned().into(),
+                route: super::kit::package_route(&package),
+            }];
+            // Modules and owners, found in the outline by name so each
+            // opens its own page.
+            let dossier = store.package(&package);
+            let tree = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned());
+            let mut level: Option<&[OutlineNode]> = tree.as_ref().map(|tree| &tree.roots[..]);
+            for name in crumbs(&identity).into_iter().skip(usize::from(identity.project().is_some())) {
+                let node = level.and_then(|nodes| nodes.iter().find(|node| node.decl.name.as_ref() == name));
+                out.push(Segment {
+                    name: name.into(),
+                    route: node.and_then(|node| super::kit::symbol_route(package.as_str(), &node.decl.coordinate)),
+                });
+                level = node.map(|node| &node.children[..]);
+            }
+            out.push(Segment { name: identity.name().to_owned().into(), route: Some(route.clone()) });
+            out
+        }
+        Route::Package(package) => PackageRef::parse(package.package.as_str())
+            .map(|package| vec![Segment { name: package.display_name().to_owned().into(), route: Some(route.clone()) }])
+            .unwrap_or_default(),
+        Route::Orbit(_) | Route::World => Vec::new(),
+    }
+}
+
+/// The siblings of segment `index` (what the menu under it lists): the
+/// entries of the outline level it sits at, each with its page.
+pub(crate) fn siblings(route: &Route, index: usize, store: &DataStore) -> Vec<Segment> {
+    let Route::Symbol(symbol) = route else { return Vec::new() };
+    let Ok(package) = PackageRef::parse(symbol.package.as_str()) else { return Vec::new() };
+    let identity = backend_present::Identity::parse(symbol.id.as_str());
+    let dossier = store.package(&package);
+    let Some(tree) = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned()) else { return Vec::new() };
+    if index == 0 {
+        return Vec::new();
+    }
+    let path: Vec<String> = crumbs(&identity).into_iter().skip(usize::from(identity.project().is_some())).collect();
+    let mut level: &[OutlineNode] = &tree.roots;
+    for name in path.iter().take(index - 1) {
+        match level.iter().find(|node| node.decl.name.as_ref() == name.as_str()) {
+            Some(node) => level = &node.children,
+            None => return Vec::new(),
+        }
+    }
+    level
+        .iter()
+        .map(|node| Segment {
+            name: node.decl.name.to_string().into(),
+            route: super::kit::symbol_route(package.as_str(), &node.decl.coordinate),
+        })
+        .collect()
+}
+
 /// A settings page's name.
 pub(crate) const fn settings_name(page: SettingsPage) -> &'static str {
     match page {
@@ -189,6 +193,10 @@ fn route_here(route: &Route, store: &DataStore) -> Here {
             name: "Project".into(),
             path: "orbit".into(),
         },
+        Route::Orbit(OrbitRoute::Browse(browse)) => {
+            let (name, path) = browse.here();
+            Here { mark: Mark::Orbit, name: name.into(), path: path.into() }
+        }
         Route::World => Here {
             mark: Mark::Orbit,
             name: "Graph".into(),
@@ -310,6 +318,10 @@ pub(crate) fn address_parts(snapshot: &AppSnapshot) -> Address {
         return place(&[], "inbox".to_owned());
     }
     match snapshot.route() {
+        Route::Orbit(OrbitRoute::Browse(browse)) => {
+            let (path, name) = browse.address();
+            Address { path, name }
+        }
         Route::Orbit(_) => place(&[], "orbit".to_owned()),
         Route::World => place(&[], "graph".to_owned()),
         Route::Package(route) => place(

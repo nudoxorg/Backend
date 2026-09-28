@@ -8,6 +8,7 @@
 //! The reader sets notes beside their block when its room is wide and folds
 //! each under its block otherwise.
 
+mod browse;
 pub(crate) mod graph;
 mod inbox;
 mod orbit;
@@ -138,6 +139,7 @@ pub(crate) struct Pages {
     packages: BTreeMap<PackageRef, Resource<PackageDossier>>,
     orbit: Option<Resource<OrbitModel>>,
     health: Option<Resource<HealthModel>>,
+    browse: BTreeMap<crate::model::browse::BrowseKey, Resource<crate::model::browse::BrowseValue>>,
 }
 
 impl Pages {
@@ -157,6 +159,9 @@ impl Pages {
                 }
                 PageKey::Orbit => pages.orbit = Some(store.orbit()),
                 PageKey::Health => pages.health = Some(store.health()),
+                PageKey::Browse(key) => {
+                    pages.browse.insert(key.clone(), store.pages().browse(key));
+                }
                 PageKey::Search(_) => {}
             }
         }
@@ -182,6 +187,10 @@ impl Pages {
     pub(crate) fn health(&self) -> Resource<HealthModel> {
         self.health.clone().unwrap_or_else(Resource::not_yet)
     }
+
+    pub(crate) fn browse(&self, key: &crate::model::browse::BrowseKey) -> Resource<crate::model::browse::BrowseValue> {
+        self.browse.get(key).cloned().unwrap_or_else(Resource::not_yet)
+    }
 }
 
 /// Builds the body for one place (the current one, or one still leaving).
@@ -200,6 +209,7 @@ pub(crate) fn build(
         Some(Overlay::AddProject | Overlay::CommandPalette) | None => {}
     }
     match route {
+        Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),
         Route::Orbit(_) => orbit::body(snapshot, store, ctx, hover, cx),
         Route::Package(_) => package::body(route, store, ctx, hover, cx),
         Route::Symbol(symbol) => match symbol.view {

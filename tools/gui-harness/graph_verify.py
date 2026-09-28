@@ -8,6 +8,7 @@ is retained. No PASS text is trusted without command success and structured data
 """
 import argparse, hashlib, html, json, math, pathlib, re, shutil, subprocess, time
 from urllib.parse import quote
+from collections import Counter
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CASES = ['graph-check-idle', 'graph-check-interrupt', 'graph-check-wheel-drag',
@@ -51,12 +52,15 @@ def overlaps(a,b):
     return a['x'] < b['x']+b['width']-.5 and a['x']+a['width'] > b['x']+.5 and a['y'] < b['y']+b['height']-.5 and a['y']+a['height'] > b['y']+.5
 
 
+def semantic_state(state):
+    # Retain every actual semantic field. Only the immutable worker wall-time
+    # measurement varies between identical native histories.
+    return {key:value for key,value in state.items() if key!='discovery_prepare_ms'} if isinstance(state,dict) else state
+
 def stable_motion(report):
-    # CPU times are deliberately nondeterministic; ledger values and alignment
-    # are not. Keep coverage in the equality check so n/a cannot masquerade as OK.
-    return {'captures': report.get('captures'), 'alignment': report.get('alignment'),
-            'script': report.get('script'),
-            'frames': [{key: value for key,value in frame.items() if key not in {'cpu_ms','input_cpu_ms','input_max_ms'}} for frame in report.get('frames',[])]}
+    return {'captures': [{key:semantic_state(value) if key=='state' else value for key,value in capture.items()} for capture in report.get('captures',[])],
+            'alignment': report.get('alignment'), 'script': report.get('script'),
+            'frames': [{key:semantic_state(value) if key=='state' else value for key,value in frame.items() if key not in {'cpu_ms','input_cpu_ms','input_max_ms'}} for frame in report.get('frames',[])]}
 
 def sweep(width, height):
     acts=[]
@@ -77,6 +81,15 @@ def state_findings(report, scene):
     states=[f['state'] for f in frames]
     for f in frames:
         state=f['state']; cam=state.get('camera')
+        scroll=state.get('find_scroll'); selection=state.get('find_selection'); query=state.get('query')
+        if not isinstance(scroll,dict) or any(not isinstance(scroll.get(k),(int,float)) or not math.isfinite(scroll[k]) for k in ('x','y')):
+            failures.append(f'actual find scroll was absent or invalid at {f["at_ms"]}ms')
+        elif not state.get('find_open') and (scroll['x']!=0 or scroll['y']!=0):
+            failures.append(f'closed find retains scrolled query at {f["at_ms"]}ms')
+        if not isinstance(query,str) or not isinstance(selection,dict) or any(not isinstance(selection.get(k),int) or isinstance(selection[k],bool) for k in ('start','end')):
+            failures.append(f'actual find selection was absent or invalid at {f["at_ms"]}ms')
+        elif not 0<=selection['start']<=selection['end']<=len(query.encode('utf-8')):
+            failures.append(f'find selection escapes actual query bytes at {f["at_ms"]}ms')
         if not cam or any(not isinstance(cam.get(k),(float,int)) or not math.isfinite(cam[k]) for k in ('x','y','w')) or cam['w']<=0:
             failures.append(f'invalid camera at {f["at_ms"]}ms')
         for key in ('focused','hovered','selected','tour_stop'):
@@ -121,6 +134,8 @@ def state_findings(report, scene):
     captures={f['time_ms']:f for f in report.get('captures',[])}
     for frame in report.get('captures',[]):
         card=frame['state'].get('measured_card_bounds')
+        footer=next((bounds for bounds in reversed(frame.get('bounds',[])) if bounds['key']=='graph-where-bounds'),None)
+        if footer and card and overlaps(footer,card): failures.append(f'actual where footer overlaps measured reading card at {frame["time_ms"]}ms')
         for text in frame.get('texts',[]):
             if not text['key'].startswith('graph-focus-'): continue
             box={key:text[key] for key in ('x','y','width','height')}
@@ -160,7 +175,12 @@ def state_findings(report, scene):
                 if not span or not any(st.get('hovered',{}).get('id')==want for st in span if st.get('hovered')):
                     failures.append(f'actual hover handoff target {want} absent in {lower}..{upper}ms')
             if any(st.get('focused') for st in states): failures.append('hover/drag film accidentally focused a subject')
-            if not any(2032<=f['at_ms']<2300 and f['state'].get('moving') for f in frames): failures.append('native drag onset was never observed')
+            before_drag=next((f for f in reversed(frames) if f['at_ms']<2032),None)
+            after_drag=next((f for f in frames if f['at_ms']>=2032),None)
+            if not before_drag or not after_drag or not after_drag.get('events'): failures.append('native drag move was never dispatched')
+            else:
+                old=before_drag['state']['camera'];new=after_drag['state']['camera'];width=before_drag['state']['viewport']['width']
+                if abs(new['x']-(old['x']-80*old['w']/width))>1e-4 or abs(new['y']-(old['y']-40*old['w']/width))>1e-4 or abs(new['w']-old['w'])>1e-4: failures.append('actual native drag move lost world-anchor displacement')
             fading=[(f['at_ms'],f['state']['fading_hover']['strength']) for f in frames if 900<=f['at_ms']<1200 and f['state'].get('fading_hover')]
             if not fading: failures.append('actual leave fading packet absent')
             elif any(b>a+1e-6 for (_,a),(_,b) in zip(fading,fading[1:])) or not any(a<fading[0][1]-.01 for _,a in fading[1:]): failures.append('actual outgoing hover opacity did not decrease')
@@ -220,8 +240,11 @@ def road_findings(report):
     """Read the real native road ledger, including held-clock restart/quiet."""
     failures=[];samples=[]
     for capture in report.get('captures',[]):
-        tracks=[track for track in capture.get('tracks',[]) if track.get('key')=='graph-chain-road']
-        if len(tracks)>1: failures.append('road published more than one progress track in a frame')
+        # Coalesced GPUI prepaint passes may publish the exact same sample
+        # twice before the ledger is taken. Only identical records coalesce;
+        # conflicting values or clocks remain a cardinality failure.
+        tracks=list({json.dumps(track,sort_keys=True):track for track in capture.get('tracks',[]) if track.get('key')=='graph-chain-road'}.values())
+        if len(tracks)>1: failures.append('road published conflicting progress tracks in a frame')
         if capture['time_ms']>=7600 and tracks: failures.append('closed road retained a terminal track')
         for track in tracks:
             if any(not isinstance(track.get(key),(int,float)) or not math.isfinite(track[key]) for key in ('value','target','started_ms','budget_ms','at_ms')):
@@ -235,9 +258,13 @@ def road_findings(report):
             samples.append((capture,track))
     held=[(capture,track) for capture,track in samples if capture.get('state',{}).get('held_chain')==[10,12,13]]
     if not held: failures.append('actual held road progress was never observed');return sorted(set(failures))
+    preview=[(capture,track) for capture,track in samples if not capture.get('state',{}).get('held_chain') and capture['time_ms']<600]
+    if not preview: failures.append('actual selected preview road was never observed')
+    elif held[0][1]['started_ms']!=preview[-1][1]['started_ms'] or held[0][1]['value']<preview[-1][1]['value']-1e-6:
+        failures.append('committing the same preview path restarted or rewound its carried value')
     reduced=all(capture.get('state',{}).get('reduced_motion') for capture,_ in held)
     if not reduced:
-        if not any(track['live'] and track['value']<=.04 and abs(track['started_ms']-600)<=16 for _,track in held): failures.append('held road start/restart was not observed')
+        if not any(track['live'] and track['value']<=.04 for _,track in preview): failures.append('selected road start was not observed')
         if not any(track['live'] and .05<track['value']<.95 for _,track in held): failures.append('held road middle was not observed')
         if not any(not track['live'] and track['value']==1 for _,track in held): failures.append('held road terminal arrival was not observed')
     clocks={}
@@ -277,23 +304,78 @@ def complete_png(path):
         handle.seek(-12,2)
         return handle.read() == b'\x00\x00\x00\x00IEND\xaeB`\x82'
 
+def painted_title_findings(image, capture, device_scale=1):
+    """Require visible native reading content, independently of layout claims."""
+    state=capture.get('state') or {}; card=state.get('measured_card_bounds')
+    if not card or state.get('find_open'): return []
+    mode=state.get('exploration'); key='graph-chain-title' if mode=='chain' else 'graph-tour-title' if mode=='tour' else 'graph-focus-title'
+    text=next((text for text in capture.get('texts',[]) if text['key']==key),None)
+    if not text or not text.get('content','').strip(): return [f'actual reading title {key} absent']
+    box={name:text[name] for name in ('x','y','width','height')}
+    if not inside(box,card): return [f'actual reading title {key} escapes measured card']
+    rectangle=(math.floor(box['x']*device_scale),math.floor(box['y']*device_scale),
+               math.ceil((box['x']+box['width'])*device_scale),math.ceil((box['y']+box['height'])*device_scale))
+    if rectangle[0]<0 or rectangle[1]<0 or rectangle[2]>image.width or rectangle[3]>image.height or rectangle[0]>=rectangle[2] or rectangle[1]>=rectangle[3]:
+        return [f'actual reading title {key} has no valid image crop']
+    crop=image.convert('RGB').crop(rectangle)
+    pixels=list(crop.get_flattened_data() if hasattr(crop,'get_flattened_data') else crop.getdata()); background=Counter(pixels).most_common(1)[0][0]
+    # Bold ink must actually appear inside the glyph rectangle. Plate fill,
+    # antialiasing noise and one stray pixel cannot establish readable content.
+    visible=sum(max(abs(a-b) for a,b in zip(pixel,background))>=32 for pixel in pixels)
+    return [] if visible>=5 else [f'actual reading title {key} has no visible painted ink']
+
+def native_capture_evidence(directory, report, scene, expected_times, device_scale=1):
+    """Verify same-draw sidecars against actual PNG bytes and report checkpoints."""
+    from PIL import Image
+    frames=[]; failures=[]
+    checkpoints={capture['time_ms']:capture.get('state') for capture in report.get('captures',[])}
+    for path in sorted(directory.glob('*.json')):
+        if path.name in ('motion.json','SEQUENCE.json'): continue
+        data=json.loads(path.read_text())
+        if 'time_ms' not in data: continue
+        at=data['time_ms']; image=path.with_suffix('.png')
+        if data.get('scene')!=scene or not isinstance(data.get('state'),dict):
+            failures.append(f'capture {at}ms has absent or wrong actual state')
+        if semantic_state(data.get('state'))!=semantic_state(checkpoints.get(at)):
+            failures.append(f'capture {at}ms state differs from independently observed checkpoint')
+        if data.get('image')!=str(image) or not image.is_file() or not complete_png(image):
+            failures.append(f'capture {at}ms actual PNG is missing, incomplete or mislabelled')
+        else:
+            with Image.open(image) as pixels:
+                actual=hashlib.sha256(pixels.convert('RGBA').tobytes()).hexdigest()
+            if data.get('rgba_sha256')!=actual:
+                failures.append(f'capture {at}ms RGBA digest differs from actual PNG')
+            with Image.open(image) as pixels:
+                for reason in painted_title_findings(pixels,next((capture for capture in report.get('captures',[]) if capture['time_ms']==at),{}),device_scale):
+                    failures.append(f'capture {at}ms '+reason)
+        frames.append(data)
+    frames.sort(key=lambda frame:frame['time_ms'])
+    if [frame['time_ms'] for frame in frames]!=expected_times:
+        failures.append('native capture timestamps missing, duplicated or unexpected')
+    if not frames: failures.append('native image state evidence absent')
+    return frames, sorted(set(failures))
+
 def write_atlas(out):
     records=[]; cards=[]
+    audit=json.loads((out/'REPORT.json').read_text()) if (out/'REPORT.json').is_file() else {}
+    status='PASS' if audit.get('passed') else 'FAIL' if audit.get('failures') else 'IN PROGRESS'
     for report_path in sorted(out.glob('run-*/correctness-*/motion.json')):
         report=json.loads(report_path.read_text()); directory=report_path.parent
-        images={int(m.group(1)):p for p in directory.glob('*.png') if complete_png(p) and (m:=re.search(r'-t(\d+)(?:-rm)?@[12]x\.png$',p.name))}
-        for frame in report.get('captures',[]):
-            at=frame['time_ms']; image=images.get(at); state=frame.get('state')
-            if image is None or state is None: continue
+        for sidecar in sorted(directory.glob('*.json')):
+            if sidecar.name in ('motion.json','SEQUENCE.json'): continue
+            captured=json.loads(sidecar.read_text()); at=captured.get('time_ms')
+            image=sidecar.with_suffix('.png'); state=captured.get('state')
+            if at is None or not image.is_file() or not complete_png(image) or not isinstance(state,dict): continue
             relative=image.relative_to(out).as_posix()
-            record={'scene':report['scene'],'time_ms':at,'image':str(image),'report':str(report_path),'state':state}
+            record={'scene':captured['scene'],'time_ms':at,'image':str(image),'sidecar':str(sidecar),
+                    'rgba_sha256':captured.get('rgba_sha256'),'report':str(report_path),'state':state}
             records.append(record)
             names=lambda key: (state.get(key) or {}).get('name','—')
             caption=f'{report["scene"]} · {at}ms · {state["exploration"]} · focus {names("focused")} · hover {names("hovered")} · selected {names("selected")}'
-            camera=state.get('camera') or {}; geometry=f'camera {camera} · card {state.get("card_bounds")} · pending {state["pending_motion"]} · requested {state["frames_requested"]} · edges {state["drawn"]["edges"]}'
+            camera=state.get('camera') or {}; geometry=f'camera {camera} · card {state.get("measured_card_bounds")} · pending {state["pending_motion"]} · requested {state["frames_requested"]} · edges {state["drawn"]["edges"]}'
             cards.append('<article><a href="'+quote(relative)+'"><img loading="lazy" src="'+quote(relative)+'" alt="'+html.escape(caption,quote=True)+'"></a><p>'+html.escape(caption)+'</p><small>'+html.escape(geometry)+'</small><details><summary>Exact state and evidence</summary><pre>'+html.escape(json.dumps(record,indent=2))+'</pre></details></article>')
     (out/'ATLAS.json').write_text(json.dumps(records,indent=2)+'\n')
-    (out/'atlas.html').write_text('<!doctype html><meta charset="utf-8"><title>Native GPUI graph evidence</title><style>body{background:#141821;color:#d8deea;font:14px system-ui;margin:24px}h1{font-size:22px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:24px}article{min-width:0;padding:12px;background:#202632}img{width:100%;height:auto}p{line-height:1.6;margin:8px 0}small{display:block;color:#aebad1;word-break:break-word}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}</style><h1>Native GPUI graph evidence</h1><p>Each image is a real native-renderer capture. Captions come from the actual state sampled in that frame; full state, exact image path and motion report are attached.</p><main>'+''.join(cards)+'</main>')
+    (out/'atlas.html').write_text('<!doctype html><meta charset="utf-8"><title>Native GPUI graph evidence</title><style>body{background:#141821;color:#d8deea;font:14px system-ui;margin:24px}h1{font-size:22px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:24px}article{min-width:0;padding:12px;background:#202632}img{width:100%;height:auto}p{line-height:1.6;margin:8px 0}small{display:block;color:#aebad1;word-break:break-word}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}</style><h1>Native GPUI graph evidence · '+status+'</h1><p><a href="REPORT.json">Exact audit scope, failures and provenance</a></p><p>Each image is a real native-renderer capture. Captions come from the actual state sampled in that frame; full state, exact image path and motion report are attached.</p><main>'+''.join(cards)+'</main>')
     return len(records)
 
 def main():
@@ -326,7 +408,7 @@ def main():
                     'Live extraction is scale/invariant coverage; pinned scenes provide exact value assertions.',
                     'Window::draw CPU is render/layout/prepaint/paint time, not displayed cadence or GPU completion.',
                     'Detailed motion reports enable probes; official perf runs do not. Both measurements are retained.',
-                    'Naive and AllPaths controls are comparative alternatives: their release budget failures are recorded explicitly, while chosen Batched gates remain unchanged.']}
+                    'Explicit renderer control scenes are comparative: their budget failures are recorded separately; production scenes always retain their release gates regardless of the selected renderer.']}
     def save(): (args.out/'REPORT.json').write_text(json.dumps(manifest,indent=2)+'\n')
     def command(run_dir, label, argv, quiet=False, comparative_budget=False):
         if quiet:
@@ -414,7 +496,7 @@ def main():
             variants += [(scene,['--size',size,'--theme',theme,'--text-scale',text,'--reduced-motion'])
                          for scene in ('graph-pinned-focus','graph-check-chain','graph-check-reach-tour','graph-live-dense-focus')
                          if scene!='graph-live-dense-focus' or scene in live
-                         for size,theme,text in (('760x400','abyss','100'),('760x400','glacier','200'),('480x400','glacier','100'),('480x400','abyss','200'))]
+                         for size,theme,text in (('760x400','abyss','100'),('760x400','glacier','200'),('480x400','glacier','100'),('480x400','abyss','200'),('480x600','glacier','200'),('480x600','abyss','200'))]
             if selected: variants = [(scene,options) for scene,options in variants if scene in selected]
             if not variants: raise RuntimeError('requested correctness subset contains no cases')
             for i,(scene,options) in enumerate(variants):
@@ -454,16 +536,23 @@ def main():
                 if proc.returncode == 124:
                     entries.append({'label':label,'watchdog_timeout':True,'captures_unavailable':True})
                     continue
-                proc=command(run_dir,label+'-film',['film',*common,'--times',capture_times,'--frames','--onion','--columns','4','--out',str(art)])
-                hashes=re.findall(r'rgba-sha256 ([0-9a-f]{64})',proc.stdout)
-                if not hashes: manifest['failures'].append(label+': film emitted no frame digests')
-                if run==2 and previous.get(label+'-hashes')!=hashes: manifest['failures'].append(label+': film pixels differ')
-                previous[label+'-hashes']=hashes
+                proc=command(run_dir,label+'-images',['sequence',*common,'--frame-ms','16','--times',capture_times,'--until','8000','--out',str(art)])
+                captures, capture_failures=native_capture_evidence(art,report if report_path.is_file() else {},scene,list(map(int,capture_times.split(','))),args.scale)
+                for reason in capture_failures: manifest['failures'].append(label+': '+reason)
+                capture_identity=[{key:value for key,value in frame.items() if key not in {'cpu_ms','input_cpu_ms'}} for frame in captures]
+                # The run directory is provenance, not UI identity. Keep raw pixel
+                # digests, timestamps, actual state and frame requests unchanged.
+                for frame in capture_identity:
+                    frame.pop('image',None)
+                    frame['state']=semantic_state(frame.get('state'))
+                if run==2 and previous.get(label+'-images')!=capture_identity: manifest['failures'].append(label+': native capture pixels/state differ')
+                previous[label+'-images']=capture_identity
+                entries.append({'label':label,'native_images':len(captures),'capture_findings':capture_failures})
                 command(run_dir,label+'-lint',['lint',*common,'--time','7600'])
         if args.mode in {'perf','all'}:
             perf_scenes = [scene for scene in live+CASES if selected is None or scene in selected]
             # Controls use identical scripts/viewports; comparison results do
-            # not redefine the release budget for the chosen batched renderer.
+            # not redefine the release budget for the production renderer.
             controlled=[s for s in CONTROLS if selected is None or s in selected]
             if not perf_scenes+controlled: raise RuntimeError('requested performance subset contains no cases')
             for scene in perf_scenes+controlled:
@@ -509,6 +598,7 @@ def main():
     if args.mode in {'correctness','all'} and not manifest.get('atlas_captures'): manifest['failures'].append('atlas has no actual-state screenshots')
     manifest['passed']=not manifest['failures']
     save()
+    write_atlas(args.out)
     print(str(args.out/'REPORT.json'))
     print('PASS' if manifest['passed'] else '\n'.join(manifest['failures']))
     return 0 if manifest['passed'] else 1

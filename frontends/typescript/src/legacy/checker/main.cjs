@@ -570,6 +570,14 @@ function emitReference(node) {
   if (origin && isEnumMemberOrigin(origin) && parent && ts.isPropertyAccessExpression(parent) && parent.name === node) {
     entry.isEnumMember = true;
   }
+  if (origin && ts.isVariableDeclaration(origin)) {
+    const flags = ts.getCombinedNodeFlags(origin);
+    if (flags & ts.NodeFlags.Const) {
+      entry.isConst = true;
+    } else {
+      entry.isVariable = true;
+    }
+  }
   references.push(entry);
 }
 

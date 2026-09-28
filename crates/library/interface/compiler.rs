@@ -3,7 +3,13 @@
 //! Its narrow surface prevents representation and policy details from leaking outward.
 //! Lean, monomorphized compiler capability boundary for the application service.
 
-use std::{collections::TryReserveError, io::ErrorKind, ops::Deref, time::Duration};
+use std::{
+    collections::TryReserveError,
+    io::ErrorKind,
+    ops::Deref,
+    sync::Mutex,
+    time::Duration,
+};
 
 use backend_semantic::vocabulary::{
     AuthorityDiagnosticClass, AuthorityPhase, CompileRecipeFact, Language, LanguageProfile,
@@ -76,13 +82,16 @@ pub struct SemanticImageAuthority {
 /// Owned encoded bytes of one exact, previously reopened semantic image.
 ///
 /// This transport owner proves only byte extent and typed artifact identity. Consumers reopen the
-/// bytes through `backend_semantic::ir::SemanticImageView` before reading semantic rows, preserving the IR
-/// crate as the sole grammar authority.
-#[derive(Debug, Eq, PartialEq)]
+/// bytes through [`SemanticImageSnapshot::reopen`]. The first call validates every plane and stores
+/// the structural proof beside these bytes. A later call rebuilds the borrowed view from that proof.
+#[derive(Debug)]
 pub struct SemanticImageSnapshot {
     /// Exact image authority requested from the compiler owner.
     pub authority: SemanticImageAuthority,
     bytes: Box<[u8]>,
+    /// Blake3 of `bytes`, fixed when the snapshot is built.
+    digest: [u8; 32],
+    proof: Mutex<Option<backend_semantic::ir::AdmittedSemanticImage>>,
 }
 
 impl SemanticImageSnapshot {
@@ -114,12 +123,67 @@ impl SemanticImageSnapshot {
             .try_reserve_exact(bytes.len())
             .map_err(|source| SemanticImageAccessError::Allocation { source })?;
         owned.extend_from_slice(bytes);
+        let digest = *blake3::hash(&owned).as_bytes();
         Ok(Self {
             authority,
             bytes: owned.into_boxed_slice(),
+            digest,
+            proof: Mutex::new(None),
         })
     }
+
+    /// Blake3 of the owned image bytes.
+    ///
+    /// Computed once while the snapshot is built from those bytes.
+    #[must_use]
+    pub fn content_digest(&self) -> [u8; 32] {
+        self.digest
+    }
+
+    /// Reopens these bytes, validating them only the first time.
+    ///
+    /// The cached proof is the one [`backend_semantic::ir::SemanticImageView::reopen`] produced for
+    /// `self`. The bytes are private, so a later call cannot apply that proof to a different image.
+    ///
+    /// # Errors
+    ///
+    /// Returns the image grammar error when the bytes have not yet been proved.
+    pub fn reopen(
+        &self,
+    ) -> Result<backend_semantic::ir::SemanticImageView<'_>, backend_semantic::ir::FullSemanticImageError>
+    {
+        let mut slot = self
+            .proof
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(proof) = *slot {
+            return Ok(backend_semantic::ir::SemanticImageView::reopen_proven(
+                self.bytes.as_ref(),
+                proof,
+            ));
+        }
+        let view = backend_semantic::ir::SemanticImageView::reopen(self.bytes.as_ref())?;
+        *slot = Some(view.proof());
+        Ok(view)
+    }
+
+    /// Drops the cached structural proof so the next [`Self::reopen`] validates again.
+    pub fn clear_reopen_proof(&self) {
+        let mut slot = self
+            .proof
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *slot = None;
+    }
 }
+
+impl PartialEq for SemanticImageSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.authority == other.authority && self.bytes == other.bytes
+    }
+}
+
+impl Eq for SemanticImageSnapshot {}
 
 impl AsRef<[u8]> for SemanticImageSnapshot {
     fn as_ref(&self) -> &[u8] {

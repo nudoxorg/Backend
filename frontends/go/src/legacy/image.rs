@@ -847,6 +847,12 @@ impl<'image> GoImage<'image> {
         self.source_digest
     }
 
+    /// The authority image wire version.
+    #[must_use]
+    pub const fn version(self) -> u16 {
+        self.version
+    }
+
     /// Number of validated declarations.
     #[must_use]
     pub const fn declaration_count(self) -> usize {

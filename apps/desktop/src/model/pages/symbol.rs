@@ -4,6 +4,8 @@ use super::common::{ByteSpan, DeclRef, Known, LineSpan, PackageRef, Provenance, 
 use backend_library::{SemanticConfidence, SemanticLinkKind, SymbolKey};
 use std::sync::Arc;
 
+pub use backend_present::SectionKind;
+
 /// Everything the Page board renders about one declaration, read once.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolPage {
@@ -16,6 +18,8 @@ pub struct SymbolPage {
     /// Producer documentation, in order. Empty means the producer captured
     /// none for this declaration (the document reply is authoritative).
     pub docs: Arc<[DocFragment]>,
+    /// The same documentation read by its language's section conventions.
+    pub sections: DocSections,
     /// Source location and excerpt availability.
     pub site: SourceSite,
     /// Members grouped for the ledger.
@@ -127,6 +131,41 @@ impl DocFragment {
     }
 }
 
+/// Documentation split by its language's conventions: the prose before any
+/// section, then each conventional section in order (`# Errors`, `@throws`,
+/// `Raises:`, `Deprecated:`). The fragments are the documentation's own,
+/// with each convention's marker (`# `, `@throws T`, `ValueError:`) read
+/// into the section's kind, title, and entry subject.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DocSections {
+    /// Prose before the first section.
+    pub lead: Arc<[DocFragment]>,
+    /// Conventional sections, in documentation order.
+    pub sections: Arc<[DocSection]>,
+}
+
+/// One conventional documentation section.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DocSection {
+    /// What the section is about.
+    pub kind: SectionKind,
+    /// The title as written (`Errors`, `throws`, `Raises`).
+    pub title: Arc<str>,
+    /// Prose of the section that belongs to no entry.
+    pub body: Arc<[DocFragment]>,
+    /// Named entries (`@throws IOException …`, `x: …`), in order.
+    pub entries: Arc<[DocEntry]>,
+}
+
+/// One named entry of a section.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DocEntry {
+    /// What the entry names (`IOException`, `x`).
+    pub subject: Arc<str>,
+    /// What the documentation says about it.
+    pub body: Arc<[DocFragment]>,
+}
+
 /// Where a declaration's source is, and whether its text is here.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceSite {
@@ -194,6 +233,10 @@ pub struct Member {
     pub signature: Known<SignatureText>,
     /// First line of its own documentation.
     pub summary: Option<Arc<str>>,
+    /// Its complete documentation, every paragraph.
+    pub docs: Arc<[DocFragment]>,
+    /// The same documentation read by its language's section conventions.
+    pub sections: DocSections,
 }
 
 /// Methods that share one receiver.

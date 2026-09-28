@@ -266,6 +266,11 @@ fn home_view(reply: &SurfaceReply) -> Option<ProductView> {
         SurfaceReply::ProjectDeleted(id) => {
             ProductView::scalar("project-delete", format!("project {} was deleted", id.get()))
         }
+        SurfaceReply::ProjectTree(tree) => tree_view(tree),
+        SurfaceReply::AdvisoryRefreshed(states) => ProductView::rows(
+            "advisory-refresh",
+            states.iter().map(advisory_source_row).collect(),
+        ),
         _ => return None,
     })
 }
@@ -284,6 +289,59 @@ fn session_view(reply: &SurfaceReply) -> ProductView {
         }
         other => ProductView::scalar("surface", format!("{:?}", other.id())),
     }
+}
+
+/// A project's tree: the lede, what affects it, each role, then each package
+/// that is here twice, in the same words the desktop's Library page uses.
+fn tree_view(tree: &backend_library::browse::ProjectTree) -> ProductView {
+    let reading = crate::browse::read_tree(tree);
+    let mut records = Vec::new();
+    let mut tags = Vec::new();
+    tags.extend(reading.elsewhere.clone());
+    tags.push(reading.health.clone());
+    tags.extend(reading.twice_line.clone());
+    records.push(ProductRecord::new(reading.lede.clone(), Some(tree.root.clone()), tags));
+    if let Some(note) = &reading.source_note {
+        records.push(ProductRecord::new(note.clone(), None, Vec::new()));
+    }
+    for alert in &reading.alerts {
+        let mut tags = vec![alert.id.clone()];
+        tags.extend(alert.summary.clone());
+        records.push(ProductRecord::new(alert.title.clone(), Some(alert.why.clone()), tags));
+    }
+    for role in &reading.roles {
+        let mut tags = Vec::new();
+        tags.extend(role.serving.clone());
+        tags.extend(role.rows.iter().map(|row| match &row.at_rest {
+            Some(rest) => format!("{} ({rest})", row.name),
+            None => row.name.clone(),
+        }));
+        tags.extend(role.brings.clone());
+        records.push(ProductRecord::new(role.label, None, tags));
+    }
+    for twice in &reading.twice {
+        let copies = twice
+            .copies
+            .iter()
+            .map(|(version, yours)| if *yours { format!("{version} (yours)") } else { version.clone() })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        records.push(ProductRecord::new(
+            format!("{} · {copies}", twice.name),
+            Some(twice.paths.join("  |  ")),
+            vec![twice.verdict.clone()],
+        ));
+    }
+    ProductView::rows(&format!("your tree · {}", reading.name), records)
+}
+
+fn advisory_source_row(state: &backend_library::browse::AdvisorySourceState) -> ProductRecord {
+    let mut tags = vec![
+        format!("{} advisories", crate::browse::count(usize::try_from(state.advisories).unwrap_or(usize::MAX))),
+        if state.complete { "a complete source".to_owned() } else { "a partial source".to_owned() },
+    ];
+    tags.extend(state.error.clone());
+    ProductRecord::new(state.source.clone(), None, tags)
 }
 
 fn append(tags: &[String], extra: String) -> Box<[String]> {

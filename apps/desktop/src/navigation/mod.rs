@@ -1,6 +1,7 @@
 //! Typed navigation and UI interaction boundary.
 
 pub mod action;
+pub mod browse;
 pub mod history;
 pub mod intent;
 pub mod journey_specs;
@@ -8,6 +9,7 @@ pub mod reducer;
 pub mod route;
 mod workspace_reducer;
 
+pub use browse::BrowseRoute;
 pub use action::{
     AccessibilityRole, ActionId, ActionNode, ActionSpec, CommandPaletteState, KeyChord,
     SemanticFamily, SemanticState, VoiceChannel,

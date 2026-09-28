@@ -238,7 +238,9 @@ impl<'w> Keys<'w> {
             TypeExpr::Binding { ty, .. } => self.walk(ty),
             // `Foo<T>::Bar` keys as `Foo`; `Self::X`, `T::X` and `<T as Tr>::X` as anything.
             TypeExpr::Assoc { base, via: None, .. } => match &**base {
-                TypeExpr::Named { path, .. } if path[0] != "Self" && !(path.len() == 1 && self.is_var(&path[0])) => {
+                TypeExpr::Named { path, .. }
+                    if path.first().is_some_and(|p| p != "Self") && !(path.len() == 1 && self.is_var(&path[0])) =>
+                {
                     self.walk(base);
                 }
                 _ => {}

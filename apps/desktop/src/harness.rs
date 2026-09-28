@@ -165,9 +165,12 @@ pub fn fixture() -> Result<&'static Fixture, String> {
         repo.join("frontends/rust/fixtures/toml_pin"),
         registry_source("toml-0.8.23")?,
     ];
+    // `NUDOX_HARNESS_STATE` keeps a run's index (and its owner's advisory
+    // authority) apart from the shared one other runs use.
     let state = STATE
         .get()
         .cloned()
+        .or_else(|| std::env::var_os("NUDOX_HARNESS_STATE").map(PathBuf::from))
         .unwrap_or_else(|| repo.join(".local/harness/desktop"));
     std::fs::create_dir_all(state.join("data")).map_err(|error| format!("{}: {error}", state.display()))?;
     let endpoint = endpoint_for(&state.join("data"))?;
@@ -241,6 +244,8 @@ pub mod route {
         Orbit,
         /// The world graph, no symbol.
         World,
+        /// This repository's dependency tree (the Library page).
+        Tree,
         /// A package by name or path (`present`), optionally at a release.
         Package {
             /// Name or path.
@@ -284,6 +289,7 @@ pub mod route {
         match parts.as_slice() {
             ["orbit"] => Ok(Target::Orbit),
             ["world"] => Ok(Target::World),
+            ["tree"] => Ok(Target::Tree),
             ["package", id, rest @ ..] => Ok(Target::Package {
                 id: (*id).to_owned(),
                 at: options("package", rest, &mut None)?,
@@ -319,6 +325,12 @@ pub mod route {
         match target {
             Target::Orbit => Ok(Route::Orbit(OrbitRoute::Home)),
             Target::World => Ok(Route::World),
+            Target::Tree => {
+                let repo = super::repo().canonicalize().map_err(|error| format!("route tree: {error}"))?;
+                crate::core::LocalProjectId::from_path(&repo)
+                    .map(|project| Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))))
+                    .map_err(|error| format!("route tree: {error:?}"))
+            }
             Target::Package { id, at } => {
                 let package = resolve_package(id, fixture)?;
                 Ok(Route::Package(PackageRoute {
@@ -560,7 +572,7 @@ fn sample_state(cx: &mut App, _: &facet::probe::Ledger) -> gallery::json::Json {
             Route::World => Json::obj([("kind", Json::str("world"))]),
             Route::Orbit(route) => Json::obj([
                 ("kind", Json::str("orbit")),
-                ("project", match route { OrbitRoute::Home => Json::Null, OrbitRoute::Project(project) => Json::num(project.get().get() as f64) }),
+                ("project", match route { OrbitRoute::Home | OrbitRoute::Browse(_) => Json::Null, OrbitRoute::Project(project) => Json::num(project.get().get() as f64) }),
             ]),
             Route::Package(route) => Json::obj([
                 ("kind", Json::str("package")), ("package", Json::str(route.package.as_str())),
@@ -712,6 +724,12 @@ pub fn scenes() -> Vec<Scene> {
             title: "The world graph, nothing selected",
             size: (1440, 900),
             build: |window, cx| build("world", window, cx),
+        },
+        Scene {
+            id: "desktop-tree",
+            title: "This repository's tree: the Library page",
+            size: (1440, 900),
+            build: |window, cx| build("tree", window, cx),
         },
     ]
 }

@@ -188,6 +188,16 @@ let
     "trustfall_core-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
     "trustfall_derive-0.3.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
   };
+  fuzzBundle = import ./fuzz.nix {
+    inherit
+      pkgs
+      workspaceRoot
+      workspaceSource
+      workspaceAvailable
+      stableRustPlatform
+      gpuiOutputHashes
+    ;
+  };
   backendControl =
     if workspaceAvailable then
       stableRustPlatform.buildRustPackage {
@@ -623,6 +633,7 @@ let
     ++ pkgs.lib.optional (typescriptChecker != null) typescriptChecker;
 in
 {
+  fuzzContract = fuzzBundle.contract;
   inherit
     authorityHelpers
     backendControl

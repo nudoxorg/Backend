@@ -29,8 +29,8 @@ pub struct Step {
     pub text: String,
     /// What it does.
     pub kind: StepKind,
-    /// The detour taken when the step cannot be done.
-    pub otherwise: Option<Vec<Act>>,
+    /// The detour taken when the step cannot be done: acts or a pointer.
+    pub otherwise: Option<Box<StepKind>>,
 }
 
 /// What a step does.
@@ -108,12 +108,12 @@ pub enum Pick {
     /// The one target published under this key (`*` globs).
     Probe(String),
     /// The target under the words a person reads: the first visible text
-    /// equal to `text` (after the first `after`, when given) in `area`.
+    /// equal to `text` in `area`, after each anchor in turn (paint order).
     Text {
         /// The exact words.
         text: String,
-        /// An anchor text it comes after, in paint order.
-        after: Option<String>,
+        /// Anchor texts it comes after, each after the one before.
+        after: Vec<String>,
         /// Where to look.
         area: Option<Area>,
     },
@@ -125,8 +125,11 @@ impl std::fmt::Display for Pick {
             Self::Probe(probe) => f.write_str(probe),
             Self::Text { text, after, area } => {
                 write!(f, "\"{text}\"")?;
-                if let Some(after) = after {
-                    write!(f, " after \"{after}\"")?;
+                if !after.is_empty() {
+                    f.write_str(" after")?;
+                    for anchor in after {
+                        write!(f, " \"{anchor}\"")?;
+                    }
                 }
                 if let Some(area) = area {
                     write!(f, " in {}", area.name())?;
@@ -151,8 +154,13 @@ pub enum Assert {
     /// Some visual row reads the string (whitespace aside): words set as
     /// separate links still read as one line.
     Line(Vec<String>, Option<Area>),
+    /// The pick is on screen and is a link (inside a published target).
+    Link(Pick),
     /// The one focused target is this pick.
     Focus(Pick),
+    /// The one focused target is the one this route was left by (a click
+    /// here, then a back): the focus came back with the route.
+    FocusRestored,
     /// A budget holds.
     Budget {
         /// Which.
@@ -256,26 +264,30 @@ fn strings_in(text: &str) -> Result<(Vec<String>, Option<Area>), String> {
     Ok((list, area))
 }
 
-/// `PROBE` or `"TEXT" [after "ANCHOR"] [in AREA]`.
+/// `PROBE` or `"TEXT" [after "ANCHOR"…] [in AREA]`.
 fn pick(text: &str) -> Result<Pick, String> {
     let toks = tokens(text)?;
     match toks.as_slice() {
         [Tok::Word(probe)] => Ok(Pick::Probe(probe.clone())),
         [Tok::Str(words), rest @ ..] => {
-            let (mut after, mut area) = (None, None);
+            let (mut after, mut area) = (Vec::new(), None);
             let mut rest = rest;
             loop {
                 match rest {
                     [] => break,
-                    [Tok::Word(key), Tok::Str(anchor), tail @ ..] if key == "after" && after.is_none() => {
-                        after = Some(anchor.clone());
+                    [Tok::Word(key), Tok::Str(_), ..] if key == "after" && after.is_empty() => {
+                        let mut tail = &rest[1..];
+                        while let [Tok::Str(anchor), next @ ..] = tail {
+                            after.push(anchor.clone());
+                            tail = next;
+                        }
                         rest = tail;
                     }
                     [Tok::Word(key), Tok::Word(name), tail @ ..] if key == "in" && area.is_none() => {
                         area = Some(Area::parse(name)?);
                         rest = tail;
                     }
-                    _ => return Err("after the text: `after \"ANCHOR\"` and/or `in AREA`".to_owned()),
+                    _ => return Err("after the text: `after \"ANCHOR\"…` and/or `in AREA`".to_owned()),
                 }
             }
             Ok(Pick::Text {
@@ -369,10 +381,12 @@ fn assertion(line: &str) -> Result<Assert, String> {
         }
         "absent" => strings_in(rest).map(|(list, area)| Assert::Absent(list, area)),
         "line" => strings_in(rest).map(|(list, area)| Assert::Line(list, area)),
+        "focus" if rest == "restored" => Ok(Assert::FocusRestored),
         "focus" if !rest.is_empty() => pick(rest).map(Assert::Focus),
+        "link" if !rest.is_empty() => pick(rest).map(Assert::Link),
         "budget" => budget(rest),
         other => Err(format!(
-            "`{other}` is not an assert (route, text, order, absent, line, focus, budget)"
+            "`{other}` is not an assert (route, text, order, absent, line, link, focus, budget)"
         )),
     }
 }
@@ -460,7 +474,13 @@ impl Journey {
                 _ => {
                     let (main, otherwise) = split_else(trimmed);
                     let kind = step_kind(main).map_err(fail)?;
-                    let otherwise = otherwise.map(acts).transpose().map_err(fail)?;
+                    let otherwise = otherwise
+                        .map(|detour| match step_kind(detour)? {
+                            kind @ (StepKind::Acts(_) | StepKind::Pointer { .. }) => Ok(Box::new(kind)),
+                            _ => Err("a detour is acts or a click/hover".to_owned()),
+                        })
+                        .transpose()
+                        .map_err(fail)?;
                     journey.steps.push(Step {
                         line,
                         text: trimmed.to_owned(),
@@ -525,10 +545,10 @@ mod tests {
         assert!(strings_in("a").is_err());
         assert!(strings_in(r#""a" in nowhere"#).is_err());
         assert_eq!(
-            pick(r#""ensure_locald" after "Spawn" in reader"#),
+            pick(r#""ensure_locald" after "How it fails" "Spawn" in reader"#),
             Ok(Pick::Text {
                 text: "ensure_locald".to_owned(),
-                after: Some("Spawn".to_owned()),
+                after: vec!["How it fails".to_owned(), "Spawn".to_owned()],
                 area: Some(Area::Reader),
             })
         );
@@ -539,12 +559,13 @@ mod tests {
 
     #[test]
     fn a_journey_parses_steps_and_asserts() {
-        let text = "size 1440x900\nstart orbit\n# a comment\nkey cmd-k\ntype \"toml Value\"\nclick orbit-package-* else route orbit\nclick \"Spawn\" in reader\nsettle\nwait 120\ncheck home\n  route orbit\n  text \"a\" \"b\" in reader\n  order \"a\" \"b\"\n  line \"Io, Spawn\"\n  focus x*\n  budget page-open <= 120ms\n";
+        let text = "size 1440x900\nstart orbit\n# a comment\nkey cmd-k\ntype \"toml Value\"\nclick orbit-package-* else route orbit\nclick \"Spawn\" in reader else click x*\nsettle\nwait 120\ncheck home\n  route orbit\n  text \"a\" \"b\" in reader\n  order \"a\" \"b\"\n  line \"Io, Spawn\"\n  focus x*\n  budget page-open <= 120ms\n  link \"a\" after \"b\"\n  focus restored\n";
         let journey = Journey::parse("J0", Path::new("J0.journey"), text).expect("parses");
         assert_eq!(journey.steps.len(), 7);
         assert!(matches!(journey.steps[2].kind, StepKind::Pointer { click: true, pick: Pick::Probe(_) }));
         assert!(journey.steps[2].otherwise.is_some());
         assert!(matches!(journey.steps[3].kind, StepKind::Pointer { pick: Pick::Text { .. }, .. }));
+        assert!(matches!(journey.steps[3].otherwise.as_deref(), Some(StepKind::Pointer { click: true, .. })));
         let StepKind::Check { asserts, .. } = &journey.steps[6].kind else {
             panic!("the last step is a check");
         };
@@ -557,6 +578,8 @@ mod tests {
                 limit_ms: 120.0
             }
         );
+        assert_eq!(asserts[7], Assert::FocusRestored);
+        assert!(matches!(&asserts[6], Assert::Link(Pick::Text { after, .. }) if after == &vec!["b".to_owned()]));
         assert!(Journey::parse("J0", Path::new("J0"), "  text \"a\"\ncheck x\n").is_err());
         assert!(Journey::parse("J0", Path::new("J0"), "key j @100\ncheck x\n").is_err());
         assert!(Journey::parse("J0", Path::new("J0"), "route elsewhere\ncheck x\n").is_err());

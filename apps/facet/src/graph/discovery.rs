@@ -191,6 +191,7 @@ pub struct Discovery {
     package_items: Arc<Vec<Vec<NodeId>>>,
     package_tours: Arc<Vec<crate::semantics::tour::Tour>>,
     focus_facts: Arc<Vec<FocusFacts>>,
+    prepare_duration: std::time::Duration,
     recipes: Recipes,
     names: Arc<Vec<(NodeId, String, String)>>,
     types: Arc<HashMap<String, Vec<NodeId>>>,
@@ -212,6 +213,7 @@ pub struct PreparedDiscovery {
     package_items: Arc<Vec<Vec<NodeId>>>,
     package_tours: Arc<Vec<crate::semantics::tour::Tour>>,
     focus_facts: Arc<Vec<FocusFacts>>,
+    prepare_duration: std::time::Duration,
     recipes: recipes::PreparedRecipes,
     names: Arc<Vec<(NodeId, String, String)>>,
     types: Arc<HashMap<String, Vec<NodeId>>>,
@@ -230,6 +232,7 @@ impl Discovery {
     /// Parses and indexes on a background worker; the result is `Send`.
     #[must_use]
     pub fn prepare(world: &World) -> PreparedDiscovery {
+        let prepare_started = std::time::Instant::now();
         let recipes = Recipes::new(world);
         let semantic_names = Arc::new(crate::semantics::names::Names::new(world));
         let mut package_items = vec![Vec::new(); world.packages.len()];
@@ -295,7 +298,7 @@ impl Discovery {
             })
             .collect();
         let focus_facts = focus_facts(world);
-        PreparedDiscovery {
+        let mut prepared = PreparedDiscovery {
             capabilities: Arc::new(capabilities),
             requirements: Arc::new(requirements),
             proof: Arc::new(proof),
@@ -303,13 +306,16 @@ impl Discovery {
             package_items: Arc::new(package_items),
             package_tours: Arc::new(package_tours),
             focus_facts: Arc::new(focus_facts),
+            prepare_duration: std::time::Duration::ZERO,
             recipes: recipes.into_prepared(),
             names: Arc::new(names),
             types: Arc::new(types),
             traits: Arc::new(traits),
             by_in: Arc::new(by_in),
             by_out: Arc::new(by_out),
-        }
+        };
+        prepared.prepare_duration = prepare_started.elapsed();
+        prepared
     }
 
     /// Attaches empty caches after loading; the expensive work is finished.
@@ -323,6 +329,7 @@ impl Discovery {
             package_items: data.package_items,
             package_tours: data.package_tours,
             focus_facts: data.focus_facts,
+            prepare_duration: data.prepare_duration,
             recipes: Recipes::from_prepared(data.recipes),
             names: data.names,
             types: data.types,
@@ -345,6 +352,7 @@ impl Discovery {
             package_items: self.package_items.clone(),
             package_tours: self.package_tours.clone(),
             focus_facts: self.focus_facts.clone(),
+            prepare_duration: self.prepare_duration,
             recipes: self.recipes.prepared(),
             names: self.names.clone(),
             types: self.types.clone(),
@@ -394,6 +402,13 @@ impl Discovery {
         }
         cache.push_back((query.trim().to_owned(), result.clone()));
         result
+    }
+
+    /// Wall time spent building this immutable index on its worker. This
+    /// excludes world parsing, layout, attachment, and renderer startup.
+    #[must_use]
+    pub fn prepare_duration(&self) -> std::time::Duration {
+        self.prepare_duration
     }
 
     /// A package reading path, prepared once off the UI thread.

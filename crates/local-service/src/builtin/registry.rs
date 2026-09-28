@@ -37,8 +37,21 @@ pub(super) struct RegistryGateway {
     source_root: PathBuf,
     shared_objects: PathBuf,
     advisory: Arc<backend_engine::advisory::AdvisoryAuthority>,
+    advisory_path: PathBuf,
+    advisory_config: AdvisoryConfig,
     last_receipt: Option<Arc<backend_engine::acquisition::AcquisitionReceipt>>,
     last_snapshot: Option<Arc<backend_engine::acquisition::SourceSnapshot>>,
+    projection: Option<(Vec<([u8; 32], [u8; 32])>, Arc<CatalogProjection>)>,
+}
+
+/// Resident catalog rows, name index, and registry dependency facts.
+///
+/// Rebuilt only when a source facts root changes. Surface commands borrow
+/// this projection instead of re-admitting every published package.
+pub(super) struct CatalogProjection {
+    pub(super) records: Vec<backend_engine::RegistryPackageRecord>,
+    pub(super) index: super::product_state::CatalogLookupIndex,
+    pub(super) dependency_facts: Vec<backend_engine::PackageDependencySourceFacts>,
 }
 
 struct RegistrySlot {
@@ -98,8 +111,52 @@ impl RegistryGateway {
         &self.workspace_root
     }
 
+    /// The advisory authority every read observes.
+    pub(super) fn advisory(&self) -> &backend_engine::advisory::AdvisoryAuthority {
+        &self.advisory
+    }
+
+    /// Refreshes every configured advisory source, persists the result, and
+    /// makes it the authority for every later read and acquisition.
+    ///
+    /// A source that fails keeps its last good body and is marked
+    /// unavailable, so coverage says "unavailable" rather than "clean".
+    pub(super) fn refresh_advisories(&mut self) -> Result<Vec<backend_library::browse::AdvisorySourceState>, String> {
+        let mut authority = (*self.advisory).clone();
+        let mut states = Vec::new();
+        for source in &self.advisory_config.sources {
+            let error = match refresh_authority_source(&authority, source, self.advisory_config.max_feed_bytes) {
+                Ok(feed) => authority.apply(feed).err().map(|error| error.to_string()),
+                Err(error) => Some(error),
+            };
+            if error.is_some() {
+                authority.mark_unavailable(source.source, advisory_now());
+            }
+            let frontier = authority.frontier(source.source);
+            states.push(backend_library::browse::AdvisorySourceState {
+                source: format!("{:?}", source.source).to_ascii_lowercase(),
+                complete: frontier.is_some_and(|frontier| frontier.complete),
+                advisories: frontier.map_or(0, |frontier| frontier.entries),
+                observed_at: frontier.map_or(0, |frontier| frontier.observed_at),
+                error,
+            });
+        }
+        authority.persist(&self.advisory_path).map_err(|error| error.to_string())?;
+        self.advisory = Arc::new(authority);
+        // Open owners hold the previous authority as their resolver; they
+        // reopen lazily with the new one.
+        self.slots.clear();
+        Ok(states)
+    }
+
     /// Projects the complete recovered local catalog without network I/O.
     pub(super) fn catalog(&mut self) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
+        Ok(self.catalog_projection()?.records.clone())
+    }
+
+    fn project_catalog_records(
+        &mut self,
+    ) -> Result<Vec<backend_engine::RegistryPackageRecord>, String> {
         let mut records = Vec::new();
         let mut seen = BTreeSet::new();
         for source in self.sources.sources().cloned().collect::<Vec<_>>() {
@@ -182,6 +239,24 @@ impl RegistryGateway {
         Ok(records)
     }
 
+    /// Identity of the opened catalog generations.
+    ///
+    /// The stamp changes when a source commits a package or a forge link.
+    /// Callers keep a resident dependency index until it changes. Opening a
+    /// source that is already resident only reads the generation counter.
+    pub(super) fn publication_stamp(&mut self) -> Result<[u8; 32], String> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"backend.registry.publication-stamp.v1\0");
+        for source in self.sources.sources().cloned().collect::<Vec<_>>() {
+            let service = self
+                .service_for(&source)
+                .map_err(|error| format!("open registry source: {error}"))?;
+            hasher.update(&source.id().as_bytes());
+            hasher.update(&service.catalog_generation().to_le_bytes());
+        }
+        Ok(*hasher.finalize().as_bytes())
+    }
+
     /// Returns dependency facts from the same immutable publication records as
     /// the catalog. Unknown and unavailable metadata stay typed all the way to
     /// the product surface; an empty known set is the only representation of
@@ -231,9 +306,45 @@ impl RegistryGateway {
             source_root,
             shared_objects,
             advisory,
+            advisory_path,
+            advisory_config: advisory_config.clone(),
             last_receipt: None,
             last_snapshot: None,
+            projection: None,
         }))
+    }
+
+    /// Returns the resident catalog projection, rebuilding it when a source
+    /// facts root changes.
+    pub(super) fn catalog_projection(&mut self) -> Result<Arc<CatalogProjection>, String> {
+        let key = self.projection_key()?;
+        if let Some((cached_key, projection)) = &self.projection
+            && cached_key == &key
+        {
+            return Ok(Arc::clone(projection));
+        }
+        let records = self.project_catalog_records()?;
+        let dependency_facts = self.dependency_facts();
+        let index = super::product_state::CatalogLookupIndex::from_catalog(&records);
+        let projection = Arc::new(CatalogProjection {
+            records,
+            index,
+            dependency_facts,
+        });
+        self.projection = Some((key, Arc::clone(&projection)));
+        Ok(projection)
+    }
+
+    fn projection_key(&mut self) -> Result<Vec<([u8; 32], [u8; 32])>, String> {
+        let sources = self.sources.sources().cloned().collect::<Vec<_>>();
+        let mut key = Vec::with_capacity(sources.len());
+        for source in &sources {
+            let service = self
+                .service_for(source)
+                .map_err(|error| format!("open registry source: {error}"))?;
+            key.push((service.source_id(), service.facts_frontier()));
+        }
+        Ok(key)
     }
 
     /// Fetches, verifies, and durably publishes one exact remote coordinate.
@@ -615,9 +726,18 @@ fn read_rustsec_tree(
         for entry in entries {
             let entry = entry.map_err(|error| error.to_string())?;
             let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
             if path.is_dir() {
-                visit(&path, maximum, observed_at, total, output)?;
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("toml") {
+                // `.git` and other dot directories hold no advisories.
+                if !name.starts_with('.') {
+                    visit(&path, maximum, observed_at, total, output)?;
+                }
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("toml")
+                // advisory-db keeps each advisory as `RUSTSEC-*.md`: fenced TOML
+                // front matter, then prose. README/CONTRIBUTING are not advisories.
+                || (name.starts_with("RUSTSEC-") && name.ends_with(".md"))
+            {
                 let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
                 *total = total.saturating_add(bytes.len());
                 if *total > maximum {

@@ -1,0 +1,54 @@
+#!/bin/bash
+# Applies cargo-bolero's sancov flags only to crates listed in ./instrumented.
+# Build scripts, proc-macros, and every other crate are not linked with
+# libFuzzer, so coverage symbols would be undefined there. The list is data:
+# adding a harness directory does not require editing this script.
+set -euo pipefail
+rustc=$1
+shift
+allowlist=$(dirname "$0")/instrumented
+if [ ! -f "$allowlist" ]; then
+  echo "missing instrumentation list $allowlist" >&2
+  exit 1
+fi
+name=""
+previous=""
+proc_macro=0
+for argument in "$@"; do
+  if [ "$previous" = "--crate-name" ]; then
+    name=$argument
+  fi
+  if [ "$previous" = "--crate-type" ] && [ "$argument" = "proc-macro" ]; then
+    proc_macro=1
+  fi
+  previous=$argument
+done
+keep=0
+while IFS= read -r line || [ -n "$line" ]; do
+  case $line in
+    '' | \#*)
+      continue
+      ;;
+  esac
+  line=${line%$'\r'}
+  if [ "$line" = "$name" ]; then
+    keep=1
+  fi
+done < "$allowlist"
+if [ "$proc_macro" = 1 ] || [ "$name" = "build_script_build" ]; then
+  keep=0
+fi
+if [ "$keep" = 0 ]; then
+  filtered=()
+  for argument in "$@"; do
+    case $argument in
+      -Cpasses=sancov-module | -Cpasses=sancov | -Cllvm-args=-sanitizer-coverage*)
+        ;;
+      *)
+        filtered+=("$argument")
+        ;;
+    esac
+  done
+  exec "$rustc" "${filtered[@]}"
+fi
+exec "$rustc" "$@"

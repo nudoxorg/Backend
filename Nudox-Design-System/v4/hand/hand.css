@@ -1,0 +1,203 @@
+/* =====================================================================
+   D-Hand: where you are (the jump bar) and what you hold (the hand).
+   Replaces the trail: beads, strands, the metro map and the trail button.
+   Every class is h-prefixed (facet.css owns the short names).
+   Restraint (gui-plan §6.2): one accent (mint = yours/current,
+   periwinkle = focus), rows at rest are mark + name, keys only while ⌘
+   is held, space not lines.
+   ===================================================================== */
+
+/* ---------- the titlebar centre: back, forward, the jump bar ---------- */
+.titlebar .thread.hthread{gap:4px;justify-content:center}
+.hctr{display:flex;align-items:center;gap:2px;min-width:0;flex:0 1 560px}
+.hnav{position:relative;width:28px;height:28px;flex:none;display:inline-flex;align-items:center;justify-content:center;color:var(--ink2);
+  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);transition:background var(--t-quick),color var(--t-quick)}
+.hnav:hover,.hnav.hov{background:var(--plate2);color:var(--ink0)}
+.hnav.fwd{color:var(--ink3)}
+.hnav svg{width:14px;height:14px}
+/* long press: the button's bevel fills while held, then the list drops */
+.hnav.on{background:var(--plate3);color:var(--ink0);box-shadow:inset 1px 1px 0 var(--bevel-hi),inset -1px -1px 0 var(--bevel-lo)}
+.hnav.press{background:conic-gradient(from 0deg,var(--peri) 0 var(--p,0%),var(--plate2) var(--p,0%) 100%)}
+
+.hjump{container:hjump / inline-size;flex:1 1 auto;min-width:0;height:32px;display:flex;align-items:center;gap:2px;padding:0 6px 0 8px;
+  background:var(--plate2);box-shadow:inset 1px 1px 0 var(--bevel-hi),inset -1px -1px 0 var(--bevel-lo);
+  clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px)}
+.hjump.focus{box-shadow:inset 2px 2px 0 var(--peri-hi),inset -2px -2px 0 var(--peri)}
+.hsegs{display:flex;align-items:center;min-width:0;overflow:hidden;flex:0 1 auto}
+.hseg{position:relative;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 6px;flex:none;white-space:nowrap;
+  font:500 12.5px/1 var(--mono);color:var(--ink3);clip-path:polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px);
+  transition:color var(--t-quick),background var(--t-quick)}
+.hseg:hover,.hseg.hov{color:var(--ink0);background:rgba(190,205,255,.06)}
+.hseg.now{color:var(--ink0);font-weight:600;flex:0 1 auto;min-width:0}
+.hseg.now b{font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.hseg.open{color:var(--ink0);background:var(--plate3)}
+.hseg.typing{color:var(--ink0);background:var(--plate3)}
+.hseg .caret{display:inline-block;width:1.5px;height:14px;background:var(--mint);margin-left:-5px;animation:none}
+.hsep{display:inline-flex;color:var(--ink4);flex:none}
+.hsep svg{width:10px;height:10px;stroke-width:2}
+.hseg.hs-deep{padding:0 4px;color:var(--ink4);visibility:hidden}
+.hseg.hs-deep svg{width:10px;height:10px;stroke-width:2}
+.hjump:hover .hseg.hs-deep,.hseg.hs-deep.show{visibility:visible}
+.hfind{margin-left:auto;flex:none;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;color:var(--ink4)}
+.hfind:hover{color:var(--ink1)}
+/* the plate measures itself: long paths give up their outer segments first */
+@container hjump (max-width:250px){ .hseg.hs-pkg,.hseg.hs-pkg+.hsep{display:none} }
+@container hjump (max-width:190px){ .hseg.hs-mod,.hseg.hs-mod+.hsep{display:none} }
+@container win (max-width:760px){ .titlebar .hctr{flex:1 1 auto} }
+
+/* ---------- key caps: only while ⌘ is held ---------- */
+.hcap{display:none;position:absolute;z-index:70;pointer-events:none;height:16px;min-width:16px;padding:0 4px;align-items:center;justify-content:center;
+  font:600 10px/1 var(--ui);color:#0a1030;background:var(--peri-hi);white-space:nowrap;
+  clip-path:polygon(3px 0,100% 0,100% calc(100% - 3px),calc(100% - 3px) 100%,0 100%,0 3px)}
+.cmd .hcap{display:inline-flex}
+.hcaps{position:absolute;inset:0;pointer-events:none;z-index:95}
+.hcaps .hcap{transform:translate(-50%,0)}
+.hcap.cb{left:50%;top:calc(100% + 3px);transform:translateX(-50%)}
+.hcap.ct{left:50%;bottom:calc(100% + 4px);transform:translateX(-50%)}
+.hcap.cr{left:calc(100% + 4px);top:50%;transform:translateY(-50%)}
+
+/* ---------- menus: siblings, members, the back list ---------- */
+.hlayer{position:absolute;inset:0;pointer-events:none;z-index:80}
+.hlayer>*{pointer-events:auto}
+.hmenuw{position:absolute;filter:drop-shadow(0 18px 30px rgba(0,0,0,.7)) drop-shadow(0 2px 6px rgba(0,0,0,.4))}
+.hmenuw.unfurl{animation:hunfurl 200ms var(--glide) both}
+@keyframes hunfurl{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0 0 -40px 0)}}
+.hmenu{min-width:200px;max-width:340px;padding:5px 0;background:var(--glass);
+  box-shadow:inset 1px 1px 0 var(--bevel-hi),inset -1px -1px 0 var(--bevel-lo);
+  clip-path:polygon(0 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%)}
+.hmr{position:relative;display:flex;align-items:center;gap:9px;height:28px;padding:0 14px 0 12px;white-space:nowrap;
+  font:500 12.5px/1 var(--mono);color:var(--ink2);cursor:default}
+.hmr .nm{overflow:hidden;text-overflow:ellipsis}
+.hmr .nm .p{color:var(--ink4)}
+.hmr .w{margin-left:auto;padding-left:18px;font:400 11px/1 var(--mono);color:var(--ink4)}
+.hmr.cur{color:var(--ink0)}
+.hmr.cur::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;background:var(--mint)}
+.hmr.sel{background:var(--peri-soft);color:var(--ink0);box-shadow:inset 2px 0 0 var(--peri)}
+.hmr.cur.sel::before{display:none}
+.hmr .hmatch{display:inline-block;font-weight:inherit;padding-bottom:1px;box-shadow:inset 0 -1.5px 0 var(--peri)}
+.hmr .ico{color:var(--ink3)}
+.hmr.more{color:var(--ink3);font:italic 400 13px/1 var(--serif)}
+.hmr.more .ico{width:12px;height:12px}
+.hmgap{height:7px}
+.hmenu .hsub{margin-left:auto;color:var(--ink4);display:inline-flex}
+.hmenu .hsub svg{width:10px;height:10px}
+.hmenu.scroll{max-height:calc(28px * 12 + 10px);overflow:hidden;position:relative}
+
+
+/* ---------- the hand at rest: marks in the foot, under the reader ---------- */
+.hfoot{position:relative}
+.hmarks{position:absolute;top:0;bottom:0;display:flex;align-items:center;z-index:5}
+.hm{position:relative;width:18px;height:20px;display:inline-flex;align-items:center;justify-content:center;flex:none;cursor:pointer;
+  transition:transform .2s var(--bounce)}
+.hm+.hm{margin-left:1px}
+.hm.apart{margin-left:12px}
+.hm .k,.hm .k.sm{width:14px;height:14px}
+.hm .k svg{width:13px;height:13px;stroke-width:1.8}
+.hm:hover{transform:translateY(-2px)}
+.hm.hnow::after{content:"";position:absolute;left:3px;right:3px;bottom:0;height:1.5px;background:var(--mint)}
+.hm.hollow .k{opacity:.6}.hm.hollow .k .f{display:none}
+.hm .hcap.ct{bottom:calc(100% + 6px)}
+.hmarks .hopen{margin-left:10px;position:relative;width:1px;height:1px}
+.hmarks .hopen .hcap{left:0;top:50%;transform:translateY(-50%)}
+.hname{display:inline-flex;overflow:hidden;white-space:nowrap;font:500 11.5px/1 var(--mono);color:var(--ink2);margin-left:6px}
+.hname i{font:italic 400 12.5px/1 var(--serif);color:var(--ink3);margin-left:6px}
+/* while indexing, the foot's top edge is the seam; the marks keep clear of its hit band */
+.hseam{position:absolute;left:0;right:0;top:-1px;display:flex;gap:2px;height:2px;z-index:6}
+.hseam>i{flex:var(--w,1);background:var(--line2);position:relative;overflow:hidden}
+.hseam>i.done{background:var(--mint)}
+.hseam>i.now{background:var(--signal-soft)}
+.hseam>i.now::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(90deg,var(--mint) 0 4px,transparent 4px 8px)}
+
+/* ---------- the hand opened: a row of cards over the reader's foot ---------- */
+.hhandw{position:absolute;z-index:60;filter:drop-shadow(0 16px 28px rgba(0,0,0,.66)) drop-shadow(0 2px 5px rgba(0,0,0,.4))}
+.hhand{display:flex;flex-direction:column;gap:9px;padding:10px 12px 11px 10px;background:var(--glass);
+  box-shadow:inset 1px 1px 0 var(--bevel-hi),inset -1px -1px 0 var(--bevel-lo);
+  clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px)}
+.hrow{position:relative;display:flex;align-items:center;flex-wrap:nowrap}
+.hc{position:relative;display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 10px 0 7px;flex:none;white-space:nowrap;
+  font:500 12.5px/1 var(--mono);color:var(--ink1);background:var(--plate2);
+  box-shadow:inset 1px 1px 0 var(--bevel-hi),inset -1px -1px 0 var(--bevel-lo);
+  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);
+  transition:transform .2s var(--bounce),background .16s}
+.hc.hnow{box-shadow:inset 1px 1px 0 var(--mint),inset -1px -1px 0 rgba(98,230,166,.28);color:var(--ink0)}
+.hc.hov{background:var(--plate3);transform:translateY(-2px);color:var(--ink0)}
+.hc.hollow{background:none;box-shadow:inset 0 0 0 1px var(--line3);color:var(--ink3)}
+.hc.hollow .k .f{display:none}
+.hc .x{display:none;margin:0 -4px 0 2px;color:var(--ink3)}
+.hc .x svg{width:10px;height:10px}
+.hc.hov .x{display:inline-flex}
+.hc .hcap.ct{bottom:calc(100% + 5px)}
+.hc.pk .eco{display:inline-flex}
+.hj{display:inline-flex;align-items:center;flex:none;min-width:22px;color:var(--line3)}
+.hj .hln{display:block;height:1px;background:currentColor;flex:1 1 auto;min-width:6px;width:10px}
+.hj .hln.end{position:relative;width:12px}
+.hj .hln.end::after{content:"";position:absolute;right:0;top:-2.5px;width:5px;height:5px;border-top:1px solid currentColor;border-right:1px solid currentColor;transform:rotate(45deg)}
+.hj em{font:italic 400 12.5px/1 var(--serif);color:var(--ink3);padding:0 4px}
+.hj code{font:400 11.5px/1 var(--mono);color:var(--ink2);padding:0 5px}
+.hj.drawing{color:var(--peri)}
+.hgap{flex:none;width:22px}
+.hsay{font:italic 400 13.5px/18px var(--serif);color:var(--ink3);padding-left:2px;white-space:nowrap}
+.hsay b{font:500 12.5px/1 var(--mono);font-style:normal;color:var(--ink1)}
+.hsay .reel{display:inline-block;height:18px;overflow:hidden;vertical-align:top;white-space:nowrap}
+.hsay .reel>span{display:block;height:18px;width:max-content}
+.hgo{margin-left:12px;display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;flex:none;font:500 12.5px/1 var(--ui);color:var(--ink0);
+  background:var(--plate3);box-shadow:inset 1px 1px 0 var(--bevel-hi),inset -1px -1px 0 var(--bevel-lo);
+  clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px)}
+.hcode{margin:0;padding:9px 12px;background:var(--table);font:400 12.5px/1.7 var(--mono);color:var(--ink1);white-space:pre}
+.hcode .kw{color:#c5a3ff}.hcode .ty{color:var(--f-type)}.hcode .ca{color:var(--f-call)}.hcode .p{color:var(--ink3)}
+/* narrow: the row turns into a column; joins run down the left */
+.hhand.hcol{min-width:0}
+.hhand.hcol .hrow{flex-direction:column;align-items:stretch}
+.hhand.hcol .hc{width:100%}
+.hhand.hcol .hj{flex-direction:column;align-items:flex-start;height:auto;min-height:14px;padding-left:15px;min-width:0}
+.hhand.hcol .hj .hln{width:1px;height:6px;min-height:4px;flex:none}
+.hhand.hcol .hj .hln.end{height:8px}
+.hhand.hcol .hj .hln.end::after{right:-2px;top:auto;bottom:0;transform:rotate(135deg)}
+.hhand.hcol .hj em,.hhand.hcol .hj code{padding:2px 0 2px 10px;margin-left:-1px;box-shadow:inset 1px 0 0 currentColor}
+.hhand.hcol .hgap{height:12px;width:auto}
+.hhand.hcol .hsay{white-space:normal}
+.hhand.hcol .hgo{margin:6px 0 0}
+
+/* the card's peek, anchored to the card's top edge */
+.hpeekw{position:absolute;z-index:75;filter:drop-shadow(0 10px 18px rgba(0,0,0,.6)) drop-shadow(0 2px 4px rgba(0,0,0,.4))}
+.hpeek{width:360px}
+.hpeek .ph .wh{white-space:nowrap}
+.hpeek .foot b{font-weight:500;color:var(--ink1)}
+
+/* the flying stone (take) and the leaving card (let go) */
+.hfly{position:absolute;z-index:90;pointer-events:none;transform-origin:50% 50%}
+.hclip{position:absolute;overflow:hidden;pointer-events:none;z-index:61}
+
+/* ---------- the docked column (Vast): the hand opened as a column ---------- */
+.hdock{flex:none;width:340px;display:flex;flex-direction:column;gap:0;padding:22px 18px 18px 16px;border-left:1px solid var(--line1);
+  background:rgba(3,8,18,.35);overflow:hidden}
+.hdock .hsay{white-space:normal;margin:0 0 16px;font-size:15px;line-height:21px;color:var(--ink3)}
+.hdock .hsay b{font-size:13px}
+.hdc{position:relative;padding:12px 13px 12px;background:var(--plate);box-shadow:inset 1px 1px 0 var(--bevel-hi),inset -1px -1px 0 var(--bevel-lo);
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+.hdc.hnow{box-shadow:inset 1px 1px 0 var(--mint),inset -1px -1px 0 rgba(98,230,166,.28)}
+.hdc.hollow{background:none;box-shadow:inset 0 0 0 1px var(--line2)}
+.hdc .hh1{display:flex;align-items:center;gap:9px}
+.hdc .hh1 b{font:600 13.5px/1 var(--mono);color:var(--ink0)}
+.hdc .hh1 small{margin-left:auto;font:400 11px/1 var(--mono);color:var(--ink4)}
+.hdc .hsig{display:block;margin-top:9px;padding:6px 8px;background:var(--table);font:400 11.5px/16px var(--mono);color:var(--ink1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hdc .hsy{margin-top:8px;font:italic 400 13.5px/19px var(--serif);color:var(--ink2)}
+.hdj{display:flex;align-items:center;gap:8px;height:30px;padding-left:20px;color:var(--line3)}
+.hdj::before{content:"";width:1px;height:100%;background:currentColor}
+.hdj em{font:italic 400 13px/1 var(--serif);color:var(--ink3)}
+.hdj code{font:400 12px/1 var(--mono);color:var(--ink2)}
+.hdgap{height:18px}
+
+/* ---------- Orbit: resume is the hand, one rung up ---------- */
+.hres{gap:5px}
+.hres .l1{display:flex;align-items:center;gap:7px;font:400 12.5px var(--ui);color:var(--ink3)}
+.hres .l1 .rc{display:inline-flex;align-items:center;gap:5px}
+.hres .l1 .rc b{display:inline-flex;align-items:center;gap:5px;font:500 12.5px var(--mono);color:var(--ink1)}
+.hres .l1 .rc i{font-style:normal;color:var(--ink4);font-size:11px}
+.hres .l2{font:italic 400 13px var(--serif);color:var(--ink3)}
+.hres .l2 b{font:500 12px var(--mono);font-style:normal;color:var(--ink2)}
+.hres .new{margin-top:9px}
+/* the overlap checker hit-tests everything painted, including pointer-transparent layers */
+.hchecking,.hchecking *{pointer-events:auto!important}
+/* frames driven by the motion maths are poses, not transitions */
+.hdriven,.hdriven *{transition:none!important;animation:none!important}

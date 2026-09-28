@@ -23,6 +23,24 @@ pub fn reduce(snapshot: &crate::model::AppSnapshot, intent: Intent) -> Reduction
                 effects.push(Effect::Persist);
             }
         }
+        Intent::Hold(held) => {
+            let mut session = next.session().clone();
+            session.hand = session.hand.hold(held);
+            next = next.with_session(session);
+            effects.push(Effect::Persist);
+        }
+        Intent::LetGo(held) => {
+            let mut session = next.session().clone();
+            session.hand = session.hand.let_go(&held);
+            next = next.with_session(session);
+            effects.push(Effect::Persist);
+        }
+        Intent::TouchHeld(held, at) => {
+            let mut session = next.session().clone();
+            session.hand = session.hand.touch(&held, at);
+            next = next.with_session(session);
+            effects.push(Effect::Persist);
+        }
         Intent::SetRelease(at) => {
             let route = snapshot.route().with_release(at);
             if &route != snapshot.route() {

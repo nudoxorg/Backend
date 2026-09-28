@@ -10,7 +10,7 @@
 //! (or pan), ↵ goes to the walked row or opens the page, Esc releases the
 //! prism then backs out, `+`/`-` zoom, `0` shows the world.
 
-use super::camera::{Landing, Rig, Travel, View};
+use super::camera::{FocusKind, FocusRoute, Landing, Rig, Travel, View};
 use super::draw::{self, Look, Stats, Strategy, tone};
 use super::layout::{self, Box2};
 use super::interaction::{Reach, TourRoad};
@@ -32,6 +32,8 @@ const PRISM_KEY: &str = "graph-prism";
 const HOVER_KEY: &str = "graph-hover";
 /// The finite edge activity envelope, independent from its wrapped phase.
 const FLOW_KEY: &str = "graph-flow";
+/// Finite ambient ink transition when entering or leaving a reading focus.
+const READING_KEY: &str = "graph-reading-ink";
 use crate::paint::{Bevel, Chamfer, Plate, cut};
 use crate::theme::ActiveFacet;
 use crate::tokens::ty;
@@ -69,9 +71,14 @@ pub type OpenPage = Rc<dyn Fn(NodeId, &mut Window, &mut App)>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReadingIntent { Focus(NodeId), Reach(NodeId), Tour(NodeId), Chain(u64) }
 
-struct OutgoingHover {
-    epoch: usize,
-    packet: Arc<super::scene::Neighbourhood>,
+#[derive(Clone, Copy, Debug)]
+enum PeekOrigin {
+    Glyph(NodeId),
+    Proxy { owner: NodeId, key: prism::SlotKey },
+}
+
+struct RetiringHover {
+    packet: Option<Arc<super::scene::Neighbourhood>>,
     alpha: f32,
     flow_alpha: f32,
 }
@@ -97,6 +104,10 @@ pub struct Retained {
     pub prism_rows: usize,
     /// Cached semantic searches and seeded producer runs.
     pub search_cache: usize,
+    /// Positive symbol envelopes awaiting their finite terminal fade.
+    pub fading_symbols: usize,
+    /// Relations in retained immutable departure packets.
+    pub fading_relations: usize,
 }
 
 /// Actual native interaction state sampled by the deterministic gallery.
@@ -106,6 +117,13 @@ pub struct Retained {
 pub struct Inspection {
     pub find_open: bool,
     pub query: String,
+    pub discovery_ready: bool,
+    pub discovery_prepare_ms: Option<f64>,
+    pub preparing_tour: Option<(u32, usize)>,
+    pub unavailable_tour: Option<u32>,
+    pub find_scroll: (f32, f32),
+    pub find_selection: (usize, usize),
+    pub pending_accept: bool,
     pub searching: bool,
     pub rows: Vec<NodeId>,
     pub chains: usize,
@@ -113,10 +131,14 @@ pub struct Inspection {
     pub hover: Option<NodeId>,
     pub hover_strength: f32,
     pub fading_hover: Option<(NodeId, f32)>,
+    pub fading_hovers: Vec<(NodeId, f32)>,
     pub hover_slot: Option<usize>,
     pub prism_selected: Option<usize>,
     pub prism: Option<(NodeId, f32)>,
     pub frame: Option<PrismFrame>,
+    pub rail_viewport: Option<Bounds<Pixels>>,
+    pub rail_offset: (f32, f32),
+    pub rail_visible: Vec<prism::SlotKey>,
     pub viewport: Option<View>,
     pub card_bounds: Option<Bounds<Pixels>>,
     pub pointer: Option<(f32, f32)>,
@@ -136,9 +158,14 @@ pub struct GraphView {
     hover_slot: Option<usize>,
     hover_a: f32,
     flow_a: f32,
+    reading_a: f32,
     hover_terr: Option<Terr>,
     prism: Option<Prism>,
     frame: Option<PrismFrame>,
+    rail_plan: Option<prism::RailPlan>,
+    rail_geometry: Option<prism::RailGeometry>,
+    rail_scroll: ScrollHandle,
+    rail_text_scale: Option<f32>,
     card_bounds: Option<Bounds<Pixels>>,
     reading_frame: Option<(ReadingIntent, View, Option<Bounds<Pixels>>)>,
     chrome_bounds: std::collections::BTreeMap<&'static str, Bounds<Pixels>>,
@@ -150,15 +177,20 @@ pub struct GraphView {
     tours: std::collections::HashMap<u32, Tour>,
     drag: Option<Drag>,
     peek: Option<(ElementId, NodeId)>,
+    peek_origins: std::collections::HashMap<ElementId, PeekOrigin>,
     prepared_peek: Option<super::peek::Prepared>,
-    outgoing_hover: Option<OutgoingHover>,
+    /// Only sampled live symbol tracks retire; immutable packets are acquired
+    /// during prepaint, never on the pointer input path. One entry per symbol
+    /// bounds both tracks and topology by this immutable world.
+    retiring_hovers: std::collections::BTreeMap<NodeId, RetiringHover>,
+    hover_packet: Option<Arc<super::scene::Neighbourhood>>,
+    hover_sampled: bool,
+    terminal_hovers: std::collections::BTreeSet<NodeId>,
     motion: Motion,
     /// The camera moved this frame (no new peek rests until it settles).
     moving: bool,
-    /// Counts hovers (each fades in on its own track).
-    hover_epoch: usize,
-    /// A fade that ended this frame (published once as settled).
-    ended_fade: Option<(usize, f32)>,
+    /// Stable symbol identity: reacquisition reverses the existing envelope.
+    hover_key: usize,
     /// The pointer's last position over the map.
     pointer: Option<(f32, f32)>,
     focus_handle: FocusHandle,
@@ -168,12 +200,14 @@ pub struct GraphView {
     code_scroll: ScrollHandle,
     road: Option<super::road::RoadProgress>,
     focus_scroll: ScrollHandle,
+    hint_metrics: Rc<std::cell::Cell<hints::Metrics>>,
     chain_scroll: ScrollHandle,
     tour_scroll: ScrollHandle,
     find_bounds: Option<Bounds<Pixels>>,
     discovery: Option<Rc<Discovery>>,
     search: Rc<Search>,
     stats: Stats,
+    painted_labels: Option<(View, Camera, Vec<draw::TerritoryLabel>)>,
     strategy: Strategy,
     on_open: Option<OpenPage>,
     on_peek_action: Option<super::peek::ActionHandler>,
@@ -200,10 +234,7 @@ impl GraphView {
             let (scene, discovery) = task.await;
             view.update(cx, |view, cx| {
                 view.scene = Some(scene);
-                view.discovery = Some(Rc::new(Discovery::from_prepared(discovery)));
-                let query = view.find.read(cx).value().to_string();
-                view.refresh_search(&query, cx);
-                cx.notify();
+                view.install_discovery(discovery, cx);
             })
             .ok();
         }));
@@ -218,14 +249,27 @@ impl GraphView {
         this._loading = Some(cx.spawn(async move |view, cx| {
             let prepared = prepared.await;
             view.update(cx, |view, cx| {
-                view.discovery = Some(Rc::new(Discovery::from_prepared(prepared)));
-                let query = view.find.read(cx).value().to_string();
-                view.refresh_search(&query, cx);
-                cx.notify();
+                view.install_discovery(prepared, cx);
             }).ok();
         }));
         this.scene = Some(scene);
         this
+    }
+
+    /// One checked worker-delivery boundary for every constructor.
+    fn install_discovery(&mut self, prepared: super::discovery::PreparedDiscovery, cx: &mut Context<Self>) {
+        self.discovery = Some(Rc::new(Discovery::from_prepared(prepared)));
+        if let Some(intent) = self.state.exploration.preparing_tour() {
+            let resolution = intent.resolve(self.state.generation, self.discovery.as_ref().and_then(|engine| engine.package_tour(intent.package)));
+            if let Effect::FlyTour(node) = self.state.apply(Event::ResolveTour(intent, resolution)) {
+                self.set_hover(None, None);
+                if let Some(prism) = &mut self.prism { prism.target = 0.0; }
+                self.fly_stop(node, cx);
+            }
+        }
+        let query = self.find.read(cx).value().to_string();
+        self.resume_search(&query, cx);
+        cx.notify();
     }
 
     fn empty(world: Arc<World>, start: Start, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -243,9 +287,14 @@ impl GraphView {
             hover_slot: None,
             hover_a: 0.0,
             flow_a: 0.0,
+            reading_a: 0.0,
             hover_terr: None,
             prism: None,
             frame: None,
+            rail_plan: None,
+            rail_geometry: None,
+            rail_scroll: ScrollHandle::new(),
+            rail_text_scale: None,
             card_bounds: None,
             reading_frame: None,
             chrome_bounds: Default::default(),
@@ -257,12 +306,15 @@ impl GraphView {
             tours: std::collections::HashMap::new(),
             drag: None,
             peek: None,
+            peek_origins: Default::default(),
             prepared_peek: None,
-            outgoing_hover: None,
+            retiring_hovers: Default::default(),
+            hover_packet: None,
+            hover_sampled: false,
+            terminal_hovers: Default::default(),
             motion: Motion::new(),
             moving: false,
-            hover_epoch: 0,
-            ended_fade: None,
+            hover_key: 0,
             pointer: None,
             focus_handle: cx.focus_handle(),
             find,
@@ -271,12 +323,14 @@ impl GraphView {
             code_scroll: ScrollHandle::new(),
             road: None,
             focus_scroll: ScrollHandle::new(),
+            hint_metrics: Rc::new(std::cell::Cell::new(hints::Metrics::default())),
             chain_scroll: ScrollHandle::new(),
             tour_scroll: ScrollHandle::new(),
             find_bounds: None,
             discovery: None,
             search,
             stats: Stats::default(),
+            painted_labels: None,
             strategy: Strategy::default(),
             on_open: None,
             on_peek_action: None,
@@ -337,7 +391,11 @@ impl GraphView {
 
     /// True when the map and its semantic query engine have no pending work.
     #[must_use]
-    pub fn ready(&self) -> bool { self.scene.is_some() && self.discovery.is_some() && !self.searching }
+    pub fn ready(&self) -> bool { self.scene.is_some() && self.discovery.is_some() && !self.searching && self.state.pending_accept.is_none() }
+
+    /// Actual background semantic preparation time, excluding layout and mount.
+    #[must_use]
+    pub fn discovery_prepare_duration(&self) -> Option<std::time::Duration> { self.discovery.as_ref().map(|engine| engine.prepare_duration()) }
 
     /// Collection counts for checking retained state during input storms.
     #[must_use]
@@ -348,6 +406,8 @@ impl GraphView {
             tours: self.tours.len(),
             prism_rows: self.prism.as_ref().map_or(0, |p| p.left.iter().chain(&p.right).map(|c| c.rows.len()).sum()),
             search_cache: self.discovery.as_ref().map_or(0, |d| d.cache_len()),
+            fading_symbols: self.retiring_hovers.len(),
+            fading_relations: self.retiring_hovers.values().filter_map(|outgoing| outgoing.packet.as_ref()).map(|packet| packet.edges.len()).sum(),
         }
     }
 
@@ -363,10 +423,13 @@ impl GraphView {
     #[cfg(feature = "gallery")]
     #[must_use]
     pub fn inspect(&self, cx: &App) -> Inspection {
-        Inspection { find_open: self.state.find_open, query: self.find.read(cx).value().to_string(), searching: self.searching,
+        let input = self.find.read(cx);
+        let offset = input.scroll_offset();
+        let selection = input.selected_range();
+        Inspection { find_open: self.state.find_open, discovery_ready: self.discovery.is_some(), discovery_prepare_ms: self.discovery_prepare_duration().map(|duration| duration.as_secs_f64() * 1000.0), preparing_tour: self.state.exploration.preparing_tour().map(|intent| (intent.package, intent.at)), unavailable_tour: self.state.exploration.unavailable_tour(), query: input.value().to_string(), find_scroll: (f32::from(offset.x), f32::from(offset.y)), find_selection: (selection.start, selection.end), pending_accept: self.state.pending_accept.is_some(), searching: self.searching,
             rows: self.results.clone(), chains: self.search.chains.len(), held_chain: self.state.exploration.chain().map(|c| c.path.clone()),
-            hover: self.hover, hover_strength: self.hover_a, fading_hover: self.outgoing_hover.as_ref().map(|outgoing| (outgoing.packet.node, outgoing.alpha)), hover_slot: self.hover_slot, prism_selected: self.state.prism_sel,
-            prism: self.prism.as_ref().map(|p| (p.node, p.g)), frame: self.frame.clone(), viewport: self.view, card_bounds: self.card_bounds, pointer: self.pointer, moving: self.moving }
+            hover: self.hover, hover_strength: self.hover_a, fading_hover: self.retiring_hovers.iter().max_by(|a, b| a.1.alpha.total_cmp(&b.1.alpha)).map(|(&node, outgoing)| (node, outgoing.alpha)), fading_hovers: self.retiring_hovers.iter().map(|(&node, outgoing)| (node, outgoing.alpha)).collect(), hover_slot: self.hover_slot, prism_selected: self.state.prism_sel,
+            prism: self.prism.as_ref().map(|p| (p.node, p.g)), frame: self.frame.clone(), rail_viewport: self.rail_geometry.as_ref().map(|geometry| geometry.viewport), rail_offset: (f32::from(self.rail_scroll.offset().x), f32::from(self.rail_scroll.offset().y)), rail_visible: self.frame.as_ref().filter(|frame| frame.rail && frame.e >= 0.8).map_or_else(Vec::new, |frame| frame.slots.iter().filter(|slot| slot.label.is_some()).filter_map(|slot| slot.key).collect()), viewport: self.view, card_bounds: self.card_bounds, pointer: self.pointer, moving: self.moving }
     }
 
     /// The focused gem's current visible window bounds, for a shared
@@ -392,6 +455,11 @@ impl GraphView {
     /// Focuses `i` (None releases): the camera flies to it at reading scale
     /// and the prism gathers on arrival (app.js `setFocus`).
     pub fn set_focus(&mut self, i: Option<NodeId>, fly: bool, cx: &mut Context<Self>) {
+        // Capture semantic endpoints before Focus retires the selected row.
+        let route = i.and_then(|target| self.scene.as_ref().zip(self.view).map(|(scene, view)| {
+            let follow = self.state.selected.is_some_and(|key| key.node == target);
+            reading_route(scene, &view, self.state.focus, target, follow, self.card_bounds, false)
+        }));
         self.state.apply(Event::Focus(i));
         self.focus_scroll.set_offset(point(px(0.0), px(0.0)));
         self._search_task = None;
@@ -400,11 +468,7 @@ impl GraphView {
         self.set_hover(None, None);
         if let Some(i) = i {
             self.visit(i);
-            if let Some(p) = &mut self.prism {
-                if p.g > 0.05 {
-                    p.target = 0.0;
-                }
-            }
+            if let Some(p) = &mut self.prism { p.target = 0.0; }
             let (Some(scene), Some(view), Some(rig)) = (&self.scene, &self.view, &mut self.rig) else {
                 // Not laid out yet: start there.
                 self.start = Start::Focus(i);
@@ -412,7 +476,7 @@ impl GraphView {
                 return;
             };
             if fly {
-                rig.fly_with(focus_camera(scene, view, i, self.card_bounds), Some(Landing::Gather(i)), Travel::Focus(package_context(scene, view, i)));
+                rig.fly_with(focus_camera(scene, view, i, self.card_bounds), Some(Landing::Gather(i)), route.map_or(Travel::Focus(package_context(scene, view, i)), Travel::Reading));
             } else {
                 rig.set(focus_camera(scene, view, i, self.card_bounds));
                 let mut prism = Prism::of(&self.world, i);
@@ -495,11 +559,24 @@ impl GraphView {
     /// Fly the shared semantic reading path of a package.
     pub fn start_tour(&mut self, package: u32, at: usize, cx: &mut Context<Self>) -> bool {
         if package as usize >= self.world.packages.len() { return false; }
+        if self.discovery.is_none() {
+            if self.state.find_open { return false; }
+            self.pending_enter = None;
+            self.state.apply(Event::PrepareTour(package, at));
+            cx.notify();
+            return true;
+        }
         let Some(tour) = self.package_tour(package) else { return false; };
         if !tour.shown() { return false; }
+        self.pending_enter = None;
         self.set_focus(None, false, cx);
         if let Effect::FlyTour(node) = self.state.apply(Event::Tour(tour, at)) { self.fly_stop(node, cx); }
         true
+    }
+
+    fn tour_status(&self) -> Option<SharedString> {
+        self.state.exploration.preparing_tour().map(|_| "Preparing a guided tour…".into())
+            .or_else(|| self.state.exploration.unavailable_tour().map(|_| "No guided tour is available for this package.".into()))
     }
 
     fn package_tour(&mut self, package: u32) -> Option<Tour> {
@@ -510,6 +587,10 @@ impl GraphView {
     fn tour_package(&self) -> Option<u32> {
         if let Some(i) = self.state.focus { return Some(self.world.node(i).pkg); }
         if let Some((tour, _)) = self.state.exploration.tour() { return Some(tour.package); }
+        if self.rig.is_none() {
+            let intended = self.pending_enter.or_else(|| if let Start::Focus(node) = self.start { Some(node) } else { None });
+            if let Some(node) = intended { return self.world.nodes.get(node as usize).map(|node| node.pkg); }
+        }
         let (scene, rig) = (self.scene.as_ref()?, self.rig.as_ref()?);
         #[allow(clippy::cast_possible_truncation)]
         scene.territory_at(rig.cam.x as f32, rig.cam.y as f32).map(|t| t.pkg)
@@ -527,7 +608,9 @@ impl GraphView {
             let focused = scene.focus_cam(&view, i, 0.0);
             let width = focused.w * 2.6;
             let dy = width * f64::from(view.h / view.w) * 0.12;
-            rig.fly_with(Camera::new(focused.x, focused.y + dy, width), None, Travel::Focus(package_context(scene, &view, i)));
+            let source = self.trail.last().copied().filter(|&node| node != i);
+            let route = reading_route(scene, &view, source, i, false, self.chrome_bounds.get("graph-tour-bounds").copied(), true);
+            rig.fly_with(Camera::new(focused.x, focused.y + dy, width), None, Travel::Reading(route));
         }
         self.visit(i);
         cx.notify();
@@ -547,6 +630,13 @@ impl GraphView {
         if !self.state.find_open { self._search_task = None; self.searching = false; return; }
         self.state.apply(Event::QueryChanged);
         self.results_scroll.set_offset(point(px(0.0), px(0.0)));
+        self.resume_search(q, cx);
+    }
+
+    /// Attaching prepared indexes resumes the same query generation, including
+    /// an Enter already waiting for it. Typing uses refresh_search instead.
+    fn resume_search(&mut self, q: &str, cx: &mut Context<Self>) {
+        if !self.state.find_open { self._search_task = None; self.searching = false; return; }
         self._search_task = None;
         if q.trim().is_empty() { self.search = empty_search(); self.results.clear(); self.searching = false; return; }
         let Some(discovery) = &self.discovery else { self.searching = true; return; };
@@ -561,16 +651,29 @@ impl GraphView {
         self._search_task = Some(cx.spawn(async move |view, cx| {
             let search = task.await;
             view.update(cx, |view, cx| {
-                if !view.state.accepts(generation) { return; }
-                let Some(discovery) = &view.discovery else { return; };
-                let search = discovery.remember(&query, search);
-                view.results = search.rows.iter().map(|r| r.node).collect(); view.search = search; view.searching = false;
-                cx.notify();
+                view.deliver_search(generation, &query, search, cx);
             }).ok();
         }));
     }
 
+    /// Latest-wins worker delivery is also the held-completion test boundary.
+    fn deliver_search(&mut self, generation: u64, query: &str, search: Search, cx: &mut Context<Self>) {
+        if !self.state.accepts(generation) { return; }
+        let Some(discovery) = &self.discovery else { return; };
+        let search = discovery.remember(query, search);
+        self.results = search.rows.iter().map(|row| row.node).collect();
+        self.state.result_sel = self.state.result_sel.min((self.results.len() + search.chains.len()).saturating_sub(1));
+        self.search = search;
+        self.searching = false;
+        cx.notify();
+    }
+
     fn choose_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.searching {
+            self.state.apply(Event::AwaitResult);
+            cx.notify();
+            return;
+        }
         let chain = self.state.result_sel.checked_sub(self.results.len()).and_then(|n| self.search.chains.get(n)).cloned();
         let node = self.results.get(self.state.result_sel).copied();
         if node.is_none() && chain.is_none() { return; }
@@ -589,7 +692,7 @@ impl GraphView {
                 rig.fly_with(to, None, Travel::Survey(to));
             }
         }
-        self.road = Some(super::road::RoadProgress::new(&chain, motion::now(cx).saturating_duration_since(motion::epoch(cx))));
+        self.road = Some(super::road::RoadProgress::for_selection(self.road.take(), &chain, motion::now(cx).saturating_duration_since(motion::epoch(cx))));
         self.code_scroll.set_offset(point(px(0.0), px(0.0)));
         self.state.apply(Event::HoldChain(chain));
         cx.notify();
@@ -599,7 +702,14 @@ impl GraphView {
         self.set_hover(None, None);
         self.sync_peek(window, cx);
         self.state.apply(Event::OpenFind);
-        self.find.update(cx, |input, cx| input.focus(window, cx));
+        self.find.update(cx, |input, cx| {
+            input.focus(window, cx);
+            // Keyboard search replaces the retained query. Ordinary field
+            // clicks still keep the native caret/selection behavior.
+            input.select_all(window, cx);
+        });
+        let query = self.find.read(cx).value().to_string();
+        self.refresh_search(&query, cx);
         cx.notify();
     }
 
@@ -614,10 +724,15 @@ impl GraphView {
             }
             InputEvent::PressEnter { .. } => {}
             InputEvent::Focus => {
-                this.state.apply(Event::OpenFind);
-                let q = input.read(cx).value().to_string();
-                this.refresh_search(&q, cx);
-                cx.notify();
+                // Native focus observers arrive after the focus-path draw.
+                // Keyboard open already owns its query; a delayed observer
+                // must not invalidate a type/Enter batch delivered meanwhile.
+                if !this.state.find_open && this.find_focused(window, cx) {
+                    this.state.apply(Event::OpenFind);
+                    let q = input.read(cx).value().to_string();
+                    this.refresh_search(&q, cx);
+                    cx.notify();
+                }
             }
             InputEvent::Blur => {
                 // The engine can resume a paused caret after blur. Drop its
@@ -628,10 +743,8 @@ impl GraphView {
         (find, subscription)
     }
 
-    /// Closes find: focus returns to the map and the field is replaced by a
-    /// fresh one. (The text engine's caret keeps blinking — and drawing —
-    /// after a blur that follows its own key handling; a new field has never
-    /// blinked, so an idle map draws nothing.)
+    /// Closes find and returns focus to the map. The last query is retained;
+    /// the input engine retires its caret clock when it loses focus.
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle, cx);
         self.reset_find(window, cx);
@@ -642,6 +755,9 @@ impl GraphView {
     /// search, and the blink clock's blur path already retires the caret
     /// without replacing the field.
     fn reset_find(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        // A closed field previews the beginning of its retained query,
+        // independently of the scroll position used while editing it.
+        self.find.update(cx, |input, cx| input.set_scroll_offset(point(px(0.0), px(0.0)), cx));
         self.state.apply(Event::CloseFind);
         self._search_task = None;
         self.searching = false;
@@ -743,13 +859,12 @@ impl GraphView {
                     let reading = frame.node == focus && self.prism.as_ref().is_some_and(|prism| prism.node == focus && prism.g == 1.0 && prism.target == 1.0) && !self.rig.as_ref().is_some_and(Rig::flying);
                     if !reading { return; }
                     if let Some(q) = frame.walk(self.state.prism_sel, dx, dy) {
-                        if let Some(key) = frame.slots[q].key { self.state.apply(Event::Walk(q, key)); }
-                        self.hover_slot = Some(q);
-                        if frame.slots[q].node != self.hover {
-                            self.hover_epoch += 1;
-                            self.motion.set((HOVER_KEY, self.hover_epoch), 1.0);
+                        if let Some(key) = frame.slots[q].key {
+                            self.state.apply(Event::Walk(q, key));
+                            if let Some(index) = self.rail_plan.as_ref().and_then(|plan| plan.child_index(key)) { self.rail_scroll.scroll_to_item(index); }
                         }
-                        self.hover = frame.slots[q].node;
+                        let node = frame.slots[q].node;
+                        self.set_hover(node, Some(q));
                     }
                 } else if let Some(rig) = &mut self.rig {
                     rig.nudge(f64::from(dx) * 0.15, f64::from(dy) * 0.15);
@@ -791,32 +906,45 @@ impl GraphView {
     fn set_hover(&mut self, i: Option<NodeId>, slot: Option<usize>) {
         self.hover_slot = slot;
         let i = i.filter(|&i| Some(i) != self.state.focus || slot.is_some());
-        if i != self.hover {
-            // The old fade ends where it is; a new hover is a new fade.
-            if self.hover.is_some() {
-                self.motion.set((HOVER_KEY, self.hover_epoch), self.hover_a);
-                if self.hover_a > 0.0 && self.prism.is_none() {
-                    if self.outgoing_hover.as_ref().is_some_and(|previous| previous.alpha > self.hover_a) {
-                        // A fleeting new hover cannot replace the stronger
-                        // visual that is already departing. Keep its original
-                        // clock, with only one outgoing packet retained.
-                        self.motion.set((HOVER_KEY, self.hover_epoch), 0.0);
-                        self.ended_fade = Some((self.hover_epoch, 0.0));
-                    } else {
-                        if let Some(previous) = self.outgoing_hover.take() {
-                            self.motion.replay((HOVER_KEY, previous.epoch));
-                            self.ended_fade = Some((previous.epoch, 0.0));
-                        }
-                        if let (Some(scene), Some(node)) = (&self.scene, self.hover) {
-                            self.outgoing_hover = Some(OutgoingHover { epoch: self.hover_epoch, packet: scene.neighbourhood(node), alpha: self.hover_a, flow_alpha: self.flow_strength() });
-                        }
-                    }
-                } else { self.ended_fade = Some((self.hover_epoch, 0.0)); }
+        if i == self.hover { return; }
+        // Preserve every sampled positive envelope, including a brief B while
+        // A is still departing. Unsampled input-only targets allocate nothing.
+        if let Some(node) = self.hover.filter(|_| self.hover_sampled) {
+            if self.hover_a > 0.0 {
+                let flow_alpha = self.flow_strength();
+                self.retiring_hovers.insert(node, RetiringHover {
+                    packet: self.hover_packet.take(),
+                    alpha: self.hover_a, flow_alpha,
+                });
+            } else {
+                self.terminal_hovers.insert(node);
             }
-            self.hover_epoch += 1;
-            self.hover = i;
-            self.hover_a = 0.0;
         }
+        self.hover = i;
+        self.hover_key = i.map_or(0, |node| node as usize);
+        self.hover_packet = None;
+        self.hover_sampled = false;
+        self.hover_a = 0.0;
+        if let Some(node) = i {
+            self.terminal_hovers.remove(&node);
+            if let Some(incoming) = self.retiring_hovers.remove(&node) {
+                // Promote the original Arc rather than rebuilding its topology
+                // and BVHs after another symbol occupied Scene's one-slot cache.
+                if let (Some(scene), Some(packet)) = (&self.scene, &incoming.packet) {
+                    scene.promote_neighbourhood(packet.clone());
+                }
+                self.hover_packet = incoming.packet;
+                self.hover_a = incoming.alpha;
+                self.hover_sampled = true;
+            }
+        }
+    }
+
+    fn pick_prism(&self, x: f32, y: f32) -> Option<usize> {
+        let focus = self.state.focus?;
+        if self.state.find_open || self.moving || self.rig.as_ref().is_some_and(Rig::flying) { return None; }
+        let prism = self.prism.as_ref().filter(|prism| prism.node == focus && prism.target == 1.0)?;
+        self.frame.as_ref().filter(|frame| frame.node == prism.node).and_then(|frame| frame.pick(x, y))
     }
 
     fn pointer_move(&mut self, x: f32, y: f32, pressed: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -850,23 +978,16 @@ impl GraphView {
         self.state.selected = None; self.state.prism_sel = None;
         self.pointer = Some((x, y));
         let cam = rig.cam;
-        let slot = self.frame.as_ref().and_then(|p| p.pick(x, y));
+        let slot = self.pick_prism(x, y);
+        let label = self.painted_territory(&view, &cam, x, y);
         let (hover, slot) = match slot {
             Some(q) => (self.frame.as_ref().and_then(|p| p.slots[q].node), Some(q)),
+            None if label.is_some() => (None, None),
             None => (scene.pick_stable(&view, &cam, x, y, self.hover.filter(|_| self.hover_slot.is_none())), None),
         };
         let before = (self.hover, self.hover_slot, self.hover_terr);
         self.set_hover(hover, slot);
-        if hover.is_none() && view.k(&cam) < 6.0 {
-            #[allow(clippy::cast_possible_truncation)]
-            let (wx, wy) = view.to_world(&cam, x, y);
-            #[allow(clippy::cast_possible_truncation)]
-            {
-                self.hover_terr = scene.territory_at(wx as f32, wy as f32);
-            }
-        } else {
-            self.hover_terr = None;
-        }
+        self.hover_terr = if hover.is_none() { label.or_else(|| pointer_territory(&scene, &view, &cam, x, y)) } else { None };
         let changed = before != (self.hover, self.hover_slot, self.hover_terr);
         if changed {
             self.sync_peek(window, cx);
@@ -882,6 +1003,28 @@ impl GraphView {
             self.sync_peek(window, cx);
             cx.notify();
         }
+    }
+
+    /// Only the exact text accepted by the painter owns these semantic targets.
+    /// A previous projection can never route input after a resize or camera move.
+    fn painted_territory(&self, view: &View, camera: &Camera, x: f32, y: f32) -> Option<Terr> {
+        let (painted_view, painted_camera, labels) = self.painted_labels.as_ref()?;
+        if painted_view != view || painted_camera != camera { return None; }
+        let point = point(px(x), px(y));
+        labels.iter().rev().find(|label| label.bounds.contains(&point)).map(|label| label.territory)
+    }
+
+    fn enter_territory(&mut self, territory: Terr, scene: &Scene, view: &View, cx: &mut Context<Self>) {
+        let bounds = match territory.module {
+            Some(module) => scene.layout.modules[module as usize].bounds,
+            _ => scene.layout.packages[territory.pkg as usize].bounds,
+        };
+        self.set_focus(None, false, cx);
+        if let Some(rig) = &mut self.rig {
+            let to = view.frame(bounds, 1.25);
+            rig.fly_with(to, None, Travel::Survey(to));
+        }
+        cx.notify();
     }
 
     fn over_chrome(&self, x: f32, y: f32) -> bool {
@@ -912,8 +1055,12 @@ impl GraphView {
         if drag.moved <= 3.0 && (!allow_click || self.over_chrome(x, y)) { return; }
         let (Some(scene), Some(view)) = (self.scene.clone(), self.view) else { return };
         if drag.moved <= 3.0 {
-            let slot = self.frame.as_ref().and_then(|p| p.pick(x, y));
+            let slot = self.pick_prism(x, y);
             let cam = self.rig.as_ref().map_or(drag.from, |r| r.cam);
+            if slot.is_none() && let Some(territory) = self.painted_territory(&view, &cam, x, y) {
+                self.enter_territory(territory, &scene, &view, cx);
+                return;
+            }
             let hit = slot
                 .and_then(|q| self.frame.as_ref().and_then(|p| p.slots[q].node))
                 .or_else(|| scene.pick(&view, &cam, x, y));
@@ -925,15 +1072,9 @@ impl GraphView {
             }
             if let Some(i) = hit {
                 self.set_focus(Some(i), true, cx);
-            } else if let Some(t) = pointer_territory(&scene, &view, &cam, x, y) {
-                let b = match t.module {
-                    Some(m) if view.k(&cam) > 1.2 => scene.layout.modules[m as usize].bounds,
-                    _ => scene.layout.packages[t.pkg as usize].bounds,
-                };
-                if let Some(rig) = &mut self.rig {
-                    let to = view.frame(b, 1.25);
-                    rig.fly_with(to, None, Travel::Survey(to));
-                }
+            } else if let Some(mut t) = pointer_territory(&scene, &view, &cam, x, y) {
+                if view.k(&cam) <= 1.2 { t.module = None; }
+                self.enter_territory(t, &scene, &view, cx);
             } else if self.state.focus.is_some() {
                 self.set_focus(None, false, cx);
             }
@@ -992,18 +1133,56 @@ impl GraphView {
         ElementId::NamedInteger("graph-node".into(), u64::from(i))
     }
 
-    /// Where the hovered symbol is this frame (window px): its diamond, or
-    /// its prism row's label.
-    fn peek_anchor(&self, i: NodeId) -> Option<(Bounds<Pixels>, float::Side)> {
-        let (scene, view, rig) = (self.scene.as_ref()?, self.view.as_ref()?, self.rig.as_ref()?);
-        if let (Some(q), Some(frame)) = (self.hover_slot, &self.frame) {
-            let sl = frame.slots.get(q)?;
-            let [x0, y0, x1, y1] = sl.label?;
-            let side = if sl.side > 0 { float::Side::Right } else { float::Side::Left };
-            return Some((Bounds::from_corners(point(px(x0), px(y0)), point(px(x1), px(y1))), side));
+    fn current_peek_origin(&self, node: NodeId) -> PeekOrigin {
+        if let (Some(slot), Some(frame)) = (self.hover_slot, &self.frame) {
+            if let Some(key) = frame.slots.get(slot).and_then(|slot| slot.key).filter(|key| key.node == node) {
+                return PeekOrigin::Proxy { owner: frame.node, key };
+            }
         }
-        let (x, y) = view.to_screen(&rig.cam, scene.layout.x[i as usize], scene.layout.y[i as usize]);
-        Some((Bounds::from_corners(point(px(x - 7.0), px(y - 7.0)), point(px(x + 7.0), px(y + 7.0))), float::Side::Right))
+        PeekOrigin::Glyph(node)
+    }
+
+    /// Resolve the original trigger, rather than another node's currently
+    /// hovered slot. A missing proxy never falls back to its home glyph.
+    fn origin_anchor(&self, origin: PeekOrigin) -> Option<(Bounds<Pixels>, float::Side)> {
+        match origin {
+            PeekOrigin::Glyph(node) => {
+                let bounds = self.node_bounds(node)?;
+                let center = bounds.center();
+                if self.over_chrome(f32::from(center.x), f32::from(center.y)) { return None; }
+                Some((bounds, float::Side::Right))
+            }
+            PeekOrigin::Proxy { owner, key } => {
+                let frame = self.frame.as_ref().filter(|frame| frame.node == owner && frame.e >= 0.8)?;
+                let slot = &frame.slots[frame.locate(key)?];
+                let [x0, y0, x1, y1] = slot.label?;
+                Some((Bounds::from_corners(point(px(x0), px(y0)), point(px(x1), px(y1))), if slot.side > 0 { float::Side::Right } else { float::Side::Left }))
+            }
+        }
+    }
+
+    fn peek_anchor(&self, node: NodeId) -> Option<(Bounds<Pixels>, float::Side)> {
+        let key = Self::peek_key(node);
+        let origin = self.peek_origins.get(&key).copied().unwrap_or_else(|| self.current_peek_origin(node));
+        self.origin_anchor(origin)
+    }
+
+    /// Aim protection can keep A open while B owns pending intent. Refresh
+    /// all our live physical sources, without touching other window floats.
+    fn anchor_live_peeks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let live = float::live_triggers(window, cx);
+        let current = self.peek.as_ref().map(|(key, _)| key);
+        self.peek_origins.retain(|key, _| live.contains(key) || current == Some(key));
+        let owned: Vec<_> = self.peek_origins.iter().filter(|(key, _)| live.contains(key)).map(|(key, origin)| (key.clone(), *origin)).collect();
+        for (key, origin) in owned {
+            if let Some((anchor, _)) = self.origin_anchor(origin) {
+                float::anchor(&key, anchor, window, cx);
+            } else {
+                float::anchor_gone(&key, window, cx);
+                self.peek_origins.remove(&key);
+                if self.peek.as_ref().is_some_and(|(current, _)| current == &key) { self.peek = None; }
+            }
+        }
     }
 
     /// Rests the float layer's peek on the hovered symbol (or leaves the
@@ -1023,24 +1202,40 @@ impl GraphView {
         let Some(i) = want else { return };
         let Some((anchor, side)) = self.peek_anchor(i) else { return };
         let key = Self::peek_key(i);
+        let origin = self.current_peek_origin(i);
+        self.peek_origins.entry(key.clone()).or_insert(origin);
         let prepared = self.prepared_peek(i);
         let request = prepared.request(key.clone(), anchor, side, self.on_open.is_some(), Self::peek_actions(cx.entity().downgrade()));
         float::rest(request, window, cx);
         self.peek = Some((key, i));
     }
 
-    /// Steps the camera, the prism and the hover fade to now, and hands the
-    /// painter everything it needs.
+    /// The prepaint transaction samples one camera before constructing any
+    /// chrome. Layout can subsequently correct its target, but never steps
+    /// a second camera underneath already rendered breadcrumbs or cards.
+    fn advance_camera(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(view), Some(rig)) = (self.view, self.rig.as_mut()) else { return; };
+        let (moving, _) = rig.step(&view, window, cx);
+        if moving && !self.moving && (self.hover.is_some() || self.peek.is_some()) && self.drag.is_none() {
+            self.set_hover(None, None);
+            self.sync_peek(window, cx);
+        }
+        self.moving = moving;
+    }
+
+    /// Initializes geometry, samples one camera, then builds the immutable
+    /// visual draft before this frame's chrome is constructed.
     fn prepare(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> Option<Prepared> {
-        let scene = self.scene.clone()?;
         let view = View {
             x: f32::from(bounds.origin.x),
             y: f32::from(bounds.origin.y),
             w: f32::from(bounds.size.width).max(1.0),
             h: f32::from(bounds.size.height).max(1.0),
         };
-        if self.view != Some(view) { self.view = Some(view); motion::request_frame(window, cx); }
-        if self.rig.is_none() {
+        if self.view != Some(view) { self.view = Some(view); }
+        let scene = self.scene.clone()?;
+        let first_camera = self.rig.is_none();
+        if first_camera {
             let cam = match self.start {
                 Start::World => scene.world_cam(&view),
                 Start::Frame(b, pad) => view.frame(b, pad),
@@ -1048,8 +1243,10 @@ impl GraphView {
                 Start::Focus(i) => focus_camera(&scene, &view, i, self.card_bounds),
             };
             self.rig = Some(Rig::new(cam));
-            if let Start::Focus(i) = self.start {
+            if let Start::Focus(i) = self.start && matches!(self.state.exploration, Exploration::Free) {
                 self.state.focus = Some(i);
+                self.reading_a = 1.0;
+                self.motion.set(READING_KEY, 1.0);
                 self.visit(i);
                 let mut p = Prism::of(&self.world, i);
                 p.g = 1.0;
@@ -1064,48 +1261,55 @@ impl GraphView {
             }
             self.set_focus(Some(i), true, cx);
         }
-        let rig = self.rig.as_mut()?;
-        let (moving, landed) = rig.step(&view, window, cx);
-        let cam = rig.cam;
-        if moving && !self.moving && (self.hover.is_some() || self.peek.is_some()) && self.drag.is_none() {
-            // The camera set off: the map is not being read; drop the hover
-            // (a pending peek must not open mid-flight). Picked again on
-            // arrival.
-            self.set_hover(None, None);
-            self.sync_peek(window, cx);
+        if first_camera {
+            if let Some(node) = self.tour_stop() { self.fly_stop(node, cx); }
         }
-        self.moving = moving;
-        let _ = landed;
-        if let Some(i) = self.state.focus.filter(|_| !self.state.find_open && matches!(self.state.exploration, Exploration::Free) && !self.rig.as_ref().is_some_and(Rig::flying)) {
-            if self.prism.as_ref().is_none_or(|prism| prism.node != i || prism.target == 0.0) {
-                self.prism = Some(Prism::of(&self.world, i)); self.motion.set(PRISM_KEY, 0.0);
+        // Accept a queued Enter before chrome and camera sampling, with real
+        // native keyboard ownership. A blur not yet observed by InputState
+        // still cancels it; returning results never steal focus from a route.
+        if self.state.pending_accept.is_some() {
+            if !self.find_focused(window, cx) { self.reset_find(window, cx); }
+            else if !self.searching {
+                let has_results = !self.results.is_empty() || !self.search.chains.is_empty();
+                if self.state.apply(Event::ResultsReady(self.state.generation, has_results)) == Effect::AcceptResult {
+                    self.choose_result(window, cx);
+                }
             }
         }
-        // The gather and the hover fade are motion tracks: they request
-        // frames only while live and publish to the probe.
+        // Sample once using this frame's actual parent viewport. Chrome is
+        // constructed afterwards from this same camera and region.
+        self.advance_camera(window, cx);
+        let cam = self.rig.as_ref()?.cam;
+        let moving = self.moving;
+        let gather = self.state.focus.filter(|_| !self.state.find_open && matches!(self.state.exploration, Exploration::Free) && !self.rig.as_ref().is_some_and(Rig::flying));
+        if let Some(i) = gather {
+            match &mut self.prism {
+                None => self.prism = Some(Prism::of(&self.world, i)),
+                Some(prism) if prism.node == i => prism.target = 1.0,
+                // A new focus owns navigation immediately, but its outgoing
+                // presentation must finish the finite collapse before reuse.
+                Some(_) => {},
+            }
+        }
+        // Publish one continuous sample per frame. A new owner gathers on
+        // the frame after the old owner's exact terminal zero, using the
+        // latest canonical focus rather than a consumed landing callback.
         if let Some(p) = &mut self.prism {
-            p.g = self.motion.animate(PRISM_KEY, p.target, motion::spec::DESCENT, window, cx);
-            if p.target == 0.0 && p.g <= 0.0 {
+            p.g = self.motion.animate_from(PRISM_KEY, 0.0, p.target, motion::spec::DESCENT, window, cx);
+            if p.target == 0.0 && p.g == 0.0 {
                 self.prism = None;
                 self.frame = None;
+                if gather.is_some() { motion::request_frame(window, cx); }
             }
         }
-        // Each lit symbol fades in on its own track (a new hover starts from
-        // nothing, as app.js does; its track was forgotten when it lost it).
-        if let Some((e, at)) = self.ended_fade.take() {
-            self.motion.animate((HOVER_KEY, e), at, motion::spec::REVEAL, window, cx);
-            self.motion.replay((HOVER_KEY, e));
-        }
-        self.hover_a = match self.hover {
-            Some(_) => self.motion.animate_from((HOVER_KEY, self.hover_epoch), 0.0, 1.0, motion::spec::REVEAL, window, cx),
-            None => 0.0,
-        };
-        let active_hover: ElementId = (HOVER_KEY, self.hover_epoch).into();
+        self.sample_hover(window, cx);
+        let active_hover = self.hover.map(|_| ElementId::from((HOVER_KEY, self.hover_key)));
         let prism_key: ElementId = PRISM_KEY.into();
-        self.fade_outgoing(window, cx);
-        let outgoing_key = self.outgoing_hover.as_ref().map(|outgoing| ElementId::from((HOVER_KEY, outgoing.epoch)));
+        self.fade_retiring(window, cx);
+        let retiring_keys: std::collections::HashSet<_> = self.retiring_hovers.keys().map(|&node| ElementId::from((HOVER_KEY, node as usize))).collect();
         let flow_key: ElementId = FLOW_KEY.into();
-        self.motion.retain(|key| key == &active_hover || key == &prism_key || key == &flow_key || outgoing_key.as_ref() == Some(key));
+        let reading_key: ElementId = READING_KEY.into();
+        self.motion.retain(|key| active_hover.as_ref() == Some(key) || key == &prism_key || key == &flow_key || key == &reading_key || retiring_keys.contains(key));
         #[allow(clippy::cast_possible_truncation)]
         let flow = (motion::now(cx).saturating_duration_since(motion::epoch(cx)).as_secs_f64() * 18.0).rem_euclid(45.0) as f32;
         let flow_alpha = self.flow_strength();
@@ -1122,11 +1326,11 @@ impl GraphView {
         let selected_chain = self.state.exploration.chain().or_else(|| self.state.result_sel.checked_sub(self.results.len()).filter(|_| self.state.find_open).and_then(|n| self.search.chains.get(n)));
         let elapsed = motion::now(cx).saturating_duration_since(motion::epoch(cx));
         let chain_progress = if let Some(chain) = selected_chain {
-            if self.road.as_ref().is_none_or(|road| !road.matches(chain)) { self.road = Some(super::road::RoadProgress::new(chain, elapsed)); }
+            self.road = Some(super::road::RoadProgress::for_selection(self.road.take(), chain, elapsed));
             let road = self.road.as_mut().expect("selected road clock");
             let sample = road.sample(elapsed, motion::reduced(cx));
             let (started, budget) = road.timing();
-            crate::probe::record_track(cx, || crate::probe::TrackSample { key: "graph-chain-road".into(), kind: crate::probe::TrackKind::Tween, value: sample.progress, target: 1.0, velocity: 0.0, started_ms: started.as_secs_f64() * 1000.0, budget_ms: budget.as_secs_f64() * 1000.0, at_ms: elapsed.as_secs_f64() * 1000.0, live: sample.moving, overshoot_ratio: 0.0, overshoot_absolute: 0.0, group: None });
+            crate::probe::record_track(cx, || crate::probe::TrackSample { key: "graph-chain-road".into(), kind: crate::probe::TrackKind::Tween, value: sample.progress, target: 1.0, velocity: road.velocity(), started_ms: started.as_secs_f64() * 1000.0, budget_ms: budget.as_secs_f64() * 1000.0, at_ms: elapsed.as_secs_f64() * 1000.0, live: sample.moving, overshoot_ratio: 0.0, overshoot_absolute: 0.0, group: None });
             if sample.moving { motion::request_frame(window, cx); }
             sample
         } else { self.road = None; super::road::RoadSample { progress: 1.0, arcs: 0, moving: false } };
@@ -1139,9 +1343,10 @@ impl GraphView {
             text_scale: facet.text_scale,
             hover: self.hover,
             hover_a: self.hover_a,
-            outgoing_hover: self.outgoing_hover.as_ref().map(|outgoing| (outgoing.packet.clone(), outgoing.alpha, outgoing.flow_alpha)),
+            retiring_hovers: self.retiring_packets(),
             hover_terr: self.hover_terr,
             focus: self.state.focus,
+            reading_a: self.reading_a,
             prism: (!self.state.find_open).then(|| self.prism.clone()).flatten(),
             prism_sel: self.state.prism_sel,
             hover_slot: self.hover_slot,
@@ -1166,7 +1371,7 @@ impl GraphView {
     fn reconcile_reading_room(&mut self, prepared: &Prepared, window: &mut Window, cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         let intent = if self.state.find_open { None } else {
             match &self.state.exploration {
-                Exploration::Free => self.state.focus.map(ReadingIntent::Focus),
+                Exploration::Free | Exploration::PreparingTour(_) | Exploration::TourUnavailable { .. } => self.state.focus.map(ReadingIntent::Focus),
                 Exploration::Reach(reach) => Some(ReadingIntent::Reach(reach.source)),
                 Exploration::Tour { data, at } => Some(ReadingIntent::Tour(data.stops[*at].node)),
                 Exploration::Chain(_) => Some(ReadingIntent::Chain(self.state.generation)),
@@ -1184,7 +1389,7 @@ impl GraphView {
         self.reading_frame = Some(key);
         let room = Scene::free_view(&prepared.view, occupied);
         let to = match &self.state.exploration {
-            Exploration::Free => focus_camera(&prepared.scene, &prepared.view, self.state.focus.expect("focused reading"), occupied),
+            Exploration::Free | Exploration::PreparingTour(_) | Exploration::TourUnavailable { .. } => focus_camera(&prepared.scene, &prepared.view, self.state.focus.expect("focused reading"), occupied),
             Exploration::Reach(reach) => {
                 if reach.all.is_empty() { focus_camera(&prepared.scene, &prepared.view, reach.source, occupied) }
                 else { readable_frame(&prepared.scene, &prepared.view, &room, reach.bounds(&prepared.scene.layout), reach.source, 1.3) }
@@ -1205,16 +1410,28 @@ impl GraphView {
             }
         };
         if let Some(rig) = &mut self.rig {
-            if first && matches!(intent, ReadingIntent::Focus(_)) && !rig.flying() { rig.set(to); }
-            else { rig.reframe(to); }
+            if motion::reduced(cx) {
+                // This frame already has the actual measured reading room.
+                // Reduced motion lands and publishes here, without queuing
+                // a flight whose only purpose would be next-frame snapping.
+                rig.snap_to(to, cx);
+                self.moving = false;
+            } else if first && matches!(intent, ReadingIntent::Focus(_)) && !rig.flying() { rig.set(to); }
+            else {
+                let anchor = if matches!(intent, ReadingIntent::Tour(_) | ReadingIntent::Chain(_)) { (room.x + room.w * 0.5, room.y + room.h * 0.5) } else { Scene::focus_anchor(&room) };
+                rig.reframe_in(to, prepared.view.flight_room(&room, anchor));
+            }
             self.moving |= rig.flying();
         }
-        motion::request_frame(window, cx);
+        if self.moving { motion::request_frame(window, cx); }
         occupied
     }
 
     fn finalize(&mut self, prepared: &mut Prepared, window: &mut Window, cx: &mut Context<Self>) {
         prepared.occupied = self.reconcile_reading_room(prepared, window, cx);
+        self.reading_a = self.motion.animate_from(READING_KEY, 0.0, if self.state.focus.is_some() { 1.0 } else { 0.0 }, motion::spec::REVEAL, window, cx);
+        if self.state.focus.is_none() && self.reading_a == 0.0 { self.motion.replay(READING_KEY); }
+        prepared.reading_a = self.reading_a;
         prepared.cam = self.camera().unwrap_or(prepared.cam);
         prepared.reserved = self.chrome_bounds.values().copied().collect();
         if crate::probe::enabled(cx) {
@@ -1237,29 +1454,30 @@ impl GraphView {
                 }
             }
         }
-        prepared.frame = prepared.prism.as_ref().map(|prism| prism::layout_with_room(prism, &prepared.scene, &prepared.view, &prepared.cam, prepared.text_scale, self.card_bounds, window));
+        prepared.frame = prepared.prism.as_ref().map(|prism| prism::layout_with_rail(prism, &prepared.scene, &prepared.view, &prepared.cam, prepared.text_scale, self.card_bounds, self.rail_plan.as_ref().zip(self.rail_geometry.as_ref()), window));
         self.frame = prepared.frame.clone();
         if let Some(key) = self.state.selected {
-            self.state.prism_sel = self.frame.as_ref().and_then(|frame| frame.locate(key));
+            self.state.prism_sel = self.frame.as_ref().filter(|frame| self.state.focus == Some(frame.node)).and_then(|frame| frame.locate(key));
             if self.state.prism_sel.is_none() { self.state.selected = None; self.set_hover(None, None); }
             else { self.set_hover(Some(key.node), self.state.prism_sel); }
         } else if !self.moving && !self.state.find_open && self.drag.as_ref().is_none_or(|d| d.moved <= 3.0) {
             if let Some((x, y)) = self.pointer {
-                if self.over_chrome(x, y) { self.set_hover(None, None); }
+                let slot = self.pick_prism(x, y);
+                if self.over_chrome(x, y) && slot.is_none() { self.set_hover(None, None); }
                 else {
-                    let slot = self.frame.as_ref().and_then(|frame| frame.pick(x, y));
                     let node = slot.and_then(|q| self.frame.as_ref().and_then(|frame| frame.slots[q].node))
-                        .or_else(|| prepared.scene.pick_stable(&prepared.view, &prepared.cam, x, y, self.hover.filter(|_| self.hover_slot.is_none())));
+                        .or_else(|| if self.painted_territory(&prepared.view, &prepared.cam, x, y).is_some() { None }
+                            else { prepared.scene.pick_stable(&prepared.view, &prepared.cam, x, y, self.hover.filter(|_| self.hover_slot.is_none())) });
                     self.set_hover(node, slot);
                 }
             }
         }
         if self.moving { self.set_hover(None, None); }
         self.hover_terr = self.pointer.filter(|&(x, y)| self.hover.is_none() && !self.moving && !self.state.find_open && !self.over_chrome(x, y))
-            .and_then(|(x, y)| pointer_territory(&prepared.scene, &prepared.view, &prepared.cam, x, y));
-        self.hover_a = if self.hover.is_some() { self.motion.animate_from((HOVER_KEY, self.hover_epoch), 0.0, 1.0, motion::spec::REVEAL, window, cx) } else { 0.0 };
-        self.fade_outgoing(window, cx);
-        prepared.outgoing_hover = self.outgoing_hover.as_ref().map(|outgoing| (outgoing.packet.clone(), outgoing.alpha, outgoing.flow_alpha));
+            .and_then(|(x, y)| self.painted_territory(&prepared.view, &prepared.cam, x, y).or_else(|| pointer_territory(&prepared.scene, &prepared.view, &prepared.cam, x, y)));
+        self.sample_hover(window, cx);
+        self.fade_retiring(window, cx);
+        prepared.retiring_hovers = self.retiring_packets();
         prepared.hover = self.hover; prepared.hover_a = self.hover_a; prepared.hover_slot = self.hover_slot; prepared.prism_sel = self.state.prism_sel;
         self.flow_a = self.motion.animate_from(FLOW_KEY, 0.0, if self.moving { 1.0 } else { 0.0 }, motion::spec::REVEAL, window, cx);
         // Publish the exact terminal sample before releasing this finite key.
@@ -1268,7 +1486,17 @@ impl GraphView {
         prepared.hover_terr = self.hover_terr;
         self.sync_peek(window, cx);
         self.report_peek(window, cx);
-        if let Some((key, node)) = self.peek.clone() { if let Some((anchor, _)) = self.peek_anchor(node) { float::anchor(&key, anchor, window, cx); } }
+        self.anchor_live_peeks(window, cx);
+    }
+
+    /// Chrome owning the reading room in this same prepaint transaction.
+    fn primary_chrome(&self) -> Option<Bounds<Pixels>> {
+        if self.state.find_open { return None; }
+        match &self.state.exploration {
+            Exploration::Chain(_) => self.chrome_bounds.get("graph-chain-bounds").copied(),
+            Exploration::Tour { .. } => self.chrome_bounds.get("graph-tour-bounds").copied(),
+            _ => self.state.focus.and(self.card_bounds),
+        }
     }
 
     fn flow_strength(&self) -> f32 {
@@ -1277,13 +1505,37 @@ impl GraphView {
         self.flow_a.max(gather).max(hover).clamp(0.0, 1.0)
     }
 
-    fn fade_outgoing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(outgoing) = &mut self.outgoing_hover else { return; };
-        outgoing.alpha = self.motion.animate((HOVER_KEY, outgoing.epoch), 0.0, motion::spec::HOVER, window, cx);
-        if outgoing.alpha == 0.0 {
-            self.motion.replay((HOVER_KEY, outgoing.epoch));
-            self.outgoing_hover = None;
+    /// Called only by prepaint: input handlers cannot request Motion frames.
+    fn sample_hover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for node in std::mem::take(&mut self.terminal_hovers) {
+            self.motion.set((HOVER_KEY, node as usize), 0.0);
+            self.motion.animate((HOVER_KEY, node as usize), 0.0, motion::spec::HOVER, window, cx);
+            self.motion.replay((HOVER_KEY, node as usize));
         }
+        self.hover_a = if let Some(node) = self.hover {
+            self.hover_sampled = true;
+            debug_assert_eq!(self.hover_key, node as usize);
+            let alpha = self.motion.animate_from((HOVER_KEY, self.hover_key), 0.0, 1.0, motion::spec::REVEAL, window, cx);
+            if alpha > 0.0 && self.prism.is_none() && self.hover_packet.is_none() {
+                self.hover_packet = self.scene.as_ref().map(|scene| scene.neighbourhood(node));
+            }
+            alpha
+        } else { 0.0 };
+    }
+
+    fn retiring_packets(&self) -> Vec<(Arc<super::scene::Neighbourhood>, f32, f32)> {
+        self.retiring_hovers.values().filter_map(|outgoing| outgoing.packet.as_ref().map(|packet| (packet.clone(), outgoing.alpha, outgoing.flow_alpha))).collect()
+    }
+
+    fn fade_retiring(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.retiring_hovers.retain(|&node, outgoing| {
+            outgoing.alpha = self.motion.animate((HOVER_KEY, node as usize), 0.0, motion::spec::HOVER, window, cx);
+            if outgoing.alpha == 0.0 {
+                // animate published the true terminal sample before removal.
+                self.motion.replay((HOVER_KEY, node as usize));
+                false
+            } else { true }
+        });
     }
 
     fn prepared_peek(&mut self, node: NodeId) -> super::peek::Prepared {
@@ -1314,9 +1566,12 @@ impl GraphView {
     /// Releases this region's transient input/float ownership at route
     /// suspension while retaining its reading camera and focused symbol.
     pub fn suspend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.apply(Event::Suspend);
         if self.state.find_open { self.reset_find(window, cx); }
         self._search_task = None; self.searching = false; self.road = None;
         self.pointer = None; self.drag = None; self.set_hover(None, None); self.sync_peek(window, cx);
+        for key in self.peek_origins.keys() { float::anchor_gone(key, window, cx); }
+        self.peek_origins.clear();
         cx.notify();
     }
 
@@ -1355,9 +1610,10 @@ struct Prepared {
     text_scale: f32,
     hover: Option<NodeId>,
     hover_a: f32,
-    outgoing_hover: Option<(Arc<super::scene::Neighbourhood>, f32, f32)>,
+    retiring_hovers: Vec<(Arc<super::scene::Neighbourhood>, f32, f32)>,
     hover_terr: Option<Terr>,
     focus: Option<NodeId>,
+    reading_a: f32,
     prism: Option<Prism>,
     prism_sel: Option<usize>,
     hover_slot: Option<usize>,
@@ -1395,11 +1651,10 @@ impl Element for MeasuredCard {
     fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
         self.child.prepaint(window, cx);
         crate::probe::record_bounds(cx, &ElementId::from("graph-focus-card"), bounds);
-        self.view.update(cx, |graph, cx| {
+        self.view.update(cx, |graph, _| {
             graph.chrome_bounds.insert("graph-focus-card", bounds);
-            if graph.card_bounds == Some(bounds) { return; }
+            // GraphFrame reconciles this measurement in the same prepaint.
             graph.card_bounds = Some(bounds);
-            motion::request_frame(window, cx);
         });
     }
     fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
@@ -1427,6 +1682,33 @@ fn readable_frame(scene: &Scene, view: &View, room: &View, bounds: Box2, source:
 
 fn chain_margin(view: &View) -> f64 { if view.w < 640.0 { 2.8 } else { 1.9 } }
 
+/// Reading provenance is constant-time: symbol endpoints, one shared module
+/// or package, and an explicit selected relation. Motion classifies the route
+/// from these landmarks rather than card-shifted camera centres.
+fn reading_route(scene: &Scene, view: &View, source: Option<NodeId>, target: NodeId, follow: bool, occupied: Option<Bounds<Pixels>>, centered: bool) -> FocusRoute {
+    let point = |node: NodeId| (f64::from(scene.layout.x[node as usize]), f64::from(scene.layout.y[node as usize]));
+    let arrival = point(target);
+    let target_node = scene.world.node(target);
+    let source = source.filter(|&node| node != target);
+    let kind = if follow { FocusKind::Follow } else if source.is_some_and(|node| scene.world.node(node).module == target_node.module) { FocusKind::Handoff } else { FocusKind::Transfer };
+    let context = source.map_or_else(|| package_context(scene, view, target), |node| {
+        let from = scene.world.node(node);
+        if from.module == target_node.module {
+            view.frame(scene.layout.modules[target_node.module as usize].bounds, 1.2)
+        } else if from.pkg == target_node.pkg {
+            package_context(scene, view, target)
+        } else {
+            let departure = point(node);
+            let corridor = Box2 { x0: scene.layout.x[node as usize].min(scene.layout.x[target as usize]), y0: scene.layout.y[node as usize].min(scene.layout.y[target as usize]), x1: scene.layout.x[node as usize].max(scene.layout.x[target as usize]), y1: scene.layout.y[node as usize].max(scene.layout.y[target as usize]) };
+            let frame = view.frame(corridor, 1.25);
+            Camera::new((departure.0 + arrival.0) * 0.5, (departure.1 + arrival.1) * 0.5, frame.w.max(package_context(scene, view, target).w))
+        }
+    });
+    let room = Scene::free_view(view, occupied);
+    let anchor = if centered { (room.x + room.w * 0.5, room.y + room.h * 0.5) } else { Scene::focus_anchor(&room) };
+    FocusRoute { departure: source.map(point), arrival, context, room: view.flight_room(&room, anchor), kind }
+}
+
 fn package_context(scene: &Scene, view: &View, node: NodeId) -> Camera {
     view.frame(scene.layout.packages[scene.world.node(node).pkg as usize].bounds, 1.2)
 }
@@ -1452,22 +1734,32 @@ impl MeasuredChrome {
 }
 impl IntoElement for MeasuredChrome { type Element = Self; fn into_element(self) -> Self { self } }
 impl Element for MeasuredChrome {
-    type RequestLayoutState = (); type PrepaintState = ();
+    type RequestLayoutState = (); type PrepaintState = bool;
     fn id(&self) -> Option<ElementId> { None }
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
     fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) { (self.child.request_layout(window, cx), ()) }
-    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
-        self.child.prepaint(window, cx);
-        self.view.update(cx, |view, cx| {
-            view.chrome_bounds.insert(self.key, bounds);
-            if self.key == "graph-find-bounds" && view.find_bounds != Some(bounds) {
-                view.find_bounds = Some(bounds);
-                motion::request_frame(window, cx);
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> bool {
+        if self.key == "graph-where-bounds" {
+            let graph = self.view.read(cx);
+            if let (Some(view), Some(primary)) = (graph.view, graph.primary_chrome()) {
+                let room = Scene::free_view(&view, Some(primary));
+                // Bottom reading chrome owns the footer context. Its exact
+                // measured strip suppresses the world breadcrumb; a side
+                // card keeps it whenever the measured rectangles are clear.
+                if (room.y == view.y && room.h < view.h) || primary.intersects(&bounds) { return false; }
             }
+        }
+        self.child.prepaint(window, cx);
+        self.view.update(cx, |view, _| {
+            view.chrome_bounds.insert(self.key, bounds);
+            if self.key == "graph-find-bounds" { view.find_bounds = Some(bounds); }
         });
         crate::probe::record_bounds(cx, &self.key.into(), bounds);
+        true
     }
-    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) { self.child.paint(window, cx); }
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), visible: &mut bool, window: &mut Window, cx: &mut App) {
+        if *visible { self.child.paint(window, cx); }
+    }
 }
 
 type FrameCell = Rc<RefCell<Option<Prepared>>>;
@@ -1562,9 +1854,10 @@ impl Element for Canvas {
             text_scale: p.text_scale,
             hover: p.hover,
             hover_a: p.hover_a,
-            outgoing_hover: p.outgoing_hover.as_ref().map(|(packet, alpha, flow_alpha)| (packet.as_ref(), *alpha, *flow_alpha)),
+            retiring_hovers: &p.retiring_hovers,
             hover_terr: p.hover_terr,
             focus: p.focus,
+            reading_a: p.reading_a,
             prism: frame,
             flow: p.flow,
             flow_alpha: p.flow_alpha,
@@ -1580,15 +1873,19 @@ impl Element for Canvas {
             strategy: p.strategy,
         };
         let stats = window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            let stats = draw::paint(&look, window, cx);
+            let painted = draw::paint_with_regions(&look, window, cx);
             if let Some(f) = frame {
                 prism::paint(f, &look, p.prism_sel, p.hover_slot, window, cx);
             }
-            stats
+            painted
         });
-        let hovering = p.hover.is_some() || p.hover_slot.is_some();
-        self.view.update(cx, |view, _| {
-            view.stats = stats;
+        let hovering = p.hover.is_some() || p.hover_slot.is_some() || p.hover_terr.is_some();
+        self.view.update(cx, |view, cx| {
+            view.stats = stats.stats;
+            view.painted_labels = Some((p.view, p.cam, stats.territory_labels));
+            // If newly accepted text covers a parked pointer, let the next
+            // committed frame retire its expanded glyph hover exactly once.
+            if view.hover.is_some() && view.pointer.is_some_and(|(x, y)| view.painted_territory(&p.view, &p.cam, x, y).is_some()) { cx.notify(); }
         });
         if hovering {
             window.set_cursor_style(CursorStyle::PointingHand, hitbox);
@@ -1602,7 +1899,14 @@ impl Element for Canvas {
             let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
             view.update(cx, |v, cx| {
                 let owns_drag = dragging && v.drag.is_some();
-                if !owns_drag && (!hit.is_hovered(window) || v.over_chrome(x, y)) {
+                let rail = v.frame.as_ref().filter(|frame| frame.rail && v.state.focus == Some(frame.node))
+                    .and_then(|frame| frame.pick(x, y).and_then(|slot| frame.slots[slot].key.map(|key| (frame.node, key))));
+                if !owns_drag && let Some((owner, key)) = rail {
+                    // Native foreground rows share capture picking with the
+                    // canvas, before the float collector observes this move.
+                    // Jitter therefore retains one uninterrupted peek intent.
+                    v.rail_pointer(owner, key, event, window, cx);
+                } else if !owns_drag && (!hit.is_hovered(window) || v.over_chrome(x, y)) {
                     v.pointer_left(window, cx);
                 } else {
                     v.pointer_move(x, y, dragging, window, cx);
@@ -1665,39 +1969,45 @@ impl Element for Canvas {
 }
 
 impl Render for GraphView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let facet = cx.facet();
-        let palette = facet.palette();
-        let width = self.view.map_or(px(1440.0), |v| px(v.w));
-        let measure = Measure::new(width, &facet);
-        self.chrome_bounds.clear();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = cx.palette();
         let draft = Rc::new(RefCell::new(None));
-        let mut root = div()
-            .id("graph")
-            .key_context("Graph")
-            .track_focus(&self.focus_handle)
-            .relative()
-            .size_full()
-            .overflow_hidden()
-            .bg(palette.g0.hsla())
+        let view = cx.entity();
+        let root = div().id("graph").key_context("Graph").track_focus(&self.focus_handle)
+            .relative().size_full().overflow_hidden().bg(palette.g0.hsla())
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.find_key(event, window, cx)))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.key(event, window, cx)))
             .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
-            .child(Canvas { view: cx.entity(), draft: draft.clone() });
+            .child(Canvas { view: cx.entity(), draft: draft.clone() })
+            // GPUI's container query constructs the same detached child once,
+            // after Canvas has sampled this frame's actual parent geometry.
+            .child(div().id("graph-chrome").absolute().top_0().left_0().size_full()
+                .child(gpui::container_query(move |size, window, cx| view.update(cx, |graph, cx| graph.chrome(size, window, cx)))));
+        GraphFrame { child: root.into_any_element(), view: cx.entity(), draft }
+    }
+}
+
+impl GraphView {
+    fn chrome(&mut self, size: gpui::Size<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let facet = cx.facet();
+        let palette = facet.palette();
+        let width = size.width;
+        let measure = Measure::new(width, &facet);
+        self.chrome_bounds.clear();
+        let mut root = div().relative().w(size.width).h(size.height);
         // Find: a quiet field at the top left; results under it.
         let find_w = (f32::from(width) - 32.0).min(300.0);
         let find_measure = Measure::new(px(find_w), &facet);
-        root = root.child(MeasuredChrome::new("graph-find-bounds",
-            div()
-                .absolute()
-                .left(px(16.0))
-                .top(px(17.0))
-                .w(px(find_w))
-                .child(field("graph-find", &self.find, &find_measure).quiet().icon(Icon::Search))
+        let mut find_stack = div().absolute().left(px(16.0)).top(px(17.0)).w(px(find_w)).flex().flex_col().gap(px(8.0))
+            .child(MeasuredChrome::new("graph-find-bounds", div().relative().w_full()
+                .child(field("graph-find", &self.find, &find_measure).quiet().opaque().icon(Icon::Search))
                 .children((!self.state.find_open && window.modifiers().platform).then(|| {
                     div().absolute().right(px(10.0)).top_0().bottom_0().flex().items_center().child(kbd("/", &find_measure))
-                })), cx.entity()
-        ));
+                })), cx.entity()));
+        if self.state.focus.is_none() {
+            if let Some(status) = self.tour_status() { find_stack = find_stack.child(MeasuredChrome::new("graph-tour-status-bounds", div().w_full().child(graph_text("graph-tour-status", status, ty::SMALL, &find_measure, palette.ink2, crate::probe::TextOverflow::Wrap)), cx.entity())); }
+        }
+        root = root.child(find_stack);
         if self.state.find_open {
             root = root.child(MeasuredChrome::new("graph-results-bounds", self.results_list(&measure, window, cx), cx.entity()));
         }
@@ -1717,14 +2027,14 @@ impl Render for GraphView {
                 .gap(px(10.0))
                 .whitespace_nowrap()
                 .set(ty::MONO_SMALL, &measure)
-                .text_color(palette.ink3.hsla());
+                .text_color(palette.ink2.hsla());
             if !pkg.is_empty() {
                 line = line.child(div().font_weight(gpui::FontWeight(600.0)).text_color(palette.ink1.hsla()).child(pkg));
             }
             if let Some(m) = module {
-                line = line.child(div().text_color(palette.ink4.hsla()).child("›")).child(m);
+                line = line.child(div().text_color(palette.ink3.hsla()).child("›")).child(m);
             }
-            line = line.child(div().ml(px(8.0)).set(ty::STATUS, &measure).text_color(palette.ink4.hsla()).child(level));
+            line = line.child(div().ml(px(8.0)).child(graph_text("graph-where-level", level, ty::STATUS, &measure, palette.ink2, crate::probe::TextOverflow::Clip)));
             if self.state.exploration.tour().is_none() {
                 if let Some(package) = self.tour_package().filter(|&package| self.discovery.as_ref().and_then(|discovery| discovery.package_tour(package)).is_some_and(Tour::shown)) {
                     line = line.child(div().id("graph-start-here").cursor_pointer().ml(px(8.0)).flex().items_center().gap(px(5.0))
@@ -1734,7 +2044,10 @@ impl Render for GraphView {
             }
             root = root.child(MeasuredChrome::new("graph-where-bounds", line, cx.entity()));
         }
-        GraphFrame { child: root.into_any_element(), view: cx.entity(), draft }
+        // Late native fallback sees this frame's measured chrome, then feeds
+        // the same row geometry to GraphFrame before Canvas paint.
+        root.child(div().id("graph-prism-rail-host").absolute().top_0().left_0().size_full()
+            .child(rail::Rail { view: cx.entity() })).into_any_element()
     }
 }
 
@@ -1952,51 +2265,54 @@ impl GraphView {
                             .flex_col()
                             .min_w(px(0.0))
                             .child(graph_text("graph-focus-title", node.name.clone(), ty::TITLE, &card, palette.ink0, crate::probe::TextOverflow::Ellipsis))
-                            .child(graph_text("graph-focus-qual", world.qual(i), ty::MONO_SMALL, &card, palette.ink3, crate::probe::TextOverflow::Wrap)),
+                            .child(graph_text("graph-focus-qual", world.qual(i), ty::MONO_SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)),
                     ),
             );
+        if let Some(status) = self.tour_status() { body = body.child(graph_text("graph-tour-status", status, ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)); }
         if let Some(doc) = &node.doc {
             body = body.child(graph_text("graph-focus-doc", doc.clone(), ty::MARGIN, &card, palette.ink1, crate::probe::TextOverflow::Wrap));
         }
         if !caps.is_empty() {
             body = body.child(crate::anatomy::can(("graph-can", i as usize), caps, &card).bare());
         }
-        let mut fx = div().flex().flex_wrap().gap_x(px(8.0)).gap_y(px(4.0)).set(ty::SMALL, &card).text_color(palette.ink3.hsla());
+        let mut fx = div().flex().flex_wrap().gap_x(px(8.0)).gap_y(px(4.0)).set(ty::SMALL, &card).text_color(palette.ink2.hsla());
         for (n, f) in facts.into_iter().enumerate() {
             if n > 0 {
                 fx = fx.child(div().text_color(palette.ink4.hsla()).child("·"));
             }
-            fx = fx.child(div().whitespace_nowrap().child(graph_text(format!("graph-focus-count-{n}"), f, ty::SMALL, &card, palette.ink3, crate::probe::TextOverflow::Wrap)));
+            fx = fx.child(div().whitespace_nowrap().child(graph_text(format!("graph-focus-count-{n}"), f, ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)));
         }
         if yours > 0 {
             fx = fx
                 .child(div().text_color(palette.ink4.hsla()).child("·"))
-                .child(div().whitespace_nowrap().child(graph_text("graph-focus-yours", format!("{yours} in your code"), ty::SMALL, &card, palette.mint.base, crate::probe::TextOverflow::Wrap)));
+                .child(div().whitespace_nowrap().child(graph_text("graph-focus-yours", format!("{yours} in your code"), ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap)));
         }
         body = body.child(fx);
         if let Some(reach) = self.state.exploration.reach() {
             body = body.child(graph_text("graph-reach-summary", reach.summary(), ty::SMALL, &card, palette.ink2, crate::probe::TextOverflow::Wrap));
             if reach.packages.len() > 1 {
                 let places = reach.packages.iter().take(3).map(|&(p, n)| format!("{} {n}", world.package_short(p))).collect::<Vec<_>>().join(" · ");
-                body = body.child(div().set(ty::SMALL, &card).text_color(palette.ink4.hsla()).child(format!("most in {places}")));
+                body = body.child(div().set(ty::SMALL, &card).text_color(palette.ink2.hsla()).child(format!("most in {places}")));
             }
         }
         // The prototype's card names its keys at rest.
         let key = |cap: &'static str, what: &'static str| {
             div().flex().items_center().gap(px(5.0)).child(kbd(cap, &card)).child(what)
         };
-        if show_keys { body = body.child(
-            div()
+        let hint = div()
                 .flex()
+                .flex_wrap()
                 .gap(px(14.0))
                 .pt(px(2.0))
                 .set(ty::STATUS, &card)
-                .text_color(palette.ink4.hsla())
+                .text_color(palette.ink2.hsla())
                 .child(key("↵", "open page"))
                 .child(key("R", "reach"))
                 .children(tour_eligible.then(|| key("T", "start here")))
-                .child(key("esc", "back out")),
-        ); }
+                .child(key("esc", "back out"));
+        let content_w = if f32::from(measure.width()) < 640.0 { f32::from(measure.width()) - 24.0 - 36.0 } else { card_w - 36.0 };
+        let content_w = content_w.max(1.0);
+        let body = hints::StableHints::new(body.w(px(content_w)).flex_shrink_0(), hint.w(px(content_w)).flex_shrink_0(), show_keys, content_w, (reading_plate_height(self.view) - 32.0).max(4.0), self.focus_scroll.clone(), self.hint_metrics.clone());
         cut()
             .chamfer(Chamfer::Md)
             .bevel(Bevel::Rest)
@@ -2014,7 +2330,7 @@ impl GraphView {
             .px(px(18.0))
             .py(px(16.0))
             .max_h(px(reading_plate_height(self.view)))
-            .child(div().id("graph-card-scroll").track_scroll(&self.focus_scroll).max_h(px((reading_plate_height(self.view) - 32.0).max(4.0))).overflow_y_scroll().child(body))
+            .child(body)
             .id("graph-focus-card")
             .into_any_element()
     }
@@ -2066,8 +2382,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn frame(cx: &mut VisualTestContext) {
-        cx.executor().advance_clock(Duration::from_millis(16));
+    fn frame(cx: &mut VisualTestContext) { frame_after(cx, Duration::from_millis(16)); }
+
+    fn frame_after(cx: &mut VisualTestContext, elapsed: Duration) {
+        cx.executor().advance_clock(elapsed);
         cx.run_until_parked();
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
@@ -2079,6 +2397,160 @@ mod tests {
     fn frames(cx: &mut VisualTestContext, n: usize) {
         for _ in 0..n {
             frame(cx);
+        }
+    }
+
+    #[gpui::test]
+    fn keyboard_hover_reentry_keeps_the_actual_fractional_envelope(cx: &mut TestAppContext) {
+        use crate::gallery::align::{self, Check, Tolerance};
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); crate::probe::enable(cx); });
+        for cadence in [4_u64, 16] {
+            let base = crate::graph::model::tests::tiny();
+            let mut edges = base.edges.clone();
+            // Outgoing USES is not a callable prism row. Pin a real call
+            // alongside the return type so Down selects a different action.
+            edges.push(crate::graph::model::Edge { from: 3, to: 4, rel: crate::graph::model::Rel::CALLS });
+            let world = Arc::new(crate::graph::model::World::new(base.packages.clone(), base.modules.clone(), base.nodes.clone(), edges).expect("valid pinned callable with return and call rows"));
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Focus(3), window, cx));
+            frames(cx, 100);
+            cx.update(|window, cx| { window.focus(&view.focus_handle(cx), cx); crate::probe::take(cx); });
+            cx.simulate_keystrokes("right");
+            let a = view.read_with(cx, |v, _| v.state.selected.expect("first native row selection").node);
+            let mut seen = Vec::new();
+            for n in 0..48 / cadence { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            cx.simulate_keystrokes("down");
+            let b = view.read_with(cx, |v, _| v.state.selected.expect("second native row selection").node);
+            assert_eq!((a, b), (5, 4), "native Right/Down must choose the pinned return and call actions");
+            assert_ne!(a, b, "the pinned outgoing rows must exercise a genuine handoff");
+            for n in 0..32 / cadence { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            let strength = view.read_with(cx, |v, _| v.retiring_hovers.get(&a).expect("first row is still visibly fading").alpha);
+            assert!(strength > 0.0 && strength < 1.0, "native reentry must reclaim a fractional painted envelope");
+            cx.simulate_keystrokes("up");
+            view.read_with(cx, |v, _| {
+                assert_eq!(v.state.selected.map(|key| key.node), Some(a));
+                assert_eq!(v.hover, Some(a));
+                assert_eq!(v.hover_a, strength, "keyboard selection must not hard-set a returning symbol to full opacity");
+            });
+            for n in 0..200_u64.div_ceil(cadence) { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            let report = align::analyze(&seen, Tolerance::default());
+            assert!(report.stats.get(&Check::Continuity).is_some_and(|stat| stat.evaluated > 10));
+            assert!(report.of(Check::Continuity).next().is_none(), "{cadence}ms keyboard envelope continuity: {:?}", report.findings);
+            cx.simulate_keystrokes("escape");
+            frames(cx, 100);
+            assert!(view.read_with(cx, |v, _| v.hover.is_none() && v.retiring_hovers.is_empty()));
+            assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        }
+    }
+
+    #[gpui::test]
+    fn latest_focus_waits_for_true_prism_collapse_without_reusing_outgoing_hits(cx: &mut TestAppContext) {
+        use crate::gallery::align::{self, Check, Tolerance};
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); crate::probe::enable(cx); });
+        for cadence in [4_u64, 16] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Focus(3), window, cx));
+            frames(cx, 100);
+            cx.update(|window, cx| { window.focus(&view.focus_handle(cx), cx); crate::probe::take(cx); });
+            cx.simulate_keystrokes("right");
+            frames(cx, 12);
+            let first = view.read_with(cx, |v, _| v.state.selected.expect("native selected relation").node);
+            cx.simulate_keystrokes("enter");
+            assert_eq!(view.read_with(cx, |v, _| v.state.focus), Some(first));
+            let latest = if first == 5 { 4 } else { 5 };
+            let mut seen = Vec::new();
+            let mut overlapping = false;
+            let mut old_terminal = false;
+            let mut saw_latest = false;
+            for n in 0..1800_u64.div_ceil(cadence) {
+                if n == 32 / cadence { view.update(cx, |v, cx| v.set_focus(Some(latest), true, cx)); }
+                frame_after(cx, Duration::from_millis(cadence));
+                let (at_ms, mut ledger) = cx.update(|_, cx| {
+                    let at_ms = u64::try_from(crate::motion::now(cx).saturating_duration_since(crate::motion::epoch(cx)).as_millis()).expect("test clock fits u64");
+                    (at_ms, crate::probe::take(cx))
+                });
+                ledger.tracks.retain(|track| track.key == super::PRISM_KEY);
+                old_terminal |= ledger.tracks.iter().any(|track| track.target == 0.0 && track.value == 0.0 && !track.live);
+                ledger.bounds.clear(); ledger.texts.clear();
+                seen.push(align::Observed { drawn: backend_gui_harness::Drawn { at_ms, invalidations: 1, callbacks: 0, cpu: Duration::ZERO, input_cpu: Duration::ZERO, input_events: usize::from(n == 0 || n == 32 / cadence), input_max: Duration::ZERO, viewport: backend_gui_harness::Viewport { width: 1024, height: 768, scale: 1 }, captured: false }, ledger, events: usize::from(n == 0 || n == 32 / cadence), state: None });
+                view.read_with(cx, |v, _| {
+                    if let Some(prism) = &v.prism {
+                        if prism.node == 3 && prism.g > 0.0 {
+                            overlapping |= !v.rig.as_ref().expect("camera").flying();
+                            assert_eq!(prism.target, 0.0);
+                            if let Some(frame) = &v.frame {
+                                for slot in &frame.slots {
+                                    if let Some([x0,y0,x1,y1]) = slot.label { assert_eq!(v.pick_prism((x0+x1)*0.5, (y0+y1)*0.5), None, "retained outgoing rows never own the new focus's input"); }
+                                }
+                            }
+                        } else if prism.node == latest {
+                            assert!(old_terminal, "the latest prism cannot replace a positive outgoing gather");
+                            saw_latest = true;
+                        }
+                    }
+                });
+            }
+            assert!(overlapping, "the camera must land while the old owner's finite collapse is still visible");
+            assert!(old_terminal && saw_latest);
+            assert_eq!(view.read_with(cx, |v, _| v.prism.as_ref().map(|prism| (prism.node, prism.g, prism.target))), Some((latest, 1.0, 1.0)));
+            let report = align::analyze(&seen, Tolerance::default());
+            assert!(report.stats.get(&Check::Continuity).is_some_and(|stat| stat.evaluated > 50));
+            assert!(report.of(Check::Continuity).next().is_none(), "{cadence}ms owner-changing prism continuity: {:?}", report.findings);
+            assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        }
+    }
+
+    #[gpui::test]
+    fn reduced_static_first_prepaint_has_no_redundant_measurement_frame(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); crate::probe::enable(cx); });
+        for (width, text_scale) in [(1024.0, 1.0), (480.0, 2.0), (640.0, 2.0), (760.0, 2.0)] {
+            cx.update(|cx| set_facet(Facet { reduced_motion: true, appearance: crate::tokens::Appearance::Glacier, text_scale, ..Facet::default() }, cx));
+            for start in [Start::World, Start::Focus(3)] {
+                let world = Arc::new(crate::graph::model::tests::tiny());
+                let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+                let baseline = cx.update(|cx| { crate::probe::take(cx); crate::motion::frames_requested(cx) });
+                let (view, cx) = cx.add_window_view(|window, cx| {
+                    // Isolate geometry from asynchronous index delivery. The
+                    // opening resize still exercises the actual native dirty
+                    // draw after the first window-sized chrome measurement.
+                    let mut graph = GraphView::empty(world.clone(), start, window, cx);
+                    graph.scene = Some(scene.clone());
+                    graph
+                });
+                cx.update(|window, _| window.set_scale_factor(2.0));
+                cx.simulate_resize(gpui::size(px(width), px(824.0)));
+                cx.run_until_parked();
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                let actual = view.read_with(cx, |v, _| {
+                    let region = v.view.expect("actual initial viewport");
+                    assert_eq!((region.w, region.h), (width, 824.0));
+                    assert!(v.find_bounds.is_some());
+                    if let Start::Focus(node) = start {
+                        assert_eq!(v.prism.as_ref().map(|prism| (prism.node, prism.g)), Some((node, 1.0)));
+                        let card = v.card_bounds.expect("current measured card");
+                        let glyph = v.node_bounds(node).expect("visible actual focused glyph");
+                        assert!(!glyph.intersects(&card), "{width}px/text{text_scale}: the first pose must clear the measured card");
+                        assert_eq!(v.camera(), Some(super::focus_camera(&scene, &region, node, Some(card))));
+                    }
+                    assert!(!v.moving && !v.rig.as_ref().expect("camera").flying());
+                    v.camera().expect("actual final pose")
+                });
+                let ledger = cx.update(|_, cx| crate::probe::take(cx));
+                for (key, coordinate) in [("graph-camera.x", actual.x), ("graph-camera.y", actual.y), ("graph-camera.w", actual.w)] {
+                    let track = ledger.tracks.iter().rev().find(|track| track.key == key).expect("first draw publishes its actual camera");
+                    assert!(!track.live);
+                    assert!((f64::from(track.value) - coordinate).abs() <= coordinate.abs().max(1.0) * 1e-6, "{width}px/text{text_scale}: final camera ledger matches rendered geometry");
+                }
+                assert_eq!(cx.update(|_, cx| crate::motion::frames_requested(cx)), baseline, "{width}px/text{text_scale}: opening measurements require no motion lease");
+                assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "static reduced first draw leaves no opening callback");
+                // Repeating an identical opening paint cannot rediscover a
+                // correction, change pose, or schedule an idle callback.
+                cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+                assert_eq!(view.read_with(cx, |v, _| v.camera()), Some(actual));
+                assert_eq!(cx.update(|_, cx| crate::motion::frames_requested(cx)), baseline);
+                assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+            }
         }
     }
 
@@ -2136,10 +2608,11 @@ mod tests {
         cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
         let mut preserved_old = false;
         let mut replaced_with_new = false;
-        // Observe the actual strengths: at 16ms the old packet dominates;
-        // at 32ms the fast arriving packet has become stronger. Both native
-        // handoffs must preserve the maximum visible envelope.
-        for brief_frames in [1, 2] {
+        let mut observed = Vec::new();
+        // Observe strengths at real 8ms and 32ms native frame cadences;
+        // handoffs must preserve the maximum visible envelope regardless
+        // of which packet dominates the actual delivery schedule.
+        for brief_ms in [8, 32] {
             let world = Arc::new(crate::graph::model::tests::tiny());
             let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
             let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
@@ -2151,14 +2624,15 @@ mod tests {
             assert_eq!(view.read_with(cx, |v, _| v.hover), Some(0), "actual native pointer first lights A");
             assert_eq!(view.read_with(cx, |v, _| v.hover_a), 1.0);
             cx.simulate_mouse_move(at(1), None, Modifiers::none());
-            frames(cx, brief_frames);
+            frame_after(cx, Duration::from_millis(brief_ms));
             let (old, current) = view.read_with(cx, |v, _| {
                 assert_eq!(v.hover, Some(3), "the brief native pointer actually entered B");
-                let outgoing = v.outgoing_hover.as_ref().expect("A is still fading");
-                assert_eq!(outgoing.packet.node, 0);
-                ((outgoing.packet.node, outgoing.epoch, outgoing.alpha, outgoing.flow_alpha),
-                 (3, v.hover_epoch, v.hover_a, v.flow_a.max(1.0 - v.hover_a)))
+                let outgoing = v.retiring_hovers.get(&0).expect("A is still fading");
+                assert_eq!(outgoing.packet.as_ref().expect("painted packet").node, 0);
+                ((outgoing.packet.as_ref().expect("painted packet").node, outgoing.packet.as_ref().expect("painted identity").node as usize, outgoing.alpha, outgoing.flow_alpha),
+                 (3, v.hover_key, v.hover_a, v.flow_a.max(1.0 - v.hover_a)))
             });
+            observed.push((brief_ms, old.2, current.2));
             let expected = if old.2 > current.2 {
                 preserved_old = true; old
             } else {
@@ -2167,18 +2641,261 @@ mod tests {
             cx.simulate_mouse_move(at(2), None, Modifiers::none());
             view.read_with(cx, |v, _| {
                 assert_eq!(v.hover, Some(5), "C owns the actual native pick immediately");
-                let outgoing = v.outgoing_hover.as_ref().expect("one dominant outgoing packet remains");
-                assert_eq!((outgoing.packet.node, outgoing.epoch), (expected.0, expected.1));
-                assert_eq!(outgoing.alpha, old.2.max(current.2), "same-clock handoff must retain the independently observed stronger envelope");
-                assert_eq!(outgoing.flow_alpha, expected.3, "new hover activity cannot revive a retained outgoing packet's flow");
+                assert_eq!(v.retiring_hovers.len(), 2, "both positive departures remain visible");
+                for prior in [old, current] {
+                    let outgoing = v.retiring_hovers.get(&prior.0).expect("each positive envelope retires");
+                    assert_eq!((outgoing.packet.as_ref().expect("painted packet").node, outgoing.packet.as_ref().expect("painted identity").node as usize), (prior.0, prior.1));
+                    assert_eq!(outgoing.alpha, prior.2, "handoff preserves each independently observed envelope");
+                    assert_eq!(outgoing.flow_alpha, prior.3, "new activity cannot revive outgoing flow");
+                }
             });
             frames(cx, 2);
-            assert!(view.read_with(cx, |v, _| v.outgoing_hover.as_ref().is_none_or(|outgoing| outgoing.alpha < expected.2)), "the selected packet continues its bounded fade");
+            assert!(view.read_with(cx, |v, _| v.retiring_hovers.get(&expected.0).is_none_or(|outgoing| outgoing.alpha < expected.2)), "the selected packet continues its bounded fade");
             frames(cx, 60);
-            assert!(view.read_with(cx, |v, _| v.outgoing_hover.is_none() && v.motion.len() <= 2));
+            assert!(view.read_with(cx, |v, _| v.retiring_hovers.is_empty() && v.motion.len() <= 2));
             assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
         }
-        assert!(preserved_old && replaced_with_new, "real native timings must exercise both dominant-packet decisions");
+        assert!(preserved_old && replaced_with_new, "real native timings must exercise both dominant-packet decisions: {observed:?}");
+    }
+
+    #[gpui::test]
+    fn same_symbol_reentry_reverses_one_visible_envelope_without_discarding_it(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+        frames(cx, 30);
+        let (x, y) = view.read_with(cx, |v, _| v.screen_position(0).expect("visible native target"));
+        cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::none());
+        frame(cx);
+        let epoch = view.read_with(cx, |v, _| v.hover_key);
+        for _ in 0..16 {
+            cx.simulate_mouse_move(point(px(-100.0), px(-100.0)), None, Modifiers::none());
+            frame(cx);
+            let fading = view.read_with(cx, |v, _| {
+                assert_eq!(v.hover, None);
+                let outgoing = v.retiring_hovers.get(&0).expect("packet still visibly fading at 16ms");
+                assert_eq!(outgoing.packet.as_ref().expect("painted identity").node as usize, epoch);
+                outgoing.alpha
+            });
+            assert!(fading > 0.0, "positive fade is the reacquisition precondition");
+            cx.simulate_mouse_move(point(px(x), px(y)), None, Modifiers::none());
+            view.read_with(cx, |v, _| {
+                assert_eq!(v.hover, Some(0));
+                assert_eq!(v.hover_key, epoch, "reentry owns the same envelope, not a replacement epoch");
+                assert_eq!(v.hover_a, fading, "same-clock retarget preserves the actual visible strength");
+                assert!(v.retiring_hovers.is_empty(), "the same symbol is not painted twice");
+            });
+            frame(cx);
+            assert!(view.read_with(cx, |v, _| v.motion.len() <= 2));
+        }
+        cx.simulate_mouse_move(point(px(-100.0), px(-100.0)), None, Modifiers::none());
+        frames(cx, 60);
+        assert!(view.read_with(cx, |v, _| v.hover.is_none() && v.retiring_hovers.is_empty() && v.motion.len() <= 2));
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    fn hover_observed(cx: &mut VisualTestContext, elapsed: Duration, events: usize) -> crate::gallery::align::Observed {
+        frame_after(cx, elapsed);
+        let (at_ms, mut ledger) = cx.update(|_, cx| {
+            let at_ms = u64::try_from(crate::motion::now(cx).saturating_duration_since(crate::motion::epoch(cx)).as_millis()).expect("test clock fits u64");
+            (at_ms, crate::probe::take(cx))
+        });
+        ledger.tracks.retain(|track| track.key.starts_with("graph-hover-"));
+        ledger.bounds.clear(); ledger.texts.clear();
+        crate::gallery::align::Observed { drawn: backend_gui_harness::Drawn { at_ms, invalidations: 1, callbacks: 0, cpu: Duration::ZERO, input_cpu: Duration::ZERO, input_events: events, input_max: Duration::ZERO, viewport: backend_gui_harness::Viewport { width: 1024, height: 768, scale: 1 }, captured: false }, ledger, events, state: None }
+    }
+    #[gpui::test]
+    fn direct_hover_return_swaps_existing_packets_and_keeps_both_tracks_continuous(cx: &mut TestAppContext) {
+        use crate::gallery::align::{self, Check, Tolerance};
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); crate::probe::enable(cx); });
+        for cadence in [4_u64, 16] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+            frames(cx, 30); cx.update(|_, cx| { crate::probe::take(cx); });
+            let points = [0, 3].map(|node| view.read_with(cx, |v, _| v.screen_position(node).expect("visible real symbol")));
+            let at = |n: usize| point(px(points[n].0), px(points[n].1));
+            let mut seen = Vec::new();
+            cx.simulate_mouse_move(at(0), None, Modifiers::none());
+            for n in 0..200_u64.div_ceil(cadence) { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            let a_epoch = view.read_with(cx, |v, _| { assert_eq!(v.hover, Some(0)); assert_eq!(v.hover_a, 1.0); v.hover_key });
+            let packet_a = scene.neighbourhood(0);
+            cx.simulate_mouse_move(at(1), None, Modifiers::none());
+            for n in 0..64 / cadence { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            let (b_epoch, a_strength, b_strength) = view.read_with(cx, |v, _| {
+                assert_eq!(v.hover, Some(3));
+                let outgoing = v.retiring_hovers.get(&0).expect("A has not finished its fade");
+                assert_eq!(outgoing.packet.as_ref().expect("painted identity").node as usize, a_epoch); assert!(Arc::ptr_eq(outgoing.packet.as_ref().expect("painted A packet"), &packet_a));
+                assert!(outgoing.alpha > 0.0 && v.hover_a > 0.0, "both visible envelopes are the swap precondition");
+                (v.hover_key, outgoing.alpha, v.hover_a)
+            });
+            let packet_b = scene.neighbourhood(3);
+            cx.simulate_mouse_move(at(0), None, Modifiers::none());
+            view.read_with(cx, |v, _| {
+                assert_eq!(v.hover, Some(0)); assert_eq!(v.hover_key, a_epoch); assert_eq!(v.hover_a, a_strength);
+                let outgoing = v.retiring_hovers.get(&3).expect("B now departs without being discarded");
+                assert_eq!(outgoing.packet.as_ref().expect("painted identity").node as usize, b_epoch); assert_eq!(outgoing.alpha, b_strength);
+                assert!(Arc::ptr_eq(outgoing.packet.as_ref().expect("painted B packet"), &packet_b));
+                assert!(Arc::ptr_eq(&scene.neighbourhood(0), &packet_a), "A's existing packet is promoted rather than rebuilt");
+            });
+            for n in 0..200_u64.div_ceil(cadence) { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            cx.simulate_mouse_move(point(px(-100.0), px(-100.0)), None, Modifiers::none());
+            for n in 0..200_u64.div_ceil(cadence) { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            let report = align::analyze(&seen, Tolerance::default());
+            assert!(report.stats.get(&Check::Continuity).is_some_and(|stat| stat.evaluated > 20), "actual per-frame samples must exercise continuity");
+            assert!(report.of(Check::Continuity).next().is_none(), "{cadence}ms A/B/A continuity: {:?}", report.findings);
+            assert!(view.read_with(cx, |v, _| v.hover.is_none() && v.retiring_hovers.is_empty() && v.motion.len() <= 2));
+            assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        }
+    }
+
+    #[gpui::test]
+    fn distinct_hover_handoff_preserves_every_visible_envelope_within_motion_budget(cx: &mut TestAppContext) {
+        use crate::gallery::align::{self, Check, Tolerance};
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); crate::probe::enable(cx); });
+        for cadence in [4_u64, 16] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+            frames(cx, 30); cx.update(|_, cx| { crate::probe::take(cx); });
+            let points = [0, 3, 5].map(|node| view.read_with(cx, |v, _| v.screen_position(node).expect("visible native A/B/C")));
+            let at = |n: usize| point(px(points[n].0), px(points[n].1));
+            let mut seen = Vec::new();
+            cx.simulate_mouse_move(at(0), None, Modifiers::none());
+            for n in 0..200_u64.div_ceil(cadence) { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            cx.simulate_mouse_move(at(1), None, Modifiers::none());
+            for n in 0..32 / cadence { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            view.read_with(cx, |v, _| {
+                assert_eq!(v.hover, Some(3));
+                assert!(v.hover_a > 0.0 && v.retiring_hovers.get(&0).is_some_and(|packet| packet.alpha > 0.0), "both actual visible packets are the three-symbol handoff precondition");
+            });
+            cx.simulate_mouse_move(at(2), None, Modifiers::none());
+            view.read_with(cx, |v, _| {
+                assert_eq!(v.hover, Some(5));
+                assert_eq!(v.retiring_hovers.len(), 2, "A and brief B both retain their positive visual envelopes");
+                assert!(v.retiring_hovers.values().all(|outgoing| outgoing.alpha > 0.0 && outgoing.packet.is_some()));
+            });
+            for n in 0..200_u64.div_ceil(cadence) {
+                seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0)));
+                if n == 0 {
+                    view.read_with(cx, |v, _| {
+                        let expected: usize = v.retiring_hovers.values().filter(|outgoing| outgoing.alpha > 0.001).filter_map(|outgoing| outgoing.packet.as_ref()).map(|packet| packet.edges.len()).sum();
+                        assert!(expected > 0, "native retiree relations are actually painted");
+                        assert_eq!(v.stats.fading_hover_relations as usize, expected, "paint counters aggregate all positive departing packets");
+                    });
+                }
+            }
+            cx.simulate_mouse_move(point(px(-100.0), px(-100.0)), None, Modifiers::none());
+            for n in 0..200_u64.div_ceil(cadence) { seen.push(hover_observed(cx, Duration::from_millis(cadence), usize::from(n == 0))); }
+            let report = align::analyze(&seen, Tolerance::default());
+            assert!(report.stats.get(&Check::Continuity).is_some_and(|stat| stat.evaluated > 20));
+            assert!(report.of(Check::Continuity).next().is_none(), "{cadence}ms distinct A/B/C continuity: {:?}", report.findings);
+            assert!(view.read_with(cx, |v, _| v.hover.is_none() && v.retiring_hovers.is_empty() && v.motion.len() <= 2));
+            assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        }
+    }
+
+    #[gpui::test]
+    fn hover_retirement_is_world_bounded_and_unsampled_input_allocates_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+        frames(cx, 30);
+        let points = [0, 3, 5].map(|node| view.read_with(cx, |v, _| v.screen_position(node).expect("visible storm target")));
+        let at = |n: usize| point(px(points[n].0), px(points[n].1));
+        cx.update(|window, cx| {
+            // VisualTestContext::simulate_mouse_move yields after each event,
+            // allowing notified native draws. Batch actual platform dispatches
+            // and inspect before this update yields to prove an input-only burst.
+            let baseline = view.read(cx).motion.len();
+            for n in 0..1000 {
+                window.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: at(n % 3), pressed_button: None, modifiers: Modifiers::none(),
+                }), cx);
+            }
+            let v = view.read(cx);
+            assert_eq!(v.motion.len(), baseline, "input-only targets create no scalar tracks");
+            assert!(v.retiring_hovers.is_empty() && v.terminal_hovers.is_empty());
+            assert!(v.hover_packet.is_none() && !v.hover_sampled, "no prepaint sampled the event burst before this assertion");
+            assert_eq!(v.hover, Some(0), "the latest actual native pick owns the first draw");
+        });
+        for n in 0..1000 {
+            cx.simulate_mouse_move(at(n % 3), None, Modifiers::none());
+            frame_after(cx, Duration::from_millis(4));
+            view.read_with(cx, |v, _| {
+                assert!(v.retiring_hovers.len() <= world.len());
+                assert!(v.terminal_hovers.len() <= world.len());
+                assert!(v.motion.len() <= world.len() + 3, "one track per symbol plus prism/flow/reading");
+                let active_edges = v.hover_packet.as_ref().map_or(0, |packet| packet.edges.len());
+                assert!(v.retained().fading_relations + active_edges <= world.edges.len() * 4, "raw member and rolled item adjacency retain only a linear number of relations");
+                assert!(v.retiring_hovers.keys().all(|&node| Some(node) != v.hover), "no active symbol is also retiring");
+            });
+        }
+        cx.simulate_mouse_move(point(px(-100.0), px(-100.0)), None, Modifiers::none());
+        frames(cx, 60);
+        assert!(view.read_with(cx, |v, _| v.retiring_hovers.is_empty() && v.terminal_hovers.is_empty() && v.hover_packet.is_none() && v.motion.len() <= 2));
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    #[gpui::test]
+    fn reading_flight_retains_symbol_and_relation_provenance_through_measured_reframe(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Focus(3), window, cx));
+        frames(cx, 30);
+        view.update(cx, |v, cx| {
+            let frame = v.frame.as_ref().expect("gathered actual relations");
+            let key = frame.slots.iter().find_map(|slot| slot.key.filter(|key| key.node != 3)).expect("actual relation target");
+            v.state.selected = Some(key);
+            v.set_focus(Some(key.node), true, cx);
+            let super::Travel::Reading(route) = v.rig.as_ref().expect("flight rig").travel().expect("reading intent") else { panic!("symbol focus must carry reading provenance") };
+            assert_eq!(route.kind, super::FocusKind::Follow);
+            assert_eq!(route.departure, Some((f64::from(scene.layout.x[3]), f64::from(scene.layout.y[3]))));
+            assert_eq!(route.arrival, (f64::from(scene.layout.x[key.node as usize]), f64::from(scene.layout.y[key.node as usize])));
+            let mut room = route.room; room.anchor.0 += 0.02;
+            let rig = v.rig.as_mut().expect("reading rig");
+            let target = rig.target();
+            rig.reframe_in(target, room);
+            let super::Travel::Reading(reframed) = rig.travel().expect("retained reading intent") else { panic!("measurement cannot erase the reading route") };
+            assert_eq!(reframed.departure, route.departure); assert_eq!(reframed.arrival, route.arrival); assert_eq!(reframed.kind, route.kind); assert_eq!(reframed.context, route.context); assert_eq!(reframed.room, room);
+        });
+        frames(cx, 160);
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    #[gpui::test]
+    fn reading_ink_retargets_continuously_and_finishes_without_an_idle_lease(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+        frames(cx, 30);
+        assert_eq!(view.read_with(cx, |v, _| v.reading_a), 0.0);
+        view.update(cx, |v, cx| v.set_focus(Some(0), true, cx));
+        frames(cx, 2);
+        let entering = view.read_with(cx, |v, _| v.reading_a);
+        assert!(entering > 0.0 && entering < 1.0, "focus ink is an observed finite envelope");
+        view.update(cx, |v, cx| v.set_focus(Some(3), true, cx));
+        assert_eq!(view.read_with(cx, |v, _| v.reading_a), entering, "another reading target cannot reset the same envelope");
+        frames(cx, 160);
+        assert_eq!(view.read_with(cx, |v, _| v.reading_a), 1.0);
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        view.update(cx, |v, cx| v.set_focus(None, false, cx));
+        frames(cx, 2);
+        let leaving = view.read_with(cx, |v, _| v.reading_a);
+        assert!(leaving > 0.0 && leaving < 1.0, "clearing focus fades ambient ink instead of switching a boolean");
+        frames(cx, 60);
+        assert_eq!(view.read_with(cx, |v, _| v.reading_a), 0.0);
+        assert!(view.read_with(cx, |v, _| v.motion.len() <= 2));
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        cx.update(|_, cx| set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx));
+        view.update(cx, |v, cx| v.set_focus(Some(0), false, cx)); frame(cx);
+        assert_eq!(view.read_with(cx, |v, _| v.reading_a), 1.0);
+        view.update(cx, |v, cx| v.set_focus(None, false, cx)); frame(cx);
+        assert_eq!(view.read_with(cx, |v, _| v.reading_a), 0.0);
     }
 
     #[gpui::test]
@@ -2230,16 +2947,16 @@ mod tests {
         cx.simulate_mouse_move(point(px(-100.0), px(-100.0)), None, Modifiers::none());
         let departure = view.read_with(cx, |v, _| {
             assert_eq!(v.hover, None, "interaction ownership clears immediately");
-            let outgoing = v.outgoing_hover.as_ref().expect("bounded outgoing visual");
-            assert_eq!(outgoing.packet.node, 0);
+            let outgoing = v.retiring_hovers.get(&0).expect("bounded outgoing visual");
+            assert_eq!(outgoing.packet.as_ref().expect("painted packet").node, 0);
             outgoing.alpha
         });
         assert!(departure > 0.0, "departure retains the actually visible neighborhood");
         frames(cx, 2);
-        let alpha = view.read_with(cx, |v, _| v.outgoing_hover.as_ref().map_or(0.0, |outgoing| outgoing.alpha));
+        let alpha = view.read_with(cx, |v, _| v.retiring_hovers.get(&0).map_or(0.0, |outgoing| outgoing.alpha));
         assert!(alpha < departure, "the same immutable packet fades rather than disappearing abruptly");
         frames(cx, 40);
-        assert!(view.read_with(cx, |v, _| v.outgoing_hover.is_none() && v.hover.is_none() && v.motion.len() <= 2));
+        assert!(view.read_with(cx, |v, _| v.retiring_hovers.is_empty() && v.hover.is_none() && v.motion.len() <= 2));
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "the terminal fade cannot retain an idle frame lease");
     }
 
@@ -2347,6 +3064,176 @@ mod tests {
     }
 
     #[gpui::test]
+    fn modifier_hints_reserve_measured_card_space_without_camera_bob_or_hidden_scroll_tail(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); crate::probe::enable(cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Focus(0), window, cx));
+        for (width, scale) in [(1440.0, 1.0), (480.0, 2.0)] {
+            cx.simulate_resize(gpui::size(px(width), px(900.0)));
+            cx.update(|_, cx| set_facet(Facet { reduced_motion: true, text_scale: scale, ..Facet::default() }, cx));
+            cx.simulate_modifiers_change(Modifiers::none());
+            frames(cx, 30);
+            let measured = view.read_with(cx, |v, _| v.hint_metrics.get());
+            assert!(measured.core > 0.0 && measured.hint > 0.0, "actual core and control row must be measured: {measured:?}");
+            // Derive a viewport which positively exercises a partially fitting
+            // row, rather than guessing font-dependent card heights.
+            let half_hint = (measured.hint + 10.0) * 0.5;
+            let height = (measured.core + half_hint + 32.0) / 0.45;
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            frames(cx, 30);
+            let (bounds, camera) = view.read_with(cx, |v, _| {
+                let m = v.hint_metrics.get();
+                assert!(m.core < m.budget && m.core + m.hint + 10.0 > m.budget, "fixture must exercise partial fit: {m:?}");
+                assert_eq!(m.reserved, m.budget);
+                assert!(v.focus_scroll.max_offset().y <= px(0.5), "hidden controls must not create a blank scroll tail");
+                (v.card_bounds.expect("actual card"), v.camera().expect("camera"))
+            });
+            for platform in [true, false, true, false] {
+                cx.update(|_, cx| { crate::probe::take(cx); });
+                cx.simulate_modifiers_change(Modifiers { platform, ..Modifiers::none() });
+                frame(cx);
+                let ledger = cx.update(|_, cx| crate::probe::take(cx));
+                for key in ["graph-focus-title", "graph-focus-qual"] {
+                    let text = ledger.texts.iter().find(|text| text.key == key).expect("actual focus content must paint in every modifier state");
+                    assert!(!text.content.is_empty());
+                    assert!(text.bounds.x >= f32::from(bounds.left()) - 0.5 && text.bounds.y >= f32::from(bounds.top()) - 0.5
+                        && text.bounds.x + text.bounds.width <= f32::from(bounds.right()) + 0.5 && text.bounds.y + text.bounds.height <= f32::from(bounds.bottom()) + 0.5,
+                        "painted content must be positioned inside its real native card, not a detached measurement root: {text:?} vs {bounds:?}");
+                }
+                view.read_with(cx, |v, _| {
+                    assert_eq!(v.card_bounds, Some(bounds), "Cmd visibility cannot resize the measured card");
+                    assert_eq!(v.camera(), Some(camera), "Cmd visibility cannot reframe the graph");
+                    if platform { assert!(v.focus_scroll.max_offset().y > px(0.0), "real hint content must remain scroll-reachable"); }
+                    else { assert!(v.focus_scroll.max_offset().y <= px(0.5), "hidden hint must not remain in scroll content"); }
+                });
+            }
+            frames(cx, 30);
+            assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+        }
+    }
+
+    #[gpui::test]
+    fn native_enter_commits_the_same_preview_road_without_teleporting_its_value(cx: &mut TestAppContext) {
+        use std::rc::Rc;
+        use crate::motion;
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+        frames(cx, 30);
+        cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+        cx.simulate_keystrokes("/");
+        frame(cx);
+        cx.update(|window, cx| assert!(view.read(cx).find_focused(window, cx)));
+        cx.simulate_input("Page -> text");
+        cx.run_until_parked();
+        let chain = super::Chain { cost: 1.0, from: "#0".into(), output: "text".into(), via: None,
+            steps: vec![super::super::discovery::ChainStep { node: 2, verb: "new".into(), input: "#0".into(), output: "text".into(), riders: vec![], fails: false, maybe: false }],
+            path: vec![0, 2, 3], stops: vec![super::RoadStop { node: 0, label: "Page".into(), calls: vec![2], yours: true }, super::RoadStop { node: 3, label: "from_str".into(), calls: vec![3], yours: false }],
+            brief: "Page to text".into(), rail: "Page reads text".into(), code: "page.new()".into() };
+        // Deliver one pinned worker answer through the real result selection
+        // boundary; native Enter must commit that exact displayed path.
+        view.update(cx, |v, cx| {
+            v._search_task = None; v.searching = false; v.results.clear();
+            v.search = Rc::new(super::Search { shaped: true, issue: None, rows: vec![], lit: vec![0, 3], lit_set: [0, 3].into_iter().collect(), packages: 2, chains: vec![chain.clone()] });
+            v.state.result_sel = 0; cx.notify();
+        });
+        frame(cx);
+        frame_after(cx, Duration::from_millis(320));
+        let epoch = cx.update(|_, cx| motion::epoch(cx));
+        let (timing, before) = view.read_with(cx, |v, cx| {
+            assert!(v.state.find_open && v.state.exploration.chain().is_none());
+            let road = v.road.as_ref().expect("visible preview clock");
+            (road.timing(), road.clone().sample(motion::now(cx).saturating_duration_since(epoch), false).progress)
+        });
+        assert!(before > 0.1 && before < 0.9, "actual preview must be mid-trip before commit: {before}");
+        cx.simulate_keystrokes("enter");
+        frame_after(cx, Duration::from_millis(8));
+        view.read_with(cx, |v, cx| {
+            assert!(!v.state.find_open);
+            assert_eq!(v.state.exploration.chain().expect("held actual path").path, chain.path);
+            let road = v.road.as_ref().expect("held clock");
+            assert_eq!(road.timing(), timing, "same semantic path must keep its original animation budget");
+            let after = road.clone().sample(motion::now(cx).saturating_duration_since(epoch), false).progress;
+            assert!(after >= before && after < 1.0, "native hold must continue rather than restart or snap: {before} -> {after}");
+        });
+        frames(cx, 120);
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    #[gpui::test]
+    fn reduced_first_draw_chrome_uses_the_same_camera_and_bottom_reading_owns_the_footer(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); crate::probe::enable(cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let survey = View { x: 0.0, y: 0.0, w: 1440.0, h: 900.0 }.frame(scene.layout.bounds, 30.0);
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::Cam(survey), window, cx));
+        frames(cx, 30);
+        let before = view.read_with(cx, |v, _| v.where_line().expect("initial context").2);
+        cx.update(|_, cx| { crate::probe::take(cx); });
+        view.update(cx, |v, cx| v.set_focus(Some(3), true, cx));
+        frame(cx);
+        let expected = view.read_with(cx, |v, _| v.where_line().expect("sampled reading context").2);
+        assert_ne!(before, expected, "the reduced jump must change altitude for a meaningful chrome assertion");
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        let levels: Vec<_> = ledger.texts.iter().filter(|text| text.key == "graph-where-level").collect();
+        assert!(!levels.is_empty(), "the first reduced draw must paint the actual breadcrumb");
+        assert!(levels.iter().all(|text| text.content == expected), "every breadcrumb in the first draw must use the sampled camera: {levels:?}");
+        cx.simulate_resize(gpui::size(px(480.0), px(600.0)));
+        cx.update(|_, cx| set_facet(Facet { text_scale: 2.0, reduced_motion: true, ..Facet::default() }, cx));
+        frames(cx, 30);
+        cx.update(|_, cx| { crate::probe::take(cx); });
+        frame(cx);
+        view.read_with(cx, |v, _| {
+            let primary = v.primary_chrome().expect("measured bottom focus card");
+            let region = v.view.expect("viewport");
+            let room = Scene::free_view(&region, Some(primary));
+            assert!(room.y == region.y && room.h < region.h, "the actual measured reading room must be above the bottom card");
+            assert!(!v.chrome_bounds.contains_key("graph-where-bounds"), "bottom reading context cannot leave a world footer behind its card");
+        });
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        assert!(ledger.texts.iter().all(|text| text.key != "graph-where-level"), "hidden footer must paint no text or hitboxes");
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    #[gpui::test]
+    fn keyboard_find_reopen_replaces_retained_query_and_focuses_the_second_result(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+        frames(cx, 30);
+        cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+        cx.simulate_keystrokes("/");
+        frame(cx);
+        cx.update(|window, cx| assert!(view.read(cx).find_focused(window, cx)));
+        cx.simulate_input("Page");
+        frames(cx, 30);
+        assert!(view.read_with(cx, |v, _| v.results.contains(&0)), "the first typed native query must resolve Page");
+        cx.simulate_keystrokes("enter");
+        frames(cx, 30);
+        assert_eq!(view.read_with(cx, |v, _| v.focused()), Some(0));
+        assert_eq!(view.read_with(cx, |v, cx| v.find.read(cx).value().to_string()), "Page", "closing find retains the first query");
+        assert_eq!(view.read_with(cx, |v, cx| v.find.read(cx).scroll_offset()), point(px(0.0), px(0.0)), "closed retained query starts at its beginning");
+        cx.simulate_keystrokes("/");
+        frame(cx);
+        cx.update(|window, cx| assert!(view.read(cx).find_focused(window, cx)));
+        cx.simulate_input("from_str");
+        frames(cx, 30);
+        view.read_with(cx, |v, cx| {
+            assert_eq!(v.find.read(cx).value().as_ref(), "from_str", "keyboard reopen selects the retained query for replacement");
+            assert!(v.results.contains(&3), "the replacement query must resolve the actual second symbol");
+        });
+        cx.simulate_keystrokes("enter");
+        frames(cx, 100);
+        assert_eq!(view.read_with(cx, |v, _| v.focused()), Some(3));
+        assert_eq!(view.read_with(cx, |v, _| v.frame.as_ref().map(|frame| frame.node)), Some(3));
+        cx.update(|window, cx| assert!(!view.read(cx).find_focused(window, cx)));
+        assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    #[gpui::test]
     fn cold_discovery_completion_after_blur_cannot_restart_search(cx: &mut TestAppContext) {
         cx.update(|cx| { gpui_component::init(cx); set_facet(Facet::default(), cx); });
         let world = Arc::new(crate::graph::model::tests::tiny());
@@ -2378,16 +3265,20 @@ mod tests {
         frame(cx);
         cx.run_until_parked();
         assert!(!view.read_with(cx, |v, _| v.state.find_open || v.searching));
+        let after_blur = view.read_with(cx, |v, cx| v.find.read(cx).value().to_string());
         view.update(cx, |v, cx| {
             v.discovery = Some(std::rc::Rc::new(super::Discovery::from_prepared(prepared)));
-            // The same requery used by both constructor worker completions.
-            assert!(v.find.read(cx).value().is_empty(), "blur replaced and cleared the native input");
-            // Deliver the nonempty query captured before blur, rather than
-            // mistaking the fresh field for the old pending request.
+            // Deliver the pending nonempty query captured before blur. Its
+            // completion cannot take ownership from the now-closed input.
             v.refresh_search(&typed_query, cx);
         });
         frames(cx, 20);
-        assert!(view.read_with(cx, |v, _| v.ready() && v._search_task.is_none()), "an obsolete cold-load query must not hang quiet readiness");
+        view.read_with(cx, |v, cx| {
+            assert!(v.ready() && v._search_task.is_none() && !v.state.find_open && !v.searching, "an obsolete cold-load query cannot reopen find or hang quiet readiness");
+            assert_eq!(v.find.read(cx).value().to_string(), after_blur, "stale completion cannot alter the field's post-blur value");
+            assert!(v.results.is_empty());
+        });
+        cx.update(|window, cx| assert!(!view.read(cx).find_focused(window, cx), "stale completion cannot reclaim native keyboard focus"));
     }
 
     #[gpui::test]
@@ -2428,16 +3319,7 @@ mod tests {
             // This is the resize callback's initial dirty frame. Subsequent
             // draws are allowed only when product code requested them.
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let mut callbacks = cx.update(|window, cx| window.simulate_next_frame(cx));
-            assert!(callbacks > 0, "prepaint's new measured width must schedule a responsive render");
-            let mut draws = 0;
-            while callbacks > 0 {
-                draws += 1;
-                assert!(draws <= 8, "measured geometry must converge rather than lease redraw forever");
-                cx.run_until_parked();
-                cx.update(|window, cx| window.draw(cx).clear(cx));
-                callbacks = cx.update(|window, cx| window.simulate_next_frame(cx));
-            }
+            assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0, "reduced responsive chrome and camera correction finish in the same dirty draw");
             let (region, card) = view.read_with(cx, |v, _| (v.view.expect("viewport"), v.card_bounds.expect("measured card")));
             assert_eq!(region.w, width);
             if width < 640.0 {
@@ -2652,3 +3534,21 @@ mod tests {
         assert!(cam.is_some_and(|c| c.w > want.w * 2.0), "Esc backs the camera out ({cam:?})");
     }
 }
+
+#[cfg(test)]
+#[path = "view/peek_tests.rs"]
+mod peek_tests;
+
+#[path="view/hints.rs"]
+mod hints;
+
+#[cfg(test)]
+#[path="view/frame_tests.rs"]
+mod frame_tests;
+
+#[path="view/rail.rs"]
+mod rail;
+
+#[cfg(test)]
+#[path="view/rail_tests.rs"]
+mod rail_tests;

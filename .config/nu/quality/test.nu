@@ -142,7 +142,13 @@ def "main test changed" [--base: string]: nothing -> record {
             "--no-tests=fail"
             "--config-file" $invocation.config
             "--profile" "default"
-            "-E" "kind(lib)"
+            # kind(lib) keeps store bolero (raw_property.rs) and the proptest
+            # module in tests/laws/src/lib.rs. The second clause keeps
+            # tests/laws/tests/*.rs, which are kind(test) and would otherwise
+            # be dropped whenever backend-laws is a changed package.
+            # --package is AND-ed with this expression, so other packages stay
+            # on kind(lib).
+            "-E" "kind(lib) | (package(backend-laws) & kind(test))"
         ]
         | append $package_arguments
     ) | ignore

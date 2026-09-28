@@ -607,6 +607,7 @@ fn frame_json(frame: &Frame) -> Json {
                         Json::obj([
                             ("key", Json::str(text.key.clone())),
                             ("content", Json::str(text.content.clone())),
+                            ("paint_clip", text.paint_clip.as_ref().map_or(Json::Null, bounds)),
                             ("x", Json::num(f64::from(text.bounds.x))),
                             ("y", Json::num(f64::from(text.bounds.y))),
                             ("width", Json::num(f64::from(text.bounds.width))),
@@ -1084,7 +1085,7 @@ fn lint(options: &Options) -> Result<()> {
         let linted = lint::lint(&frame.image, &frame.ledger, frame.drawn.viewport);
         let covered = linted.coverage.texts > 0 || linted.coverage.targets > 0;
         println!(
-            "{} {}: {}  {} texts, {} targets, contrast measured on {} ({} not){}",
+            "{} {}: {}  {} texts ({} hidden), {} targets, contrast measured on {} ({} not){}",
             scene.id,
             suffix(&shot, frame.time_ms),
             if !covered {
@@ -1095,6 +1096,7 @@ fn lint(options: &Options) -> Result<()> {
                 "FAIL"
             },
             linted.coverage.texts,
+            linted.coverage.hidden_texts,
             linted.coverage.targets,
             linted.coverage.contrast,
             linted.coverage.contrast_skipped,

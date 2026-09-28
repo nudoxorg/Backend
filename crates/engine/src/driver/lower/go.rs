@@ -1130,6 +1130,39 @@ const fn foreign_entity_kind(class: ReferenceTargetClass) -> EntityKind {
 /// package lineage plus the exact target spelling, under the entity kind
 /// the row's closed target class demands. Unresolved and external uses stay
 /// exactly this — a resolvable, untruncated key — never a dropped row.
+/// A method with no local fact is a namespace key: ecosystem `go`,
+/// namespace the receiver type, path and display the method spelling.
+fn namespace_method_target<'source>(
+    reference: u32,
+    recv_type: &'source [u8],
+    method: &'source [u8],
+) -> Result<OccurrenceTarget<'source>, GoCollectError> {
+    let namespace = str::from_utf8(recv_type).map_err(|_| {
+        terminal(ProjectionFault::Utf8 {
+            plane: GoImagePlane::ReferenceTarget,
+            row: reference,
+        })
+    })?;
+    let name = str::from_utf8(method).map_err(|_| {
+        terminal(ProjectionFault::Utf8 {
+            plane: GoImagePlane::ReferenceTarget,
+            row: reference,
+        })
+    })?;
+    let key = ForeignKey::new(
+        ForeignOrigin::Namespace {
+            ecosystem: ECOSYSTEM,
+            namespace,
+        },
+        name,
+        name,
+        Some(EntityKind::Function),
+    )
+    .map_err(|cause| ProjectionFault::ForeignKey { reference, cause })
+    .map_err(terminal)?;
+    Ok(OccurrenceTarget::Foreign(key))
+}
+
 fn foreign_target<'source>(
     reference: u32,
     package: &'source [u8],
@@ -1261,6 +1294,8 @@ struct NameKey<'source> {
     /// True only on version-6 images when the owning named type declares in
     /// a sibling source file (`name_span` present and not digest-bound).
     cross_file: bool,
+    /// The declaration's source file spelling.
+    file: &'source [u8],
 }
 
 /// One same-package member target: the (package, receiver type, member)
@@ -1277,6 +1312,11 @@ struct MemberKey<'source> {
     /// True only on version-6 images when the owning named type declares in
     /// a sibling source file (`name_span` present and not digest-bound).
     cross_file: bool,
+    embedded: bool,
+    type_root: Option<u32>,
+    /// Source file of the member row. A same-file method stays local
+    /// when a sibling file declares the same name.
+    file: &'source [u8],
 }
 
 /// The two-pass Go projector over one validated authority image.
@@ -1326,8 +1366,14 @@ impl<'x, 'source> Projector<'x, 'source> {
     }
 
     /// Records one pushed declaration name for later resolution.
-    fn record_name(&mut self, package: &'source [u8], name: &'source [u8], ordinal: u32) {
-        self.record_name_with_cross_file(package, name, ordinal, false);
+    fn record_name(
+        &mut self,
+        package: &'source [u8],
+        name: &'source [u8],
+        ordinal: u32,
+        file: &'source [u8],
+    ) {
+        self.record_name_with_cross_file(package, name, ordinal, false, file);
     }
 
     /// Records one pushed declaration name, marking sibling-file types so
@@ -1339,12 +1385,14 @@ impl<'x, 'source> Projector<'x, 'source> {
         name: &'source [u8],
         ordinal: u32,
         cross_file: bool,
+        file: &'source [u8],
     ) {
         self.names.push(NameKey {
             package,
             name,
             ordinal,
             cross_file,
+            file,
         });
     }
 
@@ -1421,12 +1469,59 @@ impl<'x, 'source> Projector<'x, 'source> {
         Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
     }
 
+    /// Resolves one package-level function spelling to a local fact. When
+    /// several same-package declarations share one name, only the unique
+    /// digest-bound row (not cross-file) resolves locally; sibling-file rows
+    /// (`name_span` without `bound`) and ambiguous duplicate sets stay
+    /// unresolved so the occurrence keeps the package import-path key the
+    /// join layer matches.
+    fn local_function_target(
+        &self,
+        package: &[u8],
+        name: &[u8],
+        use_file: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let matches: Vec<_> = self
+            .names
+            .iter()
+            .filter(|key| key.package == package && key.name == name)
+            .collect();
+        let bound: Vec<_> = matches.iter().filter(|key| !key.cross_file).collect();
+        let cross: Vec<_> = matches.iter().filter(|key| key.cross_file).collect();
+        if cross.is_empty() {
+            match bound.len() {
+                1 => Some(OccurrenceTarget::Local(EntityId::new(bound[0].ordinal))),
+                _ => None,
+            }
+        } else {
+            let same_file_bound: Vec<_> = bound
+                .iter()
+                .filter(|key| key.file == use_file)
+                .collect();
+            match same_file_bound.len() {
+                1 => Some(OccurrenceTarget::Local(EntityId::new(same_file_bound[0].ordinal))),
+                _ => None,
+            }
+        }
+    }
+
     /// True when a version-6 declaration positively lives in a sibling file
     /// of the digest-bound compile source. Version-5 rows carry no `name_span`
     /// and must not be treated as cross-file.
     fn cross_file_type(declaration: &Declaration<'source>) -> bool {
         declaration.name_span.is_some() && !declaration.bound
     }
+
+    /// True when a version-6 concrete method row lives outside the
+    /// digest-bound compile source. Version-5 rows carry no bound fact and
+    /// must not be treated as cross-file.
+    fn cross_file_method(
+        image_version: u16,
+        method: backend_frontend_go::legacy::MethodRow<'source>,
+    ) -> bool {
+        image_version == 6 && !method.bound
+    }
+
 
     /// Reports whether one unqualified identifier already names a declaration
     /// row in the authority image.
@@ -1488,6 +1583,121 @@ impl<'x, 'source> Projector<'x, 'source> {
             .map(|key| (key.ordinal, key.is_field))
     }
 
+    /// The in-package named type behind one field's type-root coordinate,
+    /// peeling one pointer when the field is spelled as `*T`.
+    fn named_type_from_root(
+        &self,
+        type_root: Option<u32>,
+    ) -> Option<(&'source [u8], &'source [u8])> {
+        let mut row_index = type_root?;
+        let row = self.image.type_row(index_of(row_index)).ok()?;
+        row_index = if row.kind == TypeRowKind::Pointer {
+            let children = self.row_children(&row).ok()?;
+            *children.first()?
+        } else {
+            row_index
+        };
+        let row = self.image.type_row(index_of(row_index)).ok()?;
+        if row.kind == TypeRowKind::Named {
+            Some((row.package, row.name))
+        } else {
+            None
+        }
+    }
+
+    /// Resolves one receiver-qualified field selector through embedded
+    /// struct fields when the name is absent on the receiver itself.
+    /// Exactly one distinct promoted field ordinal wins; zero or more than
+    /// one stay unresolved.
+    fn lookup_promoted_field(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        member: &[u8],
+    ) -> Option<u32> {
+        const MAX_DEPTH: usize = 8;
+        let mut stack: Vec<(&[u8], &[u8], usize)> = vec![(package, recv_type, 0)];
+        let mut visited: Vec<(&[u8], &[u8])> = Vec::new();
+        let mut found: Option<u32> = None;
+        while let Some((pkg, type_name, depth)) = stack.pop() {
+            if depth > MAX_DEPTH {
+                continue;
+            }
+            if visited
+                .iter()
+                .any(|&(seen_pkg, seen_type)| seen_pkg == pkg && seen_type == type_name)
+            {
+                continue;
+            }
+            visited.push((pkg, type_name));
+            for key in &self.members {
+                if key.package != pkg
+                    || key.type_name != type_name
+                    || !key.is_field
+                    || !key.embedded
+                {
+                    continue;
+                }
+                let Some((emb_pkg, emb_name)) = self.named_type_from_root(key.type_root) else {
+                    continue;
+                };
+                if let Some((ordinal, true)) = self.lookup_member(emb_pkg, emb_name, member) {
+                    let cross_file = self
+                        .members
+                        .iter()
+                        .find(|candidate| candidate.ordinal == ordinal)
+                        .is_some_and(|candidate| candidate.cross_file);
+                    // A sibling-file field is not a local ordinal. It also
+                    // blocks promotion: ignoring it would make an ambiguous
+                    // selector look unique.
+                    if cross_file {
+                        return None;
+                    }
+                    match found {
+                        None => found = Some(ordinal),
+                        Some(existing) if existing != ordinal => return None,
+                        Some(_) => {}
+                    }
+                }
+                stack.push((emb_pkg, emb_name, depth + 1));
+            }
+        }
+        found
+    }
+
+    /// A field the receiver does not declare itself. A direct member,
+    /// including one whose type declares in a sibling file, stays the
+    /// package key. Otherwise exactly one promoted field ordinal is local,
+    /// and zero or several stay the package key.
+    fn promoted_or_foreign_field(
+        &self,
+        reference_index: u32,
+        package: &'source [u8],
+        recv_type: &'source [u8],
+        target: &'source [u8],
+        class: ReferenceTargetClass,
+    ) -> Result<OccurrenceTarget<'source>, GoCollectError> {
+        if class == ReferenceTargetClass::Field && !recv_type.is_empty() {
+            if self.lookup_member(package, recv_type, target).is_some() {
+                return foreign_target(
+                    reference_index,
+                    package,
+                    target,
+                    foreign_entity_kind(class),
+                );
+            }
+            if let Some(ordinal) = self.lookup_promoted_field(package, recv_type, target) {
+                return Ok(OccurrenceTarget::Local(EntityId::new(ordinal)));
+            }
+        }
+        foreign_target(
+            reference_index,
+            package,
+            target,
+            foreign_entity_kind(class),
+        )
+    }
+
     /// Resolves one receiver-qualified member to a local fact. Fields whose
     /// owning type positively declares in a sibling file (version-6
     /// `name_span` without the digest-bound flag) stay unresolved here so
@@ -1513,6 +1723,49 @@ impl<'x, 'source> Projector<'x, 'source> {
         }
         Some(OccurrenceTarget::Local(EntityId::new(ordinal)))
     }
+
+    /// Resolves one receiver-qualified method to a local fact. Every
+    /// non-field [`MemberKey`] for the spelling is considered; cross-file
+    /// homonyms stay unresolved unless exactly one bound row lives in the
+    /// use's source file.
+    fn resolve_method_target(
+        &self,
+        package: &[u8],
+        recv_type: &[u8],
+        member: &[u8],
+        use_file: &[u8],
+    ) -> Option<OccurrenceTarget<'source>> {
+        let matches: Vec<_> = self
+            .members
+            .iter()
+            .filter(|key| {
+                !key.is_field
+                    && key.package == package
+                    && key.type_name == recv_type
+                    && key.member == member
+            })
+            .collect();
+        let bound: Vec<_> = matches.iter().copied().filter(|key| !key.cross_file).collect();
+        let cross: Vec<_> = matches.iter().copied().filter(|key| key.cross_file).collect();
+        if cross.is_empty() {
+            if bound.len() == 1 {
+                Some(OccurrenceTarget::Local(EntityId::new(bound[0].ordinal)))
+            } else {
+                None
+            }
+        } else {
+            let same_file_bound: Vec<_> = bound.iter().copied().filter(|key| key.file == use_file).collect();
+            if same_file_bound.len() == 1 {
+                Some(OccurrenceTarget::Local(EntityId::new(
+                    same_file_bound[0].ordinal,
+                )))
+            } else {
+                None
+            }
+        }
+    }
+
+
 
     /// Records one image declaration's primary-source facts: its fact's
     /// source span (the full authority-bound declaration extent, the exact
@@ -1612,6 +1865,7 @@ impl<'x, 'source> Projector<'x, 'source> {
             declaration.name,
             ordinal,
             Self::cross_file_type(declaration),
+            declaration.file,
         );
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
@@ -1636,7 +1890,12 @@ impl<'x, 'source> Projector<'x, 'source> {
             .mark_parentage_root(ordinal)
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_name(
+            declaration.package,
+            declaration.name,
+            ordinal,
+            declaration.file,
+        );
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
@@ -1684,6 +1943,7 @@ impl<'x, 'source> Projector<'x, 'source> {
                     declaration.package,
                     declaration.name,
                     Self::cross_file_type(declaration),
+                    declaration.file,
                 )?,
                 TypeRowKind::Interface => self.interface_methods(
                     &row,
@@ -1691,12 +1951,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                     type_ordinal,
                     declaration.package,
                     declaration.name,
+                    Self::cross_file_type(declaration),
+                    declaration.file,
                 )?,
                 _ => {}
             }
         }
         let mut methods = Vec::new();
         let mut method_names = Vec::new();
+        let image_version = self.image.version();
         for method_index in 0..self.image.method_count() {
             let method = self
                 .image
@@ -1727,7 +1990,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file: Self::cross_file_method(image_version, method),
+                embedded: false,
+                type_root: None,
+                file: method.file,
             });
             methods.push(ordinal);
             method_names.push(method.name);
@@ -1762,7 +2028,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: method_set.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file: Self::cross_file_type(declaration),
+                embedded: false,
+                type_root: None,
+                file: declaration.file,
             });
             methods.push(ordinal);
             method_names.push(method_set.name);
@@ -1842,6 +2111,7 @@ impl<'x, 'source> Projector<'x, 'source> {
         package: &'source [u8],
         type_name: &'source [u8],
         cross_file: bool,
+        file: &'source [u8],
     ) -> Result<(), GoCollectError> {
         let mut field_index = 0usize;
         for member_index in member_run(row) {
@@ -1873,6 +2143,9 @@ impl<'x, 'source> Projector<'x, 'source> {
                 ordinal,
                 is_field: true,
                 cross_file,
+                embedded: member.embedded,
+                type_root: member.type_root,
+                file,
             });
             fields.push(ordinal);
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1890,6 +2163,8 @@ impl<'x, 'source> Projector<'x, 'source> {
         owner: u32,
         package: &'source [u8],
         type_name: &'source [u8],
+        cross_file: bool,
+        file: &'source [u8],
     ) -> Result<(), GoCollectError> {
         for member_index in member_run(row) {
             let member = self
@@ -1915,7 +2190,10 @@ impl<'x, 'source> Projector<'x, 'source> {
                 member: member.name,
                 ordinal,
                 is_field: false,
-                cross_file: false,
+                cross_file,
+                embedded: false,
+                type_root: None,
+                file,
             });
             methods.push((ordinal, member.name));
             self.member_ordinals[member_index] = Some(ordinal);
@@ -1941,7 +2219,13 @@ impl<'x, 'source> Projector<'x, 'source> {
             .mark_parentage_root(ordinal)
             .map_err(|fault| lane_terminal_ordinal(ordinal, declaration.name.len(), fault))?;
         self.declaration_ordinals[index] = Some(ordinal);
-        self.record_name(declaration.package, declaration.name, ordinal);
+        self.record_name_with_cross_file(
+            declaration.package,
+            declaration.name,
+            ordinal,
+            Self::cross_file_type(declaration),
+            declaration.file,
+        );
         self.record_declaration_spans(index, declaration, ordinal)?;
         Ok(())
     }
@@ -2013,9 +2297,15 @@ impl<'x, 'source> Projector<'x, 'source> {
                     declaration.name,
                     ordinal,
                     Self::cross_file_type(declaration),
+                    declaration.file,
                 );
             } else {
-                self.record_name(declaration.package, declaration.name, ordinal);
+                self.record_name(
+                    declaration.package,
+                    declaration.name,
+                    ordinal,
+                    declaration.file,
+                );
             }
         }
         self.record_declaration_spans(index, declaration, ordinal)?;
@@ -2146,9 +2436,11 @@ impl<'x, 'source> Projector<'x, 'source> {
     /// class, and the receiver type name for method and field targets.
     /// Resolution keeps the call-graph law: a same-package target resolves
     /// to its local fact when the lane carries one (package scope by name,
-    /// members by receiver type and name); everything else — every foreign
-    /// package, every promoted or otherwise unlocalizable member — stays a
-    /// typed foreign `go` lineage key. Owners lift relative spans over the
+    /// members by receiver type and name). A field the receiver does not
+    /// declare resolves locally when exactly one embedded struct declares
+    /// it. Everything else — every foreign package, every ambiguous
+    /// promotion, every otherwise unlocalizable member — stays a typed
+    /// foreign `go` lineage key. Owners lift relative spans over the
     /// authority-bound source spans attached in passes one and two, so the
     /// shared containment law places every site in the exact source bytes
     /// of the used identifier.
@@ -2212,27 +2504,48 @@ impl<'x, 'source> Projector<'x, 'source> {
                     self.local_const_target(owner_package, row.target)
                 } else if row.target_class == ReferenceTargetClass::Var {
                     self.local_var_target(owner_package, row.target)
+                } else if row.target_class == ReferenceTargetClass::Method {
+                    self.resolve_method_target(
+                        owner_package,
+                        row.recv_type,
+                        row.target,
+                        row.file,
+                    )
+                } else if row.target_class == ReferenceTargetClass::Field {
+                    self.local_member_target(owner_package, row.recv_type, row.target)
+                } else if row.target_class == ReferenceTargetClass::Func {
+                    self.local_function_target(owner_package, row.target, row.file)
                 } else {
                     self.lookup(owner_package, row.target)
                         .map(|ordinal| OccurrenceTarget::Local(EntityId::new(ordinal)))
-                }
-                .or_else(|| {
-                    self.local_member_target(owner_package, row.recv_type, row.target)
-                });
+                        .or_else(|| {
+                            self.local_member_target(owner_package, row.recv_type, row.target)
+                        })
+                };
                 match local {
                     Some(target) => target,
-                    None => {
-                        // Same-package target with no local fact: promoted
-                        // members, blank-keyed fields, or build-excluded
-                        // declarations. The key keeps the exact spelling
-                        // under the declaring package's lineage.
-                        foreign_target(
-                            reference_index,
-                            owner_package,
-                            row.target,
-                            foreign_entity_kind(row.target_class),
-                        )?
+                    // A receiver-qualified method that exists but is not a
+                    // same-file fact is a namespace key. A method-shaped use
+                    // of a name this package never declared as a method stays
+                    // the package key, including a promoted field.
+                    None if row.target_class == ReferenceTargetClass::Method
+                        && !row.recv_type.is_empty()
+                        && self.members.iter().any(|key| {
+                            !key.is_field
+                                && key.package == owner_package
+                                && key.type_name == row.recv_type
+                                && key.member == row.target
+                        }) =>
+                    {
+                        namespace_method_target(reference_index, row.recv_type, row.target)?
                     }
+                    None => self.promoted_or_foreign_field(
+                        reference_index,
+                        owner_package,
+                        row.recv_type,
+                        row.target,
+                        row.target_class,
+                    )?,
                 }
             } else {
                 let local = self
@@ -2244,11 +2557,12 @@ impl<'x, 'source> Projector<'x, 'source> {
                     });
                 match local {
                     Some(target) => target,
-                    None => foreign_target(
+                    None => self.promoted_or_foreign_field(
                         reference_index,
                         row.target_package,
+                        row.recv_type,
                         row.target,
-                        foreign_entity_kind(row.target_class),
+                        row.target_class,
                     )?,
                 }
             };
@@ -3426,6 +3740,7 @@ mod tests {
     const NONE: u32 = u32::MAX;
     const IMAGE_DOMAIN: &[u8] = b"nudox.go.authority.image.sha256.v6\0";
     const FILE: &[u8] = b"main.go";
+    const SIBLING_FILE: &[u8] = b"sibling.go";
     const PACKAGE: &[u8] = b"example.com/demo";
     const SPAN_END: u32 = 256;
 
@@ -3642,6 +3957,8 @@ mod tests {
         name_span: Option<(u32, u32)>,
         /// The authority-bound-source flag (version 6).
         bound: bool,
+        /// Optional per-declaration source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3668,6 +3985,8 @@ mod tests {
         span: (u32, u32),
         /// The authority-bound-source flag (version 6).
         bound: bool,
+        /// Optional per-method source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3683,6 +4002,7 @@ mod tests {
         kind: u8,
         name: Cell,
         type_root: Option<u32>,
+        embedded: bool,
     }
 
     #[derive(Clone)]
@@ -3714,6 +4034,8 @@ mod tests {
         target_class: u8,
         /// The target receiver type-name atom (version 6).
         recv_type: Cell,
+        /// Optional per-reference source file; defaults to `main.go`.
+        file: Option<Cell>,
     }
 
     #[derive(Clone)]
@@ -3893,6 +4215,21 @@ mod tests {
                     kind: 0,
                     name: spelled,
                     type_root,
+                    embedded: false,
+                },
+            );
+        }
+
+        fn embedded_field(&mut self, owner: u32, name: &[u8], type_root: Option<u32>) {
+            let spelled = self.atom(name);
+            self.add_member(
+                owner,
+                MemberF {
+                    owner,
+                    kind: 0,
+                    name: spelled,
+                    type_root,
+                    embedded: true,
                 },
             );
         }
@@ -3906,6 +4243,7 @@ mod tests {
                     kind: 1,
                     name: spelled,
                     type_root,
+                    embedded: false,
                 },
             );
         }
@@ -3953,6 +4291,7 @@ mod tests {
                 span: (0, SPAN_END),
                 name_span: None,
                 bound: false,
+                file: None,
             });
             self.declarations.len() - 1
         }
@@ -3999,6 +4338,7 @@ mod tests {
                 ),
                 span: (0, SPAN_END),
                 bound: false,
+                file: None,
             });
             self.methods.len() - 1
         }
@@ -4058,6 +4398,33 @@ mod tests {
             target_class: u8,
             recv_type: &[u8],
         ) {
+            self.reference_typed_in_file(
+                owner,
+                receiver,
+                target,
+                target_package,
+                start,
+                end,
+                use_kind,
+                target_class,
+                recv_type,
+                None,
+            );
+        }
+
+        fn reference_typed_in_file(
+            &mut self,
+            owner: u32,
+            receiver: &[u8],
+            target: &[u8],
+            target_package: &[u8],
+            start: u32,
+            end: u32,
+            use_kind: u8,
+            target_class: u8,
+            recv_type: &[u8],
+            file: Option<Cell>,
+        ) {
             let target = self.atom(target);
             let package = self.atom(target_package);
             let receiver = self.atom(receiver);
@@ -4072,6 +4439,7 @@ mod tests {
                 use_kind,
                 target_class,
                 recv_type,
+                file,
             });
         }
 
@@ -4091,6 +4459,10 @@ mod tests {
             self.atom_cell(FILE)
         }
 
+        fn effective_file(&self, file: Option<Cell>) -> Cell {
+            file.unwrap_or_else(|| self.file_cell())
+        }
+
         fn atom_cell(&self, text: &[u8]) -> Cell {
             let offset = self
                 .atom_bytes
@@ -4107,9 +4479,9 @@ mod tests {
             let count = |length: usize| u32::try_from(length).map_err(TestError::from);
             let cell =
                 |borrowed: Cell| (borrowed.offset.to_le_bytes(), borrowed.length.to_le_bytes());
-            let file = self.file_cell();
             let mut declarations = Vec::new();
             for row in &self.declarations {
+                let row_file = self.effective_file(row.file);
                 let (name, name_len) = cell(row.name);
                 let (package, package_len) = cell(row.package);
                 let (value, value_len) = cell(row.value);
@@ -4121,8 +4493,8 @@ mod tests {
                 declarations.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
                 declarations.extend_from_slice(&row.span.0.to_le_bytes());
                 declarations.extend_from_slice(&row.span.1.to_le_bytes());
-                declarations.extend_from_slice(&file.offset.to_le_bytes());
-                declarations.extend_from_slice(&file.length.to_le_bytes());
+                declarations.extend_from_slice(&row_file.offset.to_le_bytes());
+                declarations.extend_from_slice(&row_file.length.to_le_bytes());
                 declarations.extend_from_slice(&value);
                 declarations.extend_from_slice(&value_len);
                 declarations.extend_from_slice(&row.const_group.to_le_bytes());
@@ -4169,8 +4541,9 @@ mod tests {
                 methods.extend_from_slice(&0_u32.to_le_bytes());
                 methods.extend_from_slice(&row.span.0.to_le_bytes());
                 methods.extend_from_slice(&row.span.1.to_le_bytes());
-                methods.extend_from_slice(&file.offset.to_le_bytes());
-                methods.extend_from_slice(&file.length.to_le_bytes());
+                let row_file = self.effective_file(row.file);
+                methods.extend_from_slice(&row_file.offset.to_le_bytes());
+                methods.extend_from_slice(&row_file.length.to_le_bytes());
                 // Version 6: the authority-bound flag.
                 methods.extend_from_slice(&[u8::from(row.bound), 0, 0, 0, 0, 0, 0, 0]);
             }
@@ -4186,7 +4559,7 @@ mod tests {
             for row in &self.members {
                 let (name, name_len) = cell(row.name);
                 members.extend_from_slice(&row.owner.to_le_bytes());
-                members.extend_from_slice(&[row.kind, 0, 1, 0]);
+                members.extend_from_slice(&[row.kind, u8::from(row.embedded), 1, 0]);
                 members.extend_from_slice(&name);
                 members.extend_from_slice(&name_len);
                 members.extend_from_slice(&row.type_root.unwrap_or(NONE).to_le_bytes());
@@ -4206,6 +4579,7 @@ mod tests {
             }
             let mut references = Vec::new();
             for row in &self.references {
+                let row_file = self.effective_file(row.file);
                 let (target, target_len) = cell(row.target);
                 let (package, package_len) = cell(row.target_package);
                 let (receiver, receiver_len) = cell(row.receiver);
@@ -4217,8 +4591,8 @@ mod tests {
                 references.extend_from_slice(&package_len);
                 references.extend_from_slice(&row.start.to_le_bytes());
                 references.extend_from_slice(&row.end.to_le_bytes());
-                references.extend_from_slice(&file.offset.to_le_bytes());
-                references.extend_from_slice(&file.length.to_le_bytes());
+                references.extend_from_slice(&row_file.offset.to_le_bytes());
+                references.extend_from_slice(&row_file.length.to_le_bytes());
                 references.extend_from_slice(&receiver);
                 references.extend_from_slice(&receiver_len);
                 // Version 6: the closed use kind, the target class, and the
@@ -5609,6 +5983,7 @@ mod tests {
                 span: (0, SPAN_END),
                 name_span: None,
                 bound: false,
+                file: None,
             });
         }
         let exact_image = fix.encode(b"package demo\n")?;
@@ -5636,6 +6011,7 @@ mod tests {
             span: (0, SPAN_END),
             name_span: None,
             bound: false,
+            file: None,
         });
         let image = fix.encode(b"package demo\n")?;
         let mut facts = FactSet::new();
@@ -5730,6 +6106,203 @@ mod tests {
             return Err(TestError::Missing("unresolved satisfaction rejection"));
         }
         Ok(())
+    }
+
+    fn duplicate_function_homonym_fixture(
+        fix: &mut Fixture,
+        source: &[u8],
+        bound_first: bool,
+    ) -> Result<(usize, usize, usize, usize), TestError> {
+        let sibling_file = fix.atom(SIBLING_FILE);
+        let (bound_index, sibling_index) = if bound_first {
+            let bound = fix.declaration(KIND_FUNC, b"SetNote", None);
+            let sibling = fix.declaration(KIND_FUNC, b"SetNote", None);
+            (bound, sibling)
+        } else {
+            let sibling = fix.declaration(KIND_FUNC, b"SetNote", None);
+            let bound = fix.declaration(KIND_FUNC, b"SetNote", None);
+            (bound, sibling)
+        };
+        fix.declarations[bound_index].bound = true;
+        fix.declarations[bound_index].name_span = Some(at(source, b"SetNote")?);
+        fix.declarations[sibling_index].bound = false;
+        fix.declarations[sibling_index].name_span = Some((16, 23));
+        fix.declarations[sibling_index].file = Some(sibling_file);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        let use_sibling = fix.declaration(KIND_FUNC, b"UseSibling", None);
+        fix.declarations[use_sibling].file = Some(sibling_file);
+        let (read_site, read_end) = at(source, b":= SetNote;")?;
+        let read_site = read_site + 3;
+        let read_end = read_end - 1;
+        let (call_site, call_end) = at(source, b"f; SetNote()")?;
+        let call_site = call_site + 4;
+        let call_end = call_end - 2;
+        fix.reference_typed(
+            u32::try_from(use_fn).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            read_site,
+            read_end,
+            1,
+            0,
+            b"",
+        );
+        fix.reference_typed(
+            u32::try_from(use_fn).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            call_site,
+            call_end,
+            0,
+            0,
+            b"",
+        );
+        fix.reference_typed_in_file(
+            u32::try_from(use_sibling).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            1,
+            0,
+            b"",
+            Some(sibling_file),
+        );
+        fix.reference_typed_in_file(
+            u32::try_from(use_sibling).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            20,
+            27,
+            0,
+            0,
+            b"",
+            Some(sibling_file),
+        );
+        Ok((bound_index, sibling_index, use_fn, use_sibling))
+    }
+
+    fn assert_duplicate_function_homonym_resolution(bound_first: bool) -> Result<(), TestError> {
+        use backend_semantic::ir::{ForeignKey, ForeignOrigin, PackageLineage};
+
+        let source = b"package demo\n\nfunc SetNote() {}\n\nfunc Use() { f := SetNote; _ = f; SetNote() }\n";
+        let mut fix = Fixture::new();
+        let (bound_index, sibling_index, use_fn, use_sibling) =
+            duplicate_function_homonym_fixture(&mut fix, source, bound_first)?;
+        let bytes = lower(&fix, source)?;
+        let view = FragmentView::validate(&bytes)?;
+        let bound_entity = EntityId::new(
+            u32::try_from(bound_index).map_err(|_| TestError::Missing("bound ordinal"))?,
+        );
+        let sibling_entity = EntityId::new(
+            u32::try_from(sibling_index).map_err(|_| TestError::Missing("sibling ordinal"))?,
+        );
+        if bound_entity == sibling_entity {
+            return Err(TestError::Missing("distinct homonym ordinals"));
+        }
+        let use_owner = EntityId::new(u32::try_from(use_fn).map_err(TestError::from)?);
+        let use_sibling_owner =
+            EntityId::new(u32::try_from(use_sibling).map_err(TestError::from)?);
+        let package_key = OccurrenceTarget::Foreign(
+            ForeignKey::new(
+                ForeignOrigin::Package(
+                    PackageLineage::new("go", "example.com/demo").map_err(|_| {
+                        TestError::Missing("package lineage")
+                    })?,
+                ),
+                "SetNote",
+                "SetNote",
+                Some(EntityKind::Function),
+            )
+            .map_err(|_| TestError::Missing("package foreign key"))?,
+        );
+        let (read_site, read_end) = at(source, b":= SetNote;")?;
+        let read_site = read_site + 3;
+        let read_end = read_end - 1;
+        let (call_site, call_end) = at(source, b"f; SetNote()")?;
+        let call_site = call_site + 4;
+        let call_end = call_end - 2;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let row = occurrences
+            .next()
+            .ok_or(TestError::Missing("main.go function value read"))??;
+        if row.owner != use_owner
+            || row.occurrence.kind != ReferenceKind::VariableUse
+            || row.occurrence.target != OccurrenceTarget::Local(bound_entity)
+            || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            || row.occurrence.span.start != read_site
+            || row.occurrence.span.end != read_end
+        {
+            return Err(TestError::Missing("main.go SetNote value read"));
+        }
+        let row = occurrences
+            .next()
+            .ok_or(TestError::Missing("main.go function call"))??;
+        if row.owner != use_owner
+            || row.occurrence.kind != ReferenceKind::FunctionCall
+            || row.occurrence.target != OccurrenceTarget::Local(bound_entity)
+            || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            || row.occurrence.span.start != call_site
+            || row.occurrence.span.end != call_end
+        {
+            return Err(TestError::Missing("main.go SetNote function call"));
+        }
+        let row = occurrences
+            .next()
+            .ok_or(TestError::Missing("sibling.go function value read"))??;
+        if row.owner != use_sibling_owner
+            || row.occurrence.kind != ReferenceKind::VariableUse
+            || row.occurrence.target != package_key
+            || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            || row.occurrence.span.start != 10
+            || row.occurrence.span.end != 17
+        {
+            return Err(TestError::Missing("sibling.go SetNote value read"));
+        }
+        if row.occurrence.target == OccurrenceTarget::Local(bound_entity)
+            || row.occurrence.target == OccurrenceTarget::Local(sibling_entity)
+        {
+            return Err(TestError::Missing("sibling read must not resolve locally"));
+        }
+        let row = occurrences
+            .next()
+            .ok_or(TestError::Missing("sibling.go function call"))??;
+        if row.owner != use_sibling_owner
+            || row.occurrence.kind != ReferenceKind::FunctionCall
+            || row.occurrence.target != package_key
+            || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            || row.occurrence.span.start != 20
+            || row.occurrence.span.end != 27
+        {
+            return Err(TestError::Missing("sibling.go SetNote function call"));
+        }
+        if row.occurrence.target == OccurrenceTarget::Local(bound_entity)
+            || row.occurrence.target == OccurrenceTarget::Local(sibling_entity)
+        {
+            return Err(TestError::Missing("sibling call must not resolve locally"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact homonym occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_function_homonym_resolves_by_use_file_when_bound_declared_first() -> Result<(), TestError>
+    {
+        assert_duplicate_function_homonym_resolution(true)
+    }
+
+    #[test]
+    fn duplicate_function_homonym_resolves_by_use_file_when_sibling_declared_first() -> Result<(), TestError>
+    {
+        assert_duplicate_function_homonym_resolution(false)
     }
 
     /// A reference row naming another package in this image must still
@@ -5942,6 +6515,565 @@ mod tests {
         }
         if occurrences.next().is_some() {
             return Err(TestError::Missing("exact occurrences"));
+        }
+        Ok(())
+    }
+
+    /// The single `Field` named `field_name` on the Go field list of the
+    /// type named `owner_name`. Zero or several fields of that spelling
+    /// fail the test instead of picking the first entity of the name.
+    fn field_on_type(
+        view: &FragmentView<'_>,
+        owner_name: &[u8],
+        field_name: &[u8],
+    ) -> Result<EntityId, TestError> {
+        let owner = entity_of(view, owner_name)?;
+        let facts = go_extension(
+            view,
+            usize::try_from(owner.raw).map_err(TestError::from)?,
+        )?;
+        if facts.fields.raw == 0 {
+            return Err(TestError::Missing("type field list"));
+        }
+        let listed = pooled_list(
+            view,
+            backend_semantic::ir::ExtensionPoolListLane::Entities,
+            facts.fields.raw,
+        )?;
+        let mut found = None;
+        for raw in listed {
+            let id = EntityId::new(raw);
+            let entity = view
+                .entities()
+                .find(|entity| entity.entity == id)
+                .ok_or(TestError::Missing("listed field entity"))?;
+            let atom = view
+                .atoms()
+                .nth(usize::try_from(entity.name.raw).map_err(TestError::from)?)
+                .ok_or(TestError::Missing("entity atom"))?;
+            if atom.bytes != field_name || entity.kind != EntityKind::Field {
+                continue;
+            }
+            if found.is_some() {
+                return Err(TestError::Missing("one field of that name on the type"));
+            }
+            found = Some(id);
+        }
+        found.ok_or(TestError::Missing("field on type"))
+    }
+
+    /// `owner_name` has a Go field list and none of those fields is a
+    /// `Field` named `field_name`.
+    fn type_does_not_declare_field(
+        view: &FragmentView<'_>,
+        owner_name: &[u8],
+        field_name: &[u8],
+    ) -> Result<(), TestError> {
+        match field_on_type(view, owner_name, field_name) {
+            Err(TestError::Missing("field on type")) => Ok(()),
+            Ok(_) => Err(TestError::Missing("type declares the field")),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[test]
+    fn promoted_field_unique_embed_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("unique promoted field is Inner.Value"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_two_embeds_stay_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let side = fix.declaration(KIND_TYPE, b"Side", None);
+        let side_row = fix.start_row(ROW_STRUCT);
+        fix.field(side_row, b"Value", Some(int));
+        fix.declarations[side].type_root = Some(side_row);
+        let side_named = fix.named(PACKAGE, b"Side", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.embedded_field(outer_row, b"Side", Some(side_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        let side_value = field_on_type(&view, b"Side", b"Value")?;
+        if inner_value == side_value {
+            return Err(TestError::Missing("distinct embedded Value fields"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("ambiguous promoted field read"))??;
+        if access.owner != use_entity {
+            return Err(TestError::Missing("ambiguous promoted field owner"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("ambiguous promoted field stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign promoted field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact ambiguous promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_direct_field_wins() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.field(outer_row, b"Value", Some(int));
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let outer_value = field_on_type(&view, b"Outer", b"Value")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        if outer_value == inner_value {
+            return Err(TestError::Missing("distinct direct and embedded Value fields"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("direct field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(outer_value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("outer Value field wins over the embed"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact direct-field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_pointer_embed_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let pointer_inner = fix.unary(ROW_POINTER, inner_named);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(pointer_inner));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("pointer promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("pointer embed promotes Inner.Value"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact pointer promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_two_levels_are_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let mid = fix.declaration(KIND_TYPE, b"Mid", None);
+        let mid_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(mid_row, b"Inner", Some(inner_named));
+        fix.declarations[mid].type_root = Some(mid_row);
+        let mid_named = fix.named(PACKAGE, b"Mid", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Mid", Some(mid_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        type_does_not_declare_field(&view, b"Mid", b"Value")?;
+        type_does_not_declare_field(&view, b"Outer", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("two-level promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("two-level promotion resolves to Inner.Value"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact two-level promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_cross_file_direct_stays_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.field(outer_row, b"Value", Some(int));
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        fix.declarations[outer].name_span = Some((0, 5));
+        fix.declarations[outer].bound = false;
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("cross-file direct field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target == OccurrenceTarget::Local(inner_value)
+        {
+            return Err(TestError::Missing("cross-file direct field is not the embed"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("cross-file direct field stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign cross-file direct field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact cross-file direct field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_diamond_embed_stays_the_same_field() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let mid = fix.declaration(KIND_TYPE, b"Mid", None);
+        let mid_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(mid_row, b"Inner", Some(inner_named));
+        fix.declarations[mid].type_root = Some(mid_row);
+        let mid_named = fix.named(PACKAGE, b"Mid", &[]);
+        let side = fix.declaration(KIND_TYPE, b"Side", None);
+        let side_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(side_row, b"Inner", Some(inner_named));
+        fix.declarations[side].type_root = Some(side_row);
+        let side_named = fix.named(PACKAGE, b"Side", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Mid", Some(mid_named));
+        fix.embedded_field(outer_row, b"Side", Some(side_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        type_does_not_declare_field(&view, b"Mid", b"Value")?;
+        type_does_not_declare_field(&view, b"Side", b"Value")?;
+        type_does_not_declare_field(&view, b"Outer", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("diamond promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target != OccurrenceTarget::Local(value)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("diamond promotion resolves to Inner.Value"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact diamond promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_method_shaped_read_stays_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 1, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("method-shaped promoted read"))??;
+        if access.owner != use_entity || access.occurrence.target == OccurrenceTarget::Local(value)
+        {
+            return Err(TestError::Missing("method-shaped read is not the promoted field"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("method-shaped read stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Function)
+            || access.occurrence.kind != ReferenceKind::MethodCall
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign method key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact method-shaped promoted occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_cross_file_embed_stays_foreign() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        fix.declarations[inner].name_span = Some((0, 5));
+        fix.declarations[inner].bound = false;
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("cross-file promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target == OccurrenceTarget::Local(inner_value)
+        {
+            return Err(TestError::Missing("cross-file embed is not a local field"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("cross-file embed stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign cross-file promoted field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact cross-file promoted field occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn promoted_field_cross_file_sibling_blocks_local_embed() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let int = fix.basic(b"int");
+        let inner = fix.declaration(KIND_TYPE, b"Inner", None);
+        let inner_row = fix.start_row(ROW_STRUCT);
+        fix.field(inner_row, b"Value", Some(int));
+        fix.declarations[inner].type_root = Some(inner_row);
+        let inner_named = fix.named(PACKAGE, b"Inner", &[]);
+        let side = fix.declaration(KIND_TYPE, b"Side", None);
+        let side_row = fix.start_row(ROW_STRUCT);
+        fix.field(side_row, b"Value", Some(int));
+        fix.declarations[side].type_root = Some(side_row);
+        fix.declarations[side].name_span = Some((0, 4));
+        fix.declarations[side].bound = false;
+        let side_named = fix.named(PACKAGE, b"Side", &[]);
+        let outer = fix.declaration(KIND_TYPE, b"Outer", None);
+        let outer_row = fix.start_row(ROW_STRUCT);
+        fix.embedded_field(outer_row, b"Inner", Some(inner_named));
+        fix.embedded_field(outer_row, b"Side", Some(side_named));
+        fix.declarations[outer].type_root = Some(outer_row);
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        fix.reference_typed(use_fn as u32, b"", b"Value", b"", 0, 5, 1, 2, b"Outer");
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let use_entity = entity_of(&view, b"Use")?;
+        let inner_value = field_on_type(&view, b"Inner", b"Value")?;
+        let side_value = field_on_type(&view, b"Side", b"Value")?;
+        if inner_value == side_value {
+            return Err(TestError::Missing("distinct local and sibling Value fields"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let access = occurrences
+            .next()
+            .ok_or(TestError::Missing("blocked promoted field read"))??;
+        if access.owner != use_entity
+            || access.occurrence.target == OccurrenceTarget::Local(inner_value)
+            || access.occurrence.target == OccurrenceTarget::Local(side_value)
+        {
+            return Err(TestError::Missing("sibling field blocks the local embed"));
+        }
+        let OccurrenceTarget::Foreign(ref key) = access.occurrence.target else {
+            return Err(TestError::Missing("blocked promotion stays foreign"));
+        };
+        let ForeignOrigin::Package(ref lineage) = key.origin else {
+            return Err(TestError::Missing("foreign lineage"));
+        };
+        if lineage.ecosystem != ECOSYSTEM
+            || lineage.name != "example.com/demo"
+            || key.path != "Value"
+            || key.display != "Value"
+            || key.kind != Some(EntityKind::Field)
+            || access.occurrence.kind != ReferenceKind::FieldAccess
+            || access.occurrence.confidence != OccurrenceConfidence::Oracle
+        {
+            return Err(TestError::Missing("typed foreign blocked promoted field key"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact blocked promoted field occurrences"));
         }
         Ok(())
     }
@@ -6249,4 +7381,287 @@ mod tests {
         }
         Ok(())
     }
+
+    fn count_set_note_method_calls(
+        view: &FragmentView<'_>,
+    ) -> Result<(usize, usize), TestError> {
+        let mut local = 0_usize;
+        let mut namespace = 0_usize;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        while let Some(row) = occurrences.next() {
+            let row = row?;
+            if row.occurrence.kind != ReferenceKind::MethodCall
+                || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            {
+                continue;
+            }
+            match row.occurrence.target {
+                OccurrenceTarget::Local(_) => local += 1,
+                OccurrenceTarget::Foreign(key) => {
+                    let ForeignOrigin::Namespace {
+                        ecosystem,
+                        namespace: recv,
+                    } = key.origin
+                    else {
+                        continue;
+                    };
+                    if ecosystem == ECOSYSTEM
+                        && recv == "Workout"
+                        && key.path == "SetNote"
+                        && key.display == "SetNote"
+                        && key.kind == Some(EntityKind::Function)
+                    {
+                        namespace += 1;
+                    }
+                }
+                OccurrenceTarget::Stable(_) => {}
+            }
+        }
+        Ok((local, namespace))
+    }
+
+    fn push_both_workout_set_note_methods(
+        fix: &mut Fixture,
+        bound_first: bool,
+    ) -> Result<(u32, u32, u32), TestError> {
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let push_bound = |fix: &mut Fixture| {
+            let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+            fix.declarations[workout].bound = true;
+            fix.declarations[workout].name_span = Some((0, 7));
+            fix.declarations[workout].file = Some(main);
+            let set_note = fix.method(workout, b"SetNote", None);
+            fix.methods[set_note].bound = true;
+            fix.methods[set_note].file = Some(main);
+        };
+        let push_sibling = |fix: &mut Fixture| {
+            let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+            fix.declarations[workout].bound = false;
+            fix.declarations[workout].name_span = Some((0, 7));
+            fix.declarations[workout].file = Some(sibling);
+            let set_note = fix.method(workout, b"SetNote", None);
+            fix.methods[set_note].bound = false;
+            fix.methods[set_note].file = Some(sibling);
+        };
+        if bound_first {
+            push_bound(fix);
+            push_sibling(fix);
+        } else {
+            push_sibling(fix);
+            push_bound(fix);
+        }
+        let use_main = fix.declaration(KIND_FUNC, b"UseMain", None);
+        fix.declarations[use_main].file = Some(main);
+        let use_sibling = fix.declaration(KIND_FUNC, b"UseSibling", None);
+        fix.declarations[use_sibling].file = Some(sibling);
+        let bound_method_ordinal = if bound_first { 2 } else { 3 };
+        // Facts: two types (0, 1), two methods (2, 3), then the two functions (4, 5).
+        let use_main_ordinal = 4;
+        let use_sibling_ordinal = 5;
+        fix.reference_typed_in_file(
+            u32::try_from(use_main).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        fix.reference_typed_in_file(
+            u32::try_from(use_sibling).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            20,
+            27,
+            0,
+            1,
+            b"Workout",
+            Some(sibling),
+        );
+        Ok((bound_method_ordinal, use_main_ordinal, use_sibling_ordinal))
+    }
+
+    fn assert_cross_file_method_resolution(
+        view: &FragmentView<'_>,
+        bound_method_ordinal: u32,
+        use_main: u32,
+        use_sibling: u32,
+    ) -> Result<(), TestError> {
+        let mut local_main = None;
+        let mut namespace_sibling = None;
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        while let Some(row) = occurrences.next() {
+            let row = row?;
+            if row.occurrence.kind != ReferenceKind::MethodCall
+                || row.occurrence.confidence != OccurrenceConfidence::Oracle
+            {
+                continue;
+            }
+            if row.owner.raw == use_main {
+                if !matches!(
+                    row.occurrence.target,
+                    OccurrenceTarget::Local(entity) if entity.raw == bound_method_ordinal
+                ) {
+                    return Err(TestError::Missing("main-file method call"));
+                }
+                if local_main.is_some() {
+                    return Err(TestError::Missing("exact main-file method call"));
+                }
+                local_main = Some(());
+            } else if row.owner.raw == use_sibling {
+                let OccurrenceTarget::Foreign(key) = row.occurrence.target else {
+                    return Err(TestError::Missing("sibling-file namespace method call"));
+                };
+                let ForeignOrigin::Namespace {
+                    ecosystem,
+                    namespace,
+                } = key.origin
+                else {
+                    return Err(TestError::Missing("sibling namespace origin"));
+                };
+                if ecosystem != ECOSYSTEM
+                    || namespace != "Workout"
+                    || key.path != "SetNote"
+                    || key.display != "SetNote"
+                    || key.kind != Some(EntityKind::Function)
+                {
+                    return Err(TestError::Missing("sibling namespace method key"));
+                }
+                if namespace_sibling.is_some() {
+                    return Err(TestError::Missing("exact sibling namespace method call"));
+                }
+                namespace_sibling = Some(());
+            }
+        }
+        if local_main.is_none() || namespace_sibling.is_none() {
+            return Err(TestError::Missing("cross-file method resolution"));
+        }
+        let (local, namespace) = count_set_note_method_calls(view)?;
+        if local != 1 || namespace != 1 {
+            return Err(TestError::Missing("exact homonym method-call counts"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_type_sibling_set_note_use_in_main_is_namespace() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+        fix.declarations[workout].bound = true;
+        fix.declarations[workout].name_span = Some((0, 7));
+        fix.declarations[workout].file = Some(main);
+        let set_note = fix.method(workout, b"SetNote", None);
+        fix.methods[set_note].bound = false;
+        fix.methods[set_note].file = Some(sibling);
+        let drive = fix.declaration(KIND_FUNC, b"Drive", None);
+        fix.declarations[drive].file = Some(main);
+        fix.reference_typed_in_file(
+            u32::try_from(drive).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let (local, namespace) = count_set_note_method_calls(&view)?;
+        if namespace != 1 {
+            return Err(TestError::Missing("namespace SetNote method call"));
+        }
+        if local != 0 {
+            return Err(TestError::Missing("zero local SetNote method calls"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_file_type_bound_set_note_use_in_main_is_local() -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let main = fix.file_cell();
+        let sibling = fix.atom(b"sibling.go\0");
+        let workout = fix.declaration(KIND_TYPE, b"Workout", None);
+        fix.declarations[workout].bound = false;
+        fix.declarations[workout].name_span = Some((0, 7));
+        fix.declarations[workout].file = Some(sibling);
+        let set_note = fix.method(workout, b"SetNote", None);
+        fix.methods[set_note].bound = true;
+        fix.methods[set_note].file = Some(main);
+        let drive = fix.declaration(KIND_FUNC, b"Drive", None);
+        fix.declarations[drive].file = Some(main);
+        fix.reference_typed_in_file(
+            u32::try_from(drive).map_err(TestError::from)?,
+            b"",
+            b"SetNote",
+            b"",
+            10,
+            17,
+            0,
+            1,
+            b"Workout",
+            Some(main),
+        );
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        let (local, namespace) = count_set_note_method_calls(&view)?;
+        if local != 1 {
+            return Err(TestError::Missing("local SetNote method call"));
+        }
+        if namespace != 0 {
+            return Err(TestError::Missing("zero namespace SetNote method calls"));
+        }
+        let mut occurrences = view
+            .occurrences()
+            .ok_or(TestError::Missing("occurrences"))?;
+        let call = occurrences
+            .next()
+            .ok_or(TestError::Missing("method call"))??;
+        if call.occurrence.kind != ReferenceKind::MethodCall
+            || call.occurrence.target != OccurrenceTarget::Local(EntityId::new(1))
+        {
+            return Err(TestError::Missing("bound method ordinal"));
+        }
+        if occurrences.next().is_some() {
+            return Err(TestError::Missing("exact occurrences"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_workout_set_note_stays_local_while_sibling_use_is_namespace_bound_first()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let (bound_method_ordinal, use_main, use_sibling) =
+            push_both_workout_set_note_methods(&mut fix, true)?;
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        assert_cross_file_method_resolution(&view, bound_method_ordinal, use_main, use_sibling)
+    }
+
+    #[test]
+    fn bound_workout_set_note_stays_local_while_sibling_use_is_namespace_sibling_first()
+    -> Result<(), TestError> {
+        let mut fix = Fixture::new();
+        let (bound_method_ordinal, use_main, use_sibling) =
+            push_both_workout_set_note_methods(&mut fix, false)?;
+        let bytes = lower(&fix, b"package demo\n")?;
+        let view = FragmentView::validate(&bytes)?;
+        assert_cross_file_method_resolution(&view, bound_method_ordinal, use_main, use_sibling)
+    }
+
 }

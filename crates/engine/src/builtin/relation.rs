@@ -5,7 +5,10 @@ use crate::workspace::{TransitionWork, WorkspaceRelationHandle, WorkspaceSnapsho
 pub use backend_compile::{
     Container, DeclarationKind, SourceDeclaration, SourceLanguage, SourceLocation,
 };
-use backend_compile::{SourceExcerpt, SourceExcerptExtent};
+use backend_compile::{
+    DeclarationFacts, Deprecation, Fact, MAX_FACT_TEXT_BYTES, Obligation, SourceExcerpt,
+    SourceExcerptExtent,
+};
 use backend_execution::AuthorityVersion;
 use backend_replication::ImmutableObjectSchema;
 use backend_version::{
@@ -26,8 +29,15 @@ const SOURCE_RECORD_FORMAT_CONTAINED: &[u8; 4] = b"PSR9";
 /// content identity.
 const SOURCE_RECORD_FORMAT_IDENTIFIED: &[u8; 4] = b"PSRA";
 
+/// Canonical format tag for a record in which at least one declaration
+/// states what its producer observed about it (deprecation, obligation).
+/// It carries containment for every declaration and states its source
+/// content identity with a presence byte, because the format discriminant is
+/// spent on the facts.
+const SOURCE_RECORD_FORMAT_FACTS: &[u8; 4] = b"PSRB";
+
 /// Newest source-record format version, as the tags above name it.
-const SOURCE_RECORD_VERSION: u8 = 10;
+const SOURCE_RECORD_VERSION: u8 = 11;
 
 /// Returns the lowest format tag that can carry this record.
 ///
@@ -53,7 +63,9 @@ fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
             source_identity,
             ..
         } => {
-            if source_identity.is_some() {
+            if states_facts(declarations) {
+                SOURCE_RECORD_FORMAT_FACTS
+            } else if source_identity.is_some() {
                 SOURCE_RECORD_FORMAT_IDENTIFIED
             } else if states_containment(declarations) {
                 SOURCE_RECORD_FORMAT_CONTAINED
@@ -62,6 +74,13 @@ fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
             }
         }
     }
+}
+
+/// Returns whether any declaration states an observed fact.
+fn states_facts(declarations: &[SourceDeclaration]) -> bool {
+    declarations
+        .iter()
+        .any(|declaration| !declaration.facts().is_unobserved())
 }
 
 /// Returns whether any declaration sits anywhere but its file module.
@@ -77,9 +96,11 @@ fn format_version(format: &[u8]) -> Option<u8> {
         return None;
     };
     // `PSRA` is the identified format: the eleventh shape, named by a letter
-    // because a tenth digit would read as "1" followed by nothing.
+    // because a tenth digit would read as "1" followed by nothing. `PSRB`
+    // is the facts format that follows it.
     let version = match tag {
         b'A' => 10,
+        b'B' => 11,
         digit => digit.checked_sub(b'0')?,
     };
     (2..=SOURCE_RECORD_VERSION)
@@ -745,21 +766,31 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
     else {
         return;
     };
-    let identified = source_identity.is_some();
+    let format = source_record_format(value);
+    let factual = format == SOURCE_RECORD_FORMAT_FACTS;
+    let identified = !factual && source_identity.is_some();
     debug_assert_eq!(
         identified,
-        source_record_format(value) == SOURCE_RECORD_FORMAT_IDENTIFIED,
+        format == SOURCE_RECORD_FORMAT_IDENTIFIED,
         "the minimal format tag must name the identity exactly when one is stated"
     );
-    let contained = source_record_format(value) == SOURCE_RECORD_FORMAT_CONTAINED;
+    let contained = format == SOURCE_RECORD_FORMAT_CONTAINED;
     output.push(2);
     output.extend_from_slice(project);
     push_text(output, path);
     output.push(language.wire_tag());
     output.extend_from_slice(content_version);
     output.extend_from_slice(analysis_version);
-    if identified {
-        output.extend_from_slice(source_identity.as_ref().expect("checked above").as_ref());
+    if factual {
+        match source_identity {
+            Some(identity) => {
+                output.push(1);
+                output.extend_from_slice(identity.as_ref());
+            }
+            None => output.push(0),
+        }
+    } else if let Some(identity) = source_identity {
+        output.extend_from_slice(identity.as_ref());
     }
     push_retention(output, *retention);
     push_count(output, declarations.len());
@@ -774,14 +805,49 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
         push_text(output, declaration.signature());
         push_text(output, declaration.documentation());
         push_excerpt(output, declaration.source_excerpt());
-        if identified {
-            // The identified format carries containment unconditionally: its
-            // tag already spends the format discriminant on the identity, so
-            // containment cannot also select the tag.
+        if identified || factual {
+            // The identified and facts formats carry containment
+            // unconditionally: each tag already spends the format
+            // discriminant, so containment cannot also select the tag.
             push_container(output, declaration.container());
         } else if contained {
             push_container(output, declaration.container());
         }
+        if factual {
+            push_facts(output, declaration.facts());
+        }
+    }
+}
+
+/// Encodes one declaration's observed facts. Each fact is `0` unobserved,
+/// `1` absent, or `2` followed by its value.
+fn push_facts(output: &mut Vec<u8>, facts: &DeclarationFacts) {
+    match &facts.deprecation {
+        Fact::Unobserved => output.push(0),
+        Fact::Absent => output.push(1),
+        Fact::Present(notice) => {
+            output.push(2);
+            push_optional_text(output, notice.since());
+            push_optional_text(output, notice.note());
+        }
+    }
+    match &facts.obligation {
+        Fact::Unobserved => output.push(0),
+        Fact::Absent => output.push(1),
+        Fact::Present(obligation) => {
+            output.push(2);
+            output.push(obligation.wire_tag());
+        }
+    }
+}
+
+fn push_optional_text(output: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(text) => {
+            output.push(1);
+            push_text(output, text);
+        }
+        None => output.push(0),
     }
 }
 
@@ -913,7 +979,13 @@ fn decode_file_record(
     } else {
         [0; 32]
     };
-    let source_identity = if version >= 10 {
+    let source_identity = if version >= 11 {
+        match reader.byte()? {
+            0 => None,
+            1 => Some(ContentId::<SourceFactDomain>::try_from(reader.array()?).map_err(|_| ())?),
+            _ => return Err(()),
+        }
+    } else if version >= 10 {
         Some(ContentId::<SourceFactDomain>::try_from(reader.array()?).map_err(|_| ())?)
     } else {
         None
@@ -924,8 +996,8 @@ fn decode_file_record(
         DeclarationRetention::Complete
     };
     let count = reader.count(ProductSourceRecord::MAX_FILE_DECLARATIONS)?;
-    // Containment is tag-selected: `PSR9` and `PSRA` both carry it, one per
-    // declaration, while every earlier format implies the file module.
+    // Containment is tag-selected: `PSR9`, `PSRA`, and `PSRB` carry it, one
+    // per declaration, while every earlier format implies the file module.
     let contained = version >= 9;
     let mut declarations = Vec::with_capacity(count);
     for _ in 0..count {
@@ -986,6 +1058,11 @@ fn decode_declaration(
     } else {
         Container::Module
     };
+    let facts = if version >= 11 {
+        decode_facts(reader)?
+    } else {
+        DeclarationFacts::UNOBSERVED
+    };
     Ok(SourceDeclaration::with_location(
         SourceLocation::new(declaration_path, line).map_err(|_| ())?,
         name,
@@ -995,7 +1072,40 @@ fn decode_declaration(
     )
     .map_err(|_| ())?
     .with_source_excerpt(source_excerpt)
-    .with_container(decoded_container))
+    .with_container(decoded_container)
+    .with_facts(facts))
+}
+
+/// Decodes one declaration's observed facts, rejecting an unknown tag.
+fn decode_facts(reader: &mut SourceReader<'_>) -> Result<DeclarationFacts, ()> {
+    let deprecation = match reader.byte()? {
+        0 => Fact::Unobserved,
+        1 => Fact::Absent,
+        2 => {
+            let since = decode_optional_text(reader)?;
+            let note = decode_optional_text(reader)?;
+            Fact::Present(Deprecation::admit(since, note).map_err(|_| ())?)
+        }
+        _ => return Err(()),
+    };
+    let obligation = match reader.byte()? {
+        0 => Fact::Unobserved,
+        1 => Fact::Absent,
+        2 => Fact::Present(Obligation::from_wire_tag(reader.byte()?).map_err(|_| ())?),
+        _ => return Err(()),
+    };
+    Ok(DeclarationFacts {
+        deprecation,
+        obligation,
+    })
+}
+
+fn decode_optional_text(reader: &mut SourceReader<'_>) -> Result<Option<String>, ()> {
+    match reader.byte()? {
+        0 => Ok(None),
+        1 => reader.text(MAX_FACT_TEXT_BYTES).map(Some),
+        _ => Err(()),
+    }
 }
 /// Decodes one declaration's containment, rejecting an unknown discriminant.
 fn decode_container(reader: &mut SourceReader<'_>) -> Result<Container, ()> {
@@ -1582,6 +1692,89 @@ mod tests {
         let mut re_encoded = Vec::new();
         ProductSourceRelation::encode_value(&normalized, &mut re_encoded);
         assert_eq!(re_encoded, legacy_file_record_bytes());
+    }
+
+    #[test]
+    fn declaration_facts_round_trip_in_the_facts_format_only() {
+        let deprecated = SourceDeclaration::at_path(
+            "src/lib.rs",
+            "stale",
+            "function",
+            7,
+            "pub fn stale()",
+            "Makes one.",
+        )
+        .expect("declaration")
+        .with_facts(backend_compile::DeclarationFacts {
+            deprecation: backend_compile::Fact::Present(backend_compile::Deprecation::new(
+                Some("1.2.0"),
+                Some("use `fresh`"),
+            )),
+            obligation: backend_compile::Fact::Absent,
+        });
+        let required =
+            SourceDeclaration::at_path("src/lib.rs", "execute", "method", 11, "fn execute(&self)", "")
+                .expect("declaration")
+                .with_container(super::Container::attached("Service"))
+                .with_facts(backend_compile::DeclarationFacts {
+                    deprecation: backend_compile::Fact::Absent,
+                    obligation: backend_compile::Fact::Present(backend_compile::Obligation::Required),
+                });
+        let record = ProductSourceRecord::file(
+            [3; 32],
+            "src/lib.rs",
+            super::SourceLanguage::Rust,
+            [4; 32],
+            [5; 32],
+            Arc::from([deprecated, required]),
+        )
+        .expect("file");
+        let mut encoded = Vec::new();
+        ProductSourceRelation::encode_value(&record, &mut encoded);
+        assert_eq!(encoded.get(..4), Some(b"PSRB".as_slice()));
+        let decoded = ProductSourceRelation::decode_value(&encoded).expect("decode");
+        let fields = decoded.file_fields().expect("file fields");
+        let stale = fields
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name() == "stale")
+            .expect("stale");
+        let notice = stale.facts().deprecation.present().expect("deprecation");
+        assert_eq!(notice.since(), Some("1.2.0"));
+        assert_eq!(notice.note(), Some("use `fresh`"));
+        let execute = fields
+            .declarations
+            .iter()
+            .find(|declaration| declaration.name() == "execute")
+            .expect("execute");
+        assert_eq!(
+            execute.facts().obligation,
+            backend_compile::Fact::Present(backend_compile::Obligation::Required)
+        );
+        assert_eq!(execute.container(), &super::Container::attached("Service"));
+        // Restart admission re-encodes byte-identically.
+        let mut again = Vec::new();
+        ProductSourceRelation::encode_value(&decoded, &mut again);
+        assert_eq!(again, encoded);
+        // The facts format states an identity with a presence byte.
+        let identified = record
+            .with_source_identity(fixture_source_identity())
+            .expect("identity");
+        let mut with_identity = Vec::new();
+        ProductSourceRelation::encode_value(&identified, &mut with_identity);
+        assert_eq!(with_identity.get(..4), Some(b"PSRB".as_slice()));
+        let reopened = ProductSourceRelation::decode_value(&with_identity).expect("decode");
+        assert_eq!(
+            reopened.file_fields().expect("file").source_identity,
+            Some(fixture_source_identity())
+        );
+        let mut reopened_bytes = Vec::new();
+        ProductSourceRelation::encode_value(&reopened, &mut reopened_bytes);
+        assert_eq!(reopened_bytes, with_identity);
+        // A record whose producer observed nothing keeps its historical tag.
+        let mut plain = Vec::new();
+        ProductSourceRelation::encode_value(&legacy_file_record(), &mut plain);
+        assert_eq!(plain, legacy_file_record_bytes());
     }
 
     /// Writes one file record in an exact historical format.

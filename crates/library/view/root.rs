@@ -6,14 +6,15 @@ use super::{
     ViewRootDescriptor, ViewSnapshotPage,
 };
 use crate::canonical::{
-    Frontier, ViewEntry, ViewEntryKey, ViewMetadata, ViewRecipeId, ViewStateRoot, ViewVersion,
-    package_key, symbol_key, view_version_preimage,
+    Frontier, PackageKey, ViewEntry, ViewEntryKey, ViewMetadata, ViewRecipeId, ViewStateRoot,
+    ViewVersion, package_key, symbol_key, view_version_preimage,
 };
 use backend_version::{
     Coverage as BackendCoverage, CoverageWitness, RelationState, ScopeRoot, UntrustedCoverageScope,
     prepare_delta_with_state,
 };
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::{Arc, OnceLock};
 
@@ -40,6 +41,10 @@ pub struct ViewRoot {
     pub(crate) frontier: Frontier,
     /// Lazy compatibility materialization of canonical relation rows.
     pub(super) rows_cache: Arc<OnceLock<Arc<[Row]>>>,
+    /// First and last label in each package, built without cloning row documents.
+    pub(super) package_labels: Arc<OnceLock<PackageLabelIndex>>,
+    /// First row identity for each exact label, built without cloning row bodies.
+    pub(super) label_ids: Arc<OnceLock<BTreeMap<String, RowId>>>,
     /// Coverage for each requested lane.
     pub(crate) coverage: Box<[Coverage]>,
     /// Producer-admitted witness for complete source coverage.
@@ -52,6 +57,17 @@ pub struct ViewRoot {
     /// Persistent canonical relation state for this exact root. Backend
     /// updates path-copy this state and retain untouched canonical nodes.
     pub(super) relation: RelationState<crate::ViewRelation>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PackageLabelMaps {
+    first: BTreeMap<String, RowId>,
+    last: BTreeMap<String, RowId>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct PackageLabelIndex {
+    by_package: BTreeMap<PackageKey, PackageLabelMaps>,
 }
 
 impl PartialEq for ViewRoot {
@@ -201,6 +217,21 @@ impl ViewRoot {
         backend_flow::BoundFrontier::new(self.root, self.frontier.flow())
     }
 
+    /// Borrows canonical rows without filling the owned row cache.
+    ///
+    /// Republishing a frontier uses this to compare stored hashes. The owned
+    /// cache remains available through [`Self::rows`] for callers that need a
+    /// slice.
+    #[must_use]
+    pub fn row_refs(&self) -> impl Iterator<Item = &Row> {
+        self.relation
+            .iter()
+            .filter_map(|(key, value)| match (key, value) {
+                (ViewEntryKey::Row(_), ViewEntry::Row(row)) => Some(row),
+                _ => None,
+            })
+    }
+
     /// Returns stable rows in canonical order.
     #[must_use]
     pub fn rows(&self) -> &[Row] {
@@ -232,8 +263,11 @@ impl ViewRoot {
             })
     }
 
-    #[cfg(test)]
-    pub(crate) fn compatibility_rows_are_materialized(&self) -> bool {
+    /// Reports whether [`Self::rows`] has filled the owned compatibility slice.
+    ///
+    /// Borrowed publication walks [`Self::row_refs`] and leaves this false.
+    #[must_use]
+    pub fn compatibility_rows_are_materialized(&self) -> bool {
         self.rows_cache.get().is_some()
     }
 
@@ -242,6 +276,26 @@ impl ViewRoot {
     #[must_use]
     pub fn row(&self, id: RowId) -> Option<Row> {
         self.row_ref(id).cloned()
+    }
+
+    /// Borrows the first row with this exact label.
+    ///
+    /// The index is filled from borrowed rows and does not clone row documents
+    /// into the compatibility cache. A repeated label keeps the earliest row.
+    #[must_use]
+    pub fn row_by_label(&self, label: &str) -> Option<&Row> {
+        let id = *self.label_ids().get(label)?;
+        self.row_ref(id)
+    }
+
+    fn label_ids(&self) -> &BTreeMap<String, RowId> {
+        self.label_ids.get_or_init(|| {
+            let mut index = BTreeMap::new();
+            for row in self.row_refs() {
+                index.entry(row.label.clone()).or_insert(row.id);
+            }
+            index
+        })
     }
 
     /// Borrows one row by stable identity without cloning its retained text
@@ -254,24 +308,65 @@ impl ViewRoot {
         }
     }
 
+    /// Returns the earliest row in relation order with this package and label.
+    ///
+    /// The index is built from borrowed rows, so the compatibility slice stays
+    /// empty. Duplicate labels keep that first row.
+    #[must_use]
+    pub fn first_package_label(&self, package: PackageKey, label: &str) -> Option<RowId> {
+        self.package_label_index()
+            .by_package
+            .get(&package)
+            .and_then(|maps| maps.first.get(label).copied())
+    }
+
+    /// Returns the latest row in relation order with this package and label.
+    ///
+    /// Call-graph coordinate maps keep this later row when labels collide.
+    #[must_use]
+    pub fn last_package_label(&self, package: PackageKey, label: &str) -> Option<RowId> {
+        self.package_label_index()
+            .by_package
+            .get(&package)
+            .and_then(|maps| maps.last.get(label).copied())
+    }
+
+    fn package_label_index(&self) -> &PackageLabelIndex {
+        self.package_labels.get_or_init(|| {
+            let mut index = PackageLabelIndex::default();
+            for row in self.row_refs() {
+                let Some(package) = row.package else {
+                    continue;
+                };
+                let maps = index.by_package.entry(package).or_default();
+                maps.first.entry(row.label.clone()).or_insert(row.id);
+                maps.last.insert(row.label.clone(), row.id);
+            }
+            index
+        })
+    }
+
     /// Resolves an opaque symbol selector by membership in this exact view.
     ///
-    /// The claimed digest is never promoted directly. The canonical row
-    /// slice is ordered by [`RowId`], so the lookup borrows the already typed
-    /// key from a matching row in logarithmic time.
+    /// The claimed digest is never promoted directly. Symbol rows sit in
+    /// [`RowId`] order inside the relation, so the lookup seeks one
+    /// root-to-leaf path and borrows the typed key from the stored row. The
+    /// compatibility row slice stays untouched.
     #[must_use]
     pub fn resolve_symbol_commitment(&self, claimed: [u8; 32]) -> Option<crate::SymbolKey> {
-        self.rows()
-            .binary_search_by(|row| match row.id {
-                RowId::Package(_) => Ordering::Less,
-                RowId::Symbol(symbol) => symbol.as_bytes().cmp(&claimed),
-                RowId::Object(_) => Ordering::Greater,
-            })
-            .ok()
-            .and_then(|index| match self.rows()[index].id {
-                RowId::Symbol(symbol) => Some(symbol),
-                RowId::Package(_) | RowId::Object(_) => None,
-            })
+        let (_key, value) = self.relation.find_by(|key| match key {
+            ViewEntryKey::Metadata => Ordering::Less,
+            ViewEntryKey::Row(RowId::Package(_)) => Ordering::Less,
+            ViewEntryKey::Row(RowId::Symbol(symbol)) => symbol.as_bytes().cmp(&claimed),
+            ViewEntryKey::Row(RowId::Object(_)) => Ordering::Greater,
+        })?;
+        match value {
+            ViewEntry::Row(row) => match row.id {
+                RowId::Symbol(symbol) if symbol.as_bytes() == &claimed => Some(symbol),
+                RowId::Package(_) | RowId::Symbol(_) | RowId::Object(_) => None,
+            },
+            ViewEntry::Metadata(_) => None,
+        }
     }
 
     /// Looks up only the canonical display label for one row.
@@ -374,6 +469,8 @@ impl ViewRoot {
             basis,
             frontier,
             rows_cache: Arc::new(OnceLock::new()),
+            package_labels: Arc::new(OnceLock::new()),
+            label_ids: Arc::new(OnceLock::new()),
             coverage,
             capability: None,
             relation,
@@ -480,6 +577,8 @@ impl ViewRoot {
             basis,
             frontier,
             rows_cache: Arc::new(OnceLock::new()),
+            package_labels: Arc::new(OnceLock::new()),
+            label_ids: Arc::new(OnceLock::new()),
             coverage,
             capability,
             relation,
@@ -709,6 +808,7 @@ fn row_encoded_size(row: &Row) -> usize {
         row.identity_preimage()
             .map_or(0, |preimage| preimage.as_str().len()),
     );
+    size = size.saturating_add(row.facts.text_bytes());
     for fragment in &row.document {
         size = size.saturating_add(match fragment {
             super::Fragment::Text(value) | super::Fragment::Code(value) => {
@@ -808,6 +908,56 @@ mod tests {
     }
 
     #[test]
+    fn package_labels_keep_first_and_last_without_materializing_rows() {
+        let source = view_state_root(&[]);
+        let object = object_version(b"package-labels");
+        let basis = Basis::new(source, object);
+        let package = package_key("pkg:alpha");
+        let early = symbol_key("early-label");
+        let late = symbol_key("late-label");
+        let (first_key, last_key) = if RowId::Symbol(early) < RowId::Symbol(late) {
+            (early, late)
+        } else {
+            (late, early)
+        };
+        let label = "pkg:alpha::src/lib.rs:1::draw";
+        let body = "x".repeat(4096);
+        let mut rows = vec![
+            Row::in_package(RowId::Symbol(first_key), basis, package, label),
+            Row::in_package(RowId::Symbol(last_key), basis, package, label),
+        ];
+        let sibling = package_key("pkg:beta");
+        for index in 0..32 {
+            let name = format!("sibling-{index}");
+            rows.push(
+                Row::in_package(RowId::Symbol(symbol_key(&name)), basis, sibling, name)
+                    .with_document(vec![crate::Fragment::Text(body.clone())]),
+            );
+        }
+        let root = ViewRoot::new_checked(
+            view_key(b"package-labels"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+            rows,
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("view");
+        assert!(root.rows_cache.get().is_none());
+        assert_eq!(
+            root.first_package_label(package, label),
+            Some(RowId::Symbol(first_key))
+        );
+        assert_eq!(
+            root.last_package_label(package, label),
+            Some(RowId::Symbol(last_key))
+        );
+        assert!(root.rows_cache.get().is_none());
+        assert!(root.first_package_label(package, "missing").is_none());
+        assert!(root.last_package_label(sibling, label).is_none());
+    }
+
+    #[test]
     fn page_seek_is_root_bound_and_never_materializes_the_compatibility_slice() {
         let root = root_with_rows(513);
         assert_eq!(root.row_count(), 513);
@@ -833,6 +983,145 @@ mod tests {
                 128,
             ),
             Err(ViewPageError::CursorMismatch)
+        );
+    }
+
+    #[test]
+    fn row_refs_borrow_without_filling_the_owned_cache() {
+        let root = root_with_rows(4);
+        assert_eq!(root.row_refs().count(), 4);
+        assert!(root.rows_cache.get().is_none());
+        assert_eq!(root.rows().len(), 4);
+        assert!(root.rows_cache.get().is_some());
+    }
+
+    fn heavy_root(count: usize) -> ViewRoot {
+        let source = view_state_root(&[]);
+        let object = object_version(b"label-index");
+        let basis = Basis::new(source, object);
+        let body = "x".repeat(256);
+        let rows = (0..count)
+            .map(|index| {
+                let label = format!("pkg::item-{index:04}");
+                Row::new(RowId::Symbol(symbol_key(&label)), basis, label)
+                    .with_document(vec![crate::Fragment::Text(body.clone())])
+            })
+            .collect();
+        ViewRoot::new_checked(
+            view_key(b"label-index"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+            rows,
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("label index view")
+    }
+
+    #[test]
+    fn label_index_keeps_the_earliest_row_and_skips_the_owned_cache() {
+        let source = view_state_root(&[]);
+        let object = object_version(b"duplicate-label");
+        let basis = Basis::new(source, object);
+        let first = Row::new(RowId::Symbol(symbol_key("first")), basis, "same");
+        let second = Row::new(RowId::Symbol(symbol_key("second")), basis, "same");
+        let root = ViewRoot::new_checked(
+            view_key(b"duplicate-label"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+            vec![first, second],
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("duplicate labels");
+        let indexed = root.row_by_label("same").expect("label");
+        let scanned = root
+            .rows()
+            .iter()
+            .find(|row| row.label == "same")
+            .expect("scan");
+        assert_eq!(indexed.id, scanned.id);
+        assert!(root.row_by_label("missing").is_none());
+        let borrowed = ViewRoot::new_checked(
+            view_key(b"duplicate-label-borrowed"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 1),
+            vec![
+                Row::new(RowId::Symbol(symbol_key("only")), basis, "only"),
+            ],
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("borrowed label");
+        assert!(borrowed.row_by_label("only").is_some());
+        assert!(borrowed.rows_cache.get().is_none());
+    }
+
+    #[test]
+    #[allow(clippy::print_stdout)]
+    fn label_lookup_skips_cloned_row_bodies() {
+        const ROWS: usize = 4096;
+        const SAMPLES: usize = 16;
+        let needle = format!("pkg::item-{:04}", ROWS - 1);
+        let cold_owned: Vec<_> = (0..SAMPLES).map(|_| heavy_root(ROWS)).collect();
+        let cold_indexed: Vec<_> = (0..SAMPLES).map(|_| heavy_root(ROWS)).collect();
+        let warm_owned = heavy_root(ROWS);
+        let warm_indexed = heavy_root(ROWS);
+        assert_eq!(
+            warm_owned
+                .rows()
+                .iter()
+                .find(|row| row.label == needle)
+                .map(|row| row.id),
+            warm_indexed.row_by_label(&needle).map(|row| row.id)
+        );
+        let mut owned_cold = Vec::with_capacity(SAMPLES);
+        let mut indexed_cold = Vec::with_capacity(SAMPLES);
+        let mut owned_warm = Vec::with_capacity(SAMPLES);
+        let mut indexed_warm = Vec::with_capacity(SAMPLES);
+        for _ in 0..4 {
+            std::hint::black_box(warm_owned.rows().iter().find(|row| row.label == needle));
+            std::hint::black_box(warm_indexed.row_by_label(&needle));
+        }
+        for index in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            std::hint::black_box(
+                cold_owned[index]
+                    .rows()
+                    .iter()
+                    .find(|row| row.label == needle),
+            );
+            owned_cold.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(cold_indexed[index].row_by_label(&needle));
+            indexed_cold.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(warm_owned.rows().iter().find(|row| row.label == needle));
+            owned_warm.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(warm_indexed.row_by_label(&needle));
+            indexed_warm.push(started.elapsed().as_nanos());
+        }
+        owned_cold.sort_unstable();
+        indexed_cold.sort_unstable();
+        owned_warm.sort_unstable();
+        indexed_warm.sort_unstable();
+        let owned_cold_median = owned_cold[SAMPLES / 2];
+        let indexed_cold_median = indexed_cold[SAMPLES / 2];
+        let owned_warm_median = owned_warm[SAMPLES / 2];
+        let indexed_warm_median = indexed_warm[SAMPLES / 2];
+        println!(
+            "view_label_index rows={ROWS} cold_owned_median_ns={owned_cold_median} \
+             cold_index_median_ns={indexed_cold_median} warm_owned_median_ns={owned_warm_median} \
+             warm_index_median_ns={indexed_warm_median}"
+        );
+        assert!(
+            indexed_cold_median < owned_cold_median,
+            "cold index {indexed_cold_median} owned {owned_cold_median}"
+        );
+        assert!(
+            indexed_warm_median < owned_warm_median,
+            "warm index {indexed_warm_median} owned {owned_warm_median}"
         );
     }
 
@@ -883,5 +1172,111 @@ mod tests {
         assert_eq!(descriptor.admit_rows(rows), Err(ViewError::WrongTarget));
         page = root.page(ViewPageCursor::first(&root), 8).expect("page");
         assert!(page.next().is_none());
+    }
+
+    fn slice_symbol_commitment(rows: &[Row], claimed: [u8; 32]) -> Option<crate::SymbolKey> {
+        rows.binary_search_by(|row| match row.id {
+            RowId::Package(_) => Ordering::Less,
+            RowId::Symbol(symbol) => symbol.as_bytes().cmp(&claimed),
+            RowId::Object(_) => Ordering::Greater,
+        })
+        .ok()
+        .and_then(|index| match rows[index].id {
+            RowId::Symbol(symbol) => Some(symbol),
+            RowId::Package(_) | RowId::Object(_) => None,
+        })
+    }
+
+    #[test]
+    fn symbol_commitment_seek_matches_a_cloned_row_scan() {
+        const ROWS: usize = 4096;
+        const SAMPLES: usize = 9;
+        let source = view_state_root(&[]);
+        let object = object_version(b"symbol-commitment-source");
+        let basis = Basis::new(source, object);
+        let package = package_key("commitment-package");
+        let body = "d".repeat(4096);
+        let mut built = Vec::with_capacity(ROWS + 1);
+        built.push(Row::new(
+            RowId::Package(package),
+            basis,
+            "commitment-package",
+        ));
+        for index in 0..ROWS {
+            let id = symbol_key(&format!("pkg::{index:08}"));
+            built.push(
+                Row::new(RowId::Symbol(id), basis, format!("s{index}"))
+                    .with_document(vec![crate::Fragment::Text(body.clone())]),
+            );
+        }
+        let root = ViewRoot::new_checked(
+            view_key(b"symbol-commitment"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+            built,
+            vec![Coverage::Complete],
+            capability(object),
+        )
+        .expect("symbol commitment view");
+        assert!(!root.compatibility_rows_are_materialized());
+        let mut symbols: Vec<_> = root
+            .iter_rows()
+            .filter_map(|row| match row.id {
+                RowId::Symbol(symbol) => Some(symbol),
+                RowId::Package(_) | RowId::Object(_) => None,
+            })
+            .collect();
+        symbols.sort_unstable();
+        let claimed = symbols[symbols.len() / 2].to_bytes();
+        let mut borrowed = [0_u128; SAMPLES];
+        let mut owned = [0_u128; SAMPLES];
+        for sample in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            let hit = root.resolve_symbol_commitment(claimed);
+            borrowed[sample] = started.elapsed().as_nanos();
+            std::hint::black_box(hit);
+            let started = std::time::Instant::now();
+            let cloned: Vec<_> = root.iter_rows().cloned().collect();
+            let hit = slice_symbol_commitment(&cloned, claimed);
+            owned[sample] = started.elapsed().as_nanos();
+            std::hint::black_box(hit);
+        }
+        assert!(!root.compatibility_rows_are_materialized());
+        let cloned: Vec<_> = root.iter_rows().cloned().collect();
+        for symbol in &symbols {
+            let bytes = symbol.to_bytes();
+            assert_eq!(
+                root.resolve_symbol_commitment(bytes),
+                slice_symbol_commitment(&cloned, bytes)
+            );
+            assert_eq!(root.resolve_symbol_commitment(bytes), Some(*symbol));
+        }
+        let mut missing = claimed;
+        missing[31] ^= 0xff;
+        assert_eq!(
+            root.resolve_symbol_commitment(missing),
+            slice_symbol_commitment(&cloned, missing)
+        );
+        assert_eq!(
+            root.resolve_symbol_commitment(package.to_bytes()),
+            slice_symbol_commitment(&cloned, package.to_bytes())
+        );
+        assert_eq!(
+            root.resolve_symbol_commitment(claimed),
+            slice_symbol_commitment(root.rows(), claimed)
+        );
+        borrowed.sort_unstable();
+        owned.sort_unstable();
+        let borrowed_median = borrowed[SAMPLES / 2];
+        let owned_median = owned[SAMPLES / 2];
+        eprintln!(
+            "symbol_commitment_seek rows={ROWS} owned_median_ns={owned_median} \
+             borrowed_median_ns={borrowed_median}"
+        );
+        assert!(
+            borrowed_median.saturating_mul(32) < owned_median,
+            "borrowed seek {borrowed_median} ns was not 32× faster than cloning every row \
+             {owned_median} ns"
+        );
     }
 }

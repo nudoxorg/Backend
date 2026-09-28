@@ -12,13 +12,13 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use backend_semantic::ir::EntityId;
-use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
+use backend_extension_tantivy::server::{TantivySegmentStore, TantivySegmentStoreError};
 use backend_semantic::index_core::{
     EntityArtifactIdentity, EntityDocumentId, IndexSnapshot, LexicalManifest, LexicalOperation,
     LexicalRow, LexicalScore, LexicalSegment, LexicalSnapshotHit, LexicalTopK,
 };
-use backend_extension_tantivy::server::{TantivySegmentStore, TantivySegmentStoreError};
+use backend_semantic::ir::EntityId;
+use backend_version::{ArtifactId, GenerationId, IrFragmentDomain, IrFragmentEncoding};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -516,4 +516,80 @@ fn remove_index_dir(path: &std::path::Path) -> std::io::Result<()> {
             result => return result,
         }
     }
+}
+
+#[test]
+fn exact_membership_returns_the_later_row() {
+    let path = root();
+    let store = TantivySegmentStore::open(&path).expect("store");
+    let rows = [
+        LexicalRow::new(b"alpha", document(20), LexicalScore::from(9)),
+        LexicalRow::new(b"beta", document(21), LexicalScore::from(1)),
+    ];
+    let segment = LexicalSegment::new(&rows).expect("segment");
+    let opened = store.project(segment).expect("project");
+    let ids = [segment.id];
+    let opened_segments = [&opened];
+    let pinned = store
+        .compose(snapshot(&ids), &opened_segments)
+        .expect("compose");
+    let mut output = [None; 1];
+    let mut candidates = [None; 256];
+    assert_eq!(
+        pinned
+            .search(
+                LexicalOperation::new(b"beta"),
+                1,
+                &mut output,
+                &mut candidates
+            )
+            .expect("search"),
+        1
+    );
+    let hit = output[0].expect("hit");
+    assert_eq!(hit.term(), b"beta");
+    assert_eq!(hit.provenance().document(), document(21));
+    drop(pinned);
+    drop(opened);
+    drop(store);
+    fs::remove_dir_all(path).expect("cleanup");
+}
+
+#[test]
+fn an_old_or_wrong_recipe_fails_closed_on_reopen() {
+    let path = root();
+    let store = TantivySegmentStore::open(&path).expect("store");
+    let rows = [LexicalRow::new(
+        b"alpha",
+        document(22),
+        LexicalScore::from(1),
+    )];
+    let segment = LexicalSegment::new(&rows).expect("segment");
+    let opened = store.project(segment).expect("project");
+    drop(opened);
+    let directory = fs::read_dir(path.join("ntvx-v3"))
+        .expect("root")
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().is_dir())
+        .expect("segment directory")
+        .path();
+    let recipe = directory.join("recipe");
+    fs::write(
+        &recipe,
+        b"ntvx-segment-v3/sentinel-hex-string-stored-bytes-ordinal",
+    )
+    .expect("old recipe");
+    assert!(matches!(
+        store.reopen(segment.id),
+        Err(TantivySegmentStoreError::Corrupt { detail, .. })
+            if detail == "projection recipe is not a bounded regular file"
+    ));
+    fs::write(&recipe, b"ntvx-segment-v4/not-ordinal").expect("wrong recipe");
+    assert!(matches!(
+        store.reopen(segment.id),
+        Err(TantivySegmentStoreError::Corrupt { detail, .. })
+            if detail == "projection recipe mismatch"
+    ));
+    drop(store);
+    fs::remove_dir_all(path).expect("cleanup");
 }

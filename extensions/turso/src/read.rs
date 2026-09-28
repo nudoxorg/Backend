@@ -69,7 +69,7 @@ pub(crate) async fn metadata_from(
 ) -> Result<Option<Metadata>, ProjectionError> {
     let mut rows = connection
         .query(
-            "SELECT schema_version, root, view_version, row_count \
+            "SELECT schema_version, root, view_version, row_count, row_digest \
              FROM backend_projection_meta WHERE singleton=1",
             (),
         )
@@ -82,6 +82,7 @@ pub(crate) async fn metadata_from(
         root: row.get(1)?,
         view_version: row.get(2)?,
         row_count: row.get(3)?,
+        row_digest: row.get(4)?,
     };
     if metadata.schema_version != SCHEMA_VERSION {
         return Err(ProjectionError::Schema {
@@ -103,6 +104,15 @@ fn validate_metadata(metadata: &Metadata) -> Result<(), ProjectionError> {
     }
     if metadata.row_count < 0 {
         return Err(ProjectionError::CorruptMetadata { field: "row_count" });
+    }
+    if metadata
+        .row_digest
+        .as_ref()
+        .is_some_and(|digest| digest.len() != 32)
+    {
+        return Err(ProjectionError::CorruptMetadata {
+            field: "row_digest",
+        });
     }
     Ok(())
 }

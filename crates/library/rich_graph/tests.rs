@@ -291,3 +291,112 @@ fn from_view_rejects_relation_endpoint_outside_root() {
     );
     assert!(result.is_err());
 }
+
+fn snapshot_from_cloned_rows(
+    rows: &[crate::Row],
+    center: RowId,
+    revision: RichGraphRevision,
+) -> RichGraphSnapshot {
+    let provenance = GraphProvenance::semantic(
+        revision.semantic_generation,
+        revision.semantic_root,
+        revision.semantic_root,
+        SemanticConfidence::Compiler,
+    );
+    let mut builder = RichGraphBuilder::new(revision, GraphNodeId::for_row(center));
+    for row in rows {
+        let availability = match row.state {
+            crate::RowState::Ready => GraphAvailability::Ready,
+            crate::RowState::Loading => GraphAvailability::Loading,
+            crate::RowState::Failed => {
+                GraphAvailability::failed("row failed").expect("failed availability")
+            }
+        };
+        let label = row.label.clone();
+        builder
+            .add_node(
+                RichGraphNode::new(
+                    GraphNodeId::for_row(row.id),
+                    label.clone(),
+                    Some(label),
+                    row.kind.map(|kind| format!("{kind:?}")),
+                    availability,
+                    Some(provenance),
+                )
+                .expect("node"),
+            )
+            .expect("add node");
+    }
+    builder.finish().expect("owned graph")
+}
+
+#[test]
+fn borrowed_rich_graph_matches_cloned_rows_without_filling_the_cache() {
+    const ROWS: usize = 4096;
+    const SAMPLES: usize = 9;
+    let source = view_state_root(&[]);
+    let basis = crate::Basis::with_context(
+        source,
+        crate::object_version(b"rich-graph-source"),
+        crate::branch_key("branch"),
+        crate::log_key("log"),
+        1,
+    );
+    let body = "d".repeat(4096);
+    let mut built = Vec::with_capacity(ROWS);
+    for index in 0..ROWS {
+        let id = symbol_key(&format!("pkg::{index:08}"));
+        built.push(
+            crate::Row::new(RowId::Symbol(id), basis, format!("s{index}"))
+                .with_document(vec![crate::Fragment::Text(body.clone())]),
+        );
+    }
+    let center = match built[ROWS / 2].id {
+        RowId::Symbol(symbol) => symbol,
+        RowId::Package(_) | RowId::Object(_) => panic!("center row is a symbol"),
+    };
+    let root = ViewRoot::new_incomplete(
+        crate::view_key(b"rich-graph"),
+        basis,
+        crate::Frontier::new(crate::branch_key("branch"), crate::log_key("log"), 1, source, 0),
+        built,
+        vec![],
+    )
+    .expect("rich graph view");
+    assert!(!root.compatibility_rows_are_materialized());
+    let revision = RichGraphRevision::new(
+        root.root().to_bytes(),
+        SemanticGenerationId::new([9; 32]),
+        [10; 32],
+    );
+    let borrowed = RichGraphSnapshot::from_view(&root, RowId::Symbol(center), &[], revision)
+        .expect("borrowed graph");
+    let cloned: Vec<_> = root.row_refs().cloned().collect();
+    let owned = snapshot_from_cloned_rows(&cloned, RowId::Symbol(center), revision);
+    assert_eq!(borrowed, owned);
+    assert_eq!(borrowed.nodes.len(), ROWS);
+    assert!(!root.compatibility_rows_are_materialized());
+    let mut borrowed_samples = [0_u128; SAMPLES];
+    let mut owned_samples = [0_u128; SAMPLES];
+    for sample in 0..SAMPLES {
+        let started = std::time::Instant::now();
+        let hit = RichGraphSnapshot::from_view(&root, RowId::Symbol(center), &[], revision)
+            .expect("borrowed graph");
+        borrowed_samples[sample] = started.elapsed().as_nanos();
+        std::hint::black_box(hit.nodes.len());
+        let started = std::time::Instant::now();
+        let cloned: Vec<_> = root.row_refs().cloned().collect();
+        let hit = snapshot_from_cloned_rows(&cloned, RowId::Symbol(center), revision);
+        owned_samples[sample] = started.elapsed().as_nanos();
+        std::hint::black_box(hit.nodes.len());
+    }
+    assert!(!root.compatibility_rows_are_materialized());
+    borrowed_samples.sort_unstable();
+    owned_samples.sort_unstable();
+    let borrowed_median = borrowed_samples[SAMPLES / 2];
+    let owned_median = owned_samples[SAMPLES / 2];
+    eprintln!(
+        "borrowed_rich_graph rows={ROWS} owned_median_ns={owned_median} \
+         borrowed_median_ns={borrowed_median}"
+    );
+}

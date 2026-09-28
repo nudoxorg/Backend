@@ -116,19 +116,25 @@ impl Seen {
         self.ledger.targets.iter().filter(|target| target.state.focused).collect()
     }
 
-    /// The visible text a [`Pick::Text`] names, or why not.
-    fn words(&self, text: &str, after: Option<&str>, area: Option<Area>) -> Result<&TextSample, String> {
+    /// The visible text a [`Pick::Text`] names, or why not: the first
+    /// `text` after each anchor in turn.
+    fn words(&self, text: &str, after: &[String], area: Option<Area>) -> Result<&TextSample, String> {
         let shown = self.texts(area);
-        let from = match after {
-            None => 0,
-            Some(anchor) => {
-                shown
-                    .iter()
-                    .position(|candidate| candidate.content == anchor)
-                    .ok_or_else(|| format!("the anchor \"{anchor}\" is not on screen{}", area_words(area)))?
-                    + 1
-            }
-        };
+        let mut from = 0;
+        for anchor in after {
+            from += shown[from..]
+                .iter()
+                .position(|candidate| &candidate.content == anchor)
+                .ok_or_else(|| {
+                    format!(
+                        "the anchor \"{anchor}\" is not on screen{}{}; {}",
+                        if from > 0 { " after the anchors before it" } else { "" },
+                        area_words(area),
+                        self.summary(area)
+                    )
+                })?
+                + 1;
+        }
         shown[from..]
             .iter()
             .find(|candidate| candidate.content == text)
@@ -136,7 +142,14 @@ impl Seen {
             .ok_or_else(|| {
                 format!(
                     "\"{text}\"{} is not on screen{}; {}",
-                    after.map_or_else(String::new, |anchor| format!(" after \"{anchor}\"")),
+                    if after.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " after {}",
+                            after.iter().map(|anchor| format!("\"{anchor}\"")).collect::<Vec<_>>().join(" ")
+                        )
+                    },
                     area_words(area),
                     self.summary(area)
                 )
@@ -154,8 +167,9 @@ impl Seen {
             })
     }
 
-    /// Where a person points for `pick` (logical px), and what is there.
-    pub(super) fn locate(&self, pick: &Pick) -> Result<((f32, f32), String), String> {
+    /// Where a person points for `pick` (logical px), what is there (in
+    /// words), and the target's key.
+    pub(super) fn locate(&self, pick: &Pick) -> Result<((f32, f32), String, String), String> {
         match pick {
             Pick::Probe(probe) => {
                 let mut matches = self
@@ -184,6 +198,7 @@ impl Seen {
                         Ok((
                             (x.round(), y.round()),
                             format!("target `{}` at ({:.0}, {:.0}) {:.0}x{:.0}", short(&target.key), b.x, b.y, b.width, b.height),
+                            target.key.clone(),
                         ))
                     }
                     [] => Err(format!(
@@ -204,7 +219,7 @@ impl Seen {
                 }
             }
             Pick::Text { text, after, area } => {
-                let words = self.words(text, after.as_deref(), *area)?;
+                let words = self.words(text, after, *area)?;
                 let point = centre(&words.bounds);
                 let Some(target) = self.target_at(point) else {
                     return Err(format!(
@@ -220,6 +235,7 @@ impl Seen {
                         words.bounds.y,
                         short(&target.key)
                     ),
+                    target.key.clone(),
                 ))
             }
         }
@@ -242,7 +258,7 @@ impl Seen {
             Pick::Probe(probe) if glob(probe, &target.key) => Ok(format!("`{}`", short(&target.key))),
             Pick::Probe(_) => Err(format!("focused: [{}]", names())),
             Pick::Text { text, after, area } => {
-                let words = self.words(text, after.as_deref(), *area)?;
+                let words = self.words(text, after, *area)?;
                 if contains(&target.bounds, centre(&words.bounds)) {
                     Ok(format!("`{}` holds \"{text}\"", short(&target.key)))
                 } else {
@@ -375,6 +391,9 @@ pub(super) fn describe(route: &Route) -> String {
     match route {
         Route::Orbit(OrbitRoute::Home) => "orbit".to_owned(),
         Route::Orbit(OrbitRoute::Project(id)) => format!("orbit project {id}"),
+        Route::Orbit(OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project))) => {
+            format!("tree {}", project.display_lossy())
+        }
         Route::World => "world".to_owned(),
         Route::Package(package) => format!(
             "package {}{}{}",

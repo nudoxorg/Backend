@@ -11,7 +11,7 @@
 //! too.
 
 use super::camera::{View, smooth};
-use super::draw::{Look, Strokes, cubic_to, role, tone};
+use super::draw::{EdgeWeight, Look, Strokes, cubic_to, role, thread_terminal, thread_tone, tone};
 use super::model::{Kind, NodeId, World};
 use super::scene::Scene;
 use crate::data::text::{shape, shape_fit};
@@ -27,17 +27,22 @@ const ROW: f32 = 22.0;
 const HEAD: f32 = 22.0;
 const GROUP_GAP: f32 = 10.0;
 
-mod roles {
+mod rail;
+pub(crate) use rail::{
+    RailEntry, RailGeometry, RailPlan, RailRowBounds, layout_with_rail, rail_head_tone, rail_plan,
+};
+
+pub(crate) mod roles {
     use super::role;
     use crate::tokens::{Face, TypeRole};
-    pub(super) const HEAD: TypeRole = role(Face::Serif, 400.0, 13.0);
-    pub(super) const NAME: TypeRole = role(Face::Mono, 500.0, 12.0);
-    pub(super) const NAME_BOLD: TypeRole = role(Face::Mono, 600.0, 12.0);
-    pub(super) const WHERE: TypeRole = role(Face::Mono, 400.0, 10.5);
-    pub(super) const MORE: TypeRole = role(Face::Serif, 400.0, 12.5);
+    pub(crate) const HEAD: TypeRole = role(Face::Serif, 400.0, 13.0);
+    pub(crate) const NAME: TypeRole = role(Face::Mono, 500.0, 12.0);
+    pub(crate) const NAME_BOLD: TypeRole = role(Face::Mono, 600.0, 12.0);
+    pub(crate) const WHERE: TypeRole = role(Face::Mono, 400.0, 10.5);
+    pub(crate) const MORE: TypeRole = role(Face::Serif, 400.0, 12.5);
 }
 
-fn scaled(r: TypeRole, s: f32) -> TypeRole {
+pub(crate) fn scaled(r: TypeRole, s: f32) -> TypeRole {
     TypeRole {
         size: r.size * s,
         line: r.line * s,
@@ -90,6 +95,8 @@ pub struct SlotKey {
 /// One row of a laid-out prism.
 #[derive(Clone, Debug)]
 pub struct Slot {
+    /// Semantic group, including text-only and remainder rows.
+    pub word: semantics::Word,
     /// Stable identity; virtual remainder rows are not selectable.
     pub key: Option<SlotKey>,
     /// The symbol (None for "and N more" or a text-only row).
@@ -110,6 +117,10 @@ pub struct Slot {
     pub px: f32,
     /// Where the proxy is now.
     pub py: f32,
+    /// Actual native proxy coverage; normal columns always paint a proxy.
+    pub proxy_visible: bool,
+    /// Native measured proxy half-size (normal columns use their fixed gem).
+    pub proxy_radius: f32,
     /// Its home in the map (clamped to the view).
     pub hx: f32,
     /// Its home in the map.
@@ -125,6 +136,8 @@ pub struct Slot {
 /// A group head.
 #[derive(Clone, Debug)]
 pub struct Head {
+    /// Typed relation identity, shared by heading and strand hues.
+    pub word: semantics::Word,
     /// The group word.
     pub text: &'static str,
     /// Fitted display text, shared by measurement and painting.
@@ -144,6 +157,8 @@ pub struct Head {
 /// A prism laid out for one frame.
 #[derive(Clone, Debug)]
 pub struct PrismFrame {
+    /// Native rail children own their row labels and proxy glyph paint.
+    pub rail: bool,
     /// The focus, on screen.
     pub fx: f32,
     /// The focus, on screen.
@@ -178,6 +193,9 @@ impl PrismFrame {
         self.slots.iter().position(|sl| {
             sl.node.is_some()
                 && sl.label.is_some_and(|[a, b, c, d]| {
+                    if self.rail {
+                        return x >= a && x < c && y >= b && y < d;
+                    }
                     (x >= a - 14.0 && x <= c + 4.0 && y >= b - 3.0 && y <= d + 3.0)
                         || (x - sl.px).hypot(y - sl.py) < 9.0
                 })
@@ -416,6 +434,7 @@ pub fn layout_with_room(
                 shape_fit(c.word.text(), heading, ink, column_width, window).text()
             };
             heads.push(Head {
+                word: c.word,
                 text: c.word.text(),
                 label_text,
                 x,
@@ -443,6 +462,7 @@ pub fn layout_with_room(
                 )
                 .text();
                 slots.push(Slot {
+                    word: c.word,
                     key: row.node.map(|node| SlotKey {
                         node,
                         side: semantic_side,
@@ -457,6 +477,8 @@ pub fn layout_with_room(
                     y: y + row_height / 2.0 - 2.0,
                     px: x,
                     py: y,
+                    proxy_visible: true,
+                    proxy_radius: 4.2,
                     hx: x,
                     hy: y,
                     home_on: false,
@@ -467,6 +489,7 @@ pub fn layout_with_room(
             }
             if c.more > 0 && !c.rows.is_empty() && !inline_more {
                 slots.push(Slot {
+                    word: c.word,
                     key: None,
                     node: None,
                     kind: None,
@@ -477,6 +500,8 @@ pub fn layout_with_room(
                     y: y + row_height / 2.0 - 2.0,
                     px: x,
                     py: y,
+                    proxy_visible: true,
+                    proxy_radius: 4.2,
                     hx: x,
                     hy: y,
                     home_on: false,
@@ -633,6 +658,7 @@ pub fn layout_with_room(
         });
     }
     PrismFrame {
+        rail: false,
         fx,
         fy,
         slots,
@@ -642,6 +668,107 @@ pub fn layout_with_room(
         node: prism.node,
         room,
     }
+}
+
+/// Native children paint rail names and proxies; only visible measured proxy
+/// intersections get strands. A partly visible name never creates a strand
+/// toward an offscreen gem.
+fn paint_rail(
+    frame: &PrismFrame,
+    look: &Look<'_>,
+    sel: Option<usize>,
+    hot: Option<usize>,
+    window: &mut Window,
+) {
+    let mut threads: [Fill; 4] = std::array::from_fn(|_| Fill::new());
+    let mut lights: [Fill; 4] = std::array::from_fn(|_| Fill::new());
+    let mut selected = Fill::new();
+    let mut selected_light = Fill::new();
+    let clip = [
+        (frame.fx - 16.0).min(frame.room[0]).max(look.view.x),
+        frame.room[1],
+        frame.room[2],
+        frame.room[3],
+    ];
+    for (q, slot) in frame.slots.iter().enumerate() {
+        if slot.more > 0 || slot.label.is_none() || !slot.proxy_visible {
+            continue;
+        }
+        let x0 = frame.fx + 10.0;
+        let x1 = slot.px - slot.proxy_radius - 2.0;
+        let c = (x1 - x0) * 0.5;
+        let mut points = vec![pt(x0, frame.fy)];
+        cubic_to(
+            &mut points,
+            pt(x0, frame.fy),
+            pt(x0 + c, frame.fy),
+            pt(x1 - c, slot.py),
+            pt(x1, slot.py),
+            20,
+        );
+        let outgoing = slot.key.is_none_or(|key| key.side > 0);
+        if !outgoing {
+            points.reverse();
+        }
+        let on = sel == Some(q) || hot == Some(q);
+        let family = super::scene::EdgeFamily::of_word(slot.word).slot();
+        let weight = if on {
+            EdgeWeight::SELECTED
+        } else {
+            EdgeWeight::SINGLE
+        }
+        .pixels();
+        let batch = if on {
+            &mut selected
+        } else {
+            &mut threads[family]
+        };
+        batch.polyline(&points, weight);
+        thread_terminal(
+            batch,
+            &points,
+            if outgoing { 0.0 } else { 14.0 },
+            weight.max(1.4),
+        );
+        if look.flow_alpha > 0.0 {
+            let light = if on {
+                &mut selected_light
+            } else {
+                &mut lights[family]
+            };
+            light.dashed_in(&points, 1.0, 1.5, 9.0, -look.flow * 1.4, clip);
+        }
+    }
+    let mask = gpui::ContentMask {
+        bounds: Bounds {
+            origin: point(px(clip[0]), px(clip[1])),
+            size: size(
+                px((clip[2] - clip[0]).max(0.0)),
+                px((clip[3] - clip[1]).max(0.0)),
+            ),
+        },
+    };
+    window.with_content_mask(Some(mask), |window| {
+        for (family, (thread, light)) in threads.into_iter().zip(lights).enumerate() {
+            let color = thread_tone(look.palette, family);
+            thread.paint(
+                window,
+                tone(color, (if family == 0 { 0.26 } else { 0.43 }) * frame.e),
+            );
+            light.paint(window, tone(color, 0.5 * frame.e * look.flow_alpha));
+        }
+        selected.paint(window, tone(look.palette.peri.base, 0.9 * frame.e));
+        selected_light.paint(
+            window,
+            tone(look.palette.peri.base, 0.5 * frame.e * look.flow_alpha),
+        );
+    });
+    let mut source = Fill::new();
+    source.diamond(frame.fx, frame.fy, 9.0);
+    source.paint(window, tone(look.palette.peri.base, 1.0));
+    let mut ring = Fill::new();
+    ring.diamond_ring(frame.fx, frame.fy, 14.0, 1.0);
+    ring.paint(window, tone(look.palette.peri.base, 0.45));
 }
 
 /// Paints the prism over the map (app.js `drawPrism`). `sel` is the walked
@@ -655,6 +782,10 @@ pub fn paint(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if frame.rail {
+        paint_rail(frame, look, sel, hot, window);
+        return;
+    }
     let world = &*look.scene.world;
     let palette = look.palette;
     let (ink, mint, peri, line) = (
@@ -693,25 +824,26 @@ pub fn paint(
     tethers.paint(window, tone(line, 0.12 * e));
     homes.paint(window, tone(ink, 0.25 * e));
     // Strands from the focus to each proxy, with flow along them.
-    let mut quiet = Fill::new();
-    let mut yours = Fill::new();
+    let mut threads: [Fill; 4] = std::array::from_fn(|_| Fill::new());
     let mut lit = Fill::new();
-    let mut flow_quiet = Fill::new();
+    let mut flow_threads: [Fill; 4] = std::array::from_fn(|_| Fill::new());
     let mut flow_lit = Fill::new();
     for (q, sl) in frame.slots.iter().enumerate() {
         if sl.more > 0 {
             continue;
         }
-        let out = sl.side > 0;
+        let placement_out = sl.side > 0;
+        let out = sl.key.map_or(placement_out, |key| key.side > 0);
+        let family = super::scene::EdgeFamily::of_word(sl.word).slot();
         let x0 = frame.fx
             + if frame.narrow {
                 10.0
-            } else if out {
+            } else if placement_out {
                 12.0
             } else {
                 -12.0
             };
-        let x1 = sl.px + if out { -7.0 } else { 7.0 };
+        let x1 = sl.px + if placement_out { -7.0 } else { 7.0 };
         let c = (x1 - x0) * 0.5;
         let mut pts = vec![pt(x0, frame.fy)];
         cubic_to(
@@ -723,48 +855,33 @@ pub fn paint(
             20,
         );
         let on = sel == Some(q) || hot == Some(q);
+        // Geometry follows column presentation, direction follows semantic
+        // identity even after incoming/outgoing merge on a narrow canvas.
+        if !out {
+            pts.reverse();
+        }
         if on {
-            lit.polyline(&pts, 1.5);
+            lit.polyline(&pts, EdgeWeight::SELECTED.pixels());
             if look.flow_alpha > 0.0 {
-                flow_lit.dashed_in(
-                    &pts,
-                    1.0,
-                    1.5,
-                    9.0,
-                    if out {
-                        -look.flow * 1.4
-                    } else {
-                        look.flow * 1.4
-                    },
-                    clip,
-                );
+                flow_lit.dashed_in(&pts, 1.0, 1.5, 9.0, -look.flow * 1.4, clip);
             }
         } else {
-            if sl.node.is_some_and(|j| world.yours(j)) {
-                yours.polyline(&pts, 1.0);
-            } else {
-                quiet.polyline(&pts, 1.0);
-            }
+            threads[family].polyline(&pts, EdgeWeight::SINGLE.pixels());
+            thread_terminal(&mut threads[family], &pts, if out { 2.0 } else { 3.0 }, 1.4);
             if look.flow_alpha > 0.0 {
-                flow_quiet.dashed_in(
-                    &pts,
-                    1.0,
-                    1.5,
-                    9.0,
-                    if out {
-                        -look.flow * 1.4
-                    } else {
-                        look.flow * 1.4
-                    },
-                    clip,
-                );
+                flow_threads[family].dashed_in(&pts, 1.0, 1.5, 9.0, -look.flow * 1.4, clip);
             }
         }
     }
-    quiet.paint(window, tone(ink, 0.26 * e));
-    yours.paint(window, tone(mint, 0.55 * e));
+    for (family, (thread, light)) in threads.into_iter().zip(flow_threads).enumerate() {
+        let color = thread_tone(palette, family);
+        thread.paint(
+            window,
+            tone(color, (if family == 0 { 0.26 } else { 0.43 }) * e),
+        );
+        light.paint(window, tone(color, 0.5 * e * look.flow_alpha));
+    }
     lit.paint(window, tone(peri, 0.9));
-    flow_quiet.paint(window, tone(ink, 0.5 * e * look.flow_alpha));
     flow_lit.paint(window, tone(peri, 0.5 * e * look.flow_alpha));
     // The focus gem.
     let mut gem = Fill::new();
@@ -863,7 +980,7 @@ pub fn paint(
         let t = shape(
             h.label_text.clone(),
             scaled(roles::HEAD, ts),
-            tone(ink, 0.5 * la),
+            tone(rail_head_tone(h.word, palette), 0.75 * la),
             window,
         );
         let x = if h.side > 0 {

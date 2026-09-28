@@ -759,7 +759,17 @@ in
             test-group = "display-global";
           }
           {
-            filter = "test(/corpus|multilingual|native|real_package/)";
+            filter = "test(/loom|contention|concurrent/)";
+            test-group = "concurrency-proof";
+            priority = 60;
+          }
+          {
+            # `native` is unanchored, so a laws or store-bolero name that
+            # merely contains those letters would enter this scarce group and
+            # can be killed on the 45s budget. backend-laws is the proptest
+            # suite. The three raw_property names are the store bolero tests.
+            # Store integration tests whose names contain "native" stay here.
+            filter = "test(/corpus|multilingual|native|real_package/) & !binary(backend_laws) & !test(/bolero_combines_structural_byte_mutations|every_byte_value_has_exact_structural_provenance|hostile_ordering_truncation_and_correlated_boundaries_are_exact/)";
             test-group = "native-compiler";
             threads-required = 2;
             slow-timeout = {

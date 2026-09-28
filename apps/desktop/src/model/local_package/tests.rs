@@ -407,6 +407,55 @@ fn readme_projection_retains_document_structure() {
 }
 
 #[test]
+fn readme_projection_ignores_manifest_package_facts() -> Outcome {
+    let scratch = Scratch::new("readme-facts")?;
+    scratch.write(
+        "Cargo.toml",
+        "[package]\nname = \"secret-name\"\nversion = \"9.9.9\"\n\n[dependencies]\nserde = \"1\"\n",
+    )?;
+    scratch.write("README.md", "# Visible title\n\nHello from the readme.\n")?;
+    let project = scratch.project()?;
+    let loader = LocalPackageLoader::without_cargo();
+    let package = loader.readme(&project).expect("readme");
+    assert_eq!(package.source, LocalPackageSource::Readme);
+    assert_eq!(package.name.as_ref(), scratch.0.file_name().unwrap().to_str().unwrap());
+    assert!(package.version.is_none());
+    assert!(package.dependencies.is_empty());
+    assert!(package.name.as_ref() != "secret-name");
+    assert!(matches!(
+        package.readme.as_ref(),
+        [
+            ReadmeBlock::Heading { level: 1, text },
+            ReadmeBlock::Paragraph(body)
+        ] if text.as_ref() == "Visible title" && body.as_ref() == "Hello from the readme."
+    ));
+    let mut load_ns = Vec::with_capacity(9);
+    let mut readme_ns = Vec::with_capacity(9);
+    for _ in 0..2 {
+        let _ = loader.load(&project);
+        let _ = loader.readme(&project);
+    }
+    for _ in 0..9 {
+        let started = Instant::now();
+        let loaded = loader.load(&project);
+        load_ns.push(started.elapsed().as_nanos());
+        assert_eq!(loaded.name.as_ref(), "secret-name");
+        let started = Instant::now();
+        let projected = loader.readme(&project).expect("readme");
+        readme_ns.push(started.elapsed().as_nanos());
+        assert_eq!(projected.source, LocalPackageSource::Readme);
+    }
+    load_ns.sort_unstable();
+    readme_ns.sort_unstable();
+    eprintln!(
+        "local package load median {} ns; readme projection median {} ns",
+        load_ns[load_ns.len() / 2],
+        readme_ns[readme_ns.len() / 2]
+    );
+    Ok(())
+}
+
+#[test]
 fn readme_summary_skips_headings_and_code_and_titles_drop_versions() {
     let source = "# Vector Tools v2.1\n\n```text\nnot prose\n```\n\nFirst\nparagraph.\n\nSecond.\n";
     assert_eq!(readme::first_paragraph(source), "First paragraph.");

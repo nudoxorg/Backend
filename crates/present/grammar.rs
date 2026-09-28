@@ -305,7 +305,9 @@ impl CommandGrammar {
             | CommandId::TreeOpen
             | CommandId::ForgeAdd
             | CommandId::Health
-            | CommandId::Revision => false,
+            | CommandId::Revision
+            | CommandId::ProjectTree
+            | CommandId::AdvisoryRefresh => false,
         }
     }
 
@@ -410,7 +412,7 @@ const LIMIT: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 40] = [
+pub const GRAMMARS: [CommandGrammar; 42] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -881,6 +883,26 @@ pub const GRAMMARS: [CommandGrammar; 40] = [
         )],
         options: &[],
         when: "Use after the bound lockfile changed, to make the folder match it again.",
+    },
+    CommandGrammar {
+        name: "project-tree",
+        tool: "backend.project_tree",
+        aliases: &[],
+        positional: &[ArgumentSpec::optional(
+            "path",
+            ArgumentKind::ProjectPath,
+            "Project directory; defaults to the active project.",
+        )],
+        options: &[],
+        when: "Use to see what a project depends on and why: the role of each direct dependency, the path to any package, which crates are here twice, and which advisories affect it.",
+    },
+    CommandGrammar {
+        name: "advisory-refresh",
+        tool: "backend.advisory_refresh",
+        aliases: &[],
+        positional: &[],
+        options: &[],
+        when: "Use before reading a tree when the advisory sources may have moved; it reads only the sources the owner was configured with.",
     },
     CommandGrammar {
         name: "tree",

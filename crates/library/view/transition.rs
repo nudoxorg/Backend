@@ -197,6 +197,8 @@ impl PreparedViewDelta {
             basis: self.source,
             frontier: self.target_frontier,
             rows_cache: Arc::new(OnceLock::new()),
+            package_labels: Arc::new(OnceLock::new()),
+            label_ids: Arc::new(OnceLock::new()),
             coverage: self.coverage.clone(),
             capability: Some(self.capability.clone()),
             relation: target_relation,

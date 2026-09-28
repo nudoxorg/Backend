@@ -1,6 +1,6 @@
 use super::build::{build_tree, empty_node};
 use super::update::{
-    apply_structural, collect_target_range, get_node, replace_existing, target_shape,
+    apply_structural, collect_target_range, find_node, get_node, replace_existing, target_shape,
 };
 use super::{Item, Node, PersistentTree, PreparedUpdate, TreeChange, TreeWork};
 use super::{
@@ -290,6 +290,18 @@ impl<R: Relation, I: TreeInterner<R> + Clone> PersistentTree<R, I> {
         R::Key: Borrow<Q>,
     {
         get_node(&self.root, key)
+    }
+
+    /// Binary-searches the tree by a key-order predicate and borrows the match.
+    ///
+    /// `ord` must agree with canonical key order. One root-to-leaf path is
+    /// visited, and the stored value is not cloned.
+    #[must_use]
+    pub fn find_by<F>(&self, mut ord: F) -> Option<(&R::Key, &R::Value)>
+    where
+        F: FnMut(&R::Key) -> std::cmp::Ordering,
+    {
+        find_node(&self.root, &mut ord)
     }
 
     /// Iterates rows in canonical key order.

@@ -1177,6 +1177,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-fuzz"
+version = "0.1.0"
+dependencies = [
+ "backend-compile",
+ "backend-engine",
+ "backend-flow",
+ "backend-replication",
+ "backend-semantic",
+ "backend-store",
+ "backend-version",
+ "bolero",
+]
+
+[[package]]
 name = "backend-gui-harness"
 version = "0.1.0"
 dependencies = [
@@ -1254,6 +1268,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "toml 0.8.23",
  "ureq",
 ]
 
@@ -1359,6 +1374,7 @@ name = "backend-present"
 version = "0.1.0"
 dependencies = [
  "allocation-counter",
+ "backend-advisory",
  "backend-client",
  "backend-library",
  "serde",

@@ -1,0 +1,5 @@
+# LibFuzzer dictionary for the native authority envelope.
+# The magic is PAYLOAD_MAGIC from native_protocol.rs. No keys or tokens.
+
+magic="BCN\x00"
+version="\x00\x01"

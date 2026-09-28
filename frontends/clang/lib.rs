@@ -268,7 +268,7 @@ pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_comp
     );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::Clang,
-        b"tree-sitter-cpp-0.23.4/tags-v2",
+        b"tree-sitter-cpp-0.23.4/tags-v3",
         vec![backend_compile::GrammarVariant::new(
             &["c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx", "m", "mm"],
             tree_sitter_cpp::LANGUAGE.into(),

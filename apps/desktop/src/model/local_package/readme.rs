@@ -92,6 +92,25 @@ fn is_version_word(word: &str) -> bool {
         .is_some_and(|rest| rest.starts_with(|character: char| character.is_ascii_digit()))
 }
 
+/// Projects a conventional README at the project root.
+///
+/// Package identity stays with the canonical manifest reader. This only
+/// opens a README file the dossier can render.
+pub(super) fn project_readme(root: &Path) -> Arc<[ReadmeBlock]> {
+    for name in ["README.md", "README.markdown", "README", "readme.md"] {
+        let path = root.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let text = read(&path);
+        if text.is_empty() {
+            continue;
+        }
+        return parse(&text).into();
+    }
+    Arc::from([])
+}
+
 /// Projects Markdown into [`ReadmeBlock`]s.
 pub(super) fn parse(readme: &str) -> Vec<ReadmeBlock> {
     let mut parser = Parser::default();

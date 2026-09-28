@@ -436,9 +436,9 @@ fn full_world_startup_and_first_input_cost() {
     let start = std::time::Instant::now();
     let baseline = crate::semantics::names::Names::new(&w);
     let name_build = start.elapsed();
-    let package = (0..u32::try_from(w.packages.len()).unwrap())
+    let package = (0..u32::try_from(w.packages.len()).expect("fixture package count fits u32"))
         .max_by_key(|&package| d.package_items(package).len())
-        .unwrap();
+        .expect("fixture has at least one package");
     let start = std::time::Instant::now();
     let tour = d.package_tour(package).expect("prepared package tour");
     let tour_build = start.elapsed();
@@ -1118,7 +1118,7 @@ fn qualified_nominal_types_must_agree_with_the_retained_node_identity() {
         ],
         Vec::new(),
     )
-    .unwrap();
+    .expect("fixture world is valid");
     w.importance[1] = 100.0;
     let d = Discovery::new(&w);
     assert_eq!(
@@ -1288,7 +1288,7 @@ fn relative_trait_paths_are_scoped_to_their_package_and_module() {
             vec![schema, encode],
             Vec::new(),
         )
-        .unwrap();
+        .expect("fixture world is valid");
         let d = Discovery::new(&w);
         assert_eq!(
             !d.query(&w, "Schema -> text").rows.is_empty(),
@@ -1438,7 +1438,8 @@ fn qualified_shape_names_compare_complete_segments_instead_of_substrings() {
     let mut from_b = call("from_b", None, false, &["value: Thing"], "String");
     from_b.pkg = 1;
     from_b.module = 1;
-    let w = World::new(packages, modules, vec![a, b, from_a, from_b], Vec::new()).unwrap();
+    let w = World::new(packages, modules, vec![a, b, from_a, from_b], Vec::new())
+        .expect("qualified identity fixture world is valid");
     let d = Discovery::new(&w);
     assert_eq!(
         d.query(&w, "b::Thing -> text")
@@ -1483,7 +1484,7 @@ fn qualified_shape_names_compare_complete_segments_instead_of_substrings() {
         ],
         Vec::new(),
     )
-    .unwrap();
+    .expect("fixture world is valid");
     w.importance[1] = 100.0;
     let d = Discovery::new(&w);
     assert_eq!(
@@ -1528,7 +1529,7 @@ fn trait_identity_includes_package_version_and_selected_dependency() {
         vec![schema.clone(), encode.clone()],
         Vec::new(),
     )
-    .unwrap();
+    .expect("fixture world is valid");
     assert!(
         Discovery::new(&w)
             .query(&w, "Schema -> text")
@@ -1543,7 +1544,7 @@ fn trait_identity_includes_package_version_and_selected_dependency() {
         vec![schema.clone(), encode.clone()],
         Vec::new(),
     )
-    .unwrap();
+    .expect("fixture world is valid");
     assert_eq!(
         Discovery::new(&w).query(&w, "Schema -> text").rows[0].label,
         "encode"
@@ -1558,7 +1559,7 @@ fn trait_identity_includes_package_version_and_selected_dependency() {
                 version: "1".into(),
                 yours: true,
                 external: false,
-                deps: vec![u32::try_from(a).unwrap()],
+                deps: vec![u32::try_from(a).expect("fixture package index fits u32")],
             }),
     );
     modules.extend([2, 3].into_iter().map(|pkg| Module {
@@ -1578,7 +1579,7 @@ fn trait_identity_includes_package_version_and_selected_dependency() {
         vec![schema.clone(), encode.clone()],
         Vec::new(),
     )
-    .unwrap();
+    .expect("fixture world is valid");
     assert!(
         Discovery::new(&w)
             .query(&w, "Schema -> text")
@@ -1586,7 +1587,8 @@ fn trait_identity_includes_package_version_and_selected_dependency() {
             .is_empty()
     );
     packages[3].deps = vec![0];
-    let w = World::new(packages, modules, vec![schema, encode], Vec::new()).unwrap();
+    let w = World::new(packages, modules, vec![schema, encode], Vec::new())
+        .expect("dependency fixture world is valid");
     assert_eq!(
         Discovery::new(&w).query(&w, "Schema -> text").rows[0].label,
         "encode"
@@ -1614,7 +1616,7 @@ fn crate_type_paths_accept_normalized_full_and_short_package_names() {
         ],
         Vec::new(),
     )
-    .unwrap();
+    .expect("fixture world is valid");
     let d = Discovery::new(&w);
     for q in ["backend_demo::Thing -> text", "demo::Thing -> text"] {
         assert_eq!(d.query(&w, q).rows[0].label, "consume", "{q}");
@@ -1730,6 +1732,11 @@ fn prepared_focus_facts_preserve_member_callers_and_tours() {
     let attached = Discovery::from_prepared(d.prepared());
     assert!(Arc::ptr_eq(&d.focus_facts, &attached.focus_facts));
     assert!(Arc::ptr_eq(&d.package_tours, &attached.package_tours));
+    assert_eq!(
+        d.prepare_duration(),
+        attached.prepare_duration(),
+        "worker snapshots preserve the original cold preparation measurement"
+    );
 }
 
 #[test]

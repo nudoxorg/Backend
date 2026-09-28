@@ -80,6 +80,8 @@ pub struct Coverage {
     pub contrast: usize,
     /// Text boxes whose contrast could not be measured (1x, off-screen, empty).
     pub contrast_skipped: usize,
+    /// Text rectangles fully hidden by the actual native paint mask/window.
+    pub hidden_texts: usize,
 }
 
 /// The lints of one frame.
@@ -97,6 +99,19 @@ fn intersection(a: &crate::probe::BoundsSample, b: &crate::probe::BoundsSample) 
     let width = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
     let height = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
     (width, height)
+}
+
+/// Native visibility affects pixel/overlap checks, never intrinsic layout metrics.
+fn visible_bounds(text: &crate::probe::TextSample, width: f32, height: f32) -> Option<crate::probe::BoundsSample> {
+    let bounds = &text.bounds;
+    let clip = text.paint_clip.as_ref();
+    let x = bounds.x.max(clip.map_or(0.0, |b| b.x)).max(0.0);
+    let y = bounds.y.max(clip.map_or(0.0, |b| b.y)).max(0.0);
+    let right = (bounds.x + bounds.width).min(clip.map_or(width, |b| b.x + b.width)).min(width);
+    let bottom = (bounds.y + bounds.height).min(clip.map_or(height, |b| b.y + b.height)).min(height);
+    (right > x && bottom > y).then(|| crate::probe::BoundsSample {
+        key: bounds.key.clone(), x, y, width: right - x, height: bottom - y,
+    })
 }
 
 /// Measures the contrast of the ink in a logical box of `image` (painted at
@@ -176,22 +191,10 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
             });
         }
         // Contrast from the pixels.
-        let visible = text.bounds.x < width
-            && text.bounds.y < height
-            && text.bounds.x + text.bounds.width > 0.0
-            && text.bounds.y + text.bounds.height > 0.0;
-        let measured = (viewport.scale == 2 && visible)
-            .then(|| {
-                ink_contrast(
-                    image,
-                    viewport.scale,
-                    text.bounds.x,
-                    text.bounds.y,
-                    text.bounds.width,
-                    text.bounds.height,
-                )
-            })
-            .flatten();
+        let visible = visible_bounds(text, width, height);
+        if visible.is_none() { out.coverage.hidden_texts += 1; }
+        let measured = (viewport.scale == 2).then(|| visible.as_ref()).flatten()
+            .and_then(|bounds| ink_contrast(image, viewport.scale, bounds.x, bounds.y, bounds.width, bounds.height));
         match measured {
             Some((ratio, ink, ground)) => {
                 out.coverage.contrast += 1;
@@ -224,7 +227,8 @@ pub fn lint(image: &RgbaImage, ledger: &Ledger, viewport: Viewport) -> Linted {
             if a.region != b.region || a.key == b.key {
                 continue;
             }
-            let (w, h) = intersection(&a.bounds, &b.bounds);
+            let (Some(a_visible), Some(b_visible)) = (visible_bounds(a, width, height), visible_bounds(b, width, height)) else { continue; };
+            let (w, h) = intersection(&a_visible, &b_visible);
             if w > 1.0 && h > 1.0 {
                 out.lints.push(Lint {
                     rule: Rule::Overlap,
@@ -275,6 +279,7 @@ pub fn json(linted: &Linted) -> Json {
             "coverage",
             Json::obj([
                 ("texts", Json::num(linted.coverage.texts as f64)),
+                ("hidden_texts", Json::num(linted.coverage.hidden_texts as f64)),
                 ("targets", Json::num(linted.coverage.targets as f64)),
                 ("contrast", Json::num(linted.coverage.contrast as f64)),
                 (
@@ -352,6 +357,44 @@ mod tests {
                 ..Target::default()
             },
         }
+    }
+
+    fn text_at(key: &str, rect: BoundsSample, clip: Option<BoundsSample>) -> crate::probe::TextSample {
+        crate::probe::TextSample { key: key.to_owned(), bounds: rect, paint_clip: clip,
+            natural_width: 20.0, overflow: crate::probe::TextOverflow::Clip, content: "label".to_owned(),
+            min_width: 20.0, line_height: 10.0, size: 12.0, weight: 400.0, region: Some("graph".to_owned()) }
+    }
+
+    #[test]
+    fn native_hidden_text_neither_overlaps_a_card_nor_samples_its_background() {
+        let ledger = Ledger { texts: vec![
+            text_at("hidden",bounds(10.0,100.0,40.0,20.0),Some(bounds(0.0,0.0,80.0,50.0))),
+            text_at("card",bounds(10.0,100.0,40.0,20.0),None),
+        ], ..Ledger::default() };
+        let result = lint(&blank(800,600), &ledger, Viewport { scale: 2, ..viewport() });
+        assert_eq!(result.coverage.texts,2); assert_eq!(result.coverage.hidden_texts,1);
+        assert!(!result.lints.iter().any(|lint| lint.key.contains("hidden")), "{:?}",result.lints);
+    }
+
+    #[test]
+    fn native_partial_text_still_checks_visible_low_contrast_ink() {
+        let ledger = Ledger { texts: vec![text_at("partial",bounds(10.0,10.0,40.0,20.0),Some(bounds(0.0,0.0,80.0,20.0)))], ..Ledger::default() };
+        let mut image=blank(800,600);
+        image.put_pixel(24,26,Rgba([25,30,40,255]));
+        image.put_pixel(24,50,Rgba([255,255,255,255])); // outside the actual clip
+        let result=lint(&image,&ledger,Viewport { scale: 2, ..viewport() });
+        assert_eq!(result.coverage.hidden_texts,0); assert_eq!(result.coverage.contrast,1);
+        assert!(result.lints.iter().any(|lint| lint.rule==super::Rule::Contrast && lint.key=="partial"),"{:?}",result.lints);
+    }
+
+    #[test]
+    fn native_visible_text_overlap_remains_a_failure() {
+        let ledger=Ledger { texts: vec![
+            text_at("a",bounds(10.0,10.0,40.0,20.0),Some(bounds(0.0,0.0,35.0,25.0))),
+            text_at("b",bounds(20.0,12.0,40.0,20.0),None),
+        ], ..Ledger::default() };
+        let result=lint(&blank(400,300),&ledger,viewport());
+        assert!(result.lints.iter().any(|lint| lint.rule==super::Rule::Overlap && lint.key=="a + b"),"{:?}",result.lints);
     }
 
     /// A row 40 px below a 300 px viewport is offscreen when nothing

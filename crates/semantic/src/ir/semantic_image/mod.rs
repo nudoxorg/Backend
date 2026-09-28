@@ -22,7 +22,8 @@ pub use full::{
 };
 pub use full_wire::{
     FullSemanticImageError, FullSemanticImageFault, FullSemanticImageField,
-    FullSemanticImageIdentityField, SemanticImageView, encode_full_semantic_image,
+    AdmittedSemanticImage, FullSemanticImageIdentityField, SemanticImageView,
+    encode_full_semantic_image, reset_semantic_image_validations, semantic_image_validations,
     full_semantic_image_len,
 };
 /// Exact planning failures from [`encode_full_semantic_image`].

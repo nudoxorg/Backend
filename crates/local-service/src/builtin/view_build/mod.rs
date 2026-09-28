@@ -11,10 +11,18 @@ mod call_join;
 mod go_field_join;
 #[cfg(test)]
 mod go_type_mention_join;
+#[cfg(test)]
+mod java_enum_value_join;
+#[cfg(test)]
+mod py_function_field_join;
+#[cfg(test)]
+mod py_static_field_join;
 mod identity;
 mod query;
 mod semantic;
 mod structural;
+mod image_reopen;
+mod image_rows;
 
 pub(crate) use call_join::{
     ProjectCallableIndex, foreign_display_name, foreign_namespace_call_retarget,
@@ -27,7 +35,9 @@ pub(crate) use identity::query_semantic_id;
 pub(super) use identity::{external_semantic_symbol, package_token, semantic_symbol};
 pub(crate) use identity::semantic_coordinate;
 pub(super) use query::semantic_query_corpus;
-pub(super) use semantic::{ProjectedRows, StructuralSites, rows_for_indexed_sources};
+pub(super) use semantic::{
+    ForeignPublication, ProjectedRows, StructuralSites, rows_for_indexed_sources,
+};
 pub(crate) use semantic::{EXTERNAL_SEMANTIC_TARGET_LABEL, compiled_source_path};
 pub(crate) use structural::{
     resolve_specifier_paths, structural_call_coordinate_pairs, structural_call_graph_relations,
@@ -39,13 +49,87 @@ use query::append_structural_query_facts;
 use semantic::{ProfileStalePaths, SourceRowProjection};
 use structural::{StructuralParent, StructuralProjectionPlan};
 
+/// Builds the structural declaration plan and drops it. Benchmarks time this.
+pub(super) fn project_structural_plan(
+    sources: &super::IndexedSources,
+) -> Result<(), super::BuiltinModelError> {
+    StructuralProjectionPlan::of(sources, &std::collections::BTreeSet::new()).map(|_| ())
+}
+
+/// Plans structural rows for `only` these files and drops the plan.
+///
+/// The type index still walks every file in `sources`.
+pub(super) fn project_structural_files(
+    sources: &super::IndexedSources,
+    only: &std::collections::BTreeSet<[u8; 32]>,
+) -> Result<(), super::BuiltinModelError> {
+    StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only).map(|_| ())
+}
+
+/// Times one semantic-image validation against three validations and against
+/// projecting that image's rows.
+pub(super) fn measure_semantic_image_reopen() {
+    image_reopen::measure_semantic_image_reopen();
+}
+
+/// Times projecting one semantic image against reusing the resident rows.
+pub(super) fn measure_semantic_image_rows() {
+    image_rows::measure_semantic_image_rows();
+}
+
+/// Times a batch of semantic images against reusing their admitted rows.
+pub(super) fn measure_semantic_image_batch() {
+    image_rows::measure_semantic_image_batch();
+}
+
+/// Times admitting a batch of images against reusing that admission.
+pub(super) fn measure_semantic_admission() {
+    image_rows::measure_semantic_admission();
+}
+
+/// Times validating semantic images against reusing their structural proofs.
+pub(super) fn measure_semantic_image_proof() {
+    image_rows::measure_semantic_image_proof();
+}
+
+/// Times snapshot admission and an overlay miss against the stored digest and proof.
+pub(super) fn measure_semantic_snapshot_residence() {
+    image_rows::measure_semantic_snapshot_residence();
+}
+
+/// Times one query-image validation against the three the corpus used to pay.
+pub(super) fn measure_semantic_query_walk() {
+    query::measure_semantic_query_walk();
+}
+
+/// Projected semantic rows reused across publications of the same image.
+pub(in crate::builtin) use image_rows::ImageRowResidence;
+
+/// Admits activated image bytes, reopening only when this key has not admitted them.
+pub(in crate::builtin) use image_rows::admit_activated_images;
+
+/// Projects structural rows for `only` these files.
+///
+/// A parent coordinate planned in this call wins. Otherwise `resident_labels`
+/// supplies the symbol already published for that coordinate.
+pub(super) fn rows_for_structural_files(
+    initial: &backend_engine::ViewRoot,
+    sources: &super::IndexedSources,
+    only: &std::collections::BTreeSet<[u8; 32]>,
+    resident_labels: &std::collections::BTreeMap<String, backend_engine::SymbolKey>,
+) -> Result<Vec<backend_engine::Row>, super::BuiltinModelError> {
+    let plan =
+        StructuralProjectionPlan::of_files(sources, &std::collections::BTreeSet::new(), only)?;
+    semantic::rows_for_changed_structural_files(initial, sources, &plan, resident_labels)
+}
+
 const MAX_SEMANTIC_TYPE_DEPTH: usize = 256;
 const MAX_SEMANTIC_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAX_SEMANTIC_DOCUMENT_BYTES: usize = 256 * 1024;
 const MAX_SEMANTIC_QUERY_ROWS: usize = 65_536;
 
 /// Document note appended to every row projected from a stale semantic image.
-const STALE_NOTE: &str =
+pub(super) const STALE_NOTE: &str =
     "stale semantic image: compiled from an earlier source snapshot; re-index to refresh";
 
 type DeclarationOccurrenceKey = (String, String, String);
@@ -90,8 +174,9 @@ mod tests {
     use super::ProfileStalePaths;
     use super::{
         STALE_NOTE, SourceRowProjection, StructuralParent, StructuralProjectionPlan,
-        append_structural_query_facts, semantic_profile_is_complete, structural_call_graph_relations,
-        structural_excerpt_calls,
+        append_structural_query_facts, semantic_profile_is_complete,
+        structural_call_coordinate_pairs,         structural_call_graph_relations, structural_call_graph_relations_mapped,
+        structural_excerpt_calls, structural_reference_facts, view_row_for_structural_coordinate,
     };
     use backend_engine::{
         Row, RowId, ViewRoot, package_key, product_source_file_key, symbol_key,
@@ -379,6 +464,279 @@ pub fn execute() {}
             )]),
             files: vec![(file_key, record)],
         })
+    }
+
+    /// Encodes one image whose declarations carry the attribute and
+    /// documentation planes a producer captured, under `profile`.
+    fn facts_image(
+        profile: LanguageProfile,
+        tool: NativeTool,
+        items: &[TreeItemInput<'_>],
+    ) -> Result<Vec<u8>, String> {
+        let source = SourceIdentity {
+            identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"facts-source"),
+            byte_len: 14,
+        };
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            tool,
+            source.identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"facts-toolchain"),
+        );
+        let coordinate = PackageUrl::parse("pkg:generic/facts@1.0.0".to_owned())
+            .map_err(|error| format!("fixture coordinate: {error:?}"))?;
+        let mut builder = IrBuilder::new();
+        builder
+            .set_image_provenance_for_package(source, recipe, &coordinate, FIXTURE_PATH)
+            .map_err(|error| error.to_string())?;
+        let versions = (0..items.len())
+            .map(|index| fixture_version(u8::try_from(index + 1).unwrap_or(u8::MAX)))
+            .collect::<Vec<_>>();
+        builder
+            .add_borrowed_tree(BorrowedTree {
+                versions: &versions,
+                items,
+                links: &[],
+            })
+            .map_err(|error| error.to_string())?;
+        let ir = builder.finish().map_err(|error| error.to_string())?;
+        let mut bytes = vec![0; full_semantic_image_len(&ir).map_err(|error| error.to_string())?];
+        encode_full_semantic_image(&ir, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn image_rows(bytes: &[u8], profile: LanguageProfile) -> Result<Vec<Row>, String> {
+        let view = SemanticImageView::reopen(bytes).map_err(|error| error.to_string())?;
+        let project = IndexedProject {
+            package: package_key("fixture"),
+            label: "fixture".to_owned(),
+            files: Arc::<[[u8; 32]]>::from([]),
+        };
+        let (initial, _) = initial_view().map_err(|e| e.to_string())?;
+        let mut symbols = BTreeSet::new();
+        let mut rows = Vec::new();
+        let mut remaining = usize::MAX;
+        let mut sink = super::SemanticRowSink {
+            initial: &initial,
+            symbols: &mut symbols,
+            rows: &mut rows,
+            capacity: 64,
+            remaining_bytes: &mut remaining,
+            stale: false,
+            path: FIXTURE_PATH,
+            site_declarations: &[],
+        };
+        super::append_image_rows(&view, &project, profile, &mut sink)
+            .map_err(|error| error.to_string())?;
+        Ok(rows)
+    }
+
+    fn captured_planes(parentage: ParentageAuthority) -> EntityAuthorityFacts {
+        EntityAuthorityFacts {
+            attributes: FactAvailability::Captured,
+            documentation: FactAvailability::Captured,
+            ..fixture_authority(parentage)
+        }
+    }
+
+    fn rendered_deprecation(row: &Row) -> String {
+        match &row.facts.deprecation {
+            backend_compile::Fact::Unobserved => "unobserved".to_owned(),
+            backend_compile::Fact::Absent => "absent".to_owned(),
+            backend_compile::Fact::Present(notice) => {
+                format!("since {:?} note {:?}", notice.since(), notice.note())
+            }
+        }
+    }
+
+    #[test]
+    fn a_semantic_row_reads_deprecation_from_its_captured_attributes_and_docs()
+    -> Result<(), String> {
+        use backend_semantic::ir::DocInput;
+        let profile = LanguageProfile::Java(backend_semantic::vocabulary::JavaRelease::Java17);
+        let docs = [
+            DocInput::Text("Makes one."),
+            DocInput::SoftBreak,
+            DocInput::Text("@deprecated use Fresh instead"),
+        ];
+        let attributes: [&[u8]; 1] = [br#"@java.lang.Deprecated(since="9", forRemoval=true)"#];
+        let items = [
+            TreeItemInput {
+                name: b"make",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: captured_planes(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &docs,
+                attributes: &attributes,
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"fresh",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: captured_planes(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"blind",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: fixture_authority(ParentageAuthority::Root),
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        let rows = image_rows(&facts_image(profile, NativeTool::JavaCompiler, &items)?, profile)?;
+        assert_eq!(
+            rendered_deprecation(row_named(&rows, "make")?),
+            r#"since Some("9") note Some("use Fresh instead")"#
+        );
+        assert_eq!(rendered_deprecation(row_named(&rows, "fresh")?), "absent");
+        assert_eq!(
+            rendered_deprecation(row_named(&rows, "blind")?),
+            "unobserved",
+            "an authority that captured no attribute plane observed nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_go_interface_method_is_required_and_a_deprecated_paragraph_is_read() -> Result<(), String>
+    {
+        use backend_semantic::ir::DocInput;
+        let profile = LanguageProfile::Go(backend_semantic::vocabulary::GoVersion::Go124);
+        let docs = [
+            DocInput::Text("Old makes one."),
+            DocInput::SoftBreak,
+            DocInput::SoftBreak,
+            DocInput::Text("Deprecated: use New."),
+        ];
+        let documented = EntityAuthorityFacts {
+            documentation: FactAvailability::Captured,
+            ..fixture_authority(ParentageAuthority::Root)
+        };
+        let items = [
+            TreeItemInput {
+                name: b"Shape",
+                kind: ItemKind::Trait,
+                visibility: Visibility::Public,
+                authority: documented,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"Area",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: EntityAuthorityFacts {
+                    documentation: FactAvailability::Captured,
+                    ..fixture_authority(fixture_identity(1))
+                },
+                parent: Some(TreeEntityId::new(0)),
+                semantic_type: None,
+                members: &[],
+                docs: &[],
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+            TreeItemInput {
+                name: b"Old",
+                kind: ItemKind::Function,
+                visibility: Visibility::Public,
+                authority: documented,
+                parent: None,
+                semantic_type: None,
+                members: &[],
+                docs: &docs,
+                attributes: &[],
+                source: None,
+                extension: None,
+            },
+        ];
+        let rows = image_rows(&facts_image(profile, NativeTool::GoCompiler, &items)?, profile)?;
+        let area = row_named(&rows, "Area")?;
+        assert_eq!(
+            area.facts.obligation,
+            backend_compile::Fact::Present(backend_compile::Obligation::Required)
+        );
+        let old = row_named(&rows, "Old")?;
+        assert_eq!(old.facts.obligation, backend_compile::Fact::Absent);
+        assert_eq!(rendered_deprecation(old), r#"since None note Some("use New.")"#);
+        Ok(())
+    }
+
+    #[test]
+    fn a_structural_row_carries_its_facts_and_no_invented_documentation() -> Result<(), String> {
+        let frontend = backend_frontend_rust::syntax_frontend().map_err(|e| e.to_string())?;
+        let source = "/// Makes one.\n#[deprecated(since = \"1.2.0\", note = \"use `fresh`\")]\npub fn stale() {}\n\npub fn bare() {}\n";
+        let analysis = frontend
+            .analyze(std::path::Path::new(FIXTURE_PATH), source.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let project_key = [9u8; 32];
+        let sources = structural_sources(
+            project_key,
+            FIXTURE_PATH,
+            backend_engine::SourceLanguage::Rust,
+            analysis.declarations().clone(),
+        )?;
+        let (initial, _) = initial_view().map_err(|e| e.to_string())?;
+        let structural_plan =
+            StructuralProjectionPlan::of(&sources, &BTreeSet::new()).map_err(|e| e.to_string())?;
+        let targets = super::SemanticTargets::default();
+        let mut projection = SourceRowProjection::new(
+            &initial,
+            &sources.projects,
+            64,
+            &targets,
+            &structural_plan,
+            std::path::Path::new("/tmp"),
+        )
+        .map_err(|e| e.to_string())?;
+        for (key, file) in &sources.files {
+            projection
+                .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+                .map_err(|e| e.to_string())?;
+        }
+        let rows = projection.finish(Vec::new()).map_err(|e| e.to_string())?;
+        let stale = row_named(&rows, "stale")?;
+        assert_eq!(
+            rendered_deprecation(stale),
+            r#"since Some("1.2.0") note Some("use `fresh`")"#
+        );
+        assert_eq!(
+            stale.document.as_ref(),
+            &[backend_engine::Fragment::Text("Makes one.".to_owned())]
+        );
+        let bare = row_named(&rows, "bare")?;
+        assert_eq!(rendered_deprecation(bare), "absent");
+        assert!(
+            bare.document.is_empty(),
+            "an undocumented declaration has an empty document, not {:?}",
+            bare.document
+        );
+        Ok(())
     }
 
     #[test]
@@ -2034,6 +2392,302 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             &rows,
             false,
         )?;
+        Ok(())
+    }
+
+    fn republish(view: &ViewRoot, rows: Vec<Row>) -> Result<ViewRoot, String> {
+        let capability = view.capability().ok_or("view has no coverage capability")?;
+        ViewRoot::new_checked(
+            view.recipe(),
+            view.basis(),
+            view.frontier(),
+            rows,
+            view.coverage().to_vec(),
+            capability,
+        )
+        .map_err(|error| format!("{error:?}"))
+    }
+
+    fn relations_cloning_every_row(
+        view: &ViewRoot,
+        sources: &super::super::IndexedSources,
+        package: backend_engine::PackageKey,
+        source_id: RowId,
+        include_incoming: bool,
+    ) -> Result<Vec<backend_engine::GraphRelation>, String> {
+        let rows = view.row_refs().cloned().collect::<Vec<_>>();
+        if !rows.iter().any(|row| row.id == source_id) {
+            return Err("structural call graph source is absent from the view".to_owned());
+        }
+        let mut coordinate_ids = BTreeMap::<String, RowId>::new();
+        for row in &rows {
+            if row.package == Some(package) {
+                coordinate_ids.insert(row.label.clone(), row.id);
+            }
+        }
+        let mut relations = BTreeSet::new();
+        let pairs = structural_call_coordinate_pairs(sources, package)
+            .map_err(|error| error.to_string())?;
+        for (caller_coordinate, callee_coordinate) in pairs {
+            let caller_id = *coordinate_ids.get(&caller_coordinate).ok_or(
+                "structural call graph caller is absent from the published view",
+            )?;
+            let callee_id = *coordinate_ids.get(&callee_coordinate).ok_or(
+                "structural call graph callee is absent from the published view",
+            )?;
+            relations.insert(backend_engine::GraphRelation::new(
+                caller_id,
+                callee_id,
+                backend_library::SemanticLinkKind::Calls,
+            ));
+        }
+        Ok(relations
+            .into_iter()
+            .filter(|relation| {
+                if include_incoming {
+                    relation.from == source_id || relation.to == source_id
+                } else {
+                    relation.from == source_id
+                }
+            })
+            .collect())
+    }
+
+    #[test]
+    fn borrowed_call_graph_matches_cloned_rows_and_skips_sibling_bodies() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { entriesFromItems } from \"./apply-set\";\nexport function syncWorkout() { entriesFromItems(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, mut rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
+        let callee = "fixture::apply-set.ts:1::entriesFromItems";
+        let sibling_package = package_key("pkg:beta");
+        let body = "x".repeat(4096);
+        for index in 0..4096 {
+            let label = format!("pkg:beta::item-{index:04}");
+            rows.push(
+                Row::in_package(
+                    RowId::Symbol(symbol_key(&label)),
+                    view.basis(),
+                    sibling_package,
+                    label,
+                )
+                .with_document(vec![backend_engine::Fragment::Text(body.clone())]),
+            );
+        }
+        let heavy = republish(&view, rows)?;
+        let owned = relations_cloning_every_row(&heavy, &sources, package, sync, false)?;
+        let borrowed = calls_relations(&heavy, &sources, package, sync, false)?;
+        let callee_id = row_for_coordinate_in(&heavy, callee)?;
+        if owned != borrowed || borrowed.len() != 1 || borrowed[0].to != callee_id {
+            return Err(format!("owned {owned:?} borrowed {borrowed:?}"));
+        }
+        if heavy.last_package_label(package, callee) != Some(callee_id) {
+            return Err(format!("label resolution {borrowed:?} last {callee_id:?}"));
+        }
+        let pairs = structural_call_coordinate_pairs(&sources, package)
+            .map_err(|error| error.to_string())?;
+        let mapped = structural_call_graph_relations_mapped(&heavy, &pairs, package, sync, false);
+        if mapped != borrowed {
+            return Err(format!("mapped {mapped:?} borrowed {borrowed:?}"));
+        }
+        let facts = structural_reference_facts(&heavy, &sources, callee)
+            .map_err(|error| error.to_string())?;
+        let RowId::Symbol(sync_symbol) = sync else {
+            return Err("sync row is not a symbol".to_owned());
+        };
+        if facts.len() != 1 || facts[0].site != sync_symbol {
+            return Err(format!("expected one incoming fact from syncWorkout, got {facts:?}"));
+        }
+
+        let mut owned_samples = Vec::with_capacity(9);
+        let mut borrowed_samples = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = std::time::Instant::now();
+            std::hint::black_box(relations_cloning_every_row(
+                &heavy, &sources, package, sync, false,
+            )?)
+            .len();
+            owned_samples.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            std::hint::black_box(calls_relations(&heavy, &sources, package, sync, false)?).len();
+            borrowed_samples.push(started.elapsed().as_nanos());
+        }
+        owned_samples.sort_unstable();
+        borrowed_samples.sort_unstable();
+        let owned_median = owned_samples[owned_samples.len() / 2];
+        let borrowed_median = borrowed_samples[borrowed_samples.len() / 2];
+        eprintln!(
+            "call_graph_rows rows=4096 owned_median_ns={owned_median} \
+             borrowed_median_ns={borrowed_median}"
+        );
+        if borrowed_median * 2 >= owned_median {
+            return Err(format!(
+                "borrowed {borrowed_median} ns, owned {owned_median} ns"
+            ));
+        }
+        Ok(())
+    }
+
+    fn row_for_coordinate_in(view: &ViewRoot, coordinate: &str) -> Result<RowId, String> {
+        view.row_refs()
+            .find(|row| row.label == coordinate)
+            .map(|row| row.id)
+            .ok_or_else(|| format!("missing row for coordinate {coordinate}"))
+    }
+
+    #[test]
+    fn duplicate_call_labels_keep_first_coordinate_and_last_graph_edge() -> Result<(), String> {
+        let apply = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "apply-set.ts",
+            "export function entriesFromItems() {}\n",
+        )?;
+        let weeks = analyze_source(
+            backend_engine::SourceLanguage::TypeScript,
+            "weeks.ts",
+            "import { entriesFromItems } from \"./apply-set\";\nexport function syncWorkout() { entriesFromItems(); }\n",
+        )?;
+        let (sources, package) = cross_file_sources(&[
+            ("apply-set.ts", backend_engine::SourceLanguage::TypeScript, apply),
+            ("weeks.ts", backend_engine::SourceLanguage::TypeScript, weeks),
+        ])?;
+        let (view, rows) = cross_file_view(&sources)?;
+        let sync = row_for_coordinate(&rows, "fixture::weeks.ts:2::syncWorkout")?;
+        let target = "fixture::apply-set.ts:1::entriesFromItems";
+        let original = row_for_coordinate(&rows, target)?;
+        let mut later = None;
+        for index in 0..10_000 {
+            let candidate = symbol_key(&format!("duplicate-callee-{index}"));
+            if RowId::Symbol(candidate) > original {
+                later = Some(candidate);
+                break;
+            }
+        }
+        let later = later.ok_or("no symbol key sorts after the original callee")?;
+        let mut doubled_rows = rows;
+        doubled_rows.push(Row::in_package(
+            RowId::Symbol(later),
+            view.basis(),
+            package,
+            target,
+        ));
+        let doubled = republish(&view, doubled_rows)?;
+        let first = view_row_for_structural_coordinate(&doubled, package, target)
+            .ok_or("missing first coordinate")?;
+        if first != original || doubled.first_package_label(package, target) != Some(original) {
+            return Err(format!("coordinate resolved {first:?}, first row is {original:?}"));
+        }
+        if doubled.last_package_label(package, target) != Some(RowId::Symbol(later)) {
+            return Err("graph label map lost the later row".to_owned());
+        }
+        let relations = calls_relations(&doubled, &sources, package, sync, false)?;
+        if relations.len() != 1 || relations[0].to != RowId::Symbol(later) {
+            return Err(format!("graph edge should keep the later label, got {relations:?}"));
+        }
+        let pairs = structural_call_coordinate_pairs(&sources, package)
+            .map_err(|error| error.to_string())?;
+        let mapped =
+            structural_call_graph_relations_mapped(&doubled, &pairs, package, sync, false);
+        if mapped.len() != 1 || mapped[0].to != original {
+            return Err(format!("mapped edge should keep the first label, got {mapped:?}"));
+        }
+        let facts = structural_reference_facts(&doubled, &sources, target)
+            .map_err(|error| error.to_string())?;
+        if !facts.is_empty() {
+            return Err(format!(
+                "later graph edge must not satisfy the first-label reference target: {facts:?}"
+            ));
+        }
+        let unique = structural_reference_facts(&view, &sources, target)
+            .map_err(|error| error.to_string())?;
+        let RowId::Symbol(sync_symbol) = sync else {
+            return Err("sync row is not a symbol".to_owned());
+        };
+        if unique.len() != 1 || unique[0].site != sync_symbol {
+            return Err(format!("expected one reference fact, got {unique:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_coordinate_miss_uses_the_unique_captured_declaration() -> Result<(), String> {
+        let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+        let capability =
+            super::super::test_builtin_view_capability().map_err(|error| error.to_string())?;
+        let package = package_key("fixture");
+        let caller_label = "fixture::src/worker.rs:1::main";
+        let callee_coordinate = "fixture::src/worker.rs:6::run";
+        let caller = Row::in_package(
+            RowId::Symbol(symbol_key(caller_label)),
+            initial.basis(),
+            package,
+            caller_label,
+        );
+        let location = backend_compile::SourceLocation::new("src/worker.rs", 6)
+            .map_err(|error| error.to_string())?;
+        let callee = Row::in_package(
+            RowId::Symbol(symbol_key("semantic-run")),
+            initial.basis(),
+            package,
+            "run",
+        )
+        .with_source(location.clone());
+        let view = ViewRoot::new_checked(
+            initial.recipe(),
+            initial.basis(),
+            initial.frontier(),
+            vec![caller.clone(), callee.clone()],
+            initial.coverage().to_vec(),
+            capability.clone(),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let resolved = view_row_for_structural_coordinate(&view, package, callee_coordinate)
+            .ok_or("semantic declaration was not resolved")?;
+        if resolved != callee.id {
+            return Err(format!("resolved {resolved:?}, semantic row is {:?}", callee.id));
+        }
+        let pairs = vec![(caller_label.to_owned(), callee_coordinate.to_owned())];
+        let mapped =
+            structural_call_graph_relations_mapped(&view, &pairs, package, caller.id, false);
+        if mapped.len() != 1 || mapped[0].from != caller.id || mapped[0].to != callee.id {
+            return Err(format!("mapped semantic edge: {mapped:?}"));
+        }
+        let other = Row::in_package(
+            RowId::Symbol(symbol_key("semantic-run-other")),
+            initial.basis(),
+            package,
+            "run",
+        )
+        .with_source(location);
+        let ambiguous = ViewRoot::new_checked(
+            initial.recipe(),
+            initial.basis(),
+            initial.frontier(),
+            vec![caller.clone(), callee, other],
+            initial.coverage().to_vec(),
+            capability,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        if view_row_for_structural_coordinate(&ambiguous, package, callee_coordinate).is_some() {
+            return Err("two semantic rows at one coordinate must not resolve".to_owned());
+        }
+        let missed =
+            structural_call_graph_relations_mapped(&ambiguous, &pairs, package, caller.id, false);
+        if !missed.is_empty() {
+            return Err(format!("ambiguous callee must drop the edge, got {missed:?}"));
+        }
         Ok(())
     }
 

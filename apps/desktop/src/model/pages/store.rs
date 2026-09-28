@@ -39,6 +39,8 @@ pub enum PageValue {
     Orbit(OrbitModel),
     /// The health model.
     Health(HealthModel),
+    /// A browsing page's value (your tree).
+    Browse(crate::model::browse::BrowseValue),
 }
 
 /// Why a read produced no value.
@@ -273,6 +275,7 @@ pub struct PageStore {
     searches: Slots<SearchQuery, SearchPage>,
     orbit: Slots<(), OrbitModel>,
     health: Slots<(), HealthModel>,
+    browse: Slots<crate::model::browse::BrowseKey, crate::model::browse::BrowseValue>,
     clock: u64,
     next_generation: u64,
 }
@@ -316,6 +319,11 @@ macro_rules! dispatch {
                 let $k = &();
                 $body
             }
+            PageKey::Browse(browse) => {
+                let $slots = &mut $store.browse;
+                let $k = browse;
+                $body
+            }
         }
     };
 }
@@ -353,6 +361,11 @@ macro_rules! dispatch_ref {
                 let $k = &();
                 $body
             }
+            PageKey::Browse(browse) => {
+                let $slots = &$store.browse;
+                let $k = browse;
+                $body
+            }
         }
     };
 }
@@ -368,6 +381,7 @@ impl PageStore {
             searches: Slots::new(capacity.searches),
             orbit: Slots::new(1),
             health: Slots::new(1),
+            browse: Slots::new(4),
             clock: 0,
             next_generation: 1,
         }
@@ -474,6 +488,15 @@ impl PageStore {
                 }),
                 |_, next| next,
             ),
+            (PageKey::Browse(browse), result) => self.browse.land(
+                browse,
+                generation,
+                take(result, |value| match value {
+                    PageValue::Browse(value) => Some(value),
+                    _ => None,
+                }),
+                |_, next| next,
+            ),
         }
     }
 
@@ -504,6 +527,7 @@ impl PageStore {
             PageKey::Search(query) => self.searches.map.contains_key(query),
             PageKey::Orbit => self.orbit.map.contains_key(&()),
             PageKey::Health => self.health.map.contains_key(&()),
+            PageKey::Browse(browse) => self.browse.map.contains_key(browse),
         }
     }
 
@@ -543,6 +567,12 @@ impl PageStore {
         self.health.get(&())
     }
 
+    /// Returns a browsing page's resource.
+    #[must_use]
+    pub fn browse(&self, key: &crate::model::browse::BrowseKey) -> Resource<crate::model::browse::BrowseValue> {
+        self.browse.get(key)
+    }
+
     /// Returns every resident key, orbit and health first, then by family.
     #[must_use]
     pub fn keys(&self) -> Vec<PageKey> {
@@ -557,6 +587,7 @@ impl PageStore {
         keys.extend(self.symbols.map.keys().cloned().map(PageKey::Symbol));
         keys.extend(self.sources.map.keys().cloned().map(PageKey::Source));
         keys.extend(self.searches.map.keys().cloned().map(PageKey::Search));
+        keys.extend(self.browse.map.keys().cloned().map(PageKey::Browse));
         keys
     }
 
@@ -582,6 +613,7 @@ impl PageStore {
             PageKey::Search(query) => self.searches.get(query).activity(),
             PageKey::Orbit => self.orbit.get(&()).activity(),
             PageKey::Health => self.health.get(&()).activity(),
+            PageKey::Browse(browse) => self.browse.get(browse).activity(),
         }
     }
 }

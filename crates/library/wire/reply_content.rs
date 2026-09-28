@@ -3,8 +3,9 @@ use super::reply_admission::CoverageAdmission;
 use super::{EmptyWire, TextWire, WireCertificate, WireSchema};
 use crate::canonical::{PackageSchema, SymbolSchema, encode_id};
 use crate::{
-    CoverageCapability, Document, Fragment, Outline, OutlineExtent, OutlineNode,
-    SourceAvailability, SourceExcerpt, SourceExcerptExtent, SourceLocation,
+    CoverageCapability, DeclarationFacts, Deprecation, Document, Fact, Fragment, Obligation,
+    Outline, OutlineExtent, OutlineNode, SourceAvailability, SourceExcerpt, SourceExcerptExtent,
+    SourceLocation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,85 @@ pub(crate) struct DocumentWire {
     location: SourceAvailabilityWire,
     #[serde(default = "source_excerpt_not_captured")]
     excerpt: SourceExcerptWire,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    facts: Option<FactsWire>,
+}
+
+/// Declaration facts on the wire. The field is omitted when the producer
+/// observed nothing, so such a row or document serializes exactly as before.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FactsWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deprecation: Option<FactWire<DeprecationWire>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    obligation: Option<FactWire<String>>,
+}
+
+/// One observed fact: the declaration states nothing, or states this.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "state", content = "data", deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+enum FactWire<T> {
+    Absent,
+    Present(T),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeprecationWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    since: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+pub(crate) fn facts_to_wire(facts: &DeclarationFacts) -> Option<FactsWire> {
+    if facts.is_unobserved() {
+        return None;
+    }
+    let deprecation = match &facts.deprecation {
+        Fact::Unobserved => None,
+        Fact::Absent => Some(FactWire::Absent),
+        Fact::Present(notice) => Some(FactWire::Present(DeprecationWire {
+            since: notice.since().map(str::to_owned),
+            note: notice.note().map(str::to_owned),
+        })),
+    };
+    let obligation = match &facts.obligation {
+        Fact::Unobserved => None,
+        Fact::Absent => Some(FactWire::Absent),
+        Fact::Present(obligation) => Some(FactWire::Present(obligation.name().to_owned())),
+    };
+    Some(FactsWire {
+        deprecation,
+        obligation,
+    })
+}
+
+pub(crate) fn facts_from_wire(value: Option<FactsWire>) -> Result<DeclarationFacts, String> {
+    let Some(value) = value else {
+        return Ok(DeclarationFacts::UNOBSERVED);
+    };
+    let deprecation = match value.deprecation {
+        None => Fact::Unobserved,
+        Some(FactWire::Absent) => Fact::Absent,
+        Some(FactWire::Present(notice)) => Fact::Present(
+            Deprecation::admit(notice.since, notice.note)
+                .map_err(|error| format!("deprecation: {error}"))?,
+        ),
+    };
+    let obligation = match value.obligation {
+        None => Fact::Unobserved,
+        Some(FactWire::Absent) => Fact::Absent,
+        Some(FactWire::Present(name)) => Fact::Present(
+            Obligation::from_name(&name).map_err(|_| format!("unknown obligation {name:?}"))?,
+        ),
+    };
+    Ok(DeclarationFacts {
+        deprecation,
+        obligation,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,6 +119,9 @@ pub(crate) enum SourceAvailabilityWire {
     NotCaptured,
     NotHydrated,
     Unconfigured,
+    StaleFile {
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -118,6 +201,7 @@ pub(crate) fn document_to_wire(document: &Document) -> DocumentWire {
         signature: document.signature.clone(),
         location: source_availability_to_wire(&document.location),
         excerpt: source_excerpt_to_wire(&document.excerpt),
+        facts: facts_to_wire(&document.facts),
     }
 }
 
@@ -168,6 +252,9 @@ pub(crate) fn source_availability_to_wire(source: &SourceAvailability) -> Source
         SourceAvailability::NotCaptured => SourceAvailabilityWire::NotCaptured,
         SourceAvailability::NotHydrated => SourceAvailabilityWire::NotHydrated,
         SourceAvailability::Unconfigured => SourceAvailabilityWire::Unconfigured,
+        SourceAvailability::StaleFile { path } => SourceAvailabilityWire::StaleFile {
+            path: path.to_string(),
+        },
     }
 }
 
@@ -181,6 +268,7 @@ pub(crate) fn source_availability_from_wire(
         SourceAvailabilityWire::NotCaptured => SourceAvailability::NotCaptured,
         SourceAvailabilityWire::NotHydrated => SourceAvailability::NotHydrated,
         SourceAvailabilityWire::Unconfigured => SourceAvailability::Unconfigured,
+        SourceAvailabilityWire::StaleFile { path } => SourceAvailability::stale_file(path)?,
     })
 }
 
@@ -252,6 +340,7 @@ pub(crate) fn document_from_wire_with_admission<A: CoverageAdmission>(
         signature: value.signature,
         location: source_availability_from_wire(value.location)?,
         excerpt: source_excerpt_from_wire(value.excerpt)?,
+        facts: facts_from_wire(value.facts)?,
     })
 }
 

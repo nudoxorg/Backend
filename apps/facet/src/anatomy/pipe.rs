@@ -69,14 +69,28 @@ impl RenderOnce for PipeView {
         // Inputs: the receiver's words, then each parameter's name and type.
         let mut pins = div().flex().flex_col().gap(k(&m, 8.0)).min_w_0();
         if self.pipe.inputs.is_empty() {
-            pins = pins.child(div().set(roles::INPUT, &m).text_color(palette.ink3.hsla()).child("takes nothing"));
+            pins = pins.child(crate::probe::text(
+                id("in-none".to_owned()),
+                "takes nothing",
+                m.role(roles::INPUT),
+                1.0,
+                crate::probe::TextOverflow::Wrap,
+                div().set(roles::INPUT, &m).text_color(palette.ink3.hsla()).child("takes nothing"),
+            ));
         }
         for (n, input) in self.pipe.inputs.iter().enumerate() {
             let mut row = div()
                 .flex()
                 .items_baseline()
                 .gap(k(&m, 14.0))
-                .child(div().flex_none().set(roles::INPUT, &m).text_color(palette.ink3.hsla()).child(input.name.clone()));
+                .child(crate::probe::text(
+                    id(format!("in-{n}-name")),
+                    input.name.clone(),
+                    m.role(roles::INPUT),
+                    1.0,
+                    crate::probe::TextOverflow::Wrap,
+                    div().flex_none().set(roles::INPUT, &m).text_color(palette.ink3.hsla()).child(input.name.clone()),
+                ));
             if let Some(ty) = &input.ty {
                 let mut line = Line::new();
                 line.spelled(ty, &ink, &self.links, xray);

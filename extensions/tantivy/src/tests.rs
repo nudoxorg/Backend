@@ -132,6 +132,7 @@ fn provider_substitution_cannot_change_binding_or_coverage() {
         query: query.version,
         hits: vec![hit(1)],
         next: None,
+        total: 1,
         coverage,
     };
     let adapter = Adapter::new(SubstitutingSource { page }, Limits::default()).expect("adapter");
@@ -152,6 +153,7 @@ fn provider_substitution_cannot_change_binding_or_coverage() {
         query: request.query.version,
         hits: vec![hit(1)],
         next: None,
+        total: 1,
         coverage: incomplete_coverage(7, Coverage::Partial),
     };
     let adapter =
@@ -207,6 +209,7 @@ fn provider_page_cannot_exceed_requested_bound() {
         query: query.version,
         hits: vec![hit(1), hit(2)],
         next: None,
+        total: 2,
         coverage,
     };
     let adapter = Adapter::new(SubstitutingSource { page }, Limits::default()).expect("adapter");
@@ -887,6 +890,75 @@ fn concrete_tantivy_pages_after_global_ranking_and_fences_the_binding() {
             Error::StaleRoot
         )))
     ));
+    assert_eq!(first.total, 3);
+    assert_eq!(adapter.rank_evaluations(), 1);
+}
+
+#[test]
+fn a_short_page_keeps_the_full_total_and_reuses_the_rank() {
+    let documents = vec![
+        (document(1), vec![("name".into(), "alpha".into())]),
+        (document(2), vec![("name".into(), "alpine".into())]),
+        (document(3), vec![("name".into(), "beta".into())]),
+    ];
+    let (binding, coverage) = binding(&documents);
+    let limits = Limits {
+        max_page: 1,
+        ..Limits::default()
+    };
+    let state = DocumentState::new(binding, coverage, documents, limits).expect("state");
+    let adapter = Adapter::new(
+        TantivySource::build(&state, limits).expect("projection"),
+        limits,
+    )
+    .expect("adapter");
+    let query = Query::prefix(vec!["al".into()], limits).expect("query");
+    let first = adapter
+        .query(&QueryRequest {
+            binding,
+            query: query.clone(),
+            cursor: None,
+            limit: 1,
+        })
+        .expect("first");
+    let second = adapter
+        .query(&QueryRequest {
+            binding,
+            query,
+            cursor: first.next,
+            limit: 1,
+        })
+        .expect("second");
+    assert_eq!(first.total, 2);
+    assert_eq!(second.total, 2);
+    assert!(second.next.is_none());
+    assert_ne!(first.hits[0].document, second.hits[0].document);
+    assert_eq!(adapter.rank_evaluations(), 1);
+}
+
+#[test]
+fn a_page_total_that_disagrees_with_the_cursor_is_rejected() {
+    let (binding, coverage) = binding(&[]);
+    let query = Query::new(vec!["alpha".into()], Limits::default()).expect("query");
+    let page = LexicalPage {
+        schema: SchemaVersion::CURRENT,
+        binding,
+        query: query.version,
+        hits: vec![hit(1)],
+        next: None,
+        total: 2,
+        coverage,
+    };
+    let adapter = Adapter::new(SubstitutingSource { page }, Limits::default()).expect("adapter");
+    assert!(matches!(
+        adapter.query(&QueryRequest {
+            binding,
+            query,
+            cursor: None,
+            limit: 1,
+        }),
+        Err(AdapterError::Extension(Error::InvalidCursor))
+    ));
 }
 
 #[test]
@@ -1023,16 +1095,29 @@ fn one_document_revision_deletes_only_that_documents_postings() {
         (document(2), vec![("name".into(), "beta".into())]),
         (document(3), vec![("name".into(), "gamma".into())]),
     ];
-    let mut source =
-        TantivySource::build(&state_for(original, [1; 32]), Limits::default()).expect("projection");
+    let current = state_for(original, [1; 32]);
+    let mut source = TantivySource::build(&current, Limits::default()).expect("projection");
+    let beta = Query::new(vec!["beta".into()], Limits::default()).expect("beta");
+    let before_page = LexicalSource::fetch(
+        &source,
+        &QueryRequest {
+            binding: current.binding(),
+            query: beta.clone(),
+            cursor: None,
+            limit: 8,
+        },
+    )
+    .expect("cached beta");
+    assert_eq!(before_page.total, 1);
     let before = source.indexed_postings();
     let revised = vec![
         (document(1), vec![("name".into(), "alpha".into())]),
         (document(2), vec![("name".into(), "zephyr".into())]),
         (document(3), vec![("name".into(), "gamma".into())]),
     ];
+    let revised_state = state_for(revised, [2; 32]);
     let outcome = source
-        .maintain(&state_for(revised, [2; 32]), OverlayLimits::default())
+        .maintain(&revised_state, OverlayLimits::default())
         .expect("revise");
     let MaintainOutcome::Applied(revision) = outcome else {
         panic!("revision was refused");
@@ -1049,6 +1134,19 @@ fn one_document_revision_deletes_only_that_documents_postings() {
     assert_eq!(term_hits(&source, "gamma"), vec![document(3)]);
     assert_eq!(term_hits(&source, "zephyr"), vec![document(2)]);
     assert!(term_hits(&source, "beta").is_empty());
+    let after_page = LexicalSource::fetch(
+        &source,
+        &QueryRequest {
+            binding: revised_state.binding(),
+            query: beta,
+            cursor: None,
+            limit: 8,
+        },
+    )
+    .expect("beta after revision");
+    assert_eq!(after_page.total, 0);
+    assert!(after_page.hits.is_empty());
+    assert_eq!(source.rank_evaluations(), 2);
 }
 
 #[test]

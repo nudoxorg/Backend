@@ -21,7 +21,7 @@ use super::region::{Links, measured, new_region};
 use super::reveal::{HOLD, RevealHold};
 use super::shelf::Shelf;
 use super::status::Status;
-use super::thread::route_symbol;
+use super::jump::route_symbol;
 use super::titlebar::Titlebar;
 use super::{kit, peeks};
 use crate::model::pages::PageKey;
@@ -74,6 +74,8 @@ pub struct Shell {
     ask: Entity<Ask>,
     motion: Motion,
     zen: bool,
+    /// The hand's Row rung is open (H, or the foot's marks).
+    hand_open: bool,
     shelf_over_open: bool,
     shelf_width: f32,
     zone: Zone,
@@ -85,7 +87,6 @@ pub struct Shell {
     /// How many peeks are pinned (the pins column exists only for pins).
     pinned: usize,
     ask_open: bool,
-    ask_trail: bool,
     /// The system's appearance and text size, and the window's display.
     around: Surroundings,
     renders: u64,
@@ -175,6 +176,7 @@ impl Shell {
             ask,
             motion: Motion::new(),
             zen: false,
+            hand_open: false,
             shelf_over_open: false,
             shelf_width: SHELF,
             zone: Zone::Reader,
@@ -184,7 +186,6 @@ impl Shell {
             peeking: None,
             pinned: 0,
             ask_open: false,
-            ask_trail: false,
             around: Surroundings {
                 dark: is_dark(window.appearance()),
                 text: 1.0,
@@ -256,6 +257,16 @@ impl Shell {
             pins: self.pins.read(cx).renders(),
             ask: self.ask.read(cx).renders(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shelf_upgrade(&self, cx: &App) -> Option<(SharedString, SharedString)> {
+        self.shelf.read(cx).upgrade_line()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shelf_comb(&self, cx: &App) -> Option<(Option<SharedString>, Option<SharedString>)> {
+        self.shelf.read(cx).comb_marks()
     }
 
     #[cfg(test)]
@@ -430,8 +441,7 @@ impl Shell {
         }
         self.ask_open = wants_ask;
         if wants_ask {
-            let trail = self.ask_trail;
-            self.ask.update(cx, |ask, cx| ask.opened(trail, window, cx));
+            self.ask.update(cx, |ask, cx| ask.opened(window, cx));
         } else {
             self.focus.focus(window, cx);
         }
@@ -440,10 +450,33 @@ impl Shell {
 
     // ── actions ────────────────────────────────────────────────────────
 
-    /// Opens Ask; `trail` lists the walked trail instead of results.
-    pub(crate) fn open_ask(&mut self, trail: bool, cx: &mut Context<Self>) {
-        self.ask_trail = trail;
+    /// Opens Ask.
+    pub(crate) fn open_ask(&mut self, cx: &mut Context<Self>) {
         self.links.dispatch(Intent::OpenCommandPalette, cx);
+    }
+
+    /// A link in the page's anatomy was followed: a symbol of this page's
+    /// package opens its page (joined through the package outline). A symbol
+    /// elsewhere only peeks for now: its page is found through the index
+    /// the way the graph's open is, which is not wired here yet.
+    fn open_anatomy(&mut self, open: &facet::anatomy::Open, cx: &mut Context<Self>) {
+        let facet::semantics::Target::Node(node) = open.target else {
+            return;
+        };
+        let snapshot = self.links.snapshot(cx);
+        let Some(package) = crate::runtime::store::route_package(snapshot.route()) else {
+            return;
+        };
+        let dossier = self.links.store.read(cx).package(&package);
+        let Some(tree) = dossier.loaded_value().and_then(|dossier| dossier.outline.known().cloned()) else {
+            return;
+        };
+        let Some(symbol) = crate::runtime::fixture_world::symbol_of(node, &package, &tree, cx) else {
+            return;
+        };
+        if let Some(route) = kit::symbol_route(package.as_str(), &symbol) {
+            self.links.dispatch(Intent::Navigate(route), cx);
+        }
     }
 
     /// ⌘\: the shelf opens or closes; on a window too narrow to hold it the
@@ -751,6 +784,11 @@ impl Shell {
             return;
         }
         self.peeking = None;
+        if self.hand_open {
+            self.hand_open = false;
+            cx.notify();
+            return;
+        }
         let overlay = self.links.snapshot(cx).overlay();
         if overlay.is_some() {
             self.links.dispatch(Intent::DismissOverlay, cx);
@@ -777,6 +815,44 @@ impl Shell {
 
     /// ⌘1–⌘4: Orbit, the package, the page, the code. The last two are
     /// views of the declaration you are on, not places.
+    /// ⌘D: hold what you are on (a declaration, else its package).
+    pub(crate) fn hold(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.links.snapshot(cx);
+        let (package, id) = match snapshot.route() {
+            Route::Symbol(route) => (route.package.clone(), Some(route.id.clone())),
+            Route::Package(route) => (route.package.clone(), None),
+            Route::Orbit(_) | Route::World => return,
+        };
+        let at = now_ms();
+        let held = crate::model::hand::Held { package, id, why: crate::model::hand::HeldWhy::Pin, held_at: at, touched_at: at };
+        self.links.dispatch(Intent::Hold(held), cx);
+    }
+
+    /// H: open or close the hand.
+    pub(crate) fn toggle_hand(&mut self, cx: &mut Context<Self>) {
+        self.hand_open = !self.hand_open && !self.links.snapshot(cx).session().hand.is_empty();
+        cx.notify();
+    }
+
+    /// ⌘1–⌘5: go to the hand's nth card, in the order it is shown.
+    pub(crate) fn hand_card(&mut self, n: usize, cx: &mut Context<Self>) {
+        let hand = self.links.snapshot(cx).session().hand.clone();
+        let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+        let Some(card) = view.cards.get(n) else {
+            return;
+        };
+        if let Some(route) = held_route(&card.held) {
+            self.links.dispatch(Intent::Navigate(route), cx);
+            self.links.dispatch(Intent::TouchHeld(card.held.clone(), now_ms()), cx);
+        }
+    }
+
+    /// ⌘⇧C: this place's `nudox://` address on the clipboard.
+    pub(crate) fn copy_address(&mut self, cx: &mut Context<Self>) {
+        let address = super::jump::address_parts(&self.links.snapshot(cx)).full();
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(address));
+    }
+
     fn depth(&mut self, depth: RouteDepth, window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
         let route = snapshot.route();
@@ -932,8 +1008,14 @@ impl Render for Shell {
         // The status bar grows a line when the address's name has to wrap;
         // sized here from the same fit the bar sets, in the same frame.
         let (graph_focus, graph_notice) = { let store = self.links.store.read(cx); (store.graph_focus().cloned(), store.graph_notice().cloned()) };
-        let (address, address_role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), viewport.width, cx);
-        let status_height = super::status::height(address.len(), &address_role, frame.status);
+        // The foot grows only for what the graph says in it; the hand's
+        // marks sit on one line.
+        let status_height = if super::status::graph_speaks(&snapshot, graph_focus.as_ref(), graph_notice.as_ref()) {
+            let (lines, role) = super::status::feedback_lines(&snapshot, graph_focus.as_ref(), graph_notice.as_ref(), viewport.width, cx);
+            super::status::height(lines.len(), &role, frame.status)
+        } else {
+            frame.status
+        };
         // Structural changes animate (the shelf becoming a spine, the pins
         // column arriving); a window drag inside one mode tracks directly,
         // because the targets do not move.
@@ -942,6 +1024,14 @@ impl Render for Shell {
         let spine = KSPINE * scale;
         self.shelf.update(cx, |shelf, _| shelf.set_rest(px(frame.shelf_body), px(spine)));
         self.shelf_over.update(cx, |shelf, _| shelf.set_rest(px(frame.shelf_body), px(spine)));
+        // The hand's marks start from the reader column's left edge.
+        let reader_left = px(shelf_width);
+        self.status.update(cx, |status, cx| {
+            if status.reader_left() != reader_left {
+                status.set_reader_left(reader_left);
+                cx.notify();
+            }
+        });
         let over = frame.shelf_overlays && self.shelf_over_open;
         let over_x = self.motion.animate("over-x", if over { 0.0 } else { -frame.shelf_body }, spec::SETTLE, window, cx);
 
@@ -989,7 +1079,7 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::Peek, window, cx| shell.peek(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::PeelSource, window, cx| shell.peel(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::HintMode, _, cx| shell.hint_mode(cx)))
-            .on_action(cx.listener(|shell, _: &keys::Ask, _, cx| shell.open_ask(false, cx)))
+            .on_action(cx.listener(|shell, _: &keys::Ask, _, cx| shell.open_ask(cx)))
             .on_action(cx.listener(|shell, _: &keys::Back, _, cx| shell.links.dispatch(Intent::Back, cx)))
             .on_action(cx.listener(|shell, _: &keys::Forward, _, cx| shell.links.dispatch(Intent::Forward, cx)))
             .on_action(cx.listener(|shell, _: &keys::Surface, _, cx| shell.links.dispatch(Intent::ZoomOut, cx)))
@@ -1007,9 +1097,18 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::DepthCode, window, cx| shell.depth(RouteDepth::Source, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.toggle_graph(window, cx)))
             .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.code_page(window, cx)))
+            .on_action(cx.listener(|shell, open: &facet::anatomy::Open, _, cx| shell.open_anatomy(open, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.zoom(ZoomStep::In, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.zoom(ZoomStep::Out, cx)))
             .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)))
+            .on_action(cx.listener(|shell, _: &keys::Hold, _, cx| shell.hold(cx)))
+            .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.toggle_hand(cx)))
+            .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| shell.hand_card(0, cx)))
+            .on_action(cx.listener(|shell, _: &keys::HandCard2, _, cx| shell.hand_card(1, cx)))
+            .on_action(cx.listener(|shell, _: &keys::HandCard3, _, cx| shell.hand_card(2, cx)))
+            .on_action(cx.listener(|shell, _: &keys::HandCard4, _, cx| shell.hand_card(3, cx)))
+            .on_action(cx.listener(|shell, _: &keys::HandCard5, _, cx| shell.hand_card(4, cx)))
+            .on_action(cx.listener(|shell, _: &keys::CopyAddress, _, cx| shell.copy_address(cx)))
             .on_action(cx.listener(|shell, _: &keys::OpenSettings, _, cx| {
                 shell.links.dispatch(Intent::OpenSettings(SettingsPage::Appearance), cx);
             }))
@@ -1036,6 +1135,22 @@ impl Render for Shell {
                         StyleRefinement::default().w_full().h(px(status_height)).flex_none(),
                     )),
             );
+        // The hand opened (the Row rung), just above the foot.
+        let hand = snapshot.session().hand.clone();
+        if self.hand_open && !hand.is_empty() {
+            let view = crate::runtime::fixture_world::hand_view(&hand, cx);
+            let measure = Measure::new(viewport.width, &facet);
+            root = root.child(
+                div()
+                    .absolute()
+                    .bottom(px(status_height + 6.0 * scale))
+                    .left(px(shelf_width + 14.0 * scale))
+                    .max_w(viewport.width - px(shelf_width + 28.0 * scale))
+                    .child(super::hand::row(&view, &self.links, &measure, palette)),
+            );
+        } else if self.hand_open {
+            self.hand_open = false;
+        }
         if over || over_x > -frame.shelf_body + 0.5 {
             let links = self.links.clone();
             let _ = links;
@@ -1071,3 +1186,32 @@ impl Render for Shell {
 
 #[allow(dead_code)]
 fn _key(_: PageKey) {}
+
+/// The wall clock in unix ms (the hand's held and touched times).
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The page a held thing opens: its declaration's page, or its package.
+pub(crate) fn held_route(held: &crate::model::hand::Held) -> Option<Route> {
+    Some(match &held.id {
+        Some(id) => Route::Symbol(crate::navigation::SymbolRoute {
+            project: None,
+            package: held.package.clone(),
+            id: id.clone(),
+            at: None,
+            view: View::Page,
+            line: None,
+            selected: None,
+        }),
+        None => Route::Package(crate::navigation::PackageRoute {
+            project: None,
+            package: held.package.clone(),
+            lane: crate::navigation::PackageLane::Overview,
+            selected: None,
+            at: None,
+        }),
+    })
+}

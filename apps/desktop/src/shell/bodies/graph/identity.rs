@@ -28,7 +28,7 @@ struct SourceKey {
     line: u32,
 }
 
-pub(super) struct IdentityAdapter {
+pub(crate) struct IdentityAdapter {
     aliases: BTreeMap<PackageRef, Vec<usize>>,
     sources: BTreeMap<SourceKey, Vec<NodeId>>,
     nodes: BTreeMap<NodeId, SourceKey>,
@@ -36,7 +36,7 @@ pub(super) struct IdentityAdapter {
 
 impl IdentityAdapter {
     /// Filesystem admission happens beside fixture parse/layout, off the UI.
-    pub(super) fn load(world: &World, repo: &Path) -> Self {
+    pub(crate) fn load(world: &World, repo: &Path) -> Self {
         let bindings = world
             .packages
             .iter()
@@ -144,7 +144,7 @@ impl IdentityAdapter {
     }
 
     #[cfg(test)]
-    pub(super) fn synthetic(world: &World, package: PackageRef) -> Self {
+    pub(crate) fn synthetic(world: &World, package: PackageRef) -> Self {
         Self::admit(
             world,
             &[Some(PackageBinding {
@@ -154,7 +154,7 @@ impl IdentityAdapter {
         )
     }
 
-    pub(super) fn candidates(&self, decl: &DeclRef, package: &PackageRef) -> Vec<NodeId> {
+    pub(crate) fn candidates(&self, decl: &DeclRef, package: &PackageRef) -> Vec<NodeId> {
         let (Some(line), Some(path), Some(packages)) =
             (decl.line, decl.path.as_deref(), self.aliases.get(package))
         else {
@@ -191,7 +191,7 @@ impl IdentityAdapter {
             .collect()
     }
 
-    pub(super) fn outline_symbol(
+    pub(crate) fn outline_symbol(
         &self,
         node: NodeId,
         package: &PackageRef,

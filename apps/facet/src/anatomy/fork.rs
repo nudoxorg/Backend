@@ -97,11 +97,15 @@ impl RenderOnce for ForkView {
         let tick = px(9.0 * m.scale());
         let rows = self.fork.branches.iter().enumerate().map(|(n, branch)| {
             let id = |part: &str| ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::from(format!("{n}-{part}")));
-            let name = div()
-                .set(roles::NAME, &rows_measure)
-                .text_color(palette.ink0.hsla())
-                .child(branch.name.clone())
-                .into_any_element();
+            let name = crate::probe::text(
+                id("name"),
+                branch.name.clone(),
+                rows_measure.role(roles::NAME),
+                1.0,
+                crate::probe::TextOverflow::Wrap,
+                div().set(roles::NAME, &rows_measure).text_color(palette.ink0.hsla()).child(branch.name.clone()),
+            )
+            .into_any_element();
             let ty = match &branch.payload {
                 Payload::Unit => None,
                 Payload::Tuple(parts) => {
@@ -146,7 +150,12 @@ impl RenderOnce for ForkView {
             .id(self.id.clone())
             .flex()
             .flex_col()
-            .child(heading(self.fork.heading(), &m, palette))
+            .child(heading(
+                ElementId::NamedChild(Arc::new(self.id.clone()), SharedString::new_static("heading")),
+                self.fork.heading(),
+                &m,
+                palette,
+            ))
             .child(
                 div()
                     .relative()

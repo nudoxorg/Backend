@@ -348,6 +348,8 @@ pub struct SearchSnapshotOwner {
     selected: Option<QueryCoordinator>,
     builds: u64,
     maintenance: Option<SnapshotMaintenance>,
+    corpus: Option<SemanticQueryCorpus>,
+    corpus_builds: u64,
 }
 
 impl SearchSnapshotOwner {
@@ -409,6 +411,62 @@ impl SearchSnapshotOwner {
     #[must_use]
     pub(crate) fn projection_builds(&self) -> u64 {
         self.builds
+    }
+
+    /// Returns the corpus admitted for `workspace`, building it at most once.
+    ///
+    /// The corpus is a pure function of that workspace snapshot. A later call
+    /// with the same root clones the admitted `Arc` and does not call `build`.
+    /// A build error leaves the previous corpus in place.
+    pub fn shared_corpus<E>(
+        &mut self,
+        workspace: WorkspaceRoot,
+        build: impl FnOnce() -> Result<SemanticQueryCorpus, E>,
+    ) -> Result<SemanticQueryCorpus, E> {
+        if let Some(cached) = &self.corpus
+            && cached.workspace() == workspace
+        {
+            return Ok(cached.clone());
+        }
+        let built = build()?;
+        self.corpus_builds = self.corpus_builds.saturating_add(1);
+        if built.workspace() == workspace {
+            self.corpus = Some(built.clone());
+        }
+        Ok(built)
+    }
+
+    /// How many times [`Self::shared_corpus`] has admitted a new corpus.
+    #[must_use]
+    pub(crate) fn corpus_builds(&self) -> u64 {
+        self.corpus_builds
+    }
+
+    /// Returns the corpus already admitted for `workspace`.
+    #[must_use]
+    pub fn resident_corpus(&self, workspace: WorkspaceRoot) -> Option<SemanticQueryCorpus> {
+        self.corpus
+            .as_ref()
+            .filter(|cached| cached.workspace() == workspace)
+            .cloned()
+    }
+
+    /// Admits the corpus for `workspace`, running `prepare` only on a miss.
+    ///
+    /// A resident corpus is cloned before `prepare` runs, so a warm search
+    /// does not page the workspace source relation. A prepare or build error
+    /// leaves any previous corpus in place and does not count as an admission.
+    pub fn admit_corpus<S, E>(
+        &mut self,
+        workspace: WorkspaceRoot,
+        prepare: impl FnOnce() -> Result<S, E>,
+        build: impl FnOnce(S) -> Result<SemanticQueryCorpus, E>,
+    ) -> Result<SemanticQueryCorpus, E> {
+        if let Some(cached) = self.resident_corpus(workspace) {
+            return Ok(cached);
+        }
+        let prepared = prepare()?;
+        self.shared_corpus(workspace, || build(prepared))
     }
 }
 
@@ -513,6 +571,7 @@ impl QueryCoordinator {
     pub fn search_local(&self, query: LocalQuery) -> Result<LocalAnswer, QueryError> {
         let mut hits = Vec::new();
         let mut cursor = None;
+        let mut reported_total = None;
         loop {
             let request = lexical::QueryRequest {
                 binding: self.corpus.lexical_binding,
@@ -525,11 +584,18 @@ impl QueryCoordinator {
                 .lexical
                 .query(&request)
                 .map_err(|_| QueryError::LexicalProvider)?;
+            if reported_total.is_some_and(|total| total != page.total) {
+                return Err(QueryError::LexicalProvider);
+            }
+            reported_total = Some(page.total);
             hits.extend(page.hits);
             cursor = page.next;
             if cursor.is_none() {
                 break;
             }
+        }
+        if reported_total != Some(hits.len()) {
+            return Err(QueryError::LexicalProvider);
         }
         let mut matches = hits
             .into_iter()
@@ -538,16 +604,13 @@ impl QueryCoordinator {
         if !query.qualified_clauses().is_empty() {
             let presentations = presentation_index(&self.corpus.semantic_evidence);
             matches.retain(|(entity, _)| {
-                self.corpus
-                    .entities
-                    .get(entity)
-                    .is_some_and(|row_id| {
-                        qualified_row_matches(
-                            row_id.stable_key().as_str(),
-                            query.qualified_clauses(),
-                            &presentations,
-                        )
-                    })
+                self.corpus.entities.get(entity).is_some_and(|row_id| {
+                    qualified_row_matches(
+                        row_id.stable_key().as_str(),
+                        query.qualified_clauses(),
+                        &presentations,
+                    )
+                })
             });
         }
         let total_matches = matches.len();
@@ -682,9 +745,9 @@ fn qualified_row_matches(
     clauses: &[QualifiedClause],
     presentations: &BTreeMap<&str, &SemanticQueryPresentation>,
 ) -> bool {
-    clauses.iter().all(|clause| {
-        qualified_clause_matches(row_id, clause, presentations)
-    })
+    clauses
+        .iter()
+        .all(|clause| qualified_clause_matches(row_id, clause, presentations))
 }
 
 fn qualified_clause_matches(
@@ -1019,3 +1082,99 @@ impl fmt::Display for QueryError {
 }
 
 impl std::error::Error for QueryError {}
+
+/// Times admitting a typed query corpus against reusing the resident one.
+///
+/// Fixture rows are built before the timer. `cold` admits them. `warm` returns
+/// the resident corpus. Production search also reopens semantic images and
+/// plans structure before admission; this measurement is the admission tail.
+#[allow(clippy::expect_used, clippy::print_stdout)]
+pub(super) fn measure_search_corpus() {
+    const FACTS: usize = 2_048;
+    const SAMPLES: usize = 32;
+    const WARMUPS: usize = 4;
+    let workspace = super::super::genesis().expect("genesis").root();
+    let facts = (0..FACTS)
+        .map(package_query_fact)
+        .collect::<Vec<_>>();
+    let limits = backend_extension_trustfall::Limits {
+        max_rows: FACTS,
+        ..backend_extension_trustfall::Limits::default()
+    };
+    let cold = corpus_time(WARMUPS, SAMPLES, || {
+        SemanticQueryCorpus::admit_with_limits(
+            workspace,
+            facts.clone(),
+            limits,
+        )
+        .expect("admit")
+    });
+    let mut owner = SearchSnapshotOwner::default();
+    owner
+        .shared_corpus(workspace, || {
+            SemanticQueryCorpus::admit_with_limits(
+                workspace,
+                facts.clone(),
+                limits,
+            )
+        })
+        .expect("prime");
+    let before = owner.corpus_builds();
+    let warm = corpus_time(WARMUPS, SAMPLES, || {
+        owner
+            .shared_corpus(workspace, || -> Result<SemanticQueryCorpus, &'static str> {
+                Err("warm path rebuilt the corpus")
+            })
+            .expect("reuse")
+    });
+    let (cold_median, cold_p95) = corpus_percentiles(&cold);
+    let (warm_median, warm_p95) = corpus_percentiles(&warm);
+    println!(
+        "search_corpus facts={FACTS} cold_median_ns={cold_median} cold_p95_ns={cold_p95} warm_median_ns={warm_median} warm_p95_ns={warm_p95} warm_builds={}",
+        owner.corpus_builds() - before
+    );
+}
+
+fn package_query_fact(index: usize) -> backend_extension_trustfall::SemanticQueryFact {
+    let name = format!("pkg-{index}");
+    let package = backend_engine::package_key(&name);
+    let evidence = backend_extension_trustfall::PackageScopeEvidence::new(package);
+    let id = evidence.row_id();
+    backend_extension_trustfall::SemanticQueryFact::new(
+        backend_extension_trustfall::SemanticQueryEvidence::Package(evidence),
+        SemanticQueryPresentation {
+            id,
+            kind: "project".to_owned(),
+            coordinate: format!("pkg-{index}"),
+            name: format!("pkg-{index}"),
+            signature: None,
+            documentation: String::new(),
+            score: None,
+            project: None,
+            parent: None,
+            related: Box::new([]),
+        },
+    )
+}
+
+fn corpus_time<T>(warmups: usize, samples: usize, mut body: impl FnMut() -> T) -> Vec<u128> {
+    for _ in 0..warmups {
+        let _ = body();
+    }
+    let mut samples_ns = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let started = std::time::Instant::now();
+        let _ = body();
+        samples_ns.push(started.elapsed().as_nanos());
+    }
+    samples_ns
+}
+
+#[allow(clippy::indexing_slicing)]
+fn corpus_percentiles(samples: &[u128]) -> (u128, u128) {
+    let mut ordered = samples.to_vec();
+    ordered.sort_unstable();
+    let median = ordered[ordered.len() / 2];
+    let p95 = ordered[ordered.len() * 95 / 100];
+    (median, p95)
+}

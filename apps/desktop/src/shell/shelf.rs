@@ -10,7 +10,7 @@
 use super::focus::{Act, Target, Targets};
 use super::kit::{HoverIntent, keycap, kind_of, package_route, symbol_route, text};
 use super::region::{Links, Region, RegionCore};
-use super::thread::{route_package, route_symbol, settings_name};
+use super::jump::{route_package, route_symbol, settings_name};
 use crate::model::AppSnapshot;
 use crate::model::pages::{OutlineNode, PackageRef, PageKey, SymbolRef};
 use crate::navigation::{Intent, Overlay, Route, SettingsPage};
@@ -67,6 +67,9 @@ struct Releases {
     list: Rc<[facet::controls::Release]>,
     pinned: Option<usize>,
     viewing: Option<usize>,
+    /// What moving between releases changes (the upgrade lens), when
+    /// there is release data for this package.
+    diffs: Option<&'static facet::data::release::Crate>,
 }
 
 /// The shelf region.
@@ -83,6 +86,15 @@ pub(crate) struct Shelf {
     spine: Pixels,
     rows: Rc<Vec<Row>>,
     scroll: UniformListScrollHandle,
+    /// The comb's pinned and viewed releases as last drawn (tests).
+    #[cfg(test)]
+    comb: std::cell::Cell<Option<(Option<usize>, Option<usize>)>>,
+    #[cfg(test)]
+    comb_versions: std::cell::RefCell<Vec<SharedString>>,
+    /// The upgrade line's releases as last drawn (tests; the line's words
+    /// are not published to the probe).
+    #[cfg(test)]
+    upgrade: std::cell::RefCell<Option<(SharedString, SharedString)>>,
 }
 
 impl Shelf {
@@ -97,8 +109,29 @@ impl Shelf {
             rest: px(264.0),
             spine: px(42.0),
             rows: Rc::new(Vec::new()),
+            #[cfg(test)]
+            comb: std::cell::Cell::new(None),
+            #[cfg(test)]
+            comb_versions: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
+            upgrade: std::cell::RefCell::new(None),
             scroll: UniformListScrollHandle::new(),
         }
+    }
+
+    /// The upgrade line's releases as last drawn (tests).
+    #[cfg(test)]
+    pub(crate) fn upgrade_line(&self) -> Option<(SharedString, SharedString)> {
+        self.upgrade.borrow().clone()
+    }
+
+    /// The comb's pinned and viewed versions as last drawn (tests).
+    #[cfg(test)]
+    pub(crate) fn comb_marks(&self) -> Option<(Option<SharedString>, Option<SharedString>)> {
+        let versions = self.comb_versions.borrow();
+        self.comb.get().map(|(pinned, viewing)| {
+            (pinned.and_then(|i| versions.get(i).cloned()), viewing.and_then(|i| versions.get(i).cloned()))
+        })
     }
 
     #[cfg(test)]
@@ -327,6 +360,7 @@ impl Shelf {
         let Some(package) = route_package(route) else {
             return (Head::default(), Vec::new());
         };
+        let diffs = crate::runtime::fixture_releases::release_data(&package, cx);
         let store = self.links.store.read(cx);
         let current = if let Some(focus) = store.graph_focus() {
             focus.indexed.as_ref().filter(|(owner, _)| owner == &package).map(|(_, symbol)| symbol.clone())
@@ -354,7 +388,19 @@ impl Shelf {
             let mut list = versions.iter().collect::<Vec<_>>();
             list.reverse();
             let viewing = route.at().and_then(|at| list.iter().position(|entry| entry.version.as_ref() == at.as_str()));
-            let pinned = list.iter().position(|entry| entry.current);
+            // The pin is the route's own release. While another release is
+            // viewed, the dossier is about that one, so its `current` is not
+            // the pin.
+            let pinned_version = match route {
+                Route::Package(route) => PackageRef::parse(route.package.as_str()).ok(),
+                Route::Symbol(route) => PackageRef::parse(route.package.as_str()).ok(),
+                Route::Orbit(_) | Route::World => None,
+            };
+            let pinned = pinned_version
+                .as_ref()
+                .and_then(PackageRef::version)
+                .and_then(|version| list.iter().position(|entry| entry.version.as_ref() == version))
+                .or_else(|| list.iter().position(|entry| entry.current));
             Releases {
                 list: list
                     .iter()
@@ -367,6 +413,7 @@ impl Shelf {
                     .collect(),
                 pinned,
                 viewing,
+                diffs,
             }
         });
         let head = Head {
@@ -472,9 +519,16 @@ impl Shelf {
             );
             // The comb's slot under the name (W-Controls' `version_comb`):
             // choosing a release re-scopes the route in place.
+            #[cfg(test)]
+            self.upgrade.replace(None);
             if let Some(releases) = &head.releases
                 && !releases.list.is_empty()
             {
+                #[cfg(test)]
+                {
+                    self.comb.set(Some((releases.pinned, releases.viewing)));
+                    *self.comb_versions.borrow_mut() = releases.list.iter().map(|release| release.version.clone()).collect();
+                }
                 let links = self.links.clone();
                 let pinned = releases.pinned.map(|index| releases.list[index].id.clone());
                 let mut comb = facet::controls::version_comb("shelf-versions", Rc::clone(&releases.list), &measure.inset(gutter))
@@ -491,6 +545,22 @@ impl Shelf {
                     comb = comb.selected(index);
                 }
                 column = column.child(div().px(gutter).pb(measure.space(Space::Roomy)).child(comb));
+                // Away from the pin, the upgrade lens's crate-wide line.
+                if let (Some(diffs), Some(pinned), Some(viewing)) = (releases.diffs, releases.pinned, releases.viewing)
+                    && pinned != viewing
+                {
+                    let spelled = |index: usize| {
+                        let version = &releases.list[index].version;
+                        crate::runtime::fixture_releases::spelled(diffs, version).unwrap_or_else(|| version.clone())
+                    };
+                    let (from, to) = (spelled(pinned), spelled(viewing));
+                    let summary = facet::data::release::summary(diffs, &from, &to);
+                    #[cfg(test)]
+                    self.upgrade.replace(Some((from.clone(), to.clone())));
+                    column = column.child(div().px(gutter).pb(measure.space(Space::Roomy)).child(
+                        facet::data::release::view::shelf_line("shelf-upgrade", &summary, &from, &to, &measure.inset(gutter), palette),
+                    ));
+                }
             }
         }
         let links = self.links.clone();
@@ -512,7 +582,7 @@ impl Shelf {
                             .child(icons::ui(Icon::Filter, IconSize::S12, palette.ink3).size(measure.icon(12.0)))
                             .child(text(ty::SMALL, measure, palette.ink3).child("Filter")),
                     )
-                    .on_click(move |_: &ClickEvent, _, cx| links.shell(cx, |shell, cx| shell.open_ask(false, cx)))
+                    .on_click(move |_: &ClickEvent, _, cx| links.shell(cx, |shell, cx| shell.open_ask(cx)))
                     .children(keycap(keys, "⌘K", measure)),
             ),
         );

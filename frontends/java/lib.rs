@@ -28,7 +28,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::Java,
-        b"tree-sitter-java-0.23.5/tags-v2",
+        b"tree-sitter-java-0.23.5/tags-v3",
         vec![GrammarVariant::new(
             &["java"],
             tree_sitter_java::LANGUAGE.into(),

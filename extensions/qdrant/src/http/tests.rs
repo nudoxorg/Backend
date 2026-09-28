@@ -111,9 +111,67 @@ fn physical_point_identity_is_scoped_by_the_complete_binding() {
     assert_eq!(payload.candidate(), Some(candidate));
     assert!(payload.matches_binding(binding));
     assert!(!payload.matches_binding(next));
+    let bound = BindingText::from_binding(binding);
+    let candidate_prefix = PhysicalPointId::candidate_prefix(binding);
+    let residence_prefix = PhysicalPointId::residence_prefix(binding.workspace, binding.recipe);
+    assert!(payload.matches_text(&bound));
+    assert_eq!(
+        payload.physical_id_with(&candidate_prefix, &residence_prefix, candidate),
+        payload.physical_id(binding, candidate)
+    );
+    assert!(!payload.matches_text(&BindingText::from_binding(next)));
     let mut noncanonical = payload;
     noncanonical.candidate = "7".to_owned();
     assert_eq!(noncanonical.candidate(), None);
+}
+
+#[test]
+fn admitted_hit_check_reuses_the_binding_text_and_point_prefix() {
+    let (binding, _) = crate::tests::binding(&[]);
+    let bound = BindingText::from_binding(binding);
+    let candidate_prefix = PhysicalPointId::candidate_prefix(binding);
+    let residence_prefix = PhysicalPointId::residence_prefix(binding.workspace, binding.recipe);
+    let payloads = (0..512_u64)
+        .map(|index| {
+            let candidate = CandidateId::new(index + 1).expect("candidate");
+            let payload = PointPayload::for_candidate(binding, candidate, &[0.25, -0.5]);
+            let id = PhysicalPointId::for_candidate(binding, candidate);
+            (candidate, id, payload)
+        })
+        .collect::<Vec<_>>();
+    let mut reencode = [0_u128; 16];
+    let mut folded = [0_u128; 16];
+    for sample in 0..reencode.len() {
+        let started = std::time::Instant::now();
+        let mut accepted = 0_usize;
+        for (candidate, id, payload) in &payloads {
+            if payload.matches_binding(binding) && *id == payload.physical_id(binding, *candidate) {
+                accepted += 1;
+            }
+        }
+        reencode[sample] = started.elapsed().as_nanos();
+        assert_eq!(std::hint::black_box(accepted), payloads.len());
+
+        let started = std::time::Instant::now();
+        accepted = 0;
+        for (candidate, id, payload) in &payloads {
+            if payload.matches_text(&bound)
+                && *id == payload.physical_id_with(&candidate_prefix, &residence_prefix, *candidate)
+            {
+                accepted += 1;
+            }
+        }
+        folded[sample] = started.elapsed().as_nanos();
+        assert_eq!(std::hint::black_box(accepted), payloads.len());
+    }
+    reencode.sort_unstable();
+    folded.sort_unstable();
+    let reencode_median = reencode[reencode.len() / 2];
+    let folded_median = folded[folded.len() / 2];
+    eprintln!(
+        "hit_fold hits=512 reencode_median_ns={reencode_median} folded_median_ns={folded_median}"
+    );
+    assert!(folded_median < reencode_median);
 }
 
 #[test]

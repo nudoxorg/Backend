@@ -92,7 +92,7 @@ fn the_value_page_shows_one_row_per_item_not_per_re_export() {
         .iter()
         .map(|r| format!("{} {} {}", r.what.word(), r.name, r.after.as_ref().map(|m| m.plain()).unwrap_or_default()))
         .collect();
-    assert_eq!(rows, ["added deserialize_struct (name text, _fields list of text, visitor V) → V’s Value or fails with Error"]);
+    assert_eq!(rows, ["added deserialize_struct (name text, fields list of text, visitor V) → V’s Value or fails with Error"]);
     // The same page reached through the root re-export says the same.
     assert_eq!(lens, super::lens(toml(), "toml::Value", TOML_NEXT, &Nowhere));
 }
@@ -128,26 +128,62 @@ fn going_back_reads_as_going_back() {
     assert!(lens.compared());
 }
 
-/// The crate-wide counts, and the three places they differ from the
-/// prototype's (73 breaking · 78 added · 5 respelled): each is a prototype
-/// defect, pinned here so it cannot come back.
+/// The crate-wide counts now match the lead's fixed prototype
+/// (`releases-ui.js`'s `declared()`/`bindings()`) exactly: 40 breaking · 77
+/// added · 38 respelled. Rust has no named arguments, so a parameter's name
+/// (and its binding pattern: `v`, `_v`, `mut v`) is the callee's business,
+/// never the caller's — comparing signatures by type, position by position,
+/// moves every rename-only and binding-only change from breaking to
+/// respelled (35 pure renames plus 3 that only add a `mut` binding, once
+/// re-exports fold to one item each).
 #[test]
 fn the_toml_upgrade_counts_each_item_once() {
     let krate = toml();
     let line = summary(krate, TOML_PIN, TOML_NEXT);
-    assert_eq!(line.words(TOML_NEXT), "71 breaking · 77 added · 7 respelled · none of your 80 uses change");
+    assert_eq!(line.words(TOML_NEXT), "40 breaking · 77 added · 38 respelled · none of your 80 uses change");
     let changes = krate.changes(TOML_PIN, TOML_NEXT);
     let find = |what: What, path: &str| changes.iter().filter(|c| c.what == what && c.path == path).count();
     // 1. `toml::from_slice` is `toml::de::from_slice` re-exported: one item
-    //    (the prototype keyed on the last two segments, so counted it twice).
+    //    (a path keyed on only its last two segments would count it twice).
     assert_eq!(find(What::Added, "toml::from_slice") + find(What::Added, "toml::de::from_slice"), 1);
     // 2. `de::Error::fmt` and `ser::Error::fmt` are two items that happen to
-    //    share a tail (the prototype merged them).
+    //    share a tail (a naive fold by tail alone would merge them).
     assert_eq!(find(What::Changed, "toml::de::Error::fmt"), 1);
     assert_eq!(find(What::Changed, "toml::ser::Error::fmt"), 1);
     // 3. `v: f32` → `mut v: f32` is a binding the caller never sees.
     let f32 = changes.iter().find(|c| c.path == "toml::ser::ValueSerializer::serialize_f32").expect("serialize_f32 changed");
     assert!(f32.respelled(), "{:?} → {:?}", f32.before, f32.after);
+}
+
+/// A signature change that only renames a parameter (`v: bool` →
+/// `_v: bool`) is a respelling, not a breaking change: Rust has no named
+/// arguments, so the name is never compared, never marked old or new, and
+/// never counts against you.
+#[test]
+fn a_parameter_rename_alone_is_respelled_not_breaking() {
+    let krate = toml();
+    let changes = krate.changes(TOML_PIN, TOML_NEXT);
+    let change = changes
+        .iter()
+        .find(|c| c.path == "toml::ser::Serializer::serialize_bool")
+        .expect("serialize_bool's parameter was renamed between these releases");
+    assert_eq!(change.what, What::Changed);
+    assert_eq!(change.before.as_deref(), Some("fn serialize_bool(self, v:bool) -> Result<Serializer::Ok, Serializer::Error>"));
+    assert_eq!(change.after.as_deref(), Some("fn serialize_bool(self, _v:bool) -> Result<Serializer::Ok, Serializer::Error>"));
+    assert!(change.respelled(), "a parameter rename alone is never breaking: {:?} → {:?}", change.before, change.after);
+
+    let (before, after) = marked(change.before.as_deref().unwrap_or(""), change.after.as_deref().unwrap_or(""), &Nowhere);
+    assert!(before.marked(Mark::Old).is_empty(), "a renamed parameter is never struck: {:?}", before.marked(Mark::Old));
+    assert!(after.marked(Mark::New).is_empty(), "a renamed parameter is never underlined: {:?}", after.marked(Mark::New));
+    assert_eq!(before.plain(), after.plain(), "the two sides read the same in plain words");
+
+    // The same `respelled()` predicate gates both the shelf's breaking count
+    // and `Crate::impact`'s per-use changing count, so this change (were it
+    // one of your uses) could never count as breaking or against you; the
+    // crate-wide line already prices it as one of the 38 respelled, not one
+    // of the 40 breaking.
+    let line = summary(krate, TOML_PIN, TOML_NEXT);
+    assert_eq!(line.words(TOML_NEXT), "40 breaking · 77 added · 38 respelled · none of your 80 uses change");
 }
 
 #[test]
@@ -171,4 +207,22 @@ fn the_comb_touches_only_releases_that_really_change_your_code() {
     }
     let touches: Vec<String> = yours.touches().iter().map(ToString::to_string).collect();
     assert_eq!(touches, [TOML_NEXT]);
+}
+
+/// A manual inspection dump, not an assertion: run it with
+/// `cargo test -- --ignored debug_respelled_dump --nocapture`.
+#[test]
+#[ignore = "debug dump"]
+fn debug_respelled_dump() {
+    let krate = toml();
+    let changes = krate.changes(TOML_PIN, TOML_NEXT);
+    let mut n = 0;
+    for c in &changes {
+        if c.what == What::Changed && c.severity == super::Severity::Breaking && c.respelled() {
+            n += 1;
+            println!("RESPELLED[{n}] {} \n  before: {:?}\n  after:  {:?}", c.path, c.before, c.after);
+        }
+    }
+    println!("total respelled-breaking: {n}");
+    panic!("dump");
 }

@@ -24,13 +24,15 @@
 //!    the rest (`ensure`, `prefetch`), so an idle window requests no frame.
 
 mod ask;
-mod bodies;
+pub(crate) mod bodies;
 mod facet_sync;
 mod focus;
+mod hand;
 mod frame;
+mod jump;
 mod hints;
 mod keys;
-mod kit;
+pub(crate) mod kit;
 mod peeks;
 mod pins;
 mod reader;
@@ -41,11 +43,20 @@ mod shelf;
 mod status;
 mod system;
 mod text_fit;
-mod thread;
 mod titlebar;
 
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod anatomy_tests;
+#[cfg(test)]
+mod motion_tests;
+#[cfg(test)]
+mod comb_tests;
+#[cfg(test)]
+mod hand_tests;
+#[cfg(test)]
+mod jump_tests;
 
 pub use frame::{Frame, FrameInput, ShelfMode};
 pub use reader::Way;

@@ -6,10 +6,10 @@
 //! keeps the engine's availability distinctions: a reply that could not
 //! answer becomes a typed [`Gap`], never an empty list.
 
-use crate::model::local_package::{DependencyKind, LocalPackage};
+use crate::model::local_package::{DependencyKind, LocalPackage, LocalPackageSource};
 use crate::model::pages::{
-    AdvisorySummary, Arrival, ByteSpan, DeclRef, Dependency, DependencyScope, Derivation,
-    DocFragment, Downloads, Excerpt, FaultProgress, FileSpan, Gap, GapReason, HealthModel,
+    AdvisorySummary, Arrival, ByteSpan, DeclFacts, DeclRef, Dependency, DependencyScope,
+    Derivation, DocEntry, DocFragment, DocSection, DocSections, Downloads, Excerpt, FaultProgress, FileSpan, Gap, GapReason, HealthModel,
     IdentifierSpan, IndexedPackage, IngestModel, Known, LanguageProgress, LineSpan, MatchReason,
     Member, Members, MethodGroup, OrbitModel, OrbitProject, OutlineNode, OutlinePosition,
     OutlineTree, PackageDossier, PackageRecord, PackageRef, Provenance, Readiness, Receiver,
@@ -380,6 +380,235 @@ pub fn doc_fragments(fragments: &[Fragment], outline: Option<&OutlineIndex>) -> 
         .collect()
 }
 
+/// One documentation line: its fragments and the prose they spell.
+struct DocLine {
+    fragments: Vec<DocFragment>,
+    text: String,
+    code_only: bool,
+}
+
+/// Splits fragments into lines at every break and every newline in prose.
+fn doc_lines(fragments: &[DocFragment]) -> Vec<DocLine> {
+    let mut lines = vec![DocLine {
+        fragments: Vec::new(),
+        text: String::new(),
+        code_only: true,
+    }];
+    let push = |lines: &mut Vec<DocLine>, fragment: DocFragment, text: &str, code: bool| {
+        if let Some(line) = lines.last_mut() {
+            line.text.push_str(text);
+            line.code_only &= code;
+            line.fragments.push(fragment);
+        }
+    };
+    let new_line = |lines: &mut Vec<DocLine>| {
+        lines.push(DocLine {
+            fragments: Vec::new(),
+            text: String::new(),
+            code_only: true,
+        });
+    };
+    for fragment in fragments {
+        match fragment {
+            DocFragment::Text(text) => {
+                for (index, part) in text.split('\n').enumerate() {
+                    if index > 0 {
+                        new_line(&mut lines);
+                    }
+                    if !part.is_empty() {
+                        push(&mut lines, DocFragment::Text(Arc::from(part)), part, false);
+                    }
+                }
+            }
+            DocFragment::Code(code) => push(&mut lines, fragment.clone(), code, true),
+            DocFragment::Link { label, .. } => push(&mut lines, fragment.clone(), label, false),
+            DocFragment::Break => new_line(&mut lines),
+        }
+    }
+    lines
+}
+
+/// Drops the first `consumed` bytes a convention marker spelled from one
+/// line's fragments, and the whitespace after them.
+fn after_marker(line: &DocLine, consumed: usize) -> Vec<DocFragment> {
+    let mut remaining = consumed;
+    let mut out = Vec::new();
+    for fragment in &line.fragments {
+        if remaining == 0 {
+            out.push(fragment.clone());
+            continue;
+        }
+        let width = match fragment {
+            DocFragment::Text(text) | DocFragment::Code(text) => text.len(),
+            DocFragment::Link { label, .. } => label.len(),
+            DocFragment::Break => 0,
+        };
+        if width <= remaining {
+            remaining -= width;
+            continue;
+        }
+        match fragment {
+            DocFragment::Text(text) if text.is_char_boundary(remaining) => {
+                out.push(DocFragment::Text(Arc::from(&text[remaining..])));
+            }
+            other => out.push(other.clone()),
+        }
+        remaining = 0;
+    }
+    if let Some(DocFragment::Text(first)) = out.first() {
+        let trimmed = first.trim_start();
+        if trimmed.is_empty() {
+            out.remove(0);
+        } else if trimmed.len() != first.len() {
+            out[0] = DocFragment::Text(Arc::from(trimmed));
+        }
+    }
+    out
+}
+
+/// Appends one line's fragments to a body, a break between lines. The
+/// line's source indentation (a docstring's, a comment's) is not prose.
+fn append_line(body: &mut Vec<DocFragment>, mut fragments: Vec<DocFragment>) {
+    if !body.is_empty() {
+        body.push(DocFragment::Break);
+    }
+    if let Some(DocFragment::Text(first)) = fragments.first() {
+        let trimmed = first.trim_start();
+        if trimmed.is_empty() {
+            fragments.remove(0);
+        } else if trimmed.len() != first.len() {
+            fragments[0] = DocFragment::Text(Arc::from(trimmed));
+        }
+    }
+    body.extend(fragments);
+}
+
+/// Trims the breaks a body starts and ends with.
+fn trimmed_body(mut body: Vec<DocFragment>) -> Arc<[DocFragment]> {
+    while matches!(body.last(), Some(DocFragment::Break)) {
+        body.pop();
+    }
+    let start = body
+        .iter()
+        .position(|fragment| !matches!(fragment, DocFragment::Break))
+        .unwrap_or(body.len());
+    body.drain(..start);
+    body.into()
+}
+
+/// A section under construction.
+struct OpenSection {
+    kind: crate::model::pages::SectionKind,
+    title: Arc<str>,
+    body: Vec<DocFragment>,
+    entries: Vec<(Arc<str>, Vec<DocFragment>)>,
+}
+
+impl OpenSection {
+    fn close(self) -> DocSection {
+        DocSection {
+            kind: self.kind,
+            title: self.title,
+            body: trimmed_body(self.body),
+            entries: self
+                .entries
+                .into_iter()
+                .map(|(subject, body)| DocEntry {
+                    subject,
+                    body: trimmed_body(body),
+                })
+                .collect(),
+        }
+    }
+
+    /// Where the next prose line belongs: the last entry, or the section.
+    fn target(&mut self) -> &mut Vec<DocFragment> {
+        match self.entries.last_mut() {
+            Some((_, body)) => body,
+            None => &mut self.body,
+        }
+    }
+}
+
+/// Reads documentation by its language's section conventions.
+///
+/// The documentation's own fragments are kept; only each convention's
+/// marker is read into structure. A line of fenced code is never a marker.
+#[must_use]
+pub fn doc_sections(language: Language, fragments: &[DocFragment]) -> DocSections {
+    let lines = doc_lines(fragments);
+    let mut reader = backend_present::SectionReader::new(language);
+    let mut lead = Vec::new();
+    let mut sections: Vec<DocSection> = Vec::new();
+    let mut open: Option<OpenSection> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let role = if line.code_only && !line.fragments.is_empty() {
+            backend_present::LineRole::Prose
+        } else {
+            reader.line(&line.text, lines.get(index + 1).map(|next| next.text.as_str()))
+        };
+        match role {
+            backend_present::LineRole::Heading { kind, title } => {
+                sections.extend(open.take().map(OpenSection::close));
+                open = Some(OpenSection {
+                    kind,
+                    title: Arc::from(title),
+                    body: Vec::new(),
+                    entries: Vec::new(),
+                });
+            }
+            backend_present::LineRole::Tag {
+                kind,
+                title,
+                subject,
+                consumed,
+            } => {
+                // Consecutive tags of one kind (`@throws A`, `@throws B`) are
+                // entries of one section.
+                let continues = open
+                    .as_ref()
+                    .is_some_and(|section| section.kind == kind && kind.has_entries());
+                if !continues {
+                    sections.extend(open.take().map(OpenSection::close));
+                    open = Some(OpenSection {
+                        kind,
+                        title: Arc::from(title),
+                        body: Vec::new(),
+                        entries: Vec::new(),
+                    });
+                }
+                if let Some(section) = open.as_mut() {
+                    let rest = after_marker(line, consumed);
+                    match subject {
+                        Some(subject) => section.entries.push((Arc::from(subject), rest)),
+                        None => append_line(section.target(), rest),
+                    }
+                }
+            }
+            backend_present::LineRole::Entry { subject, consumed } => {
+                let rest = after_marker(line, consumed);
+                match open.as_mut() {
+                    Some(section) => section.entries.push((Arc::from(subject), rest)),
+                    None => append_line(&mut lead, line.fragments.clone()),
+                }
+            }
+            backend_present::LineRole::Underline => {}
+            backend_present::LineRole::Prose => {
+                let target = match open.as_mut() {
+                    Some(section) => section.target(),
+                    None => &mut lead,
+                };
+                append_line(target, line.fragments.clone());
+            }
+        }
+    }
+    sections.extend(open.take().map(OpenSection::close));
+    DocSections {
+        lead: trimmed_body(lead),
+        sections: sections.into(),
+    }
+}
+
 fn availability_gap(availability: &SourceAvailability) -> Gap {
     match availability {
         SourceAvailability::Captured(_) | SourceAvailability::NotCaptured => Gap::new(
@@ -393,6 +622,10 @@ fn availability_gap(availability: &SourceAvailability) -> Gap {
         SourceAvailability::Unconfigured => Gap::new(
             GapReason::Unconfigured,
             "this deployment has no source provider for the declaration's origin",
+        ),
+        SourceAvailability::StaleFile { path } => Gap::new(
+            GapReason::Stale,
+            format!("the compiled line for {path} is no longer that file's line"),
         ),
     }
 }
@@ -504,10 +737,13 @@ fn member_of(row: &Row, outline: Option<&OutlineIndex>) -> Option<Member> {
     let decl = DeclRef::from_row(row)?;
     let own = decl.key;
     let signature = signature_text(row.signature.as_deref(), decl.language, own, outline);
+    let docs = doc_fragments(&row.document, outline);
     Some(Member {
+        sections: doc_sections(decl.language, &docs),
         decl,
         signature,
         summary: summary_of(row),
+        docs,
     })
 }
 
@@ -986,7 +1222,14 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
         line: None,
         language: Language::Unknown,
         semantic: false,
+        facts: DeclFacts::unread(),
     });
+    // The page's own facts come from its document, which the producer
+    // copied from the declaration's row.
+    let identity = DeclRef {
+        facts: DeclFacts::from_facts(&inputs.document.facts),
+        ..identity
+    };
     let signature = signature_text(
         inputs.document.signature.as_deref(),
         identity.language,
@@ -1040,6 +1283,10 @@ pub fn symbol_page(inputs: &SymbolInputs<'_>) -> SymbolPage {
             Known::Known,
         ),
         signature,
+        sections: doc_sections(
+            identity.language,
+            &doc_fragments(&inputs.document.fragments, outline),
+        ),
         docs: doc_fragments(&inputs.document.fragments, outline),
         site: source_site(&inputs.document.location, &inputs.document.excerpt),
         members: members_known,
@@ -1176,6 +1423,7 @@ pub fn source_view(
             line: None,
             language: Language::Unknown,
             semantic: false,
+            facts: DeclFacts::unread(),
         });
     let file = site
         .location
@@ -1344,6 +1592,31 @@ pub fn registry_record(record: &RegistryPackageRecord) -> PackageRecord {
     }
 }
 
+fn local_manifest_facts(local: &LocalPackage) -> bool {
+    matches!(
+        local.source,
+        LocalPackageSource::Cargo | LocalPackageSource::Manifest(_)
+    )
+}
+
+fn local_manifest_record(
+    package: &PackageRef,
+    local: Option<&LocalPackage>,
+    is_local: bool,
+) -> Known<PackageRecord> {
+    if let Some(manifest) = local.filter(|manifest| local_manifest_facts(manifest)) {
+        return Known::Known(local_record(package, manifest));
+    }
+    Known::Unknown(if is_local {
+        local_gap("a registry record")
+    } else {
+        Gap::new(
+            GapReason::NotRecorded,
+            "the local registry has no committed record for this release",
+        )
+    })
+}
+
 fn local_record(package: &PackageRef, local: &LocalPackage) -> PackageRecord {
     PackageRecord {
         package: package.clone(),
@@ -1418,26 +1691,25 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
         Ok(SurfaceReply::Package(records)) => Ok(records.as_ref()),
         other => Err(surface_gap(other, "package")),
     };
-    let record = match (inputs.local, &registry_records) {
-        (Some(manifest), _) => Known::Known(local_record(package, manifest)),
-        (None, Ok(records)) => records
+    let record = match &registry_records {
+        Ok(records) => records
             .iter()
             .find(|record| record.coordinate == *package.reference())
             .or_else(|| records.first())
             .map_or_else(
-                || {
-                    Known::Unknown(if local {
-                        local_gap("a registry record")
-                    } else {
-                        Gap::new(
-                            GapReason::NotRecorded,
-                            "the local registry has no committed record for this release",
-                        )
-                    })
-                },
+                || local_manifest_record(package, inputs.local, local),
                 |record| Known::Known(registry_record(record)),
             ),
-        (None, Err(gap)) => Known::Unknown(gap.clone()),
+        Err(gap) => inputs.local.map_or_else(
+            || Known::Unknown(gap.clone()),
+            |manifest| {
+                if local_manifest_facts(manifest) {
+                    Known::Known(local_record(package, manifest))
+                } else {
+                    Known::Unknown(gap.clone())
+                }
+            },
+        ),
     };
     let current_version = record
         .known()
@@ -1482,9 +1754,10 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
                     .into(),
             )
         }
-        // A local project's own manifest names its dependencies even when
-        // the registry graph has no record of the project.
-        (Some(manifest), _) => Known::Known(
+        // The canonical graph had no dependency rows. A manifest read is the
+        // recovery path for a project the index has not recorded. A README
+        // projection leaves dependency availability on the surface reply.
+        (Some(manifest), _) if local_manifest_facts(manifest) => Known::Known(
             manifest
                 .dependencies
                 .iter()
@@ -1502,14 +1775,14 @@ pub fn package_dossier(inputs: &PackageInputs<'_>) -> PackageDossier {
                 .collect::<Vec<_>>()
                 .into(),
         ),
-        (None, Ok(SurfaceReply::Dependencies(backend_library::DependencyFacts::Unknown(text)))) => {
+        (_, Ok(SurfaceReply::Dependencies(backend_library::DependencyFacts::Unknown(text)))) => {
             Known::unknown(GapReason::NotRecorded, text.as_str())
         }
         (
-            None,
+            _,
             Ok(SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(text))),
         ) => Known::unknown(GapReason::Unavailable, text.as_str()),
-        (None, other) => Known::Unknown(surface_gap(other, "dependencies")),
+        (_, other) => Known::Unknown(surface_gap(other, "dependencies")),
     };
     let dependents = match inputs.dependents {
         Ok(SurfaceReply::Dependents(backend_library::RegistryMetadata::Recorded(records))) => {
@@ -2299,6 +2572,133 @@ mod tests {
     }
 
     #[test]
+    fn an_engine_package_record_wins_over_the_local_manifest() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
+            source: LocalPackageSource::Cargo,
+            name: Arc::from("secret-local"),
+            version: Some(Arc::from("9.9.9")),
+            description: None,
+            license: None,
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("From the checkout."))]),
+            dependencies: Arc::from([LocalDependency {
+                name: Arc::from("local-only"),
+                requirement: Arc::from("0.1"),
+                kind: DependencyKind::Normal,
+                users: 1,
+            }]),
+            features: Arc::from([]),
+            members: 1,
+        };
+        let record = crate::runtime::tests::registry_record("engine-name", "1.2.3");
+        let records = SurfaceReply::Package(Box::new([record]));
+        let versions = SurfaceReply::PackageVersions(Box::new([]));
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Known(Box::new([
+                backend_library::PackageDependencyRecord::new(
+                    package.reference().clone(),
+                    backend_library::PackageDependencyTarget::new(
+                        backend_library::RegistryEcosystem::Cargo,
+                        "from-engine",
+                        "^2",
+                        None,
+                    )
+                    .expect("target"),
+                    backend_library::DependencyScope::Runtime,
+                    false,
+                    backend_library::DependencyEvidence {
+                        authority: backend_library::DependencyAuthority::RegistryMetadata,
+                        frontier: [7; 32],
+                        provenance: [8; 32],
+                    },
+                ),
+            ])));
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
+            backend_library::ProductText::new("not recorded").expect("reason"),
+        ));
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Ok(&versions),
+            dependencies: Ok(&dependencies),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
+            local: Some(&local),
+        });
+        let head = dossier.record.known().expect("engine record");
+        assert_eq!(head.source, RecordSource::Registry);
+        assert_eq!(head.name.as_ref(), "engine-name");
+        assert_eq!(head.version.known().map(AsRef::as_ref), Some("1.2.3"));
+        let dependencies = dossier.dependencies.known().expect("engine dependencies");
+        assert_eq!(dependencies[0].name.as_ref(), "from-engine");
+        assert_eq!(dependencies[0].requirement.as_ref(), "^2");
+        assert!(matches!(
+            dossier.readme.known().map(AsRef::as_ref),
+            Some([ReadmeBlock::Paragraph(text)]) if text.as_ref() == "From the checkout."
+        ));
+    }
+
+    #[test]
+    fn a_readme_projection_does_not_invent_package_facts() {
+        let package = PackageRef::parse(PRESENT).expect("local package");
+        let local = LocalPackage {
+            project: crate::core::LocalProjectId::new(PRESENT).expect("project"),
+            source: LocalPackageSource::Readme,
+            name: Arc::from("present"),
+            version: None,
+            description: None,
+            license: None,
+            rust_version: None,
+            repository: None,
+            homepage: None,
+            documentation: None,
+            keywords: Arc::from([]),
+            categories: Arc::from([]),
+            readme: Arc::from([ReadmeBlock::Paragraph(Arc::from("Visible."))]),
+            dependencies: Arc::from([]),
+            features: Arc::from([]),
+            members: 0,
+        };
+        let records = SurfaceReply::Package(Box::new([]));
+        let versions = SurfaceReply::PackageVersions(Box::new([]));
+        let reason = "dependency facts are unavailable because the package is not recorded";
+        let dependencies =
+            SurfaceReply::Dependencies(backend_library::DependencyFacts::Unavailable(
+                backend_library::ProductText::new(reason).expect("reason"),
+            ));
+        let dependents = SurfaceReply::Dependents(backend_library::RegistryMetadata::NotRecorded(
+            backend_library::ProductText::new("not recorded").expect("reason"),
+        ));
+        let dossier = package_dossier(&PackageInputs {
+            package: &package,
+            records: Ok(&records),
+            versions: Ok(&versions),
+            dependencies: Ok(&dependencies),
+            dependents: Ok(&dependents),
+            outline: Err(Gap::new(GapReason::ReadFailed, "outline refused")),
+            local: Some(&local),
+        });
+        assert_eq!(
+            dossier.record.gap().map(|gap| gap.reason),
+            Some(GapReason::LocalProject)
+        );
+        let dependencies = dossier.dependencies.gap().expect("unavailable dependencies");
+        assert_eq!(dependencies.reason, GapReason::Unavailable);
+        assert_eq!(dependencies.detail.as_ref(), reason);
+        assert!(matches!(
+            dossier.readme.known().map(AsRef::as_ref),
+            Some([ReadmeBlock::Paragraph(text)]) if text.as_ref() == "Visible."
+        ));
+    }
+
+    #[test]
     fn search_rows_keep_producer_order_and_say_why_each_matched() {
         let rows = vec![
             row(&RowSpec { label: present("record.rs:91::from_row"), kind: DeclarationKind::Method, signature: Some("pub fn from_row(row: &Row) -> Self"), parent: None, doc: Some("Lowers one engine row into a result record."), site: Some(("record.rs", 91)) }),
@@ -2448,5 +2848,217 @@ mod tests {
         ] {
             assert!(!is_encoded_signature(source), "{source}");
         }
+    }
+
+    fn rendered_sections(sections: &DocSections) -> Vec<String> {
+        sections
+            .sections
+            .iter()
+            .map(|section| {
+                let entries = section
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        format!("{}: {}", entry.subject, DocFragment::plain_text(&entry.body))
+                    })
+                    .collect::<Vec<_>>();
+                format!(
+                    "{} {:?} body {:?} entries {entries:?}",
+                    section.kind.name(),
+                    section.title,
+                    DocFragment::plain_text(&section.body)
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_page_reads_member_docs_facts_and_sections_from_its_rows() {
+        use backend_library::{DeclarationFacts, Deprecation, Fact, Obligation};
+        let module = present("service.rs");
+        let service = present("service.rs:3::Service");
+        fn spec<'a>(
+            label: String,
+            kind: DeclarationKind,
+            signature: &'a str,
+            parent: &'a str,
+            doc: &'a str,
+            line: u32,
+        ) -> RowSpec<'a> {
+            RowSpec {
+                label,
+                kind,
+                signature: Some(signature),
+                parent: Some(parent),
+                doc: Some(doc),
+                site: Some(("service.rs", line)),
+            }
+        }
+        let rows = vec![
+            row(&RowSpec { label: module.clone(), kind: DeclarationKind::Module, signature: None, parent: None, doc: None, site: Some(("service.rs", 1)) }),
+            row(&spec(service.clone(), DeclarationKind::Trait, "pub trait Service", &module, "A contract.", 3)),
+            row(&spec(
+                present("service.rs:9::execute"),
+                DeclarationKind::Method,
+                "fn execute(&self) -> u8",
+                &service,
+                "Runs once.\n\nA second paragraph a ledger needs.\n\n# Errors\nFails when stopped.",
+                9,
+            ))
+            .with_facts(DeclarationFacts {
+                deprecation: Fact::Absent,
+                obligation: Fact::Present(Obligation::Required),
+            }),
+            row(&spec(
+                present("service.rs:12::describe"),
+                DeclarationKind::Method,
+                "fn describe(&self) -> String",
+                &service,
+                "Describes it.",
+                12,
+            ))
+            .with_facts(DeclarationFacts {
+                deprecation: Fact::Present(Deprecation::new(Some("2.0.0"), Some("use `execute`"))),
+                obligation: Fact::Present(Obligation::Provided),
+            }),
+            row(&spec(present("service.rs:20::unread"), DeclarationKind::Function, "fn unread()", &module, "Never looked at.", 20)),
+        ];
+        let outline = OutlineIndex::new(rows.clone(), true);
+        let coordinate = SymbolRef::new(&service).expect("coordinate");
+        let document = present_document(
+            &service,
+            "pub trait Service",
+            "A contract.",
+            ("service.rs", 3),
+            "pub trait Service {}",
+        )
+        .with_facts(DeclarationFacts {
+            deprecation: Fact::Present(Deprecation::new(None, Some("the old contract"))),
+            obligation: Fact::Absent,
+        });
+        let failure = no_semantics();
+        let page = symbol_page(&SymbolInputs {
+            coordinate: &coordinate,
+            document: &document,
+            related: Ok(Neighbourhood {
+                rows: &rows,
+                relations: None,
+                rich: None,
+            }),
+            references: Err(&failure),
+            outline: Ok(&outline),
+        });
+
+        assert_eq!(
+            page.identity.facts.deprecated().and_then(|notice| notice.note.as_deref()),
+            Some("the old contract")
+        );
+        let members = page.members.known().expect("members");
+        let member = |name: &str| {
+            members
+                .all()
+                .find(|member| member.decl.name.as_ref() == name)
+                .unwrap_or_else(|| panic!("no member {name}"))
+        };
+        let execute = member("execute");
+        assert_eq!(execute.summary.as_deref(), Some("Runs once."));
+        assert_eq!(
+            DocFragment::plain_text(&execute.docs),
+            "Runs once.\n\nA second paragraph a ledger needs.\n\n# Errors\nFails when stopped.",
+            "a member keeps every paragraph, not only its summary line"
+        );
+        assert_eq!(
+            execute.decl.facts.obligation.known(),
+            Some(&Some(Obligation::Required))
+        );
+        assert_eq!(execute.decl.facts.deprecation.known(), Some(&None));
+        assert_eq!(
+            DocFragment::plain_text(&execute.sections.lead),
+            "Runs once.\n\nA second paragraph a ledger needs."
+        );
+        assert_eq!(
+            rendered_sections(&execute.sections),
+            [r#"errors "Errors" body "Fails when stopped." entries []"#]
+        );
+        let describe = member("describe");
+        let notice = describe.decl.facts.deprecated().expect("describe is deprecated");
+        assert_eq!(notice.since.as_deref(), Some("2.0.0"));
+        assert_eq!(notice.note.as_deref(), Some("use `execute`"));
+        assert_eq!(
+            describe.decl.facts.obligation.known(),
+            Some(&Some(Obligation::Provided))
+        );
+        // A row whose producer observed nothing is a typed gap, never
+        // "not deprecated".
+        let unread = rows
+            .iter()
+            .find(|row| row.label.ends_with("::unread"))
+            .and_then(DeclRef::from_row)
+            .expect("unread");
+        assert_eq!(
+            unread.facts.deprecation.gap().map(|gap| gap.reason),
+            Some(GapReason::NotCaptured)
+        );
+    }
+
+    #[test]
+    fn doc_sections_read_each_language_convention_over_real_fragment_shapes() {
+        // A compiler-backed TypeScript row: one fragment run per line, a
+        // link inside a tag line.
+        let target = key("pkg::TypeError");
+        let typescript = [
+            DocFragment::Text(Arc::from("Builds one.")),
+            DocFragment::Break,
+            DocFragment::Text(Arc::from("@throws ")),
+            DocFragment::Link {
+                label: Arc::from("TypeError"),
+                target,
+                coordinate: None,
+            },
+            DocFragment::Text(Arc::from(" when the input is bad")),
+            DocFragment::Break,
+            DocFragment::Text(Arc::from("@throws RangeError when it is far")),
+            DocFragment::Break,
+            DocFragment::Text(Arc::from("@returns the thing")),
+        ];
+        let sections = doc_sections(Language::TypeScript, &typescript);
+        assert_eq!(DocFragment::plain_text(&sections.lead), "Builds one.");
+        assert_eq!(
+            rendered_sections(&sections),
+            [
+                r#"errors "throws" body "" entries ["TypeError: when the input is bad", "RangeError: when it is far"]"#,
+                r#"returns "returns" body "the thing" entries []"#,
+            ]
+        );
+        // A structural Python row: the whole docstring is one text.
+        let python = [DocFragment::Text(Arc::from(
+            "Makes one.\n\nRaises:\n    ValueError: when empty.\n        It says why.\n\nReturns:\n    The thing.",
+        ))];
+        assert_eq!(
+            rendered_sections(&doc_sections(Language::Python, &python)),
+            [
+                r#"errors "Raises" body "" entries ["ValueError: when empty.\nIt says why."]"#,
+                r#"returns "Returns" body "The thing." entries []"#,
+            ]
+        );
+        // Fenced Rust code is never read as a heading.
+        let rust = [
+            DocFragment::Text(Arc::from("Parses.")),
+            DocFragment::Break,
+            DocFragment::Code(Arc::from("# use crate::parse;")),
+            DocFragment::Break,
+            DocFragment::Text(Arc::from("# Safety")),
+            DocFragment::Break,
+            DocFragment::Text(Arc::from("The pointer must be valid.")),
+        ];
+        let sections = doc_sections(Language::Rust, &rust);
+        assert_eq!(
+            DocFragment::plain_text(&sections.lead),
+            "Parses.\n# use crate::parse;"
+        );
+        assert_eq!(
+            rendered_sections(&sections),
+            [r#"safety "Safety" body "The pointer must be valid." entries []"#]
+        );
     }
 }

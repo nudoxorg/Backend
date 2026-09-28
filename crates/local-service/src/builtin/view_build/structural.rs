@@ -148,9 +148,33 @@ impl StructuralProjectionPlan {
         sources: &IndexedSources,
         complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
     ) -> Result<Self, BuiltinModelError> {
+        Self::plan(sources, complete, None)
+    }
+
+    /// Plans structural rows for `only` these file keys.
+    ///
+    /// The type index still walks every file. An attached parent declared in
+    /// an untouched file keeps that file's coordinate; the row builder resolves
+    /// the coordinate against the resident view.
+    pub(super) fn of_files(
+        sources: &IndexedSources,
+        complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+        only: &BTreeSet<[u8; 32]>,
+    ) -> Result<Self, BuiltinModelError> {
+        Self::plan(sources, complete, Some(only))
+    }
+
+    fn plan(
+        sources: &IndexedSources,
+        complete: &BTreeSet<([u8; 32], backend_semantic::vocabulary::LanguageProfile)>,
+        only: Option<&BTreeSet<[u8; 32]>>,
+    ) -> Result<Self, BuiltinModelError> {
         let types = ProjectTypeIndex::of(sources);
         let mut plan = Self::default();
         for (file_key, record) in &sources.files {
+            if only.is_some_and(|keys| !keys.contains(file_key)) {
+                continue;
+            }
             let Some(file) = record.file_fields() else {
                 continue;
             };
@@ -207,6 +231,15 @@ impl StructuralProjectionPlan {
                 },
             );
         }
+        if let Some(only) = only {
+            for key in only {
+                if !plan.files.contains_key(key) {
+                    return Err(BuiltinModelError(
+                        "structural file splice omitted a requested source".to_owned(),
+                    ));
+                }
+            }
+        }
         for symbols in plan.by_coordinate.values_mut() {
             symbols.sort_unstable_by_key(|symbol| {
                 (structural_parent_rank(symbol.kind), symbol.kind, symbol.id)
@@ -256,6 +289,22 @@ impl StructuralProjectionPlan {
             return Ok(StructuralParent::Symbol(symbol.id));
         }
         Ok(StructuralParent::Package(file.package))
+    }
+
+    /// The retained symbol at this coordinate, with no module fallback.
+    ///
+    /// [`Self::parent_id`] substitutes the file module when the coordinate was
+    /// not planned. A one-file splice must not use that fallback for a parent
+    /// that still lives in another file.
+    pub(super) fn symbol_for_coordinate(
+        &self,
+        project: [u8; 32],
+        coordinate: &str,
+    ) -> Option<RowId> {
+        self.by_coordinate
+            .get(&(project, coordinate.to_owned()))
+            .and_then(|symbols| symbols.first())
+            .map(|symbol| symbol.id)
     }
 }
 
@@ -1341,6 +1390,13 @@ struct ParsedDeclarationCoordinate {
     name: String,
 }
 
+fn label_names_declaration(label: &str, name: &str) -> bool {
+    label == name
+        || label
+            .strip_suffix(name)
+            .is_some_and(|prefix| prefix.ends_with("::"))
+}
+
 fn parsed_declaration_coordinate(coordinate: &str) -> Option<ParsedDeclarationCoordinate> {
     let (prefix, name) = coordinate.rsplit_once("::")?;
     if name.is_empty() {
@@ -1370,24 +1426,24 @@ pub(crate) fn view_row_for_structural_coordinate(
     package: backend_engine::PackageKey,
     coordinate: &str,
 ) -> Option<RowId> {
+    if let Some(id) = view.first_package_label(package, coordinate) {
+        return Some(id);
+    }
+    let Some(parsed) = parsed_declaration_coordinate(coordinate) else {
+        return None;
+    };
     let mut semantic_matches = Vec::new();
-    for row in view.rows() {
+    for row in view.row_refs() {
         if row.package != Some(package) {
             continue;
         }
-        if row.label == coordinate {
-            return Some(row.id);
-        }
-        let Some(parsed) = parsed_declaration_coordinate(coordinate) else {
-            continue;
-        };
         let Some(location) = row.source.captured() else {
             continue;
         };
         if location.path() != parsed.path || location.start_line() != parsed.line {
             continue;
         }
-        if row.label.ends_with(&format!("::{}", parsed.name)) || row.label == parsed.name {
+        if label_names_declaration(&row.label, &parsed.name) {
             semantic_matches.push(row.id);
         }
     }
@@ -1407,14 +1463,24 @@ pub(crate) fn structural_call_graph_relations_mapped(
     source_id: RowId,
     include_incoming: bool,
 ) -> Vec<backend_engine::GraphRelation> {
+    // Exact labels resolve on the first package row in relation order. A miss
+    // falls through to the semantic path/line/name scan.
+    let mut first_label = BTreeMap::<String, RowId>::new();
+    for row in view.row_refs() {
+        if row.package == Some(package) {
+            first_label.entry(row.label.clone()).or_insert(row.id);
+        }
+    }
     let mut relations = BTreeSet::new();
     for (caller_coordinate, callee_coordinate) in pairs {
-        let Some(caller_id) = view_row_for_structural_coordinate(view, package, caller_coordinate)
-        else {
+        let Some(caller_id) = first_label.get(caller_coordinate).copied().or_else(|| {
+            view_row_for_structural_coordinate(view, package, caller_coordinate)
+        }) else {
             continue;
         };
-        let Some(callee_id) = view_row_for_structural_coordinate(view, package, callee_coordinate)
-        else {
+        let Some(callee_id) = first_label.get(callee_coordinate).copied().or_else(|| {
+            view_row_for_structural_coordinate(view, package, callee_coordinate)
+        }) else {
             continue;
         };
         relations.insert(backend_engine::GraphRelation::new(
@@ -1445,14 +1511,10 @@ pub(crate) fn structural_call_graph_relations(
     source_id: RowId,
     include_incoming: bool,
 ) -> Result<Option<Vec<backend_engine::GraphRelation>>, BuiltinModelError> {
-    let _source_row = view.row(source_id).ok_or_else(|| {
-        BuiltinModelError("structural call graph source is absent from the view".to_owned())
-    })?;
-    let mut coordinate_ids = BTreeMap::<String, RowId>::new();
-    for row in view.rows() {
-        if row.package == Some(package) {
-            coordinate_ids.insert(row.label.clone(), row.id);
-        }
+    if view.row_ref(source_id).is_none() {
+        return Err(BuiltinModelError(
+            "structural call graph source is absent from the view".to_owned(),
+        ));
     }
     let mut relations = BTreeSet::new();
     for (caller_coordinate, callee_coordinate) in structural_call_coordinate_pairs(sources, package)?
@@ -1462,14 +1524,14 @@ pub(crate) fn structural_call_graph_relations(
         // of its own. Such a pair cannot be drawn and never touches the
         // requested source row; it is not a view inconsistency.
         let (Some(caller_id), Some(callee_id)) = (
-            coordinate_ids.get(&caller_coordinate),
-            coordinate_ids.get(&callee_coordinate),
+            view.last_package_label(package, &caller_coordinate),
+            view.last_package_label(package, &callee_coordinate),
         ) else {
             continue;
         };
         relations.insert(backend_engine::GraphRelation::new(
-            *caller_id,
-            *callee_id,
+            caller_id,
+            callee_id,
             backend_library::SemanticLinkKind::Calls,
         ));
     }
@@ -1500,25 +1562,23 @@ pub(crate) fn structural_reference_facts(
     sources: &super::super::IndexedSources,
     target: &str,
 ) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
-    let target_row = view
-        .rows()
-        .iter()
-        .find(|row| row.label == target)
-        .ok_or_else(|| {
+    let (target_id, target_symbol, package) = {
+        let target_row = view.row_by_label(target).ok_or_else(|| {
             BuiltinModelError("structural references target is absent from the view".to_owned())
         })?;
-    let backend_engine::RowId::Symbol(target_symbol) = target_row.id else {
-        return Err(BuiltinModelError(
-            "structural references target is not a declaration row".to_owned(),
-        ));
+        let backend_engine::RowId::Symbol(target_symbol) = target_row.id else {
+            return Err(BuiltinModelError(
+                "structural references target is not a declaration row".to_owned(),
+            ));
+        };
+        let Some(package) = target_row.package else {
+            return Err(BuiltinModelError(
+                "structural references target is not attributed to a package".to_owned(),
+            ));
+        };
+        (target_row.id, target_symbol, package)
     };
-    let Some(package) = target_row.package else {
-        return Err(BuiltinModelError(
-            "structural references target is not attributed to a package".to_owned(),
-        ));
-    };
-    let Some(relations) =
-        structural_call_graph_relations(view, sources, package, target_row.id, true)?
+    let Some(relations) = structural_call_graph_relations(view, sources, package, target_id, true)?
     else {
         return Ok(Vec::new());
     };
@@ -1532,12 +1592,12 @@ pub(crate) fn structural_reference_facts(
     let target_identity = structural_symbol_identity(target_symbol);
     let mut facts = Vec::new();
     for relation in relations {
-        if relation.to != target_row.id
+        if relation.to != target_id
             || relation.relation != backend_library::SemanticLinkKind::Calls
         {
             continue;
         }
-        let site_row = view.row(relation.from).ok_or_else(|| {
+        let site_row = view.row_ref(relation.from).ok_or_else(|| {
             BuiltinModelError("structural references site is absent from the view".to_owned())
         })?;
         let backend_engine::RowId::Symbol(site_symbol) = site_row.id else {

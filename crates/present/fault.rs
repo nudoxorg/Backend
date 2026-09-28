@@ -477,6 +477,11 @@ impl Fault {
                 "this deployment has no source provider for the declaration's origin",
                 Affordance::None,
             ),
+            SourceAvailability::StaleFile { .. } => (
+                CauseSlug::NotCaptured,
+                "the compiled line is no longer that file's line",
+                Affordance::None,
+            ),
         };
         Some(Self::new(
             FaultSlug::SourceUnavailable,

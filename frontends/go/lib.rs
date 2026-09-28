@@ -29,7 +29,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::Go,
-        b"tree-sitter-go-0.25.0/tags-v2",
+        b"tree-sitter-go-0.25.0/tags-v3",
         vec![GrammarVariant::new(
             &["go"],
             tree_sitter_go::LANGUAGE.into(),

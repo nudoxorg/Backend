@@ -54,6 +54,8 @@ impl CommandSpec {
                 | CommandId::Tree
                 | CommandId::TreeOpen
                 | CommandId::TreeClose
+                | CommandId::ProjectTree
+                | CommandId::AdvisoryRefresh
         )
     }
 }
@@ -84,7 +86,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 40] = [
+pub const COMMANDS: [CommandSpec; 42] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -405,6 +407,22 @@ pub const COMMANDS: [CommandSpec; 40] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Registry,
     },
+    CommandSpec {
+        id: CommandId::ProjectTree,
+        name: "project-tree",
+        title: "Your Tree",
+        description: "Read a project's dependency tree as Cargo resolves it here: the role each dependency plays, why every package is in the tree, which are here twice, and what the advisory sources say.",
+        mutation: CommandMutation::Read,
+        domain: CommandDomain::Home,
+    },
+    CommandSpec {
+        id: CommandId::AdvisoryRefresh,
+        name: "advisory-refresh",
+        title: "Refresh Advisories",
+        description: "Refresh the configured RustSec, OSV, and GHSA sources and keep what they say for tree and package reads.",
+        mutation: CommandMutation::Write,
+        domain: CommandDomain::System,
+    },
 ];
 
 /// Finds one registry row.
@@ -451,6 +469,8 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::TreeClose => 37,
         CommandId::ForgeAdd => 38,
         CommandId::ForgeReference => 39,
+        CommandId::ProjectTree => 40,
+        CommandId::AdvisoryRefresh => 41,
     };
     COMMANDS[index]
 }

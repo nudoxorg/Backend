@@ -207,6 +207,7 @@ fn attempt_once() -> Result<Opened, String> {
         back: restored.back,
         forward: restored.forward,
         selected: restored.selected,
+        hand: restored.hand,
     });
     let client = LocalEngineClient::new(host.endpoint(), host_project.clone());
     Ok(Opened {

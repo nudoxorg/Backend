@@ -589,3 +589,52 @@ fn a_class_change_mid_drag_springs_from_the_painted_position_and_keeps_following
     assert!(view.read_with(cx, |dragged, cx| dragged.flow.is_settled(cx)));
     assert_eq!(frame(cx), 0, "a settled flow requests no frames");
 }
+
+/// flow-list at 1900 ms: a row reordered (its spring starts) and removed in
+/// the same change leaves before its spring settles. Its track must still
+/// end: a final at-rest sample, so the probe never sees motion that stopped
+/// being drawn while live.
+#[gpui::test]
+fn a_row_that_leaves_mid_flight_ends_its_track_at_rest(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(|_, _| Pushed {
+        presence: super::Presence::new("gone.presence"),
+        flow: super::Flow::new("gone.flip"),
+        rows: vec![1, 2, 3, 4],
+        version: 0,
+    });
+    cx.update(|_, cx| {
+        crate::probe::enable(cx);
+        super::reset_epoch(cx);
+    });
+    let mut ledgers = vec![probed(cx)];
+    // Row 4 jumps to the top (an epoch: every row below it springs down
+    // 50 px) while row 2 leaves: its exit (380 ms) ends before its spring.
+    view.update(cx, |pushed, cx| {
+        pushed.rows = vec![4, 1, 3];
+        pushed.version += 1;
+        cx.notify();
+    });
+    ledgers.push(probed(cx));
+    for step in 0..100 {
+        advance(cx, CADENCE[step % CADENCE.len()]);
+        ledgers.push(probed(cx));
+    }
+    let last = |key: &str| {
+        ledgers
+            .iter()
+            .flat_map(|ledger| &ledger.tracks)
+            .filter(|sample| sample.key == key)
+            .last()
+            .cloned()
+    };
+    let gone = last("gone.flip.2.y").expect("the leaving row was published while it flowed");
+    assert!(
+        !gone.live,
+        "the leaving row's track ends live at {} ms: its motion stopped being drawn mid-flight",
+        gone.at_ms
+    );
+    for key in ["gone.flip.1.y", "gone.flip.3.y", "gone.flip.4.y"] {
+        assert!(!last(key).expect("published").live, "{key} settled");
+    }
+    assert!(view.read_with(cx, |pushed, cx| pushed.flow.is_settled(cx) && pushed.presence.is_settled(cx)));
+}

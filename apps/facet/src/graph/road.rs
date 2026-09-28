@@ -11,8 +11,8 @@ struct RoadKey {
     path: Vec<NodeId>,
 }
 
-/// One chain's clock. Selecting the same path keeps its progress; holding a
-/// chain creates a fresh clock explicitly. No timer survives completion.
+/// One chain's clock. Committing the same preview keeps its progress; a new
+/// semantic path starts a fresh trip. No timer survives completion.
 #[derive(Clone, Debug)]
 pub struct RoadProgress {
     key: RoadKey,
@@ -57,10 +57,26 @@ impl RoadProgress {
         }
     }
 
+    /// Selection and commit share one clock while the semantic path matches.
+    #[must_use]
+    pub fn for_selection(previous: Option<Self>, chain: &Chain, now: Duration) -> Self {
+        previous.filter(|road| road.matches(chain)).unwrap_or_else(|| Self::new(chain, now))
+    }
+
     /// The finite start/budget pair used by the native animation probe.
     #[must_use]
     pub fn timing(&self) -> (Duration, Duration) {
         (self.started, self.duration)
+    }
+
+    /// Analytic progress velocity in units per second at the last sample.
+    /// Settled, reduced-motion and zero-arc roads have no active velocity.
+    #[must_use]
+    pub fn velocity(&self) -> f32 {
+        if self.settled { return 0.0; }
+        // p=(1-cos(theta))/2, hence sin(theta)=2*sqrt(p*(1-p)).
+        std::f32::consts::PI * (self.progress * (1.0 - self.progress)).max(0.0).sqrt()
+            / self.duration.as_secs_f32()
     }
 
     /// A stable selection must not restart while its camera or labels move.
@@ -176,7 +192,33 @@ mod tests {
     }
 
     #[test]
-    fn selection_identity_is_stable_but_hold_can_restart() {
+    fn velocity_matches_measured_progress_and_settles_exactly() {
+        let mut road = RoadProgress::new(&chain(3), ms(100));
+        let _ = road.sample(ms(100), false);
+        assert_eq!(road.velocity(), 0.0);
+        let before = road.sample(ms(549), false).progress;
+        let _ = road.sample(ms(550), false);
+        let velocity = road.velocity();
+        let after = road.sample(ms(551), false).progress;
+        let measured = (after - before) / 0.002;
+        assert!((velocity - measured).abs() < 0.001, "analytic velocity must match independently sampled progress: {velocity} vs {measured}");
+        assert!((velocity - std::f32::consts::PI / 1.8).abs() < 1e-6);
+        let _ = road.sample(ms(1000), false);
+        assert_eq!(road.velocity(), 0.0);
+        let _ = road.sample(ms(5000), false);
+        assert_eq!(road.velocity(), 0.0);
+        let mut reduced = RoadProgress::new(&chain(3), ms(0));
+        let _ = reduced.sample(ms(320), false);
+        assert!(reduced.velocity() > 0.0);
+        let _ = reduced.sample(ms(321), true);
+        assert_eq!(reduced.velocity(), 0.0);
+        for stops in [0, 1] {
+            assert_eq!(RoadProgress::new(&chain(stops), ms(0)).velocity(), 0.0);
+        }
+    }
+
+    #[test]
+    fn committing_same_path_preserves_progress_and_new_path_restarts() {
         let selected = chain(2);
         let mut road = RoadProgress::new(&selected, ms(0));
         assert!(road.matches(&selected));
@@ -185,8 +227,14 @@ mod tests {
         let mut different = selected.clone();
         different.from = "#4".into();
         assert!(!road.matches(&different));
-        let mut held = RoadProgress::new(&selected, ms(320));
-        assert_eq!(held.sample(ms(320), false).progress, 0.0);
+        let timing = road.timing();
+        let mut held = RoadProgress::for_selection(Some(road), &selected, ms(320));
+        assert_eq!(held.timing(), timing);
+        assert_eq!(held.sample(ms(320), false), before);
+        assert!(held.sample(ms(328), false).progress > before.progress);
+        let mut next = RoadProgress::for_selection(Some(held), &different, ms(328));
+        assert_eq!(next.timing().0, ms(328));
+        assert_eq!(next.sample(ms(328), false).progress, 0.0);
     }
 
     #[test]

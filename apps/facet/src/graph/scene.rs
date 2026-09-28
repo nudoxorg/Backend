@@ -4,7 +4,7 @@
 
 use super::camera::{View, smooth};
 use super::layout::{Box2, Layout, core};
-use super::model::{Kind, NodeId, World};
+use super::model::{Kind, NodeId, Rel, World};
 use crate::data::spatial::Aabb;
 use crate::motion::Camera;
 use std::collections::{BTreeMap, HashMap};
@@ -87,21 +87,62 @@ pub struct Glyph {
     pub radius: f32,
     /// Actual silhouette.
     pub shape: Shape,
+    /// Continuous square-to-type silhouette, sampled solely from zoom.
+    pub morph: f32,
+    /// Hollow centre radius (zero for a filled mark).
+    pub inner: f32,
+    /// Ordinary label coverage; hover/focus may promote independently.
+    pub label_alpha: f32,
 }
 
 impl Glyph {
-    /// The painted silhouette at a displacement from the symbol centre.
+    /// The convex silhouette shared by paint, bounds and hit testing.
+    #[must_use]
+    pub fn vertices(self, radius: f32) -> [[f32; 2]; 4] {
+        let m = self.morph;
+        [
+            [-(1.0 - m) * radius, -radius],
+            [radius, -(1.0 - m) * radius],
+            [(1.0 - m) * radius, radius],
+            [-radius, (1.0 - m) * radius],
+        ]
+    }
+    /// The painted outer silhouette at a displacement from the symbol centre.
     #[must_use]
     pub fn contains(self, dx: f32, dy: f32) -> bool {
-        match self.shape {
-            Shape::Diamond => dx.abs() + dy.abs() <= self.radius,
-            Shape::Square => dx.abs() <= self.radius && dy.abs() <= self.radius,
+        if self.morph == 0.0 {
+            return dx.abs() <= self.radius && dy.abs() <= self.radius;
         }
+        if self.morph == 1.0 {
+            return dx.abs() + dy.abs() <= self.radius + 1e-5;
+        }
+        let points = self.vertices(self.radius);
+        (0..4).all(|i| {
+            let a = points[i];
+            let b = points[(i + 1) % 4];
+            (b[0] - a[0]) * (dy - a[1]) - (b[1] - a[1]) * (dx - a[0]) >= -1e-5
+        })
     }
     /// The silhouette plus the minimum centre target.
     #[must_use]
     pub fn hit(self, dx: f32, dy: f32) -> bool {
-        self.contains(dx, dy) || dx.hypot(dy) <= 10.0
+        dx * dx + dy * dy <= 100.0 || self.contains(dx, dy)
+    }
+}
+
+/// One item's member-shell detail shared by painting, picking and bounds.
+#[derive(Clone, Copy)]
+pub struct MemberDetail {
+    /// Actual mark silhouette at this coverage.
+    pub glyph: Glyph,
+    /// Continuous shell ink coverage.
+    pub coverage: f32,
+}
+impl MemberDetail {
+    /// Negligible coverage is omitted consistently by all consumers.
+    #[must_use]
+    pub fn visible(self) -> bool {
+        self.coverage > 0.02
     }
 }
 
@@ -128,6 +169,7 @@ pub(crate) struct HoverEdge {
 /// endpoint index and semantic zoom admit it to the visible frame.
 pub(crate) struct RelationLeaf {
     pub other: NodeId,
+    pub rel: Rel,
     pub incoming: bool,
     pub shared: bool,
 }
@@ -147,6 +189,51 @@ pub(crate) struct HoverBundle {
     pub route: HoverEdge,
     pub count: usize,
     pub caption: Option<gpui::SharedString>,
+    /// Exact relation totals by primary semantic family, including mixed hubs.
+    pub families: [u32; 4],
+}
+
+/// Finite foreground materials: meaning is independent of direction/ownership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EdgeFamily {
+    Structure,
+    Value,
+    Capability,
+    Execution,
+}
+impl EdgeFamily {
+    /// Specific semantic relations win over the generic body-use bit.
+    pub(crate) fn of(rel: Rel) -> Self {
+        if rel.any(Rel::CALLS) {
+            Self::Execution
+        } else if rel.any(Rel::TAKES | Rel::GIVES) {
+            Self::Value
+        } else if rel.any(Rel::IS | Rel::DERIVES | Rel::IMPL) {
+            Self::Capability
+        } else {
+            Self::Structure
+        }
+    }
+    pub(crate) const fn slot(self) -> usize {
+        self as usize
+    }
+    pub(crate) fn of_word(word: crate::semantics::Word) -> Self {
+        use crate::semantics::Word;
+        match word {
+            Word::Is | Word::ImplementedBy => Self::Capability,
+            Word::MadeBy | Word::TakenBy | Word::Takes | Word::Gives => Self::Value,
+            Word::CallsIt | Word::CalledFrom | Word::Calls => Self::Execution,
+            Word::MadeOf | Word::HeldBy | Word::UsedBy => Self::Structure,
+        }
+    }
+}
+impl HoverBundle {
+    /// A mixed hub keeps the complete histogram; this only chooses trunk ink.
+    pub(crate) fn family(&self) -> usize {
+        (0..4)
+            .max_by_key(|&i| (self.families[i], i))
+            .expect("four semantic families")
+    }
 }
 impl Neighbourhood {
     pub(crate) fn visit_leaves(&self, projection: &Projection, emit: impl FnMut(usize)) -> usize {
@@ -508,6 +595,14 @@ impl Scene {
         self.visible_inner.visit(projection.world, emit)
     }
 
+    /// Reuses a departing packet from this same immutable scene when its
+    /// symbol becomes active again. This promotes one existing Arc; it never
+    /// derives adjacency or expands the single-entry cache.
+    pub(crate) fn promote_neighbourhood(&self, packet: Arc<Neighbourhood>) {
+        debug_assert!((packet.node as usize) < self.world.len());
+        *self.neighbourhood.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(packet);
+    }
+
     /// Hover tracks sample the same target many times; derive its adjacency
     /// and sorted membership once. A single-entry cache cannot grow with the
     /// world's size or with a long pointer sweep.
@@ -531,19 +626,22 @@ impl Scene {
         lit.dedup();
         let mut edges: Vec<_> = outs
             .iter()
-            .map(|&(j, _)| RelationLeaf {
+            .map(|&(j, rel)| RelationLeaf {
                 other: j,
+                rel,
                 incoming: false,
                 shared: true,
             })
-            .chain(ins.iter().map(|&(j, _)| RelationLeaf {
+            .chain(ins.iter().map(|&(j, rel)| RelationLeaf {
                 other: j,
+                rel,
                 incoming: true,
                 shared: true,
             }))
             .collect();
         let at = self.world.node(node);
-        let mut groups: BTreeMap<(u32, Option<u32>, bool, bool), (usize, usize)> = BTreeMap::new();
+        let mut groups: BTreeMap<(u32, Option<u32>, bool, bool), (usize, usize, [u32; 4])> =
+            BTreeMap::new();
         for (index, edge) in edges.iter().enumerate() {
             let other = self.world.node(edge.other);
             let key = (
@@ -552,14 +650,15 @@ impl Scene {
                 edge.incoming,
                 self.world.yours(edge.other),
             );
-            let value = groups.entry(key).or_insert((index, 0));
+            let value = groups.entry(key).or_insert((index, 0, [0; 4]));
             value.1 += 1;
+            value.2[EdgeFamily::of(edge.rel).slot()] += 1;
         }
         let source = [self.layout.x[node as usize], self.layout.y[node as usize]];
         let context = &self.layout.packages[at.pkg as usize];
         let bundles = groups
             .into_iter()
-            .map(|((pkg, module, incoming, _), (index, count))| {
+            .map(|((pkg, module, incoming, _), (index, count, families))| {
                 edges[index].shared = count > 1;
                 let other = edges[index].other;
                 let route = if count == 1 {
@@ -597,6 +696,7 @@ impl Scene {
                     route,
                     count,
                     caption,
+                    families,
                 }
             })
             .collect();
@@ -845,14 +945,14 @@ impl Scene {
                 return;
             }
             if let Some(p) = node.parent {
-                if self.member_alpha(p, k) < 0.5 {
+                if !self.member_detail(p, k).visible() {
                     return;
                 }
             }
             let dx = ((f64::from(self.layout.x[i as usize]) - x) * k) as f32;
             let dy = ((f64::from(self.layout.y[i as usize]) - y) * k) as f32;
-            let glyph = if node.parent.is_some() {
-                Self::member_glyph(k)
+            let glyph = if let Some(parent) = node.parent {
+                self.member_detail(parent, k).glyph
             } else {
                 Self::glyph(node.kind, k)
             };
@@ -889,12 +989,12 @@ impl Scene {
             || !projection.contains(px, py)
             || node
                 .parent
-                .is_some_and(|parent| self.member_alpha(parent, k) < 0.5)
+                .is_some_and(|parent| !self.member_detail(parent, k).visible())
         {
             return next;
         }
-        let glyph = if node.parent.is_some() {
-            Self::member_glyph(k)
+        let glyph = if let Some(parent) = node.parent {
+            self.member_detail(parent, k).glyph
         } else {
             Self::glyph(node.kind, k)
         };
@@ -935,46 +1035,61 @@ impl Scene {
         None
     }
 
-    /// Shared capped screen-space geometry for an item.
+    /// Pure semantic zoom detail. Shape, extent and ordinary label coverage
+    /// are continuous; every consumer uses this same outer silhouette.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn glyph(kind: Kind, k: f64) -> Glyph {
         let core = Self::draw_core(kind) * k as f32;
-        let shape = if core < 1.6 {
-            Shape::Square
-        } else if matches!(
+        let detail = smooth(f64::from(core), 1.3, 2.3) as f32;
+        let type_like = matches!(
             kind,
             Kind::Trait | Kind::Struct | Kind::Enum | Kind::Type | Kind::Union
-        ) {
-            Shape::Diamond
+        );
+        let morph = if type_like { detail } else { 0.0 };
+        let star = 0.5 + 0.25 * smooth(f64::from(core), 0.7, 1.0) as f32;
+        let stroke = if kind == Kind::Trait {
+            0.6 * std::f32::consts::SQRT_2
         } else {
-            Shape::Square
+            0.0
         };
-        let radius = if core < 1.6 {
-            if core < 0.7 { 0.5 } else { 0.75 }
-        } else {
-            core.min(9.0) * 0.8 * if shape == Shape::Square { 0.55 } else { 1.0 }
-        };
+        let typed = core.min(9.0) * 0.8 * if type_like { 1.0 } else { 0.55 };
         Glyph {
             core,
-            radius,
-            shape,
+            radius: star + (typed + stroke - star) * detail,
+            shape: if morph > 0.0 {
+                Shape::Diamond
+            } else {
+                Shape::Square
+            },
+            morph,
+            inner: if kind == Kind::Trait {
+                (typed - stroke).max(0.0) * detail
+            } else {
+                0.0
+            },
+            label_alpha: smooth(f64::from(core), 4.0, 6.5) as f32,
         }
+    }
+
+    /// Continuous ink coverage replaces four quantized shell/member levels.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn member_detail(&self, parent: NodeId, k: f64) -> MemberDetail {
+        let coverage = self.member_alpha(parent, k) as f32;
+        let mut glyph = Self::member_glyph(k);
+        glyph.radius *= coverage.sqrt();
+        glyph.label_alpha *= coverage;
+        MemberDetail { glyph, coverage }
     }
 
     /// Actual painted radius for a node, including member geometry.
     #[must_use]
     pub fn glyph_radius(&self, node: NodeId, k: f64) -> f32 {
-        if self.world.node(node).parent.is_some() {
-            Self::member_glyph(k).radius
+        if let Some(parent) = self.world.node(node).parent {
+            self.member_detail(parent, k).glyph.radius
         } else {
-            let glyph = Self::glyph(self.world.node(node).kind, k);
-            glyph.radius
-                + if glyph.core >= 1.6 && self.world.node(node).kind == Kind::Trait {
-                    0.6 * std::f32::consts::SQRT_2
-                } else {
-                    0.0
-                }
+            Self::glyph(self.world.node(node).kind, k).radius
         }
     }
 
@@ -988,7 +1103,7 @@ impl Scene {
     ) -> Option<gpui::Bounds<gpui::Pixels>> {
         let p = self.projection(*view, *cam);
         if let Some(parent) = self.world.node(node).parent {
-            if (self.member_alpha(parent, p.scale()) * 3.0).round() <= 0.0 {
+            if !self.member_detail(parent, p.scale()).visible() {
                 return None;
             }
         } else if !self.world.is_item(node) {
@@ -1019,6 +1134,9 @@ impl Scene {
             core: 0.26 * k as f32,
             radius: (0.26 * k as f32 * 0.8).clamp(1.0, 4.5) * 0.5,
             shape: Shape::Square,
+            morph: 0.0,
+            inner: 0.0,
+            label_alpha: smooth(k, 34.0, 44.0) as f32,
         }
     }
 
@@ -1070,6 +1188,110 @@ mod tests {
     use crate::graph::model::{Edge, Kind, Module, Node, Package, Rel, World};
     use crate::motion::Camera;
     use std::sync::Arc;
+
+    #[test]
+    fn zoom_detail_is_continuous_and_its_silhouette_is_the_hit_contract() {
+        for kind in [
+            Kind::Struct,
+            Kind::Trait,
+            Kind::Type,
+            Kind::Function,
+            Kind::Constant,
+        ] {
+            let mut last = Scene::glyph(kind, 0.01);
+            for step in 2..=2000 {
+                let now = Scene::glyph(kind, f64::from(step) * 0.01);
+                assert!((now.radius - last.radius).abs() < 0.04);
+                assert!((now.label_alpha - last.label_alpha).abs() < 0.012);
+                for vertex in now.vertices(now.radius) {
+                    assert!(now.contains(vertex[0], vertex[1]));
+                    assert!(now.hit(vertex[0], vertex[1]));
+                    assert!(vertex[0].abs() <= now.radius && vertex[1].abs() <= now.radius);
+                }
+                assert!(now.inner >= 0.0 && now.inner <= now.radius);
+                last = now;
+            }
+        }
+    }
+
+    #[test]
+    fn visible_members_are_pickable_through_the_former_half_alpha_gap() {
+        let world = Arc::new(tiny());
+        let mut layout = Layout::compute(&world);
+        for (i, x) in layout.x.iter_mut().enumerate() {
+            *x = 1000.0 + i as f32;
+        }
+        layout.x[0] = 0.0;
+        layout.y[0] = 0.0;
+        layout.r[0] = 1.0;
+        layout.x[1] = 2.0;
+        layout.y[1] = 0.0;
+        let scene = Scene::new(world, Arc::new(layout));
+        let view = View {
+            x: 37.0,
+            y: 53.0,
+            w: 480.0,
+            h: 618.0,
+        };
+        for k in [12.0, 14.0, 18.0, 19.0, 20.0, 26.0, 38.0] {
+            let cam = Camera::new(0.0, 0.0, 480.0 / k);
+            let p = scene.projection(view, cam);
+            let detail = scene.member_detail(0, k);
+            let pos = (p.x(2.0), p.y(0.0));
+            assert_eq!(
+                scene.node_bounds(&view, &cam, 1).is_some(),
+                detail.visible()
+            );
+            assert_eq!(
+                scene.pick(&view, &cam, pos.0, pos.1),
+                detail.visible().then_some(1)
+            );
+            assert_eq!(
+                scene.pick_stable(&view, &cam, pos.0, pos.1, Some(1)),
+                detail.visible().then_some(1)
+            );
+        }
+        assert!(scene.member_alpha(0, 18.0) > 0.02 && scene.member_alpha(0, 18.0) < 0.5);
+    }
+
+    #[test]
+    fn cached_relations_keep_masks_and_exact_mixed_family_counts() {
+        use super::EdgeFamily;
+        let world = Arc::new(tiny());
+        let scene = Scene::new(world.clone(), Arc::new(Layout::compute(&world)));
+        let packet = scene.neighbourhood(3);
+        let mut masks: Vec<_> = packet
+            .edges
+            .iter()
+            .map(|e| (e.other, e.rel.0, e.incoming))
+            .collect();
+        masks.sort_unstable();
+        assert_eq!(
+            masks,
+            vec![
+                (0, Rel::CALLS.0, true),
+                (4, Rel::USES.0, false),
+                (5, Rel::GIVES.0, false)
+            ]
+        );
+        assert_eq!(
+            packet
+                .bundles
+                .iter()
+                .map(|b| b.families.iter().sum::<u32>() as usize)
+                .sum::<usize>(),
+            packet.edges.len()
+        );
+        for (mask, family) in [
+            (Rel::CALLS | Rel::USES, EdgeFamily::Execution),
+            (Rel::GIVES | Rel::USES, EdgeFamily::Value),
+            (Rel::IMPL | Rel::TYPE, EdgeFamily::Capability),
+            (Rel::HAS | Rel::TYPE, EdgeFamily::Structure),
+        ] {
+            assert_eq!(EdgeFamily::of(mask), family);
+        }
+        assert!(std::mem::size_of::<super::RelationLeaf>() <= 8);
+    }
 
     #[test]
     fn visible_bounds_index_matches_brute_force_and_bounds_local_work() {
@@ -1253,7 +1475,7 @@ mod tests {
                 ],
                 vec![],
             )
-            .unwrap(),
+            .expect("hover fixture world is valid"),
         );
         let mut layout = Layout::compute(&world);
         layout.x[0] = 0.0;
@@ -1383,7 +1605,9 @@ mod tests {
                 }
             })
             .collect();
-        let world = Arc::new(World::new(packages, modules, nodes, edges).unwrap());
+        let world = Arc::new(
+            World::new(packages, modules, nodes, edges).expect("scene fixture world is valid"),
+        );
         let x: Vec<_> = (0..=n)
             .map(|i| {
                 if i == 0 {
@@ -1592,6 +1816,8 @@ mod tests {
         let next = scene.neighbourhood(3);
         assert!(!Arc::ptr_eq(&first, &next));
         assert!(Arc::ptr_eq(&next, &scene.neighbourhood(3)));
+        scene.promote_neighbourhood(first.clone());
+        assert!(Arc::ptr_eq(&first, &scene.neighbourhood(2)), "reacquiring a retained packet cannot rebuild its topology");
         assert_eq!(
             first.lit,
             vec![0, 2, 3],

@@ -51,6 +51,13 @@ pub enum AnnotationPosition {
     Parameter,
     Return,
     Field,
+    /// A function-body `AnnAssign` whose target is a simple name (`obj: Child =
+    /// ...` and `obj: Child` with no value). Not a class-body field and not a
+    /// module constant.
+    Local,
+    /// A function-body `AnnAssign` on `self.name` or `cls.name` inside a
+    /// class-body method at `function_depth` 1. Not a class-body field.
+    Instance,
     /// The value expression of a PEP 695 `type` alias statement.
     AliasValue,
 }
@@ -178,6 +185,25 @@ pub enum OccurrenceKind {
 /// extractor's original keying; widened attribute rows carry the receiver
 /// class proven by the declaration walk or an honestly foreign receiver.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttributeChainRoot {
+    /// `self` / `cls` inside a class-body method at function_depth 1.
+    Enclosing { class: String },
+    /// Any other plain name, including `obj` in a nested function.
+    Name { name: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttributeStep {
+    /// One field name, root to leaf, excluding the member being resolved.
+    Field(String),
+    /// A runtime index whose slice is not a plain name (`value[0]`, `value[-1]`).
+    /// Not a slice (`value[0:1]`). A numeric subscript of a class name is not that class.
+    Index,
+    /// A subscript whose slice is a plain name (`items[index]`, `Child[int]`).
+    /// An annotated value peels to the element type. A bare class name falls
+    /// back to that class, which is how `Child[int].note` stays `Child.note`.
+    NameIndex,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OccurrenceReceiver {
     /// A bare-name call (`fn()`): resolved through module names alone.
     None,
@@ -188,6 +214,71 @@ pub enum OccurrenceReceiver {
     /// `self.method()` / `cls.method()`: keyed by the attribute name and
     /// the enclosing class, proven by the declaration walk.
     EnclosingClass { class: String },
+    /// `super()` or `super(Start, self)` / `super(Start, cls)` written
+    /// directly in a class-body function (`super().note`, `super(Child,
+    /// self).note()`). The search starts after `class` when `after` is
+    /// `None`, or after `Start` when `after` is `Some`. Nested functions and
+    /// the bare name `super` are not this variant.
+    Super {
+        class: String,
+        /// `None` for zero-argument `super()`: search starts after `class`.
+        /// `Some` for `super(Start, self)` or `super(Start, cls)`: search
+        /// starts after `Start`.
+        after: Option<String>,
+    },
+    /// `Child().note` / `Child().note()`, `Child[int]().note`,
+    /// `Child[int][str]().note()`, and `Child[int].note` when subscripts peel
+    /// to one simple name. The lowerer binds that class's member when the name
+    /// is one live class. Non-class names (`factory`, `list`) and attribute
+    /// callees (`pkg.Child[int]().note()`) keep universe keys.
+    Constructed { class: String },
+    /// `self.child.note` / `self.child.note()` and the `cls` form, one attribute
+    /// deep. `class` is the enclosing class. `attribute` is the field name
+    /// (`child`). Two or more fields before the member are `ChainedAttribute`.
+    /// Index subscripts (`self.child[0].note`) are `SubscriptedAttribute`.
+    InstanceAttribute { class: String, attribute: String },
+    /// `obj.child.note` / `obj.child.note()` when `obj` is a plain name other than
+    /// the enclosing `self`/`cls` form. `name` is `obj`. `attribute` is `child`.
+    /// Two or more fields before the member are `ChainedAttribute`. Index
+    /// subscripts are `SubscriptedAttribute`.
+    NamedAttribute { name: String, attribute: String },
+    /// `self.child.other.note` and `obj.child.other.note`, two or more fields
+    /// before the member. Deeper chains are included. Index subscripts are
+    /// `SubscriptedAttribute`.
+    ChainedAttribute {
+        root: AttributeChainRoot,
+        attributes: Vec<String>,
+    },
+    /// `self.child[0].note`, `items[0].note`, `self.child[0].other.note` when the
+    /// receiver contains at least one index subscript on a name or `self`/`cls`
+    /// base. `steps` are root-to-leaf and exclude the member. A slice, a subscript
+    /// of a call, and a chain with no index are not this variant.
+    SubscriptedAttribute {
+        root: AttributeChainRoot,
+        steps: Vec<AttributeStep>,
+    },
+    /// `self.note()[0].extra` when the call's return annotation is peeled by the
+    /// following index steps. `call` is the `CallReturn` of `note()`. `steps` are
+    /// root-to-leaf after that call and before the member, and contain at least
+    /// one index. A slice is not this variant.
+    SubscriptedCall {
+        call: Box<OccurrenceReceiver>,
+        steps: Vec<AttributeStep>,
+    },
+    /// `self.note().extra` / `obj.note().extra()` / `note().extra()` and one
+    /// or more hops through an attribute or constructed receiver before the
+    /// call (`self.child.note().extra()` / `Child().note().extra()` /
+    /// `self.note().extra().more()`). `method` is the called name (`note`).
+    /// `receiver` is `EnclosingClass` for `self`/`cls`,
+    /// `Foreign { receiver: Some(name) }` for another plain name, or `None`
+    /// for a bare call. The inner receiver may be `InstanceAttribute`,
+    /// `NamedAttribute`, `ChainedAttribute`, `SubscriptedAttribute`,
+    /// `SubscriptedCall`, `Constructed`, or a nested `CallReturn` for successive
+    /// calls. Still not `Super`, not `Module`, and not a slice.
+    CallReturn {
+        method: String,
+        receiver: Box<OccurrenceReceiver>,
+    },
     /// Any other receiver (`obj.method()`, `factory().method()`): honestly
     /// foreign. The receiver's written spelling is carried when the receiver
     /// is a plain name, so an imported module receiver can still resolve
@@ -263,6 +354,26 @@ pub struct OccurrenceFact {
 pub enum Confidence {
     Index,
 }
+/// One `for` clause of a comprehension. Its iterable is evaluated before
+/// `targets` exist. The leftmost iterable is also outside the comprehension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComprehensionClause {
+    pub iterable: Span,
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingScopeFact {
+    /// Span of the function, lambda, or comprehension.
+    pub span: Span,
+    /// Empty for functions and lambdas. Comprehension clauses are in source order.
+    pub clauses: Vec<ComprehensionClause>,
+    pub locals: Vec<String>,
+    /// Names assigned inside this scope, excluding parameters.
+    pub assigned: Vec<String>,
+    pub globals: Vec<String>,
+    pub nonlocals: Vec<String>,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleFacts {
     pub identity: String,
@@ -271,6 +382,7 @@ pub struct ModuleFacts {
     pub occurrences: Vec<OccurrenceFact>,
     pub docstring: Option<DocstringFact>,
     pub annotations: Vec<AnnotationFact>,
+    pub binding_scopes: Vec<BindingScopeFact>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnnotationFact {
@@ -479,6 +591,7 @@ fn module_facts(
         occurrences: Vec::new(),
         docstring: module_doc,
         annotations: Vec::new(),
+        binding_scopes: Vec::new(),
     })
 }
 
@@ -489,13 +602,16 @@ fn project(
     facts: &mut ModuleFacts,
 ) -> Result<(), ExtractionError> {
     let mut names = FunctionNames::default();
+    let mut class_names = ClassNames::default();
     for statement in &syntax.body {
         names.visit_stmt(statement);
+        class_names.visit_stmt(statement);
     }
     let error = {
         let mut projection = Projection {
             text,
             names: &names.0,
+            class_names: &class_names.0,
             facts,
             owner: MODULE_IDENTITY.to_owned(),
             class_depth: 0,
@@ -506,6 +622,7 @@ fn project(
             error: None,
             module_declared: HashSet::new(),
             last_module_function: None,
+            bodies: Vec::new(),
         };
         for statement in &syntax.body {
             projection.visit_stmt(statement);
@@ -567,6 +684,7 @@ fn span(range: ruff_text_size::TextRange) -> Span {
         end: range.end().to_u32(),
     }
 }
+
 /// Borrows an exact source range or returns a typed projection fault.
 fn source_slice(text: &str, range: ruff_text_size::TextRange) -> Result<&str, ExtractionError> {
     let start = range.start().to_usize();
@@ -581,6 +699,25 @@ fn source_slice(text: &str, range: ruff_text_size::TextRange) -> Result<&str, Ex
 /// Projects only syntax proven by Ruff's typed expression tree.
 fn annotation(expr: &ast::Expr) -> Annotation {
     annotation_at_depth(expr, 0)
+}
+
+/// A module assignment is a type alias only when its value is a type expression.
+///
+/// Names, attributes, subscripts, `|` unions, quoted annotations, and `None`
+/// match the shapes `annotation` already projects. Calls, numbers, lists, and
+/// other runtime values stay ordinary constants and record no `AliasValue`.
+fn type_shaped_alias_value(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Name(_)
+        | ast::Expr::Attribute(_)
+        | ast::Expr::Subscript(_)
+        | ast::Expr::StringLiteral(_)
+        | ast::Expr::NoneLiteral(_) => true,
+        ast::Expr::BinOp(binary) if binary.op == ast::Operator::BitOr => {
+            type_shaped_alias_value(&binary.left) && type_shaped_alias_value(&binary.right)
+        }
+        _ => false,
+    }
 }
 
 /// Quoted annotations may quote further annotations; the guard keeps the
@@ -797,6 +934,19 @@ fn terminal_name(expr: &ast::Expr) -> Option<&str> {
     }
 }
 
+/// Walks only `Subscript::value` until a `Name` is reached. Stops on anything
+/// else, so `pkg.Child[int]` does not peel and `list[Child]` peels to `list`.
+fn peel_subscript_name(expr: &ast::Expr) -> Option<&str> {
+    let mut current = expr;
+    loop {
+        match current {
+            ast::Expr::Subscript(subscript) => current = subscript.value.as_ref(),
+            ast::Expr::Name(name) => return Some(name.id.as_str()),
+            _ => return None,
+        }
+    }
+}
+
 fn docstring(body: &[ast::Stmt], text: &str) -> Result<Option<DocstringFact>, ExtractionError> {
     let Some(first) = body.first() else {
         return Ok(None);
@@ -810,6 +960,17 @@ fn docstring(body: &[ast::Stmt], text: &str) -> Result<Option<DocstringFact>, Ex
             _ => Ok(None),
         },
         _ => Ok(None),
+    }
+}
+
+#[derive(Default)]
+struct ClassNames(Vec<String>);
+impl<'a> Visitor<'a> for ClassNames {
+    fn visit_stmt(&mut self, statement: &'a ast::Stmt) {
+        if let ast::Stmt::ClassDef(class) = statement {
+            self.0.push(class.name.as_str().to_owned());
+        }
+        visitor::walk_stmt(self, statement);
     }
 }
 
@@ -871,6 +1032,7 @@ fn type_parameter_spans(type_params: Option<&ast::TypeParams>) -> Vec<Span> {
 struct Projection<'a> {
     text: &'a str,
     names: &'a [String],
+    class_names: &'a [String],
     facts: &'a mut ModuleFacts,
     owner: String,
     class_depth: usize,
@@ -888,6 +1050,27 @@ struct Projection<'a> {
     /// The most recent module-level function name, so overload runs stay
     /// distinct from later rebindings of the same spelling.
     last_module_function: Option<String>,
+    /// Innermost class or function bodies, so a class nested in a function
+    /// is not treated as that function's local scope.
+    bodies: Vec<BodyFrame>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BodyKind {
+    Function,
+    Class,
+    Comprehension,
+    Lambda,
+}
+
+struct BodyFrame {
+    kind: BodyKind,
+    span: Span,
+    clauses: Vec<ComprehensionClause>,
+    locals: HashSet<String>,
+    assigned: HashSet<String>,
+    globals: HashSet<String>,
+    nonlocals: HashSet<String>,
 }
 impl<'a> Projection<'a> {
     fn add_declaration(&mut self, declaration: DeclarationFact) {
@@ -895,6 +1078,18 @@ impl<'a> Projection<'a> {
             let allow_overload = declaration.kind == DeclarationKind::Function
                 && self.last_module_function.as_deref() == Some(declaration.name.as_str());
             if self.module_declared.contains(&declaration.name) && !allow_overload {
+                // A later module constant is dropped, but its name is where
+                // pyrefly's end-of-module type is probed. The first statement
+                // span stays, so a written annotation and the first alias
+                // value remain contained there. Later alias values are still
+                // recorded and keep two aliases ambiguous.
+                if declaration.kind == DeclarationKind::Constant {
+                    if let Some(existing) = self.facts.declarations.iter_mut().rev().find(|row| {
+                        row.kind == DeclarationKind::Constant && row.name == declaration.name
+                    }) {
+                        existing.name_span = declaration.name_span;
+                    }
+                }
                 return;
             }
             if !allow_overload {
@@ -913,6 +1108,387 @@ impl<'a> Projection<'a> {
     fn reject(&mut self, error: ExtractionError) {
         if self.error.is_none() {
             self.error = Some(error);
+        }
+    }
+
+    /// `super()` or `super(Start, self)` / `super(Start, cls)` inside a
+    /// class-body method at `function_depth` 1. One-argument `super`, dotted
+    /// start classes, other second arguments, keywords, nested functions, and
+    /// bare `super` stay foreign.
+    fn super_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let ast::Expr::Call(call) = expr else {
+            return None;
+        };
+        let ast::Expr::Name(name) = call.func.as_ref() else {
+            return None;
+        };
+        if name.id.as_str() != "super" {
+            return None;
+        }
+        if !call.arguments.keywords.is_empty() {
+            return None;
+        }
+        if self.function_depth != 1 {
+            return None;
+        }
+        let class = self.enclosing_class.clone()?;
+        let after = match call.arguments.args.len() {
+            0 => None,
+            2 => {
+                let ast::Expr::Name(start) = &call.arguments.args[0] else {
+                    return None;
+                };
+                let ast::Expr::Name(second) = &call.arguments.args[1] else {
+                    return None;
+                };
+                if !matches!(second.id.as_str(), "self" | "cls") {
+                    return None;
+                }
+                Some(start.id.as_str().to_owned())
+            }
+            _ => return None,
+        };
+        Some(OccurrenceReceiver::Super { class, after })
+    }
+
+    /// `Child().note` / `Child().note()`, `Child[int]().note`, and
+    /// `Child[int].note` when subscripts on the callee peel to one simple name.
+    /// Attribute callees (`pkg.Child[int]().note()`) stay foreign.
+    fn constructed_class_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let class = match expr {
+            ast::Expr::Call(call) => peel_subscript_name(call.func.as_ref()),
+            ast::Expr::Subscript(_) => peel_subscript_name(expr),
+            _ => None,
+        }?;
+        Some(OccurrenceReceiver::Constructed {
+            class: class.to_owned(),
+        })
+    }
+
+    /// `self.child.note` / `self.child.note()` and the `cls` form when `expr`
+    /// is one `self`/`cls` attribute access (`self.child`).
+    fn instance_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        if self.function_depth != 1 {
+            return None;
+        }
+        let ast::Expr::Attribute(inner) = expr else {
+            return None;
+        };
+        let ast::Expr::Name(name) = inner.value.as_ref() else {
+            return None;
+        };
+        if !matches!(name.id.as_str(), "self" | "cls") {
+            return None;
+        }
+        let class = self.enclosing_class.clone()?;
+        Some(OccurrenceReceiver::InstanceAttribute {
+            class,
+            attribute: inner.attr.as_str().to_owned(),
+        })
+    }
+
+    /// `obj.child.note` / `obj.child.note()` when `expr` is one plain-name
+    /// attribute access (`obj.child`).
+    fn named_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let ast::Expr::Attribute(inner) = expr else {
+            return None;
+        };
+        let ast::Expr::Name(name) = inner.value.as_ref() else {
+            return None;
+        };
+        Some(OccurrenceReceiver::NamedAttribute {
+            name: name.id.as_str().to_owned(),
+            attribute: inner.attr.as_str().to_owned(),
+        })
+    }
+
+    /// `self.child.other.note` / `obj.child.other.note` when `expr` is two or
+    /// more attribute accesses before the member (`self.child.other`).
+    fn chained_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let mut attributes = Vec::new();
+        let mut current = expr;
+        while let ast::Expr::Attribute(inner) = current {
+            attributes.push(inner.attr.as_str().to_owned());
+            current = inner.value.as_ref();
+        }
+        if attributes.len() < 2 {
+            return None;
+        }
+        attributes.reverse();
+        let root = match current {
+            ast::Expr::Name(name) => {
+                let id = name.id.as_str();
+                if matches!(id, "self" | "cls") && self.function_depth == 1 {
+                    let class = self.enclosing_class.clone()?;
+                    AttributeChainRoot::Enclosing { class }
+                } else {
+                    AttributeChainRoot::Name {
+                        name: id.to_owned(),
+                    }
+                }
+            }
+            _ => return None,
+        };
+        Some(OccurrenceReceiver::ChainedAttribute { root, attributes })
+    }
+
+    /// True when a `CallReturn` nested inside `SubscriptedCall` must stay absent
+    /// because `self`/`cls` would name the enclosing class at `function_depth != 1`.
+    fn rejects_nested_self_call_receiver(&self, receiver: &OccurrenceReceiver) -> bool {
+        let OccurrenceReceiver::CallReturn {
+            receiver: inner, ..
+        } = receiver
+        else {
+            return true;
+        };
+        match inner.as_ref() {
+            OccurrenceReceiver::NamedAttribute { name, .. }
+                if matches!(name.as_str(), "self" | "cls") && self.function_depth != 1 =>
+            {
+                true
+            }
+            OccurrenceReceiver::ChainedAttribute {
+                root: AttributeChainRoot::Name { name },
+                ..
+            } if matches!(name.as_str(), "self" | "cls") && self.function_depth != 1 => true,
+            OccurrenceReceiver::SubscriptedAttribute {
+                root: AttributeChainRoot::Name { name },
+                ..
+            } if matches!(name.as_str(), "self" | "cls") && self.function_depth != 1 => true,
+            OccurrenceReceiver::SubscriptedAttribute {
+                root: AttributeChainRoot::Enclosing { .. },
+                ..
+            } if self.function_depth != 1 => true,
+            _ => false,
+        }
+    }
+
+    /// `self.child[0].note` / `items[0].note` / `self.note()[0].extra` when `expr`
+    /// is an attribute or index subscript chain containing at least one index
+    /// subscript before the member. Slices are not this receiver.
+    fn subscripted_attribute_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let mut steps = Vec::new();
+        let mut current = expr;
+        loop {
+            match current {
+                ast::Expr::Attribute(inner) => {
+                    steps.push(AttributeStep::Field(inner.attr.as_str().to_owned()));
+                    current = inner.value.as_ref();
+                }
+                ast::Expr::Subscript(subscript) => {
+                    if matches!(subscript.slice.as_ref(), ast::Expr::Slice(_)) {
+                        return None;
+                    }
+                    let step = if matches!(subscript.slice.as_ref(), ast::Expr::Name(_)) {
+                        AttributeStep::NameIndex
+                    } else {
+                        AttributeStep::Index
+                    };
+                    steps.push(step);
+                    current = subscript.value.as_ref();
+                }
+                ast::Expr::Call(_) => {
+                    let call = self.call_return_receiver(current)?;
+                    if self.rejects_nested_self_call_receiver(&call) {
+                        return None;
+                    }
+                    steps.reverse();
+                    if !steps.iter().any(|step| {
+                        matches!(step, AttributeStep::Index | AttributeStep::NameIndex)
+                    }) {
+                        return None;
+                    }
+                    return Some(OccurrenceReceiver::SubscriptedCall {
+                        call: Box::new(call),
+                        steps,
+                    });
+                }
+                ast::Expr::Name(name) => {
+                    let id = name.id.as_str();
+                    steps.reverse();
+                    if !steps.iter().any(|step| {
+                        matches!(step, AttributeStep::Index | AttributeStep::NameIndex)
+                    }) {
+                        return None;
+                    }
+                    if matches!(id, "self" | "cls") {
+                        if self.function_depth != 1 {
+                            return None;
+                        }
+                        let class = self.enclosing_class.clone()?;
+                        if !steps
+                            .iter()
+                            .any(|step| matches!(step, AttributeStep::Field(_)))
+                        {
+                            return None;
+                        }
+                        return Some(OccurrenceReceiver::SubscriptedAttribute {
+                            root: AttributeChainRoot::Enclosing { class },
+                            steps,
+                        });
+                    }
+                    return Some(OccurrenceReceiver::SubscriptedAttribute {
+                        root: AttributeChainRoot::Name {
+                            name: id.to_owned(),
+                        },
+                        steps,
+                    });
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// `self.note().extra` / `obj.note().extra()` / `note().extra()` when `expr`
+    /// is the call before the member, including one or more hops through an
+    /// attribute, constructed, or call-return receiver (`self.child.note().extra()`
+    /// / `Child().note().extra()` / `self.note().extra().more()`).
+    fn call_return_receiver(&self, expr: &ast::Expr) -> Option<OccurrenceReceiver> {
+        let ast::Expr::Call(call) = expr else {
+            return None;
+        };
+        match call.func.as_ref() {
+            ast::Expr::Attribute(attribute) => {
+                let method = attribute.attr.as_str().to_owned();
+                match attribute.value.as_ref() {
+                    ast::Expr::Name(name) => {
+                        let id = name.id.as_str();
+                        if matches!(id, "self" | "cls") && self.function_depth == 1 {
+                            if let Some(class) = self.enclosing_class.clone() {
+                                return Some(OccurrenceReceiver::CallReturn {
+                                    method,
+                                    receiver: Box::new(OccurrenceReceiver::EnclosingClass {
+                                        class,
+                                    }),
+                                });
+                            }
+                        }
+                        Some(OccurrenceReceiver::CallReturn {
+                            method,
+                            receiver: Box::new(OccurrenceReceiver::Foreign {
+                                receiver: Some(id.to_owned()),
+                            }),
+                        })
+                    }
+                    value => {
+                        let inner = self
+                            .instance_attribute_receiver(value)
+                            .or_else(|| self.named_attribute_receiver(value))
+                            .or_else(|| self.chained_attribute_receiver(value))
+                            .or_else(|| self.subscripted_attribute_receiver(value))
+                            .or_else(|| self.call_return_receiver(value))
+                            .or_else(|| self.constructed_class_receiver(value));
+                        let inner = match inner {
+                            Some(OccurrenceReceiver::NamedAttribute { ref name, .. })
+                                if matches!(name.as_str(), "self" | "cls")
+                                    && self.function_depth != 1 =>
+                            {
+                                None
+                            }
+                            Some(OccurrenceReceiver::ChainedAttribute {
+                                root: AttributeChainRoot::Name { ref name },
+                                ..
+                            }) if matches!(name.as_str(), "self" | "cls")
+                                && self.function_depth != 1 =>
+                            {
+                                None
+                            }
+                            Some(OccurrenceReceiver::SubscriptedAttribute {
+                                root: AttributeChainRoot::Name { ref name },
+                                ..
+                            }) if matches!(name.as_str(), "self" | "cls")
+                                && self.function_depth != 1 =>
+                            {
+                                None
+                            }
+                            Some(OccurrenceReceiver::SubscriptedAttribute {
+                                root: AttributeChainRoot::Enclosing { .. },
+                                ..
+                            }) if self.function_depth != 1 =>
+                            {
+                                None
+                            }
+                            Some(OccurrenceReceiver::SubscriptedCall { ref call, .. })
+                                if self.rejects_nested_self_call_receiver(call) =>
+                            {
+                                None
+                            }
+                            other => other,
+                        };
+                        inner.map(|receiver| OccurrenceReceiver::CallReturn {
+                            method,
+                            receiver: Box::new(receiver),
+                        })
+                    }
+                }
+            }
+            ast::Expr::Name(name) => {
+                let id = name.id.as_str();
+                if self.module_level_function_name(id) {
+                    Some(OccurrenceReceiver::CallReturn {
+                        method: id.to_owned(),
+                        receiver: Box::new(OccurrenceReceiver::None),
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// True when `name` is one live module-level function declaration.
+    fn module_level_function_name(&self, name: &str) -> bool {
+        self.facts.declarations.iter().any(|declaration| {
+            declaration.kind == DeclarationKind::Function
+                && declaration.name == name
+                && !self
+                    .facts
+                    .declarations
+                    .iter()
+                    .any(|class| {
+                        class.kind == DeclarationKind::Class
+                            && class.span.start <= declaration.span.start
+                            && declaration.span.end <= class.span.end
+                    })
+        })
+    }
+
+    /// Receiver classification shared by attribute reads and method calls.
+    fn attribute_occurrence_receiver(&self, value: &ast::Expr) -> OccurrenceReceiver {
+        if let Some(receiver) = self.super_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.call_return_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.subscripted_attribute_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.constructed_class_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.instance_attribute_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.named_attribute_receiver(value) {
+            return receiver;
+        }
+        if let Some(receiver) = self.chained_attribute_receiver(value) {
+            return receiver;
+        }
+        match value {
+            ast::Expr::Name(name) => {
+                if matches!(name.id.as_str(), "self" | "cls") {
+                    if let Some(class) = self.enclosing_class.clone() {
+                        return OccurrenceReceiver::EnclosingClass { class };
+                    }
+                }
+                OccurrenceReceiver::Foreign {
+                    receiver: Some(name.id.as_str().to_owned()),
+                }
+            }
+            _ => OccurrenceReceiver::Foreign { receiver: None },
         }
     }
 
@@ -1082,6 +1658,277 @@ impl<'a> Projection<'a> {
         }
         (bases, form, total)
     }
+
+    fn push_binding_frame(&mut self, kind: BodyKind, range: ruff_text_size::TextRange) {
+        self.bodies.push(BodyFrame {
+            kind,
+            span: span(range),
+            clauses: Vec::new(),
+            locals: HashSet::new(),
+            assigned: HashSet::new(),
+            globals: HashSet::new(),
+            nonlocals: HashSet::new(),
+        });
+    }
+
+    fn pop_binding_frame(&mut self) {
+        if let Some(frame) = self.bodies.pop() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
+                    let mut locals: Vec<String> = frame.locals.into_iter().collect();
+                    locals.sort();
+                    let mut assigned: Vec<String> = frame.assigned.into_iter().collect();
+                    assigned.sort();
+                    let mut globals: Vec<String> = frame.globals.into_iter().collect();
+                    globals.sort();
+                    let mut nonlocals: Vec<String> = frame.nonlocals.into_iter().collect();
+                    nonlocals.sort();
+                    self.facts.binding_scopes.push(BindingScopeFact {
+                        span: frame.span,
+                        clauses: frame.clauses,
+                        locals,
+                        assigned,
+                        globals,
+                        nonlocals,
+                    });
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_local(&mut self, name: &str) {
+        if let Some(frame) = self.bodies.last_mut() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
+                    frame.locals.insert(name.to_owned());
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_assigned(&mut self, name: &str) {
+        if let Some(frame) = self.bodies.last_mut() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda => {
+                    frame.locals.insert(name.to_owned());
+                    frame.assigned.insert(name.to_owned());
+                }
+                BodyKind::Comprehension => {
+                    frame.locals.insert(name.to_owned());
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_walrus(&mut self, name: &str) {
+        for frame in self.bodies.iter_mut().rev() {
+            match frame.kind {
+                BodyKind::Comprehension => continue,
+                BodyKind::Function | BodyKind::Lambda => {
+                    frame.locals.insert(name.to_owned());
+                    frame.assigned.insert(name.to_owned());
+                    return;
+                }
+                BodyKind::Class => return,
+            }
+        }
+    }
+
+    fn note_global(&mut self, name: &str) {
+        if let Some(frame) = self.bodies.last_mut() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
+                    frame.globals.insert(name.to_owned());
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_nonlocal(&mut self, name: &str) {
+        if let Some(frame) = self.bodies.last_mut() {
+            match frame.kind {
+                BodyKind::Function | BodyKind::Lambda | BodyKind::Comprehension => {
+                    frame.nonlocals.insert(name.to_owned());
+                }
+                BodyKind::Class => {}
+            }
+        }
+    }
+
+    fn note_nested_binding(&mut self, name: &str) {
+        self.note_local(name);
+    }
+
+    fn note_import_alias(&mut self, alias: &ast::Alias) {
+        if let Some(frame) = self.bodies.last() {
+            if matches!(frame.kind, BodyKind::Function | BodyKind::Lambda) {
+                self.note_local(&alias_binding(alias));
+            }
+        }
+    }
+
+    /// Default expressions are evaluated in the enclosing scope, so they are
+    /// walked before the function or lambda frame exists.
+    fn walk_parameter_defaults(&mut self, parameters: &'a ast::Parameters) {
+        for item in &parameters.posonlyargs {
+            if let Some(default) = item.default.as_deref() {
+                self.visit_expr(default);
+            }
+        }
+        for item in &parameters.args {
+            if let Some(default) = item.default.as_deref() {
+                self.visit_expr(default);
+            }
+        }
+        for item in &parameters.kwonlyargs {
+            if let Some(default) = item.default.as_deref() {
+                self.visit_expr(default);
+            }
+        }
+    }
+
+    fn note_parameters(&mut self, parameters: &ast::Parameters) {
+        for item in &parameters.posonlyargs {
+            self.note_local(item.parameter.name.as_str());
+        }
+        for item in &parameters.args {
+            self.note_local(item.parameter.name.as_str());
+        }
+        if let Some(item) = parameters.vararg.as_ref() {
+            self.note_local(item.name.as_str());
+        }
+        for item in &parameters.kwonlyargs {
+            self.note_local(item.parameter.name.as_str());
+        }
+        if let Some(item) = parameters.kwarg.as_ref() {
+            self.note_local(item.name.as_str());
+        }
+    }
+
+    fn comprehension_target_names(target: &ast::Expr, names: &mut Vec<String>) {
+        match target {
+            ast::Expr::Name(name) if name.ctx.is_store() => names.push(name.id.as_str().to_owned()),
+            ast::Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    Self::comprehension_target_names(element, names);
+                }
+            }
+            ast::Expr::List(list) => {
+                for element in &list.elts {
+                    Self::comprehension_target_names(element, names);
+                }
+            }
+            ast::Expr::Starred(starred) => {
+                Self::comprehension_target_names(starred.value.as_ref(), names);
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_comprehension_target(&mut self, target: &'a ast::Expr) {
+        match target {
+            ast::Expr::Name(name) if name.ctx.is_store() => self.note_local(name.id.as_str()),
+            ast::Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    self.visit_comprehension_target(element);
+                }
+            }
+            ast::Expr::List(list) => {
+                for element in &list.elts {
+                    self.visit_comprehension_target(element);
+                }
+            }
+            ast::Expr::Starred(starred) => self.visit_comprehension_target(starred.value.as_ref()),
+            _ => visitor::walk_expr(self, target),
+        }
+    }
+
+    fn visit_comprehension_generators(
+        &mut self,
+        generators: &'a [ast::Comprehension],
+        comp_range: ruff_text_size::TextRange,
+        element: &'a ast::Expr,
+        key: Option<&'a ast::Expr>,
+    ) {
+        let clauses = generators
+            .iter()
+            .map(|generator| {
+                let mut targets = Vec::new();
+                Self::comprehension_target_names(&generator.target, &mut targets);
+                targets.sort();
+                ComprehensionClause {
+                    iterable: span(generator.iter.range()),
+                    targets,
+                }
+            })
+            .collect();
+        if let Some(first) = generators.first() {
+            self.visit_expr(&first.iter);
+        }
+        self.push_binding_frame(BodyKind::Comprehension, comp_range);
+        if let Some(frame) = self.bodies.last_mut() {
+            frame.clauses = clauses;
+        }
+        if let Some(first) = generators.first() {
+            self.visit_comprehension_target(&first.target);
+            for condition in &first.ifs {
+                self.visit_expr(condition);
+            }
+        }
+        for generator in generators.iter().skip(1) {
+            self.visit_expr(&generator.iter);
+            self.visit_comprehension_target(&generator.target);
+            for condition in &generator.ifs {
+                self.visit_expr(condition);
+            }
+        }
+        if let Some(key) = key {
+            self.visit_expr(key);
+        }
+        self.visit_expr(element);
+        self.pop_binding_frame();
+    }
+
+    fn occurrence_owner(&self, expr: &ast::Expr) -> &str {
+        if self.decorator_ranges.iter().any(|range| {
+            range.start() <= expr.range().start() && range.end() >= expr.range().end()
+        }) {
+            match self.decorator_owner.as_deref() {
+                Some(owner) => owner,
+                None => &self.owner,
+            }
+        } else {
+            &self.owner
+        }
+    }
+
+    fn record_attribute_occurrence(&mut self, owner: &str, attribute: &ast::ExprAttribute) {
+        let target = attribute.attr.as_str();
+        let attr_span = span(attribute.attr.range());
+        let already_recorded = self.facts.occurrences.iter().any(|occurrence| {
+            occurrence.owner == owner
+                && occurrence.target == target
+                && occurrence.span.start <= attr_span.start
+                && occurrence.span.end >= attr_span.end
+        });
+        if already_recorded {
+            return;
+        }
+        let receiver = self.attribute_occurrence_receiver(attribute.value.as_ref());
+        self.facts.occurrences.push(OccurrenceFact {
+            owner: owner.to_owned(),
+            target: target.to_owned(),
+            kind: OccurrenceKind::AttributeRead,
+            confidence: Confidence::Index,
+            span: attr_span,
+            receiver,
+        });
+    }
+
 }
 impl<'a> Visitor<'a> for Projection<'a> {
     fn visit_stmt(&mut self, statement: &'a ast::Stmt) {
@@ -1145,9 +1992,13 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 });
                 self.decorator_ranges = function.decorator_list.iter().map(|d| d.range).collect();
                 self.decorator_owner = Some(old.clone());
+                self.note_nested_binding(&name);
                 self.owner = name;
                 self.function_depth += 1;
+                self.push_binding_frame(BodyKind::Function, function.range);
+                self.note_parameters(&function.parameters);
                 visitor::walk_stmt(self, statement);
+                self.pop_binding_frame();
                 self.function_depth -= 1;
                 self.owner = old;
                 self.decorator_ranges = old_decorator_ranges;
@@ -1189,10 +2040,13 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 });
                 self.decorator_ranges = class.decorator_list.iter().map(|d| d.range).collect();
                 self.decorator_owner = Some(old.clone());
+                self.note_nested_binding(&name);
                 self.owner = name;
                 self.enclosing_class = Some(self.owner.clone());
                 self.class_depth += 1;
+                self.push_binding_frame(BodyKind::Class, class.range);
                 visitor::walk_stmt(self, statement);
+                self.pop_binding_frame();
                 self.class_depth -= 1;
                 self.owner = old;
                 self.enclosing_class = old_enclosing_class;
@@ -1205,13 +2059,38 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     self.add_alias(alias, statement);
                 }
             }
+            ast::Stmt::Import(import) if self.function_depth > 0 => {
+                for alias in &import.names {
+                    self.note_import_alias(alias);
+                }
+            }
             ast::Stmt::ImportFrom(import) if self.function_depth == 0 && self.class_depth == 0 => {
                 for alias in &import.names {
                     self.add_from_alias(import, alias, statement);
                 }
             }
+            ast::Stmt::ImportFrom(import) if self.function_depth > 0 => {
+                for alias in &import.names {
+                    self.note_import_alias(alias);
+                }
+            }
+            ast::Stmt::Global(global) => {
+                for name in &global.names {
+                    self.note_global(name.as_str());
+                }
+            }
+            ast::Stmt::Nonlocal(nonlocal) => {
+                for name in &nonlocal.names {
+                    self.note_nonlocal(name.as_str());
+                }
+            }
             ast::Stmt::TypeAlias(alias) if self.function_depth == 0 && self.class_depth == 0 => {
                 self.add_type_alias(alias, statement);
+            }
+            ast::Stmt::TypeAlias(alias) if self.function_depth > 0 || self.class_depth > 0 => {
+                if let ast::Expr::Name(name) = alias.name.as_ref() {
+                    self.note_nested_binding(name.id.as_str());
+                }
             }
             ast::Stmt::Assign(assign) if self.class_depth > 0 && self.function_depth == 0 => {
                 if let Some(target) = assign.targets.first() {
@@ -1239,11 +2118,138 @@ impl<'a> Visitor<'a> for Projection<'a> {
                     statement,
                 )
             }
+            ast::Stmt::AnnAssign(assign)
+                if self.function_depth >= 1
+                    && self.bodies.last().map(|frame| frame.kind) == Some(BodyKind::Function) =>
+            {
+                if let ast::Expr::Name(name) = assign.target.as_ref() {
+                    self.facts.annotations.push(AnnotationFact {
+                        owner: name.id.as_str().to_owned(),
+                        position: AnnotationPosition::Local,
+                        annotation: annotation(assign.annotation.as_ref()),
+                        span: span(assign.range()),
+                    });
+                } else if self.function_depth == 1 && self.enclosing_class.is_some() {
+                    if let ast::Expr::Attribute(attribute) = assign.target.as_ref() {
+                        if let ast::Expr::Name(receiver) = attribute.value.as_ref() {
+                            if matches!(receiver.id.as_str(), "self" | "cls") {
+                                self.facts.annotations.push(AnnotationFact {
+                                    owner: attribute.attr.as_str().to_owned(),
+                                    position: AnnotationPosition::Instance,
+                                    annotation: annotation(assign.annotation.as_ref()),
+                                    span: span(assign.range()),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         visitor::walk_stmt(self, statement);
     }
+    fn visit_except_handler(&mut self, handler: &'a ast::ExceptHandler) {
+        let ast::ExceptHandler::ExceptHandler(inner) = handler;
+        if let Some(name) = &inner.name {
+            self.note_assigned(name.as_str());
+        }
+        visitor::walk_except_handler(self, handler);
+    }
+
+    fn visit_pattern(&mut self, pattern: &'a ast::Pattern) {
+        match pattern {
+            ast::Pattern::MatchAs(match_as) => {
+                if let Some(name) = &match_as.name {
+                    self.note_assigned(name.as_str());
+                }
+                if let Some(inner) = &match_as.pattern {
+                    self.visit_pattern(inner);
+                }
+            }
+            ast::Pattern::MatchStar(match_star) => {
+                if let Some(name) = &match_star.name {
+                    self.note_assigned(name.as_str());
+                }
+            }
+            ast::Pattern::MatchMapping(mapping) => {
+                if let Some(rest) = &mapping.rest {
+                    self.note_assigned(rest.as_str());
+                }
+                for pattern in &mapping.patterns {
+                    self.visit_pattern(pattern);
+                }
+            }
+            _ => visitor::walk_pattern(self, pattern),
+        }
+    }
+
     fn visit_expr(&mut self, expr: &'a ast::Expr) {
+        if let ast::Expr::Named(named) = expr {
+            self.visit_expr(&named.value);
+            if let ast::Expr::Name(name) = named.target.as_ref() {
+                if name.ctx.is_store() {
+                    self.note_walrus(name.id.as_str());
+                }
+            }
+            self.visit_expr(&named.target);
+            return;
+        }
+        if let ast::Expr::Lambda(lambda) = expr {
+            if let Some(parameters) = lambda.parameters.as_ref() {
+                self.walk_parameter_defaults(parameters);
+            }
+            // The binding span is the body. Defaults stay in the enclosing
+            // scope, so `lambda obj=obj.note(): obj` still sees the module name.
+            self.push_binding_frame(BodyKind::Lambda, lambda.body.range());
+            if let Some(parameters) = lambda.parameters.as_ref() {
+                self.note_parameters(parameters);
+            }
+            self.visit_expr(&lambda.body);
+            self.pop_binding_frame();
+            return;
+        }
+        if let ast::Expr::ListComp(list_comp) = expr {
+            self.visit_comprehension_generators(
+                &list_comp.generators,
+                list_comp.range,
+                &list_comp.elt,
+                None,
+            );
+            return;
+        }
+        if let ast::Expr::SetComp(set_comp) = expr {
+            self.visit_comprehension_generators(
+                &set_comp.generators,
+                set_comp.range,
+                &set_comp.elt,
+                None,
+            );
+            return;
+        }
+        if let ast::Expr::DictComp(dict_comp) = expr {
+            self.visit_comprehension_generators(
+                &dict_comp.generators,
+                dict_comp.range,
+                &dict_comp.value,
+                dict_comp.key.as_deref(),
+            );
+            return;
+        }
+        if let ast::Expr::Generator(generator) = expr {
+            self.visit_comprehension_generators(
+                &generator.generators,
+                generator.range,
+                &generator.elt,
+                None,
+            );
+            return;
+        }
+        if let ast::Expr::Name(name) = expr {
+            if name.ctx.is_store() {
+                self.note_assigned(name.id.as_str());
+            }
+            return;
+        }
         if let ast::Expr::Call(call) = expr {
             // One call becomes at most one occurrence row. A callee whose
             // spelling is a declared module name keeps the original
@@ -1268,29 +2274,23 @@ impl<'a> Visitor<'a> for Projection<'a> {
                 }
                 ast::Expr::Attribute(attribute) => {
                     let target = attribute.attr.as_str();
-                    let receiver = match attribute.value.as_ref() {
-                        ast::Expr::Name(name)
-                            if matches!(name.id.as_str(), "self" | "cls")
-                                && self.enclosing_class.is_some() =>
-                        {
-                            OccurrenceReceiver::EnclosingClass {
-                                class: self
-                                    .enclosing_class
-                                    .clone()
-                                    .expect("enclosing class proven above"),
-                            }
-                        }
-                        ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                            receiver: Some(name.id.as_str().to_owned()),
-                        },
-                        _ => OccurrenceReceiver::Foreign { receiver: None },
-                    };
+                    let receiver =
+                        self.attribute_occurrence_receiver(attribute.value.as_ref());
                     let receiver_is_module_name = matches!(
                         attribute.value.as_ref(),
                         ast::Expr::Name(name)
                             if self.names.iter().any(|declared| declared == name.id.as_str())
                     );
+                    let receiver_is_class_name = matches!(
+                        attribute.value.as_ref(),
+                        ast::Expr::Name(name)
+                            if self
+                                .class_names
+                                .iter()
+                                .any(|class| class == name.id.as_str())
+                    );
                     let gated = receiver_is_module_name
+                        && !receiver_is_class_name
                         && self.names.iter().any(|declared| declared == target);
                     Some((
                         target,
@@ -1331,50 +2331,10 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
         }
         if let ast::Expr::Attribute(attribute) = expr {
-            let target = attribute.attr.as_str();
-            let attr_span = span(attribute.attr.range());
-            let already_recorded = self.facts.occurrences.iter().any(|occurrence| {
-                occurrence.target == target
-                    && occurrence.span.start <= attr_span.start
-                    && occurrence.span.end >= attr_span.end
-            });
-            if !already_recorded {
-                let receiver = match attribute.value.as_ref() {
-                    ast::Expr::Name(name)
-                        if matches!(name.id.as_str(), "self" | "cls")
-                            && self.enclosing_class.is_some() =>
-                    {
-                        OccurrenceReceiver::EnclosingClass {
-                            class: self
-                                .enclosing_class
-                                .clone()
-                                .expect("enclosing class proven above"),
-                        }
-                    }
-                    ast::Expr::Name(name) => OccurrenceReceiver::Foreign {
-                        receiver: Some(name.id.as_str().to_owned()),
-                    },
-                    _ => OccurrenceReceiver::Foreign { receiver: None },
-                };
-                let owner = if self.decorator_ranges.iter().any(|range| {
-                    range.start() <= expr.range().start() && range.end() >= expr.range().end()
-                }) {
-                    match self.decorator_owner.as_deref() {
-                        Some(owner) => owner,
-                        None => &self.owner,
-                    }
-                } else {
-                    &self.owner
-                };
-                self.facts.occurrences.push(OccurrenceFact {
-                    owner: owner.to_owned(),
-                    target: target.to_owned(),
-                    kind: OccurrenceKind::AttributeRead,
-                    confidence: Confidence::Index,
-                    span: attr_span,
-                    receiver,
-                });
-            }
+            self.visit_expr(attribute.value.as_ref());
+            let owner = self.occurrence_owner(expr).to_owned();
+            self.record_attribute_occurrence(&owner, attribute);
+            return;
         }
         visitor::walk_expr(self, expr);
     }
@@ -1596,6 +2556,18 @@ impl Projection<'_> {
                     span: span(annotation_expr.range()),
                 });
             }
+            // Pushed after `add_declaration`, including when a later rebinding
+            // of the same name was dropped, so two alias values stay ambiguous.
+            if let Some(value) = value
+                && type_shaped_alias_value(value)
+            {
+                self.facts.annotations.push(AnnotationFact {
+                    owner: name.id.as_str().to_owned(),
+                    position: AnnotationPosition::AliasValue,
+                    annotation: annotation(value),
+                    span: span(value.range()),
+                });
+            }
         }
     }
 }
@@ -1634,10 +2606,12 @@ mod tests {
             occurrences: Vec::new(),
             docstring: None,
             annotations: Vec::new(),
+            binding_scopes: Vec::new(),
         };
         let mut projection = Projection {
             text: "x",
             names: &[],
+            class_names: &[],
             facts: &mut facts,
             owner: String::new(),
             class_depth: 0,
@@ -1648,6 +2622,7 @@ mod tests {
             error: None,
             module_declared: HashSet::new(),
             last_module_function: None,
+            bodies: Vec::new(),
         };
         assert!(projection.source_owned(range).is_none());
         match projection.error.take() {

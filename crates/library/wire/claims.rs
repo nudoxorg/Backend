@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 /// Schema marker carried by a producer certificate.  The marker is part of
 /// the certificate grammar so a preimage for one identity class cannot be
 /// silently reused for another class.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WireSchema {
     /// Actor object key.
@@ -55,7 +55,7 @@ pub enum WireSchema {
 /// A fixed-width digest is only a wire claim.  These records are emitted by
 /// the owner that has the logical value or checked relation transition and are
 /// independently rehashed by a receiving process before a typed ID is built.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 pub enum WireClaim {

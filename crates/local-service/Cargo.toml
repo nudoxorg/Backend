@@ -38,5 +38,65 @@ ureq.workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
 
+[[bench]]
+name = "package_publication"
+path = "benches/package_publication.rs"
+harness = false
+
+[[bench]]
+name = "manifest_residence"
+path = "benches/manifest_residence.rs"
+harness = false
+
+[[bench]]
+name = "manifest_ancestor"
+path = "benches/manifest_ancestor.rs"
+harness = false
+
+[[bench]]
+name = "search_corpus"
+path = "benches/search_corpus.rs"
+harness = false
+
+[[bench]]
+name = "semantic_image_reopen"
+path = "benches/semantic_image_reopen.rs"
+harness = false
+
+[[bench]]
+name = "semantic_image_rows"
+path = "benches/semantic_image_rows.rs"
+harness = false
+
+[[bench]]
+name = "semantic_image_batch"
+path = "benches/semantic_image_batch.rs"
+harness = false
+
+[[bench]]
+name = "semantic_query_walk"
+path = "benches/semantic_query_walk.rs"
+harness = false
+
+[[bench]]
+name = "semantic_generation"
+path = "benches/semantic_generation.rs"
+harness = false
+
+[[bench]]
+name = "semantic_admission"
+path = "benches/semantic_admission.rs"
+harness = false
+
+[[bench]]
+name = "semantic_image_proof"
+path = "benches/semantic_image_proof.rs"
+harness = false
+
+[[bench]]
+name = "semantic_snapshot_residence"
+path = "benches/semantic_snapshot_residence.rs"
+harness = false
+
 [lints]
 workspace = true

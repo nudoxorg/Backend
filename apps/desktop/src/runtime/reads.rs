@@ -69,6 +69,8 @@ pub enum ReadRequest {
     Orbit,
     /// The owner health model.
     Health,
+    /// A browsing page's resource (your tree).
+    Browse(crate::model::browse::BrowseKey),
 }
 
 impl ReadRequest {
@@ -82,6 +84,7 @@ impl ReadRequest {
             PageKey::Search(query) => Self::Search(query.clone()),
             PageKey::Orbit => Self::Orbit,
             PageKey::Health => Self::Health,
+            PageKey::Browse(key) => Self::Browse(key.clone()),
         }
     }
 }
@@ -537,6 +540,7 @@ const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::Subscriptions
             | SurfaceCommand::Projects
             | SurfaceCommand::Tree
+            | SurfaceCommand::ProjectTree { .. }
     )
 }
 
@@ -639,6 +643,7 @@ impl<E: Engine + Send + 'static> PageReader for SessionReader<E> {
                 .health()
                 .map(|report| PageValue::Health(page_mapping::health_model(&report)))
                 .map_err(|error| failure(&error)),
+            ReadRequest::Browse(key) => super::browse_reads::compose(&mut self.engine, key),
         }
     }
 }
@@ -933,12 +938,22 @@ fn compose_package(
     check(context.cancel)?;
     let outline = outline(engine, package, context);
     check(context.cancel)?;
+    let engine_record = matches!(
+        records,
+        Ok(SurfaceReply::Package(ref rows)) if !rows.is_empty()
+    );
     let local = package
         .is_local()
         .then(|| LocalProjectId::from_path(Path::new(package.as_str())).ok())
         .flatten()
         .filter(|project| project.path().is_dir())
-        .map(|project| loader.load(&project));
+        .and_then(|project| {
+            if engine_record {
+                loader.readme(&project)
+            } else {
+                Some(loader.load(&project))
+            }
+        });
     // Every part failing the same way means the package itself is unknown.
     if let (Err(error), None) = (&records, &local)
         && matches!(

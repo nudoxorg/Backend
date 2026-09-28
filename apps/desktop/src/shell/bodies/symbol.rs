@@ -1,6 +1,9 @@
-//! The declaration page, plain: hero, one facts line, the lens bar, the
-//! declaration's code, its docs, the relation list (the rose's narrow form),
-//! and the Made of / Does ledgers as mark + name + one sentence rows.
+//! The declaration page: hero, one facts line, the lens bar, then either
+//! the anatomy (when the world knows the declaration: its shape, `can`
+//! line, Getting one / Calling it, docs, relation list and Does, with real
+//! statements under Usage) or, plain, the declaration's code, its docs, the
+//! relation list (the rose's narrow form) and the Made of / Does ledgers as
+//! mark + name + one sentence rows.
 
 use super::state::{Shown, not_ready, shown};
 use super::{Ctx, Leaf, Lens};
@@ -42,20 +45,45 @@ pub(super) fn body(
         other => return not_ready(&other, &PageKey::Symbol(symbol), &name, ctx, cx),
     };
     let package = route.package.as_str().to_owned();
+    // The anatomy, when the world knows this declaration; otherwise the body
+    // built from the index's page data (`runtime::fixture_world`).
+    let anatomy = crate::model::pages::PackageRef::parse(&package)
+        .ok()
+        .and_then(|owner| crate::runtime::fixture_world::anatomy(&page.identity, &owner, cx));
     let mut leaves = vec![hero(&page, ctx, cx), lens_bar(ctx, cx)];
+    if ctx.lens == Lens::Reference
+        && let Some(section) = upgrade(route, ctx, cx)
+    {
+        leaves.push(Leaf::new(section));
+    }
     match ctx.lens {
         Lens::Reference => {
-            if let Some(code) = declaration(&page, ctx, cx) {
-                leaves.push(Leaf::new(code));
+            if let Some(anatomy) = &anatomy {
+                leaves.extend(anatomy_reference(&page, anatomy, &package, ctx, hover, cx));
+            } else {
+                if let Some(code) = declaration(&page, ctx, cx) {
+                    leaves.push(Leaf::new(code));
+                }
+                if let Some(docs) = docs(&page, &package, ctx) {
+                    leaves.push(Leaf::new(docs));
+                }
+                leaves.push(Leaf::new(relations(&page, &package, ctx, hover, cx, true)));
+                leaves.extend(ledgers(&page, &package, ctx, hover, cx));
             }
-            if let Some(docs) = docs(&page, &package, ctx) {
-                leaves.push(Leaf::new(docs));
-            }
-            leaves.push(Leaf::new(relations(&page, &package, ctx, hover, cx, true)));
-            leaves.extend(ledgers(&page, &package, ctx, hover, cx));
         }
         Lens::Relations => leaves.push(Leaf::new(relations(&page, &package, ctx, hover, cx, false))),
-        Lens::Usage => leaves.push(Leaf::new(usage(&page, ctx))),
+        Lens::Usage => {
+            // Real statements from the callers' bodies first, then every
+            // indexed use.
+            if let Some(anatomy) = anatomy.as_ref().filter(|anatomy| !anatomy.uses.is_empty()) {
+                let links = crate::runtime::fixture_world::links(&anatomy.world);
+                leaves.push(Leaf::new(
+                    facet::anatomy::in_use("anatomy-in-use", anatomy.uses.clone(), &ctx.measure, &links)
+                        .into_any_element(),
+                ));
+            }
+            leaves.push(Leaf::new(usage(&page, ctx)));
+        }
         Lens::History => {
             let line = ctx.say("No release history is recorded for this declaration yet.");
             leaves.push(Leaf::new(quiet(line, &ctx.measure, ctx.palette)));
@@ -239,6 +267,170 @@ fn lens_bar(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
 
 /// The declaration's own text: the bounded excerpt when captured, else the
 /// signature.
+/// Away from the pin: the upgrade lens's section above the page (what
+/// moving from the release you pin to the one viewed changes for this
+/// declaration), when there is release data for its package.
+fn upgrade(route: &SymbolRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Option<AnyElement> {
+    let at = route.at.as_ref()?;
+    let pinned = crate::model::pages::PackageRef::parse(route.package.as_str()).ok()?;
+    let diffs = crate::runtime::fixture_releases::release_data(&pinned, cx)?;
+    let path = crate_path(&diffs.name, route.id.as_str());
+    let to = crate::runtime::fixture_releases::spelled(diffs, at.as_str()).unwrap_or_else(|| at.as_str().to_owned().into());
+    let lens = facet::data::release::lens(diffs, &path, &to, &facet::semantics::types::Nowhere);
+    let pin = pinned.version().map_or_else(|| diffs.pinned.to_string(), ToOwned::to_owned);
+    Some(
+        facet::data::release::view::section("upgrade", lens, path, pin, &ctx.measure, &facet::anatomy::Links::plain(), ctx.reveal.xray)
+            .into_any_element(),
+    )
+}
+
+/// `toml::de::from_str` for a declaration of `krate` at `coordinate`: the
+/// crate, its module (a file's stem, unless `lib`, `mod` or `main`), then
+/// the declaration's own trail.
+fn crate_path(krate: &str, coordinate: &str) -> String {
+    let identity = backend_present::Identity::parse(coordinate);
+    let mut parts = vec![krate.to_owned()];
+    if let Some(path) = identity.path() {
+        let stem = path.stem();
+        if !stem.is_empty() && !matches!(stem, "lib" | "mod" | "main") {
+            parts.push(stem.to_owned());
+        }
+    }
+    parts.extend(identity.trail().segments().iter().map(|segment| segment.as_str().to_owned()));
+    parts.join("::")
+}
+
+/// The Reference lens drawn from the world: the anatomy in place of the
+/// declaration's code, the `can` line, Getting one / Calling it, the docs,
+/// the plain relation list (the prism belongs to the graph), and Does in
+/// place of the ledgers.
+fn anatomy_reference(
+    page: &SymbolPage,
+    anatomy: &crate::runtime::fixture_world::Anatomy,
+    package: &str,
+    ctx: &mut Ctx<'_>,
+    hover: &mut HoverIntent,
+    cx: &mut Context<Reader>,
+) -> Vec<Leaf> {
+    use facet::semantics::Word;
+    use facet::semantics::page::Shape;
+    let measure = ctx.measure;
+    let links = crate::runtime::fixture_world::links(&anatomy.world);
+    let id = |part: &str| gpui::ElementId::Name(SharedString::from(format!("anatomy-{part}")));
+    let mut leaves = Vec::new();
+    // Every relation word the sections below say, so the list after them
+    // says only the rest.
+    let mut shown = Vec::new();
+    match &anatomy.page.shape {
+        Shape::Fork(_) | Shape::Holds(_) => shown.push(Word::MadeOf),
+        Shape::Pipe(_) => shown.extend([Word::Takes, Word::Gives]),
+        Shape::Contract(_) | Shape::Alias(_) | Shape::Constant(_) | Shape::None => {}
+    }
+    match anatomy.recipe.as_ref().map(|recipe| recipe.heading) {
+        Some("Getting one") => shown.push(Word::MadeBy),
+        Some("Calling it") => shown.push(Word::Takes),
+        _ => {}
+    }
+    let shape = match anatomy.page.shape.clone() {
+        Shape::Fork(fork) => Some(facet::anatomy::fork(id("shape"), fork, &measure, &links).into_any_element()),
+        Shape::Holds(holds) => Some(facet::anatomy::holds(id("shape"), holds, &measure, &links).into_any_element()),
+        Shape::Pipe(pipe) => Some(facet::anatomy::pipe(id("shape"), pipe, &measure, &links).into_any_element()),
+        Shape::Contract(contract) => {
+            Some(facet::anatomy::contract(id("shape"), contract, &measure, &links).into_any_element())
+        }
+        // An alias, a constant or a shapeless declaration keeps its code.
+        Shape::Alias(_) | Shape::Constant(_) | Shape::None => declaration(page, ctx, cx),
+    };
+    leaves.extend(shape.map(Leaf::new));
+    if !anatomy.page.caps.is_empty() {
+        leaves.push(Leaf::new(facet::anatomy::can(id("can"), anatomy.page.caps.clone(), &measure).into_any_element()));
+    }
+    if let Some(recipe) = &anatomy.recipe {
+        leaves.push(Leaf::new(facet::anatomy::recipe(id("recipe"), recipe.clone(), &measure, &links).into_any_element()));
+    }
+    if let Some(docs) = docs(page, package, ctx) {
+        leaves.push(Leaf::new(docs));
+    }
+    let _ = hover;
+    leaves.extend(unsaid_relations(anatomy, &shown, ctx).map(Leaf::new));
+    leaves.push(Leaf::new(facet::anatomy::does(id("does"), anatomy.page.does.clone(), &measure, &links).into_any_element()));
+    leaves
+}
+
+/// The world's relations the anatomy has not already said, as a plain
+/// list (the prism belongs to the graph): `relations_of` without the words
+/// in `shown`. Nothing at all when every group is covered.
+fn unsaid_relations(
+    anatomy: &crate::runtime::fixture_world::Anatomy,
+    shown: &[facet::semantics::Word],
+    ctx: &mut Ctx<'_>,
+) -> Option<AnyElement> {
+    use facet::semantics::relations::{except, label, relations_of};
+    let world = &anatomy.world;
+    let groups = except(relations_of(world, anatomy.node), shown);
+    if groups.is_empty() {
+        return None;
+    }
+    let measure = ctx.measure;
+    let palette = ctx.palette;
+    let mut column = div().flex().flex_col().gap(measure.space(Space::Base));
+    for group in groups {
+        let word = ctx.say(group.word.text());
+        let mut names = div().flex().flex_wrap().gap(measure.space(Space::Base)).flex_1().min_w(px(0.0));
+        for entry in &group.entries {
+            let name = ctx.say(label(world, entry).to_string());
+            let Some(node) = entry.node else {
+                names = names.child(text(ty::MONO_ROW, &measure, palette.ink2).child(name));
+                continue;
+            };
+            let id: SharedString = format!("world-rel-{node}").into();
+            let act: Act = Rc::new(move |window, cx| {
+                window.dispatch_action(Box::new(facet::anatomy::Open { target: facet::semantics::Target::Node(node) }), cx);
+            });
+            ctx.targets.push(Target { id: id.clone(), label: name.clone(), act: Rc::clone(&act), peek: None, source: None });
+            names = names.child(
+                ctx.targets.track(
+                    id.clone(),
+                    div()
+                        .id(id)
+                        .flex()
+                        .items_center()
+                        .min_h(px(24.0 * measure.scale()))
+                        .gap(px(5.0 * measure.scale()))
+                        .child(crate::shell::kit::kind_mark(crate::shell::kit::world_kind(world.node(node).kind), KindSize::Sm, &measure, palette))
+                        .child(text(ty::MONO_ROW, &measure, palette.ink1).hover(|style| style.text_color(palette.ink0.hsla())).child(name))
+                        .on_click(move |_: &ClickEvent, window, cx| act(window, cx)),
+                ),
+            );
+        }
+        column = column.child(
+            div()
+                .flex()
+                .items_start()
+                .gap(measure.space(Space::Roomy))
+                .child(verb(word, &measure, palette))
+                .child(names),
+        );
+    }
+    Some(column.into_any_element())
+}
+
+/// A relation group's verb (`taken by`, `held by`): UI face at ink3,
+/// right-aligned in its own column and centred on the first row of names,
+/// as the verb rows of the page targets set it.
+fn verb(word: SharedString, measure: &Measure, palette: &Palette) -> gpui::Div {
+    div()
+        .w(px(104.0 * measure.scale()))
+        .flex_none()
+        .min_h(px(24.0 * measure.scale()))
+        .flex()
+        .items_center()
+        .justify_end()
+        .child(text(ty::SMALL, measure, palette.ink3).text_right().child(word))
+}
+
+
+
 fn declaration(page: &SymbolPage, ctx: &mut Ctx<'_>, cx: &gpui::App) -> Option<AnyElement> {
     let measure = ctx.measure;
     let palette = ctx.palette;
@@ -482,7 +674,7 @@ fn relations(
                         .flex()
                         .items_start()
                         .gap(measure.space(Space::Roomy))
-                        .child(text(ty::CAPTION, &measure, palette.ink3).w(px(72.0 * measure.scale())).flex_none().child(label))
+                        .child(verb(label, &measure, palette))
                         .child(names),
                 );
             }
@@ -490,8 +682,10 @@ fn relations(
             None => {
                 if !said_gap && let Some(gap) = relations.gap() {
                     said_gap = true;
+                    // A fault is said in the UI face: serif is for the lede
+                    // and the one sentence.
                     let words = ctx.say(gap_words(gap));
-                    column = column.child(quiet(words, &measure, palette));
+                    column = column.child(text(ty::SMALL, &measure, palette.ink3).child(words));
                 }
             }
         }

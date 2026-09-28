@@ -162,6 +162,26 @@ impl PackageUrl {
         &self.text
     }
 
+    /// A non-admitted probe that sorts before every parsed package URL.
+    ///
+    /// The empty spelling is not a package URL. Callers use it only as an
+    /// ordering cursor, never as a value written into a relation.
+    #[must_use]
+    pub fn ordering_floor() -> Self {
+        Self {
+            text: Box::from(""),
+            facts: PackageUrlFacts {
+                identity: ContentId::from_digest([0; 32]),
+                ecosystem: PackageType::Cargo,
+                namespace: None,
+                name: PackageTextRange { start: 0, end: 0 },
+                version: PackageTextRange { start: 0, end: 0 },
+                qualifiers: None,
+                subpath: None,
+            },
+        }
+    }
+
     /// Returns the canonical package URL type.
     #[must_use]
     pub const fn package_type(&self) -> PackageType {

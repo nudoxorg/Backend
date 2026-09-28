@@ -512,9 +512,18 @@ pub(crate) fn collect<'source>(
                 let ordinal = push_member(facts, image, &names, &declared)?;
                 ordinals.record(coordinate, ordinal).map_err(terminal)?;
                 if let Some(owner) = declared.owner {
-                    members
-                        .record(owner.bytes, declared.name.bytes, ordinal)
-                        .map_err(terminal)?;
+                    let record_member = declared.kind != DeclarationKind::EnumConstant
+                        || image
+                            .declaration_extent(coordinate)
+                            .map_err(|cause| {
+                                JavaCollectError::Image(BoundImageError::Image(cause))
+                            })?
+                            .present();
+                    if record_member {
+                        members
+                            .record(owner.bytes, declared.name.bytes, ordinal)
+                            .map_err(terminal)?;
+                    }
                 }
             }
             DeclarationKind::Constructor | DeclarationKind::Method => {

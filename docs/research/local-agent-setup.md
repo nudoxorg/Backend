@@ -125,8 +125,12 @@ version-pinned in control (`.config/nix/control.nix:141-243`), uses zero retries
 and flaky-result failure in the default profile, enforces leak/global/slow
 timeouts, and groups allocator, service, process, display, concurrency, native,
 and telemetry tests. `backend test changed` invokes `cargo nextest run --locked
---no-tests=fail` with `-E kind(lib)`; `affected` selects packages without that
-library-only expression; `workspace` selects `--workspace`
+--no-tests=fail` with `-E 'kind(lib) | (package(backend-laws) & kind(test))'`.
+`kind(lib)` keeps the proptest module in `tests/laws/src/lib.rs` and the store
+bolero tests in `raw_property.rs`. The second clause keeps `tests/laws/tests/*.rs`.
+The `corpus|native|real_package` group excludes `binary(backend_laws)` and those
+three bolero names. `affected` selects packages without that expression;
+`workspace` selects `--workspace`
 (`.config/nu/quality/test.nu:88-160`). `--no-tests=fail` is an empty-selection
 guard, not permission to pass with no tests. A cutover plan must still enumerate
 integration, binary, example, and benchmark targets because the quick changed

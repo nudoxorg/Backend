@@ -2,7 +2,7 @@
 //! the map reads the prototype fixture (§8.5); page routes always resolve
 //! through the real read pool, never through an invented fixture coordinate.
 
-mod identity;
+pub(crate) mod identity;
 use identity::{IdentityAdapter, MatchFailure, ResolvedSymbol};
 
 use crate::core::{Activity, Resource, ResourceTerminal, VersionedRoot};
@@ -10,7 +10,9 @@ use crate::model::pages::{PackageRef, PageKey, SearchContinuation, SearchQuery};
 use crate::navigation::{Intent, Route, View};
 use crate::runtime::store::{Branch, StoreEvent, route_symbol};
 use crate::shell::region::Links;
-use facet::graph::{GraphView, NodeId, Start, World};
+use facet::graph::{GraphView, NodeId, Start};
+#[cfg(test)]
+use facet::graph::World;
 use gpui::{
     App, AppContext as _, Context, Entity, Focusable as _, IntoElement, ParentElement, Render,
     Styled, Subscription, Task, Window, div, px,
@@ -161,15 +163,8 @@ impl Map {
             (None, Some(scene))
         } else {
             let load = cx.background_executor().spawn(async {
-                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../Nudox-Design-System/v4/graph/world.json");
-                let bytes =
-                    std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-                let world = Arc::new(World::from_json(&bytes).map_err(|error| error.to_string())?);
-                let identities = Arc::new(IdentityAdapter::load(
-                    &world,
-                    &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
-                ));
+                // The fixture world is shared with the symbol page's anatomy.
+                let (world, identities) = crate::runtime::fixture_world::blocking()?;
                 let layout = facet::graph::layout::layout_of(&world);
                 Ok::<_, String>((
                     Arc::new(facet::graph::scene::Scene::new(world, layout)),
@@ -1100,9 +1095,17 @@ impl gpui::Element for FocusMark {
         .into_any_element();
         mark.layout_as_root(bounds.size.into(), window, cx);
         mark.prepaint_at(bounds.origin, window, cx);
-        let painted = facet::motion::shared::last_bounds(key, window, cx);
+        let morphing = morphing.get();
+        // At rest this native mark is transparent: its pixel-rounded layout
+        // is not the canvas glyph's continuous painted rectangle. Only an
+        // actual shared morph owns the proxy's composited geometry.
+        let painted = if morphing {
+            facet::motion::shared::last_bounds(key, window, cx)
+        } else {
+            canvas_bounds(Some(bounds), window.layer_transform())
+        };
         let _ = self.owner.update(cx, |map, _| {
-            map.painted_focus = painted.map(|bounds| (node, bounds, morphing.get()))
+            map.painted_focus = painted.map(|bounds| (node, bounds, morphing))
         });
         Some(mark)
     }
