@@ -50,6 +50,15 @@ pub(super) fn body(
         other => return not_ready(&other, &PageKey::Symbol(symbol), &name, ctx, cx),
     };
     let package = route.package.as_str().to_owned();
+    if std::env::var_os("NUDOX_PAGE_DUMP").is_some() {
+        eprintln!("[page-dump] {} kind={:?} lang={} sig={:?}", page.identity.name, page.identity.kind, page.identity.language.name(), page.signature.known().map(|s| s.text.to_string()));
+        if let Some(members) = page.members.known() {
+            for m in members.made_of.iter() { eprintln!("[page-dump]   made_of {} kind={:?} sig={:?} summary={:?}", m.decl.name, m.decl.kind, m.signature.known().map(|s| s.text.to_string()), m.summary); }
+            for g in members.does.iter() { for m in g.members.iter() { eprintln!("[page-dump]   does {:?} {} sig={:?}", g.receiver, m.decl.name, m.signature.known().map(|s| s.text.to_string())); } }
+            for m in members.other.iter() { eprintln!("[page-dump]   other {} kind={:?} sig={:?}", m.decl.name, m.decl.kind, m.signature.known().map(|s| s.text.to_string())); }
+        } else { eprintln!("[page-dump]   members gap {:?}", page.members.gap()); }
+        eprintln!("[page-dump]   rose up={:?} left={:?} right={:?} refs={:?}", page.rose.up.known().map(|r| r.iter().map(|x| x.decl.name.to_string()).collect::<Vec<_>>()), page.rose.left.known().map(|r| r.len()), page.rose.right.known().map(|r| r.len()), page.references.known().map(|r| r.len()));
+    }
     // The anatomy, when the world knows this declaration; otherwise the body
     // built from the index's page data (`runtime::fixture_world`).
     let anatomy = crate::model::pages::PackageRef::parse(&package)

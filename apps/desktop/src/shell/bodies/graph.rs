@@ -589,7 +589,7 @@ impl Map {
         let notice = (!self.visible)
             .then(|| self.error.as_ref())
             .flatten()
-            .map(|error| crate::runtime::graph_focus::GraphNotice {
+            .map(|error| crate::runtime::graph_focus::Notice {
                 visit: snapshot.route().clone(),
                 root: snapshot.key(),
                 message: Arc::from(error.as_str()),

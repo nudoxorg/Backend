@@ -219,7 +219,7 @@ pub(crate) fn build(
     match route {
         Route::Orbit(crate::navigation::OrbitRoute::Browse(browse)) => browse::body(browse, store, ctx, cx),
         Route::Orbit(_) => orbit::body(snapshot, store, ctx, hover, cx),
-        Route::Package(_) => package::body(route, store, ctx, hover, cx),
+        Route::Package(_) => package::body(route, snapshot, store, ctx, hover, cx),
         Route::Symbol(symbol) => match symbol.view {
             View::Page => symbol::body(route, symbol, store, ctx, hover, cx),
             View::Code => source::body(route, symbol, store, ctx, cx),
