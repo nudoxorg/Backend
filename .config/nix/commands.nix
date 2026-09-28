@@ -54,66 +54,91 @@ let
   };
 in
 let
+  # nuenv's writeShellApplication starts the script with
+  # `#!/usr/bin/env -S <nu> --stdin`. A sandboxed builder has no
+  # /usr/bin/env, so every derivation that runs `backend` at build time (the
+  # agent skills, gui-contract, tooling-contracts, control-plane) failed with
+  # "bad interpreter"; they only passed while CI built checks in a container
+  # that happened to have one. `<nu> --stdin` is a single interpreter
+  # argument, which a direct shebang carries on Linux and macOS alike.
+  sandboxSafe =
+    app:
+    pkgs.runCommand app.name
+      {
+        passthru = app.passthru or { };
+        meta = app.meta or { };
+      }
+      ''
+        cp -R ${app} "$out"
+        chmod -R u+w "$out"
+        sed -i '1s|^#!/usr/bin/env -S |#!|' "$out/bin/backend"
+        head -1 "$out/bin/backend" | grep -q '^#!/nix/store/' || {
+          echo "backend shebang is not a store path: $(head -1 "$out/bin/backend")" >&2
+          exit 1
+        }
+      '';
   makeBackend =
     {
       runtimeEnv ? { },
       runtimeInputs ? [ ],
     }:
-    pkgs.nuenv.writeShellApplication {
-      name = "backend";
-      text = source;
-      runtimeInputs =
-        tools.qualityTools
-        ++ tools.coreServiceTools
-        ++ tools.nativeCompilers
-        ++ tools.authorityHelpers
-        ++ gui.allPackages
-        ++ runtimeInputs;
-      runtimeEnv =
-        nativeTestEnv
-        // {
-          CARGO_TARGET_DIR = ".local/target";
-          BACKEND_CONFIG_SNAPSHOT = toString ../.;
-          BACKEND_AST_GREP = "${astGrepSuite}/sgconfig.yml";
-          BACKEND_KOJI_CONFIG = artifacts.koji;
-          BACKEND_NEXTEST_CONFIG = artifacts.nextest;
-          BACKEND_OTEL_COLLECTOR = artifacts.otelCollector;
-          BACKEND_TREEFMT = "${formatting.wrapper}/bin/treefmt";
-          BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
-          BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
-          BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
-          BACKEND_STABLE_CARGO = toolchains.stableCargo;
-          BACKEND_PARALLEL_CARGO = "${tools.parallelCargo}/bin/cargo";
-          BACKEND_CONTROL_SOURCE = toString workspaceRoot;
-          # The control binary remains available as the dedicated
-          # `.#backend-control` package. Keeping it out of this general shell
-          # prevents each Cargo.lock edit from vendoring and rebuilding the
-          # workspace before ordinary checks can begin; cutover commands retain
-          # their explicit pinned `cargo run` fallback.
-          BACKEND_CONTROL_BIN = "";
-          BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
-          BACKEND_RUSTFMT = toolchains.rustfmt;
-          BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
-          BACKEND_GUI_FONTCONFIG = gui.fontConfig;
-          BACKEND_GUI_FONT_MANIFEST = "${gui.fontManifest}/share/nudox/fonts.sha256";
-          NUDOX_GUI_GPUI_SOURCE_DIGEST = gui.gpuiSourceDigest;
-          NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST =
-            if gui.gpuiComponentSourceDigest == null then "" else gui.gpuiComponentSourceDigest;
-          NUDOX_GUI_GPUI_SOURCE_MANIFEST = gui.gpuiSourceManifest;
-          NUDOX_GUI_DEPENDENCY_GRAPH_SHA256 = gui.dependencyGraphDigest;
-          NUDOX_GUI_GPU_BACKEND = control.gui.gpu.defaultGpuBackend;
-          NUDOX_GUI_GPU_DEVICE = control.gui.gpu.expectedGpuDevice;
-          NUDOX_GUI_GPU_PROBE = "${gui.gpuProbe}/bin/nudox-gui-gpu-probe";
-          WGPU_BACKEND = control.gui.gpu.forceEnvironment.WGPU_BACKEND;
-          LIBGL_ALWAYS_SOFTWARE = control.gui.gpu.forceEnvironment.LIBGL_ALWAYS_SOFTWARE;
-          MESA_LOADER_DRIVER_OVERRIDE = control.gui.gpu.forceEnvironment.MESA_LOADER_DRIVER_OVERRIDE;
-          NUDOX_GUI_TOOLCHAIN = toString toolchains.stable;
-          NUDOX_GUI_ENCODER_VERSION = pkgs.ffmpeg.version;
-          NUDOX_GUI_TOOL_CLOSURE = "${gui.toolsBundle}";
-          NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools .#gui-runtime";
-        }
-        // runtimeEnv;
-    };
+    sandboxSafe (
+      pkgs.nuenv.writeShellApplication {
+        name = "backend";
+        text = source;
+        runtimeInputs =
+          tools.qualityTools
+          ++ tools.coreServiceTools
+          ++ tools.nativeCompilers
+          ++ tools.authorityHelpers
+          ++ gui.allPackages
+          ++ runtimeInputs;
+        runtimeEnv =
+          nativeTestEnv
+          // {
+            CARGO_TARGET_DIR = ".local/target";
+            BACKEND_CONFIG_SNAPSHOT = toString ../.;
+            BACKEND_AST_GREP = "${astGrepSuite}/sgconfig.yml";
+            BACKEND_KOJI_CONFIG = artifacts.koji;
+            BACKEND_NEXTEST_CONFIG = artifacts.nextest;
+            BACKEND_OTEL_COLLECTOR = artifacts.otelCollector;
+            BACKEND_TREEFMT = "${formatting.wrapper}/bin/treefmt";
+            BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
+            BACKEND_POLICY_ROOT_DIGEST = control.policyRootDigest;
+            BACKEND_COMMAND_CATALOG_DIGEST = builtins.hashString "sha256" source;
+            BACKEND_STABLE_CARGO = toolchains.stableCargo;
+            BACKEND_PARALLEL_CARGO = "${tools.parallelCargo}/bin/cargo";
+            BACKEND_CONTROL_SOURCE = toString workspaceRoot;
+            # The control binary remains available as the dedicated
+            # `.#backend-control` package. Keeping it out of this general shell
+            # prevents each Cargo.lock edit from vendoring and rebuilding the
+            # workspace before ordinary checks can begin; cutover commands retain
+            # their explicit pinned `cargo run` fallback.
+            BACKEND_CONTROL_BIN = "";
+            BACKEND_DYLINT_TOOLCHAIN = toolchains.dylintToolchain;
+            BACKEND_RUSTFMT = toolchains.rustfmt;
+            BACKEND_GUI_CONFIG = "${gui.configFile}/share/nudox/gui-control-plane.json";
+            BACKEND_GUI_FONTCONFIG = gui.fontConfig;
+            BACKEND_GUI_FONT_MANIFEST = "${gui.fontManifest}/share/nudox/fonts.sha256";
+            NUDOX_GUI_GPUI_SOURCE_DIGEST = gui.gpuiSourceDigest;
+            NUDOX_GUI_GPUI_COMPONENT_SOURCE_DIGEST =
+              if gui.gpuiComponentSourceDigest == null then "" else gui.gpuiComponentSourceDigest;
+            NUDOX_GUI_GPUI_SOURCE_MANIFEST = gui.gpuiSourceManifest;
+            NUDOX_GUI_DEPENDENCY_GRAPH_SHA256 = gui.dependencyGraphDigest;
+            NUDOX_GUI_GPU_BACKEND = control.gui.gpu.defaultGpuBackend;
+            NUDOX_GUI_GPU_DEVICE = control.gui.gpu.expectedGpuDevice;
+            NUDOX_GUI_GPU_PROBE = "${gui.gpuProbe}/bin/nudox-gui-gpu-probe";
+            WGPU_BACKEND = control.gui.gpu.forceEnvironment.WGPU_BACKEND;
+            LIBGL_ALWAYS_SOFTWARE = control.gui.gpu.forceEnvironment.LIBGL_ALWAYS_SOFTWARE;
+            MESA_LOADER_DRIVER_OVERRIDE = control.gui.gpu.forceEnvironment.MESA_LOADER_DRIVER_OVERRIDE;
+            NUDOX_GUI_TOOLCHAIN = toString toolchains.stable;
+            NUDOX_GUI_ENCODER_VERSION = pkgs.ffmpeg.version;
+            NUDOX_GUI_TOOL_CLOSURE = "${gui.toolsBundle}";
+            NUDOX_GUI_HARNESS = "nix shell .#gui-harness .#gui-tools .#gui-runtime";
+          }
+          // runtimeEnv;
+      }
+    );
 in
 rec {
   backend = makeBackend { };
