@@ -411,9 +411,7 @@ fn parse_worker_line(output: &std::process::Output) -> Result<Timing, Box<dyn st
 }
 
 fn benchmark_test_filter() -> Result<String, Box<dyn std::error::Error>> {
-    let listed = Command::new(std::env::current_exe()?)
-        .arg("--list")
-        .output()?;
+    let listed = Command::new(env::current_exe()?).arg("--list").output()?;
     if !listed.status.success() {
         return Err("could not list unit test names for cold process samples".into());
     }
@@ -434,7 +432,7 @@ fn local_cold_process_samples(
     sample_count: usize,
     test_filter: &str,
 ) -> Result<Vec<Timing>, Box<dyn std::error::Error>> {
-    let executable = std::env::current_exe()?;
+    let executable = env::current_exe()?;
     let mut measurements = Vec::with_capacity(sample_count);
     for _ in 0..sample_count {
         let output = Command::new(&executable)
@@ -837,7 +835,7 @@ fn local_cold_query_process_samples(
     sample_count: usize,
     test_filter: &str,
 ) -> Result<Vec<Timing>, Box<dyn std::error::Error>> {
-    let executable = std::env::current_exe()?;
+    let executable = env::current_exe()?;
     let mut measurements = Vec::with_capacity(sample_count);
     for query_index in 0..sample_count {
         let output = Command::new(&executable)
@@ -1417,7 +1415,6 @@ fn parallel_s3_batches_concurrent_server(
         pack.manifest()
             .page_for_object(object.id())
             .ok_or("single object page missing")?
-            .1
             .bytes(),
     );
     let envelope_bytes = u64::try_from(OBJECT_HEADER_BYTES + object.bytes().len())?;
@@ -1530,7 +1527,6 @@ fn benchmark_concurrency(sample_count: usize) -> Result<(), Box<dyn std::error::
                 pack.manifest()
                     .page_for_object(object.id())
                     .ok_or("single object page missing")?
-                    .1
                     .bytes(),
             ))
             .and_then(|bytes| bytes.checked_mul(u64::try_from(concurrency).ok()?))
