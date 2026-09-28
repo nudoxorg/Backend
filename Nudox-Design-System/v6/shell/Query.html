@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>One query</title>
+<!-- v6 shell target (the lead): one query lights the world.
+     ?state=rest | typing | graph   — each is one 1440×900 frame. -->
+<link rel="stylesheet" href="../../v5/page/page.css">
+<style>
+  body { background: #000; }
+  .win { position: relative; width: 1440px; height: 900px; overflow: hidden; background: var(--g1); margin: 0 auto 40px; font: 400 14px/22px var(--ui); }
+  .tb { position: absolute; left: 0; right: 0; top: 0; height: 48px; border-bottom: 1px solid var(--line1); display: flex; align-items: center; }
+  .foot { position: absolute; left: 0; right: 0; bottom: 0; height: 26px; border-top: 1px solid var(--line1); display: flex; align-items: center; padding: 0 12px; font: 400 11px var(--mono); color: var(--ink3); gap: 18px; }
+  .shelf { position: absolute; left: 0; top: 49px; bottom: 27px; width: 260px; border-right: 1px solid var(--line1); background: rgba(3,8,18,.55); }
+  .reader { position: absolute; left: 261px; right: 0; top: 49px; bottom: 27px; overflow: hidden; }
+
+  /* the jump bar: the path at rest, the query when typing */
+  .jump { position: absolute; left: 50%; transform: translateX(-50%); top: 8px; height: 32px; display: flex; align-items: center; gap: 0;
+          background: var(--plate); box-shadow: inset 0 0 0 1px var(--line2); clip-path: polygon(0 0, 100% 0, 100% 72%, calc(100% - 9px) 100%, 0 100%); }
+  .jump .seg { padding: 0 10px; font: 500 12.5px var(--mono); color: var(--ink2); display: flex; align-items: center; gap: 7px; height: 100%; }
+  .jump .seg.cur { color: var(--ink0); font-weight: 600; }
+  .jump .sep { width: 1px; height: 12px; background: var(--line3); transform: skewX(-18deg); }
+  .jump .back { width: 30px; display: grid; place-items: center; color: var(--ink3); }
+  .q { width: 620px; }
+  .q .scope { margin-left: 8px; height: 22px; padding: 0 8px; display: flex; align-items: center; gap: 6px; font: 500 11.5px var(--mono); color: var(--ink2);
+              background: var(--plate3); clip-path: polygon(0 0, 100% 0, 100% 70%, calc(100% - 6px) 100%, 0 100%); }
+  .q .typed { margin-left: 10px; font: 500 14px var(--mono); color: var(--ink0); }
+  .q .caret { display: inline-block; width: 1.5px; height: 16px; background: var(--peri); vertical-align: -3px; margin-left: 1px; }
+  .q .n { margin-left: auto; margin-right: 12px; font: 400 11.5px var(--mono); color: var(--ink3); }
+
+  .gem { width: 14px; height: 14px; display: inline-block; transform: rotate(45deg) scale(.78); border: 1.5px solid currentColor; }
+  .k { width: 14px; height: 14px; display: inline-grid; place-items: center; font: 700 10px var(--mono); flex: none; }
+  .k.ty { color: var(--k-ty); } .k.ca { color: var(--k-ca); } .k.co { color: var(--k-co); } .k.ns { color: var(--k-ns); }
+
+  /* shelf at rest: the neighbourhood */
+  .up { height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 14px; font: 500 12px var(--ui); color: var(--ink3); }
+  .book { display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px; }
+  .book .bn { font: 600 14px var(--ui); color: var(--ink0); } .book .bv { font: 400 11.5px var(--mono); color: var(--ink3); }
+  .row { height: 28px; display: flex; align-items: center; gap: 9px; padding: 0 14px; font: 500 12.5px var(--mono); color: var(--ink2); white-space: nowrap; position: relative; }
+  .row.in { padding-left: 30px; }
+  .row.cur { color: var(--ink0); background: rgba(108,235,173,.05); }
+  .row.cur::before { content: ""; position: absolute; left: 0; top: 5px; bottom: 5px; width: 2px; background: var(--mint); }
+
+  /* the results plate: the shelf, widened over the reader's empty margin */
+  .results { position: absolute; left: 0; top: 49px; bottom: 27px; width: 440px; background: var(--g2); border-right: 1px solid var(--line2);
+             box-shadow: 18px 0 40px -24px rgba(0,0,0,.7); z-index: 5; padding-top: 8px; }
+  .grp { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px; font: 600 11px var(--ui); letter-spacing: .02em; color: var(--ink3); }
+  .grp .rule { flex: 1; height: 1px; background: var(--line1); }
+  .grp .c { font: 400 11px var(--mono); color: var(--ink3); }
+  .res { display: grid; grid-template-columns: 16px auto 1fr; align-items: center; column-gap: 10px; height: 34px; padding: 0 14px; position: relative; }
+  .res .nm { font: 500 13px var(--mono); color: var(--ink1); white-space: nowrap; }
+  .res .nm u { text-decoration: none; color: var(--ink0); box-shadow: inset 0 -1.5px 0 var(--peri); }
+  .res .pl { font: 400 11.5px var(--mono); color: var(--ink3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; justify-self: end; }
+  .res.sel { background: var(--plate2); }
+  .res.sel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--peri); }
+  .res.sel .nm { color: var(--ink0); }
+  .res .yours { color: var(--mint); }
+  .ask { margin: 6px 14px 4px; padding: 10px 12px; background: var(--plate); box-shadow: inset 0 0 0 1px var(--line2); font: italic 400 14px/20px var(--serif); color: var(--ink2);
+         clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%); }
+  .ask b { font: 500 12.5px var(--mono); font-style: normal; color: var(--ink0); }
+
+  /* the page (a compact drawn page, schematic) */
+  .page { position: absolute; left: 190px; top: 40px; width: 780px; }
+  .hero { display: flex; align-items: center; gap: 18px; }
+  .hgem { width: 44px; height: 44px; transform: rotate(45deg); border: 2px solid var(--k-ty); display: grid; place-items: center; background: rgba(70,210,220,.08); }
+  .hgem.ca { border-color: var(--k-ca); background: rgba(143,166,255,.08); }
+  .title { font: 700 40px/44px var(--display); letter-spacing: -.035em; color: var(--ink0); }
+  .lede { font: italic 400 19px/28px var(--serif); color: var(--ink2); margin-top: 2px; }
+  .spine { position: absolute; left: 21px; top: 70px; width: 1.5px; bottom: -420px; background: rgba(70,210,220,.28); }
+  .spine.ca { background: rgba(143,166,255,.28); }
+  .sec { margin: 34px 0 0 64px; }
+  .sh { display: flex; align-items: center; gap: 10px; font: 600 13px/16px var(--ui); color: var(--ink1); }
+  .sh .rule { flex: 1; height: 1px; background: var(--line1); }
+  .tine { display: grid; grid-template-columns: 22px 130px 1fr; align-items: center; height: 24px; font: 500 13px var(--mono); color: var(--ink1); }
+  .tine .t { height: 1.5px; background: var(--k-ty); width: 18px; }
+  .tine .p { color: var(--ink3); }
+  .tine .lit, .lit { box-shadow: inset 0 -1.5px 0 var(--peri); color: var(--ink0); }
+  .pipe { display: flex; align-items: center; gap: 10px; margin-top: 12px; font: 500 13px var(--mono); color: var(--ink1); }
+  .plate { padding: 3px 10px; box-shadow: inset 0 0 0 1.5px var(--k-ca); clip-path: polygon(0 0, 100% 0, 100% 70%, calc(100% - 6px) 100%, 0 100%); }
+  .arrow { width: 44px; height: 1.5px; background: var(--ink3); position: relative; }
+  .arrow::after { content: ""; position: absolute; right: -1px; top: -3px; border-left: 6px solid var(--ink3); border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent; }
+  .drop { color: var(--coral); font: 500 12.5px var(--mono); }
+  .quiet { color: var(--ink4) !important; }
+
+  /* the map (graph variant) */
+  .map { position: absolute; inset: 0; }
+  .node { position: absolute; font: 500 12px var(--mono); color: var(--ink3); display: flex; align-items: center; gap: 6px; }
+  .node.hit { color: var(--ink0); }
+  .node.hit .ring { box-shadow: 0 0 0 2px var(--peri); }
+  .node .dot { width: 8px; height: 8px; transform: rotate(45deg); background: var(--ink4); }
+  .node.hit .dot { background: var(--k-ca); }
+  .terr { position: absolute; border: 1px solid var(--line2); clip-path: polygon(12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%, 0 50%); }
+  .terr span { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font: 600 13px var(--ui); color: var(--ink3); }
+  .terr.hit { border-color: rgba(147,162,250,.45); }
+  .terr.hit span { color: var(--ink1); }
+  .note { position: absolute; font: 400 12px var(--ui); color: var(--ink3); }
+</style>
+</head>
+<body>
+<script>
+const state = new URLSearchParams(location.search).get('state') || 'all';
+</script>
+
+<!-- A. rest: the path, the neighbourhood, the page -->
+<div class="win" id="rest">
+  <div class="tb">
+    <div style="position:absolute;left:78px;top:13px;width:22px;height:22px;box-shadow:inset 0 0 0 1px var(--line3);"></div>
+    <div class="jump">
+      <div class="back">‹</div><div class="sep"></div>
+      <div class="seg">present</div><div class="sep"></div>
+      <div class="seg">glyph</div><div class="sep"></div>
+      <div class="seg cur"><span class="k ty">≡</span>RelationLabel</div>
+    </div>
+  </div>
+  <div class="shelf">
+    <div class="up">‹ Library</div>
+    <div class="book"><span class="gem" style="color:var(--k-ns)"></span><div><div class="bn">backend-present</div><div class="bv">0.1.0</div></div></div>
+    <div class="row"><span class="k ns">{}</span>assemble</div>
+    <div class="row"><span class="k ns">{}</span>browse</div>
+    <div class="row"><span class="k ns">{}</span>glyph</div>
+    <div class="row in"><span class="k ty">≡</span>DeclarationKind</div>
+    <div class="row in"><span class="k ty">≡</span>KindGlyph</div>
+    <div class="row in"><span class="k ty">≡</span>RelationDirection</div>
+    <div class="row in cur"><span class="k ty">≡</span>RelationLabel</div>
+    <div class="row in"><span class="k ca">›</span>relation_label</div>
+    <div class="row"><span class="k ns">{}</span>identity</div>
+    <div class="row"><span class="k ns">{}</span>outline</div>
+  </div>
+  <div class="reader">
+    <div class="page">
+      <div class="spine"></div>
+      <div class="hero"><div class="hgem"></div><div><div class="title">RelationLabel</div><div class="lede">The readable label of one relation group.</div></div></div>
+      <div class="sec"><div class="sh"><span class="k ty">⑂</span>one of 3<span class="rule"></span></div>
+        <div class="tine"><span class="t"></span><span>Typed</span><span class="p">SemanticLinkKind × RelationDirection</span></div>
+        <div class="tine"><span class="t"></span><span>Neighbourhood</span><span></span></div>
+        <div class="tine"><span class="t"></span><span>Related</span><span></span></div>
+      </div>
+      <div class="sec"><div class="sh"><span class="k ca">→</span>Getting one<span class="rule"></span><span style="font:400 11.5px var(--mono);color:var(--ink3)">2 ways</span></div>
+        <div class="pipe"><span class="p" style="color:var(--ink3)">SemanticLinkKind</span><span class="arrow"></span><span class="plate">relation_label</span><span class="arrow"></span><span>RelationLabel</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">nudox://present/glyph/RelationLabel</div>
+</div>
+
+<!-- B. typing "from_s": the bar is the query; the shelf is the results; the reader previews the selection; the page lights what matches -->
+<div class="win" id="typing">
+  <div class="tb">
+    <div style="position:absolute;left:78px;top:13px;width:22px;height:22px;box-shadow:inset 0 0 0 1px var(--line3);"></div>
+    <div class="jump q">
+      <div class="scope"><span class="gem" style="color:var(--k-ns);width:9px;height:9px"></span>present</div>
+      <span class="typed">from_s<span class="caret"></span></span>
+      <span class="n">1 here · 11 everywhere</span>
+    </div>
+  </div>
+  <div class="shelf" style="opacity:0"></div>
+  <div class="results">
+    <div class="grp">in present<span class="rule"></span><span class="c">1</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>emantic</span><span class="pl">glyph::RelationDirection</span></div>
+    <div class="grp">everywhere<span class="rule"></span><span class="c">11</span></div>
+    <div class="res sel"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">toml 0.8.23 · de</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">serde_json 1.0.151 · de</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>tring_unchecked</span><span class="pl">serde_json · raw</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">toml_edit 0.22.27 · key</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">toml_datetime 0.6.11</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">basic-toml 0.1.10</span></div>
+    <div class="res"><span class="k co">◇</span><span class="nm">IntoDeserializer</span><span class="pl">serde_core · names <u>from_s</u>tr</span></div>
+    <div class="grp" style="margin-top:6px">and 4 more<span class="rule"></span></div>
+    <div class="ask">Asked as a question — <b>parse a string into a Value</b>: <b>toml::from_str</b> turns TOML text into your type.</div>
+  </div>
+  <div class="reader">
+    <div class="page" style="left:250px;width:760px">
+      <div class="spine ca"></div>
+      <div class="hero"><div class="hgem ca"></div><div><div class="title">from_str</div><div class="lede">Deserializes a string into a type.</div></div></div>
+      <div class="sec"><div class="sh"><span class="k ca">→</span>Calling it<span class="rule"></span></div>
+        <div class="pipe"><span style="color:var(--ink3)">● text</span><span class="arrow"></span><span class="plate"><span class="lit">from_s</span>tr ?</span><span class="arrow"></span><span>T <span style="color:var(--ink3)">: Deserialize</span></span></div>
+        <div class="pipe" style="margin-left:132px"><span class="drop">↘ fails with toml::de::Error</span></div>
+      </div>
+      <div class="sec"><div class="sh"><span class="k ca">↗</span>Who uses it<span class="rule"></span><span style="font:400 11.5px var(--mono);color:var(--ink3)">3 places · <span style="color:var(--mint)">1 yours</span></span></div>
+        <div class="tine"><span></span><span class="yours" style="color:var(--mint)">toml_pin</span><span class="p">let cfg: Config = toml::<span class="lit">from_s</span>tr(&amp;text)?;</span></div>
+      </div>
+    </div>
+    <div class="note" style="right:28px;top:20px">preview · ↵ opens · esc returns to RelationLabel</div>
+  </div>
+  <div class="foot"><span>nudox://crates.io/toml@0.8.23/de/from_str</span></div>
+</div>
+
+<!-- C. the same query in the map: matches light, the rest step down; the selection is the camera's -->
+<div class="win" id="graph">
+  <div class="tb">
+    <div class="jump q">
+      <div class="scope">everywhere</div>
+      <span class="typed">from_s<span class="caret"></span></span>
+      <span class="n">12 on the map</span>
+    </div>
+  </div>
+  <div class="results">
+    <div class="grp">on the map<span class="rule"></span><span class="c">12</span></div>
+    <div class="res sel"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">toml · de</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">serde_json · de</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">toml_edit · key</span></div>
+    <div class="res"><span class="k ca">›</span><span class="nm"><u>from_s</u>tr</span><span class="pl">toml_datetime</span></div>
+  </div>
+  <div class="reader">
+    <div class="map">
+      <div class="terr hit" style="left:300px;top:120px;width:300px;height:260px"><span>toml</span></div>
+      <div class="terr hit" style="left:640px;top:260px;width:340px;height:300px"><span>serde_json</span></div>
+      <div class="terr" style="left:250px;top:430px;width:260px;height:220px"><span class="quiet">smallvec</span></div>
+      <div class="terr hit" style="left:560px;top:600px;width:240px;height:190px"><span>toml_edit</span></div>
+      <div class="node hit" style="left:410px;top:240px"><span class="dot ring"></span>from_str</div>
+      <div class="node" style="left:360px;top:300px"><span class="dot"></span><span class="quiet">Value</span></div>
+      <div class="node hit" style="left:760px;top:390px"><span class="dot"></span>from_str</div>
+      <div class="node" style="left:820px;top:450px"><span class="dot"></span><span class="quiet">Deserializer</span></div>
+      <div class="node hit" style="left:640px;top:690px"><span class="dot"></span>from_str</div>
+    </div>
+  </div>
+  <div class="foot"><span>nudox://world</span></div>
+</div>
+<script>
+if (state !== 'all') for (const w of document.querySelectorAll('.win')) w.style.display = w.id === state ? '' : 'none';
+</script>
+</body>
+</html>

@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nudox v6 · Gems</title>
+<link rel="stylesheet" href="../../v5/page/page.css">
+<style>
+  body { background: #000; padding: 24px; display: flex; flex-direction: column; gap: 24px; align-items: flex-start; }
+  .win { width: 1440px; height: 900px; }
+  .note { font: 400 13px/20px var(--ui); color: #8591a8; max-width: 1440px; }
+  .note b { color: #d2d9e5; font-weight: 600; }
+  svg text { font-feature-settings: "liga" 0, "calt" 0; }
+  .reader { flex: 1; position: relative; overflow: hidden; }
+  .shelf .sec { font: 500 11px/16px var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--ink3); padding: 14px 16px 6px; display: flex; gap: 8px; align-items: center; }
+  .shelf .sec::after { content: ""; flex: 1; height: 1px; background: var(--line1); }
+  .shelf .row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shelf .row .vv { font: 400 11px var(--mono); color: var(--ink4); }
+  .shelf .row .tape { height: 3px; background: var(--line3); flex: none; }
+  .shelf .row.y .nm { color: var(--ink0); }
+  .shelf .row svg { width: auto; height: auto; }
+  .shelf .row.sub { padding-left: 38px; }
+  .tb .jump svg { flex: none; }
+  .tb .jump .q { color: var(--ink0); font-weight: 500; }
+  .tb .jump .caret { width: 1.5px; height: 16px; background: var(--peri); }
+  .tb .jump .cnt { font: 400 12px var(--ui); color: var(--ink3); margin-left: 18px; }
+  /* results plate: the query, over the shelf column */
+  .plate { position: absolute; left: 0; top: 0; bottom: 0; width: 440px; background: var(--g2); border-right: 1px solid var(--line2); z-index: 2; padding: 10px 0; }
+  .plate .gh { display: flex; align-items: center; gap: 10px; padding: 12px 16px 6px; font: 500 11px var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--ink3); }
+  .plate .gh::after { content: ""; flex: 1; height: 1px; background: var(--line1); order: 1; }
+  .plate .gh .n { order: 2; letter-spacing: 0; text-transform: none; font: 400 12px var(--mono); color: var(--ink4); }
+  .plate .r { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 16px; font: 400 13px var(--mono); color: var(--ink1); }
+  .plate .r.on { background: var(--plate2); box-shadow: inset 2px 0 0 var(--peri); color: var(--ink0); }
+  .plate .r u { text-decoration: none; border-bottom: 1.5px solid var(--peri); }
+  .plate .r .pl { margin-left: auto; font: 400 12px var(--mono); color: var(--ink3); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+  .plate .foot { position: absolute; left: 16px; right: 16px; bottom: 12px; font: 400 12px var(--ui); color: var(--ink3); display: flex; gap: 8px; align-items: center; }
+  .plate .foot kbd { font: 500 11px var(--mono); color: var(--ink2); padding: 1px 5px; box-shadow: inset 0 0 0 1px var(--line2); }
+  /* package page */
+  .page { position: absolute; left: 196px; top: 40px; width: 784px; }
+  .page .top { display: flex; gap: 22px; align-items: flex-start; }
+  .page h1 { margin: 0; font: 650 44px/48px var(--display); color: var(--ink0); letter-spacing: -.01em; }
+  .page .lede { font: italic 400 19px/26px var(--serif); color: var(--ink2); margin-top: 6px; max-width: 640px; }
+  .page .facts { display: flex; gap: 18px; align-items: center; margin-top: 12px; font: 400 12px var(--ui); color: var(--ink3); }
+  .page .facts .v { font: 400 12px var(--mono); color: var(--ink2); }
+  .sec2 { display: flex; align-items: baseline; gap: 12px; margin: 30px 0 10px; }
+  .sec2 h2 { margin: 0; font: 600 15px/20px var(--display); color: var(--ink0); }
+  .sec2 .aside { font: 400 12px var(--ui); color: var(--ink3); }
+  .lm { display: grid; grid-template-columns: 18px 150px 1fr 90px; align-items: center; column-gap: 10px; height: 26px; font: 400 13px var(--mono); color: var(--ink1); }
+  .lm .doc { font: italic 400 15px var(--serif); color: var(--ink3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lm .in { font: 400 12px var(--mono); color: var(--ink3); text-align: right; }
+  .deps { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+  .dep { display: flex; align-items: center; gap: 8px; font: 400 13px var(--mono); color: var(--ink1); }
+  .dep .rq { font: 400 11px var(--mono); color: var(--ink4); }
+  .dep.ghost { color: var(--ink3); }
+  .comb { display: flex; align-items: center; gap: 0; margin-top: 10px; font: 400 11px var(--mono); color: var(--ink3); }
+</style>
+</head>
+<body>
+<div class="note" id="note"></div>
+<div id="stage"></div>
+<script>
+(async () => {
+  const PK = await (await fetch("data/packages.json", { cache: "reload" })).json();
+  const byName = Object.fromEntries(PK.map((p) => [p.name, p]));
+  const state = new URLSearchParams(location.search).get("state") || "atlas";
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  // ------------------------------------------------------------------ geometry
+  const area = (P) => { let s = 0; for (let i = 0; i < P.length; i++) { const [a, b] = P[i], [c, d] = P[(i + 1) % P.length]; s += a * d - c * b; } return Math.abs(s) / 2; };
+  const centroid = (P) => { let a = 0, x = 0, y = 0; for (let i = 0; i < P.length; i++) { const [x1, y1] = P[i], [x2, y2] = P[(i + 1) % P.length]; const f = x1 * y2 - x2 * y1; a += f; x += (x1 + x2) * f; y += (y1 + y2) * f; } a *= 0.5; return [x / (6 * a), y / (6 * a)]; };
+  const half = (P, nx, ny, d) => { const o = []; for (let i = 0; i < P.length; i++) { const p = P[i], q = P[(i + 1) % P.length]; const dp = nx * p[0] + ny * p[1] - d, dq = nx * q[0] + ny * q[1] - d; if (dp <= 0) o.push(p); if ((dp < 0 && dq > 0) || (dp > 0 && dq < 0)) { const t = dp / (dp - dq); o.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]); } } return o; };
+  const inside = (P, x, y) => { let s = 0; for (let i = 0; i < P.length; i++) { const [a, b] = P[i], [c, d] = P[(i + 1) % P.length]; const z = (c - a) * (y - b) - (d - b) * (x - a); if (z !== 0) { if (s === 0) s = Math.sign(z); else if (Math.sign(z) !== s) return false; } } return true; };
+  const hash = (s) => { let h = 2166136261; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return ((h >>> 0) % 10000) / 10000; };
+  const bbox = (P) => { const xs = P.map((p) => p[0]), ys = P.map((p) => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; };
+  function split(P, ang, ratio) {
+    const nx = Math.cos(ang), ny = Math.sin(ang);
+    let lo = Infinity, hi = -Infinity; for (const p of P) { const v = nx * p[0] + ny * p[1]; lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    const total = area(P);
+    for (let k = 0; k < 44; k++) { const m = (lo + hi) / 2; if (area(half(P, nx, ny, m)) / total < ratio) lo = m; else hi = m; }
+    const d = (lo + hi) / 2;
+    return [half(P, nx, ny, d), half(P, -nx, -ny, -d)];
+  }
+  // Recursive weighted bisection: every cut is straight, every piece stays convex, every area is honest.
+  function cut(P, items, seed, depth = 0, limit = 99) {
+    if (items.length === 1) return [{ poly: P, item: items[0] }];
+    if (depth >= limit) return [{ poly: P, item: null }];
+    const sorted = [...items].sort((a, b) => b.w - a.w);
+    const g = [[], []], t = [0, 0];
+    for (const it of sorted) { const k = t[0] <= t[1] ? 0 : 1; g[k].push(it); t[k] += it.w; }
+    const [x0, y0, x1, y1] = bbox(P);
+    const across = (x1 - x0) >= (y1 - y0) ? 0 : Math.PI / 2;
+    const ang = across + (hash(seed + ":" + depth + ":" + items.length) - 0.5) * 0.9;
+    const [a, b] = split(P, ang, t[0] / (t[0] + t[1]));
+    return [...cut(a, g[0], seed + "a", depth + 1, limit), ...cut(b, g[1], seed + "b", depth + 1, limit)];
+  }
+
+  // ------------------------------------------------------------------ cuts: the outline is the language
+  const CUTS = {
+    rust: { name: "Rust", cut: "octagon", aspect: 1, poly: (w, h) => { const c = 0.29 * Math.min(w, h); return [[c, 0], [w - c, 0], [w, c], [w, h - c], [w - c, h], [c, h], [0, h - c], [0, c]]; } },
+    go: { name: "Go", cut: "emerald", aspect: 1.36, poly: (w, h) => { const c = 0.16 * Math.min(w, h); return [[c, 0], [w - c, 0], [w, c], [w, h - c], [w - c, h], [c, h], [0, h - c], [0, c]]; } },
+    ts: { name: "TypeScript", cut: "shield", aspect: 1, poly: (w, h) => [[0, 0], [w, 0], [w, 0.6 * h], [w / 2, h], [0, 0.6 * h]] },
+    python: { name: "Python", cut: "oval", aspect: 0.82, poly: (w, h) => Array.from({ length: 20 }, (_, i) => { const a = (i / 20) * Math.PI * 2; return [w / 2 + (w / 2) * Math.cos(a), h / 2 + (h / 2) * Math.sin(a)]; }) },
+    java: { name: "Java", cut: "marquise", aspect: 0.66, poly: (w, h) => { const pts = []; for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push([w / 2 + (w / 2) * Math.sin(Math.PI * t), h * t]); } for (let i = 1; i < 8; i++) { const t = 1 - i / 8; pts.push([w / 2 - (w / 2) * Math.sin(Math.PI * t), h * t]); } return pts; } },
+    csharp: { name: "C#", cut: "hexagon", aspect: 0.9, poly: (w, h) => [[w / 2, 0], [w, h / 4], [w, 3 * h / 4], [w / 2, h], [0, 3 * h / 4], [0, h / 4]] },
+    c: { name: "C / C++", cut: "trillion", aspect: 1.14, poly: (w, h) => { const c = 0.12 * w; return [[w / 2 - c * 0.6, 0], [w / 2 + c * 0.6, 0], [w, h - c], [w - c, h], [c, h], [0, h - c]]; } },
+  };
+
+  // ------------------------------------------------------------------ the gem
+  const KH = { type: css("--k-ty"), callable: css("--k-ca"), contract: css("--k-co"), value: css("--k-va") };
+  function mark(kind, x, y, s = 7) {
+    const c = KH[kind] || css("--ink3");
+    if (kind === "type") return `<path d="M${x} ${y - s / 2}L${x + s / 2} ${y}L${x} ${y + s / 2}L${x - s / 2} ${y}Z" fill="${c}"/>`;
+    if (kind === "contract") return `<path d="M${x} ${y - s / 2}L${x + s / 2} ${y}L${x} ${y + s / 2}L${x - s / 2} ${y}Z" fill="none" stroke="${c}" stroke-width="1.3"/>`;
+    if (kind === "callable") return `<path d="M${x - s / 3} ${y - s / 2}L${x + s / 3} ${y}L${x - s / 3} ${y + s / 2}" fill="none" stroke="${c}" stroke-width="1.5"/>`;
+    return `<rect x="${x - s / 3}" y="${y - s / 3}" width="${(2 * s) / 3}" height="${(2 * s) / 3}" fill="${c}"/>`;
+  }
+  // light: default from the upper left; the board moves it with the pointer (the gems glint as you move)
+  let LIGHT = [-0.55, -0.83];
+  function shade(tx, ty, L, micro) {
+    const n = Math.hypot(tx, ty) || 1;
+    const d = -(tx * L[0] + ty * L[1]) / n; // -1..1, facing the light = 1
+    const b = Math.max(0, d) ** 1.6;
+    return micro ? 0.06 + 0.2 * b : 0.045 + 0.19 * b + (d > 0.8 ? 0.12 : 0);
+  }
+  // fire: only the facets turned most squarely to the light show colour, and the colour is the kind of
+  // the module's landmark: move the light and the gem tells you what it's made of, a facet at a time
+  function fire(tx, ty, L) { const n = Math.hypot(tx, ty) || 1; return -(tx * L[0] + ty * L[1]) / n > 0.8; }
+  const INK1 = "#d2d9e5";
+  function relight(L) {
+    LIGHT = L;
+    for (const el of document.querySelectorAll("polygon.f")) {
+      const [tx, ty, m] = el.dataset.t.split(",");
+      el.setAttribute("fill-opacity", shade(+tx, +ty, L, m === "m").toFixed(3));
+      el.setAttribute("fill", fire(+tx, +ty, L) ? el.dataset.hue : INK1);
+    }
+  }
+  addEventListener("mousemove", (e) => { const dx = e.clientX / innerWidth - 0.5, dy = e.clientY / innerHeight - 0.5; const n = Math.hypot(dx, dy) || 1; relight([dx / n, dy / n]); });
+  const pts = (P, dx = 0, dy = 0) => P.map(([x, y]) => `${(x + dx).toFixed(1)},${(y + dy).toFixed(1)}`).join(" ");
+  function leaves(p, w, h, withSubs, o_limit = 99) {
+    const P = CUTS[p.lang].poly(w, h);
+    const total = p.modules.reduce((s, m) => s + m.n, 0) || 1;
+    const items = p.modules.map((m) => ({ m, w: Math.max(m.n, total * 0.018) }));
+    const L = cut(P, items, p.name, 0, o_limit);
+    if (withSubs) for (const l of L) {
+      const m = l.item.m; if (!m.subs.length || area(l.poly) < 2400) continue;
+      const own = m.n - m.subs.reduce((s, x) => s + x.n, 0);
+      const it = m.subs.map((s) => ({ s, w: Math.max(s.n, m.n * 0.05) })); if (own > 0) it.push({ s: null, w: own });
+      l.subs = cut(l.poly, it, p.name + m.name);
+    }
+    return { P, L };
+  }
+  // opts: size | w,h; labels; lit: Set(module) ; hot (hover facet); ghost; yours; micro
+  function gem(p, o = {}) {
+    const cutdef = CUTS[p.lang];
+    const h = o.h || o.size, w = o.w || Math.round(o.size * cutdef.aspect);
+    const { P, L: L0 } = leaves(p, w, h, o.labels, o.limit);
+    const uncut = L0.filter((l) => !l.item); const L = L0.filter((l) => l.item);
+    const [cx, cy] = [w / 2, h / 2];
+    const micro = h < 26;
+    const ink4 = css("--ink4"), line2 = css("--line2"), line3 = css("--line3");
+    let facets = "", subs = "", labels = "";
+    for (const l of L) {
+      const m = l.item.m;
+      const [fx, fy] = centroid(l.poly);
+      // each facet has a tilt: where it sits in the gem, plus a stable per-facet jitter (the cut)
+      const tx = (fx - cx) / (w / 2) * 0.55 + (hash(p.name + m.name + "x") - 0.5) * 1.3;
+      const ty = (fy - cy) / (h / 2) * 0.55 + (hash(p.name + m.name + "y") - 0.5) * 1.3;
+      const lit = o.lit && o.lit.has(m.name);
+      const kind = (m.top[0] || [])[1] || "callable";
+      const hue = KH[kind] || css("--ink1");
+      const alpha = lit ? 0.46 : shade(tx, ty, LIGHT, micro);
+      const fill = lit ? css("--peri") : (!o.lit && fire(tx, ty, LIGHT)) ? hue : css("--ink1");
+      facets += `<polygon class="${lit ? "" : o.lit ? "q" : "f"}" data-t="${tx.toFixed(3)},${ty.toFixed(3)},${micro ? "m" : ""}" data-hue="${hue}" points="${pts(l.poly)}" fill="${fill}" fill-opacity="${alpha.toFixed(3)}" stroke="${lit ? css("--peri-hi") : (micro ? "rgba(210,217,229,.34)" : "rgba(210,217,229,.2)")}" stroke-width="${micro ? 0.6 : 1}" stroke-linejoin="round"/>`;
+      if (o.hot === m.name) facets += `<polygon points="${pts(l.poly)}" fill="none" stroke="${css("--peri-hi")}" stroke-width="1.5"/>`;
+      if (l.subs) for (const s of l.subs) subs += `<polygon points="${pts(s.poly)}" fill="none" stroke="rgba(158,176,255,.09)" stroke-width="1"/>`;
+      if (o.labels) {
+        const name = m.name, cw = 7.25, bw = name.length * cw + 8, bh = 16;
+        const fits = (x, y, bw2, bh2) => [[x - bw2 / 2, y - bh2 / 2], [x + bw2 / 2, y - bh2 / 2], [x - bw2 / 2, y + bh2 / 2], [x + bw2 / 2, y + bh2 / 2]].every(([a2, b2]) => inside(l.poly, a2, b2));
+        const lm = m.top[0];
+        const lmw = lm ? (lm[0].length * 7.25 + 22) : 0;
+        const tall = lm && fits(fx, fy + 8, Math.max(bw, lmw), 52);
+        if (tall) {
+          labels += `<text x="${fx}" y="${fy - 8}" text-anchor="middle" font-family="Geist Mono" font-size="12.5" fill="${css("--ink0")}" font-weight="500">${esc(name)}</text>`;
+          labels += `<text x="${fx}" y="${fy + 8}" text-anchor="middle" font-family="Geist Mono" font-size="11" fill="${css("--ink3")}">${m.n}</text>`;
+          labels += mark(lm[1], fx - lmw / 2 + 6, fy + 26) + `<text x="${fx - lmw / 2 + 16}" y="${fy + 30}" font-family="Geist Mono" font-size="12" fill="${css("--ink2")}">${esc(lm[0])}</text>`;
+        } else if (fits(fx, fy + 4, bw, 34)) {
+          labels += `<text x="${fx}" y="${fy}" text-anchor="middle" font-family="Geist Mono" font-size="12.5" fill="${css("--ink1")}" font-weight="500">${esc(name)}</text>`;
+          labels += `<text x="${fx}" y="${fy + 15}" text-anchor="middle" font-family="Geist Mono" font-size="11" fill="${css("--ink3")}">${m.n}</text>`;
+        } else if (fits(fx, fy, bw, bh)) {
+          labels += `<text x="${fx}" y="${fy + 4}" text-anchor="middle" font-family="Geist Mono" font-size="11.5" fill="${css("--ink2")}">${esc(name)}</text>`;
+        }
+      }
+      if (o.count && lit) {
+        // nothing: the count sits on the gem, not the facet
+      }
+    }
+    const outline = o.yours ? css("--mint") : (micro ? css("--ink2") : "rgba(210,217,229,.42)");
+    const rough = uncut.map((l) => `<polygon points="${pts(l.poly)}" fill="${css("--g1")}" stroke="rgba(210,217,229,.2)" stroke-dasharray="3 3"/>`).join("");
+    const body = `<polygon points="${pts(P)}" fill="${css("--g1")}"/>${facets}${rough}${subs}<polygon points="${pts(P)}" fill="none" stroke="${outline}" stroke-width="${o.yours ? 1.5 : (micro ? 1 : 1.2)}" stroke-linejoin="round"/>${labels}`;
+    const pad = 2;
+    return `<svg width="${w + pad * 2}" height="${h + pad * 2}" viewBox="${-pad} ${-pad} ${w + pad * 2} ${h + pad * 2}" style="overflow:visible">${body}</svg>`;
+  }
+  function ghost(lang, size, label) {
+    const c = CUTS[lang] || CUTS.rust; const h = size, w = Math.round(size * c.aspect);
+    return `<svg width="${w + 4}" height="${h + 4}" viewBox="-2 -2 ${w + 4} ${h + 4}"><polygon points="${pts(c.poly(w, h))}" fill="none" stroke="${css("--ink4")}" stroke-width="1" stroke-dasharray="3 3"/></svg>`;
+  }
+
+  // ------------------------------------------------------------------ chrome
+  const lights = `<div class="lights"><i></i><i></i><i></i></div>`;
+  const search = `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4.5" fill="none" stroke="${css("--ink3")}" stroke-width="1.4"/><path d="M9.5 9.5L13 13" stroke="${css("--ink3")}" stroke-width="1.4"/></svg>`;
+  const libraryShelf = (sel) => {
+    const yours = PK.filter((p) => p.yours), lib = PK.filter((p) => !p.yours);
+    const row = (p) => `<div class="row ${p.yours ? "y" : ""} ${sel === p.name ? "cur" : ""}">${gem(p, { size: 14, yours: p.yours })}<span class="nm">${esc(p.name)}</span><span class="vv">${p.version || ""}</span></div>`;
+    return `<div class="shelf"><div class="sec">Yours</div>${yours.map(row).join("")}<div class="sec">Library</div>${lib.sort((a, b) => a.name.localeCompare(b.name)).map(row).join("")}</div>`;
+  };
+
+  // ------------------------------------------------------------------ the atlas: home is the world, zoomed out
+  function atlas(o = {}) {
+    const idx = new Set(PK.map((p) => p.name));
+    const alias = (n) => (n === "serde" && idx.has("serde_core") ? "serde_core" : n);
+    const depsOf = (p) => (p.deps || []).map((d) => alias(d.name));
+    const memo = {};
+    const depth = (n, seen = new Set()) => { if (n in memo) return memo[n]; if (seen.has(n)) return 0; seen.add(n); const p = byName[n]; const ds = p ? depsOf(p).filter((d) => idx.has(d)) : []; return (memo[n] = ds.length ? 1 + Math.max(...ds.map((d) => depth(d, seen))) : 0); };
+    const usedBy = {}; for (const p of PK) for (const d of depsOf(p)) (usedBy[d] ||= []).push(p.name);
+    const inTree = new Set(); const walk = (n) => { if (inTree.has(n)) return; inTree.add(n); const p = byName[n]; if (p) depsOf(p).forEach(walk); };
+    PK.filter((p) => p.yours).forEach((p) => walk(p.name));
+    const W = o.w, H = o.h, x0 = o.x0 || 90;
+    const size = (p) => Math.round(34 + Math.sqrt(p.n) * 3.3);
+    // columns: yours = 0; the rest by how far they are from the ground (depth 0 = rests on nothing indexed = rightmost)
+    const maxD = Math.max(...[...inTree].filter((n) => !byName[n]?.yours && idx.has(n)).map((n) => depth(n)));
+    const cols = {}; const loose = [];
+    for (const p of PK) { if (!inTree.has(p.name)) { loose.push(p); continue; } const col = p.yours ? 0 : 1 + (maxD - depth(p.name)); (cols[col] ||= []).push(p); }
+    const ncol = Math.max(...Object.keys(cols).map(Number)) + 1;
+    const colX = (c) => x0 + 70 + c * ((W - x0 - 260) / Math.max(1, ncol - 1));
+    const place = {};
+    const treeTop = 96, treeH = o.treeH || 560;
+    for (const [c, ps] of Object.entries(cols)) {
+      ps.sort((a, b) => (a.yours === b.yours ? b.n - a.n : 0));
+      const gap = 58; const tot = ps.reduce((s2, p) => s2 + size(p), 0) + gap * (ps.length - 1);
+      let y = treeTop + (treeH - tot) / 2;
+      for (const p of ps) { const sz = size(p), w = Math.round(sz * CUTS[p.lang].aspect); place[p.name] = { x: colX(+c) - w / 2, y, w, h: sz }; y += sz + gap; }
+    }
+    loose.sort((a, b) => b.n - a.n);
+    const ly = treeTop + treeH + 96; let lx = x0 + 30;
+    for (const p of loose) { const sz = Math.round(size(p) * 0.8), w = Math.round(sz * CUTS[p.lang].aspect); place[p.name] = { x: lx, y: ly + (130 - sz) / 2, w, h: sz }; lx += w + 96; }
+    // every indexed dependency is a stroke; at rest they are hairlines, the hovered chain is lit
+    const hot = o.hot;
+    const edges = [];
+    for (const p of PK) for (const d of p.deps || []) { const n = alias(d.name); if (idx.has(n) && (inTree.has(p.name) || p.name === hot)) edges.push({ a: p.name, b: n, req: d.req.replace(/^[\^=~]/, "") }); }
+    const chain = new Set(); if (hot) { chain.add(hot); const up = (n) => { for (const u of usedBy[n] || []) if (!chain.has(u)) { chain.add(u); up(u); } }; const dn = (n) => { for (const d of depsOf(byName[n] || {})) if (idx.has(d) && !chain.has(d)) { chain.add(d); dn(d); } }; up(hot); dn(hot); }
+    if (hot) (byName[hot].deps || []).forEach((d, i) => { const n = alias(d.name); if (idx.has(n)) return; edges.push({ a: hot, b: n, req: d.req.replace(/^[\^=~]/, ""), ghost: true }); });
+    const ghosts = edges.filter((e) => e.ghost);
+    ghosts.forEach((e, i) => { const hp = place[hot]; place[e.b] = { x: hp.x + hp.w + 110 + (i % 2) * 150, y: hp.y - 70 + Math.floor(i / 2) * 64 + (i % 2) * 22, w: 26, h: 26, ghost: true }; });
+    let svg = "", html = "";
+    for (const e of edges) {
+      const A = place[e.a], B = place[e.b]; if (!A || !B) continue;
+      const on = hot && (e.ghost || (chain.has(e.a) && chain.has(e.b)));
+      const x1 = A.x + A.w + 4, y1 = A.y + A.h / 2, x2 = B.x - 4, y2 = B.y + B.h / 2;
+      const back = x2 < x1; // a stroke that has to go back left bends below
+      const mx = (x1 + x2) / 2;
+      const d = back ? `M${x1} ${y1} C${x1 + 80} ${y1 + 120} ${x2 - 80} ${y2 + 120} ${x2} ${y2}` : `M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
+      svg += `<path d="${d}" fill="none" stroke="${on ? (e.ghost ? css("--ink3") : css("--peri")) : "rgba(210,217,229,.13)"}" stroke-width="${on ? 1.5 : 1}" ${e.ghost ? 'stroke-dasharray="3 4"' : ""} opacity="${hot && !on ? 0.5 : 1}"/>`;
+      if (on && e.req) { const tx = x1 + (x2 - x1) * 0.55, ty = y1 + (y2 - y1) * 0.55 + (back ? 90 : 0); svg += `<rect x="${tx - e.req.length * 3.4 - 6}" y="${ty - 9}" width="${e.req.length * 6.8 + 12}" height="18" fill="${css("--g1")}"/><text x="${tx}" y="${ty + 4}" text-anchor="middle" font-family="Geist Mono" font-size="11" fill="${e.ghost ? css("--ink3") : css("--peri-hi")}">${esc(e.req)}</text>`; }
+    }
+    for (const [n, q] of Object.entries(place)) {
+      const p = byName[n];
+      const lit = o.query && p ? new Set(p.modules.filter((m) => m.names.includes(o.query)).map((m) => m.name)) : null;
+      const hits = lit ? lit.size : 0;
+      const dim = (hot && !chain.has(n) && !q.ghost) || (o.query && !hits);
+      const g = q.ghost ? ghost("rust", 26) : gem(p, { size: q.h, yours: p.yours, lit, hot: o.hotFacet && n === hot ? o.hotFacet : null });
+      html += `<div class="g" style="position:absolute;left:${q.x}px;top:${q.y}px;opacity:${dim ? 0.3 : 1}">${g}</div>`;
+      const nm = q.ghost ? `<span style="color:var(--ink3)">${esc(n)}</span>` : `<span style="color:${p.yours || n === hot ? "var(--ink0)" : "var(--ink1)"};font-weight:${n === hot ? 600 : 400}">${esc(n)}</span>`;
+      const sub = q.ghost ? `<span style="color:var(--ink4)">not indexed</span>` : hits ? `<span style="color:var(--peri-hi)">${hits} ${hits === 1 ? "module" : "modules"}</span>` : `<span style="color:var(--ink4)">${p.version || (p.yours ? "yours" : "")}</span>`;
+      const below = q.ghost;
+      html += `<div style="position:absolute;left:${below ? q.x + q.w + 10 : q.x + q.w / 2 - 120}px;width:${below ? 200 : 240}px;text-align:${below ? "left" : "center"};top:${below ? q.y + 1 : q.y + q.h + 10}px;font:400 12.5px/17px var(--mono);opacity:${dim ? 0.3 : 1};white-space:nowrap">${nm}<br>${sub}</div>`;
+    }
+    const cap = (x, y, t, c = "var(--ink4)") => `<div style="position:absolute;left:${x}px;top:${y}px;font:500 11px var(--ui);letter-spacing:.07em;text-transform:uppercase;color:${c}">${t}</div>`;
+    html += cap(colX(0) - 60, 40, "Yours", "var(--mint)") + cap(colX(1) - 60, 40, "Rests on") + `<div style="position:absolute;left:${colX(1) + 20}px;right:120px;top:47px;height:1px;background:linear-gradient(90deg,var(--line2),transparent)"></div>`;
+    html += cap(x0, ly - 34, "Also in the library") + `<div style="position:absolute;left:${x0 + 150}px;right:60px;top:${ly - 27}px;height:1px;background:var(--line1)"></div>`;
+    return `<svg width="${W}" height="${H}" style="position:absolute;left:0;top:0;overflow:visible">${svg}</svg>${html}`;
+  }
+
+  // ------------------------------------------------------------------ states
+  const stage = document.getElementById("stage");
+  const note = document.getElementById("note");
+  const win = (tb, body) => `<div class="win"><div class="tb">${lights}${tb}</div><div class="body">${body}</div></div>`;
+
+  if (state === "cuts") {
+    note.innerHTML = `<b>The cut is the language, the facets are the modules.</b> Every package is one gem, drawn from its own index: each facet is a module with area ∝ declarations (straight cuts, recursively weighted, deterministic from the name), faintly tinted by the kind of the module's landmark. Same object at 14 px (the shelf), 64 px (the hero), full width (the floor plan). Mint outline = yours. Real packages where the fixture has one; the other four cuts use toml's modules as a stand-in.`;
+    let rows = "";
+    for (const [k, c] of Object.entries(CUTS)) {
+      const real = PK.find((p) => p.lang === k);
+      const p = real || { ...byName.toml, name: "toml·" + k, lang: k };
+      rows += `<div style="display:grid;grid-template-columns:140px 40px 60px 150px 1fr;align-items:center;gap:24px;height:170px;border-bottom:1px solid var(--line1)">
+        <div><div style="font:600 15px var(--display);color:var(--ink0)">${c.name}</div><div style="font:400 12px var(--mono);color:var(--ink3)">${c.cut}${real ? " · " + real.name : ""}</div></div>
+        <div>${gem(p, { size: 14 })}</div><div>${gem(p, { size: 40 })}</div><div>${gem(p, { size: 130 })}</div><div></div></div>`;
+    }
+    let strip = "";
+    for (const p of PK) strip += `<div style="display:flex;flex-direction:column;align-items:center;gap:8px;width:120px">${gem(p, { size: 56, yours: p.yours })}<div style="font:400 12px var(--mono);color:var(--ink1)">${esc(p.name)}</div><div style="font:400 11px var(--mono);color:var(--ink4)">${p.n}</div></div>`;
+    stage.innerHTML = `<div class="win" style="height:auto;padding:30px 40px;background:var(--g1)">${rows}<div style="display:flex;flex-wrap:wrap;gap:28px 8px;padding:34px 0 10px">${strip}</div></div>`;
+  }
+
+  if (state === "atlas" || state === "hover" || state === "query") {
+    const hot = state === "hover" ? "toml" : null;
+    const query = state === "query" ? "from_str" : null;
+    note.innerHTML = state === "query"
+      ? `<b>One query lights the world.</b> Typing in the jump bar opens results on a plate over the left; the atlas stays, and every facet that holds a match lights, per keystroke. You see at once that <i>from_str</i> is in toml's <i>de</i>, <i>table</i> and <i>value</i>, all over toml_edit, and nowhere in your own code. ↑↓ previews each result in place; ↵ keeps it; Esc puts you back.`
+      : state === "hover" ? `<b>Hover a gem: its whole chain lights, the rest steps back.</b> Strokes carry the requirement; dashed ghosts are dependencies the index hasn't read (an honest empty, and a one-click "index these").`
+      : `<b>Home is the world, zoomed out, full bleed.</b> No shelf here: the atlas <i>is</i> the library, so nothing repeats. Your projects on the left in mint; what they rest on runs right, by distance from the ground (deeper is to the right). What's in the library but not in your tree sits on the shelf below. Size = declarations; cut = language; facets = modules. Move the pointer: the gems catch the light. Entering a package brings the shelf in as that package's outline.`;
+    const tb = query
+      ? `<div class="jump" style="width:620px;justify-content:flex-start">${search}<span class="q">from_str</span><span class="caret"></span><span class="cnt" style="margin-left:auto">0 yours · 13 in 5 packages</span></div>`
+      : `<div class="jump">${search}<b>Library</b><span class="sep">13 packages · 3 languages</span></div>`;
+    let left = "";
+    if (query) {
+      const res = [];
+      for (const p of PK) for (const m of p.modules) if (m.names.includes(query)) res.push({ p, m });
+      left = `<div style="position:relative;width:440px;flex:none"><div class="plate"><div class="gh">Everywhere<span class="n">${res.length}</span></div>${res.slice(0, 16).map((r, i) => `<div class="r ${i === 0 ? "on" : ""}"><svg width="10" height="12">${mark("callable", 5, 6, 9)}</svg><span><u>from_str</u></span><span class="pl">${gem(r.p, { size: 12 })}${esc(r.p.name)} › ${esc(r.m.name)}</span></div>`).join("")}<div class="foot"><kbd>↑↓</kbd> preview <kbd>↵</kbd> keep <kbd>⌘↵</kbd> all, as a page <kbd>esc</kbd> back</div></div></div>`;
+    }
+    stage.innerHTML = win(tb, `${left}<div class="reader">${atlas({ hot, query, w: query ? 1000 : 1440, h: 850, x0: query ? 20 : 90, treeH: 520 })}</div>`);
+  }
+
+  if (state === "indexing") {
+    const p = byName.toml;
+    note.innerHTML = `<b>Indexing is cutting the gem.</b> A project you add appears as a rough stone (dashed); as the index reads, the stone is cut, the biggest splits first, and the part still unread stays rough. No spinner, no percentage: the progress <i>is</i> the information, and the last frame is the gem you'll recognise from then on. In the app the cuts land as they're read (one per module), each a single straight stroke drawn across in 120 ms.`;
+    const frames = [0, 1, 2, 3, 5, 99].map((k, i) => `<div style="display:flex;flex-direction:column;align-items:center;gap:12px">${gem(p, { size: 150, limit: k })}<div style="font:400 12px var(--mono);color:var(--ink3)">${["added", "reading", "", "", "", "toml · 10 modules"][i]}</div></div>`).join("");
+    stage.innerHTML = `<div class="win" style="height:auto;padding:48px 40px;background:var(--g1);flex-direction:row;gap:56px;justify-content:center">${frames}</div>`;
+  }
+
+  if (state === "package" || state === "symbol") {
+    const p = byName.toml;
+    const tb = `<div class="jump">${gem(p, { size: 14 })}<b>toml</b><span class="sep">0.8.23</span>${state === "symbol" ? `<span class="sep">›</span><span>value</span><span class="sep">›</span><b>Value</b>` : ""}</div>`;
+    const maxN = Math.max(...p.modules.map((m) => m.n));
+    const cur = state === "symbol" ? "value" : null;
+    const shelfRows = p.modules.map((m) => `<div class="row ${m.name === cur ? "cur" : ""}"><span class="nm">${esc(m.name)}</span><span class="tape" style="width:${Math.max(2, (m.n / maxN) * 64)}px;${m.name === (cur || "value") && state === "package" ? "background:var(--peri)" : ""}"></span></div>${m.subs.map((s2) => `<div class="row sub"><span class="nm">${esc(s2.name)}</span><span class="tape" style="width:${Math.max(2, (s2.n / maxN) * 64)}px"></span></div>`).join("")}`).join("");
+    const shelf = `<div class="shelf"><div class="up">‹ Library</div><div class="book">${gem(p, { size: 26 })}<div><div class="bn">toml</div><div class="bv">0.8.23</div></div></div>${shelfRows}</div>`;
+    if (state === "package") {
+      note.innerHTML = `<b>The package page is its gem, opened.</b> The floor plan replaces "Recorded outline" (which repeated the shelf): the mass of toml is <i>value</i> and <i>ser</i>, and each facet names its landmark. Hover a facet → its edge lights and the shelf row answers (here: <i>value</i>); click → the facet grows into the module (the same object, zoomed; the shelf is its outline). Start here = the landmarks, one row each, docs on hover. What it rests on and what rests on it are gems too; dashed = not indexed. The whole page is inside the fold.`;
+      const lms = [["Value", "type", "value", "Representation of a TOML value."], ["Table", "type", "table", "A TOML table, the payload of Value::Table."], ["from_str", "callable", "de", "Deserializes a string into a type."], ["to_string", "callable", "ser", "Serializes a value as a String of TOML."], ["Deserializer", "type", "de", "Deserialization for TOML documents."]];
+      const deps = (p.deps || []).map((d) => { const q = byName[d.name === "serde" ? "serde_core" : d.name]; return `<div class="dep ${q ? "" : "ghost"}">${q ? gem(q, { size: 18 }) : ghost("rust", 16)}${esc(d.name)}<span class="rq">${esc(d.req)}</span></div>`; }).join("");
+      const plan = gem(p, { w: 784, h: 250, labels: true, hot: "value" });
+      stage.innerHTML = win(tb, `${shelf}<div class="reader"><div class="page" style="top:36px">
+        <div class="top">${gem(p, { size: 64 })}<div><h1>toml</h1><div class="lede">A native Rust encoder and decoder of TOML-formatted files and streams.</div>
+        <div class="facts"><span class="v">0.8.23</span><span>crates.io</span><span>MIT / Apache-2.0</span><span>423 declarations in 10 modules</span></div></div></div>
+        <div style="margin-top:22px">${plan}</div>
+        <div style="display:grid;grid-template-columns:1fr 300px;column-gap:40px">
+          <div><div class="sec2"><h2>Start here</h2></div>
+          ${lms.map(([n, k, m, d]) => `<div class="lm" style="grid-template-columns:14px 118px 1fr 44px"><svg width="12" height="12">${mark(k, 6, 6, 9)}</svg><span style="color:var(--ink0)">${n}</span><span class="doc">${esc(d)}</span><span class="in">${m}</span></div>`).join("")}</div>
+          <div><div class="sec2"><h2>Rests on</h2><span class="aside">5</span></div><div class="deps" style="flex-direction:column;gap:6px">${deps}</div>
+          <div class="sec2" style="margin-top:18px"><h2>Rests on it</h2><span class="aside">1</span></div><div class="dep">${gem(byName.toml_pin, { size: 18, yours: true })}<span style="color:var(--mint)">toml_pin</span><span class="rq">yours</span></div></div>
+        </div>
+      </div></div>`);
+    } else {
+      // the symbol page's new pieces: the locator (you are here, in the package) and uses as lit facets across the world
+      note.innerHTML = `<b>Two new pieces for the symbol page (W-Page2 owns the page; these are the lead's additions).</b> <i>Locator</i>: beside the path, the package gem with this declaration's facet lit: where you are, at a glance, and a door back to the floor plan. <i>Used in</i>: uses are a query, so they draw the way the query draws: each package that uses Value, as its gem with the facets that use it lit, and the count on the stroke. Hover a lit facet → the call sites in that module. (The board matches by name; the app draws resolved references.)`;
+      const users = PK.filter((q) => q.modules.some((m) => m.names.includes("Value"))).slice(0, 6);
+      const uses = users.map((q) => { const lit = new Set(q.modules.filter((m) => m.names.includes("Value")).map((m) => m.name)); return `<div style="display:flex;flex-direction:column;align-items:center;gap:6px;width:100px">${gem(q, { size: 46, lit, yours: q.yours })}<div style="font:400 12px var(--mono);color:var(--ink1)">${esc(q.name)}</div><div style="font:400 11px var(--mono);color:var(--peri-hi)">${lit.size} ${lit.size === 1 ? "module" : "modules"}</div></div>`; }).join("");
+      stage.innerHTML = win(tb, `${shelf}<div class="reader"><div class="page" style="top:36px">
+        <div class="top"><svg width="64" height="64" viewBox="0 0 64 64"><path d="M32 4L60 32L32 60L4 32Z" fill="none" stroke="${css("--k-ty")}" stroke-width="2"/><path d="M32 16L48 32L32 48L16 32Z" fill="${css("--k-ty")}" fill-opacity=".25"/></svg>
+        <div style="flex:1"><h1>Value</h1><div class="lede">Representation of a TOML value.</div>
+        <div class="facts" style="gap:10px">${gem(p, { size: 22, lit: new Set(["value"]) })}<span class="v">toml › value</span><span>src/value.rs:25</span></div></div></div>
+        <div style="margin:26px 0 0;padding:18px 0;border-top:1px solid var(--line1);border-bottom:1px solid var(--line1);font:400 13px var(--ui);color:var(--ink3)">… the drawn page (W-Page2: the specimen, one of seven, getting one, what it does) …</div>
+        <div class="sec2"><h2>Used in</h2><span class="aside">${users.length} packages</span></div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap">${uses}</div>
+      </div></div>`);
+    }
+  }
+})();
+</script>
+</body>
+</html>
