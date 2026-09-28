@@ -1,0 +1,32 @@
+@font-face { font-family: "Bricolage"; src: url("../../fonts/BricolageGrotesque[opsz,wdth,wght].ttf"); font-weight: 200 800; }
+@font-face { font-family: "Geist"; src: url("../../fonts/Geist[wght].ttf"); font-weight: 100 900; }
+@font-face { font-family: "GeistMono"; src: url("../../fonts/GeistMono[wght].ttf"); font-weight: 100 900; }
+@font-face { font-family: "Newsreader"; src: url("../../fonts/Newsreader-Italic[opsz,wght].ttf"); font-style: italic; font-weight: 200 800; }
+
+:root {
+  --g0: #030814; --g1: #060d1b; --g2: #0a1424; --g3: #0f1b2f;
+  --plate: #0b1526; --plate2: #101d33; --plate3: #16273f;
+  --line1: rgba(158,176,255,.07); --line2: rgba(158,176,255,.12); --line3: rgba(158,176,255,.22);
+  --ink0: #f5f7fb; --ink1: #d2d9e5; --ink2: #9aa6ba; --ink3: #74819a; --ink4: #4c5870;
+  --mint: #6cebad; --mint-soft: rgba(98,230,166,.12); --mint-line: rgba(98,230,166,.34);
+  --peri: #93a2fa; --peri-soft: rgba(147,162,250,.13); --peri-line: rgba(147,162,250,.4); --peri-hi: #bcc6ff;
+  --enum: #6cd1b0; --fn: #8fb4ff; --trait: #c9a4ff;
+}
+html, body { margin: 0; background: var(--g0); }
+#stage { position: relative; width: 1440px; height: 900px; overflow: hidden; background: var(--g1); font-family: Geist, sans-serif; color: var(--ink1); }
+#caption { display: none; }
+.el { position: absolute; white-space: nowrap; transform-origin: 0 0; }
+.layer { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; }
+.clip { position: absolute; overflow: hidden; }
+.plate { position: absolute; background: var(--g1); }
+.rule { position: absolute; height: 1px; }
+.mono { font-family: GeistMono, monospace; }
+.serif { font-family: Newsreader, serif; font-style: italic; }
+.display { font-family: Bricolage, sans-serif; font-weight: 700; letter-spacing: -0.02em; }
+.gem { position: absolute; transform-origin: 50% 50%; }
+.gem > div { position: absolute; inset: 0; transform: rotate(45deg); border: 2px solid var(--enum); background: rgba(108,209,176,.08); }
+.gem > i { position: absolute; left: 32%; top: 32%; width: 36%; height: 36%; background: var(--enum); opacity: .85; }
+.node { position: absolute; transform-origin: 50% 50%; }
+.node > div { position: absolute; inset: 0; transform: rotate(45deg); border: 1.5px solid var(--ink3); background: var(--g2); }
+.dot { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--ink4); }
+svg.edges { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; }
