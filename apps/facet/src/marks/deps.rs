@@ -95,8 +95,12 @@ pub struct DepFacts {
     pub in_tree: Option<InTree>,
     /// What to say about your tree when there is no lockfile for it.
     pub tree_note: Option<String>,
-    /// Where its link goes.
-    pub target: SharedString,
+    /// Where its link goes; `None` when the dependency never resolved to a
+    /// package this app can open. Dead end #15 (`shell/kit.rs`): a link
+    /// without a place is drawn as text, never as a control that looks
+    /// live but goes nowhere, so `None` here draws the name plain, with no
+    /// underline, no click, and no card.
+    pub target: Option<SharedString>,
 }
 
 impl DepFacts {
@@ -311,32 +315,41 @@ impl RenderOnce for DepLink {
         let s = measure.scale();
         let key = ElementId::NamedChild(Arc::new(self.id.clone()), "card".into());
         let live = card::live(&self.id, &key, window, cx);
+        let diamond = diamond_element(diamond_kind(&self.facts), 6.5 * s, diamond_ink(&self.facts, palette));
+        let name_key = ElementId::NamedChild(Arc::new(self.id.clone()), "name".into());
+        let Some(target) = self.facts.target.clone() else {
+            // Dead end #15 (`shell/kit.rs`): a link without a place is
+            // drawn as text, never as a control that looks live but goes
+            // nowhere: no underline, no click, no card.
+            let name = text(name_key, self.facts.name.clone(), card::DEP, &measure, palette.ink3);
+            let row = div().flex().items_center().gap(px(7.0 * s)).child(diamond).child(name);
+            return card::door(&self.id, &key, &live, None, self.sheet, None, row);
+        };
         let quiet = self.facts.off() || self.facts.kind != DepKind::Normal;
         let rest: Hsla = if quiet { palette.ink3.into() } else { palette.ink1.into() };
         let ink = mix(rest, palette.ink0.into(), live.lit);
         let underline = crate::controls::with_alpha(palette.peri.base.into(), live.lit);
-        let name_key = ElementId::NamedChild(Arc::new(self.id.clone()), "name".into());
         let name = div()
             .border_b_1()
             .border_color(underline)
             .child(text(name_key, self.facts.name.clone(), card::DEP, &measure, ink));
-        let target = self.facts.target.clone();
         let open = self.on_open.clone();
+        let click_target = target.clone();
         let link = div()
             .id(ElementId::NamedChild(Arc::new(self.id.clone()), "link".into()))
             .flex()
             .items_center()
             .gap(px(7.0 * s))
             .cursor_pointer()
-            .child(diamond_element(diamond_kind(&self.facts), 6.5 * s, diamond_ink(&self.facts, palette)))
+            .child(diamond)
             .child(name)
             .on_click(move |_: &ClickEvent, window, cx| {
                 if let Some(open) = &open {
-                    open(&target, window, cx);
+                    open(&click_target, window, cx);
                 }
             });
         let activate: Option<Activate> = self.on_open.clone().map(|open| {
-            let target = self.facts.target.clone();
+            let target = target.clone();
             Rc::new(move |window: &mut Window, cx: &mut App| open(&target, window, cx)) as Activate
         });
         let content = dep_card(self.facts.clone(), self.parent.clone());
@@ -650,7 +663,7 @@ mod tests {
             local: false,
             in_tree: None,
             tree_note: None,
-            target: "crates.io/unread".into(),
+            target: Some("crates.io/unread".into()),
         }
     }
 

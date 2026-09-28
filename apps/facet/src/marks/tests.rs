@@ -151,6 +151,47 @@ fn a_license_choice_names_the_option_it_assumed_and_the_card_ends_with_the_hedge
     assert_eq!(one(f, "lic-word"), "MIT/Apache-2.0");
 }
 
+fn copyleft_known_yours(_: &mut Window, cx: &mut App) -> AnyView {
+    stage(
+        |measure, _, _| {
+            let facts = LicenseFacts::new(Some("GPL-2.0"), Some("MIT"), "present");
+            div().absolute().left(px(40.0)).top(px(40.0)).child(license_mark("gpl-known", facts, measure).open_look()).into_any_element()
+        },
+        cx,
+    )
+}
+
+fn copyleft_unknown_yours(_: &mut Window, cx: &mut App) -> AnyView {
+    stage(
+        |measure, _, _| {
+            let facts = LicenseFacts::new(Some("GPL-2.0"), None, "present");
+            div().absolute().left(px(40.0)).top(px(40.0)).child(license_mark("gpl-unknown", facts, measure).open_look()).into_any_element()
+        },
+        cx,
+    )
+}
+
+#[test]
+fn a_known_project_license_reads_the_real_copyleft_consequence() {
+    let frames = run(copyleft_known_yours, (700, 600), &[900], "");
+    assert_eq!(
+        one(&frames[0], "mk-lic-fit"),
+        "Shipping it would make present GPL-2.0: anyone you ship to could ask for all of its source."
+    );
+}
+
+#[test]
+fn an_unknown_project_license_omits_the_fit_line_rather_than_guess() {
+    let frames = run(copyleft_unknown_yours, (700, 600), &[900], "");
+    assert!(
+        contents(&frames[0], "mk-lic-fit").is_empty(),
+        "the fit line must not be drawn when the reader's own license is not known: {:?}",
+        contents(&frames[0], "mk-lic-fit")
+    );
+    // Everything else about the dependency's own license still reads.
+    assert_eq!(one(&frames[0], "mk-lic-title"), "GNU GPL v2.0");
+}
+
 #[test]
 fn every_license_card_on_the_board_reads_the_tree_and_hedges() {
     let frames = run_scene(&board("marks-license"), &[20], "");
@@ -247,10 +288,10 @@ fn unknowns(_: &mut Window, cx: &mut App) -> AnyView {
                 local: false,
                 in_tree: None,
                 tree_note: None,
-                target: "crates.io/unread".into(),
+                target: Some("crates.io/unread".into()),
             };
             let bare = EcoFacts::new(Eco::Npm, None);
-            let unlicensed = LicenseFacts::new(None, "MIT OR Apache-2.0", "present");
+            let unlicensed = LicenseFacts::new(None, Some("MIT OR Apache-2.0"), "present");
             div()
                 .absolute()
                 .left(px(40.0))
@@ -359,6 +400,55 @@ fn a_dependency_link_goes_to_the_package_it_names() {
     let _ = run(links, (1000, 300), &[400], &format!("click {sx:.0},{sy:.0} @50; click {lx:.0},{ly:.0} @200"));
     let opened = OPENED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     assert_eq!(opened, vec!["crates.io/serde".to_owned(), "workspace/backend-library".to_owned()]);
+}
+
+static UNRESOLVED_OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn unresolved_dep_line(_: &mut Window, cx: &mut App) -> AnyView {
+    stage(
+        |measure, _, _| {
+            let resolved = fixture::dep("present", "serde", DepKind::Normal);
+            let unresolved = DepFacts { name: "unpublished-thing".into(), target: None, ..resolved.clone() };
+            div()
+                .absolute()
+                .left(px(40.0))
+                .top(px(40.0))
+                .child(
+                    dep_line("mix", vec![resolved, unresolved], "present", &measure.within(px(900.0))).on_open(
+                        |target: &SharedString, _, _| {
+                            UNRESOLVED_OPENED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(target.to_string());
+                        },
+                    ),
+                )
+                .into_any_element()
+        },
+        cx,
+    )
+}
+
+#[test]
+fn a_dependency_without_a_resolved_target_is_drawn_as_text_not_a_link() {
+    // Dead end #15 (`shell/kit.rs`): a link without a place is drawn as
+    // text, never as a control that looks live but goes nowhere.
+    let frames = run(unresolved_dep_line, (1000, 300), &[20], "");
+    let spot = |name: &str| {
+        let t = frames[0]
+            .ledger
+            .texts
+            .iter()
+            .find(|t| t.key.starts_with("mix-dep-") && t.key.ends_with("-name") && t.content == name)
+            .unwrap_or_else(|| panic!("{name} is painted"));
+        (t.bounds.x + t.bounds.width / 2.0, t.bounds.y + t.bounds.height / 2.0)
+    };
+    // Both names still paint (never hidden)…
+    let (ux, uy) = spot("unpublished-thing");
+    let (rx, ry) = spot("serde");
+    UNRESOLVED_OPENED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    // …but clicking the unresolved one goes nowhere, while its resolved
+    // neighbour on the same line still opens.
+    let _ = run(unresolved_dep_line, (1000, 300), &[300], &format!("click {ux:.0},{uy:.0} @50; click {rx:.0},{ry:.0} @150"));
+    let opened = UNRESOLVED_OPENED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert_eq!(opened, vec!["crates.io/serde".to_owned()], "only the resolved dependency's click opened anything");
 }
 
 // ------------------------------------------------------------------ motion

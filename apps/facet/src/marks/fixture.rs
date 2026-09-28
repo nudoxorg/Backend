@@ -208,7 +208,7 @@ pub fn tree() -> Rc<TreeLicenses> {
 /// A package licensed `spdx`, read by this workspace, knowing its tree.
 #[must_use]
 pub fn license(spdx: Option<&str>, package: Option<&str>) -> LicenseFacts {
-    let mut facts = LicenseFacts::new(spdx, &FIXTURE.you.license, &FIXTURE.you.project);
+    let mut facts = LicenseFacts::new(spdx, Some(&FIXTURE.you.license), &FIXTURE.you.project);
     facts.package = package.map(|p| p.to_owned().into());
     facts.tree = Some(tree());
     facts
@@ -295,11 +295,11 @@ pub fn deps(name: &str) -> Vec<DepFacts> {
                 local: t.local,
             }),
             tree_note: d.tree_note.clone(),
-            target: if d.local || d.in_tree.as_ref().is_some_and(|t| t.local) {
+            target: Some(if d.local || d.in_tree.as_ref().is_some_and(|t| t.local) {
                 format!("workspace/{}", d.name).into()
             } else {
                 format!("{registry}/{}", d.name).into()
-            },
+            }),
         })
         .collect()
 }

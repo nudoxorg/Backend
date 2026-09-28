@@ -41,8 +41,12 @@ pub struct LicenseFacts {
     pub spdx: Option<SharedString>,
     /// The license file's name when there is no expression (`LICENSE`).
     pub file: Option<SharedString>,
-    /// Your project's own license (what fit is measured against).
-    pub yours: SharedString,
+    /// Your project's own license (what fit is measured against); `None`
+    /// when the active project's own license is not known. Comparing a
+    /// package against itself says nothing, so a caller must never pass
+    /// its own `spdx` back as `yours` — pass `None` instead, and the card
+    /// omits the fit line rather than guess.
+    pub yours: Option<SharedString>,
     /// Your project's name, for consequence words ("would make present GPL").
     pub project: SharedString,
     /// The package's name, to find it in your tree.
@@ -55,13 +59,14 @@ pub struct LicenseFacts {
 }
 
 impl LicenseFacts {
-    /// A package licensed `spdx`, read by a project licensed `yours`.
+    /// A package licensed `spdx`, read by a project licensed `yours`
+    /// (`None` when the reader's own license is not known).
     #[must_use]
-    pub fn new(spdx: Option<&str>, yours: &str, project: &str) -> Self {
+    pub fn new(spdx: Option<&str>, yours: Option<&str>, project: &str) -> Self {
         Self {
             spdx: spdx.map(|s| SharedString::from(s.to_owned())),
             file: None,
-            yours: yours.to_owned().into(),
+            yours: yours.map(|y| SharedString::from(y.to_owned())),
             project: project.to_owned().into(),
             package: None,
             tree: None,
@@ -116,18 +121,23 @@ impl LicenseFacts {
                 }
             }
         };
+        // Comparing a package's license with itself says nothing: a fit
+        // line only exists when the reader's own project license is known
+        // (or this is that project's own hero, which reads the whole tree
+        // instead of a comparison). Otherwise the card omits the fit line
+        // rather than guess.
         let fit = if self.own {
-            spdx::Fit {
+            Some(spdx::Fit {
                 level: 0,
                 line: "Your project's own license: every package in your tree is checked against it.".to_owned(),
                 choice: ids.first().cloned().into_iter().collect(),
                 assumed: false,
                 chose: Vec::new(),
-            }
+            })
         } else {
-            spdx::fit(expr.as_ref(), &self.yours, &self.project)
+            self.yours.as_deref().map(|yours| spdx::fit(expr.as_ref(), yours, &self.project))
         };
-        let assumed = if self.own { None } else { spdx::assumption(&fit) };
+        let assumed = if self.own { None } else { fit.as_ref().and_then(spdx::assumption) };
         let tree = match (&self.tree, &expr) {
             (Some(tree), _) if self.own => Some(TreeLine::Summary(spdx::tree_summary(tree))),
             (Some(tree), Some(expr)) => {
@@ -155,8 +165,10 @@ pub struct Reading {
     pub place: String,
     /// Every license id, one tab each when there are several.
     pub ids: Vec<String>,
-    /// Whether it fits.
-    pub fit: spdx::Fit,
+    /// Whether it fits, measured against the reader's own project; `None`
+    /// when that project's own license is not known (never a self
+    /// comparison — see `LicenseFacts::yours`).
+    pub fit: Option<spdx::Fit>,
     /// Which option was assumed, when there was a choice.
     pub assumed: Option<String>,
     /// What it means for your tree.
@@ -327,7 +339,7 @@ fn license_card(facts: Rc<LicenseFacts>, selected: Rc<RefCell<Option<String>>>) 
         let palette = cx.facet().palette();
         let reading = facts.reading();
         let expr = facts.expr();
-        let fit_ids = reading.fit.choice.clone();
+        let fit_ids = reading.fit.as_ref().map(|fit| fit.choice.clone()).unwrap_or_default();
         let chosen = selected.borrow().clone().filter(|id| reading.ids.contains(id)).or_else(|| fit_ids.first().cloned());
         let fit_ink: Hsla = palette.mint.base.into();
         let head = div()
@@ -341,7 +353,7 @@ fn license_card(facts: Rc<LicenseFacts>, selected: Rc<RefCell<Option<String>>>) 
                 4.0 * measure.scale(),
                 0.0,
                 1.0,
-                (reading.fit.level <= 1).then_some((fit_ids.as_slice(), fit_ink)),
+                reading.fit.as_ref().is_some_and(|fit| fit.level <= 1).then_some((fit_ids.as_slice(), fit_ink)),
             ))
             .child(
                 div()
@@ -360,7 +372,9 @@ fn license_card(facts: Rc<LicenseFacts>, selected: Rc<RefCell<Option<String>>>) 
         if let Some(id) = chosen.as_ref().filter(|id| id.as_str() != spdx::LICENSE_FILE) {
             body = body.child(columns(id, measure, palette));
         }
-        body = body.child(fit(&reading, measure, palette));
+        if let Some(fit_data) = &reading.fit {
+            body = body.child(fit(fit_data, measure, palette));
+        }
         if let Some(assumed) = &reading.assumed {
             body = body.child(div().mt(k(measure, 4.0)).pl(k(measure, 21.0)).child(text(
                 "mk-lic-assumed",
@@ -486,8 +500,8 @@ fn columns(id: &str, measure: &Measure, palette: &'static Palette) -> AnyElement
         .into_any_element()
 }
 
-fn fit(reading: &Reading, measure: &Measure, palette: &'static Palette) -> AnyElement {
-    let ink: Hsla = match reading.fit.level {
+fn fit(fit: &spdx::Fit, measure: &Measure, palette: &'static Palette) -> AnyElement {
+    let ink: Hsla = match fit.level {
         0 | 1 => palette.mint.base.into(),
         2 => palette.ink2.into(),
         _ => palette.ink3.into(),
@@ -501,7 +515,7 @@ fn fit(reading: &Reading, measure: &Measure, palette: &'static Palette) -> AnyEl
         .items_start()
         .gap(k(measure, 9.0))
         .child(div().mt(k(measure, 4.0)).child(ring_element(Family::Permissive, 12.0 * measure.scale(), ink, 0.0)))
-        .child(div().flex_1().min_w_0().child(text("mk-lic-fit", reading.fit.line.clone(), card::SAY, measure, palette.ink1)))
+        .child(div().flex_1().min_w_0().child(text("mk-lic-fit", fit.line.clone(), card::SAY, measure, palette.ink1)))
         .into_any_element()
 }
 
