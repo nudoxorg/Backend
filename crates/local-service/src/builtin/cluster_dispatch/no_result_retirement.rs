@@ -876,7 +876,7 @@ mod tests {
             .expect("fresh attempt reanchors pending debt");
         assert!(
             !restarted
-                .acknowledge(pending[0])
+                .acknowledge(pending[0].clone())
                 .expect("late old ACK is harmless")
         );
         let exact = restarted.pending();

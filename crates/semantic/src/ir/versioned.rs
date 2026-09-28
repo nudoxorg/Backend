@@ -3303,9 +3303,9 @@ mod tests {
             input(90),
             vec![plane(ir, vec![segment(ir, 1, b"fact")])],
         );
-        let segment = value.planes()[0].segments()[0];
+        let first_segment = value.planes()[0].segments()[0];
         assert!(matches!(
-            segment.admit(ir, b"fake"),
+            first_segment.admit(ir, b"fake"),
             Err(SemanticManifestError::SegmentIdentity { .. })
         ));
         let mut cursor = value

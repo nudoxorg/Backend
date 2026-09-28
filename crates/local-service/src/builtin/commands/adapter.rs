@@ -1492,6 +1492,36 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    /// Creates a directory symlink, or `None` when the platform refuses it
+    /// (Windows without Developer Mode or elevation) so the caller can skip
+    /// the symlink-specific assertion instead of failing the test.
+    fn symlink_dir(original: &std::path::Path, link: &std::path::Path) -> Option<()> {
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(original, link);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_dir(original, link);
+        match result {
+            Ok(()) => Some(()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
+            Err(error) => panic!("create directory symlink: {error}"),
+        }
+    }
+
+    /// Creates a file symlink, or `None` when the platform refuses it
+    /// (Windows without Developer Mode or elevation) so the caller can skip
+    /// the symlink-specific assertion instead of failing the test.
+    fn symlink_file(original: &std::path::Path, link: &std::path::Path) -> Option<()> {
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(original, link);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_file(original, link);
+        match result {
+            Ok(()) => Some(()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => None,
+            Err(error) => panic!("create file symlink: {error}"),
+        }
+    }
+
     #[test]
     fn a_directory_is_indexed_in_place() {
         let tree = TempTree::new();
@@ -1509,7 +1539,9 @@ mod tests {
         let project = tree.0.join("project");
         let link = tree.0.join("link");
         fs::create_dir(&project).expect("project dir");
-        std::os::unix::fs::symlink(&project, &link).expect("directory symlink");
+        if symlink_dir(&project, &link).is_none() {
+            return;
+        }
         assert!(matches!(
             classify_add_target(&label(&link)),
             Ok(AddTarget::LocalDirectory)
@@ -1537,7 +1569,9 @@ mod tests {
         let file = tree.0.join("lib.rs");
         let link = tree.0.join("link.rs");
         fs::write(&file, "fn main() {}\n").expect("file");
-        std::os::unix::fs::symlink(&file, &link).expect("file symlink");
+        if symlink_file(&file, &link).is_none() {
+            return;
+        }
         let error = classify_add_target(&label(&link)).expect_err("symlink add");
         assert_eq!(error.0, ADD_TARGET_REQUIRED);
     }

@@ -6017,7 +6017,7 @@ mod tests {
         }
         assert_eq!(
             hit_keys(index.page("net-client", 8).expect("alias query").hits),
-            [npm_key, cargo_key]
+            [npm_key.clone(), cargo_key]
         );
         assert_eq!(
             hit_keys(index.page("wire-cli", 8).expect("alias prefix typo").hits),
