@@ -198,6 +198,9 @@ pub struct SessionState {
     pub whispered: bool,
     /// The hold to whisper about now (the first ever), until it fades.
     pub whisper: Option<crate::model::hand::Held>,
+    /// While the query walks its results, the place you were on: `route`
+    /// is then provisional, and neither history nor persistence sees it.
+    pub preview: Option<Route>,
 }
 
 impl Default for SessionState {
@@ -211,6 +214,7 @@ impl Default for SessionState {
             hand: crate::model::hand::Hand::default(),
             whispered: false,
             whisper: None,
+            preview: None,
         }
     }
 }
@@ -332,6 +336,13 @@ impl AppSnapshot {
     #[must_use]
     pub fn route(&self) -> &Route {
         &self.data.session.route
+    }
+
+    /// The route to keep: the place you were on while the query previews
+    /// another, else the current one. Persistence and Back read this.
+    #[must_use]
+    pub fn committed_route(&self) -> &Route {
+        self.data.session.preview.as_ref().unwrap_or(&self.data.session.route)
     }
 
     /// Returns the transient shell overlay without changing content route.

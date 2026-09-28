@@ -753,7 +753,7 @@ impl PersistentState {
             route: match snapshot.overlay() {
                 Some(Overlay::Settings(_)) => PersistedRoute::Settings,
                 Some(Overlay::AddProject | Overlay::CommandPalette | Overlay::Inbox) | None => {
-                    match snapshot.route() {
+                    match snapshot.committed_route() {
                         // A browsing page reopens at home: its read model is
                         // one owner round trip away, and its route is not a
                         // persisted shape yet.
@@ -1362,6 +1362,34 @@ mod tests {
         let restored = PersistentState::at("unused").cold_reload(&value);
         assert_eq!(restored.route, snapshot.route().clone(), "view, release and line survive");
         assert_eq!(restored.overlay, None);
+    }
+
+    /// Quitting while the query previews a result reopens where you were,
+    /// never on the provisional page.
+    #[test]
+    fn a_previewed_route_is_never_persisted_the_place_you_were_on_is() {
+        let snapshot = AppSnapshot::empty(crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("persistence".to_owned(), "preview".to_owned())]),
+            1,
+        ));
+        let symbol = |name: &str| Route::Symbol(crate::navigation::SymbolRoute {
+            project: None,
+            package: crate::core::PackageId::new("pkg").expect("package"),
+            id: Coordinate::new(&format!("pkg::{name}")).expect("coordinate"),
+            at: None,
+            view: View::Page,
+            line: None,
+            selected: None,
+        });
+        let session = SessionState {
+            route: symbol("Walked"),
+            preview: Some(symbol("Origin")),
+            overlay: Some(Overlay::CommandPalette),
+            ..SessionState::default()
+        };
+        let value = PersistentState::project(&snapshot.with_session(session));
+        let restored = PersistentState::at("unused").cold_reload(&value);
+        assert_eq!(restored.route, symbol("Origin"), "the provisional page is not where you reopen");
     }
 
     #[test]
