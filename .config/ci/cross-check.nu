@@ -31,13 +31,16 @@ def main [
     let target_root = ($env.CARGO_TARGET_DIR? | default ".local/target")
     let results = $targets | each {|triple|
         print $"cross: cargo check --locked --workspace --all-targets --target ($triple)"
-        # Stream Cargo's own progress and diagnostics straight through.
-        try {
+        # Stream Cargo's own progress and diagnostics straight through. The
+        # verdict comes out of the try itself: an env change such as
+        # LAST_EXIT_CODE made inside the block does not survive it, so
+        # reading it afterwards reported every clean target as failed.
+        let status = (try {
             run-external "cargo" "check" "--locked" "--workspace" "--all-targets" "--target" $triple
+            0
         } catch {
-            # LAST_EXIT_CODE keeps the exact status; the summary reports it.
-        }
-        let status = ($env.LAST_EXIT_CODE? | default 1)
+            1
+        })
         # A foreign target tree can reach tens of gigabytes; the shared CI disk
         # runs close to full, so reclaim it between targets unless asked not to.
         if not $keep_artifacts {
