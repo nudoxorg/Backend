@@ -315,9 +315,10 @@ fn a_closed_card_stays_in_the_model_until_its_exit_settles() {
         .expect("opened");
     model.tick(t0 + ms(400));
     model.close_all(t0 + ms(400));
-    model.tick(t0 + ms(400) + FloatKind::Peek.exit() - ms(1));
+    // Every card unfurls: its exit is the unfurl's, run backwards.
+    model.tick(t0 + ms(400) + crate::overlay::float::UNFURL_EXIT - ms(1));
     assert!(model.card(id).is_some_and(|card| !card.is_open()), "leaving, still drawn");
-    model.tick(t0 + ms(400) + FloatKind::Peek.exit());
+    model.tick(t0 + ms(400) + crate::overlay::float::UNFURL_EXIT);
     assert!(model.card(id).is_none(), "gone once the exit settled");
 }
 

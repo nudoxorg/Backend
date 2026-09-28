@@ -26,6 +26,7 @@
 //!   edge), rests on other triggers at that level are deferred; they apply
 //!   only if the pointer stops on them for [`AIM_IDLE`].
 
+use super::unfurl::{self, Bands};
 use super::{Content, FloatKind, FloatRequest, Side};
 use crate::paint::cut;
 use crate::tokens::motion::{Bezier, DROP, GLIDE};
@@ -150,9 +151,18 @@ pub struct Presence {
     to: f32,
     since: Instant,
     duration: Duration,
-    /// Runs on a straight line: an unfurl card eases each of its bands
-    /// itself (underline, edge, body), so the presence must not ease too.
-    linear: bool,
+    path: Path,
+}
+
+/// How a presence runs between 0 and 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Path {
+    /// One eased curve: GLIDE in, DROP out.
+    Eased,
+    /// An unfurl's three bands on their own schedule (see [`unfurl`]):
+    /// `from` is where the bands were when this segment began, `offset` how
+    /// far into its schedule (ms) the segment joined it.
+    Unfurl { from: Bands, offset: f32 },
 }
 
 impl Presence {
@@ -164,38 +174,82 @@ impl Presence {
             to: 1.0,
             since: now,
             duration,
-            linear: false,
+            path: Path::Eased,
         }
     }
 
-    /// Entering from 0 at `now` on a straight line (see [`Card::unfurl`]).
+    /// Unfurling from nothing at `now`: `duration` is the whole entrance
+    /// ([`super::UNFURL_ENTER`], or zero under reduced motion).
     #[must_use]
-    pub fn entering_linear(now: Instant, duration: Duration) -> Self {
+    pub fn unfurling(now: Instant, duration: Duration) -> Self {
         Self {
-            linear: true,
+            path: Path::Unfurl { from: Bands::CLOSED, offset: 0.0 },
             ..Self::entering(now, duration)
         }
     }
 
-    fn curve(&self) -> Bezier {
-        if self.linear {
-            crate::motion::LINEAR
-        } else if self.to >= self.from {
-            GLIDE
-        } else {
-            DROP
+    /// Settled on its target at `now` (the harness's "settle").
+    #[must_use]
+    pub fn settled(self, now: Instant) -> Self {
+        let path = match self.path {
+            Path::Eased => Path::Eased,
+            Path::Unfurl { .. } => Path::Unfurl {
+                from: Bands::all(self.to),
+                offset: 0.0,
+            },
+        };
+        Self {
+            from: self.to,
+            to: self.to,
+            since: now,
+            duration: Duration::ZERO,
+            path,
         }
     }
 
-    /// The value at `now`.
-    #[must_use]
-    pub fn value(&self, now: Instant) -> f32 {
+    /// How far the segment has run at `now` (0..1).
+    fn progress(&self, now: Instant) -> f32 {
         if self.duration.is_zero() {
-            return self.to;
+            return 1.0;
         }
         let run = now.saturating_duration_since(self.since).as_secs_f32();
-        let progress = (run / self.duration.as_secs_f32()).clamp(0.0, 1.0);
-        self.from + (self.to - self.from) * self.curve().ease(progress)
+        (run / self.duration.as_secs_f32()).clamp(0.0, 1.0)
+    }
+
+    /// Where an unfurl is on its schedule at linear progress `progress`, ms.
+    fn schedule(&self, offset: f32, progress: f32) -> f32 {
+        let end = if self.to >= self.from { unfurl::ENTER_MS } else { unfurl::EXIT_MS };
+        offset + (end - offset) * progress
+    }
+
+    /// The unfurl's bands at `now` (a card that does not unfurl has every
+    /// band at its value).
+    #[must_use]
+    pub fn bands(&self, now: Instant) -> Bands {
+        match self.path {
+            Path::Eased => Bands::all(self.value(now)),
+            Path::Unfurl { from, offset } => {
+                let progress = self.progress(now);
+                if progress >= 1.0 {
+                    return Bands::all(self.to);
+                }
+                unfurl::at(from, self.to >= self.from, self.schedule(offset, progress))
+            }
+        }
+    }
+
+    /// The value at `now`: an unfurl's is its bands' mean.
+    #[must_use]
+    pub fn value(&self, now: Instant) -> f32 {
+        let progress = self.progress(now);
+        match self.path {
+            Path::Eased => self.from + (self.to - self.from) * self.curve().ease(progress),
+            Path::Unfurl { .. } => self.bands(now).mean(),
+        }
+    }
+
+    fn curve(&self) -> Bezier {
+        if self.to >= self.from { GLIDE } else { DROP }
     }
 
     /// Where it is heading.
@@ -204,7 +258,7 @@ impl Presence {
         self.to
     }
 
-    /// The rate of change at `now`, in units per second: the same easing
+    /// The rate of change at `now`, in units per second: the same curve
     /// [`value`](Self::value) samples, differentiated (matches
     /// `motion::store`'s own tween velocity, `(to - from) * slope / span`),
     /// so a probe reading this alongside `value` sees one consistent curve
@@ -220,7 +274,20 @@ impl Presence {
             return 0.0;
         }
         let progress = (run / span).clamp(0.0, 1.0);
-        (self.to - self.from) * self.curve().slope(progress) / span
+        match self.path {
+            Path::Eased => (self.to - self.from) * self.curve().slope(progress) / span,
+            Path::Unfurl { from, offset } => {
+                // The bands' mean, differentiated across a millisecond of
+                // schedule (each band is piecewise smooth on its window).
+                let entering = self.to >= self.from;
+                let ms = self.schedule(offset, progress);
+                let per_second = (self.schedule(offset, 1.0) - offset) / span;
+                let h = 0.5;
+                let after = unfurl::at(from, entering, ms + h).mean();
+                let before = unfurl::at(from, entering, (ms - h).max(offset)).mean();
+                (after - before) / (ms + h - (ms - h).max(offset)) * per_second
+            }
+        }
     }
 
     /// When the current segment ends.
@@ -247,19 +314,36 @@ impl Presence {
         (self.to - self.from).abs() > f32::EPSILON && now < self.ends()
     }
 
-    /// Heads for `to` from wherever it is now, taking the share of `full`
-    /// that the remaining distance is of the whole way.
+    /// Heads for `to` from wherever it is now. An eased presence takes the
+    /// share of `full` that the remaining distance is of the whole way; an
+    /// unfurl joins the other schedule where its bands are ([`unfurl::resume`])
+    /// and takes the share of `full` that is left of it.
     pub fn retarget(&mut self, to: f32, full: Duration, now: Instant) {
         if (self.to - to).abs() <= f32::EPSILON {
             return;
         }
         let value = self.value(now);
-        *self = Self {
-            from: value,
-            to,
-            since: now,
-            duration: full.mul_f32((to - value).abs().clamp(0.0, 1.0)),
-            linear: self.linear,
+        *self = match self.path {
+            Path::Eased => Self {
+                from: value,
+                to,
+                since: now,
+                duration: full.mul_f32((to - value).abs().clamp(0.0, 1.0)),
+                path: Path::Eased,
+            },
+            Path::Unfurl { .. } => {
+                let from = self.bands(now);
+                let entering = to >= value;
+                let offset = unfurl::resume(from, entering);
+                let end = if entering { unfurl::ENTER_MS } else { unfurl::EXIT_MS };
+                Self {
+                    from: value,
+                    to,
+                    since: now,
+                    duration: full.mul_f32(((end - offset) / end).clamp(0.0, 1.0)),
+                    path: Path::Unfurl { from, offset },
+                }
+            }
         };
     }
 }
@@ -981,24 +1065,10 @@ impl Model {
     /// current state; the harness's "settle").
     pub fn snap(&mut self, now: Instant) {
         for card in &mut self.cards {
-            let target = card.presence.target();
-            card.presence = Presence {
-                from: target,
-                to: target,
-                since: now,
-                duration: Duration::ZERO,
-                linear: card.presence.linear,
-            };
+            card.presence = card.presence.settled(now);
         }
         for pin in &mut self.pins {
-            let target = pin.presence.target();
-            pin.presence = Presence {
-                from: target,
-                to: target,
-                since: now,
-                duration: Duration::ZERO,
-                linear: pin.presence.linear,
-            };
+            pin.presence = pin.presence.settled(now);
         }
         self.tick(now);
     }
@@ -1269,7 +1339,7 @@ impl Model {
                     level,
                     sticky,
                     presence: if request.unfurl {
-                        Presence::entering_linear(now, enter)
+                        Presence::unfurling(now, enter)
                     } else {
                         Presence::entering(now, enter)
                     },
