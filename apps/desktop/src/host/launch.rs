@@ -76,6 +76,8 @@ fn run(opened: Opened) {
                 eprintln!("backend-desktop: install UI assets: {error}");
                 return;
             }
+            crate::runtime::trace::frames(cx);
+            crate::runtime::trace::mark("boot.app_running", "gpui");
             let graph = UiEntityGraph::install_with_reads(cx, runtime, Some(persistence), reads);
             // Temporary: `NUDOX_DEBUG_PAGE="search:Engine;orbit;health"` opens a
             // plain-text window onto the data plane (see runtime::debug_page).
@@ -95,6 +97,7 @@ fn run(opened: Opened) {
             }) {
                 eprintln!("backend-desktop: open window: {error}");
             }
+            crate::runtime::trace::mark("boot.window_opened", "open_window returned");
             cx.activate(true);
         });
     drop(host);
@@ -147,7 +150,11 @@ fn open() -> Result<Opened, String> {
 }
 
 fn attempt_once() -> Result<Opened, String> {
+    let starting = std::time::Instant::now();
+    crate::runtime::trace::mark("boot.main", "attempt");
     let host = DesktopHost::start().map_err(|error| describe(&error))?;
+    crate::runtime::trace::span("boot.owner_start", starting, format_args!("{:?}", host.mode()));
+    let bootstrapping = std::time::Instant::now();
     let host_project = LocalProjectId::from_path(host.project()).map_err(|error| {
         format!("the discovered workspace path cannot be represented safely: {error}")
     })?;
@@ -159,6 +166,7 @@ fn attempt_once() -> Result<Opened, String> {
     if revision.root() != view.root() {
         return Err("the local service returned mismatched startup identities".to_owned());
     }
+    crate::runtime::trace::span("boot.bootstrap_root", bootstrapping, "product subscription");
     let key = VersionedRoot::from_revision(1, revision, 0);
     let persistence = PersistentState::at(host.data().join("desktop-state.json"));
     let admitted = persistence.load_recovering().map_err(|error| {
