@@ -122,6 +122,42 @@ pub fn span(name: &str, started: Instant, detail: impl std::fmt::Display) {
     }
 }
 
+fn frame_line(sink: &Sink, frame: &gpui::profiler::FrameTiming) -> String {
+    format!(
+        "{{\"t_ms\":{:.3},\"name\":\"frame\",\"draw_start_ms\":{:.3},\"draw_ms\":{:.3},\"dirty_ms\":{},\"invalidations\":{}}}",
+        ms(sink, frame.draw_end),
+        ms(sink, frame.draw_start),
+        frame.draw_duration().as_secs_f64() * 1e3,
+        frame
+            .dirty_at
+            .map_or_else(|| "null".to_owned(), |dirty| format!("{:.3}", ms(sink, dirty))),
+        frame.invalidations,
+    )
+}
+
+thread_local! {
+    static NOW: std::cell::RefCell<Option<gpui::profiler::FrameTimingCollector>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Writes every GPUI draw recorded since the previous call, now, on the
+/// calling thread. For a driver without a live timer loop (the harness's
+/// virtual frame clock), called once per played frame; a no-op when
+/// tracing is off.
+pub fn frames_now() {
+    let Some(sink) = sink() else { return };
+    NOW.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let collector = slot.get_or_insert_with(|| {
+            gpui::set_frame_trace_enabled(true);
+            gpui::profiler::FrameTimingCollector::new()
+        });
+        for frame in collector.collect_unseen() {
+            write(sink, &frame_line(sink, &frame));
+        }
+    });
+}
+
 /// Samples GPUI's draw timings into the trace until the app quits. Call
 /// once, before the first window opens; a no-op when tracing is off.
 pub fn frames(cx: &mut gpui::App) {
@@ -131,19 +167,7 @@ pub fn frames(cx: &mut gpui::App) {
     cx.spawn(async move |cx| {
         loop {
             for frame in collector.collect_unseen() {
-                write(
-                    sink,
-                    &format!(
-                        "{{\"t_ms\":{:.3},\"name\":\"frame\",\"draw_start_ms\":{:.3},\"draw_ms\":{:.3},\"dirty_ms\":{},\"invalidations\":{}}}",
-                        ms(sink, frame.draw_end),
-                        ms(sink, frame.draw_start),
-                        frame.draw_duration().as_secs_f64() * 1e3,
-                        frame
-                            .dirty_at
-                            .map_or_else(|| "null".to_owned(), |dirty| format!("{:.3}", ms(sink, dirty))),
-                        frame.invalidations,
-                    ),
-                );
+                write(sink, &frame_line(sink, &frame));
             }
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(100))
