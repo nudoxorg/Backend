@@ -9,6 +9,7 @@
 
 pub mod cut;
 pub mod gem;
+pub mod stone;
 pub mod geom;
 pub mod ground;
 pub mod hatch;
