@@ -34,6 +34,8 @@ pub mod holds;
 pub mod in_use;
 pub mod pipe;
 pub mod operation;
+pub mod page;
+pub mod plan;
 pub mod unroll;
 pub mod fails;
 pub mod prism;
