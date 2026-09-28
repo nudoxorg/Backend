@@ -6,15 +6,32 @@
 //! canvas that reads the bounds the elements recorded as [`anchor`]s in
 //! prepaint, in the same frame. Anchor ids come from the plan (a section and
 //! an index into it), never from layout order, so they hold at every width.
+//!
+//! Compact by law (the lead, wave 6): the first 1440×900 screen holds the
+//! hero, the specimen and the first in-section; the hero says nothing the
+//! chrome says; a section head is one row; a member is one row, 24 px, its
+//! doc only in the hover's peek; a group of more than 7 folds; counts ride
+//! the strokes; below the wide room the margins fold into the column.
 
-use super::plan::{AnchorId, Dir, Fam, Hero, Mark, PagePlan, Part, Record, Section, SectionId, Spec, Tier, Tok, TokKind, Ty, Wrap};
+mod fork;
+mod ink;
+mod rails;
+
+pub use fork::{CASES, more_link};
+pub use ink::ink;
+pub use rails::RAILS;
+
+use super::plan::{AnchorId, Dir, Fam, Hero, Mark, PagePlan, Part, Record, Section, SectionId, Spec, Tok, TokKind, Ty, Wrap};
+use crate::hover::{self, Lit, Subject};
 use crate::measure::{Measure, Set};
+use crate::motion::presence::Presence;
+use crate::overlay::float::FloatRequest;
 use crate::probe::{self, TextOverflow};
-use crate::tokens::{Palette, Tone, rhythm, scale, stroke};
+use crate::tokens::{Palette, Tone, TypeRole, rhythm, scale};
 use gpui::{
-    AnyElement, App, Bounds, ColorExt, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, InteractiveElement,
-    IntoElement, LayoutId, ParentElement, PathBuilder, Pixels, Point, SharedString, StatefulInteractiveElement, Styled,
-    Window, canvas, div, point, px,
+    AnyElement, App, Bounds, ColorExt, Element, ElementId, Global, GlobalElementId, Hsla, InspectorElementId,
+    InteractiveElement, IntoElement, LayoutId, ParentElement, PathBuilder, Pixels, Point, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, point, px,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -39,6 +56,11 @@ pub struct Geometry {
     pub scale: f32,
 }
 
+/// The reach at which the margins carry the edges: at 100 % text a 1440 or
+/// 1280 window with the shelf open has it; a narrower room folds the edges
+/// into the column as counts.
+const WIDE_REACH: f32 = 180.0;
+
 impl Geometry {
     /// The geometry of a page `width` wide, with `margin` more room on each
     /// side outside it (the reader's gutters), at text `scale`.
@@ -55,10 +77,15 @@ impl Geometry {
         Self { spine: px(col - spine_off), col: px(col), col_w: px(col_w), gem, reach: px(reach), scale }
     }
 
-    /// Whether margin notes and stubs have room.
+    /// Whether the margins carry the edges (stubs with their counts, rail
+    /// sources); otherwise they fold into the column.
     #[must_use]
     pub fn margins(&self) -> bool {
-        f32::from(self.reach) >= 150.0 * self.scale
+        f32::from(self.reach) >= WIDE_REACH * self.scale
+    }
+
+    fn s(&self, value: f32) -> Pixels {
+        px(value * self.scale)
     }
 }
 
@@ -76,7 +103,9 @@ pub fn hue(fam: Fam, palette: &Palette) -> Tone {
 
 // ------------------------------------------------------------------ anchors
 
-/// The bounds a frame's anchored elements recorded, read by [`ink`].
+/// The bounds a frame's anchored elements recorded, read by [`ink`] and by
+/// the transitions (the page ↔ graph fold reads the gem, the spine, the
+/// section rules and the stubs).
 #[derive(Debug, Default)]
 pub struct Anchors {
     map: RefCell<BTreeMap<AnchorId, Bounds<Pixels>>>,
@@ -95,22 +124,71 @@ impl Anchors {
         self.map.borrow().get(&id).copied()
     }
 
-    /// Every anchor recorded in `section`, in plan order.
+    /// Every row anchor recorded in `section`, in plan order.
     #[must_use]
     pub fn rows(&self, section: SectionId) -> Vec<(u16, Bounds<Pixels>)> {
+        self.parts(section, |part| match part {
+            Part::Row(n) => Some(n),
+            _ => None,
+        })
+    }
+
+    /// Every rail anchor (the step plates), in plan order.
+    #[must_use]
+    pub fn rails(&self) -> Vec<(u16, Bounds<Pixels>)> {
+        self.parts(SectionId::Getting, |part| match part {
+            Part::Rail(n) => Some(n),
+            _ => None,
+        })
+    }
+
+    /// Every anchor, in id order: for the transitions and for tests.
+    #[must_use]
+    pub fn all(&self) -> Vec<(AnchorId, Bounds<Pixels>)> {
+        self.map.borrow().iter().map(|(id, bounds)| (*id, *bounds)).collect()
+    }
+
+    fn parts(&self, section: SectionId, pick: impl Fn(Part) -> Option<u16>) -> Vec<(u16, Bounds<Pixels>)> {
         self.map
             .borrow()
             .iter()
-            .filter_map(|(id, bounds)| match id.part {
-                Part::Row(n) if id.section == section => Some((n, *bounds)),
-                _ => None,
-            })
+            .filter(|(id, _)| id.section == section)
+            .filter_map(|(id, bounds)| pick(id.part).map(|n| (n, *bounds)))
             .collect()
     }
 
-    fn record(&self, id: AnchorId, bounds: Bounds<Pixels>) {
+    /// Records `bounds` under `id` (elements in prepaint; the ink records
+    /// the spine, rules and stubs it paints).
+    pub fn record(&self, id: AnchorId, bounds: Bounds<Pixels>) {
         self.map.borrow_mut().insert(id, bounds);
     }
+}
+
+/// The anchors of the pages on screen, by the page's address, so the
+/// transitions can read a page's gem, spine, rules and stubs on its first
+/// frame. Bounded: the last few pages drawn.
+#[derive(Default)]
+struct Published {
+    pages: Vec<(SharedString, Rc<Anchors>)>,
+}
+
+impl Global for Published {}
+
+/// Publishes `anchors` as the page `address`'s.
+pub fn publish(address: impl Into<SharedString>, anchors: &Rc<Anchors>, cx: &mut App) {
+    let address = address.into();
+    let published = cx.default_global::<Published>();
+    published.pages.retain(|(key, _)| *key != address);
+    published.pages.push((address, Rc::clone(anchors)));
+    if published.pages.len() > 8 {
+        published.pages.remove(0);
+    }
+}
+
+/// The anchors the page `address` last published.
+#[must_use]
+pub fn published(address: &str, cx: &App) -> Option<Rc<Anchors>> {
+    cx.try_global::<Published>()?.pages.iter().rev().find(|(key, _)| key.as_ref() == address).map(|(_, anchors)| Rc::clone(anchors))
 }
 
 /// Wraps `child` so its bounds are recorded under `id` in prepaint.
@@ -158,13 +236,92 @@ impl Element for Anchor {
     }
 }
 
-fn at(section: SectionId, part: Part) -> AnchorId {
+pub(crate) fn at(section: SectionId, part: Part) -> AnchorId {
     AnchorId { section, part }
+}
+
+// ------------------------------------------------------------------ doors
+
+/// Where a name on the page leads: what lights with it, the peek that
+/// unfurls from it, and what a click does.
+#[derive(Clone)]
+pub struct Door {
+    /// What lights together with it.
+    pub subject: Subject,
+    /// The card that unfurls from it after the hover delay.
+    pub peek: Option<Rc<dyn Fn(Bounds<Pixels>) -> FloatRequest>>,
+    /// A click.
+    pub open: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+}
+
+/// A fold's state: open or not, its clip motion, and its toggle.
+#[derive(Clone)]
+pub struct Fold {
+    /// Unrolled.
+    pub open: bool,
+    /// Its clip motion.
+    pub presence: Presence,
+    /// Opens or closes it.
+    pub toggle: Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
+/// What the shell lends the page: doors for its names, its folds, keyboard
+/// targets, and the record of what the page says.
+pub trait Doors {
+    /// The door for the thing at `link` (an address), when it leads anywhere.
+    fn door(&self, link: &str) -> Option<Door>;
+    /// The fold named `key`.
+    fn fold(&self, key: &'static str) -> Option<Fold>;
+    /// `element` as a keyboard target labelled `label`, opening `door`.
+    fn track(&self, key: SharedString, label: SharedString, door: Option<&Door>, element: AnyElement) -> AnyElement;
+    /// Records a string the page puts on screen.
+    fn say(&self, text: &str);
+}
+
+/// No doors: a still page (the gallery, tests).
+pub struct Still;
+
+impl Doors for Still {
+    fn door(&self, _: &str) -> Option<Door> {
+        None
+    }
+    fn fold(&self, _: &'static str) -> Option<Fold> {
+        None
+    }
+    fn track(&self, _: SharedString, _: SharedString, _: Option<&Door>, element: AnyElement) -> AnyElement {
+        element
+    }
+    fn say(&self, _: &str) {}
+}
+
+/// One hoverable name: `build` lays it out with this frame's [`Lit`]. With a
+/// door it lights its subject, unfurls its peek and opens on a click, and it
+/// is a keyboard target; without one it is plain.
+pub fn named(
+    key: impl Into<SharedString>,
+    label: &str,
+    link: Option<&str>,
+    hue: Hsla,
+    doors: &dyn Doors,
+    build: impl FnOnce(Lit) -> AnyElement + 'static,
+) -> AnyElement {
+    let key = key.into();
+    let door = link.and_then(|link| doors.door(link));
+    let Some(door) = door else { return build(Lit::Rest) };
+    let mut lit = hover::hoverable(ElementId::Name(SharedString::from(format!("{key}-hover"))), door.subject.clone(), hue, build);
+    if let Some(peek) = door.peek.clone() {
+        lit = lit.peek(move |bounds| peek(bounds));
+    }
+    let mut hit = div().id(ElementId::Name(key.clone())).cursor_pointer().child(lit);
+    if let Some(open) = door.open.clone() {
+        hit = hit.on_click(move |_, window, cx| open(window, cx));
+    }
+    doors.track(key, SharedString::from(label.to_owned()), Some(&door), hit.into_any_element())
 }
 
 // ------------------------------------------------------------------ text
 
-fn said(key: impl Into<SharedString>, content: impl Into<SharedString>, role: crate::tokens::TypeRole, color: Tone, measure: &Measure) -> AnyElement {
+pub fn said(key: impl Into<SharedString>, content: impl Into<SharedString>, role: TypeRole, color: impl Into<Hsla>, measure: &Measure) -> AnyElement {
     let key = key.into();
     let content = content.into();
     probe::text(
@@ -173,7 +330,7 @@ fn said(key: impl Into<SharedString>, content: impl Into<SharedString>, role: cr
         measure.role(role),
         1.0,
         TextOverflow::Wrap,
-        div().set(role, measure).text_color(color.hsla()).child(content),
+        div().set(role, measure).text_color(color.into()).whitespace_nowrap().child(content),
     )
     .into_any_element()
 }
@@ -181,21 +338,25 @@ fn said(key: impl Into<SharedString>, content: impl Into<SharedString>, role: cr
 /// A type in plain words: its glyph, then its tokens.
 #[must_use]
 pub fn ty_element(key: &str, ty: &Ty, measure: &Measure, palette: &Palette, xray: bool) -> AnyElement {
+    ty_lit(key, ty, measure, palette, xray, Lit::Rest)
+}
+
+pub fn ty_lit(key: &str, ty: &Ty, measure: &Measure, palette: &Palette, xray: bool, lit: Lit) -> AnyElement {
     let mut row = div().flex().flex_none().items_baseline().gap(px(5.0 * measure.scale()));
     if let Some(head) = ty.head().filter(|tok| tok.kind != TokKind::Var) {
-        row = row.child(glyph(head, ty.wrap(), palette, measure.scale()));
+        row = row.child(div().flex_none().self_center().child(glyph(head, ty.wrap(), palette, measure.scale())));
     }
     for (n, tok) in ty.toks.iter().enumerate() {
         let (role, color) = tok_style(tok, palette);
-        row = row.child(said(format!("{key}-tok-{n}"), tok.text.clone(), role, color, measure));
+        row = row.child(said(format!("{key}-tok-{n}"), tok.text.clone(), role, hover::ink(color, lit, palette), measure));
     }
-    if xray && !ty.exact.is_empty() {
+    if xray && !ty.exact.is_empty() && ty.exact != ty.plain() {
         row = row.child(said(format!("{key}-exact"), ty.exact.clone(), scale::LABEL_MONO, palette.ink3, measure));
     }
     row.into_any_element()
 }
 
-fn tok_style(tok: &Tok, palette: &Palette) -> (crate::tokens::TypeRole, Tone) {
+fn tok_style(tok: &Tok, palette: &Palette) -> (TypeRole, Tone) {
     match tok.kind {
         TokKind::Word | TokKind::Punct => (scale::BODY, palette.ink3),
         TokKind::Prim => (scale::BODY, palette.ink2),
@@ -207,7 +368,7 @@ fn tok_style(tok: &Tok, palette: &Palette) -> (crate::tokens::TypeRole, Tone) {
 
 /// The only icon a type has: a stone for a plain value, a plate for a named
 /// type, a diamond for a contract; stacked for a list, dotted for maybe.
-fn glyph(head: &Tok, wrap: Wrap, palette: &Palette, scale: f32) -> AnyElement {
+pub(crate) fn glyph(head: &Tok, wrap: Wrap, palette: &Palette, scale: f32) -> AnyElement {
     let color: Hsla = match head.kind {
         TokKind::Prim | TokKind::Lit => palette.ink3.hsla(),
         _ => hue(head.fam, palette).hsla(),
@@ -253,30 +414,9 @@ fn glyph(head: &Tok, wrap: Wrap, palette: &Palette, scale: f32) -> AnyElement {
     .into_any_element()
 }
 
-// ------------------------------------------------------------------ hero
-
-/// The top of the page: the gem on the spine, the name, the author's lede,
-/// and the marks.
-#[must_use]
-pub fn hero(plan: &Hero, gem_kind: crate::icons::Kind, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette) -> AnyElement {
-    let m = measure;
-    let gem = crate::paint::gem(gem_kind).size(geo.gem).hue(hue(plan.fam, palette).hsla());
-    let gem = anchor(at(SectionId::Spec, Part::Gem), anchors, div().w(px(geo.gem)).h(px(geo.gem)).child(gem));
-    let gem = div().absolute().left(geo.spine - geo.col - px(geo.gem / 2.0)).top(px(-6.0 * geo.scale)).child(gem);
-    let mut name = div().flex().flex_wrap().items_baseline();
-    if let Some(owner) = &plan.owner {
-        name = name.child(said("page-owner", format!("{owner}."), scale::DISPLAY, palette.ink3, m));
-    }
-    name = name.child(said("page-title", plan.name.clone(), scale::DISPLAY, palette.ink0, m));
-    let mut column = div().relative().flex().flex_col().child(gem).child(anchor(at(SectionId::Spec, Part::Title), anchors, name));
-    if let Some(lede) = &plan.lede {
-        column = column.child(div().mt(px(6.0 * geo.scale)).child(said("page-lede", plain(lede), scale::LEDE, palette.ink2, m)));
-    }
-    let mut marks = div().flex().flex_wrap().items_center().gap_x(px(20.0 * geo.scale)).gap_y(px(6.0 * geo.scale)).mt(px(16.0 * geo.scale));
-    for (n, mark) in plan.marks.iter().enumerate() {
-        marks = marks.child(mark_element(n, mark, m, palette));
-    }
-    column.child(marks).into_any_element()
+/// A neutral stone: a value's mark (values carry no hue).
+pub fn stone(palette: &Palette, scale: f32) -> AnyElement {
+    glyph(&Tok { kind: TokKind::Lit, text: String::new(), fam: Fam::Value }, Wrap::Plain, palette, scale)
 }
 
 /// Markup (`code`, [links]) as plain words.
@@ -284,13 +424,65 @@ fn plain(markup: &str) -> String {
     crate::overlay::text::parse(markup).iter().map(crate::overlay::text::Piece::text).collect()
 }
 
-fn mark_element(n: usize, mark: &Mark, m: &Measure, palette: &Palette) -> AnyElement {
-    let (icon, text, struck) = match mark {
-        Mark::Package { name, version } => (crate::icons::Icon::Package, version.as_ref().map_or_else(|| name.clone(), |v| format!("{name} {v}")), false),
-        Mark::Path { text } => (crate::icons::Icon::Folder, text.clone(), false),
-        Mark::Deprecated(d) => (crate::icons::Icon::Alert, d.since.as_ref().map_or_else(|| "deprecated".to_owned(), |s| format!("deprecated {s}")), true),
+/// Widths for a column of mono text, from its longest entry: Geist Mono's
+/// advance is 0.6 em.
+pub fn mono_w(chars: usize, role: TypeRole, scale: f32) -> Pixels {
+    px(chars as f32 * role.size * 0.6 * scale)
+}
+
+/// Widths for plain words in the UI face (an upper bound: 0.58 em).
+pub fn words_w(chars: usize, role: TypeRole, scale: f32) -> Pixels {
+    px(chars as f32 * role.size * 0.58 * scale)
+}
+
+// ------------------------------------------------------------------ hero
+
+/// The top of the page: the gem on the spine, the name, the author's lede
+/// (only when the docs have one), and the marks the chrome does not already
+/// say: since, deprecated, yours. `gem` and `title` come from the shell
+/// (shared elements, a name fitted to the room).
+#[must_use]
+pub fn hero(plan: &Hero, gem: AnyElement, title: AnyElement, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette, doors: &dyn Doors) -> AnyElement {
+    let m = measure;
+    let gem = anchor(at(SectionId::Spec, Part::Gem), anchors, div().w(px(geo.gem)).h(px(geo.gem)).child(gem));
+    // Centred on the title's first line.
+    let line = scale::DISPLAY.line * geo.scale;
+    let gem = div().absolute().left(geo.spine - geo.col - px(geo.gem / 2.0)).top(px((line - geo.gem) / 2.0)).child(gem);
+    let mut column = div().relative().flex().flex_col().child(gem).child(anchor(at(SectionId::Spec, Part::Title), anchors, title));
+    if let Some(lede) = &plan.lede {
+        let lede = plain(lede);
+        doors.say(&lede);
+        column = column.child(
+            div().mt(geo.s(4.0)).max_w(geo.col_w).child(
+                probe::text(
+                    ElementId::Name("page-lede".into()),
+                    SharedString::from(lede.clone()),
+                    m.role(scale::LEDE),
+                    1.0,
+                    TextOverflow::Wrap,
+                    div().set(scale::LEDE, m).text_color(palette.ink2.hsla()).child(lede),
+                ),
+            ),
+        );
+    }
+    if !plan.marks.is_empty() {
+        let mut marks = div().flex().flex_wrap().items_center().gap_x(geo.s(20.0)).gap_y(geo.s(6.0)).mt(geo.s(10.0));
+        for (n, mark) in plan.marks.iter().enumerate() {
+            marks = marks.child(mark_element(n, mark, m, palette, doors));
+        }
+        column = column.child(marks);
+    }
+    column.into_any_element()
+}
+
+fn mark_element(n: usize, mark: &Mark, m: &Measure, palette: &Palette, doors: &dyn Doors) -> AnyElement {
+    let (icon, text, struck, color) = match mark {
+        Mark::Since(version) => (crate::icons::Icon::Clock, format!("since {version}"), false, palette.ink3),
+        Mark::Deprecated(d) => (crate::icons::Icon::Alert, d.since.as_ref().map_or_else(|| "deprecated".to_owned(), |s| format!("deprecated {s}")), true, palette.ink3),
+        Mark::Yours => (crate::icons::Icon::Diamond, "yours".to_owned(), false, palette.mint.base),
     };
-    let mut words = div().set(scale::LABEL_MONO, m).text_color(palette.ink3.hsla());
+    doors.say(&text);
+    let mut words = div().set(scale::LABEL_MONO, m).text_color(color.hsla());
     if struck { words = words.line_through(); }
     div()
         .id(SharedString::from(format!("page-mark-{n}")))
@@ -298,8 +490,7 @@ fn mark_element(n: usize, mark: &Mark, m: &Measure, palette: &Palette) -> AnyEle
         .items_center()
         .gap(px(7.0 * m.scale()))
         .whitespace_nowrap()
-        .hover(|style| style.text_color(palette.ink1.hsla()))
-        .child(crate::icons::ui(icon, crate::icons::IconSize::S12, palette.ink3).size(m.icon(12.0)))
+        .child(crate::icons::ui(icon, crate::icons::IconSize::S12, color).size(m.icon(12.0)))
         .child(probe::text(
             ElementId::Name(SharedString::from(format!("page-mark-{n}-text"))),
             SharedString::from(text.clone()),
@@ -315,10 +506,11 @@ fn mark_element(n: usize, mark: &Mark, m: &Measure, palette: &Palette) -> AnyEle
 
 /// The drawing at the centre of the page, when the plan has one.
 #[must_use]
-pub fn specimen(spec: &Spec, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette) -> Option<AnyElement> {
-    match spec {
+pub fn specimen(plan: &PagePlan, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette, doors: &dyn Doors) -> Option<AnyElement> {
+    match &plan.spec {
         Spec::None => None,
         Spec::Record(record) => Some(bracket(record, geo, anchors, measure, palette)),
+        Spec::Choice(choice) => Some(fork::fork(choice, plan.hero.fam, geo, anchors, measure, palette, doors)),
     }
 }
 
@@ -376,7 +568,7 @@ fn bracket(record: &Record, geo: &Geometry, anchors: &Rc<Anchors>, m: &Measure, 
             .relative()
             .flex()
             .items_center()
-            .min_h(px(rhythm::ROW * s))
+            .h(px(rhythm::ROW_PITCH * s))
             .child(anchor(at(SectionId::Spec, Part::Row(n as u16)), anchors, name))
             .child(ty_element(&format!("{key}-type"), &rung.ty, m, palette, m.reveal().xray))
             .children(doc);
@@ -386,158 +578,112 @@ fn bracket(record: &Record, geo: &Geometry, anchors: &Rc<Anchors>, m: &Measure, 
     if record.private > 0 {
         let words = format!("and {} private", record.private);
         body = body.child(anchor(at(SectionId::Spec, Part::Private), anchors,
-            div().min_h(px(rhythm::ROW * s)).flex().items_center().child(said("page-private", words, scale::LABEL, palette.ink3, m))));
+            div().h(px(rhythm::ROW_PITCH * s)).flex().items_center().child(said("page-private", words, scale::LABEL, palette.ink3, m))));
     }
     body.into_any_element()
 }
 
-// ------------------------------------------------------------------ section heads
+// ------------------------------------------------------------------ sections
+
+/// The subject a section's head and its stub light together under.
+#[must_use]
+pub fn section_subject(id: SectionId) -> Subject {
+    Subject::new(format!("page-section:{id:?}"))
+}
 
 /// A section's head: its mark sits on the spine (drawn by [`ink`]), then its
-/// heading; the rule and the stub are ink, the stub's count is text in the
-/// margin.
+/// heading, one row high; the rule and the stub are ink, the stub's count is
+/// text: in the margin above its stub when the margins carry the edges, at
+/// the head's right end otherwise.
 #[must_use]
-pub fn section_head(section: &Section, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette) -> AnyElement {
-    let s = geo.scale;
+pub fn section_head(section: &Section, fam: Fam, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette, doors: &dyn Doors) -> AnyElement {
     let key = format!("page-section-{:?}", section.id);
-    let title = anchor(at(section.id, Part::Head), anchors, said(key.clone(), section.title.clone(), scale::SECTION, palette.ink2, measure));
-    let mut head = div().relative().h(px(16.0 * s)).mb(px(rhythm::HEAD_GAP * s)).flex().items_center().child(title);
+    doors.say(&section.title);
+    let subject = section_subject(section.id);
+    let color = if section.id == SectionId::Fails { palette.coral.base } else { hue(fam, palette) };
+    let (title, m, pal) = (section.title.clone(), *measure, *palette);
+    let head_key = key.clone();
+    let title = hover::hoverable(ElementId::Name(SharedString::from(format!("{key}-hover"))), subject, color.hsla(), move |lit| {
+        said(head_key, title, scale::SECTION, hover::ink(pal.ink2, lit, &pal), &m)
+    });
+    let title = anchor(at(section.id, Part::Head), anchors, title);
+    let mut head = div().relative().h(geo.s(16.0)).flex().items_center().child(title);
     if let Some(count) = &section.count {
         let label = section.yours.as_ref().map_or_else(|| count.clone(), |yours| format!("{count} · {yours}"));
-        let place = if geo.margins() {
+        doors.say(&label);
+        let words = count_label(&key, count, section.yours.as_deref(), measure, palette);
+        let place = if geo.margins() && section.dir != Dir::None {
             match section.dir {
-                Dir::In => div().absolute().right(geo.col_w + (geo.col - geo.spine) + px(16.0 * s)).top(px(-18.0 * s)),
-                _ => div().absolute().left(geo.col_w + px(12.0 * s)).top(px(-18.0 * s)),
+                Dir::In => div().absolute().right(geo.col_w + (geo.col - geo.spine) + geo.s(18.0)).bottom(geo.s(10.0)),
+                _ => div().absolute().left(geo.col_w + geo.s(14.0)).bottom(geo.s(10.0)),
             }
         } else {
             div().absolute().right_0().top_0()
         };
-        head = head.child(place.whitespace_nowrap().child(said(format!("{key}-count"), label, scale::LABEL_MONO, palette.ink3, measure)));
+        head = head.child(place.whitespace_nowrap().child(anchor(at(section.id, Part::Count), anchors, words)));
     }
     head.into_any_element()
 }
 
-// ------------------------------------------------------------------ ink
-
-/// Every stroke on the page, painted in one pass from this frame's anchors:
-/// the spine, the specimen's shape, and each section's mark, rule and stub.
-#[must_use]
-pub fn ink(plan: &PagePlan, geo: Geometry, anchors: &Rc<Anchors>, palette: &Palette) -> AnyElement {
-    let anchors = Rc::clone(anchors);
-    let kind = hue(plan.hero.fam, palette).hsla();
-    let coral = palette.coral.base.hsla();
-    let rule = palette.line2.hsla();
-    let ground = palette.g1.hsla();
-    let sections = plan.sections.iter().map(|section| (section.id, section.dir, section.tier)).collect::<Vec<_>>();
-    let record = match &plan.spec { Spec::Record(record) => Some(record.rungs.iter().map(|rung| rung.optional).collect::<Vec<_>>()), Spec::None => None };
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let s = geo.scale;
-            let x_spine = bounds.origin.x + geo.spine + px(0.5);
-            let x_col = bounds.origin.x + geo.col;
-            let x_end = x_col + geo.col_w;
-            let line = |window: &mut Window, from: Point<Pixels>, to: Point<Pixels>, width: f32, color: Hsla, dash: Option<[f32; 2]>| {
-                let mut path = PathBuilder::stroke(px(width));
-                if let Some([on, off]) = dash { path = path.dash_array(&[px(on * s), px(off * s)]); }
-                path.move_to(from);
-                path.line_to(to);
-                if let Ok(path) = path.build() { window.paint_path(path, color); }
-            };
-            let poly = |window: &mut Window, points: &[Point<Pixels>], width: f32, color: Hsla, fill: Option<Hsla>| {
-                if let Some(fill) = fill {
-                    let mut path = PathBuilder::fill();
-                    path.add_polygon(points, true);
-                    if let Ok(path) = path.build() { window.paint_path(path, fill); }
-                }
-                let mut path = PathBuilder::stroke(px(width));
-                path.add_polygon(points, fill.is_some());
-                if let Ok(path) = path.build() { window.paint_path(path, color); }
-            };
-            let gem_bottom = anchors.get(at(SectionId::Spec, Part::Gem)).map(|gem| gem.bottom() + px(2.0));
-            let heads = sections.iter().filter_map(|(id, dir, tier)| anchors.get(at(*id, Part::Head)).map(|b| (*id, *dir, *tier, b))).collect::<Vec<_>>();
-            let mid = |b: &Bounds<Pixels>| (b.origin.y + b.size.height / 2.0).round() + px(0.5);
-            // The spine: the node's body, from the gem to the last section.
-            if let Some(top) = gem_bottom {
-                let bottom = heads.last().map_or(top + px(40.0 * s), |(_, _, _, b)| mid(b));
-                line(window, point(x_spine, top), point(x_spine, bottom), stroke::HAIR, kind.opacity(0.28), None);
-            }
-            // The record's bracket: its back is the spine.
-            if let Some(optional) = &record {
-                let rows = anchors.rows(SectionId::Spec);
-                if let (Some((_, first)), Some((_, last))) = (rows.first(), rows.last()) {
-                    let top = mid(first) - px(14.0 * s);
-                    let mut bottom = mid(last) + px(14.0 * s);
-                    if let Some(private) = anchors.get(at(SectionId::Spec, Part::Private)) { bottom = mid(&private) + px(8.0 * s); }
-                    let serif = px(7.0 * s);
-                    let mut back = PathBuilder::stroke(px(stroke::RELATION));
-                    back.move_to(point(x_spine + serif, top));
-                    back.line_to(point(x_spine, top));
-                    back.line_to(point(x_spine, bottom));
-                    back.line_to(point(x_spine + serif, bottom));
-                    if let Ok(path) = back.build() { window.paint_path(path, kind); }
-                    if let Some(top_of_gem) = gem_bottom { line(window, point(x_spine, top_of_gem), point(x_spine, top), stroke::HAIR, kind.opacity(0.45), None); }
-                    for (n, b) in &rows {
-                        let y = mid(b);
-                        let opt = optional.get(*n as usize).copied().unwrap_or(false);
-                        let end = x_col - px(12.0 * s);
-                        line(window, point(x_spine, y), point(end, y), stroke::HAIR, kind, opt.then_some(stroke::OPTIONAL));
-                        let sq = px(3.0 * s);
-                        let square = [point(end - sq, y - sq), point(end + sq, y - sq), point(end + sq, y + sq), point(end - sq, y + sq)];
-                        poly(window, &square, stroke::HAIR, kind, Some(if opt { ground } else { kind }));
-                    }
-                    if let Some(private) = anchors.get(at(SectionId::Spec, Part::Private)) {
-                        // Private fields: short hatched rungs, no names.
-                        let y = mid(&private);
-                        for k in 0..3 {
-                            let x = x_spine + px((4.0 + 5.0 * k as f32) * s);
-                            line(window, point(x, y + px(3.0 * s)), point(x + px(4.0 * s), y - px(3.0 * s)), stroke::HAIR, kind.opacity(0.6), None);
-                        }
-                    }
-                }
-            }
-            // Each section: its mark on the spine, the rule after its heading,
-            // and its stub into the margin it relates to.
-            for (id, dir, tier, b) in &heads {
-                let y = mid(b);
-                let color = if *id == SectionId::Fails { coral } else { kind };
-                let r = px(8.0 * s);
-                let knock = [point(x_spine - r, y - r), point(x_spine + r, y - r), point(x_spine + r, y + r), point(x_spine - r, y + r)];
-                poly(window, &knock, 0.0, ground, Some(ground));
-                mark(window, *id, point(x_spine, y), s, color);
-                line(window, point(b.right() + px(14.0 * s), y), point(x_end, y), stroke::HAIR, rule, None);
-                let dash = (*tier == Tier::Name).then_some(stroke::INFERRED);
-                if geo.margins() {
-                    match dir {
-                        Dir::In => line(window, point(x_spine - px(10.0 * s) - (geo.reach - px(16.0 * s)).min(geo.col), y), point(x_spine - px(10.0 * s), y), stroke::RELATION, color.opacity(0.55), dash),
-                        Dir::Out => line(window, point(x_end + px(8.0 * s), y), point(x_end + geo.reach - px(16.0 * s), y), stroke::RELATION, color.opacity(0.55), dash),
-                        Dir::None => {}
-                    }
-                }
-            }
-        },
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .size_full()
-    .into_any_element()
+fn count_label(key: &str, count: &str, yours: Option<&str>, m: &Measure, palette: &Palette) -> AnyElement {
+    let mut row = div().flex().items_baseline().gap(px(6.0 * m.scale()));
+    row = row.child(said(format!("{key}-count"), count.to_owned(), scale::LABEL_MONO, palette.ink3, m));
+    if let Some(yours) = yours {
+        row = row.child(said(format!("{key}-count-dot"), "·", scale::LABEL_MONO, palette.ink4, m));
+        row = row.child(said(format!("{key}-count-yours"), yours.to_owned(), scale::LABEL_MONO, palette.mint.base, m));
+    }
+    row.into_any_element()
 }
 
-/// A section's gutter mark: one glyph per section, 12 px.
-fn mark(window: &mut Window, id: SectionId, c: Point<Pixels>, s: f32, color: Hsla) {
-    let p = |x: f32, y: f32| point(c.x + px(x * s), c.y + px(y * s));
-    let mut path = PathBuilder::stroke(px(1.4));
-    match id {
-        SectionId::Getting => { path.move_to(p(-5.0, 0.0)); path.line_to(p(5.0, 0.0)); path.move_to(p(1.0, -4.0)); path.line_to(p(5.0, 0.0)); path.line_to(p(1.0, 4.0)); }
-        SectionId::Does => { for (x, y) in [(-5.0, -5.0), (1.0, -5.0), (-5.0, 1.0), (1.0, 1.0)] { path.add_polygon(&[p(x, y), p(x + 4.0, y), p(x + 4.0, y + 4.0), p(x, y + 4.0)], true); } }
-        SectionId::Fails => { path.move_to(p(0.0, -6.0)); path.line_to(p(0.0, -1.0)); path.line_to(p(-5.0, 5.0)); path.move_to(p(0.0, -1.0)); path.line_to(p(5.0, 5.0)); }
-        SectionId::Uses => { path.move_to(p(-5.0, 0.0)); path.line_to(p(-1.0, 0.0)); path.line_to(p(5.0, -5.0)); path.move_to(p(-1.0, 0.0)); path.line_to(p(5.0, 0.0)); path.move_to(p(-1.0, 0.0)); path.line_to(p(5.0, 5.0)); }
-        SectionId::Changed => { path.move_to(p(-6.0, 5.0)); path.line_to(p(6.0, 5.0)); for (x, h) in [(-5.0, 4.0), (-1.0, 9.0), (3.0, 6.0)] { path.move_to(p(x, 5.0)); path.line_to(p(x, 5.0 - h)); } }
-        SectionId::Words => { for (y, w) in [(-5.0, 10.0), (-1.0, 10.0), (3.0, 6.0)] { path.move_to(p(-5.0, y)); path.line_to(p(-5.0 + w, y)); } }
-        SectionId::Spec => { path.move_to(p(-4.0, 0.0)); path.line_to(p(4.0, 0.0)); }
+/// Getting one's body: the rails.
+#[must_use]
+pub fn getting(plan: &PagePlan, geo: &Geometry, anchors: &Rc<Anchors>, measure: &Measure, palette: &Palette, doors: &dyn Doors) -> Option<AnyElement> {
+    rails::rails(plan, geo, anchors, measure, palette, doors)
+}
+
+// ------------------------------------------------------------------ the page
+
+/// The whole page: the hero, the specimen, then each section in reading
+/// order (its head, then its body), and the ink over them. `bodies` are the
+/// sections the shell draws itself; Getting one is drawn here from the plan
+/// unless the shell gives one.
+///
+/// Every part is its own child, in reading order, keyed
+/// `page-part-{n}`, so a transition can reveal them in that order.
+#[must_use]
+pub fn page(
+    plan: &PagePlan,
+    gem: AnyElement,
+    title: AnyElement,
+    mut bodies: Vec<(SectionId, AnyElement)>,
+    geo: Geometry,
+    anchors: &Rc<Anchors>,
+    measure: &Measure,
+    palette: &Palette,
+    doors: &dyn Doors,
+) -> AnyElement {
+    let mut parts: Vec<AnyElement> = vec![hero(&plan.hero, gem, title, &geo, anchors, measure, palette, doors)];
+    if let Some(spec) = specimen(plan, &geo, anchors, measure, palette, doors) {
+        parts.push(div().mt(geo.s(24.0)).child(spec).into_any_element());
     }
-    if let Ok(path) = path.build() { window.paint_path(path, color); }
+    for section in &plan.sections {
+        let body = match bodies.iter().position(|(id, _)| *id == section.id) {
+            Some(at) => Some(bodies.remove(at).1),
+            None if section.id == SectionId::Getting => getting(plan, &geo, anchors, measure, palette, doors),
+            None => None,
+        };
+        let head = section_head(section, plan.hero.fam, &geo, anchors, measure, palette, doors);
+        let mut block = div().flex().flex_col().mt(geo.s(rhythm::SECTION - 8.0)).child(head);
+        if let Some(body) = body {
+            block = block.child(anchor(at(section.id, Part::Body), anchors, div().mt(geo.s(rhythm::HEAD_GAP - 4.0)).child(body)));
+        }
+        parts.push(block.into_any_element());
+    }
+    let mut column = div().relative().w(geo.col + geo.col_w).pl(geo.col).flex().flex_col();
+    for (n, part) in parts.into_iter().enumerate() {
+        column = column.child(div().id(SharedString::from(format!("page-part-{n}"))).child(part));
+    }
+    column.child(ink(plan, geo, anchors, palette)).into_any_element()
 }
 
 #[cfg(test)]
@@ -547,9 +693,13 @@ mod tests {
 
     #[test]
     fn the_column_is_640_with_the_spine_44_left_of_it_in_a_wide_folio() {
-        let geo = Geometry::new(px(784.0), px(160.0), 1.0);
+        let geo = Geometry::new(px(784.0), px(196.0), 1.0);
         assert_eq!((geo.col, geo.col_w, geo.spine), (px(72.0), px(640.0), px(28.0)));
-        assert!(geo.margins(), "a wide reader leaves the margins room for stubs");
+        assert!(geo.margins(), "a 1440 window leaves the margins room for stubs");
+        // 1280 with the shelf open: the reader is 1016 wide.
+        assert!(Geometry::new(px(784.0), px(116.0), 1.0).margins(), "1280 still carries the edges");
+        // Below: the edges fold into the column.
+        assert!(!Geometry::new(px(784.0), px(60.0), 1.0).margins());
         let narrow = Geometry::new(px(640.0), px(20.0), 1.0);
         assert_eq!(narrow.col - narrow.spine, px(36.0), "the narrow spine sits 36 px left of the column");
         assert!(!narrow.margins(), "a narrow reader keeps its counts in the column");
