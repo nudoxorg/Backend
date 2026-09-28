@@ -49,12 +49,16 @@ pub(crate) fn blocking() -> Result<Loaded, String> {
     FIXTURE
         .get_or_init(|| {
             let path = folder().join("world.json");
+            let reading = std::time::Instant::now();
             let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
             let world = Arc::new(World::from_json(&bytes).map_err(|error| error.to_string())?);
+            super::trace::span("world.parse", reading, format_args!("{} bytes", bytes.len()));
+            let joining = std::time::Instant::now();
             let identities = Arc::new(IdentityAdapter::load(
                 &world,
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
             ));
+            super::trace::span("world.identities", joining, "IdentityAdapter::load");
             Ok((world, identities))
         })
         .clone()
@@ -165,12 +169,15 @@ struct Prepared {
 
 impl Prepared {
     fn new(world: Arc<World>, identities: Arc<IdentityAdapter>) -> Self {
-        Self {
+        let preparing = std::time::Instant::now();
+        let prepared = Self {
             names: Names::new(&world),
             recipes: Recipes::new(&world).into_prepared(),
             world,
             identities,
-        }
+        };
+        super::trace::span("world.tables", preparing, "Names + Recipes");
+        prepared
     }
 }
 

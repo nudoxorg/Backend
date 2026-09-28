@@ -51,15 +51,20 @@ impl GraphFocus {
     }
 }
 
-/// A pinned card can finish a lookup while its graph is hidden. Its failure
-/// belongs to this exact visible page/root, not to future navigation.
+/// The one visit-scoped notice, for every route (§15 ruling 1). A failure
+/// that cannot move the page (an unresolved link, an unindexed hold, a
+/// pinned card whose lookup finished while the graph was hidden) belongs to
+/// this exact visible page/root, never to a future navigation: it clears the
+/// moment the route changes, and a newer notice always replaces an older one
+/// (`DataStore::set_notice`). Drawn in the foot, to the right of the hand's
+/// marks (`shell::status`).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct GraphNotice {
+pub(crate) struct Notice {
     pub visit: Route,
     pub root: VersionedRoot,
     pub message: Arc<str>,
 }
-impl GraphNotice {
+impl Notice {
     pub(crate) fn active(&self, snapshot: &AppSnapshot) -> bool {
         snapshot.overlay().is_none()
             && snapshot.route() == &self.visit
