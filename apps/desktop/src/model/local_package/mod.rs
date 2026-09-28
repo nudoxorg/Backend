@@ -20,6 +20,7 @@ mod readme;
 mod tests;
 
 use crate::core::LocalProjectId;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -201,14 +202,33 @@ impl LocalPackageLoader {
 
     /// Projects the project's README without reading package facts.
     ///
-    /// The canonical graph owns name, version, and dependencies. This reader
-    /// only recovers the document the dossier renders.
+    /// The canonical graph owns name, version, and dependencies. But it never
+    /// owns description or license: `RegistryPackageRecord` (the DTO behind
+    /// every "package" surface reply, registry release or synthesized local
+    /// record alike) has no field for either, so a caller that trusts the
+    /// canonical graph for those two facts renders them as unknown forever,
+    /// even when the manifest states both (this was toml's bug: its own
+    /// `Cargo.toml` states `description` and `license`, but the record built
+    /// from the canonical graph could never carry them). This reader
+    /// recovers exactly those two fields with one extra cheap, cargo-free
+    /// manifest read (`manifest::package_facts`, no subprocess, no
+    /// workspace-member glob walk), alongside the document.
     #[must_use]
     #[allow(clippy::unused_self)]
     pub fn readme(&self, project: &LocalProjectId) -> Option<LocalPackage> {
         let root = project.path();
         let readme = readme::project_readme(&root);
-        if readme.is_empty() {
+        let facts = manifest::read_manifest(&root.join("Cargo.toml"))
+            .map(|manifest| manifest::package_facts(&root, &manifest));
+        let description = facts.as_ref().and_then(|facts| present(facts.description.clone()));
+        let license = facts.as_ref().and_then(|facts| present(facts.license.clone()));
+        // A project with neither a README to project nor manifest facts to
+        // recover has nothing for this reader to contribute; `None` lets the
+        // caller fall through to its own gap. But a missing README must not
+        // discard manifest facts that were actually read (this was crate
+        // `present`'s bug: no `README.md`, yet its `Cargo.toml` states a
+        // workspace-inherited license that a bare emptiness check threw away).
+        if readme.is_empty() && description.is_none() && license.is_none() {
             return None;
         }
         Some(LocalPackage {
@@ -216,8 +236,8 @@ impl LocalPackageLoader {
             source: LocalPackageSource::Readme,
             name: Arc::from(folder_name(&root)),
             version: None,
-            description: None,
-            license: None,
+            description: description.map(Arc::from),
+            license: license.map(Arc::from),
             rust_version: None,
             repository: None,
             homepage: None,
@@ -255,6 +275,42 @@ impl LocalPackageLoader {
             }
         };
         manifest::project(project.clone(), &root, failure)
+    }
+}
+
+/// What a mark needs to know about the *active* workspace project — not
+/// necessarily the package whose page is open, but the one the reader is
+/// working in (`WorkspaceState::active`). Read the same cheap, cargo-free
+/// way as [`LocalPackageLoader::readme`]'s recovered fields: one manifest
+/// parse, no subprocess, no full dependency resolution.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ActiveProject {
+    /// Its own name, when its manifest states one.
+    pub name: Option<Arc<str>>,
+    /// Its own declared license; `None` when not known. Comparing a
+    /// package's license against itself says nothing, so this must only
+    /// ever come from the reader's own active project, never from the
+    /// package whose page happens to be open.
+    pub license: Option<Arc<str>>,
+    /// Every package name this workspace builds itself: the root and every
+    /// `[workspace] members` match. A dependency whose name is in this set
+    /// is truly "yours"; merely resolving to a path on this machine is not
+    /// enough (vendored and registry sources do that too).
+    pub members: BTreeSet<Arc<str>>,
+}
+
+/// Reads `root`'s [`ActiveProject`] facts (an empty, unknown result when
+/// there is no manifest to read).
+#[must_use]
+pub fn active_project(root: &Path) -> ActiveProject {
+    let Some(manifest) = manifest::read_manifest(&root.join("Cargo.toml")) else {
+        return ActiveProject::default();
+    };
+    let facts = manifest::package_facts(root, &manifest);
+    ActiveProject {
+        name: present(facts.name).map(Arc::from),
+        license: present(facts.license).map(Arc::from),
+        members: manifest::workspace_member_names(root, &manifest).into_iter().map(Arc::from).collect(),
     }
 }
 

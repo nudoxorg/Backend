@@ -1,9 +1,13 @@
 //! `Cargo.toml` reader used when Cargo cannot answer.
 //!
 //! It resolves `[workspace] members`/`exclude` globs (`*` and `**`) and
-//! `field.workspace = true` inheritance from `[workspace.package]`. Symlinks
-//! and build/VCS directories are never followed, and glob expansion is
-//! bounded so a pathological `**` cannot walk an entire home directory.
+//! `field.workspace = true` inheritance from `[workspace.package]` —
+//! whether that table lives in the manifest's own file (a single-file
+//! workspace root) or, the ordinary case, in an ancestor's (a member
+//! manifest reading the ancestor workspace root's `[workspace.package]`;
+//! see `ancestor_workspace_package`). Symlinks and build/VCS directories
+//! are never followed, and glob expansion is bounded so a pathological
+//! `**` cannot walk an entire home directory.
 
 use super::{
     CargoFailure, DependencyKind, Facts, LocalPackage, LocalPackageSource, dependencies, features,
@@ -11,7 +15,7 @@ use super::{
 };
 use crate::core::LocalProjectId;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -107,12 +111,23 @@ pub(super) fn project(project: LocalProjectId, root: &Path, failure: CargoFailur
 }
 
 /// Reads the root package's fields, following workspace inheritance.
-fn package_facts(root: &Path, manifest: &Manifest) -> Facts {
+///
+/// `pub(super)`: also called from the README-only projection
+/// (`LocalPackageLoader::readme`), which needs `description` and `license`
+/// without the cost of `Self::project`'s workspace member walk.
+pub(super) fn package_facts(root: &Path, manifest: &Manifest) -> Facts {
     let package = manifest.package.as_ref();
+    // `field.workspace = true` usually points at a *different* file: the
+    // workspace root's `[workspace.package]`, one or more directories up
+    // from a member's own manifest (this manifest's own `[workspace]`
+    // table, when it has one, is tried first — a single-file workspace
+    // root reading its own fields needs no walk).
+    let ancestor = manifest.workspace.is_none().then(|| ancestor_workspace_package(root)).flatten();
     let inherited = manifest
         .workspace
         .as_ref()
-        .and_then(|workspace| workspace.package.as_ref());
+        .and_then(|workspace| workspace.package.as_ref())
+        .or(ancestor.as_ref());
     let field = |select: fn(&ManifestPackage) -> Option<&toml::Value>| {
         inherited_string(package.and_then(select), inherited.and_then(select))
     };
@@ -138,6 +153,26 @@ fn package_facts(root: &Path, manifest: &Manifest) -> Facts {
     }
 }
 
+/// Every package name the workspace rooted at `manifest` builds itself:
+/// its own root name, plus every `[workspace] members` match. Cargo-free
+/// (the member manifests are already read for `Self::project`'s
+/// dependency/feature walk; this just names them), so a caller can decide
+/// whether a dependency is truly *yours* — a workspace member — rather
+/// than merely resolving to a path on this machine, which vendored and
+/// registry sources do too.
+pub(super) fn workspace_member_names(root: &Path, manifest: &Manifest) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    if let Some(name) = manifest.package.as_ref().and_then(|package| package.name.clone()) {
+        names.insert(name);
+    }
+    for member in member_manifests(root, manifest.workspace.as_ref()) {
+        if let Some(name) = member.package.as_ref().and_then(|package| package.name.clone()) {
+            names.insert(name);
+        }
+    }
+    names
+}
+
 impl Facts {
     fn empty() -> Self {
         Self {
@@ -156,13 +191,33 @@ impl Facts {
     }
 }
 
-fn read_manifest(path: &Path) -> Option<Manifest> {
+pub(super) fn read_manifest(path: &Path) -> Option<Manifest> {
     let file = fs::File::open(path).ok()?;
     let mut source = String::new();
     file.take(MAX_MANIFEST_BYTES)
         .read_to_string(&mut source)
         .ok()?;
     toml::from_str(&source).ok()
+}
+
+/// Walks from `root` up through its ancestors for the nearest manifest that
+/// declares `[workspace.package]`, for a member manifest whose own file has
+/// no `[workspace]` table at all — the ordinary layout, where the
+/// workspace root and its members are separate files. Each step is one
+/// more `Cargo.toml` read, bounded by the real directory depth (a plain
+/// upward walk, never a glob: it cannot loop or fan out).
+fn ancestor_workspace_package(root: &Path) -> Option<ManifestPackage> {
+    let mut dir = root.parent();
+    while let Some(current) = dir {
+        if let Some(package) = read_manifest(&current.join("Cargo.toml"))
+            .and_then(|manifest| manifest.workspace)
+            .and_then(|workspace| workspace.package)
+        {
+            return Some(package);
+        }
+        dir = current.parent();
+    }
+    None
 }
 
 /// Returns the root manifest plus each non-excluded member manifest.
