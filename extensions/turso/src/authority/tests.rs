@@ -1190,6 +1190,8 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
     let barrier_gate = Arc::clone(&gate);
     let barrier_path = path.clone();
     let barrier_namespace = namespace.clone();
+    let terminal_epoch = terminal.epoch();
+    let terminal_fence = terminal.fence_bytes();
     let barrier_thread = thread::spawn(move || {
         barrier_gate.wait();
         futures_executor::block_on(async {
@@ -1200,8 +1202,8 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
                 .mint_no_result_retirement_barrier(
                     &barrier_namespace,
                     [0x71; 16],
-                    terminal.epoch(),
-                    terminal.fence_bytes(),
+                    terminal_epoch,
+                    terminal_fence,
                 )
                 .await
                 .unwrap_or_else(|error| panic!("race barrier: {error}"))
@@ -1233,7 +1235,7 @@ fn no_result_barrier_and_begin_attempt_share_one_serialized_epoch_lane() {
     assert_ne!(barrier.barrier_epoch(), later_attempt.epoch());
 
     futures_executor::block_on(async {
-        let reopened = TursoAuthority::open(&path)
+        let mut reopened = TursoAuthority::open(&path)
             .await
             .unwrap_or_else(|error| panic!("reopen: {error}"));
         let retry = reopened

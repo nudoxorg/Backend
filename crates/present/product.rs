@@ -1408,11 +1408,14 @@ mod tests {
         let commit =
             backend_library::ForgeObjectId::parse("0123456789abcdef0123456789abcdef01234567")
                 .expect("commit");
-        let unavailable = || {
+        fn unavailable<T>() -> backend_library::ForgeFact<T> {
             backend_library::ForgeFact::Unavailable(
-                backend_library::ForgeUnavailableReason::AuthorityOmitted,
+                backend_library::ProductText::new(
+                    backend_library::ForgeUnavailableReason::AuthorityOmitted.as_str(),
+                )
+                .expect("reason text"),
             )
-        };
+        }
         let detail = backend_library::ForgePackageDetailRecord {
             source: source.clone(),
             source_id: source.identity(),
