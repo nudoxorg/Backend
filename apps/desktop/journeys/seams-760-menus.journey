@@ -1,0 +1,14 @@
+# seams-760-menus · §14 check (a): at 760 px wide, the jump bar's siblings
+# menu must stay inside the window. The owner's earlier capture cropped the
+# window, so this re-takes it narrower. (The back menu opens only on a
+# right click, which this journey DSL's named `click` cannot address; the
+# siblings menu shares the same anchored-below popover, `titlebar::menu`.)
+size 760x900
+start symbol present::glyph::RelationLabel
+
+check page
+  route symbol present::glyph::RelationLabel
+
+click jump-seg-1
+check siblings-menu
+  route symbol present::glyph::RelationLabel

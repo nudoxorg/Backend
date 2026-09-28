@@ -214,6 +214,13 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
         registry_source("smallvec-1.16.0")?,
         registry_source("basic-toml-0.1.10")?,
         registry_source("toml_edit-0.22.27")?,
+        // The symbol page's record, in three languages (W-Page): toml's
+        // Datetime (Rust), zod's issue shapes (TypeScript, a pinned excerpt)
+        // and spf13/pflag (Go, a pinned copy). TypeScript and Go index through
+        // the checker and oracle the development shell provides.
+        registry_source("toml_datetime-0.6.11")?,
+        repo.join("apps/desktop/tests/fixtures/lang/ts/zod"),
+        repo.join("apps/desktop/tests/fixtures/lang/go/pflag"),
     ];
     let mut preflight_roots = projects.clone();
     preflight_roots.push(browse_tree_root());
@@ -247,6 +254,8 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
             Err(error) => return Err(format!("fixture owner: {error}")),
         }
     };
+    crate::runtime::trace::span("boot.owner_start", attaching, format_args!("{:?}", host.mode()));
+    let indexing = Instant::now();
     let mut session = Session::connect(&endpoint).map_err(|error| format!("session: {error}"))?;
     let total = projects.len();
     for (index, project) in projects.iter().enumerate() {
@@ -255,17 +264,32 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
             .index(utf8(project)?)
             .map_err(|error| format!("index {}: {error}", project.display()))?;
     }
+    crate::runtime::trace::span("boot.index_requests", indexing, format_args!("{total} roots"));
     progress("Waiting for indexed sources");
     let started = Instant::now();
     let (mut last_rows, mut stable) = (0, 0);
+    let mut polls = 0_u32;
     loop {
+        polls += 1;
         let ready = match session.packages().map(|reply| reply.reply) {
-            Ok(backend_library::CommandReply::Packages(snapshot)) => projects.iter().all(|project| {
-                snapshot.root.rows().iter().any(|row| {
-                    Some(row.label.as_str()) == project.to_str()
-                        && row.state == backend_library::RowState::Ready
+            Ok(backend_library::CommandReply::Packages(snapshot)) => {
+                // With NUDOX_REVIEW_DIAGNOSTICS, say which roots are still not
+                // ready, and how, every ~10 s of waiting.
+                if polls.is_multiple_of(33) {
+                    for project in &projects {
+                        let row = snapshot.root.rows().iter().find(|row| Some(row.label.as_str()) == project.to_str());
+                        if row.is_none_or(|row| row.state != backend_library::RowState::Ready) {
+                            review_diag(&format!("waiting on {}: {:?}", project.display(), row.map(|row| (&row.state, row.document.len()))));
+                        }
+                    }
+                }
+                projects.iter().all(|project| {
+                    snapshot.root.rows().iter().any(|row| {
+                        Some(row.label.as_str()) == project.to_str()
+                            && row.state == backend_library::RowState::Ready
+                    })
                 })
-            }),
+            }
             _ => false,
         };
         let rows = session.health().map_or(0, |health| health.row_count());
@@ -279,6 +303,7 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
         }
         std::thread::sleep(Duration::from_millis(300));
     }
+    crate::runtime::trace::span("boot.index_settled", started, format_args!("{last_rows} rows"));
     let fixture: &'static Fixture = Box::leak(Box::new(Fixture { host, projects }));
     *cached = Some(fixture);
     Ok(fixture)
@@ -290,6 +315,10 @@ fn fixture_with_progress(progress: impl Fn(&str)) -> Result<&'static Fixture, St
 fn preflight_fixture_manifests(projects: &[PathBuf]) -> Result<(), String> {
     for project in projects {
         let manifest = project.join("Cargo.toml");
+        // A TypeScript or Go root has no Rust edition to check.
+        if !manifest.exists() && (project.join("package.json").exists() || project.join("go.mod").exists()) {
+            continue;
+        }
         let bytes = std::fs::read_to_string(&manifest)
             .map_err(|error| format!("{}: {error}", manifest.display()))?;
         let parsed: toml::Value = toml::from_str(&bytes)
@@ -717,11 +746,14 @@ pub(super) fn prepare_with_progress(
     let fixture = fixture_with_progress(&report)?;
     report(&format!("Resolving {start}"));
     let endpoint = fixture.endpoint().to_path_buf();
+    let bootstrapping = Instant::now();
     let mut subscription = LocalSubscriptionTransport::connect(&endpoint)
         .map_err(|error| format!("subscription: {error}"))?;
     let (view, revision) = subscription
         .bootstrap_root()
         .map_err(|error| format!("bootstrap root: {error}"))?;
+    crate::runtime::trace::span("boot.bootstrap_root", bootstrapping, "harness subscription");
+    let resolving = Instant::now();
     if view.root() != revision.root() {
         return Err("the owner returned mismatched startup identities".to_owned());
     }
@@ -741,6 +773,7 @@ pub(super) fn prepare_with_progress(
     {
         snapshot = snapshot.with_workspace(tree_workspace(project));
     }
+    crate::runtime::trace::span("boot.resolve_route", resolving, start);
     let project = LocalProjectId::from_path(&fixture.projects()[0])
         .map_err(|error| format!("project identity: {error}"))?;
     let actor = EngineActor::start(LocalEngineClient::new(&endpoint, project), 32)
@@ -758,6 +791,7 @@ pub(super) fn mount(
     cx: &mut App,
 ) -> Result<AnyView, String> {
     review_diag("UI mount starting");
+    let mounting = Instant::now();
     let PreparedBoot { fixture, snapshot, actor, reads, route } = prepared;
     let runtime = DesktopRuntime::new(snapshot, actor);
     let graph = UiEntityGraph::install_with_reads(cx, runtime, None, Some(reads));
@@ -791,6 +825,7 @@ pub(super) fn mount(
         last: std::cell::Cell::new((crate::shell::RenderCounts::default(), 0)),
     });
     review_diag("UI mount completed");
+    crate::runtime::trace::span("boot.mount", mounting, "UiEntityGraph + shell");
     Ok(shell.into())
 }
 
@@ -1002,6 +1037,12 @@ pub fn scenes() -> Vec<Scene> {
             build: |window, cx| build("package present", window, cx),
         },
         Scene {
+            id: "desktop-package-toml",
+            title: "The `toml` package dossier, at the release `toml_pin` pins",
+            size: (1440, 900),
+            build: |window, cx| build("package toml-0.8.23", window, cx),
+        },
+        Scene {
             id: "desktop-symbol",
             title: "present::glyph::RelationLabel, its page",
             size: (1440, 900),
@@ -1072,6 +1113,24 @@ pub fn scenes() -> Vec<Scene> {
             title: "serde::Serialize, structured symbol page",
             size: (1440, 900),
             build: |window, cx| build("symbol serde_core-1.0.229::ser::Serialize kind=trait path=src/ser/mod.rs", window, cx),
+        },
+        Scene {
+            id: "desktop-record-rust",
+            title: "toml_datetime::Datetime: the record specimen, Rust",
+            size: (1440, 900),
+            build: |window, cx| build("symbol toml_datetime-0.6.11::datetime::Datetime kind=struct path=src/datetime.rs", window, cx),
+        },
+        Scene {
+            id: "desktop-record-ts",
+            title: "zod's $ZodIssueTooSmall: the record specimen, TypeScript",
+            size: (1440, 900),
+            build: |window, cx| build("symbol zod::$ZodIssueTooSmall path=src/errors.ts", window, cx),
+        },
+        Scene {
+            id: "desktop-record-go",
+            title: "pflag.Flag: the record specimen, Go",
+            size: (1440, 900),
+            build: |window, cx| build("symbol pflag::Flag path=flag.go", window, cx),
         },
         Scene {
             id: "desktop-smallvec",
