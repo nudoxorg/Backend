@@ -28,17 +28,24 @@ use windows_sys::Win32::Security::{
     PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR_CONTROL,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY,
+    DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO,
     FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
     FILE_READ_DATA, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_STANDARD_INFO, FILE_TRAVERSE,
     FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
-    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo, FileRenameInfo,
+    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo,
     FileStandardInfo, FlushFileBuffers, GetFileInformationByHandleEx, READ_CONTROL, SYNCHRONIZE,
     SetFileInformationByHandle, WRITE_DAC,
 };
+
+/// Native `FILE_INFORMATION_CLASS` value for `FileRenameInformation`, used
+/// with `NtSetInformationFile` directly. Distinct from (and numbered
+/// differently than) the Win32 `FILE_INFO_BY_HANDLE_CLASS` `FileRenameInfo`
+/// constant used by `SetFileInformationByHandle`, which does not reliably
+/// honor a non-null `RootDirectory`.
+const FILE_RENAME_INFORMATION_CLASS: u32 = 10;
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 
 const STATUS_SUCCESS: i32 = 0;
@@ -53,7 +60,6 @@ const FILE_SHARE_WRITE: u32 = 2;
 const FILE_SHARE_DELETE: u32 = 4;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 const ACL_INFORMATION_CLASS_SIZE: i32 = 2;
-const GENERIC_ALL: u32 = 0x1000_0000;
 
 #[repr(C)]
 struct UnicodeString {
@@ -98,6 +104,13 @@ unsafe extern "system" {
         create_options: u32,
         ea_buffer: *mut c_void,
         ea_length: u32,
+    ) -> i32;
+    fn NtSetInformationFile(
+        file_handle: HANDLE,
+        io_status_block: *mut IoStatusBlock,
+        file_information: *mut c_void,
+        length: u32,
+        file_information_class: u32,
     ) -> i32;
     fn RtlNtStatusToDosError(status: i32) -> u32;
 }
@@ -375,9 +388,13 @@ impl WorkspaceRoot {
         // each field write stays within the documented FILE_RENAME_INFO
         // header and the UTF-16 payload is copied below.
         unsafe {
-            ptr::addr_of_mut!((*rename).Anonymous).write(FILE_RENAME_INFO_0 {
-                ReplaceIfExists: replace,
-            });
+            // `FILE_RENAME_INFO_0` shares storage with a `Flags: u32` field
+            // used by the FileRenameInformationEx native class; zero it first
+            // so the bytes beyond the single `ReplaceIfExists` byte this
+            // (non-Ex) class reads are deterministic.
+            let mut anonymous = FILE_RENAME_INFO_0::default();
+            anonymous.ReplaceIfExists = replace;
+            ptr::addr_of_mut!((*rename).Anonymous).write(anonymous);
             ptr::addr_of_mut!((*rename).RootDirectory)
                 .write(destination_parent.handle.as_raw_handle().cast());
             ptr::addr_of_mut!((*rename).FileNameLength)
@@ -388,18 +405,31 @@ impl WorkspaceRoot {
                 name.len(),
             );
         }
-        // SAFETY: `source_handle` and the destination root handle remain live,
-        // and `storage` contains a correctly-sized FILE_RENAME_INFO buffer.
-        let moved = unsafe {
-            SetFileInformationByHandle(
+        // The Win32 SetFileInformationByHandle wrapper does not reliably
+        // honor a non-null RootDirectory (handle-relative rename) even
+        // through FileRenameInfoEx; call NtSetInformationFile directly with
+        // the native FileRenameInformation class instead, matching this
+        // module's existing direct use of NtCreateFile for the same reason.
+        let mut io_status = IoStatusBlock {
+            value: IoStatusValue { status: 0 },
+            information: 0,
+        };
+        // SAFETY: `source_handle` and the destination root handle remain
+        // live, and `storage` contains a correctly-sized FILE_RENAME_INFO
+        // buffer matching the native FILE_RENAME_INFORMATION layout.
+        let status = unsafe {
+            NtSetInformationFile(
                 source_handle.as_raw_handle().cast(),
-                FileRenameInfo,
+                &raw mut io_status,
                 rename.cast(),
                 u32::try_from(total_size).map_err(|_| invalid_name())?,
+                FILE_RENAME_INFORMATION_CLASS,
             )
         };
-        if moved == 0 {
-            return Err(io::Error::last_os_error());
+        if status < STATUS_SUCCESS {
+            // SAFETY: this converts the NTSTATUS returned by the preceding call.
+            let error = unsafe { RtlNtStatusToDosError(status) };
+            return Err(io::Error::from_raw_os_error(error as i32));
         }
         flush_handle(destination_parent.handle.as_raw_handle())?;
         if !Arc::ptr_eq(&source_parent, &destination_parent) {
@@ -725,7 +755,10 @@ fn create_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Re
         parent,
         &name,
         access,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        // Callers request DELETE in `access`; share it too so a concurrent
+        // DELETE-requesting open elsewhere (every handle-relative open in
+        // this module) isn't rejected while this handle is still live.
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         FILE_CREATE,
         kind | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
         security.0,
@@ -733,12 +766,17 @@ fn create_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Re
 }
 
 fn open_relative(parent: HANDLE, name: &str, access: u32, kind: u32) -> io::Result<OwnedHandle> {
+    // Every caller of this function requests DELETE in `access`, so its
+    // share mode must offer FILE_SHARE_DELETE too: Windows' sharing check is
+    // symmetric, and an existing handle holding DELETE access (as every
+    // concurrent handle here does) conflicts with a newcomer that doesn't
+    // share it, regardless of what the newcomer itself requests.
     open_relative_with_share(
         parent,
         name,
         access,
         kind,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
     )
 }
 
@@ -804,6 +842,15 @@ fn nt_open_absolute(
     nt_create(&mut attributes, access, share, disposition, options)
 }
 
+/// A file just created or written can be briefly held open by antivirus
+/// real-time scanning (observed with Windows Defender), which fails an
+/// immediately-following open for `DELETE` access with
+/// `STATUS_SHARING_VIOLATION`. Retry a bounded number of times with a short
+/// backoff instead of failing closed on a transient external lock.
+const STATUS_SHARING_VIOLATION: i32 = 0xC000_0043_u32 as i32;
+const SHARING_VIOLATION_RETRIES: u32 = 20;
+const SHARING_VIOLATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+
 fn nt_create(
     attributes: &mut ObjectAttributes,
     access: u32,
@@ -811,39 +858,48 @@ fn nt_create(
     disposition: u32,
     options: u32,
 ) -> io::Result<OwnedHandle> {
-    let mut raw: HANDLE = ptr::null_mut();
-    let mut status_block = IoStatusBlock {
-        value: IoStatusValue { status: 0 },
-        information: 0,
-    };
-    // SAFETY: object attributes and Unicode storage are live for the call;
-    // output handles and I/O status are valid stack out-parameters. NTSTATUS
-    // is tested by its signed success rule, not by comparing to zero only.
-    let status = unsafe {
-        NtCreateFile(
-            &raw mut raw,
-            access,
-            attributes,
-            &raw mut status_block,
-            ptr::null_mut(),
-            0,
-            share,
-            disposition,
-            options,
-            ptr::null_mut(),
-            0,
-        )
-    };
-    if status < STATUS_SUCCESS {
-        // SAFETY: this converts the NTSTATUS returned by the preceding call.
-        let error = unsafe { RtlNtStatusToDosError(status) };
-        return Err(io::Error::from_raw_os_error(error as i32));
+    let mut attempt = 0_u32;
+    loop {
+        let mut raw: HANDLE = ptr::null_mut();
+        let mut status_block = IoStatusBlock {
+            value: IoStatusValue { status: 0 },
+            information: 0,
+        };
+        // SAFETY: object attributes and Unicode storage are live for the
+        // call; output handles and I/O status are valid stack
+        // out-parameters. NTSTATUS is tested by its signed success rule, not
+        // by comparing to zero only.
+        let status = unsafe {
+            NtCreateFile(
+                &raw mut raw,
+                access,
+                attributes,
+                &raw mut status_block,
+                ptr::null_mut(),
+                0,
+                share,
+                disposition,
+                options,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if status == STATUS_SHARING_VIOLATION && attempt < SHARING_VIOLATION_RETRIES {
+            attempt += 1;
+            std::thread::sleep(SHARING_VIOLATION_RETRY_DELAY);
+            continue;
+        }
+        if status < STATUS_SUCCESS {
+            // SAFETY: this converts the NTSTATUS returned by the preceding call.
+            let error = unsafe { RtlNtStatusToDosError(status) };
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+        if raw.is_null() || raw as isize == -1 {
+            return Err(invalid_data("NtCreateFile returned an invalid handle"));
+        }
+        // SAFETY: successful NtCreateFile transfers one owning HANDLE to us.
+        return Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) });
     }
-    if raw.is_null() || raw as isize == -1 {
-        return Err(invalid_data("NtCreateFile returned an invalid handle"));
-    }
-    // SAFETY: successful NtCreateFile transfers one owning HANDLE to us.
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
 }
 
 fn unicode_string(buffer: &mut [u16]) -> io::Result<UnicodeString> {
@@ -1030,7 +1086,13 @@ fn ensure_private_handle(handle: *mut c_void) -> io::Result<()> {
     // ACCESS_ALLOWED_ACE begins with ACE_HEADER and a mask followed by SID.
     // SAFETY: GetAce returned the sole ACE in a valid ACL.
     let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-    if u32::from(allowed.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE || allowed.Mask != GENERIC_ALL {
+    // `restrict_handle_to_current_user` grants GENERIC_ALL, but SetSecurityInfo
+    // maps generic rights to the object type's specific rights before storing
+    // the ACE, so the persisted mask reads back as FILE_ALL_ACCESS, not the
+    // raw generic bit.
+    if u32::from(allowed.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE
+        || allowed.Mask != FILE_ALL_ACCESS
+    {
         return Err(invalid_data("workspace DACL is not current-user-only"));
     }
     let sid = current_user()?;
@@ -1435,7 +1497,12 @@ mod tests {
                 assert!(root.open_file_read_checked(&["symlink"]).is_err());
                 true
             }
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => false,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(1314) =>
+            {
+                false
+            }
             Err(error) => panic!("create symlink: {error}"),
         };
         assert!(root.read_dir_checked(&[]).is_err());
